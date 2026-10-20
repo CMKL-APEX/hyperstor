@@ -15,6 +15,8 @@ fresh reader cannot infer just by reading the source.
 | Document | Scope |
 |---|---|
 | [design.md](design.md) | The whole system (draft): decisions D1–D37; metadata in three levels (Raft cluster map, `.meta` header objects, engine metadata); placement by lineage over PGs; the io_uring reactor storage daemon; the local engine with general objects, NVMe and block back ends; replication, peering, read leases, recovery, scrub; EC with a write log and full-stripe writes; volume leases, delegates and the blocklist; snapshots and clones; vhost-user-blk, the NVMe-oF target and the host read cache; GPU-direct storage behind cuFile and hipFile; the internal protocol over TCP, RoCEv2 and InfiniBand; the transactional key–value store; the S3 gateway with S3-over-RDMA; glidex integration; deployment; milestones HS0–HS14; host checks G1–G12 |
+| [implementation-notes.md](implementation-notes.md) | Decisions made while implementing (I1…), considerations and proposed design changes for review, bugs the tests found |
+| [benchmarks.md](benchmarks.md) | Benchmark hosts, methods and results, with findings |
 | [filesystem.md](filesystem.md) | The distributed filesystem (outline): stateless metadata servers on the key–value store, file data in objects, virtio-fs for VMs and FUSE elsewhere, close-to-open data with POSIX metadata, decisions F1–F12 |
 
 ## Conventions

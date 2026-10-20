@@ -1,0 +1,19 @@
+[package]
+name = "hyperstor-engine"
+description = "Hyperstor's local storage engine: general objects on block devices (spec/design.md §7)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-codec = { path = "../hyperstor-codec" }
+io-uring.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[lints]
+workspace = true

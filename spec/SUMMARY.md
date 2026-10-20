@@ -9,3 +9,8 @@
 
 - [Hyperstor design](design.md)
 - [Filesystem](filesystem.md)
+
+# Implementation
+
+- [Implementation notes](implementation-notes.md)
+- [Benchmarks](benchmarks.md)
