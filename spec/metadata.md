@@ -48,10 +48,19 @@ that no single node sees every change (D28):
   heartbeat timeout expires, so it can tell a down node from one that is
   cut off from the leader alone, and one confused node can't mark healthy
   peers down.
-- **Map lease.** Each daemon's heartbeat reply renews a *map lease* of
-  10 s. A daemon whose map lease has run out stops accepting writes for
-  its PGs (replication.md §8.4) until it renews. This bounds how long a blocklist round
-  (D24) can wait for a silent node.
+- **Map lease** (D42). Each heartbeat answer renews the node's *map
+  lease* (2 s by default), which runs from when the node sent the
+  heartbeat. A node without a valid lease serves no PG I/O (reads
+  included) until it renews. The liveness timeout is at least 1.25 times
+  the lease, so a node marked down has stopped serving by then. This also
+  bounds how long a blocklist round (D24) can wait for a silent node.
+- **Publishing a change** (D42). The leader keeps a working map and a
+  published one. Before publishing a change, it fences every device that
+  loses a role in it: the device acknowledges a `Fence` once its in-flight
+  writes for those PGs are answered, or its last granted lease runs out
+  (a device that doesn't answer gets no new lease meanwhile). Then the map
+  is published and pushed to every live device; polling remains the
+  fallback.
 - **Blocklist.** An entry names a client *instance*: a random id each
   client process makes at start, bound to its certificate identity in
   `Hello`. A storage node refuses every request from a blocklisted

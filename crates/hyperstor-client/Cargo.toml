@@ -11,6 +11,7 @@ hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
+hyperstor-rpc = { path = "../hyperstor-rpc" }
 libc.workspace = true
 thiserror.workspace = true
 

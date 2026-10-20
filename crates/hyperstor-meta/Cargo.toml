@@ -11,6 +11,7 @@ hyperstor-codec = { path = "../hyperstor-codec" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
+hyperstor-rpc = { path = "../hyperstor-rpc" }
 
 [lints]
 workspace = true

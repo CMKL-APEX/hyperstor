@@ -1,0 +1,15 @@
+[package]
+name = "hyperstor-rpc"
+description = "Multiplexed request/response connections on the hyperstor reactor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

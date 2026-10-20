@@ -72,6 +72,7 @@ fn main() {
         meta,
         shards,
         cpus,
+        meta_blocked: None,
         defer_max: args
             .iter()
             .any(|a| a == "--hdd")

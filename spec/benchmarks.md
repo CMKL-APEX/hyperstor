@@ -225,3 +225,27 @@ succeeded, now with two copies per write.
 Writes were faster degraded because each one waits for two flushes on the
 shared drive instead of three.
 
+## 2026-10-20: index size and checkpoint cost (dev-1)
+
+`target/release/hyperstor-bench index <scratch file>`: one shard on a
+buffered file on dev-1's disk, deferral off (D38). 1 GiB of 4 MiB objects
+written sequentially, a checkpoint; then every block overwritten once in
+random order (batches of 64), another checkpoint. Run twice, identical
+results. "Index RAM" is the growth of the process's resident memory, which
+for the sequential case is mostly write buffers the allocator keeps.
+
+| 1 GiB of data | extent runs | index RAM MiB | checkpoint MiB | checkpoint ms | index RAM GiB per TiB | checkpoint GiB per TiB |
+|---|---|---|---|---|---|---|
+| written sequentially | 256 | 8.1 | 1.0 | 2 | 8.1 | 1.0 |
+| every block overwritten (fully fragmented) | 262144 | 35.8 | 6.0 | 25 | 35.8 | 6.0 |
+
+### Findings
+
+1. **Checksums set the floor:** 4 bytes per 4 KiB block, 1 GiB per TiB.
+2. **Fragmentation multiplies the index** by about 18 in RAM and 6 on
+   disk, since every run carries a map entry and its own checksum vector.
+   With redirect-on-write on flash (D38), random-write volumes get there.
+3. **A whole-index checkpoint takes 2–25 ms per GiB**, so today's format
+   pauses for seconds per TiB. The capacity each checkpoint approach
+   allows, and the dense block map that bounds fragmentation, are in
+   decision-log.md, point 5.

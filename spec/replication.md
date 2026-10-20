@@ -45,16 +45,26 @@ members, as long as there are at least `min_size` of them. Below
 - A member that missed operations still covered by the log catches up by
   replaying them (delta recovery). Otherwise it is backfilled (§8.5).
 
-### 8.4 Primaries, epochs and read leases (D8, D23)
+### 8.4 Primaries, epochs and leases (D8, D42)
 
 - Every change to a PG's `acting` set or primary is a new `pg_epoch`.
   Members accept operations only for the `pg_epoch` they have peered in.
-- **Read lease.** A primary may serve reads only while a lease from
-  every in-sync member is valid. Members grant it with each `Repl` reply
-  and each heartbeat, for 8 s, measured on their own monotonic clocks.
-  A member that peers in a newer epoch first waits out the leases it has
-  granted. So a partitioned old primary stops serving reads before a new
-  one starts.
+- **Map lease** (D42, metadata.md §4.1). A storage node serves a PG's
+  reads and writes only while it holds a valid map lease and the PG isn't
+  fenced. The map service publishes a change that takes a role away from
+  a device only after fencing that device, by its acknowledgment or its
+  lease running out. So a primary that serves a read is still the
+  primary, and no write is acknowledged by a member that has been
+  replaced.
+- **As built** (HS2): leases and fencing as above, pushes as the fast
+  path, polling every 200 ms as the fallback. Replica-granted read leases
+  (below) are not built; they would let reads continue through an outage
+  of the whole map service, which map leases don't (the amendment to D23).
+- **Replica-granted read leases** (the original design, an option for
+  later). A primary may serve reads only while a lease from every in-sync
+  member is valid. Members grant it with each `Repl` reply and each
+  heartbeat, for 8 s, measured on their own monotonic clocks. A member
+  that peers in a newer epoch first waits out the leases it has granted.
 - **Peering.** When a PG enters a new `pg_epoch`, the new primary:
   1. asks each member of the previous in-sync set for its last sequence
      number and log head;

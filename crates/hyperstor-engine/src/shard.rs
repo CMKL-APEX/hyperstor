@@ -166,6 +166,10 @@ pub struct ShardStats {
     pub checkpoints: u64,
     pub commits: u64,
     pub records: u64,
+    /// Size of the last checkpoint (the serialized index), in bytes.
+    pub checkpoint_bytes: u64,
+    /// Extent runs in the index (one per contiguous mapped range).
+    pub runs: u64,
 }
 
 /// One shard of a device.
@@ -1038,6 +1042,13 @@ impl Shard {
             checkpoints: self.checkpoints,
             commits: self.commits,
             records: self.records,
+            checkpoint_bytes: self.ckpt.as_ref().map_or(0, |c| c.len),
+            runs: self
+                .index
+                .objects
+                .values()
+                .map(|o| o.blocks.len() as u64)
+                .sum(),
         }
     }
 

@@ -227,8 +227,11 @@ impl ClusterMap {
                                 .collect(),
                         };
                         if kept.iter().all(|d| *d == NO_DEVICE) {
-                            // Every copy is gone: the PG starts again empty.
-                            up.clone()
+                            // Every copy is down: the PG stays down, with
+                            // its acting set as it was, until a member
+                            // returns. Starting it again empty would let
+                            // backfill wipe the members when they return.
+                            o.acting.clone()
                         } else {
                             kept
                         }
@@ -446,27 +449,65 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
     }
 }
 
-/// The map service's state: the map, and when each node last sent a
-/// heartbeat (kept in memory only, metadata.md §4.1 and clustering.md D7).
+/// The map service's state (metadata.md §4.1, decisions.md D42).
+///
+/// - `map` is the working map: liveness and backfill change it.
+/// - `published` is what nodes and clients see. A change is published only
+///   after every device that loses a role in it has been fenced: it has
+///   acknowledged a `Fence` (and answered every write it had accepted for
+///   those PGs), or its last granted lease has run out. Then the map is
+///   pushed to every live device.
+/// - Heartbeats renew a node's map lease; a node may serve PG I/O only
+///   while its lease is valid. A node that doesn't answer a fence gets no
+///   new lease until the fence resolves.
 pub struct Meta {
     pub map: RefCell<ClusterMap>,
+    pub published: RefCell<ClusterMap>,
     beats: RefCell<HashMap<u32, Instant>>,
+    /// When each node was last granted a non-zero lease.
+    granted: RefCell<HashMap<u32, Instant>>,
+    /// Nodes that didn't answer a fence: no leases until it resolves.
+    fencing: RefCell<std::collections::HashSet<u32>>,
+    conns: RefCell<HashMap<SocketAddr, hyperstor_rpc::Conn>>,
+    lease: Duration,
     started: Instant,
 }
 
+/// Default map lease.
+pub const LEASE: Duration = Duration::from_secs(2);
+
 impl Meta {
     pub fn new(map: ClusterMap) -> Rc<Self> {
+        Self::with_lease(map, LEASE)
+    }
+
+    pub fn with_lease(map: ClusterMap, lease: Duration) -> Rc<Self> {
         Rc::new(Meta {
+            published: RefCell::new(map.clone()),
             map: RefCell::new(map),
             beats: RefCell::new(HashMap::new()),
+            granted: RefCell::new(HashMap::new()),
+            fencing: RefCell::new(std::collections::HashSet::new()),
+            conns: RefCell::new(HashMap::new()),
+            lease,
             started: Instant::now(),
         })
     }
 
+    pub fn lease(&self) -> Duration {
+        self.lease
+    }
+
     /// Marks nodes down after `timeout` without a heartbeat, and up again
-    /// when they send one, recomputing the map on every change. A node
-    /// gets `timeout` of grace from the service's start.
+    /// when they send one, recomputing the working map on every change. A
+    /// node gets `timeout` of grace from the service's start. The timeout
+    /// must exceed the lease with margin, so a node marked down has
+    /// stopped serving (its lease has run out) by the time it is.
     pub async fn liveness(self: Rc<Self>, timeout: Duration) {
+        assert!(
+            timeout >= self.lease + self.lease / 4,
+            "liveness timeout must exceed the lease by a quarter"
+        );
         loop {
             sleep(timeout / 4).await;
             let now = Instant::now();
@@ -489,6 +530,151 @@ impl Meta {
         }
     }
 
+    /// Publishes working-map changes: fence, publish, push.
+    pub async fn publisher(self: Rc<Self>) {
+        loop {
+            sleep(Duration::from_millis(10)).await;
+            if self.map.borrow().epoch > self.published.borrow().epoch {
+                self.publish().await;
+            }
+        }
+    }
+
+    /// Devices that lose a role between `old` and `new`, with the PGs.
+    pub fn losers(old: &ClusterMap, new: &ClusterMap) -> HashMap<u32, Vec<(u32, u32)>> {
+        let mut out: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+        for (k, o) in &old.pgs {
+            let Some(n) = new.pgs.get(k) else { continue };
+            for (pos, d) in o.acting.iter().enumerate() {
+                if *d == NO_DEVICE {
+                    continue;
+                }
+                let lost = match n.acting.iter().position(|x| x == d) {
+                    None => true,
+                    // Losing primacy, or (EC) changing shard position.
+                    Some(p) => {
+                        (pos == 0 && p != 0)
+                            || (n.acting.len() == o.acting.len()
+                                && p != pos
+                                && new
+                                    .pools
+                                    .get(&k.0)
+                                    .is_some_and(|pl| matches!(pl.kind, PoolKind::Ec { .. })))
+                    }
+                };
+                if lost {
+                    out.entry(*d).or_default().push(*k);
+                }
+            }
+        }
+        out
+    }
+
+    async fn publish(self: &Rc<Self>) {
+        let new = self.map.borrow().clone();
+        let old = self.published.borrow().clone();
+        let mut waits = Vec::new();
+        for (dev, pgs) in Self::losers(&old, &new) {
+            let me = self.clone();
+            let node = new
+                .devices
+                .get(&dev)
+                .or(old.devices.get(&dev))
+                .map(|d| d.node);
+            let addr = new.device_addr(dev).or(old.device_addr(dev));
+            let up = node.and_then(|n| new.nodes.get(&n)).is_some_and(|n| n.up);
+            waits.push(hyperstor_reactor::spawn(async move {
+                me.fence(node, addr, up, pgs, new.epoch).await
+            }));
+        }
+        for w in waits {
+            w.await;
+        }
+        *self.published.borrow_mut() = new.clone();
+        // Fast path: push the new map to every live device.
+        let bytes = Rc::new(new.encode());
+        for d in new.devices.values() {
+            if !new.nodes.get(&d.node).is_some_and(|n| n.up) {
+                continue;
+            }
+            let (me, addr, bytes, epoch) = (self.clone(), d.addr, bytes.clone(), new.epoch);
+            hyperstor_reactor::spawn(async move {
+                if let Ok(c) = me.conn(addr).await {
+                    let _ = hyperstor_reactor::time::timeout(
+                        me.lease,
+                        c.call(
+                            &hyperstor_proto::Msg::MapPush {
+                                epoch,
+                                map: bytes.to_vec(),
+                            },
+                            &[],
+                        ),
+                    )
+                    .await;
+                }
+            });
+        }
+    }
+
+    async fn conn(&self, addr: SocketAddr) -> Result<hyperstor_rpc::Conn, hyperstor_rpc::RpcError> {
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && !c.is_dead()
+        {
+            return Ok(c.clone());
+        }
+        let c = hyperstor_rpc::Conn::connect(addr).await?;
+        self.conns.borrow_mut().insert(addr, c.clone());
+        Ok(c)
+    }
+
+    /// Returns once `dev` can no longer serve `pgs` under an older map.
+    async fn fence(
+        self: Rc<Self>,
+        node: Option<u32>,
+        addr: Option<SocketAddr>,
+        up: bool,
+        pgs: Vec<(u32, u32)>,
+        epoch: u64,
+    ) {
+        use hyperstor_proto::Msg;
+        if up && let Some(addr) = addr {
+            let asked = async {
+                let c = self.conn(addr).await.ok()?;
+                c.call(
+                    &Msg::Fence {
+                        epoch,
+                        pgs: pgs.clone(),
+                    },
+                    &[],
+                )
+                .await
+                .ok()
+            };
+            if let Ok(Some((Msg::FenceOk, _))) =
+                hyperstor_reactor::time::timeout(self.lease, asked).await
+            {
+                return;
+            }
+        }
+        // No answer: stop renewing the node's lease and wait out the last
+        // one granted.
+        let Some(node) = node else { return };
+        self.fencing.borrow_mut().insert(node);
+        loop {
+            let last = self.granted.borrow().get(&node).copied();
+            let Some(last) = last else { break };
+            // Leases run from when the node sent its heartbeat, which is
+            // before we granted it; a quarter more covers clock rate drift.
+            let until = last + self.lease + self.lease / 4;
+            let now = Instant::now();
+            if now >= until {
+                break;
+            }
+            sleep(until - now).await;
+        }
+        self.fencing.borrow_mut().remove(&node);
+    }
+
     fn handle(
         &self,
         msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
@@ -498,10 +684,10 @@ impl Meta {
             Ok(Msg::Hello { .. }) => Msg::HelloOk {
                 version: VERSION,
                 node: 0,
-                map_epoch: self.map.borrow().epoch,
+                map_epoch: self.published.borrow().epoch,
             },
             Ok(Msg::GetMap { have_epoch }) => {
-                let m = self.map.borrow();
+                let m = self.published.borrow();
                 Msg::Map {
                     epoch: m.epoch,
                     // Nothing new: an empty map body saves the encoding.
@@ -513,9 +699,17 @@ impl Meta {
                 }
             }
             Ok(Msg::Heartbeat { node }) => {
-                self.beats.borrow_mut().insert(node, Instant::now());
+                let now = Instant::now();
+                self.beats.borrow_mut().insert(node, now);
+                let lease_ms = if self.fencing.borrow().contains(&node) {
+                    0
+                } else {
+                    self.granted.borrow_mut().insert(node, now);
+                    self.lease.as_millis() as u32
+                };
                 Msg::HeartbeatOk {
-                    map_epoch: self.map.borrow().epoch,
+                    map_epoch: self.published.borrow().epoch,
+                    lease_ms,
                 }
             }
             Ok(Msg::BackfillDone {
@@ -696,6 +890,57 @@ mod tests {
             }
         }
         assert!(degraded > 10);
+    }
+
+    #[test]
+    fn a_pg_whose_copies_are_all_down_stays_down() {
+        let mut m = map();
+        let before = m.clone();
+        for n in 0..4 {
+            m.nodes.get_mut(&n).unwrap().up = false;
+        }
+        m.recompute();
+        for (k, pg) in &m.pgs {
+            // Keeps its acting set; nothing would be backfilled from an
+            // empty primary when the members return.
+            assert_eq!(pg.acting, before.pgs[k].acting, "{k:?}");
+        }
+        for n in 0..4 {
+            m.nodes.get_mut(&n).unwrap().up = true;
+        }
+        m.recompute();
+        for (k, pg) in m.pgs.iter().filter(|(k, _)| k.0 == 1) {
+            assert_eq!(pg.acting, before.pgs[k].acting, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn losers_are_devices_that_lose_a_role() {
+        let mut m = map();
+        let before = m.clone();
+        m.nodes.get_mut(&1).unwrap().up = false;
+        m.recompute();
+        let losers = Meta::losers(&before, &m);
+        for (dev, pgs) in &losers {
+            for k in pgs {
+                let (o, n) = (&before.pgs[k], &m.pgs[k]);
+                let removed = !n.acting.contains(dev);
+                let lost_primary = o.primary() == Some(*dev) && n.primary() != Some(*dev);
+                let moved_shard = k.0 == 2
+                    && o.acting.iter().position(|d| d == dev)
+                        != n.acting.iter().position(|d| d == dev);
+                assert!(removed || lost_primary || moved_shard, "{dev} {k:?}");
+            }
+        }
+        // Node 1's devices lost their roles everywhere they had one.
+        for (k, o) in &before.pgs {
+            for d in o.acting.iter().filter(|d| m.devices[d].node == 1) {
+                assert!(losers.get(d).is_some_and(|v| v.contains(k)), "{d} {k:?}");
+            }
+        }
+        // Survivors keep their positions and primacy: nothing else is fenced.
+        assert!(losers.keys().all(|d| m.devices[d].node == 1));
+        assert!(Meta::losers(&m, &m).is_empty());
     }
 
     #[test]

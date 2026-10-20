@@ -8,7 +8,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 |---|---|---|
 | HS0 | Reactor prototype (io_uring passthrough, TCP, buffers) and gate G5 on a test host. Engine prototype with the general object format (D34: data, attributes, key–value tables, operation lists) and crash tests (log replay, atomicity, D22), on both device back ends. | — |
 | HS1 | `glidex-raftstore` extracted (a glidex change); `hyperstor-meta` with the map, pools, PGs and placement; `hyperstord` with the engine; replicated pools over TCP; the `.meta` pool with headers, directories and leases; the client library; ublk devices for testing. fio through ublk. | HS0 |
-| HS2 | Failures: peering, read leases, recovery, backfill, scrub, down and out, the blocklist and forced takeovers (replication.md §8.4–metadata.md §9). A fault-injection test rig (kill, partition, slow disk). | HS1 |
+| HS2 | Failures (built so far: liveness, degraded acting sets, backfill, map leases with fencing and pushes, D42): peering, read leases, recovery, backfill, scrub, down and out, the blocklist and forced takeovers (replication.md §8.4–metadata.md §9). A fault-injection test rig (kill, partition, slow disk). | HS1 |
 | HS3 | `hyperstor-vhost` with adaptive polling and guest-memory registration (frontends.md §11.1), client readahead, and the glidex driver (glidex.md §17): create, delete, expand, stage, images as golden snapshots and clones, metering. | HS2, storage S6 |
 | HS4 | Snapshots, groups, clones, rollback, flatten, snapshot deletion; the host read cache (frontends.md §11.3). glidex disk snapshots spec. | HS2 |
 | HS5 | NVMe-oF: the ublk and `nvmet` stopgap, then our NVMe/TCP target with ANA, reservations and CHAP. | HS2 |

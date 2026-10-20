@@ -9,6 +9,7 @@ members = [
     "crates/hyperstor-placement",
     "crates/hyperstor-proto",
     "crates/hyperstor-reactor",
+    "crates/hyperstor-rpc",
 ]
 resolver = "2"
 

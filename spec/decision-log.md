@@ -14,9 +14,9 @@ HS1 and the first part of HS2.
 |---|---|---|---|
 | 1 | Defer small overwrites only on hard disks, redirect on flash (I14) | Redirect on flash | D38; storage nodes default to no deferral, `hyperstord --hdd` turns it on |
 | 2 | One listening port per reactor (I19) | One port per reactor | D39 |
-| 3 | The stale-primary window until map leases exist (I20) | Discuss the pros and cons | Open: [below](#3-map-leases-before-or-after-the-vm-path) |
+| 3 | The stale-primary window until map leases exist (I20) | Discussed ([below](#3-map-leases-before-or-after-the-vm-path)); then: leases now, pushes as the fast path | D42; built (HS2) |
 | 4 | Failure detection by the map service only (I21, I25) | Nodes report each other | D40; to build in HS2 |
-| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? | Open: [below](#5-checkpoints-without-the-spike) |
+| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? What data size can each support? | Open: [below](#5-checkpoints-without-the-spike), with measured sizes |
 | 6 | Test hardware (NVMe namespace, RDMA NIC, power-loss-protected drives) | Later | G5 and HS6 measurements wait for it |
 | 7 | CPU per operation before RDMA | Agreed | D41; milestone HS5b |
 
@@ -38,9 +38,21 @@ power-loss protection):
 | Crash test soak | 5,000 seeds, 30,000 crashes, all consistent |
 | Separate processes, `kill -9` of a node | every request succeeded afterwards, on two copies |
 
-## Open points
+## Points settled after discussion
 
 ### 3. Map leases before or after the VM path
+
+**Answer (2026-10-20): leases now, with pushes as the fast path: option A
+below.** Built as D42: leases granted by the map service, two-phase map
+changes (fence, then publish and push). The cluster test
+`a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write` cuts
+a primary off from the map service while clients can still reach it.
+With the lease check removed, the cut-off former primary serves stale
+reads, and the test fails. With it, nothing acknowledged is lost and the
+former primary refuses both reads and writes. Choosing map-service leases
+over replica-granted read leases amends D23 (see D42).
+
+The discussion as it stood:
 
 **The window.** When the map changes (a node is marked down, a PG moves),
 storage nodes learn it by polling (every 200 ms). Until they do, a primary
@@ -100,6 +112,8 @@ takes effect.
 
 **Recommendation: A, with B as its fast path, before HS3.** A 1–2 s lease,
 pushes for the common case, and the lease for safety.
+
+## Open points
 
 ### 5. Checkpoints without the spike
 
@@ -169,3 +183,54 @@ original design).
 the spike with a small change. B makes checkpoint cost follow the rate of
 change and gives per-PG pages that backfill and shard rebalancing can
 use. C stays the long-term format. D isn't worth its compaction cost here.
+
+#### Expected data size for each approach
+
+Measured with `hyperstor-bench index` on dev-1 (benchmarks.md): 1 GiB of
+4 MiB objects written sequentially, then every block overwritten in
+random order with redirect-on-write (D38), the worst case for the index.
+
+| State | Extent runs | Index RAM per TiB of data | Checkpoint per TiB | Checkpoint time per TiB |
+|---|---|---|---|---|
+| Written sequentially (one run per chunk) | 256 per GiB | about 1–2 GiB (the checksums, 4 bytes per 4 KiB block) | 1 GiB | about 2 s |
+| Fully fragmented (one run per block) | 262,144 per GiB | about 36 GiB | 6 GiB | about 25 s |
+
+The index RAM for the sequential case is the checkpoint size plus
+structure: the measured 8 MiB per GiB is mostly write buffers the
+allocator kept, not index. Fragmented chunks cost about 140 bytes of RAM
+per block, in per-run map entries and their checksum vectors.
+
+What each approach can then hold, per shard (one shard per reactor):
+
+| Approach | What limits it | Data per shard |
+|---|---|---|
+| Today: whole-index checkpoint, shard paused | The pause: 2–25 ms per GiB, so a 10 ms p99 budget allows about 5 GiB (sequential) or 0.4 GiB (fragmented) | Tens of GiB at most; a test-only format |
+| A: fuzzy checkpoint with a sync marker | RAM for the index; background bandwidth to rewrite the whole index each checkpoint; log room for one checkpoint's duration | With 64 GiB of RAM for the index: about 40 TiB sequential, about 2 TiB fragmented. Rewriting 6 GiB per TiB every checkpoint needs long checkpoint intervals (a log ring of several GiB) to keep background writes near 1–5% of the device |
+| B: paged index, dirty pages only | RAM, as A; bandwidth now follows the pages changed, not the index size | As A for capacity; checkpoint writes drop with locality (a workload touching 10% of the index writes 10% as much). Uniform random writes over a whole shard dirty every page, the same as A |
+| C: on-device copy-on-write B+tree | Device space (0.1–0.6% of data) and the cache for hot index pages | Not bounded by RAM: 100+ TiB per shard. Flush cost follows dirty leaves |
+| D: log-structured merge | Device space, compaction | Like C, with compaction's write amplification |
+
+#### A finding behind the numbers: fragmentation, not the approach
+
+With D38, random-write VM disks end up fragmented, and a fragmented chunk
+costs about 18 times the RAM of a sequential one (36 against about 2 GiB
+per TiB). That decides how much data a node can hold far more than the
+checkpoint approach does. Two ways to bound it, for the next engine
+change:
+
+- **A dense block map for fragmented chunks.** Once a chunk has more than
+  a few dozen runs, store it as an array of (physical block, checksum),
+  4 + 4 bytes per block: 8 KiB per 4 MiB chunk, **2 GiB per TiB however
+  fragmented**. Physical block numbers fit in 32 bits for shards up to
+  16 TiB. Recommended: no extra writes, and the index stays near the
+  sequential case.
+- **Defragmenting chunks in the background**, rewriting a chunk
+  contiguously once its runs pass a threshold. Bounds memory too, but
+  costs write amplification (a 4 MiB rewrite for every few hundred
+  scattered 4 KiB writes), and helps sequential read performance.
+
+**Recommendation, combined:** the dense block map now, together with the
+fuzzy checkpoint (A). That gives about 2 GiB of RAM per TiB in every case,
+so a node with 64 GiB for its index holds about 30 TiB, with no checkpoint
+pause. Then paged checkpoints (B) to cut checkpoint bandwidth, and the
+B+tree (C) when nodes need more data than their RAM allows.

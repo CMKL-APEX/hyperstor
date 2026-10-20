@@ -316,7 +316,8 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
     std::thread::spawn(move || {
         hyperstor_reactor::block_on(async move {
             let meta = hyperstor_meta::Meta::new(map);
-            hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_secs(2)));
+            hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_secs(3)));
+            hyperstor_reactor::spawn(meta.clone().publisher());
             hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), meta).await
         })
     });
@@ -359,6 +360,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 meta,
                 shards,
                 cpus,
+                meta_blocked: None,
                 defer_max: None,
             })
         })
@@ -427,6 +429,98 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
             row(&format!("{label}: {name}, QD{qd}"), n, elapsed, len, &mut l);
         }
     });
+}
+
+fn rss_bytes() -> u64 {
+    let s = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages: u64 = s
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    // SAFETY: sysconf has no preconditions.
+    pages * unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64
+}
+
+/// Index size and checkpoint cost for 1 GiB of 4 MiB objects, written
+/// sequentially (one extent run per object), then overwritten block by
+/// block in random order with every write redirected (one run per block,
+/// the worst case for D38).
+fn index_suite(path: &Path) {
+    let gib = 1u64;
+    let dev: Arc<dyn BlockDev> =
+        Arc::new(FileDev::open(path, false, Some((gib + 1) << 30)).expect("open scratch file"));
+    format(
+        &dev,
+        &DeviceConfig {
+            device_id: 1,
+            cluster_id: 1,
+            shards: 1,
+            log_blocks: None,
+        },
+    )
+    .unwrap();
+    let mut sh = open(&dev).unwrap().1.pop().unwrap();
+    sh.set_defer_max(0);
+    let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+    let base = rss_bytes();
+    let report = |sh: &mut Shard, label: &str, base: u64| {
+        let t = Instant::now();
+        sh.checkpoint().unwrap();
+        let took = t.elapsed();
+        let st = sh.stats();
+        let rss = rss_bytes().saturating_sub(base);
+        let per_tib = |bytes: u64| bytes as f64 * 1024.0 / (1u64 << 30) as f64;
+        println!(
+            "| {label} | {} | {:.1} | {:.1} | {:.0} | {:.1} | {:.1} |",
+            st.runs,
+            rss as f64 / (1 << 20) as f64,
+            st.checkpoint_bytes as f64 / (1 << 20) as f64,
+            took.as_secs_f64() * 1e3,
+            per_tib(rss),
+            per_tib(st.checkpoint_bytes),
+        );
+    };
+    println!(
+        "| 1 GiB of data | extent runs | index RAM MiB | checkpoint MiB | checkpoint ms | index RAM GiB per TiB | checkpoint GiB per TiB |"
+    );
+    println!("|---|---|---|---|---|---|---|");
+    let chunk = vec![0x5au8; (OBJ_BLOCKS * BLOCK as u64) as usize];
+    for o in 0..objects {
+        sh.commit(vec![OpList {
+            key: key(o),
+            ops: vec![Op::Write {
+                off: 0,
+                data: chunk.clone(),
+            }],
+        }])
+        .unwrap();
+    }
+    report(&mut sh, "written sequentially", base);
+    let mut blocks: Vec<(u64, u64)> = (0..objects)
+        .flat_map(|o| (0..OBJ_BLOCKS).map(move |b| (o, b)))
+        .collect();
+    let mut rng = SmallRng::seed_from_u64(3);
+    for i in (1..blocks.len()).rev() {
+        blocks.swap(i, rng.random_range(0..=i));
+    }
+    let data = vec![0xa5u8; BLOCK];
+    for batch in blocks.chunks(64) {
+        let lists = batch
+            .iter()
+            .map(|(o, b)| OpList {
+                key: key(*o),
+                ops: vec![Op::Write {
+                    off: b * BLOCK as u64,
+                    data: data.clone(),
+                }],
+            })
+            .collect();
+        sh.commit(lists).unwrap();
+    }
+    report(&mut sh, "every block overwritten (fully fragmented)", base);
+    drop(sh);
+    let _ = std::fs::remove_file(path);
 }
 
 fn main() {
@@ -500,6 +594,10 @@ fn main() {
                 .expect("map service address");
             header();
             client_workload(meta, &format!("remote {meta}"), secs);
+        }
+        Some("index") => {
+            // hyperstor-bench index <file on a filesystem with 2 GiB free>
+            index_suite(Path::new(args.get(2).expect("scratch file path")));
         }
         Some("crc") => {
             let data = vec![7u8; 1 << 20];

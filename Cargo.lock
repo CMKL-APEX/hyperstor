@@ -58,6 +58,7 @@ dependencies = [
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "hyperstor-rpc",
  "libc",
  "thiserror",
 ]
@@ -80,6 +81,7 @@ dependencies = [
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "hyperstor-rpc",
  "rand",
 ]
 
@@ -102,6 +104,7 @@ dependencies = [
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "hyperstor-rpc",
 ]
 
 [[package]]
@@ -125,6 +128,15 @@ version = "0.1.0"
 dependencies = [
  "io-uring",
  "libc",
+]
+
+[[package]]
+name = "hyperstor-rpc"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "thiserror",
 ]
 
 [[package]]

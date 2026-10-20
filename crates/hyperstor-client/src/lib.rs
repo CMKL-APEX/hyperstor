@@ -5,7 +5,7 @@
 //! primary, all pieces in parallel. A `StaleMap` or `NotPrimary` answer, or
 //! a broken connection, refreshes the map and retries.
 
-pub mod rpc;
+pub use hyperstor_rpc as rpc;
 
 use hyperstor_meta::ClusterMap;
 use hyperstor_placement::pg_of;
@@ -82,6 +82,13 @@ impl Client {
 
     pub fn map(&self) -> Rc<ClusterMap> {
         self.map.borrow().clone()
+    }
+
+    /// Installs `m` if it is newer than the map held (a pushed map).
+    pub fn install_map(&self, m: ClusterMap) {
+        if m.epoch > self.map.borrow().epoch {
+            *self.map.borrow_mut() = Rc::new(m);
+        }
     }
 
     /// Fetches the map if the service has a newer one.

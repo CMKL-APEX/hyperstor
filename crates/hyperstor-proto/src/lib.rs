@@ -236,9 +236,27 @@ pub enum Msg {
     Heartbeat {
         node: u32,
     },
+    /// Renews the sender's map lease (replication.md §8.4, decisions.md
+    /// D42): it may serve PG I/O for `lease_ms` from when it sent the
+    /// heartbeat. 0 revokes the lease.
     HeartbeatOk {
         map_epoch: u64,
+        lease_ms: u32,
     },
+    /// Map service to a storage reactor: stop serving these PGs until you
+    /// have a map of at least `epoch`; answer once every write already
+    /// accepted for them has been answered.
+    Fence {
+        epoch: u64,
+        pgs: Vec<(u32, u32)>,
+    },
+    FenceOk,
+    /// Map service to a storage reactor: a newly published map.
+    MapPush {
+        epoch: u64,
+        map: Vec<u8>,
+    },
+    MapPushOk,
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (replication.md §8.5).
     Push {
@@ -284,6 +302,10 @@ mod kind {
     pub const HEARTBEAT_OK: u16 = 31;
     pub const BACKFILL_DONE: u16 = 32;
     pub const BACKFILL_OK: u16 = 33;
+    pub const FENCE: u16 = 34;
+    pub const FENCE_OK: u16 = 35;
+    pub const MAP_PUSH: u16 = 36;
+    pub const MAP_PUSH_OK: u16 = 37;
     pub const ERROR: u16 = 99;
 }
 
@@ -309,6 +331,10 @@ impl Msg {
             Msg::HeartbeatOk { .. } => HEARTBEAT_OK,
             Msg::BackfillDone { .. } => BACKFILL_DONE,
             Msg::BackfillOk { .. } => BACKFILL_OK,
+            Msg::Fence { .. } => FENCE,
+            Msg::FenceOk => FENCE_OK,
+            Msg::MapPush { .. } => MAP_PUSH,
+            Msg::MapPushOk => MAP_PUSH_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -324,6 +350,8 @@ impl Msg {
                 | Msg::ReplOk { .. }
                 | Msg::PushOk
                 | Msg::HeartbeatOk { .. }
+                | Msg::FenceOk
+                | Msg::MapPushOk
                 | Msg::BackfillOk { .. }
                 | Msg::Error { .. }
         )
@@ -358,8 +386,23 @@ impl Msg {
             Msg::Heartbeat { node } => {
                 e.u32(*node);
             }
-            Msg::HeartbeatOk { map_epoch } | Msg::BackfillOk { map_epoch } => {
+            Msg::HeartbeatOk {
+                map_epoch,
+                lease_ms,
+            } => {
+                e.u64(*map_epoch).u32(*lease_ms);
+            }
+            Msg::BackfillOk { map_epoch } => {
                 e.u64(*map_epoch);
+            }
+            Msg::FenceOk | Msg::MapPushOk => {}
+            Msg::Fence { epoch, pgs } => {
+                e.u64(*epoch).seq(pgs, |e, (p, g)| {
+                    e.u32(*p).u32(*g);
+                });
+            }
+            Msg::MapPush { epoch, map } => {
+                e.u64(*epoch).bytes(map);
             }
             Msg::Push { to, key, crcs: c } => {
                 to.enc(e);
@@ -481,7 +524,18 @@ impl Msg {
             HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
             HEARTBEAT_OK => Msg::HeartbeatOk {
                 map_epoch: d.u64()?,
+                lease_ms: d.u32()?,
             },
+            FENCE => Msg::Fence {
+                epoch: d.u64()?,
+                pgs: d.seq(8, |d| Ok((d.u32()?, d.u32()?)))?,
+            },
+            FENCE_OK => Msg::FenceOk,
+            MAP_PUSH => Msg::MapPush {
+                epoch: d.u64()?,
+                map: d.bytes()?.to_vec(),
+            },
+            MAP_PUSH_OK => Msg::MapPushOk,
             BACKFILL_DONE => Msg::BackfillDone {
                 pool: d.u32()?,
                 pg: d.u32()?,
@@ -607,7 +661,20 @@ mod tests {
             },
             Msg::PushOk,
             Msg::Heartbeat { node: 3 },
-            Msg::HeartbeatOk { map_epoch: 4 },
+            Msg::HeartbeatOk {
+                map_epoch: 4,
+                lease_ms: 2000,
+            },
+            Msg::Fence {
+                epoch: 9,
+                pgs: vec![(1, 2), (1, 7)],
+            },
+            Msg::FenceOk,
+            Msg::MapPush {
+                epoch: 9,
+                map: vec![1, 2],
+            },
+            Msg::MapPushOk,
             Msg::BackfillDone {
                 pool: 1,
                 pg: 2,

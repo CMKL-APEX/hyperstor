@@ -101,6 +101,10 @@ pub struct NodeConfig {
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
+    /// Test hook: while set, this node neither reaches the map service nor
+    /// hears from it (no heartbeats, map fetches, pushes or fences), as if
+    /// cut off from it while clients and peers can still reach it.
+    pub meta_blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Engine deferral threshold: `None` for flash, which redirects every
     /// write (decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
     /// hard disks.
@@ -147,6 +151,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         stops.push(tx);
         let cpu = cfg.cpus.get(i).copied();
         let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
+        let blocked = cfg.meta_blocked.clone();
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -157,7 +162,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
-                        let st = ShardState::open(node, sh.device_id, d2, meta, defer).await?;
+                        let st =
+                            ShardState::open(node, sh.device_id, d2, meta, defer, blocked.clone())
+                                .await?;
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
@@ -199,6 +206,15 @@ struct ShardState {
     /// write must reach them from now on, because the map service may make
     /// them acting members at any moment.
     required: RefCell<std::collections::HashSet<(u32, u32, u32)>>,
+    /// Until when this reactor may serve PG I/O (its map lease, decisions.md
+    /// D42); none before the first heartbeat answer.
+    lease_until: Cell<Option<std::time::Instant>>,
+    /// PGs fenced by the map service, with the map epoch that lifts each.
+    fenced: RefCell<HashMap<(u32, u32), u64>>,
+    /// Writes accepted as primary and not yet answered, per PG.
+    pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
+    /// The test hook of `NodeConfig::meta_blocked`.
+    blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -221,6 +237,7 @@ impl ShardState {
         dev: Arc<dyn BlockDev>,
         meta: SocketAddr,
         defer: Option<usize>,
+        blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Rc<Self>, String> {
         let mut shard = match hyperstor_engine::open(&dev) {
             Ok((_, mut v)) => v.pop().ok_or("device has no shard")?,
@@ -267,6 +284,10 @@ impl ShardState {
             backfills: RefCell::new(HashMap::new()),
             fill_inflight: RefCell::new(HashMap::new()),
             required: RefCell::new(std::collections::HashSet::new()),
+            lease_until: Cell::new(None),
+            fenced: RefCell::new(HashMap::new()),
+            pg_inflight: RefCell::new(HashMap::new()),
+            blocked,
         }))
     }
 
@@ -324,7 +345,9 @@ impl ShardState {
     async fn follow_map(self: Rc<Self>) {
         loop {
             sleep(Duration::from_millis(200)).await;
-            let _ = self.client.refresh_map().await;
+            if !self.cut_off() {
+                let _ = self.client.refresh_map().await;
+            }
         }
     }
 
@@ -342,10 +365,24 @@ impl ShardState {
     /// Checks a request against the map: the PG exists, its epoch is the
     /// one the sender used, and this device is its primary (or a member).
     async fn check(&self, to: &Target, primary: bool) -> Result<PgInfo, Msg> {
-        if to.map_epoch > self.map().epoch {
+        if to.map_epoch > self.map().epoch && !self.cut_off() {
             let _ = self.client.refresh_map().await;
         }
         let map = self.map();
+        // No valid map lease: this node may have been replaced without
+        // knowing it, so it serves nothing (replication.md §8.4).
+        if self
+            .lease_until
+            .get()
+            .is_none_or(|t| std::time::Instant::now() >= t)
+        {
+            return Err(err(Code::Unavailable, &map, "no map lease"));
+        }
+        if let Some(e) = self.fenced.borrow().get(&(to.pool, to.pg))
+            && map.epoch < *e
+        {
+            return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
+        }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             return Err(err(Code::Invalid, &map, "no such PG"));
         };
@@ -413,6 +450,36 @@ impl ShardState {
                 Msg::Read { to, key, off, len } => {
                     let (m, p) = self.read(to, key, off, len).await;
                     reply(&m, &p);
+                }
+                // Cut off from the map service (test hook): its messages
+                // don't arrive.
+                Msg::Fence { .. } | Msg::MapPush { .. } if self.cut_off() => {}
+                Msg::Fence { epoch, pgs } => {
+                    let me = self.clone();
+                    let tx = tx.clone();
+                    let req = h.req;
+                    for k in &pgs {
+                        let mut f = self.fenced.borrow_mut();
+                        let e = f.entry(*k).or_default();
+                        *e = (*e).max(epoch);
+                    }
+                    // Answer once every write already accepted for these
+                    // PGs has been answered.
+                    spawn(async move {
+                        while pgs
+                            .iter()
+                            .any(|k| me.pg_inflight.borrow().get(k).copied().unwrap_or(0) > 0)
+                        {
+                            sleep(Duration::from_millis(1)).await;
+                        }
+                        let _ = tx.send(encode_frame(req, &Msg::FenceOk, &[]));
+                    });
+                }
+                Msg::MapPush { map, .. } => {
+                    if let Ok(m) = ClusterMap::decode(&map) {
+                        self.client.install_map(m);
+                    }
+                    reply(&Msg::MapPushOk, &[]);
                 }
                 Msg::Push { to, key, crcs } => {
                     self.push(h.req, to, key, crcs, payload, tx.clone()).await
@@ -484,6 +551,12 @@ impl ShardState {
                 None => self.fill_failed(to.pool, to.pg, d),
             }
         }
+        // Counted until answered, so a fence waits for it.
+        *self
+            .pg_inflight
+            .borrow_mut()
+            .entry((to.pool, to.pg))
+            .or_default() += 1;
         let seq = {
             let mut seqs = self.seqs.borrow_mut();
             let s = seqs.entry((to.pool, to.pg)).or_default();
@@ -525,8 +598,10 @@ impl ShardState {
                 }
             }
         });
+        let me2 = self.clone();
         spawn(async move {
             let r = local.await;
+            let _inflight = InflightGuard(me2, (to.pool, to.pg));
             let mut failed = None;
             for f in remote {
                 match f.await {
@@ -660,10 +735,35 @@ impl ShardState {
         });
     }
 
+    /// True while the test hook cuts this node off from the map service.
+    fn cut_off(&self) -> bool {
+        self.blocked
+            .as_ref()
+            .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     async fn heartbeat(self: Rc<Self>, node: u32) {
         loop {
-            let _ = self.client.call_meta(&Msg::Heartbeat { node }).await;
-            sleep(Duration::from_millis(150)).await;
+            if !self.cut_off() {
+                // The lease runs from when the heartbeat was sent, which is
+                // before the map service granted it.
+                let sent = std::time::Instant::now();
+                if let Ok((
+                    Msg::HeartbeatOk {
+                        map_epoch,
+                        lease_ms,
+                    },
+                    _,
+                )) = self.client.call_meta(&Msg::Heartbeat { node }).await
+                {
+                    self.lease_until
+                        .set(Some(sent + Duration::from_millis(lease_ms as u64)));
+                    if map_epoch > self.map().epoch {
+                        let _ = self.client.refresh_map().await;
+                    }
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -847,5 +947,16 @@ impl ShardState {
             },
             data,
         )
+    }
+}
+
+/// Decrements a PG's count of unanswered writes when dropped.
+struct InflightGuard(Rc<ShardState>, (u32, u32));
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if let Some(n) = self.0.pg_inflight.borrow_mut().get_mut(&self.1) {
+            *n = n.saturating_sub(1);
+        }
     }
 }

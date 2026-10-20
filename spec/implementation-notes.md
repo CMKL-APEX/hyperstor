@@ -20,14 +20,14 @@ Built, on branch `impl/hs0-hs1`:
 |---|---|---|
 | HS0 | Engine (general objects, group commit, deferred writes, checkpoints, recovery), device back ends (memory, pread/pwrite, io_uring `O_DIRECT`, fault injection), crash test, benchmarks | NVMe passthrough back end and the G5 comparison with SPDK (needs a spare namespace, I11) |
 | HS1 | Placement, wire protocol, reactor, cluster map and map service, storage daemon with replication and group commit, client, `hyperstord` and `hyperstor-meta` binaries, end-to-end tests and benchmark | Raft for the map service (I18), `.meta` header objects and volume leases (metadata.md §4.2, §9) |
-| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy (including a node that returns with stale data: reset, refilled, stand-ins dropped), failure end-to-end tests, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | Read leases and map leases (§8.4, closes I20), PG log and delta recovery (§8.3), scrub, blocklist and forced takeovers (§9), throttling |
+| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy (including a node that returns with stale data: reset, refilled, stand-ins dropped), map leases with fencing and pushes (D42), failure end-to-end tests, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | Peer reports (D40), PG log and delta recovery (replication.md §8.3), scrub, blocklist and forced takeovers (metadata.md §9), throttling |
 
 ### Review
 
 The points raised here were reviewed with the owner on 2026-10-20; the
 answers, and the two points still open (map leases, checkpoint spikes)
 with their trade-offs, are in [decision-log.md](decision-log.md). Settled
-points: D38 (I14), D39 (I19), D40 (I21, I25), D41 (I12, I23, I24).
+points: D38 (I14), D39 (I19), D40 (I21, I25), D41 (I12, I23, I24), D42 (I20).
 
 ## Engine (HS0)
 
@@ -64,6 +64,13 @@ Across the session, tests found five bugs before anything else did:
    test hung). Each pass now runs only the tasks ready when it starts;
    `a_yielding_task_does_not_starve_io` guards it.
 
+Found in review while designing leases:
+
+6. Map: a PG whose acting members were all down was reset to an empty
+   acting set, so when the members returned, backfill from the empty
+   primary would have wiped them. Such a PG now stays down with its acting
+   set until a member returns (`a_pg_whose_copies_are_all_down_stays_down`).
+
 ### Details of the engine bugs
 
 The randomized crash test (`crates/hyperstor-engine/tests/crash.rs`) found
@@ -91,7 +98,7 @@ two engine bugs before any other test did:
 |---|---|---|---|
 | I18 | **The map service is a single in-memory map** (`hyperstor_meta::serve`), not yet the Raft group of D2/D20. | HS1 needed a map to route by; Raft through `glidex-raftstore` needs that crate extracted from glidex first (a glidex change). | Until then the map service is a single point of failure for map changes (not for I/O, D23). |
 | I19 | **Each reactor listens on its own address, recorded per device in the map.** | No cross-thread hand-off of sockets, and tests can bind ephemeral ports before the map exists. | **Settled: D39.** |
-| I20 | **Storage nodes poll the map every 200 ms**; replicas refuse `Repl` for a PG epoch they don't have. | Simple, and it bounds how long a stale primary can find willing replicas. | Open: decision-log.md, point 3. |
+| I20 | **(Superseded by D42.)** **Storage nodes poll the map every 200 ms**; replicas refuse `Repl` for a PG epoch they don't have. | Simple, and it bounds how long a stale primary can find willing replicas. | Open: decision-log.md, point 3. |
 | I21 | **A write fails if any acting member fails** (`Unavailable`), and the client retries until the map service has marked the node down and the PG's acting set has shrunk (I25). | No in-sync shrinking on a primary's say-so: one authority (the map service's liveness) decides who is out. | **Settled: D40** (nodes report each other; to build in HS2). |
 | I22 | **A read of a chunk never written returns zeros** from the primary. | Thin volumes. | — |
 | I23 | **Payloads are copied into each outgoing frame**, once per replica. | Simplest correct path. | Zero copy with registered buffers and vectored sends (`SEND_ZC`) is the next CPU win (benchmarks.md, end to end). |
@@ -111,3 +118,11 @@ two engine bugs before any other test did:
 |---|---|---|---|
 | I28 | **`hyperstord` and `hyperstor-meta` take flags and a plain-text cluster file** (`hyperstor_meta::parse_cluster`), no configuration library. | Enough to run a cluster by hand; no extra dependencies. | glidex will drive these (glidex.md §17); the cluster file is a stopgap until the map service has its management API (§15). `hyperstord` creates sparse files for shard devices; on ext4 the first write to each block then costs a journal update. Use block devices, or files written once in full. |
 
+## Leases (HS2, D42)
+
+| # | Decision | Why | To discuss |
+|---|---|---|---|
+| I29 | **Leases come from the map service**, with every heartbeat answer, and run from when the node *sent* the heartbeat; the map service measures expiry from when it granted the lease plus a quarter. Storage reactors send heartbeats every 100 ms. | The node's lease always ends before the map service believes it has, whatever the network delay; the quarter covers clock *rate* differences between hosts (no synchronized clocks needed). | Defaults: lease 2 s, liveness timeout 3 s (must be at least 1.25 × the lease; `hyperstor-meta` refuses otherwise). With D40, detection can drop below the timeout; the lease remains the floor of failover time. |
+| I30 | **A fence is acknowledged only after the device's in-flight writes for the fenced PGs are answered.** | A write accepted under the old role and answered after the new map took effect could otherwise be acknowledged without reaching the new acting set. | — |
+| I31 | **The RPC connection moved to its own crate**, `hyperstor-rpc` (re-exported as `hyperstor_client::rpc`). | The map service now calls storage reactors (fences, pushes) and couldn't depend on the client crate, which depends on it. | — |
+| I32 | **Test hook `NodeConfig::meta_blocked`** cuts a node off from the map service in both directions (heartbeats, map fetches, pushes, fences) while clients and peers can still reach it. | Lets the cluster test reproduce the partition leases exist for. Removing the lease check makes that test fail with a stale read, which shows the test checks what it should. | Test-only; a fault-injection layer for the network (drops, delays, partitions between any two nodes) is the general form, for the HS2 fault rig. |

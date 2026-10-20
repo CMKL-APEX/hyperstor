@@ -16,6 +16,7 @@ hyperstor-reactor = { path = "../hyperstor-reactor" }
 [dev-dependencies]
 rand.workspace = true
 hyperstor-placement = { path = "../hyperstor-placement" }
+hyperstor-rpc = { path = "../hyperstor-rpc" }
 
 [lints]
 workspace = true

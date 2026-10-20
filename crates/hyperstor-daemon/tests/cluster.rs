@@ -15,6 +15,9 @@ use std::sync::Arc;
 
 const POOL: u32 = 1;
 const CHUNK: u32 = 1 << 20;
+/// Short leases and detection, to keep the tests quick.
+const LEASE: std::time::Duration = std::time::Duration::from_millis(400);
+const DOWN_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
 
 enum MetaCmd {
     Stop,
@@ -27,6 +30,9 @@ struct Cluster {
     meta_addr: SocketAddr,
     /// Each node's reactor addresses, to restart it at the same place.
     addrs: Vec<Vec<SocketAddr>>,
+    /// Per node: set to cut it off from the map service (heartbeats stop)
+    /// while clients and peers can still reach it.
+    blocked: Vec<Arc<std::sync::atomic::AtomicBool>>,
     /// Devices of stopped nodes, by node.
     stopped: std::collections::HashMap<usize, Vec<Arc<dyn BlockDev>>>,
     meta_tx: Sender<MetaCmd>,
@@ -57,17 +63,19 @@ impl Cluster {
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
-                let meta = hyperstor_meta::Meta::new(map);
-                let map = &meta.map;
+                let meta = hyperstor_meta::Meta::with_lease(map, LEASE);
                 spawn(hyperstor_meta::serve(
                     hyperstor_reactor::net::TcpListener::from_std(meta_l),
                     meta.clone(),
                 ));
-                spawn(meta.clone().liveness(std::time::Duration::from_millis(600)));
+                spawn(meta.clone().liveness(DOWN_AFTER));
+                spawn(meta.clone().publisher());
                 if let Some(MetaCmd::Stop) = meta_rx.recv().await {}
-                map.borrow().clone()
+                meta.published.borrow().clone()
             })
         });
+        let blocked: Vec<Arc<std::sync::atomic::AtomicBool>> =
+            (0..nodes).map(|_| Arc::default()).collect();
         let nodes = listeners
             .into_iter()
             .enumerate()
@@ -85,12 +93,14 @@ impl Cluster {
                         })
                         .collect(),
                     cpus: Vec::new(),
+                    meta_blocked: Some(blocked[n].clone()),
                     defer_max: None,
                 }))
             })
             .collect();
         Cluster {
             meta_addr,
+            blocked,
             addrs: all_addrs,
             stopped: std::collections::HashMap::new(),
             meta_tx,
@@ -126,6 +136,7 @@ impl Cluster {
             meta: self.meta_addr,
             shards,
             cpus: Vec::new(),
+            meta_blocked: Some(self.blocked[n].clone()),
             defer_max: None,
         }));
     }
@@ -457,4 +468,136 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
         .flat_map(|v| (0..8u64).map(move |c| (v, c)))
         .collect();
     copies_agree(&map, devs, &chunks);
+}
+
+/// The case map leases exist for (decisions.md D42): a primary cut off from
+/// the map service but still reachable by clients and peers. Once its lease
+/// runs out it must refuse everything, so no write it acknowledges can be
+/// missing from the acting set that replaces it.
+#[test]
+fn a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write() {
+    use hyperstor_proto::{Code, Msg, Target, WireKey, block_crcs};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let blocked = c.blocked[0].clone();
+    let (cut_tx, cut_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let old = cl.map();
+            // A volume whose chunk 0 has its primary on node 0.
+            let v = (1u128..)
+                .find(|v| {
+                    let pg = pg_of(*v, 0, old.pools[&POOL].pg_count);
+                    old.devices[&old.pg(POOL, pg).unwrap().primary().unwrap()].node == 0
+                })
+                .unwrap();
+            let block = |i: u64| pattern(1000 + i, 16 * 4096);
+            cl.write(POOL, v, 0, block(0)).await.unwrap();
+            cut_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+            // Keep overwriting the same block through the change; remember
+            // the last write that was acknowledged.
+            let mut last = 0u64;
+            let t = std::time::Instant::now();
+            let mut i = 1u64;
+            while t.elapsed() < std::time::Duration::from_millis(2500) {
+                if cl.write(POOL, v, 0, block(i)).await.is_ok() {
+                    last = i;
+                }
+                i += 1;
+            }
+            assert!(last > 0, "writes resumed after the change");
+            assert!(cl.map().epoch > old.epoch);
+            // Node 0, cut off and without a lease, refuses a read and a write
+            // sent with the old map. Without leases it would still think it
+            // is the primary and answer the read with data older than writes
+            // the new primary has acknowledged.
+            let pg = pg_of(v, 0, old.pools[&POOL].pg_count);
+            let info = old.pg(POOL, pg).unwrap();
+            let conn =
+                hyperstor_rpc::Conn::connect(old.device_addr(info.primary().unwrap()).unwrap())
+                    .await
+                    .unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: old.epoch,
+                pg_epoch: info.epoch,
+            };
+            let key = WireKey {
+                ns: hyperstor_client::NS_VOL,
+                name: chunk_name(v, 0),
+                version: 0,
+            };
+            let (reply, data) = conn
+                .call(
+                    &Msg::Read {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        len: 16 * 4096,
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    Msg::Error {
+                        code: Code::Unavailable,
+                        ..
+                    }
+                ),
+                "the cut-off primary served a read ({} bytes, current: {}): {reply:?}",
+                data.len(),
+                data == block(last)
+            );
+            let data = block(9999);
+            let (reply, _) = conn
+                .call(
+                    &Msg::Write {
+                        to,
+                        key,
+                        off: 0,
+                        crcs: block_crcs(&data),
+                    },
+                    &data,
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(reply, Msg::Error { .. }),
+                "the cut-off primary accepted a write: {reply:?}"
+            );
+            // What the cluster holds is the last acknowledged write.
+            let back = cl.read(POOL, v, 0, 16 * 4096).await.unwrap();
+            assert!(
+                back == block(last),
+                "lost an acknowledged write (last acknowledged: {last})"
+            );
+            (v, last)
+        })
+    });
+    cut_rx.recv().unwrap();
+    blocked.store(true, std::sync::atomic::Ordering::Relaxed);
+    go_tx.send(()).unwrap();
+    let (v, last) = client.join().unwrap();
+    // Node 0 reconnects: it is placed again, refilled, and serves.
+    blocked.store(false, std::sync::atomic::Ordering::Relaxed);
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(500)).await;
+            wait_backfilled(&cl).await;
+            let back = cl.read(POOL, v, 0, 16 * 4096).await.unwrap();
+            assert!(back == pattern(1000 + last, 16 * 4096));
+        })
+    })
+    .join()
+    .unwrap();
+    let (map, devs) = c.stop();
+    copies_agree(&map, devs, &[(v, 0)]);
 }
