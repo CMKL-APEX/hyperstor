@@ -10,23 +10,42 @@ contributors: they capture **invariants**, **contracts between
 components**, and **why** the code is shaped the way it is, things a
 fresh reader cannot infer just by reading the source.
 
-## Contents
+## How the design is organized
 
-| Document | Scope |
-|---|---|
-| [design.md](design.md) | The whole system (draft): decisions D1–D37; metadata in three levels (Raft cluster map, `.meta` header objects, engine metadata); placement by lineage over PGs; the io_uring reactor storage daemon; the local engine with general objects, NVMe and block back ends; replication, peering, read leases, recovery, scrub; EC with a write log and full-stripe writes; volume leases, delegates and the blocklist; snapshots and clones; vhost-user-blk, the NVMe-oF target and the host read cache; GPU-direct storage behind cuFile and hipFile; the internal protocol over TCP, RoCEv2 and InfiniBand; the transactional key–value store; the S3 gateway with S3-over-RDMA; glidex integration; deployment; milestones HS0–HS14; host checks G1–G12 |
-| [implementation-notes.md](implementation-notes.md) | Decisions made while implementing (I1…), considerations and proposed design changes for review, bugs the tests found |
-| [benchmarks.md](benchmarks.md) | Benchmark hosts, methods and results, with findings |
-| [filesystem.md](filesystem.md) | The distributed filesystem (outline): stateless metadata servers on the key–value store, file data in objects, virtio-fs for VMs and FUSE elsewhere, close-to-open data with POSIX metadata, decisions F1–F12 |
+The design is split by topic. **Section numbers are global**: `§8.4` is
+the same section whichever document cites it, and a reference to a
+section in another document names the file (`engine.md §7.3`).
+**Decisions** (`D1`…) are all in [decisions.md](decisions.md), and other
+documents cite them by number.
+
+| Document | Sections | What needs consideration there |
+|---|---|---|
+| [overview.md](overview.md) | §1, §3 | Scope (in, later, out), processes and ports |
+| [decisions.md](decisions.md) | §2 | Every design decision with its why; D20–D37 still open to review |
+| [metadata.md](metadata.md) | §4, §9 | What goes through Raft and what doesn't; `.meta` header objects; volume leases, delegates and the blocklist |
+| [placement.md](placement.md) | §5 | Chunk-to-PG hashing, weighted rendezvous over failure domains, rebalancing, EC shard positions |
+| [engine.md](engine.md) | §6, §7 | Reactors, device back ends, the on-device format, write atomicity and deferral, checkpoints, the transactional key–value store |
+| [replication.md](replication.md) | §8, §15 | Write and read paths, epochs and leases, peering, recovery, backfill, scrub, erasure coding, failure behaviour |
+| [volumes.md](volumes.md) | §10 | Client I/O, snapshots, clones, flatten, QoS |
+| [frontends.md](frontends.md) | §11 | vhost-user-blk, the NVMe-oF target, the host read cache |
+| [gpu.md](gpu.md) | §12 | GPU-direct storage behind cuFile and hipFile, in VMs, alongside NCCL and RCCL |
+| [protocol.md](protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
+| [s3.md](s3.md) | §14 | The S3 gateway and S3 over RDMA |
+| [operations.md](operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
+| [glidex.md](glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
+| [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS14 and host checks G1–G12 |
+| [filesystem.md](filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
+| [decision-log.md](decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
+| [implementation-notes.md](implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
+| [benchmarks.md](benchmarks.md) | — | Hosts, methods, results and findings |
 
 ## Conventions
 
-- **Decisions** are numbered (`D1`, `F1`) and never renumbered; a
-  dropped decision leaves a gap. Each has a *why*.
-- **Host checks** (`G1`, `FG1`) are things to verify on real hardware
+- **Decisions** (`D…`, `F…`, `I…`) are tables: the decision, then *why*.
+  Never renumber them; a dropped decision is removed and its number not
+  reused. A decision that changes an earlier one says so in both.
+- **Host checks** (`G…`, `FG…`) are things to verify on real hardware
   before the sections that depend on them are final.
 - **Milestones** (`HS0`…) list what each step delivers and depends on.
-- Status lines at the top of each document say what is settled, what is
-  draft, and what is open for review.
 - References to glidex documents (`storage.md`, `host-topology.md`, …)
-  are to glidex's `spec/` directory (see design.md's introduction).
+  are to glidex's `spec/` directory (see overview.md).

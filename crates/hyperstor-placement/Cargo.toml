@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-placement"
-description = "Chunk-to-PG hashing and weighted rendezvous placement over failure domains (spec/design.md §5)"
+description = "Chunk-to-PG hashing and weighted rendezvous placement over failure domains (spec/placement.md §5)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

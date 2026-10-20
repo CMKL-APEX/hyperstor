@@ -1,4 +1,4 @@
-//! The client library (spec/design.md §10.1).
+//! The client library (spec/volumes.md §10.1).
 //!
 //! A [`Client`] holds the cluster map and connections to storage reactors.
 //! Volume I/O is split at chunk boundaries; each piece goes to its PG's
@@ -230,7 +230,7 @@ impl Client {
     }
 
     /// Writes `data` at `off` of volume `lineage` in `pool`. Returns once
-    /// every copy of every chunk has it (spec/design.md §8.1).
+    /// every copy of every chunk has it (spec/replication.md §8.1).
     pub async fn write(
         self: &Rc<Self>,
         pool: u32,

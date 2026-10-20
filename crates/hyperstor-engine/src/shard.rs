@@ -1,4 +1,4 @@
-//! A shard: one reactor's part of a device (spec/design.md §7,
+//! A shard: one reactor's part of a device (spec/engine.md §7,
 //! spec/implementation-notes.md I1).
 //!
 //! Layout of a shard's region, in blocks:
@@ -38,7 +38,7 @@ const CKPT_MAGIC: u64 = 0x4853_434b_5054_3031; // "HSCKPT01"
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
-/// the log and are applied in place later (spec/design.md D22).
+/// the log and are applied in place later (spec/decisions.md D22).
 pub const DEFER_MAX: usize = 64 * 1024;
 /// Pending in-place writes above this many blocks are applied before the
 /// next commit, to bound memory.
@@ -528,7 +528,7 @@ impl Shard {
     }
 
     /// Sets the size below which overwrites of held blocks are deferred
-    /// (spec/design.md D22; spec/implementation-notes.md I14). 0 redirects
+    /// (spec/decisions.md D22; spec/implementation-notes.md I14). 0 redirects
     /// every write to new extents.
     pub fn set_defer_max(&mut self, bytes: usize) {
         self.defer_max = bytes;

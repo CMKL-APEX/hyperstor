@@ -122,7 +122,7 @@ impl Conn {
 
     /// Queues a request now and returns the future of its response. The
     /// request is on the wire in the order `start` was called, which
-    /// replication relies on (spec/design.md §8.1).
+    /// replication relies on (spec/replication.md §8.1).
     pub fn start(
         &self,
         msg: &Msg,

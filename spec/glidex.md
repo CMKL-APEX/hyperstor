@@ -1,0 +1,52 @@
+# glidex integration
+
+The `hyperstor` datastore driver and the changes glidex needs. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
+
+## 17. glidex integration
+
+This builds on storage.md S6 (`glidex-stord` and `VolumeBinding::Block`,
+PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
+(storage.md §7).
+
+| glidex | hyperstor |
+|---|---|
+| `Datastore{driver: hyperstor}` | parameters: management endpoints, pool, the admin identity's credential (credentials.md). Topology `shared`. |
+| `capabilities` | block, linked clones, expand, shared, snapshots (new). No shrink. |
+| `probe` | the node runs `hyperstor-vhost` and reaches the metadata service: the node reaches the datastore. |
+| `create_volume` | blank: create. From an image copy: clone of the image's golden snapshot. From a volume: snapshot, clone, then flatten in the background. |
+| `delete_volume`, `expand_volume`, `capacity` | delete, expand, pool free space |
+| `stage` / `unstage` | attach (`rw` lease) and a vhost-user socket: `VolumeBinding::VhostUserBlk{socket}` (new). Detach on unstage. |
+| image copies (S9) | one per datastore: a volume holding the image, plus its snapshot `golden` |
+| linked clones (S8) | clones of `golden` (D21), instant |
+| extend-root | on the worker: attach through a ublk device mapped by stord, run `images::partition` on it as for `Block`, detach |
+| disk move (S5) | through two bindings on the worker, as S6c does for `lvm` |
+| volume lock (S16) | replaced by the lease (D11); the shim takes it at start through `hyperstor-vhost` |
+| metering `disk.stored` | volume allocated bytes, head plus snapshots |
+
+- **Hypervisor arguments.** `VhostUserBlk` gives Cloud Hypervisor
+  `--disk vhost_user=true,socket=…` and QEMU a `vhost-user-blk-pci`
+  device, with the VM's memory backend shared (frontends.md §11.1). Command-line pin
+  tests cover both.
+- **Disk snapshots in glidex** (API, Cedar, UI) are a separate glidex
+  spec change. storage.md lists disk snapshots as out of scope today, and
+  hyperstor is the first datastore that can do them.
+- **Bare-metal GPU hosts** aren't glidex nodes. An operator exports a
+  volume or snapshot to a host identity (operations.md §16) through `gxctl datastore`
+  sub-commands that call the management API.
+
+## 20. Edits to other documents (when implemented)
+
+- **storage.md §11:** the `hyperstor` driver, `VolumeBinding::VhostUserBlk`,
+  and the snapshot capability.
+- **host-topology.md:** hyperstor's reserved cores, namespaces and NICs
+  (operations.md §18.3).
+- **clustering.md §18:** the `--fenced` question for VMs whose disks are
+  all on hyperstor (metadata.md §9).
+- **security.md:** hyperstor's identities and networks.
+- **architecture.md:** hyperstor's processes.
+- **tenancy.md, credentials.md:** S3 access keys per project, and
+  Cedar actions for buckets and objects (s3.md §14.2).
+- **hypervisors.md:** a vhost-user-fs device for VMs mounting the
+  hyperstor filesystem (filesystem.md); a virtio-vsock device for VMs with GPU-direct
+  storage (D33); vhost-user-blk hot-plug, for the later CSI driver
+  (frontends.md §11.4).

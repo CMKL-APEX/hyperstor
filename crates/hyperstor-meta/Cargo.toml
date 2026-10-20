@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-meta"
-description = "Hyperstor's cluster map and map service (spec/design.md §4)"
+description = "Hyperstor's cluster map and map service (spec/metadata.md §4)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

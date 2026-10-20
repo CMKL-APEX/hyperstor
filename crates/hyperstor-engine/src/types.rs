@@ -1,9 +1,9 @@
-//! Object keys, operations and errors (spec/design.md §7.2, D34).
+//! Object keys, operations and errors (spec/engine.md §7.2, D34).
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use thiserror::Error;
 
-/// Object namespaces (spec/design.md §7.2).
+/// Object namespaces (spec/engine.md §7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Namespace {
@@ -84,7 +84,7 @@ impl ObjKey {
     }
 }
 
-/// One operation of an atomic list (spec/design.md §7.2).
+/// One operation of an atomic list (spec/engine.md §7.2).
 ///
 /// Data offsets and lengths are multiples of [`crate::BLOCK`]. Assertions
 /// are checked against the object as it was before the list; the other

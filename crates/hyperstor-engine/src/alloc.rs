@@ -1,4 +1,4 @@
-//! Free-space allocation within a shard's data region (spec/design.md §7.4).
+//! Free-space allocation within a shard's data region (spec/engine.md §7.4).
 //!
 //! Free space is kept as extents indexed both by start (to merge neighbours
 //! on free) and by length (for best fit). Nothing here is persisted: on

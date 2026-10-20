@@ -1,4 +1,4 @@
-//! Behaviour of the engine's operations (spec/design.md §7).
+//! Behaviour of the engine's operations (spec/engine.md §7).
 
 use hyperstor_engine::*;
 use std::sync::Arc;

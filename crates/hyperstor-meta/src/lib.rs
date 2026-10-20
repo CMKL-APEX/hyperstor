@@ -1,4 +1,4 @@
-//! The cluster map (spec/design.md §4.1) and a map service.
+//! The cluster map (spec/metadata.md §4.1) and a map service.
 //!
 //! The map names nodes, devices (one per engine shard), pools and each PG's
 //! acting set; the first member of an acting set is the PG's primary.
@@ -7,7 +7,7 @@
 //! I16).
 //!
 //! [`serve`] answers `GetMap` from one in-memory map. Replicating the map
-//! with Raft (design D2, D20) comes later (implementation-notes.md I18).
+//! with Raft (decisions.md D2, D20) comes later (implementation-notes.md I18).
 //! Each device records the address its reactor listens on.
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
@@ -65,7 +65,7 @@ pub struct PgInfo {
     /// Map epoch of the last change to this PG's `up` or `acting` set.
     pub epoch: u64,
     /// Devices that hold every acknowledged write and serve the PG,
-    /// primary first (design §5.3). For EC pools the position is the shard
+    /// primary first (placement.md §5.3). For EC pools the position is the shard
     /// index, and a missing shard is `NO_DEVICE`.
     pub acting: Vec<u32>,
     /// Where placement wants the PG. Members of `up` not in `acting` are
@@ -160,7 +160,7 @@ impl ClusterMap {
     }
 
     /// Places every PG for the current devices and bumps the epoch
-    /// (design §5.3):
+    /// (placement.md §5.3):
     /// - `up` is where placement wants the PG;
     /// - `acting` keeps its live members, in order, so a failed primary is
     ///   replaced by the next member, which has every acknowledged write;
@@ -248,7 +248,7 @@ impl ClusterMap {
         }
     }
 
-    /// Records that `device` has a full copy of a PG (design §8.5). It
+    /// Records that `device` has a full copy of a PG (replication.md §8.5). It
     /// joins `acting`; once every member of `up` has, `acting` becomes
     /// `up`, dropping members placement no longer wants. Refused (false)
     /// if the PG changed since the backfill started.
@@ -447,7 +447,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
 }
 
 /// The map service's state: the map, and when each node last sent a
-/// heartbeat (kept in memory only, design §4.1 and clustering.md D7).
+/// heartbeat (kept in memory only, metadata.md §4.1 and clustering.md D7).
 pub struct Meta {
     pub map: RefCell<ClusterMap>,
     beats: RefCell<HashMap<u32, Instant>>,

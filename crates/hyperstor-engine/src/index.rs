@@ -147,7 +147,7 @@ pub enum ROp {
         crcs: Vec<u32>,
     },
     /// Overwrites mapped blocks in place; the data is in the log until
-    /// applied (spec/design.md §7.3).
+    /// applied (spec/engine.md §7.3).
     Deferred {
         lb: u64,
         data: Vec<u8>,

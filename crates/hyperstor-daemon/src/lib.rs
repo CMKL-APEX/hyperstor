@@ -1,4 +1,4 @@
-//! `hyperstord`: a storage node (spec/design.md §6, §8).
+//! `hyperstord`: a storage node (spec/engine.md §6, §8).
 //!
 //! A node runs one reactor thread per engine shard (implementation-notes.md
 //! I1). Each reactor listens on its own address, follows the cluster map,
@@ -101,7 +101,9 @@ pub struct NodeConfig {
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
-    /// Engine deferral threshold (implementation-notes.md I14).
+    /// Engine deferral threshold: `None` for flash, which redirects every
+    /// write (decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
+    /// hard disks.
     pub defer_max: Option<usize>,
 }
 
@@ -241,9 +243,7 @@ impl ShardState {
             }
             Err(e) => return Err(e.to_string()),
         };
-        if let Some(d) = defer {
-            shard.set_defer_max(d);
-        }
+        shard.set_defer_max(defer.unwrap_or(0));
         let mut client = None;
         for _ in 0..100 {
             match Client::connect(meta, node as u64).await {
@@ -602,7 +602,7 @@ impl ShardState {
         }
     }
 
-    /// Replaces an object with a primary's copy (backfill, design §8.5).
+    /// Replaces an object with a primary's copy (backfill, replication.md §8.5).
     /// Namespace 0 means: delete every object of the PG first.
     async fn push(
         self: &Rc<Self>,

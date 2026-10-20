@@ -3,7 +3,8 @@
 Hyperstor is a sharded, distributed block, object and file store in
 Rust, built for [glidex](https://github.com/CMKL-APEX/glidex) nodes and
 usable without them. Read `spec/README.md` first, then the status line
-and decisions table of `spec/design.md`.
+of `spec/overview.md` and the decisions in `spec/decisions.md`; the
+design is split by topic, with section numbers kept across files.
 
 ## Where things stand
 
@@ -12,7 +13,7 @@ and decisions table of `spec/design.md`.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19 in design.md, and the
+- **Settled with the project owner:** D1–D19 and D38–D41 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I28,
   and every host check (G1–G12, FG1–FG2).
@@ -24,7 +25,7 @@ and decisions table of `spec/design.md`.
 - **Resolve design questions before drafting.** When a choice is the
   owner's to make, ask, with options and a recommendation first, rather
   than picking silently. Record the answer as a numbered decision.
-- **Decisions** (`D…` in design.md, `F…` in filesystem.md) are a table:
+- **Decisions** (`D…` in decisions.md, `F…` in filesystem.md) are a table:
   the decision, then *why*. Never renumber them; a dropped decision is
   removed and its number not reused. Decisions you make while drafting
   are marked open for review in the status line.
@@ -44,7 +45,7 @@ and decisions table of `spec/design.md`.
 ## Code conventions
 
 - Rust 2024, rustfmt defaults (`cargo fmt --check`), crates under
-  `crates/hyperstor-*` (design.md §18.1).
+  `crates/hyperstor-*` (operations.md §18.1).
 - Before every pull request, run
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo fmt --check` and `cargo test --workspace --release`.

@@ -1,4 +1,4 @@
-//! The per-core reactor (spec/design.md §6.1, D3).
+//! The per-core reactor (spec/engine.md §6.1, D3).
 //!
 //! One thread, one io_uring, one executor. [`block_on`] runs a future and
 //! everything it [`spawn`]s on the current thread until it completes.

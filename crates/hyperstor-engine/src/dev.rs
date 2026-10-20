@@ -1,4 +1,4 @@
-//! Block devices under the engine (spec/design.md §6.2, D29).
+//! Block devices under the engine (spec/engine.md §6.2, D29).
 //!
 //! Every I/O is block-aligned in offset and length. Implementations:
 //! - [`MemDev`]: memory, for tests;

@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-proto"
-description = "Hyperstor's framed wire protocol between clients and storage nodes (spec/design.md §13)"
+description = "Hyperstor's framed wire protocol between clients and storage nodes (spec/protocol.md §13)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

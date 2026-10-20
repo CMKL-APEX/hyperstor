@@ -1,4 +1,4 @@
-//! The framed wire protocol (spec/design.md §13.1, D5).
+//! The framed wire protocol (spec/protocol.md §13.1, D5).
 //!
 //! A frame is a fixed 32-byte header, a typed body and an optional payload
 //! (block data, never interpreted by the framing):
@@ -185,7 +185,7 @@ pub enum Msg {
         max_version: u16,
         /// Client id, or node id for storage nodes.
         id: u64,
-        /// Random per process (design §4.1, blocklist).
+        /// Random per process (metadata.md §4.1, blocklist).
         instance: u64,
     },
     HelloOk {
@@ -221,7 +221,7 @@ pub enum Msg {
     ReadOk {
         crcs: Vec<u32>,
     },
-    /// Primary to replica: apply this write (design §8.1).
+    /// Primary to replica: apply this write (replication.md §8.1).
     Repl {
         to: Target,
         seq: u64,
@@ -232,7 +232,7 @@ pub enum Msg {
     ReplOk {
         revision: u64,
     },
-    /// Storage node to map service: still alive (design §4.1).
+    /// Storage node to map service: still alive (metadata.md §4.1).
     Heartbeat {
         node: u32,
     },
@@ -240,7 +240,7 @@ pub enum Msg {
         map_epoch: u64,
     },
     /// Primary to backfill target: replace the object with the payload
-    /// (empty: delete it) (design §8.5).
+    /// (empty: delete it) (replication.md §8.5).
     Push {
         to: Target,
         key: WireKey,

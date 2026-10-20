@@ -1,4 +1,4 @@
-//! Hyperstor's local storage engine (spec/design.md §7, D4, D22, D29, D34).
+//! Hyperstor's local storage engine (spec/engine.md §7, D4, D22, D29, D34).
 //!
 //! A device is formatted into shards, one per reactor. Each [`Shard`]
 //! stores general objects: versioned sparse data with per-block checksums,

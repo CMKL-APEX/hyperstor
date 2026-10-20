@@ -1,4 +1,4 @@
-//! Fixed-layout, little-endian encoding (spec/design.md §13.1).
+//! Fixed-layout, little-endian encoding (spec/protocol.md §13.1).
 //!
 //! Both the wire protocol and the engine's on-disk records use this codec.
 //! Layouts are explicit and versioned by their users; there is no

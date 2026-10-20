@@ -1,4 +1,4 @@
-//! A formatted device: its superblock and its shards (spec/design.md §7.1).
+//! A formatted device: its superblock and its shards (spec/engine.md §7.1).
 //!
 //! Block 0 holds the device superblock, block 1 a copy. The rest is split
 //! evenly into one region per shard (see [`crate::shard`]).

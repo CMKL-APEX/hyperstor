@@ -62,7 +62,7 @@ Tests: `cargo test --workspace --release` (the engine's crash test takes
 |---|---|
 | `spec/` | Design specification (contributors) |
 | `docs/` | Documentation sets and their build configuration |
-| `crates/` | Rust crates (`spec/design.md` §18.1): codec, engine, placement, proto, reactor, meta (map service), daemon (`hyperstord`), client, bench |
+| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, proto, reactor, meta (map service), daemon (`hyperstord`), client, bench |
 | `LICENSES/` | License texts and copyright notice |
 
 ## License

@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-engine"
-description = "Hyperstor's local storage engine: general objects on block devices (spec/design.md §7)"
+description = "Hyperstor's local storage engine: general objects on block devices (spec/engine.md §7)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

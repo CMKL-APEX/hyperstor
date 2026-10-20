@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-client"
-description = "Hyperstor's client library: RPC connections and volume I/O routed to PG primaries (spec/design.md §10.1)"
+description = "Hyperstor's client library: RPC connections and volume I/O routed to PG primaries (spec/volumes.md §10.1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

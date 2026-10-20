@@ -1,11 +1,13 @@
 //! `hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...]
-//!            [--cpus 2,3] [--buffered]`
+//!            [--cpus 2,3] [--buffered] [--hdd]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
 //! the cluster file) and storing on PATH (a file, created and extended to
 //! SIZE_GIB if needed, or a block device), opened `O_DIRECT` through
 //! io_uring unless `--buffered`. Formats unformatted devices. Stops on
 //! SIGINT or SIGTERM by exiting; the engine recovers on the next start.
+//! `--hdd` marks the devices as hard disks, which defer small overwrites
+//! through the log (decisions.md D38); flash redirects every write.
 
 use hyperstor_daemon::*;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered]"
+            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd]"
         );
         std::process::exit(2)
     };
@@ -70,7 +72,10 @@ fn main() {
         meta,
         shards,
         cpus,
-        defer_max: None,
+        defer_max: args
+            .iter()
+            .any(|a| a == "--hdd")
+            .then_some(hyperstor_engine::DEFER_MAX),
     });
     // Run until killed; a reactor that fails to start ends the process.
     for r in h.stop_when_any_fails() {

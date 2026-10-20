@@ -1,0 +1,171 @@
+# Decision log
+
+Status: **working record.** Decision points raised during implementation,
+the owner's answers, and the points still open with their trade-offs.
+Settled points become numbered decisions in [decisions.md](decisions.md);
+the measurements behind them are in [benchmarks.md](benchmarks.md).
+
+## Review of 2026-10-20
+
+Raised in [implementation-notes.md](implementation-notes.md) after HS0,
+HS1 and the first part of HS2.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 1 | Defer small overwrites only on hard disks, redirect on flash (I14) | Redirect on flash | D38; storage nodes default to no deferral, `hyperstord --hdd` turns it on |
+| 2 | One listening port per reactor (I19) | One port per reactor | D39 |
+| 3 | The stale-primary window until map leases exist (I20) | Discuss the pros and cons | Open: [below](#3-map-leases-before-or-after-the-vm-path) |
+| 4 | Failure detection by the map service only (I21, I25) | Nodes report each other | D40; to build in HS2 |
+| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? | Open: [below](#5-checkpoints-without-the-spike) |
+| 6 | Test hardware (NVMe namespace, RDMA NIC, power-loss-protected drives) | Later | G5 and HS6 measurements wait for it |
+| 7 | CPU per operation before RDMA | Agreed | D41; milestone HS5b |
+
+### Benchmark summary behind the review
+
+From [benchmarks.md](benchmarks.md), dev-1 (one consumer NVMe SSD without
+power-loss protection):
+
+| Measurement | Result |
+|---|---|
+| Engine 4 KiB write, batch 1, against raw write + flush | 168 µs against 162 µs |
+| Engine 4 KiB QD1 read against raw | 64 µs against 53 µs |
+| Engine 4 KiB writes, batch 128: deferred against redirected (raw: 160k) | 85k against 133k ops/s (point 1) |
+| Engine CPU per deferred 4 KiB write | about 5 µs (point 7) |
+| Checkpoint stall at p99 (memory, batch 128) | 12.5 ms (point 5) |
+| Cluster, memory devices: replicated 4 KiB write / read, QD1 | 92 µs / 40 µs (point 7) |
+| Cluster, one client reactor, 4 KiB writes QD32 | 31k–47k ops/s |
+| Placement, 1,024 devices | 2.2 µs per PG |
+| Crash test soak | 5,000 seeds, 30,000 crashes, all consistent |
+| Separate processes, `kill -9` of a node | every request succeeded afterwards, on two copies |
+
+## Open points
+
+### 3. Map leases before or after the VM path
+
+**The window.** When the map changes (a node is marked down, a PG moves),
+storage nodes learn it by polling (every 200 ms). Until they do, a primary
+and replicas that are all still on the old map accept writes under the old
+PG epoch. Replicas that already have the new map refuse, which bounds the
+window, but doesn't close it.
+
+**When it loses data.** Only when the old primary is still running and
+reachable by clients, but has been taken out of the acting set: a network
+partition from the map service, or a false detection. A node that has
+really died accepts nothing. Writes acknowledged in the window go to the
+old acting set; the new one never sees them, so they are lost when the
+partition heals and backfill copies the new set's state.
+
+**Option A: map leases and read leases now, before HS3** (design
+replication.md §8.4, metadata.md §4.1).
+
+- How: every heartbeat reply renews a node's *map lease*. A node whose
+  lease has run out stops accepting writes and reads for its PGs. The map
+  service makes a change that removes a member effective only after that
+  member's lease has expired or the member has acknowledged the new map.
+  Primaries hold read leases from their replicas, as designed.
+- Pros:
+  - closes the hole: no acknowledged write can be lost to a partition or
+    a false detection, which is the basic promise of a block store;
+  - VMs (HS3) are the first real users of the data; building HS3 on a
+    path that can lose writes would make every HS3 test suspect;
+  - the write path is still small, so adding the lease check now is
+    cheaper than retrofitting it under vhost, NVMe-oF and EC later;
+  - D40 (peer reports) shortens detection, so the lease, not detection,
+    becomes the main part of failover time, which is a number we choose.
+- Cons:
+  - failover takes at least one lease period after a failure (writes to
+    the affected PGs stall for it), so the lease must be short (1–2 s)
+    and heartbeats frequent;
+  - more protocol: lease renewal, a bound on clock *rate* drift (monotonic
+    clocks only, no synchronized time), and the map service's rule for
+    when a change takes effect;
+  - delays HS3 by roughly one milestone.
+
+**Option B: push map changes, leases later.** The map service pushes each
+new map to every node and waits for acknowledgements before the change
+takes effect.
+
+- Pros: shrinks the window to a round trip for every node that can be
+  reached; less code than leases.
+- Cons: a partitioned node can't be reached, which is exactly the case
+  that loses data. B alone doesn't close the hole; it is the optimization
+  that makes A's failover fast in the common case.
+
+**Option C: after HS3.**
+
+- Pros: VMs on hyperstor sooner; the lease design can use what HS3 teaches
+  about failover time that VMs tolerate.
+- Cons: the window stays open through HS3 testing; anything built on top
+  assumes guarantees that aren't there yet.
+
+**Recommendation: A, with B as its fast path, before HS3.** A 1–2 s lease,
+pushes for the common case, and the lease for safety.
+
+### 5. Checkpoints without the spike
+
+**Today** (implementation-notes.md I3): the index lives in memory; a
+checkpoint serializes all of it into new extents, then writes the
+superblock. The shard pauses for the whole write (12.5 ms p99 on a small
+test index; it grows with the index).
+
+**What makes the alternatives possible.** Every logged operation sets
+state absolutely (map these blocks here, set this size, put this key,
+delete this range). Replaying a sequence of them in order over a state
+that already contains some of them ends in the same state as applying
+them once. Recovery can therefore start from an index image taken
+*while* commits continue, as long as replay starts from a log position
+older than anything in the image.
+
+**Option A: fuzzy checkpoint with a sync marker** (ARIES-style; the
+log-based approach asked about).
+
+1. Record the current log position `L` as the checkpoint's start (a
+   marker in the log, or simply in memory until the end).
+2. Serialize the index in slices, a bounded amount per commit round, while
+   commits go on. Each object is written as it is when its slice runs.
+3. When the last slice is durable, write the superblock: checkpoint
+   extents plus *head = L*.
+4. Recovery loads the image and replays from `L`; the absolute operations
+   converge to the right state.
+
+- Pros: removes the pause (each round pays a slice); small change to the
+  current code; reuses the existing log and recovery path.
+- Cons: still writes the whole index on every checkpoint, so checkpoint
+  bandwidth grows with the index; the log must keep everything from `L`,
+  so it needs room for one checkpoint's duration of writes.
+
+**Option B: paged index with dirty-page tracking** (the paged,
+incremental approach).
+
+- Split the index into pages, naturally one or more per PG (key ranges of
+  the index), each serialized separately. Track which pages changed since
+  they were last written.
+- A checkpoint writes only dirty pages, to new extents, then a page table
+  (itself a small page) that names every page's extents; the superblock
+  points at the page table. Combined with A, the dirty pages are written
+  in slices too.
+- Pros: checkpoint cost follows the rate of change, not the index size; a
+  PG's pages can be shipped whole for backfill or moved between shards;
+  it is the first half of the copy-on-write B+tree.
+- Cons: more format to get right (page table, page versions, freeing
+  superseded pages only after the superblock that drops them is durable);
+  the whole index still lives in memory.
+
+**Option C: the on-device copy-on-write B+tree** (engine.md §7.1, the
+original design).
+
+- Pros: the index no longer needs to fit in memory; checkpoints write only
+  changed nodes; this is what large shards eventually need.
+- Cons: the largest piece of work; read paths gain a cache and page-in
+  latency.
+
+**Option D: log-structured merge (sorted delta runs plus compaction).**
+
+- Pros: writes are sequential and proportional to change.
+- Cons: compaction brings its own spikes, and reads must merge runs; a
+  poor fit for an index that is mostly point lookups by block.
+
+**Recommendation: A now, B next, C when shards outgrow memory.** A removes
+the spike with a small change. B makes checkpoint cost follow the rate of
+change and gives per-PG pages that backfill and shard rebalancing can
+use. C stays the long-term format. D isn't worth its compaction cost here.
