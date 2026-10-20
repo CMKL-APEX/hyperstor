@@ -1,0 +1,2 @@
+# The house style is rustfmt's defaults; CI checks it (`cargo fmt --check`).
+edition = "2024"

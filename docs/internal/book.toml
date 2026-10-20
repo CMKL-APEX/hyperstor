@@ -1,0 +1,16 @@
+# Contributor documentation (docs/README.md): the design specs in spec/,
+# which stay there because code cites them by that path.
+# Internal only: publish to access-controlled hosts.
+[book]
+title = "Hyperstor Internals"
+description = "Design specification for Hyperstor contributors"
+language = "en"
+src = "../../spec"
+
+[build]
+build-dir = "../../target/docs/internal"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/CMKL-APEX/hyperstor"
+edit-url-template = "https://github.com/CMKL-APEX/hyperstor/edit/main/spec/{path}"

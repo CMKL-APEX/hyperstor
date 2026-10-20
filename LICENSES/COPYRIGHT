@@ -1,0 +1,21 @@
+Copyright (c) 2026 CMKL University and The Hyperstor Project Contributors
+
+Hyperstor is dual-licensed under either of
+
+  * the Apache License, Version 2.0 (LICENSE-APACHE, or
+    https://www.apache.org/licenses/LICENSE-2.0), or
+  * the MIT license (LICENSE-MIT, or https://opensource.org/licenses/MIT),
+
+at your option. SPDX-License-Identifier: MIT OR Apache-2.0
+
+"The Hyperstor Project Contributors" are everyone who has contributed to
+Hyperstor; the git history records who they are and what each contributed.
+Each contributor keeps the copyright in their contributions.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Hyperstor by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
+
+Third-party code vendored in this repository keeps its own license, noted
+where it lives.
