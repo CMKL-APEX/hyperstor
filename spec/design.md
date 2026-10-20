@@ -1,8 +1,12 @@
 # Hyperstor design
 
-Status: **draft.** Decisions D1–D19 were settled with the user; D20–D37
-were made while drafting and are open to review. Host checks G1–G8 (§22)
-are still open.
+Status: **draft, implementation started.** Decisions D1–D19 were settled
+with the user; D20–D37 were made while drafting and are open to review.
+Host checks G1–G12 (§22) are still open. Built so far: HS0, HS1 without
+Raft, and the failure-detection and backfill part of HS2; see
+[implementation-notes.md](implementation-notes.md) for what was built,
+the deviations it proposes for this document (I14, I19), and what is
+left.
 
 Hyperstor is a sharded, distributed block store for glidex nodes. It
 exports volumes over NVMe-oF (TCP, RoCEv2, InfiniBand), protects them by

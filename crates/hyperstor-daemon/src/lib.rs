@@ -100,6 +100,17 @@ pub struct NodeHandle {
 }
 
 impl NodeHandle {
+    /// Waits for the reactor threads, which run until one fails; then
+    /// stops the others and returns every result.
+    pub fn stop_when_any_fails(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {
+        loop {
+            if self.threads.iter().any(|t| t.is_finished()) {
+                return self.stop();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     /// Stops every reactor and returns the shards' devices, for inspection.
     pub fn stop(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {
         for s in &self.stops {

@@ -193,3 +193,35 @@ reactor. "QD" is the number of concurrent requests from the client.
    drive (QD1: 495 µs; QD32: 4.9k ops/s). This says more about the
    test host than about hyperstor; a real cluster has a drive per node.
 
+## 2026-10-20: separate processes, and a node killed (dev-1)
+
+The README's cluster: `hyperstor-meta` and three `hyperstord` processes on
+dev-1, each shard on a 1 GiB file created by `hyperstord` (sparse, so the
+first write to each block also updates the ext4 journal, I28), driven by
+`hyperstor-bench remote 127.0.0.1:19000` (2 s per test).
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 942 | 3.9 | 994 | 1538 |
+| 4 KiB random writes, QD32 | 2383 | 9.8 | 10388 | 34090 |
+| 4 KiB random reads, QD1 | 10684 | 43.8 | 92 | 139 |
+| 4 KiB random reads, QD32 | 36460 | 149.3 | 451 | 2304 |
+| 1 MiB writes, QD4 | 391 | 410.0 | 10138 | 16853 |
+| 1 MiB reads, QD4 | 1250 | 1310.4 | 2787 | 7928 |
+
+Then `kill -9` of node 1's `hyperstord`, a 3 s wait (the map service marks
+it down after 2 s), and the same workload for 1 s per test: every request
+succeeded, now with two copies per write.
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 1006 | 4.1 | 968 | 1643 |
+| 4 KiB random writes, QD32 | 5301 | 21.7 | 5074 | 28416 |
+| 4 KiB random reads, QD1 | 10327 | 42.3 | 94 | 128 |
+| 4 KiB random reads, QD32 | 26158 | 107.1 | 1283 | 2358 |
+| 1 MiB writes, QD4 | 616 | 646.1 | 6347 | 10381 |
+| 1 MiB reads, QD4 | 1157 | 1213.5 | 3152 | 6264 |
+
+Writes were faster degraded because each one waits for two flushes on the
+shared drive instead of three.
+

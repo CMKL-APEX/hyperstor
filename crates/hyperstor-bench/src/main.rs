@@ -299,8 +299,6 @@ fn raw_suite(dev: &UringDev, secs: f64) {
 fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
     use hyperstor_daemon::*;
     use hyperstor_meta::{ClusterMap, replicated_pool};
-    use std::cell::RefCell;
-    use std::rc::Rc;
     let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let meta = meta_l.local_addr().unwrap();
     let mut map = ClusterMap::new(1);
@@ -366,6 +364,18 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
         })
         .collect();
     let label = format!("3 nodes x {reactors} reactor(s), size 3, {where_}");
+    client_workload(meta, &label, secs);
+    for n in nodes {
+        n.stop();
+    }
+}
+
+/// Fills eight 64 MiB volumes in pool 1, then runs random and sequential
+/// reads and writes against the cluster whose map service is at `meta`.
+fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let label = label.to_string();
     hyperstor_reactor::block_on(async move {
         let _ = hyperstor_reactor::pin_to_cpu(1);
         let cl = hyperstor_client::Client::connect(meta, 1).await.unwrap();
@@ -417,9 +427,6 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
             row(&format!("{label}: {name}, QD{qd}"), n, elapsed, len, &mut l);
         }
     });
-    for n in nodes {
-        n.stop();
-    }
 }
 
 fn main() {
@@ -484,6 +491,15 @@ fn main() {
             let where_ = args.get(2).cloned().unwrap_or_else(|| "mem".into());
             let reactors: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             cluster_suite(&where_, reactors, secs);
+        }
+        Some("remote") => {
+            // hyperstor-bench remote <map service address>
+            let meta = args
+                .get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("map service address");
+            header();
+            client_workload(meta, &format!("remote {meta}"), secs);
         }
         Some("crc") => {
             let data = vec![7u8; 1 << 20];

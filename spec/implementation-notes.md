@@ -5,7 +5,40 @@ while implementing (`I…`), and considerations to discuss. Design decisions
 stay in [design.md](design.md); a note here that changes the design says
 so, and design.md gets the change once the owner agrees.
 
-Benchmarks are in [benchmarks.md](benchmarks.md). Tests: `cargo test --workspace`; the crash test's seed count is `HS_CRASH_SEEDS` (300 by default; a 5,000-seed run, 30,000 crashes, passed on 2026-10-20).
+Benchmarks are in [benchmarks.md](benchmarks.md). Tests:
+`cargo test --workspace --release`; the crash test's seed count is
+`HS_CRASH_SEEDS` (300 by default; a 5,000-seed run, 30,000 crashes,
+passed on 2026-10-20).
+
+## Where things stand (2026-10-20)
+
+Built, on branch `impl/hs0-hs1`:
+
+| Milestone | Built | Not yet |
+|---|---|---|
+| HS0 | Engine (general objects, group commit, deferred writes, checkpoints, recovery), device back ends (memory, pread/pwrite, io_uring `O_DIRECT`, fault injection), crash test, benchmarks | NVMe passthrough back end and the G5 comparison with SPDK (needs a spare namespace, I11) |
+| HS1 | Placement, wire protocol, reactor, cluster map and map service, storage daemon with replication and group commit, client, `hyperstord` and `hyperstor-meta` binaries, end-to-end tests and benchmark | Raft for the map service (I18), `.meta` header objects and volume leases (design §4.2, §9) |
+| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy, failure end-to-end test, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | Read leases and map leases (§8.4, closes I20), PG log and delta recovery (§8.3), scrub, blocklist and forced takeovers (§9), throttling |
+
+### To discuss with the owner
+
+1. **I14: defer small overwrites only on hard disks**, redirect them on
+   flash (a design change to D22's default).
+2. **I19: one listening port per reactor** instead of one per node with
+   hand-off (a design change to §3 and §6.1).
+3. **I20: the stale-primary window** until map leases exist: is closing it
+   the next priority, ahead of vhost (HS3)?
+4. **I21/I25: failure detection by the map service only.** Writes to
+   affected PGs stall for the detection time (2 s by default); peers
+   reporting each other (design §4.1) would shorten it.
+5. **I3: the in-memory index with whole-index checkpoints** is fine now but
+   needs the on-device B+tree before large shards; when?
+6. **Test hardware:** a host with a spare NVMe namespace (G5, I11), an RDMA
+   NIC (HS6), and drives with power-loss protection, for numbers that mean
+   something for deployment.
+7. **CPU per operation:** about 5 µs per deferred 4 KiB write in the engine
+   and 40–90 µs per request end to end on loopback; removing copies (I12,
+   I23) and adaptive polling (I24) come before RDMA.
 
 ## Engine (HS0)
 
@@ -66,4 +99,10 @@ two engine bugs before any other test did:
 | I25 | **Liveness by heartbeats to the map service** (every 150 ms from each reactor; a node is down after a timeout, 600 ms in tests and 2 s in the benchmark). Each PG has an `up` set (placement) and an `acting` set (who has every acknowledged write). When a node goes down, `acting` keeps its live members in order, so the new primary is a surviving member that has every acknowledged write. | Writes are acknowledged only when every acting member has them (§8.1), so any surviving member is complete. Keeping order avoids an election. | Detection by the map service only: a node that can reach the map service but not its peers isn't detected (design §4.1 asks peers to report each other; not built). |
 | I26 | **Backfill**: the primary resets the target's copy of the PG, then pushes every object whole, each read taken only when no commit is queued and sent on the same connection as live writes. Live writes also go to the target meanwhile (best effort). If any write or push to the target fails, the backfill starts over. When it finishes, the target becomes *required* for every write before the primary waits out in-flight writes to it and reports `BackfillDone`; the map service then adds it to `acting`, and once all of `up` is there, `acting = up`. | Ordering on one connection makes each pushed object exactly the primary's state at that point, with later writes following. Making the target required before reporting closes a race the cluster test found (2 failures in 25 runs before the fix, 0 in 30 after): a write could be acknowledged while its copy to a target that had just joined `acting` failed. | Objects are pushed whole, holes included (reads materialize zeros), so a backfill writes every byte of each chunk; an extent list from the engine would send only what's there. No throttling or priorities yet (design §8.5). A node that returns with old data gets a reset and a full copy, not a delta from the PG log (no PG log yet). |
 | I27 | **Storage nodes refuse `Repl` and `Push` for PGs they are in neither `acting` nor `up` of**, and for PG epochs they don't have. | A node that is no longer a member must not accept writes. | — |
+
+## Binaries
+
+| # | Decision | Why | To discuss |
+|---|---|---|---|
+| I28 | **`hyperstord` and `hyperstor-meta` take flags and a plain-text cluster file** (`hyperstor_meta::parse_cluster`), no configuration library. | Enough to run a cluster by hand; no extra dependencies. | glidex will drive these (design §17); the cluster file is a stopgap until the map service has its management API (§15). `hyperstord` creates sparse files for shard devices; on ext4 the first write to each block then costs a journal update. Use block devices, or files written once in full. |
 

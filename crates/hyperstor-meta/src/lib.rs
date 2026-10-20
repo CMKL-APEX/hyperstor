@@ -727,3 +727,96 @@ mod tests {
         });
     }
 }
+
+/// Parses a cluster file:
+///
+/// ```text
+/// # comments and blank lines are ignored
+/// cluster 42
+/// node 0 rack 0 10.0.0.1:9100 10.0.0.1:9101   # one address per reactor
+/// node 1 rack 0 10.0.0.2:9100 10.0.0.2:9101
+/// pool 1 vol replicated size 3 min 2 pgs 128 chunk 4194304 domain host
+/// ```
+///
+/// and returns the map with every PG placed.
+pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
+    let mut map = ClusterMap::new(0);
+    for (lineno, line) in text.lines().enumerate() {
+        let line = line.split('#').next().unwrap().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let bad = |what: &str| format!("line {}: {what}: {line}", lineno + 1);
+        let num = |s: &str| s.parse::<u64>().map_err(|_| bad("expected a number"));
+        match w[0] {
+            "cluster" if w.len() == 2 => map.cluster_id = num(w[1])? as u128,
+            "node" if w.len() >= 5 && w[2] == "rack" => {
+                let addrs: Vec<SocketAddr> = w[4..]
+                    .iter()
+                    .map(|a| a.parse().map_err(|_| bad("bad address")))
+                    .collect::<Result<_, _>>()?;
+                map.add_node(num(w[1])? as u32, &addrs, num(w[3])? as u32);
+            }
+            "pool" if w.len() >= 4 => {
+                let mut p = replicated_pool(num(w[1])? as u32, w[2], 3, 128);
+                let mut i = 3;
+                if w[3] == "replicated" {
+                    i = 4;
+                } else if let Some(km) = w[3].strip_prefix("ec") {
+                    // ec4+2
+                    let (k, m) = km.split_once('+').ok_or_else(|| bad("ec needs k+m"))?;
+                    let (k, m) = (num(k)? as u8, num(m)? as u8);
+                    p.kind = PoolKind::Ec { k, m };
+                    p.size = k + m;
+                    p.min_size = k + 1;
+                    i = 4;
+                }
+                while i + 1 < w.len() {
+                    match w[i] {
+                        "size" => p.size = num(w[i + 1])? as u8,
+                        "min" => p.min_size = num(w[i + 1])? as u8,
+                        "pgs" => p.pg_count = num(w[i + 1])? as u32,
+                        "chunk" => p.chunk_size = num(w[i + 1])? as u32,
+                        "class" => p.class = Some(w[i + 1].to_string()),
+                        "domain" => {
+                            p.domain = match w[i + 1] {
+                                "device" => Domain::Device,
+                                "host" => Domain::Host,
+                                "rack" => Domain::Rack,
+                                _ => return Err(bad("domain is device, host or rack")),
+                            }
+                        }
+                        _ => return Err(bad("unknown pool option")),
+                    }
+                    i += 2;
+                }
+                if !p.pg_count.is_power_of_two() {
+                    return Err(bad("pgs must be a power of two"));
+                }
+                map.add_pool(p);
+            }
+            _ => return Err(bad("unknown line")),
+        }
+    }
+    map.recompute();
+    Ok(map)
+}
+
+#[cfg(test)]
+mod parse_tests {
+    #[test]
+    fn cluster_file() {
+        let m = super::parse_cluster(
+            "cluster 7\n# x\nnode 0 rack 0 127.0.0.1:9100 127.0.0.1:9101\nnode 1 rack 1 127.0.0.1:9200\nnode 2 rack 1 127.0.0.1:9300\n\
+             pool 1 vol replicated size 3 min 2 pgs 64 chunk 1048576 domain host\npool 2 cold ec2+1 pgs 32\n",
+        )
+        .unwrap();
+        assert_eq!(m.cluster_id, 7);
+        assert_eq!(m.devices.len(), 4);
+        assert_eq!(m.pools[&1].chunk_size, 1 << 20);
+        assert_eq!(m.pools[&2].size, 3);
+        assert!(super::parse_cluster("pool 1 v replicated pgs 3").is_err());
+        assert!(super::parse_cluster("node x rack 0 1.2.3.4:1").is_err());
+    }
+}
