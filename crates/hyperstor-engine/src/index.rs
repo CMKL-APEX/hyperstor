@@ -6,130 +6,39 @@
 //! apply them with [`Index::apply`], so replay reproduces exactly the
 //! state the commit produced.
 
+pub use crate::blockmap::{BlockMap, DensePolicy, Loc, Run};
 use crate::types::ObjKey;
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use std::collections::BTreeMap;
-
-/// A contiguous run of logical blocks mapped to contiguous physical blocks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Run {
-    pub pblock: u64,
-    /// One CRC32C per 4 KiB block of the run.
-    pub crcs: Vec<u32>,
-}
-
-impl Run {
-    pub fn len(&self) -> u64 {
-        self.crcs.len() as u64
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.crcs.is_empty()
-    }
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Object {
     pub size: u64,
     pub revision: u64,
-    /// Runs keyed by their first logical block. Runs never overlap.
-    pub blocks: BTreeMap<u64, Run>,
+    /// Logical to physical blocks, as runs or a dense map (D43).
+    pub blocks: BlockMap,
     pub attrs: BTreeMap<Vec<u8>, Vec<u8>>,
     pub kv: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
-/// Where a logical block's data is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Loc {
-    Hole,
-    Mapped { pblock: u64, crc: u32 },
-}
-
 impl Object {
     pub fn block_count(&self) -> u64 {
-        self.blocks.values().map(Run::len).sum()
+        self.blocks.block_count()
     }
 
     pub fn lookup(&self, lb: u64) -> Loc {
-        if let Some((&start, run)) = self.blocks.range(..=lb).next_back()
-            && lb < start + run.len()
-        {
-            let i = (lb - start) as usize;
-            return Loc::Mapped {
-                pblock: run.pblock + i as u64,
-                crc: run.crcs[i],
-            };
-        }
-        Loc::Hole
+        self.blocks.lookup(lb)
     }
 
     /// True if every block of `[lb, lb + n)` is mapped.
     pub fn all_mapped(&self, lb: u64, n: u64) -> bool {
-        let mut cur = lb;
-        let end = lb + n;
-        while cur < end {
-            match self.blocks.range(..=cur).next_back() {
-                Some((&s, r)) if cur < s + r.len() => cur = s + r.len(),
-                _ => return false,
-            }
-        }
-        true
-    }
-
-    /// Splits the run containing `lb`, if any, so that a run starts at `lb`.
-    fn split_at(&mut self, lb: u64) {
-        let Some((&s, r)) = self.blocks.range(..lb).next_back() else {
-            return;
-        };
-        if lb >= s + r.len() {
-            return;
-        }
-        let i = (lb - s) as usize;
-        let mut r = self.blocks.remove(&s).unwrap();
-        let tail = Run {
-            pblock: r.pblock + i as u64,
-            crcs: r.crcs.split_off(i),
-        };
-        self.blocks.insert(s, r);
-        self.blocks.insert(lb, tail);
+        self.blocks.all_mapped(lb, n)
     }
 
     /// Removes the mappings of `[lb, lb + n)` and returns the physical
     /// extents they held.
     pub fn unmap(&mut self, lb: u64, n: u64) -> Vec<(u64, u64)> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let end = lb.saturating_add(n);
-        self.split_at(lb);
-        if end != u64::MAX {
-            self.split_at(end);
-        }
-        let keys: Vec<u64> = self.blocks.range(lb..end).map(|(&k, _)| k).collect();
-        keys.into_iter()
-            .map(|k| {
-                let r = self.blocks.remove(&k).unwrap();
-                (r.pblock, r.len())
-            })
-            .collect()
-    }
-
-    /// Updates the checksums of mapped blocks `[lb, lb + crcs.len())` and
-    /// returns their physical block numbers, in order.
-    fn set_crcs(&mut self, lb: u64, crcs: &[u32]) -> Vec<u64> {
-        let mut out = Vec::with_capacity(crcs.len());
-        for (i, &c) in crcs.iter().enumerate() {
-            let b = lb + i as u64;
-            let (&s, run) = self
-                .blocks
-                .range_mut(..=b)
-                .next_back()
-                .expect("deferred write to a mapped block");
-            let j = (b - s) as usize;
-            run.crcs[j] = c;
-            out.push(run.pblock + j as u64);
-        }
-        out
+        self.blocks.unmap(lb, n)
     }
 }
 
@@ -196,10 +105,20 @@ impl Effects {
 }
 
 /// The shard's index of objects.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone)]
 pub struct Index {
     pub objects: BTreeMap<ObjKey, Object>,
+    /// When block maps switch representation (not part of the content).
+    pub policy: DensePolicy,
 }
+
+impl PartialEq for Index {
+    fn eq(&self, other: &Self) -> bool {
+        self.objects == other.objects
+    }
+}
+
+impl Eq for Index {}
 
 impl Index {
     /// Applies one resolved list.
@@ -211,12 +130,11 @@ impl Index {
 
     /// Applies one resolved operation to the object `key`.
     pub fn apply_op(&mut self, key: &ObjKey, op: &ROp, fx: &mut Effects) {
+        let policy = self.policy;
         {
             if let ROp::Delete = op {
                 if let Some(o) = self.objects.remove(key) {
-                    let ext: Vec<(u64, u64)> =
-                        o.blocks.values().map(|r| (r.pblock, r.len())).collect();
-                    fx.free(ext);
+                    fx.free(o.blocks.extents());
                 }
                 return;
             }
@@ -230,16 +148,11 @@ impl Index {
                 ROp::Map { lb, pblock, crcs } => {
                     let freed = o.unmap(*lb, crcs.len() as u64);
                     fx.free(freed);
-                    o.blocks.insert(
-                        *lb,
-                        Run {
-                            pblock: *pblock,
-                            crcs: crcs.clone(),
-                        },
-                    );
+                    o.blocks.map(*lb, *pblock, crcs);
+                    o.blocks.rebalance(&policy);
                 }
                 ROp::Deferred { lb, data, crcs } => {
-                    let pbs = o.set_crcs(*lb, crcs);
+                    let pbs = o.blocks.set_crcs(*lb, crcs);
                     for (i, pb) in pbs.into_iter().enumerate() {
                         let blk = &data[i * crate::BLOCK..(i + 1) * crate::BLOCK];
                         fx.pending.insert(pb, blk.into());
@@ -248,6 +161,7 @@ impl Index {
                 ROp::Unmap { lb, n } => {
                     let freed = o.unmap(*lb, *n);
                     fx.free(freed);
+                    o.blocks.rebalance(&policy);
                 }
                 ROp::SetAttr(k, v) => {
                     o.attrs.insert(k.clone(), v.clone());
@@ -279,9 +193,7 @@ impl Index {
 
     /// Every physical extent in use.
     pub fn used_extents(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.objects
-            .values()
-            .flat_map(|o| o.blocks.values().map(|r| (r.pblock, r.len())))
+        self.objects.values().flat_map(|o| o.blocks.extents())
     }
 
     pub fn encode(&self, e: &mut Enc) {
@@ -289,11 +201,21 @@ impl Index {
         for (k, o) in &self.objects {
             k.encode(e);
             e.u64(o.size).u64(o.revision);
-            e.u32(o.blocks.len() as u32);
-            for (lb, r) in &o.blocks {
-                e.u64(*lb).u64(r.pblock).u32(r.crcs.len() as u32);
-                for c in &r.crcs {
-                    e.u32(*c);
+            match &o.blocks {
+                BlockMap::Runs(m) => {
+                    e.u8(0).u32(m.len() as u32);
+                    for (lb, r) in m {
+                        e.u64(*lb).u64(r.pblock).u32(r.crcs.len() as u32);
+                        for c in &r.crcs {
+                            e.u32(*c);
+                        }
+                    }
+                }
+                BlockMap::Dense(v) => {
+                    e.u8(1).u32(v.len() as u32);
+                    for slot in v {
+                        e.u64(*slot);
+                    }
                 }
             }
             e.u32(o.attrs.len() as u32);
@@ -317,13 +239,25 @@ impl Index {
                 revision: d.u64()?,
                 ..Default::default()
             };
-            let runs = d.u32()?;
-            for _ in 0..runs {
-                let lb = d.u64()?;
-                let pblock = d.u64()?;
-                let crcs = d.seq(4, |d| d.u32())?;
-                o.blocks.insert(lb, Run { pblock, crcs });
-            }
+            o.blocks = match d.u8()? {
+                0 => {
+                    let mut m = BTreeMap::new();
+                    for _ in 0..d.u32()? {
+                        let lb = d.u64()?;
+                        let pblock = d.u64()?;
+                        let crcs = d.seq(4, |d| d.u32())?;
+                        m.insert(lb, Run { pblock, crcs });
+                    }
+                    BlockMap::Runs(m)
+                }
+                1 => BlockMap::Dense(d.seq(8, |d| d.u64())?),
+                v => {
+                    return Err(DecodeError::Invalid {
+                        field: "block map",
+                        value: v as u64,
+                    });
+                }
+            };
             let na = d.u32()?;
             for _ in 0..na {
                 o.attrs.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
@@ -334,7 +268,10 @@ impl Index {
             }
             objects.insert(k, o);
         }
-        Ok(Self { objects })
+        Ok(Self {
+            objects,
+            policy: DensePolicy::default(),
+        })
     }
 }
 

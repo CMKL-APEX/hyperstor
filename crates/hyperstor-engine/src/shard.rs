@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
 const LOG_MAGIC: u32 = 0x4853_4c47; // "HSLG"
-const CKPT_MAGIC: u64 = 0x4853_434b_5054_3031; // "HSCKPT01"
+const CKPT_MAGIC: u64 = 0x4853_434b_5054_3032; // "HSCKPT02": tagged block maps (D43)
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
@@ -170,6 +170,10 @@ pub struct ShardStats {
     pub checkpoint_bytes: u64,
     /// Extent runs in the index (one per contiguous mapped range).
     pub runs: u64,
+    /// Objects whose block map is dense (D43).
+    pub dense_objects: u64,
+    /// Estimated memory of every block map, in bytes.
+    pub index_map_bytes: u64,
 }
 
 /// One shard of a device.
@@ -536,6 +540,12 @@ impl Shard {
     /// every write to new extents.
     pub fn set_defer_max(&mut self, bytes: usize) {
         self.defer_max = bytes;
+    }
+
+    /// Sets when block maps switch to and from the dense representation
+    /// (D43). Takes effect for later changes; existing maps keep theirs.
+    pub fn set_dense_policy(&mut self, policy: crate::DensePolicy) {
+        self.index.policy = policy;
     }
 
     /// The largest list bound ([`estimate`]) the shard accepts.
@@ -1047,7 +1057,19 @@ impl Shard {
                 .index
                 .objects
                 .values()
-                .map(|o| o.blocks.len() as u64)
+                .map(|o| o.blocks.run_count())
+                .sum(),
+            dense_objects: self
+                .index
+                .objects
+                .values()
+                .filter(|o| o.blocks.is_dense())
+                .count() as u64,
+            index_map_bytes: self
+                .index
+                .objects
+                .values()
+                .map(|o| o.blocks.mem_bytes())
                 .sum(),
         }
     }
