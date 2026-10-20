@@ -8,6 +8,7 @@
 # Design
 
 - [Overview](overview.md)
+- [Target workloads](workloads.md)
 - [Decisions](decisions.md)
 - [Metadata, leases and fencing](metadata.md)
 - [Placement](placement.md)

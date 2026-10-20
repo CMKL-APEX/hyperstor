@@ -21,6 +21,7 @@ documents cite them by number.
 | Document | Sections | What needs consideration there |
 |---|---|---|
 | [overview.md](overview.md) | §1, §3 | Scope (in, later, out), processes and ports |
+| [workloads.md](workloads.md) | (own) | The target workloads (agent VMs, inference, agent memory, fine-tuning, RAG) and what each implies; proposed pool semantics and index flavours |
 | [decisions.md](decisions.md) | §2 | Every design decision with its why; D20–D37 still open to review |
 | [metadata.md](metadata.md) | §4, §9 | What goes through Raft and what doesn't; `.meta` header objects; volume leases, delegates and the blocklist |
 | [placement.md](placement.md) | §5 | Chunk-to-PG hashing, weighted rendezvous over failure domains, rebalancing, EC shard positions |
