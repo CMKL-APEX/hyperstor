@@ -3,28 +3,29 @@
 Hyperstor is a sharded, distributed block, object and file store in
 Rust, built for [glidex](https://github.com/CMKL-APEX/glidex) nodes and
 usable without them. Read `spec/README.md` first, then the status line
-and decisions table of `spec/design.md`.
+of `spec/overview.md` and the decisions in `spec/decisions.md`; the
+design is split by topic, with section numbers kept across files.
 
 ## Where things stand
 
-- **Design only; no code yet.** `spec/design.md` is a full draft;
-  `spec/filesystem.md` is an outline.
-- **Settled with the project owner:** D1–D19 in design.md, and the
-  choices behind D28–D31 and D34–D37 (metadata out of Raft, non-NVMe
-  devices, verbs as the RDMA transport, NCCL coexistence, a native S3
-  gateway with S3-over-RDMA, a native filesystem).
-- **Open for the owner's review:** the wording and details of D20–D37 and
-  F1–F12, and every host check (G1–G12, FG1–FG2).
-- **Next:** finish that review, then plan milestone HS0 (design.md §21):
-  the reactor prototype, the engine format and the io_uring-versus-SPDK
-  benchmark gate G5.
+- **Implementation has started** on branch `impl/hs0-hs1`: HS0, HS1 (no
+  Raft yet) and the first part of HS2. `spec/implementation-notes.md` has
+  what was built, the decisions taken while building it (I1…), what to
+  discuss with the owner, and bugs the tests found;
+  `spec/benchmarks.md` has the measurements.
+- **Settled with the project owner:** D1–D19 and D38–D46 in decisions.md, and the
+  choices behind D28–D31 and D34–D37.
+- **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I28,
+  and every host check (G1–G12, FG1–FG2).
+- **Next:** the "To discuss" list in implementation-notes.md, then the
+  rest of HS2 (map and read leases, PG log, scrub, blocklist).
 
 ## Design work
 
 - **Resolve design questions before drafting.** When a choice is the
   owner's to make, ask, with options and a recommendation first, rather
   than picking silently. Record the answer as a numbered decision.
-- **Decisions** (`D…` in design.md, `F…` in filesystem.md) are a table:
+- **Decisions** (`D…` in decisions.md, `F…` in filesystem.md) are a table:
   the decision, then *why*. Never renumber them; a dropped decision is
   removed and its number not reused. Decisions you make while drafting
   are marked open for review in the status line.
@@ -41,12 +42,17 @@ and decisions table of `spec/design.md`.
 - A new spec document needs an entry in `spec/README.md` and
   `spec/SUMMARY.md`.
 
-## Code conventions (from HS0 on)
+## Code conventions
 
 - Rust 2024, rustfmt defaults (`cargo fmt --check`), crates under
-  `crates/hyperstor-*` (design.md §18.1).
+  `crates/hyperstor-*` (operations.md §18.1).
 - Before every pull request, run
-  `cargo clippy --workspace --all-targets -- -D warnings` and the tests.
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --check` and `cargo test --workspace --release`.
+- New behaviour comes with tests; anything that persists data or crosses
+  a crash gets a randomized test against a model (see the engine's crash
+  test). Record measurements in `spec/benchmarks.md` with the host and
+  the command, and decisions in `spec/implementation-notes.md`.
 - No SPDK or DPDK dependency (D3). The data path is hyperstor's own
   io_uring reactor, with no third-party async runtime; tokio is for the
   control path only.

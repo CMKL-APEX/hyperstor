@@ -1,0 +1,22 @@
+[package]
+name = "hyperstor-bench"
+description = "Benchmarks for hyperstor components (results in spec/benchmarks.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+hyperstor-engine = { path = "../hyperstor-engine" }
+hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-placement = { path = "../hyperstor-placement" }
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-daemon = { path = "../hyperstor-daemon" }
+hyperstor-meta = { path = "../hyperstor-meta" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+libc.workspace = true
+rand.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "hyperstor-client"
+description = "Hyperstor's client library: RPC connections and volume I/O routed to PG primaries (spec/volumes.md §10.1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-meta = { path = "../hyperstor-meta" }
+hyperstor-placement = { path = "../hyperstor-placement" }
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+hyperstor-rpc = { path = "../hyperstor-rpc" }
+libc.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

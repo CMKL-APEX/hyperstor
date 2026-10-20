@@ -1,0 +1,14 @@
+[package]
+name = "hyperstor-proto"
+description = "Hyperstor's framed wire protocol between clients and storage nodes (spec/protocol.md §13)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-codec = { path = "../hyperstor-codec" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

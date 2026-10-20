@@ -7,5 +7,25 @@
 
 # Design
 
-- [Hyperstor design](design.md)
+- [Overview](overview.md)
+- [Target workloads](workloads.md)
+- [Decisions](decisions.md)
+- [Metadata, leases and fencing](metadata.md)
+- [Placement](placement.md)
+- [Storage node and local engine](engine.md)
+- [Replication, recovery and failures](replication.md)
+- [Volume operations](volumes.md)
+- [Front ends](frontends.md)
+- [GPU-direct storage](gpu.md)
+- [Internal protocol and transports](protocol.md)
+- [S3 gateway](s3.md)
+- [Management, deployment and security](operations.md)
+- [glidex integration](glidex.md)
+- [Milestones and host checks](milestones.md)
 - [Filesystem](filesystem.md)
+
+# Implementation
+
+- [Decision log](decision-log.md)
+- [Implementation notes](implementation-notes.md)
+- [Benchmarks](benchmarks.md)

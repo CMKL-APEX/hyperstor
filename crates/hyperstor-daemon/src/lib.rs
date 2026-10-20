@@ -1,0 +1,962 @@
+//! `hyperstord`: a storage node (spec/engine.md §6, §8).
+//!
+//! A node runs one reactor thread per engine shard (implementation-notes.md
+//! I1). Each reactor listens on its own address, follows the cluster map,
+//! and serves:
+//!
+//! - `Write` as a PG's primary: checks the PG epoch, sends `Repl` to every
+//!   replica and queues the local commit, all before reading the next
+//!   request, then answers once every copy has committed (§8.1);
+//! - `Repl` as a replica: queues the commit in arrival order;
+//! - `Read` as the primary.
+//!
+//! Commits go through a batcher: everything queued since the last commit
+//! is committed in one engine call (group commit, I2). Requests are queued
+//! in the order they are read from each connection, and a primary queues a
+//! write's replication and local commit without waiting in between, so
+//! every copy applies writes in the same order.
+//!
+//! Not yet (HS2): shrinking the in-sync set when a replica fails, peering,
+//! recovery, read leases. A write whose replica is unreachable fails with
+//! `Unavailable`, and the client retries.
+
+use hyperstor_client::rpc::{Conn, read_frame, writer};
+use hyperstor_client::{Client, ClientError};
+use hyperstor_engine::{
+    BlockDev, Committed, DeviceConfig, EngineError, FileDev, MemDev, Namespace, ObjKey, Op,
+    OpError, OpList, Shard, UringDev,
+};
+use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
+use hyperstor_proto::{Code, Msg, Target, VERSION, WireKey, block_crcs, encode_frame, verify_crcs};
+use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
+use hyperstor_reactor::net::{TcpListener, TcpStream};
+use hyperstor_reactor::{block_on, spawn, time::sleep};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::future::Future;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::task::{Poll, Waker};
+use std::time::Duration;
+
+/// The device behind one shard.
+#[derive(Clone)]
+pub enum DeviceSpec {
+    Mem {
+        bytes: u64,
+    },
+    File {
+        path: PathBuf,
+        bytes: u64,
+        direct: bool,
+        uring: bool,
+    },
+    /// A device already open, for example one a stopped node returned.
+    Existing(Arc<dyn BlockDev>),
+}
+
+impl std::fmt::Debug for DeviceSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceSpec::Mem { bytes } => write!(f, "Mem({bytes})"),
+            DeviceSpec::File { path, .. } => write!(f, "File({})", path.display()),
+            DeviceSpec::Existing(d) => write!(f, "Existing({} bytes)", d.len()),
+        }
+    }
+}
+
+impl DeviceSpec {
+    fn open(&self) -> std::io::Result<Arc<dyn BlockDev>> {
+        Ok(match self {
+            DeviceSpec::Mem { bytes } => Arc::new(MemDev::new(*bytes)),
+            DeviceSpec::Existing(d) => d.clone(),
+            DeviceSpec::File {
+                path,
+                bytes,
+                direct,
+                uring: true,
+            } => Arc::new(UringDev::open(path, *direct, Some(*bytes), 256)?),
+            DeviceSpec::File {
+                path,
+                bytes,
+                direct,
+                uring: false,
+            } => Arc::new(FileDev::open(path, *direct, Some(*bytes))?),
+        })
+    }
+}
+
+pub struct ShardSpec {
+    pub device_id: u32,
+    pub device: DeviceSpec,
+    /// Bound before the node starts, so its address can be in the map.
+    pub listener: std::net::TcpListener,
+}
+
+pub struct NodeConfig {
+    pub node_id: u32,
+    pub meta: SocketAddr,
+    pub shards: Vec<ShardSpec>,
+    /// Pin reactor `i` to CPU `cpus[i]`, if given.
+    pub cpus: Vec<usize>,
+    /// Test hook: while set, this node neither reaches the map service nor
+    /// hears from it (no heartbeats, map fetches, pushes or fences), as if
+    /// cut off from it while clients and peers can still reach it.
+    pub meta_blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Engine deferral threshold: `None` for flash, which redirects every
+    /// write (decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
+    /// hard disks.
+    pub defer_max: Option<usize>,
+}
+
+/// A running node. Dropping it without [`NodeHandle::stop`] leaves the
+/// threads running.
+pub struct NodeHandle {
+    stops: Vec<Sender<()>>,
+    threads: Vec<std::thread::JoinHandle<Result<Arc<dyn BlockDev>, String>>>,
+}
+
+impl NodeHandle {
+    /// Waits for the reactor threads, which run until one fails; then
+    /// stops the others and returns every result.
+    pub fn stop_when_any_fails(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {
+        loop {
+            if self.threads.iter().any(|t| t.is_finished()) {
+                return self.stop();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Stops every reactor and returns the shards' devices, for inspection.
+    pub fn stop(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {
+        for s in &self.stops {
+            let _ = s.send(());
+        }
+        self.threads
+            .into_iter()
+            .map(|t| t.join().unwrap_or_else(|_| Err("reactor panicked".into())))
+            .collect()
+    }
+}
+
+/// Starts a node: one reactor thread per shard.
+pub fn start(cfg: NodeConfig) -> NodeHandle {
+    let mut stops = Vec::new();
+    let mut threads = Vec::new();
+    for (i, sh) in cfg.shards.into_iter().enumerate() {
+        let (tx, mut rx) = channel::<()>();
+        stops.push(tx);
+        let cpu = cfg.cpus.get(i).copied();
+        let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
+        let blocked = cfg.meta_blocked.clone();
+        threads.push(
+            std::thread::Builder::new()
+                .name(format!("hs-reactor-{node}-{i}"))
+                .spawn(move || {
+                    if let Some(c) = cpu {
+                        let _ = hyperstor_reactor::pin_to_cpu(c);
+                    }
+                    let dev = sh.device.open().map_err(|e| e.to_string())?;
+                    let d2 = dev.clone();
+                    block_on(async move {
+                        let st =
+                            ShardState::open(node, sh.device_id, d2, meta, defer, blocked.clone())
+                                .await?;
+                        let l = TcpListener::from_std(sh.listener);
+                        spawn(st.clone().committer());
+                        spawn(st.clone().follow_map());
+                        spawn(st.clone().heartbeat(node));
+                        spawn(st.clone().backfiller());
+                        spawn(st.clone().accept(l));
+                        rx.recv().await;
+                        Ok::<(), String>(())
+                    })?;
+                    Ok(dev)
+                })
+                .expect("spawn reactor thread"),
+        );
+    }
+    NodeHandle { stops, threads }
+}
+
+type CommitResult = Result<Committed, String>;
+
+/// One reactor's state.
+struct ShardState {
+    me: u32,
+    shard: RefCell<Shard>,
+    client: Rc<Client>,
+    queue: RefCell<Vec<(OpList, OneSender<CommitResult>)>>,
+    committer: RefCell<Option<Waker>>,
+    /// Per-PG replication sequence numbers (primary side).
+    seqs: RefCell<HashMap<(u32, u32), u64>>,
+    /// Connections to replicas, by address.
+    peers: RefCell<HashMap<SocketAddr, Conn>>,
+    batches: Cell<u64>,
+    /// Backfills this primary is running: (pool, pg, target) -> whether a
+    /// write or push to the target failed meanwhile (the copy may then be
+    /// incomplete, so the backfill starts over).
+    backfills: RefCell<HashMap<(u32, u32, u32), bool>>,
+    /// Best-effort writes still in flight to each backfill target.
+    fill_inflight: RefCell<HashMap<(u32, u32, u32), u32>>,
+    /// Backfill targets whose copy is complete (or being reported): every
+    /// write must reach them from now on, because the map service may make
+    /// them acting members at any moment.
+    required: RefCell<std::collections::HashSet<(u32, u32, u32)>>,
+    /// Until when this reactor may serve PG I/O (its map lease, decisions.md
+    /// D42); none before the first heartbeat answer.
+    lease_until: Cell<Option<std::time::Instant>>,
+    /// PGs fenced by the map service, with the map epoch that lifts each.
+    fenced: RefCell<HashMap<(u32, u32), u64>>,
+    /// Writes accepted as primary and not yet answered, per PG.
+    pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
+    /// The test hook of `NodeConfig::meta_blocked`.
+    blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
+    Msg::Error {
+        code,
+        map_epoch: map.epoch,
+        detail: detail.into(),
+    }
+}
+
+fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
+    let ns = Namespace::from_u8(k.ns).map_err(|_| ())?;
+    Ok(ObjKey::new(to.pool, to.pg, ns, k.name.clone(), k.version))
+}
+
+impl ShardState {
+    async fn open(
+        node: u32,
+        me: u32,
+        dev: Arc<dyn BlockDev>,
+        meta: SocketAddr,
+        defer: Option<usize>,
+        blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Rc<Self>, String> {
+        let mut shard = match hyperstor_engine::open(&dev) {
+            Ok((_, mut v)) => v.pop().ok_or("device has no shard")?,
+            Err(EngineError::NotFormatted) => {
+                hyperstor_engine::format(
+                    &dev,
+                    &DeviceConfig {
+                        device_id: me as u128,
+                        cluster_id: 0,
+                        shards: 1,
+                        log_blocks: None,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+                hyperstor_engine::open(&dev)
+                    .map_err(|e| e.to_string())?
+                    .1
+                    .pop()
+                    .ok_or("device has no shard")?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        shard.set_defer_max(defer.unwrap_or(0));
+        let mut client = None;
+        for _ in 0..100 {
+            match Client::connect(meta, node as u64).await {
+                Ok(c) => {
+                    client = Some(c);
+                    break;
+                }
+                Err(_) => sleep(Duration::from_millis(20)).await,
+            }
+        }
+        let client = client.ok_or("map service unreachable")?;
+        Ok(Rc::new(ShardState {
+            me,
+            shard: RefCell::new(shard),
+            client,
+            queue: RefCell::new(Vec::new()),
+            committer: RefCell::new(None),
+            seqs: RefCell::new(HashMap::new()),
+            peers: RefCell::new(HashMap::new()),
+            batches: Cell::new(0),
+            backfills: RefCell::new(HashMap::new()),
+            fill_inflight: RefCell::new(HashMap::new()),
+            required: RefCell::new(std::collections::HashSet::new()),
+            lease_until: Cell::new(None),
+            fenced: RefCell::new(HashMap::new()),
+            pg_inflight: RefCell::new(HashMap::new()),
+            blocked,
+        }))
+    }
+
+    fn map(&self) -> Rc<ClusterMap> {
+        self.client.map()
+    }
+
+    /// Queues a list for the next group commit.
+    fn enqueue(&self, list: OpList) -> impl Future<Output = CommitResult> + 'static {
+        let (tx, rx) = oneshot();
+        self.queue.borrow_mut().push((list, tx));
+        if let Some(w) = self.committer.borrow_mut().take() {
+            w.wake();
+        }
+        async move { rx.recv().await.unwrap_or(Err("commit dropped".into())) }
+    }
+
+    /// Commits whatever is queued, as one batch, whenever anything is.
+    async fn committer(self: Rc<Self>) {
+        loop {
+            std::future::poll_fn(|cx| {
+                if self.queue.borrow().is_empty() {
+                    *self.committer.borrow_mut() = Some(cx.waker().clone());
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+            let batch = std::mem::take(&mut *self.queue.borrow_mut());
+            let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+            let res = self.shard.borrow_mut().commit(lists);
+            self.batches.set(self.batches.get() + 1);
+            match res {
+                Ok(rs) => {
+                    for (tx, r) in txs.into_iter().zip(rs) {
+                        let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
+                    }
+                }
+                Err(e) => {
+                    for tx in txs {
+                        let _ = tx.send(Err(e.to_string()));
+                    }
+                }
+            }
+            let pending = self.shard.borrow().stats().pending_blocks;
+            if pending > 4096 {
+                let _ = self.shard.borrow_mut().apply_deferred();
+            }
+            // Let request handlers queue the next batch.
+            hyperstor_reactor::yield_now().await;
+        }
+    }
+
+    async fn follow_map(self: Rc<Self>) {
+        loop {
+            sleep(Duration::from_millis(200)).await;
+            if !self.cut_off() {
+                let _ = self.client.refresh_map().await;
+            }
+        }
+    }
+
+    async fn accept(self: Rc<Self>, l: TcpListener) {
+        loop {
+            match l.accept().await {
+                Ok((s, _)) => {
+                    spawn(self.clone().serve(s));
+                }
+                Err(_) => sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    /// Checks a request against the map: the PG exists, its epoch is the
+    /// one the sender used, and this device is its primary (or a member).
+    async fn check(&self, to: &Target, primary: bool) -> Result<PgInfo, Msg> {
+        if to.map_epoch > self.map().epoch && !self.cut_off() {
+            let _ = self.client.refresh_map().await;
+        }
+        let map = self.map();
+        // No valid map lease: this node may have been replaced without
+        // knowing it, so it serves nothing (replication.md §8.4).
+        if self
+            .lease_until
+            .get()
+            .is_none_or(|t| std::time::Instant::now() >= t)
+        {
+            return Err(err(Code::Unavailable, &map, "no map lease"));
+        }
+        if let Some(e) = self.fenced.borrow().get(&(to.pool, to.pg))
+            && map.epoch < *e
+        {
+            return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
+        }
+        let Some(pg) = map.pg(to.pool, to.pg) else {
+            return Err(err(Code::Invalid, &map, "no such PG"));
+        };
+        if pg.epoch != to.pg_epoch {
+            return Err(err(Code::StaleMap, &map, "PG epoch changed"));
+        }
+        let ok = if primary {
+            pg.primary() == Some(self.me)
+        } else {
+            pg.acting.contains(&self.me) || pg.up.contains(&self.me)
+        };
+        if !ok {
+            return Err(err(Code::NotPrimary, &map, "not primary for this PG"));
+        }
+        Ok(pg.clone())
+    }
+
+    async fn peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        if let Some(c) = self.peers.borrow().get(&addr)
+            && !c.is_dead()
+        {
+            return Ok(c.clone());
+        }
+        let c = Conn::connect(addr).await?;
+        self.peers.borrow_mut().insert(addr, c.clone());
+        Ok(c)
+    }
+
+    async fn serve(self: Rc<Self>, s: TcpStream) {
+        let s = Rc::new(s);
+        let (tx, rx) = channel::<Vec<u8>>();
+        spawn(writer(s.clone(), rx));
+        loop {
+            let Ok((h, msg, payload)) = read_frame(&s).await else {
+                let _ = s.shutdown();
+                return;
+            };
+            let reply = |m: &Msg, p: &[u8]| {
+                let _ = tx.send(encode_frame(h.req, m, p));
+            };
+            match msg {
+                Msg::Hello { .. } => reply(
+                    &Msg::HelloOk {
+                        version: VERSION,
+                        node: self.me as u64,
+                        map_epoch: self.map().epoch,
+                    },
+                    &[],
+                ),
+                Msg::Ping => reply(&Msg::Pong, &[]),
+                Msg::Write { to, key, off, crcs } => {
+                    self.write(h.req, to, key, off, crcs, payload, tx.clone())
+                        .await;
+                }
+                Msg::Repl {
+                    to,
+                    seq: _,
+                    key,
+                    off,
+                    crcs,
+                } => {
+                    self.repl(h.req, to, key, off, crcs, payload, tx.clone())
+                        .await
+                }
+                Msg::Read { to, key, off, len } => {
+                    let (m, p) = self.read(to, key, off, len).await;
+                    reply(&m, &p);
+                }
+                // Cut off from the map service (test hook): its messages
+                // don't arrive.
+                Msg::Fence { .. } | Msg::MapPush { .. } if self.cut_off() => {}
+                Msg::Fence { epoch, pgs } => {
+                    let me = self.clone();
+                    let tx = tx.clone();
+                    let req = h.req;
+                    for k in &pgs {
+                        let mut f = self.fenced.borrow_mut();
+                        let e = f.entry(*k).or_default();
+                        *e = (*e).max(epoch);
+                    }
+                    // Answer once every write already accepted for these
+                    // PGs has been answered.
+                    spawn(async move {
+                        while pgs
+                            .iter()
+                            .any(|k| me.pg_inflight.borrow().get(k).copied().unwrap_or(0) > 0)
+                        {
+                            sleep(Duration::from_millis(1)).await;
+                        }
+                        let _ = tx.send(encode_frame(req, &Msg::FenceOk, &[]));
+                    });
+                }
+                Msg::MapPush { map, .. } => {
+                    if let Ok(m) = ClusterMap::decode(&map) {
+                        self.client.install_map(m);
+                    }
+                    reply(&Msg::MapPushOk, &[]);
+                }
+                Msg::Push { to, key, crcs } => {
+                    self.push(h.req, to, key, crcs, payload, tx.clone()).await
+                }
+                _ => reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[]),
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        off: u64,
+        crcs: Vec<u32>,
+        data: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        let pg = match self.check(&to, true).await {
+            Ok(p) => p,
+            Err(m) => return send(m),
+        };
+        if verify_crcs(&data, &crcs).is_err() {
+            return send(err(Code::Checksum, &self.map(), "payload checksum"));
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        // Connect to every replica first; then queue everything with no
+        // wait in between, so every copy sees writes in the same order.
+        // Acting members must all answer; backfill targets get the write
+        // too (so they miss nothing after their copy), best effort.
+        let map = self.map();
+        if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
+            return send(err(Code::Unavailable, &map, "too few copies"));
+        }
+        let mut conns = Vec::new();
+        let required: Vec<u32> = pg
+            .backfilling()
+            .filter(|d| self.required.borrow().contains(&(to.pool, to.pg, *d)))
+            .collect();
+        for d in pg
+            .acting
+            .iter()
+            .skip(1)
+            .filter(|d| **d != NO_DEVICE)
+            .chain(required.iter())
+        {
+            let Some(addr) = map.device_addr(*d) else {
+                return send(err(Code::Unavailable, &map, "replica has no address"));
+            };
+            match self.peer(addr).await {
+                Ok(c) => conns.push(c),
+                Err(e) => return send(err(Code::Unavailable, &map, format!("replica: {e}"))),
+            }
+        }
+        let mut fills = Vec::new();
+        for d in pg.backfilling().filter(|d| !required.contains(d)) {
+            match map.device_addr(d) {
+                Some(addr) => match self.peer(addr).await {
+                    Ok(c) => fills.push((d, c)),
+                    Err(_) => self.fill_failed(to.pool, to.pg, d),
+                },
+                None => self.fill_failed(to.pool, to.pg, d),
+            }
+        }
+        // Counted until answered, so a fence waits for it.
+        *self
+            .pg_inflight
+            .borrow_mut()
+            .entry((to.pool, to.pg))
+            .or_default() += 1;
+        let seq = {
+            let mut seqs = self.seqs.borrow_mut();
+            let s = seqs.entry((to.pool, to.pg)).or_default();
+            *s += 1;
+            *s
+        };
+        let repl = Msg::Repl {
+            to,
+            seq,
+            key: key.clone(),
+            off,
+            crcs,
+        };
+        let remote: Vec<_> = conns.iter().map(|c| c.start(&repl, &data)).collect();
+        let filling: Vec<_> = fills
+            .iter()
+            .map(|(d, c)| {
+                *self
+                    .fill_inflight
+                    .borrow_mut()
+                    .entry((to.pool, to.pg, *d))
+                    .or_default() += 1;
+                (*d, c.start(&repl, &data))
+            })
+            .collect();
+        let local = self.enqueue(OpList {
+            key: okey,
+            ops: vec![Op::Write { off, data }],
+        });
+        let me = self.clone();
+        let (pool, pgn) = (to.pool, to.pg);
+        spawn(async move {
+            for (d, f) in filling {
+                if !matches!(f.await, Ok((Msg::ReplOk { .. }, _))) {
+                    me.fill_failed(pool, pgn, d);
+                }
+                if let Some(n) = me.fill_inflight.borrow_mut().get_mut(&(pool, pgn, d)) {
+                    *n -= 1;
+                }
+            }
+        });
+        let me2 = self.clone();
+        spawn(async move {
+            let r = local.await;
+            let _inflight = InflightGuard(me2, (to.pool, to.pg));
+            let mut failed = None;
+            for f in remote {
+                match f.await {
+                    Ok((Msg::ReplOk { .. }, _)) => {}
+                    Ok((Msg::Error { detail, .. }, _)) => failed = Some(detail),
+                    Ok((m, _)) => failed = Some(format!("unexpected {m:?}")),
+                    Err(e) => failed = Some(e.to_string()),
+                }
+            }
+            send(match (r, failed) {
+                (Ok(c), None) => Msg::WriteOk {
+                    revision: c.revision,
+                },
+                (Err(e), _) => Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: e,
+                },
+                (_, Some(e)) => Msg::Error {
+                    code: Code::Unavailable,
+                    map_epoch: 0,
+                    detail: format!("replica: {e}"),
+                },
+            });
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn repl(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        off: u64,
+        crcs: Vec<u32>,
+        data: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
+        }
+        if verify_crcs(&data, &crcs).is_err() {
+            return send(err(Code::Checksum, &self.map(), "payload checksum"));
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        let local = self.enqueue(OpList {
+            key: okey,
+            ops: vec![Op::Write { off, data }],
+        });
+        spawn(async move {
+            send(match local.await {
+                Ok(c) => Msg::ReplOk {
+                    revision: c.revision,
+                },
+                Err(e) => Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: e,
+                },
+            });
+        });
+    }
+
+    /// Notes that a backfill target missed a write or push.
+    fn fill_failed(&self, pool: u32, pg: u32, device: u32) {
+        if let Some(f) = self.backfills.borrow_mut().get_mut(&(pool, pg, device)) {
+            *f = true;
+        }
+    }
+
+    /// Replaces an object with a primary's copy (backfill, replication.md §8.5).
+    /// Namespace 0 means: delete every object of the PG first.
+    async fn push(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        crcs: Vec<u32>,
+        data: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
+        }
+        let lists: Vec<OpList> = if key.ns == 0 {
+            self.shard
+                .borrow()
+                .list_pg(to.pool, to.pg)
+                .into_iter()
+                .map(|k| OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                })
+                .collect()
+        } else {
+            if verify_crcs(&data, &crcs).is_err() {
+                return send(err(Code::Checksum, &self.map(), "payload checksum"));
+            }
+            let Ok(okey) = engine_key(&to, &key) else {
+                return send(err(Code::Invalid, &self.map(), "bad namespace"));
+            };
+            let mut ops = vec![Op::Delete];
+            if !data.is_empty() {
+                ops.push(Op::Write { off: 0, data });
+            }
+            vec![OpList { key: okey, ops }]
+        };
+        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        spawn(async move {
+            let mut ok = true;
+            for d in done {
+                ok &= d.await.is_ok();
+            }
+            send(if ok {
+                Msg::PushOk
+            } else {
+                Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: "push failed".into(),
+                }
+            });
+        });
+    }
+
+    /// True while the test hook cuts this node off from the map service.
+    fn cut_off(&self) -> bool {
+        self.blocked
+            .as_ref()
+            .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    async fn heartbeat(self: Rc<Self>, node: u32) {
+        loop {
+            if !self.cut_off() {
+                // The lease runs from when the heartbeat was sent, which is
+                // before the map service granted it.
+                let sent = std::time::Instant::now();
+                if let Ok((
+                    Msg::HeartbeatOk {
+                        map_epoch,
+                        lease_ms,
+                    },
+                    _,
+                )) = self.client.call_meta(&Msg::Heartbeat { node }).await
+                {
+                    self.lease_until
+                        .set(Some(sent + Duration::from_millis(lease_ms as u64)));
+                    if map_epoch > self.map().epoch {
+                        let _ = self.client.refresh_map().await;
+                    }
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Starts a backfill for every PG this device is primary of that has
+    /// members still to fill.
+    async fn backfiller(self: Rc<Self>) {
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            let map = self.map();
+            // Targets that are now acting members (or no longer wanted)
+            // need no special treatment any more.
+            self.required.borrow_mut().retain(|(pool, pg, d)| {
+                map.pg(*pool, *pg)
+                    .is_some_and(|i| i.backfilling().any(|x| x == *d))
+            });
+            for ((pool, pg), info) in &map.pgs {
+                if info.primary() != Some(self.me) {
+                    continue;
+                }
+                for target in info.backfilling() {
+                    let k = (*pool, *pg, target);
+                    if self.backfills.borrow().contains_key(&k) {
+                        continue;
+                    }
+                    self.backfills.borrow_mut().insert(k, false);
+                    spawn(self.clone().backfill(*pool, *pg, target, info.epoch));
+                }
+            }
+        }
+    }
+
+    /// Waits until every queued commit is done, so the engine holds every
+    /// write queued so far.
+    async fn drained(&self) {
+        while !self.queue.borrow().is_empty() {
+            hyperstor_reactor::yield_now().await;
+        }
+    }
+
+    async fn backfill(self: Rc<Self>, pool: u32, pg: u32, target: u32, pg_epoch: u64) {
+        let k = (pool, pg, target);
+        let mut reported = false;
+        if self.backfill_once(pool, pg, target, pg_epoch).await {
+            // From here on every write must reach the target. Then wait for
+            // the best-effort writes already sent to it: if any failed, the
+            // copy is incomplete and the backfill starts over.
+            self.required.borrow_mut().insert(k);
+            while self.fill_inflight.borrow().get(&k).copied().unwrap_or(0) > 0 {
+                hyperstor_reactor::yield_now().await;
+            }
+            let clean = !self.backfills.borrow().get(&k).copied().unwrap_or(true);
+            if clean {
+                let r = self
+                    .client
+                    .call_meta(&Msg::BackfillDone {
+                        pool,
+                        pg,
+                        pg_epoch,
+                        device: target,
+                    })
+                    .await;
+                reported = matches!(r, Ok((Msg::BackfillOk { .. }, _)));
+                let _ = self.client.refresh_map().await;
+            }
+        }
+        if !reported {
+            self.required.borrow_mut().remove(&k);
+            sleep(Duration::from_millis(200)).await;
+        }
+        // Allow a new attempt (or none, once the map says it's done).
+        self.backfills.borrow_mut().remove(&k);
+    }
+
+    async fn backfill_once(&self, pool: u32, pg: u32, target: u32, pg_epoch: u64) -> bool {
+        let map = self.map();
+        let Some(addr) = map.device_addr(target) else {
+            return false;
+        };
+        let Ok(conn) = self.peer(addr).await else {
+            return false;
+        };
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch,
+        };
+        // Reset the target's copy, then send every object. Each read and
+        // its push happen with no wait in between, after every queued
+        // commit is done: writes queued earlier are in the copy, and writes
+        // queued later follow it on the same connection.
+        self.drained().await;
+        let reset = conn.start(
+            &Msg::Push {
+                to,
+                key: WireKey {
+                    ns: 0,
+                    name: Vec::new(),
+                    version: 0,
+                },
+                crcs: Vec::new(),
+            },
+            &[],
+        );
+        if !matches!(reset.await, Ok((Msg::PushOk, _))) {
+            return false;
+        }
+        self.drained().await;
+        let keys = self.shard.borrow().list_pg(pool, pg);
+        let mut inflight = Vec::new();
+        for key in keys {
+            if self.map().pg(pool, pg).map(|p| p.epoch) != Some(pg_epoch) {
+                return false;
+            }
+            self.drained().await;
+            let data = {
+                let sh = self.shard.borrow();
+                match sh.stat(&key) {
+                    Some(st) => {
+                        let len = st.size.div_ceil(4096) * 4096;
+                        match sh.read(&key, 0, len) {
+                            Ok(b) => b.to_vec(),
+                            Err(_) => return false,
+                        }
+                    }
+                    None => Vec::new(),
+                }
+            };
+            let wk = WireKey {
+                ns: key.ns as u8,
+                name: key.name.clone(),
+                version: key.version,
+            };
+            inflight.push(conn.start(
+                &Msg::Push {
+                    to,
+                    key: wk,
+                    crcs: block_crcs(&data),
+                },
+                &data,
+            ));
+            if inflight.len() >= 16 {
+                for f in inflight.drain(..) {
+                    if !matches!(f.await, Ok((Msg::PushOk, _))) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for f in inflight {
+            if !matches!(f.await, Ok((Msg::PushOk, _))) {
+                return false;
+            }
+        }
+        true
+    }
+
+    async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, true).await {
+            return (m, Vec::new());
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
+        };
+        let r = self.shard.borrow().read(&okey, off, len);
+        let data = match r {
+            Ok(b) => b.to_vec(),
+            // Never written: reads as zeros.
+            Err(EngineError::NotFound) => vec![0; len as usize],
+            Err(EngineError::Checksum { lblock }) => {
+                return (
+                    err(Code::Checksum, &self.map(), format!("block {lblock}")),
+                    Vec::new(),
+                );
+            }
+            Err(e) => return (err(Code::Io, &self.map(), e.to_string()), Vec::new()),
+        };
+        (
+            Msg::ReadOk {
+                crcs: block_crcs(&data),
+            },
+            data,
+        )
+    }
+}
+
+/// Decrements a PG's count of unanswered writes when dropped.
+struct InflightGuard(Rc<ShardState>, (u32, u32));
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if let Some(n) = self.0.pg_inflight.borrow_mut().get_mut(&self.1) {
+            *n = n.saturating_sub(1);
+        }
+    }
+}

@@ -1,0 +1,251 @@
+# Benchmarks
+
+Status: **working record.** Each run lists the host, the method and the
+raw numbers, so later runs can be compared. Reproduce with the commands
+given; the tool is `crates/hyperstor-bench`.
+
+## Hosts
+
+| Name | CPU | Storage | Kernel |
+|---|---|---|---|
+| dev-1 | AMD EPYC 9124 (16 cores, 32 threads, one socket) | one consumer NVMe SSD (WD SN770 1 TB, DRAM-less, volatile write cache, FUA supported, **no power-loss protection**), ext4 on LVM, holding the root filesystem | Linux 7.0 |
+
+On dev-1, the engine runs on a 2 GiB file on the root filesystem, opened
+`O_DIRECT` and driven through io_uring (the block back end of D29). The
+file is preallocated and then written once in full, so that no read is
+served from an unwritten extent and no write converts one. NVMe
+passthrough can't be measured there (implementation-notes.md I11).
+
+Caveats for dev-1:
+- Flushes are expensive (no power-loss protection): a 4 KiB write plus
+  `fdatasync` takes about 160 µs. Server drives with power-loss
+  protection complete a flush in microseconds, so absolute write latencies
+  here are much worse than a deployment's, and batching matters more.
+- The drive is shared with the root filesystem and other work on the
+  host, and it slows down once its write cache fills. Write results vary
+  between runs by up to 3× after several GB of writes; compare runs made
+  close together, and treat single numbers as indicative.
+
+## 2026-10-20: engine HS0 (dev-1)
+
+Commands:
+
+```sh
+cargo build --release -p hyperstor-bench
+HS_BENCH_SECS=3 target/release/hyperstor-bench crc
+HS_BENCH_SECS=3 target/release/hyperstor-bench raw  ~/hyperstor-bench/dev.img 2
+HS_BENCH_SECS=3 target/release/hyperstor-bench engine ~/hyperstor-bench/dev.img 2
+HS_DEFER_MAX=0 HS_BENCH_SECS=3 target/release/hyperstor-bench engine ~/hyperstor-bench/dev.img 2
+HS_BENCH_SECS=2 target/release/hyperstor-bench mem
+```
+
+Every engine test runs on one shard, from one thread, with the operations
+of a batch committed as one call (group commit, I2). "Per call" latency is
+one `commit` or `read` call, so a batch of 32 has 32 operations in one call.
+Objects are 4 MiB (like volume chunks), 64 of them, filled first by the
+1 MiB test.
+
+**CRC32C:** 6.75 GB/s on one core.
+
+**Raw device** (io_uring, `O_DIRECT`, no engine):
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes + fdatasync, batch 1 | 6020 | 24.7 | 162 | 210 |
+| 4 KiB random writes + fdatasync, batch 8 | 46508 | 190.5 | 156 | 409 |
+| 4 KiB random writes + fdatasync, batch 32 | 117015 | 479.3 | 250 | 919 |
+| 4 KiB random writes + fdatasync, batch 128 | 160154 | 656.0 | 633 | 2165 |
+| 4 KiB random reads, QD1 | 18151 | 74.3 | 53 | 88 |
+| 128 KiB random reads, QD1 | 3770 | 494.1 | 224 | 850 |
+| 1 MiB random reads, QD1 | 1077 | 1129.6 | 924 | 1104 |
+| 4 KiB random reads, QD32 (one submit) | 128906 | 528.0 | 244 | 314 |
+
+**Engine, deferred small writes** (`defer < 64 KiB`, the D22 default):
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 1 MiB writes, new extents, QD1 | 1500 | 1572.6 | 611 | 1622 |
+| 4 KiB overwrites, batch 1 | 5581 | 22.9 | 168 | 218 |
+| 4 KiB overwrites, batch 8 | 32380 | 132.6 | 186 | 253 |
+| 4 KiB overwrites, batch 32 | 64093 | 262.5 | 267 | 407 |
+| 4 KiB overwrites, batch 128 | 84725 | 347.0 | 607 | 2765 |
+| 64 KiB overwrites, batch 1 | 4959 | 325.0 | 192 | 283 |
+| 64 KiB overwrites, batch 32 | 19698 | 1290.9 | 1172 | 5938 |
+| 4 KiB random reads, QD1 | 14714 | 60.3 | 64 | 92 |
+| 128 KiB random reads, QD1 | 6566 | 860.6 | 145 | 274 |
+| 1 MiB random reads, QD1 | 1510 | 1583.3 | 652 | 828 |
+
+**Engine, every write redirected** (`HS_DEFER_MAX=0`), run right after
+the one above:
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 1 MiB writes, new extents, QD1 | 196 | 205.4 | 5907 | 12459 |
+| 4 KiB overwrites, batch 1 | 4713 | 19.3 | 196 | 280 |
+| 4 KiB overwrites, batch 8 | 35043 | 143.5 | 216 | 345 |
+| 4 KiB overwrites, batch 32 | 86722 | 355.2 | 351 | 552 |
+| 4 KiB overwrites, batch 128 | 132704 | 543.6 | 928 | 1131 |
+| 64 KiB overwrites, batch 1 | 4694 | 307.6 | 200 | 318 |
+| 64 KiB overwrites, batch 32 | 6515 | 427.0 | 1322 | 35212 |
+| 4 KiB random reads, QD1 | 14210 | 58.2 | 79 | 95 |
+
+The 1 MiB and 64 KiB rows of this run were hit by the drive's slowdown
+(they write the same data as in the run before); its 4 KiB rows wrote
+less data and are comparable.
+
+**Engine on memory** (CPU cost only, no device):
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB overwrites (deferred), batch 1 | 135010 | 553.0 | 3 | 8 |
+| 4 KiB overwrites (deferred), batch 32 | 194632 | 797.2 | 78 | 93 |
+| 4 KiB overwrites (deferred), batch 128 | 188294 | 771.3 | 321 | 12516 |
+| 64 KiB overwrites (redirected), batch 32 | 53274 | 3491.4 | 552 | 575 |
+| 4 KiB random reads, QD1 | 761876 | 3120.6 | 1 | 1 |
+
+### Findings
+
+1. **Engine overhead on reads is small:** 4 KiB QD1 reads take 64 µs
+   against 53 µs raw; larger reads match the device.
+2. **At batch 1, a write costs the same as a raw write plus flush**
+   (168 µs against 162 µs): the flush dominates on this drive.
+3. **Deferred small writes cost throughput on flash.** Each one is written
+   twice (in the log, then in place), and at batch 128 the engine reaches
+   85k ops/s against 160k raw. Redirecting every write reaches 133k.
+   See I14 in implementation-notes.md: deferral may be worth keeping only
+   for hard disks (D29), where it turns random writes into sequential
+   ones.
+4. **CPU per deferred 4 KiB write is about 5 µs** (190k ops/s on one core
+   with no device). That is too much for a reactor that should do several
+   hundred thousand operations per second; the copies and per-operation
+   allocations in the commit path are the first things to remove (I12).
+5. **Checkpoints show in p99** (batch 128 on memory: 12.5 ms), because a
+   checkpoint writes the whole index (I3).
+6. **G5 is half run:** the NVMe passthrough path needs a dedicated
+   namespace. SPDK wasn't installed for the comparison either.
+
+## 2026-10-20: placement (dev-1)
+
+`HS_BENCH_SECS=2 target/release/hyperstor-bench placement`: 1,024 devices
+in 128 hosts and 8 racks, 3 copies, one thread, topology built once per
+map (`Topology`):
+
+| Failure domain | PGs/s | µs per PG |
+|---|---|---|
+| host | 449,661 | 2.2 |
+| rack | 756,105 | 1.3 |
+
+The first version rebuilt the domain list for every PG (47 µs per PG by
+host); building it once per map made placement 21× faster with identical
+results. Placing every PG of a 65,536-PG pool after a map change takes
+about 0.15 s on one core.
+
+## 2026-10-20: end to end, one host (dev-1)
+
+`HS_BENCH_SECS=3 target/release/hyperstor-bench cluster mem|<dir> [reactors]`:
+a map service, three storage nodes and a client in one process on
+dev-1, talking over loopback TCP. A replicated pool (size 3, 128 PGs,
+4 MiB chunks), eight volumes of 64 MiB, filled first. Every write goes
+client → primary → two replicas, each committing to its engine; reads go
+to the primary. Each reactor is pinned to its own CPU; the client is one
+reactor. "QD" is the number of concurrent requests from the client.
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| mem, 1 reactor per node: 4 KiB random writes, QD1 | 10083 | 41.3 | 92 | 116 |
+| mem, 1 reactor per node: 4 KiB random writes, QD32 | 30899 | 126.6 | 591 | 8445 |
+| mem, 1 reactor per node: 4 KiB random reads, QD1 | 25385 | 104.0 | 40 | 57 |
+| mem, 1 reactor per node: 4 KiB random reads, QD32 | 80482 | 329.7 | 219 | 1003 |
+| mem, 1 reactor per node: 1 MiB writes, QD4 | 755 | 791.8 | 5200 | 8780 |
+| mem, 1 reactor per node: 1 MiB reads, QD4 | 2218 | 2325.7 | 1648 | 3793 |
+| mem, 4 reactors per node: 4 KiB random writes, QD1 | 6638 | 27.2 | 137 | 234 |
+| mem, 4 reactors per node: 4 KiB random writes, QD32 | 46959 | 192.3 | 338 | 12884 |
+| mem, 4 reactors per node: 4 KiB random reads, QD1 | 17785 | 72.8 | 56 | 89 |
+| mem, 4 reactors per node: 4 KiB random reads, QD32 | 74617 | 305.6 | 206 | 1966 |
+| mem, 4 reactors per node: 1 MiB writes, QD4 | 598 | 627.5 | 6335 | 12156 |
+| mem, 4 reactors per node: 1 MiB reads, QD4 | 1441 | 1510.6 | 2351 | 8553 |
+| files, 1 reactor per node: 4 KiB random writes, QD1 | 1906 | 7.8 | 495 | 628 |
+| files, 1 reactor per node: 4 KiB random writes, QD32 | 4921 | 20.2 | 4957 | 19816 |
+| files, 1 reactor per node: 4 KiB random reads, QD1 | 10363 | 42.4 | 94 | 141 |
+| files, 1 reactor per node: 4 KiB random reads, QD32 | 35838 | 146.8 | 511 | 2295 |
+| files, 1 reactor per node: 1 MiB writes, QD4 | 368 | 386.0 | 7821 | 77929 |
+| files, 1 reactor per node: 1 MiB reads, QD4 | 1237 | 1296.9 | 2791 | 7876 |
+
+### Findings
+
+1. **The software path costs about 40 µs for a read and 90 µs for a
+   replicated write** at QD1 on memory devices: two (read) or four
+   (write) loopback TCP hops plus engine work. This is the floor to
+   improve before RDMA (HS6) can matter.
+2. **One client reactor tops out near 31k–47k writes and 75k–80k reads
+   per second.** Several reactors per client (and per volume) are needed
+   for more; the per-request copies in the client and daemon (payload
+   copied into each frame, once per replica) are the first CPU to remove.
+3. **More reactors per node raised QD32 write throughput by half** (more
+   PGs committing in parallel) but **raised QD1 latency** (137 µs against
+   92 µs): a request now often wakes a sleeping reactor on another core.
+   Adaptive polling (spin briefly before sleeping in the kernel) is the
+   usual fix.
+4. **p99 write latency of 8–13 ms on memory** comes from engine
+   checkpoints, which write the whole index (I3).
+5. **On files, the three nodes share one consumer SSD without power-loss
+   protection**, so every write waits for three flushes on the same
+   drive (QD1: 495 µs; QD32: 4.9k ops/s). This says more about the
+   test host than about hyperstor; a real cluster has a drive per node.
+
+## 2026-10-20: separate processes, and a node killed (dev-1)
+
+The README's cluster: `hyperstor-meta` and three `hyperstord` processes on
+dev-1, each shard on a 1 GiB file created by `hyperstord` (sparse, so the
+first write to each block also updates the ext4 journal, I28), driven by
+`hyperstor-bench remote 127.0.0.1:19000` (2 s per test).
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 942 | 3.9 | 994 | 1538 |
+| 4 KiB random writes, QD32 | 2383 | 9.8 | 10388 | 34090 |
+| 4 KiB random reads, QD1 | 10684 | 43.8 | 92 | 139 |
+| 4 KiB random reads, QD32 | 36460 | 149.3 | 451 | 2304 |
+| 1 MiB writes, QD4 | 391 | 410.0 | 10138 | 16853 |
+| 1 MiB reads, QD4 | 1250 | 1310.4 | 2787 | 7928 |
+
+Then `kill -9` of node 1's `hyperstord`, a 3 s wait (the map service marks
+it down after 2 s), and the same workload for 1 s per test: every request
+succeeded, now with two copies per write.
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 1006 | 4.1 | 968 | 1643 |
+| 4 KiB random writes, QD32 | 5301 | 21.7 | 5074 | 28416 |
+| 4 KiB random reads, QD1 | 10327 | 42.3 | 94 | 128 |
+| 4 KiB random reads, QD32 | 26158 | 107.1 | 1283 | 2358 |
+| 1 MiB writes, QD4 | 616 | 646.1 | 6347 | 10381 |
+| 1 MiB reads, QD4 | 1157 | 1213.5 | 3152 | 6264 |
+
+Writes were faster degraded because each one waits for two flushes on the
+shared drive instead of three.
+
+## 2026-10-20: index size and checkpoint cost (dev-1)
+
+`target/release/hyperstor-bench index <scratch file>`: one shard on a
+buffered file on dev-1's disk, deferral off (D38). 1 GiB of 4 MiB objects
+written sequentially, a checkpoint; then every block overwritten once in
+random order (batches of 64), another checkpoint. Run twice, identical
+results. "Index RAM" is the growth of the process's resident memory, which
+for the sequential case is mostly write buffers the allocator keeps.
+
+| 1 GiB of data | extent runs | index RAM MiB | checkpoint MiB | checkpoint ms | index RAM GiB per TiB | checkpoint GiB per TiB |
+|---|---|---|---|---|---|---|
+| written sequentially | 256 | 8.1 | 1.0 | 2 | 8.1 | 1.0 |
+| every block overwritten (fully fragmented) | 262144 | 35.8 | 6.0 | 25 | 35.8 | 6.0 |
+
+### Findings
+
+1. **Checksums set the floor:** 4 bytes per 4 KiB block, 1 GiB per TiB.
+2. **Fragmentation multiplies the index** by about 18 in RAM and 6 on
+   disk, since every run carries a map entry and its own checksum vector.
+   With redirect-on-write on flash (D38), random-write volumes get there.
+3. **A whole-index checkpoint takes 2–25 ms per GiB**, so today's format
+   pauses for seconds per TiB. The capacity each checkpoint approach
+   allows, and the dense block map that bounds fragmentation, are in
+   decision-log.md, point 5.

@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/hyperstor-client",
+    "crates/hyperstor-codec",
+    "crates/hyperstor-daemon",
+    "crates/hyperstor-engine",
+    "crates/hyperstor-bench",
+    "crates/hyperstor-meta",
+    "crates/hyperstor-placement",
+    "crates/hyperstor-proto",
+    "crates/hyperstor-reactor",
+    "crates/hyperstor-rpc",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/CMKL-APEX/hyperstor"
+
+[workspace.dependencies]
+crc32c = "0.6"
+io-uring = "0.7"
+libc = "0.2"
+thiserror = "2"
+rand = { version = "0.9", features = ["small_rng"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+debug = 1
+
+[profile.bench]
+debug = 1

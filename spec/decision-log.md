@@ -1,0 +1,325 @@
+# Decision log
+
+Status: **working record.** Decision points raised during implementation,
+the owner's answers, and the points still open with their trade-offs.
+Settled points become numbered decisions in [decisions.md](decisions.md);
+the measurements behind them are in [benchmarks.md](benchmarks.md).
+
+## Review of 2026-10-20
+
+Raised in [implementation-notes.md](implementation-notes.md) after HS0,
+HS1 and the first part of HS2.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 1 | Defer small overwrites only on hard disks, redirect on flash (I14) | Redirect on flash | D38; storage nodes default to no deferral, `hyperstord --hdd` turns it on |
+| 2 | One listening port per reactor (I19) | One port per reactor | D39 |
+| 3 | The stale-primary window until map leases exist (I20) | Discussed ([below](#3-map-leases-before-or-after-the-vm-path)); then: leases now, pushes as the fast path | D42; built (HS2) |
+| 4 | Failure detection by the map service only (I21, I25) | Nodes report each other | D40; to build in HS2 |
+| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? What data size can each support? Then: dense per-block maps for fragmented chunks, and eventually a cache-aware B+tree | D43. The interim checkpoint approach (fuzzy, then paged) is recommended [below](#5-checkpoints-without-the-spike) |
+| 6 | Test hardware (NVMe namespace, RDMA NIC, power-loss-protected drives) | Later | G5 and HS6 measurements wait for it |
+| 7 | CPU per operation before RDMA | Agreed | D41; milestone HS5b |
+
+### Benchmark summary behind the review
+
+From [benchmarks.md](benchmarks.md), dev-1 (one consumer NVMe SSD without
+power-loss protection):
+
+| Measurement | Result |
+|---|---|
+| Engine 4 KiB write, batch 1, against raw write + flush | 168 µs against 162 µs |
+| Engine 4 KiB QD1 read against raw | 64 µs against 53 µs |
+| Engine 4 KiB writes, batch 128: deferred against redirected (raw: 160k) | 85k against 133k ops/s (point 1) |
+| Engine CPU per deferred 4 KiB write | about 5 µs (point 7) |
+| Checkpoint stall at p99 (memory, batch 128) | 12.5 ms (point 5) |
+| Cluster, memory devices: replicated 4 KiB write / read, QD1 | 92 µs / 40 µs (point 7) |
+| Cluster, one client reactor, 4 KiB writes QD32 | 31k–47k ops/s |
+| Placement, 1,024 devices | 2.2 µs per PG |
+| Crash test soak | 5,000 seeds, 30,000 crashes, all consistent |
+| Separate processes, `kill -9` of a node | every request succeeded afterwards, on two copies |
+
+## Points settled after discussion
+
+### 3. Map leases before or after the VM path
+
+**Answer (2026-10-20): leases now, with pushes as the fast path: option A
+below.** Built as D42: leases granted by the map service, two-phase map
+changes (fence, then publish and push). The cluster test
+`a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write` cuts
+a primary off from the map service while clients can still reach it.
+With the lease check removed, the cut-off former primary serves stale
+reads, and the test fails. With it, nothing acknowledged is lost and the
+former primary refuses both reads and writes. Choosing map-service leases
+over replica-granted read leases amends D23 (see D42).
+
+The discussion as it stood:
+
+**The window.** When the map changes (a node is marked down, a PG moves),
+storage nodes learn it by polling (every 200 ms). Until they do, a primary
+and replicas that are all still on the old map accept writes under the old
+PG epoch. Replicas that already have the new map refuse, which bounds the
+window, but doesn't close it.
+
+**When it loses data.** Only when the old primary is still running and
+reachable by clients, but has been taken out of the acting set: a network
+partition from the map service, or a false detection. A node that has
+really died accepts nothing. Writes acknowledged in the window go to the
+old acting set; the new one never sees them, so they are lost when the
+partition heals and backfill copies the new set's state.
+
+**Option A: map leases and read leases now, before HS3** (design
+replication.md §8.4, metadata.md §4.1).
+
+- How: every heartbeat reply renews a node's *map lease*. A node whose
+  lease has run out stops accepting writes and reads for its PGs. The map
+  service makes a change that removes a member effective only after that
+  member's lease has expired or the member has acknowledged the new map.
+  Primaries hold read leases from their replicas, as designed.
+- Pros:
+  - closes the hole: no acknowledged write can be lost to a partition or
+    a false detection, which is the basic promise of a block store;
+  - VMs (HS3) are the first real users of the data; building HS3 on a
+    path that can lose writes would make every HS3 test suspect;
+  - the write path is still small, so adding the lease check now is
+    cheaper than retrofitting it under vhost, NVMe-oF and EC later;
+  - D40 (peer reports) shortens detection, so the lease, not detection,
+    becomes the main part of failover time, which is a number we choose.
+- Cons:
+  - failover takes at least one lease period after a failure (writes to
+    the affected PGs stall for it), so the lease must be short (1–2 s)
+    and heartbeats frequent;
+  - more protocol: lease renewal, a bound on clock *rate* drift (monotonic
+    clocks only, no synchronized time), and the map service's rule for
+    when a change takes effect;
+  - delays HS3 by roughly one milestone.
+
+**Option B: push map changes, leases later.** The map service pushes each
+new map to every node and waits for acknowledgements before the change
+takes effect.
+
+- Pros: shrinks the window to a round trip for every node that can be
+  reached; less code than leases.
+- Cons: a partitioned node can't be reached, which is exactly the case
+  that loses data. B alone doesn't close the hole; it is the optimization
+  that makes A's failover fast in the common case.
+
+**Option C: after HS3.**
+
+- Pros: VMs on hyperstor sooner; the lease design can use what HS3 teaches
+  about failover time that VMs tolerate.
+- Cons: the window stays open through HS3 testing; anything built on top
+  assumes guarantees that aren't there yet.
+
+**Recommendation: A, with B as its fast path, before HS3.** A 1–2 s lease,
+pushes for the common case, and the lease for safety.
+
+## Open points
+
+### 5. Checkpoints without the spike
+
+**Today** (implementation-notes.md I3): the index lives in memory; a
+checkpoint serializes all of it into new extents, then writes the
+superblock. The shard pauses for the whole write (12.5 ms p99 on a small
+test index; it grows with the index).
+
+**What makes the alternatives possible.** Every logged operation sets
+state absolutely (map these blocks here, set this size, put this key,
+delete this range). Replaying a sequence of them in order over a state
+that already contains some of them ends in the same state as applying
+them once. Recovery can therefore start from an index image taken
+*while* commits continue, as long as replay starts from a log position
+older than anything in the image.
+
+**Option A: fuzzy checkpoint with a sync marker** (ARIES-style; the
+log-based approach asked about).
+
+1. Record the current log position `L` as the checkpoint's start (a
+   marker in the log, or simply in memory until the end).
+2. Serialize the index in slices, a bounded amount per commit round, while
+   commits go on. Each object is written as it is when its slice runs.
+3. When the last slice is durable, write the superblock: checkpoint
+   extents plus *head = L*.
+4. Recovery loads the image and replays from `L`; the absolute operations
+   converge to the right state.
+
+- Pros: removes the pause (each round pays a slice); small change to the
+  current code; reuses the existing log and recovery path.
+- Cons: still writes the whole index on every checkpoint, so checkpoint
+  bandwidth grows with the index; the log must keep everything from `L`,
+  so it needs room for one checkpoint's duration of writes.
+
+**Option B: paged index with dirty-page tracking** (the paged,
+incremental approach).
+
+- Split the index into pages, naturally one or more per PG (key ranges of
+  the index), each serialized separately. Track which pages changed since
+  they were last written.
+- A checkpoint writes only dirty pages, to new extents, then a page table
+  (itself a small page) that names every page's extents; the superblock
+  points at the page table. Combined with A, the dirty pages are written
+  in slices too.
+- Pros: checkpoint cost follows the rate of change, not the index size; a
+  PG's pages can be shipped whole for backfill or moved between shards;
+  it is the first half of the copy-on-write B+tree.
+- Cons: more format to get right (page table, page versions, freeing
+  superseded pages only after the superblock that drops them is durable);
+  the whole index still lives in memory.
+
+**Option C: the on-device copy-on-write B+tree** (engine.md §7.1, the
+original design).
+
+- Pros: the index no longer needs to fit in memory; checkpoints write only
+  changed nodes; this is what large shards eventually need.
+- Cons: the largest piece of work; read paths gain a cache and page-in
+  latency.
+
+**Option D: log-structured merge (sorted delta runs plus compaction).**
+
+- Pros: writes are sequential and proportional to change.
+- Cons: compaction brings its own spikes, and reads must merge runs; a
+  poor fit for an index that is mostly point lookups by block.
+
+**Recommendation: A now, B next, C when shards outgrow memory.** A removes
+the spike with a small change. B makes checkpoint cost follow the rate of
+change and gives per-PG pages that backfill and shard rebalancing can
+use. C stays the long-term format. D isn't worth its compaction cost here.
+
+#### Expected data size for each approach
+
+Measured with `hyperstor-bench index` on dev-1 (benchmarks.md): 1 GiB of
+4 MiB objects written sequentially, then every block overwritten in
+random order with redirect-on-write (D38), the worst case for the index.
+
+| State | Extent runs | Index RAM per TiB of data | Checkpoint per TiB | Checkpoint time per TiB |
+|---|---|---|---|---|
+| Written sequentially (one run per chunk) | 256 per GiB | about 1–2 GiB (the checksums, 4 bytes per 4 KiB block) | 1 GiB | about 2 s |
+| Fully fragmented (one run per block) | 262,144 per GiB | about 36 GiB | 6 GiB | about 25 s |
+
+The index RAM for the sequential case is the checkpoint size plus
+structure: the measured 8 MiB per GiB is mostly write buffers the
+allocator kept, not index. Fragmented chunks cost about 140 bytes of RAM
+per block, in per-run map entries and their checksum vectors.
+
+What each approach can then hold, per shard (one shard per reactor):
+
+| Approach | What limits it | Data per shard |
+|---|---|---|
+| Today: whole-index checkpoint, shard paused | The pause: 2–25 ms per GiB, so a 10 ms p99 budget allows about 5 GiB (sequential) or 0.4 GiB (fragmented) | Tens of GiB at most; a test-only format |
+| A: fuzzy checkpoint with a sync marker | RAM for the index; background bandwidth to rewrite the whole index each checkpoint; log room for one checkpoint's duration | With 64 GiB of RAM for the index: about 40 TiB sequential, about 2 TiB fragmented. Rewriting 6 GiB per TiB every checkpoint needs long checkpoint intervals (a log ring of several GiB) to keep background writes near 1–5% of the device |
+| B: paged index, dirty pages only | RAM, as A; bandwidth now follows the pages changed, not the index size | As A for capacity; checkpoint writes drop with locality (a workload touching 10% of the index writes 10% as much). Uniform random writes over a whole shard dirty every page, the same as A |
+| C: on-device copy-on-write B+tree | Device space (0.1–0.6% of data) and the cache for hot index pages | Not bounded by RAM: 100+ TiB per shard. Flush cost follows dirty leaves |
+| D: log-structured merge | Device space, compaction | Like C, with compaction's write amplification |
+
+#### A finding behind the numbers: fragmentation, not the approach
+
+With D38, random-write VM disks end up fragmented, and a fragmented chunk
+costs about 18 times the RAM of a sequential one (36 against about 2 GiB
+per TiB). That decides how much data a node can hold far more than the
+checkpoint approach does. Two ways to bound it, for the next engine
+change:
+
+- **A dense block map for fragmented chunks.** Once a chunk has more than
+  a few dozen runs, store it as an array of (physical block, checksum),
+  4 + 4 bytes per block: 8 KiB per 4 MiB chunk, **2 GiB per TiB however
+  fragmented**. Physical block numbers fit in 32 bits for shards up to
+  16 TiB. Recommended: no extra writes, and the index stays near the
+  sequential case.
+- **Defragmenting chunks in the background**, rewriting a chunk
+  contiguously once its runs pass a threshold. Bounds memory too, but
+  costs write amplification (a 4 MiB rewrite for every few hundred
+  scattered 4 KiB writes), and helps sequential read performance.
+
+**Recommendation, combined:** the dense block map now, together with the
+fuzzy checkpoint (A). That gives about 2 GiB of RAM per TiB in every case,
+so a node with 64 GiB for its index holds about 30 TiB, with no checkpoint
+pause. Then paged checkpoints (B) to cut checkpoint bandwidth, and the
+B+tree (C) when nodes need more data than their RAM allows.
+
+#### Decision and prior art (2026-10-20)
+
+**Answer:** switch fragmented chunks to a dense per-block map, and
+eventually move the index to a cache-aware B+tree on the device (D43).
+Proven approaches for each part:
+
+**Switching representation by density** (the dense map):
+- **XFS inode data forks** hold a file's mapping in one of three formats:
+  inline in the inode, a list of extents while it fits, a B+tree of
+  extents (the BMBT) when it doesn't. XFS converts between them as files
+  grow and shrink. This is the closest match: hyperstor's runs and dense
+  array are the same idea at chunk scale.
+- **Roaring bitmaps** keep each 64 Ki range as a sorted array, a bitmap or
+  runs, whichever is smallest, and convert as the range fills; widely
+  used (Lucene, Spark, Druid). The conversion thresholds are the model for
+  ours (convert at the size where the two encodings cost the same).
+- **The adaptive radix tree** (Leis et al., ICDE 2013) picks node types by
+  how many children are present. The same principle at node level.
+
+**Dense maps with checksums** (what a dense chunk holds):
+- **ZFS** indirect blocks are dense arrays of block pointers, each carrying
+  the checksum of the block it points to (a Merkle tree), so integrity
+  checking needs no separate checksum store.
+- **SPDK's blobstore** gives each blob a dense array of cluster addresses.
+- **Linux dm-thin** maps each virtual block of a thin volume to a data
+  block, with a snapshot time, in the leaves of a B-tree.
+
+**Copy-on-write B+trees on the device** (the long-term index):
+- **Shadowing** (Rodeh, "B-trees, Shadowing, and Clones", ACM TOS 2008):
+  a change copies the path from leaf to root and the new root commits it,
+  so the tree on disk is always consistent; reference counts on nodes give
+  cheap clones. The basis of Btrfs, and of what D10's snapshots and clones
+  need.
+- **dm-thin** (Linux device-mapper, `persistent-data`): copy-on-write
+  B-trees for thin volumes and snapshots, a space map for block reference
+  counts, and a transaction committed by writing the superblock. The
+  nearest system to hyperstor's use: block volumes, thin provisioning,
+  snapshots.
+- **LMDB**: a copy-on-write B+tree with two meta pages and no write-ahead
+  log. **redb**, the Rust B-tree database glidex already uses (via
+  `glidex-raftstore`), follows the same design and exposes a
+  `StorageBackend` trait (length, read, write, set length, sync), so it
+  might run on a region of a hyperstor shard. Worth a prototype before
+  writing our own (new host check: a commit rate and write amplification
+  against our log-plus-checkpoint design).
+- **WAFL** (NetApp) and **ZFS**: copy-on-write trees with periodic
+  consistency points and an intent log between them, which is our log
+  plus checkpoint, and the model for how often to commit the tree.
+
+**Making it cache-aware:**
+- **Node size = device page** (4 KiB, or 16–64 KiB for leaves holding
+  dense maps: a 4 MiB chunk's dense map is 8 KiB) for the device side, and
+  a node cache with a scan-resistant policy (CLOCK-Pro, 2Q or ARC) sized
+  to the memory budget, so hot volumes stay in memory and cold ones cost a
+  read.
+- **Cache-conscious in-memory node layout** (CSB+-trees, Rao and Ross,
+  SIGMOD 2000; FAST, Kim et al., SIGMOD 2010): keys packed into cache lines
+  and searched without pointer chasing, for lookups on the I/O path.
+- **Write-optimized variants**, if random metadata updates outrun the
+  tree: **Bε-trees** (Brodal and Fagerberg 2003; TokuDB's fractal tree,
+  BetrFS) buffer updates in internal nodes and are provably near-optimal
+  for writes; the **Bw-tree** and **LLAMA** (Microsoft, ICDE 2013, VLDB
+  2013) use delta records and a mapping table that also makes page
+  checkpoints incremental. Neither needs latch-freedom here (one reactor
+  owns a shard), but both reduce write amplification.
+
+**Checkpointing until the tree exists:** ARIES-style fuzzy checkpoints
+(Mohan et al., ACM TODS 1992): a begin marker, pages written while work
+continues, and redo from the marker; it relies on log records that set
+state absolutely, which hyperstor's do (option A above).
+
+**Suggested order:**
+1. The dense map, with the fuzzy checkpoint.
+2. A redb prototype on a shard region, measured against (1).
+3. Our own copy-on-write B+tree (or redb, if it measures well) with node
+   reference counts for snapshots, a node cache, and per-PG subtrees so a
+   PG can move between shards whole.
+
+## Workload review (2026-10-20)
+
+The target workloads and their implications are in
+[workloads.md](workloads.md). Points raised, and the answers:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 8 | One index for everything, or two flavours (copy-on-write B+tree for block maps, Bε-tree for metadata) | Two flavours, as recommended | D44 |
+| 9 | A pool semantic for recomputable data (KV-cache offload) | Make cache pools first-class | D45 |
+| 10 | A priority class above fair share for latency-critical I/O | Agreed | D46 |
