@@ -232,6 +232,32 @@ pub enum Msg {
     ReplOk {
         revision: u64,
     },
+    /// Storage node to map service: still alive (design §4.1).
+    Heartbeat {
+        node: u32,
+    },
+    HeartbeatOk {
+        map_epoch: u64,
+    },
+    /// Primary to backfill target: replace the object with the payload
+    /// (empty: delete it) (design §8.5).
+    Push {
+        to: Target,
+        key: WireKey,
+        crcs: Vec<u32>,
+    },
+    PushOk,
+    /// Primary to map service: `device` now has every object of the PG and
+    /// may join its acting set.
+    BackfillDone {
+        pool: u32,
+        pg: u32,
+        pg_epoch: u64,
+        device: u32,
+    },
+    BackfillOk {
+        map_epoch: u64,
+    },
     Error {
         code: Code,
         map_epoch: u64,
@@ -252,6 +278,12 @@ mod kind {
     pub const READ_OK: u16 = 13;
     pub const REPL: u16 = 20;
     pub const REPL_OK: u16 = 21;
+    pub const PUSH: u16 = 22;
+    pub const PUSH_OK: u16 = 23;
+    pub const HEARTBEAT: u16 = 30;
+    pub const HEARTBEAT_OK: u16 = 31;
+    pub const BACKFILL_DONE: u16 = 32;
+    pub const BACKFILL_OK: u16 = 33;
     pub const ERROR: u16 = 99;
 }
 
@@ -271,6 +303,12 @@ impl Msg {
             Msg::ReadOk { .. } => READ_OK,
             Msg::Repl { .. } => REPL,
             Msg::ReplOk { .. } => REPL_OK,
+            Msg::Push { .. } => PUSH,
+            Msg::PushOk => PUSH_OK,
+            Msg::Heartbeat { .. } => HEARTBEAT,
+            Msg::HeartbeatOk { .. } => HEARTBEAT_OK,
+            Msg::BackfillDone { .. } => BACKFILL_DONE,
+            Msg::BackfillOk { .. } => BACKFILL_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -284,6 +322,9 @@ impl Msg {
                 | Msg::WriteOk { .. }
                 | Msg::ReadOk { .. }
                 | Msg::ReplOk { .. }
+                | Msg::PushOk
+                | Msg::HeartbeatOk { .. }
+                | Msg::BackfillOk { .. }
                 | Msg::Error { .. }
         )
     }
@@ -313,7 +354,26 @@ impl Msg {
             } => {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
-            Msg::Ping | Msg::Pong => {}
+            Msg::Ping | Msg::Pong | Msg::PushOk => {}
+            Msg::Heartbeat { node } => {
+                e.u32(*node);
+            }
+            Msg::HeartbeatOk { map_epoch } | Msg::BackfillOk { map_epoch } => {
+                e.u64(*map_epoch);
+            }
+            Msg::Push { to, key, crcs: c } => {
+                to.enc(e);
+                key.enc(e);
+                crcs(e, c);
+            }
+            Msg::BackfillDone {
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            } => {
+                e.u32(*pool).u32(*pg).u64(*pg_epoch).u32(*device);
+            }
             Msg::GetMap { have_epoch } => {
                 e.u64(*have_epoch);
             }
@@ -412,6 +472,25 @@ impl Msg {
                 crcs: crcs(&mut d)?,
             },
             REPL_OK => Msg::ReplOk { revision: d.u64()? },
+            PUSH => Msg::Push {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                crcs: crcs(&mut d)?,
+            },
+            PUSH_OK => Msg::PushOk,
+            HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
+            HEARTBEAT_OK => Msg::HeartbeatOk {
+                map_epoch: d.u64()?,
+            },
+            BACKFILL_DONE => Msg::BackfillDone {
+                pool: d.u32()?,
+                pg: d.u32()?,
+                pg_epoch: d.u64()?,
+                device: d.u32()?,
+            },
+            BACKFILL_OK => Msg::BackfillOk {
+                map_epoch: d.u64()?,
+            },
             ERROR => Msg::Error {
                 code: Code::from_u16(d.u16()?),
                 map_epoch: d.u64()?,
@@ -517,6 +596,25 @@ mod tests {
                 crcs: vec![],
             },
             Msg::ReplOk { revision: 12 },
+            Msg::Push {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"p".to_vec(),
+                    version: 0,
+                },
+                crcs: vec![5],
+            },
+            Msg::PushOk,
+            Msg::Heartbeat { node: 3 },
+            Msg::HeartbeatOk { map_epoch: 4 },
+            Msg::BackfillDone {
+                pool: 1,
+                pg: 2,
+                pg_epoch: 3,
+                device: 4,
+            },
+            Msg::BackfillOk { map_epoch: 5 },
             Msg::Error {
                 code: Code::NotPrimary,
                 map_epoch: 5,

@@ -135,6 +135,8 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
+                        spawn(st.clone().heartbeat(node));
+                        spawn(st.clone().backfiller());
                         spawn(st.clone().accept(l));
                         rx.recv().await;
                         Ok::<(), String>(())
@@ -161,6 +163,16 @@ struct ShardState {
     /// Connections to replicas, by address.
     peers: RefCell<HashMap<SocketAddr, Conn>>,
     batches: Cell<u64>,
+    /// Backfills this primary is running: (pool, pg, target) -> whether a
+    /// write or push to the target failed meanwhile (the copy may then be
+    /// incomplete, so the backfill starts over).
+    backfills: RefCell<HashMap<(u32, u32, u32), bool>>,
+    /// Best-effort writes still in flight to each backfill target.
+    fill_inflight: RefCell<HashMap<(u32, u32, u32), u32>>,
+    /// Backfill targets whose copy is complete (or being reported): every
+    /// write must reach them from now on, because the map service may make
+    /// them acting members at any moment.
+    required: RefCell<std::collections::HashSet<(u32, u32, u32)>>,
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -228,6 +240,9 @@ impl ShardState {
             seqs: RefCell::new(HashMap::new()),
             peers: RefCell::new(HashMap::new()),
             batches: Cell::new(0),
+            backfills: RefCell::new(HashMap::new()),
+            fill_inflight: RefCell::new(HashMap::new()),
+            required: RefCell::new(std::collections::HashSet::new()),
         }))
     }
 
@@ -316,7 +331,7 @@ impl ShardState {
         let ok = if primary {
             pg.primary() == Some(self.me)
         } else {
-            pg.acting.contains(&self.me)
+            pg.acting.contains(&self.me) || pg.up.contains(&self.me)
         };
         if !ok {
             return Err(err(Code::NotPrimary, &map, "not primary for this PG"));
@@ -375,6 +390,9 @@ impl ShardState {
                     let (m, p) = self.read(to, key, off, len).await;
                     reply(&m, &p);
                 }
+                Msg::Push { to, key, crcs } => {
+                    self.push(h.req, to, key, crcs, payload, tx.clone()).await
+                }
                 _ => reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[]),
             }
         }
@@ -406,9 +424,24 @@ impl ShardState {
         };
         // Connect to every replica first; then queue everything with no
         // wait in between, so every copy sees writes in the same order.
+        // Acting members must all answer; backfill targets get the write
+        // too (so they miss nothing after their copy), best effort.
         let map = self.map();
+        if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
+            return send(err(Code::Unavailable, &map, "too few copies"));
+        }
         let mut conns = Vec::new();
-        for d in pg.acting.iter().skip(1).filter(|d| **d != NO_DEVICE) {
+        let required: Vec<u32> = pg
+            .backfilling()
+            .filter(|d| self.required.borrow().contains(&(to.pool, to.pg, *d)))
+            .collect();
+        for d in pg
+            .acting
+            .iter()
+            .skip(1)
+            .filter(|d| **d != NO_DEVICE)
+            .chain(required.iter())
+        {
             let Some(addr) = map.device_addr(*d) else {
                 return send(err(Code::Unavailable, &map, "replica has no address"));
             };
@@ -417,10 +450,15 @@ impl ShardState {
                 Err(e) => return send(err(Code::Unavailable, &map, format!("replica: {e}"))),
             }
         }
-        if (pg.acting.iter().filter(|d| **d != NO_DEVICE).count() as u8)
-            < map.pools[&to.pool].min_size
-        {
-            return send(err(Code::Unavailable, &map, "too few copies"));
+        let mut fills = Vec::new();
+        for d in pg.backfilling().filter(|d| !required.contains(d)) {
+            match map.device_addr(d) {
+                Some(addr) => match self.peer(addr).await {
+                    Ok(c) => fills.push((d, c)),
+                    Err(_) => self.fill_failed(to.pool, to.pg, d),
+                },
+                None => self.fill_failed(to.pool, to.pg, d),
+            }
         }
         let seq = {
             let mut seqs = self.seqs.borrow_mut();
@@ -436,9 +474,32 @@ impl ShardState {
             crcs,
         };
         let remote: Vec<_> = conns.iter().map(|c| c.start(&repl, &data)).collect();
+        let filling: Vec<_> = fills
+            .iter()
+            .map(|(d, c)| {
+                *self
+                    .fill_inflight
+                    .borrow_mut()
+                    .entry((to.pool, to.pg, *d))
+                    .or_default() += 1;
+                (*d, c.start(&repl, &data))
+            })
+            .collect();
         let local = self.enqueue(OpList {
             key: okey,
             ops: vec![Op::Write { off, data }],
+        });
+        let me = self.clone();
+        let (pool, pgn) = (to.pool, to.pg);
+        spawn(async move {
+            for (d, f) in filling {
+                if !matches!(f.await, Ok((Msg::ReplOk { .. }, _))) {
+                    me.fill_failed(pool, pgn, d);
+                }
+                if let Some(n) = me.fill_inflight.borrow_mut().get_mut(&(pool, pgn, d)) {
+                    *n -= 1;
+                }
+            }
         });
         spawn(async move {
             let r = local.await;
@@ -508,6 +569,232 @@ impl ShardState {
                 },
             });
         });
+    }
+
+    /// Notes that a backfill target missed a write or push.
+    fn fill_failed(&self, pool: u32, pg: u32, device: u32) {
+        if let Some(f) = self.backfills.borrow_mut().get_mut(&(pool, pg, device)) {
+            *f = true;
+        }
+    }
+
+    /// Replaces an object with a primary's copy (backfill, design §8.5).
+    /// Namespace 0 means: delete every object of the PG first.
+    async fn push(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        crcs: Vec<u32>,
+        data: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
+        }
+        let lists: Vec<OpList> = if key.ns == 0 {
+            self.shard
+                .borrow()
+                .list_pg(to.pool, to.pg)
+                .into_iter()
+                .map(|k| OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                })
+                .collect()
+        } else {
+            if verify_crcs(&data, &crcs).is_err() {
+                return send(err(Code::Checksum, &self.map(), "payload checksum"));
+            }
+            let Ok(okey) = engine_key(&to, &key) else {
+                return send(err(Code::Invalid, &self.map(), "bad namespace"));
+            };
+            let mut ops = vec![Op::Delete];
+            if !data.is_empty() {
+                ops.push(Op::Write { off: 0, data });
+            }
+            vec![OpList { key: okey, ops }]
+        };
+        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        spawn(async move {
+            let mut ok = true;
+            for d in done {
+                ok &= d.await.is_ok();
+            }
+            send(if ok {
+                Msg::PushOk
+            } else {
+                Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: "push failed".into(),
+                }
+            });
+        });
+    }
+
+    async fn heartbeat(self: Rc<Self>, node: u32) {
+        loop {
+            let _ = self.client.call_meta(&Msg::Heartbeat { node }).await;
+            sleep(Duration::from_millis(150)).await;
+        }
+    }
+
+    /// Starts a backfill for every PG this device is primary of that has
+    /// members still to fill.
+    async fn backfiller(self: Rc<Self>) {
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            let map = self.map();
+            // Targets that are now acting members (or no longer wanted)
+            // need no special treatment any more.
+            self.required.borrow_mut().retain(|(pool, pg, d)| {
+                map.pg(*pool, *pg)
+                    .is_some_and(|i| i.backfilling().any(|x| x == *d))
+            });
+            for ((pool, pg), info) in &map.pgs {
+                if info.primary() != Some(self.me) {
+                    continue;
+                }
+                for target in info.backfilling() {
+                    let k = (*pool, *pg, target);
+                    if self.backfills.borrow().contains_key(&k) {
+                        continue;
+                    }
+                    self.backfills.borrow_mut().insert(k, false);
+                    spawn(self.clone().backfill(*pool, *pg, target, info.epoch));
+                }
+            }
+        }
+    }
+
+    /// Waits until every queued commit is done, so the engine holds every
+    /// write queued so far.
+    async fn drained(&self) {
+        while !self.queue.borrow().is_empty() {
+            hyperstor_reactor::yield_now().await;
+        }
+    }
+
+    async fn backfill(self: Rc<Self>, pool: u32, pg: u32, target: u32, pg_epoch: u64) {
+        let k = (pool, pg, target);
+        let mut reported = false;
+        if self.backfill_once(pool, pg, target, pg_epoch).await {
+            // From here on every write must reach the target. Then wait for
+            // the best-effort writes already sent to it: if any failed, the
+            // copy is incomplete and the backfill starts over.
+            self.required.borrow_mut().insert(k);
+            while self.fill_inflight.borrow().get(&k).copied().unwrap_or(0) > 0 {
+                hyperstor_reactor::yield_now().await;
+            }
+            let clean = !self.backfills.borrow().get(&k).copied().unwrap_or(true);
+            if clean {
+                let r = self
+                    .client
+                    .call_meta(&Msg::BackfillDone {
+                        pool,
+                        pg,
+                        pg_epoch,
+                        device: target,
+                    })
+                    .await;
+                reported = matches!(r, Ok((Msg::BackfillOk { .. }, _)));
+                let _ = self.client.refresh_map().await;
+            }
+        }
+        if !reported {
+            self.required.borrow_mut().remove(&k);
+            sleep(Duration::from_millis(200)).await;
+        }
+        // Allow a new attempt (or none, once the map says it's done).
+        self.backfills.borrow_mut().remove(&k);
+    }
+
+    async fn backfill_once(&self, pool: u32, pg: u32, target: u32, pg_epoch: u64) -> bool {
+        let map = self.map();
+        let Some(addr) = map.device_addr(target) else {
+            return false;
+        };
+        let Ok(conn) = self.peer(addr).await else {
+            return false;
+        };
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch,
+        };
+        // Reset the target's copy, then send every object. Each read and
+        // its push happen with no wait in between, after every queued
+        // commit is done: writes queued earlier are in the copy, and writes
+        // queued later follow it on the same connection.
+        self.drained().await;
+        let reset = conn.start(
+            &Msg::Push {
+                to,
+                key: WireKey {
+                    ns: 0,
+                    name: Vec::new(),
+                    version: 0,
+                },
+                crcs: Vec::new(),
+            },
+            &[],
+        );
+        if !matches!(reset.await, Ok((Msg::PushOk, _))) {
+            return false;
+        }
+        self.drained().await;
+        let keys = self.shard.borrow().list_pg(pool, pg);
+        let mut inflight = Vec::new();
+        for key in keys {
+            if self.map().pg(pool, pg).map(|p| p.epoch) != Some(pg_epoch) {
+                return false;
+            }
+            self.drained().await;
+            let data = {
+                let sh = self.shard.borrow();
+                match sh.stat(&key) {
+                    Some(st) => {
+                        let len = st.size.div_ceil(4096) * 4096;
+                        match sh.read(&key, 0, len) {
+                            Ok(b) => b.to_vec(),
+                            Err(_) => return false,
+                        }
+                    }
+                    None => Vec::new(),
+                }
+            };
+            let wk = WireKey {
+                ns: key.ns as u8,
+                name: key.name.clone(),
+                version: key.version,
+            };
+            inflight.push(conn.start(
+                &Msg::Push {
+                    to,
+                    key: wk,
+                    crcs: block_crcs(&data),
+                },
+                &data,
+            ));
+            if inflight.len() >= 16 {
+                for f in inflight.drain(..) {
+                    if !matches!(f.await, Ok((Msg::PushOk, _))) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for f in inflight {
+            if !matches!(f.await, Ok((Msg::PushOk, _))) {
+                return false;
+            }
+        }
+        true
     }
 
     async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {

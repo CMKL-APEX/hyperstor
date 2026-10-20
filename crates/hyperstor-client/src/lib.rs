@@ -106,6 +106,12 @@ impl Client {
         Ok(())
     }
 
+    /// Sends a request to the map service.
+    pub async fn call_meta(&self, msg: &Msg) -> Result<rpc::Reply, ClientError> {
+        let conn = self.conn(self.meta).await?;
+        Ok(conn.call(msg, &[]).await?)
+    }
+
     /// A connection to `addr`, opened (with `Hello`) if needed.
     pub async fn conn(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
         if let Some(c) = self.conns.borrow().get(&addr)

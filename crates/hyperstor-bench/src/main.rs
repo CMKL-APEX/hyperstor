@@ -317,11 +317,9 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
     map.recompute();
     std::thread::spawn(move || {
         hyperstor_reactor::block_on(async move {
-            hyperstor_meta::serve(
-                hyperstor_reactor::net::TcpListener::from_std(meta_l),
-                Rc::new(RefCell::new(map)),
-            )
-            .await
+            let meta = hyperstor_meta::Meta::new(map);
+            hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_secs(2)));
+            hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), meta).await
         })
     });
     let mut cpu = 2;

@@ -12,10 +12,12 @@
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
+use hyperstor_reactor::time::sleep;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeInfo {
@@ -60,16 +62,34 @@ pub struct PoolInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PgInfo {
-    /// Map epoch of the last change to this PG's acting set.
+    /// Map epoch of the last change to this PG's `up` or `acting` set.
     pub epoch: u64,
-    /// Devices holding the PG, primary first. For EC pools the position is
-    /// the shard index, and a missing shard is `u32::MAX`.
+    /// Devices that hold every acknowledged write and serve the PG,
+    /// primary first (design §5.3). For EC pools the position is the shard
+    /// index, and a missing shard is `NO_DEVICE`.
     pub acting: Vec<u32>,
+    /// Where placement wants the PG. Members of `up` not in `acting` are
+    /// being backfilled: they receive new writes and a copy of every
+    /// object, then join `acting`.
+    pub up: Vec<u32>,
 }
 
 impl PgInfo {
     pub fn primary(&self) -> Option<u32> {
-        self.acting.first().copied().filter(|d| *d != u32::MAX)
+        self.acting.first().copied().filter(|d| *d != NO_DEVICE)
+    }
+
+    /// Members of `up` still being backfilled.
+    pub fn backfilling(&self) -> impl Iterator<Item = u32> + '_ {
+        self.up
+            .iter()
+            .copied()
+            .filter(|d| *d != NO_DEVICE && !self.acting.contains(d))
+    }
+
+    /// Devices with a live copy in `acting`.
+    pub fn acting_count(&self) -> usize {
+        self.acting.iter().filter(|d| **d != NO_DEVICE).count()
     }
 }
 
@@ -133,6 +153,20 @@ impl ClusterMap {
 
     /// Places every PG for the current devices and bumps the epoch. PGs
     /// whose acting set changes get the new epoch.
+    fn live(&self, device: u32) -> bool {
+        self.devices
+            .get(&device)
+            .is_some_and(|d| d.up_in && self.nodes.get(&d.node).is_some_and(|n| n.up))
+    }
+
+    /// Places every PG for the current devices and bumps the epoch
+    /// (design §5.3):
+    /// - `up` is where placement wants the PG;
+    /// - `acting` keeps its live members, in order, so a failed primary is
+    ///   replaced by the next member, which has every acknowledged write;
+    /// - a new PG, or one that lost every copy, starts with `acting = up`.
+    ///
+    /// PGs whose sets change get the new epoch.
     pub fn recompute(&mut self) {
         self.epoch += 1;
         let devs: Vec<Device> = self
@@ -150,7 +184,8 @@ impl ClusterMap {
                 }
             })
             .collect();
-        for p in self.pools.values() {
+        let pools: Vec<PoolInfo> = self.pools.values().cloned().collect();
+        for p in pools {
             let rule = Rule {
                 pool: p.id,
                 size: p.size as usize,
@@ -160,15 +195,16 @@ impl ClusterMap {
             let topo = Topology::new(&rule, &devs);
             for pg in 0..p.pg_count {
                 let members = topo.place(pg);
-                let acting = match p.kind {
+                let old = self.pgs.get(&(p.id, pg)).cloned();
+                let up: Vec<u32> = match p.kind {
                     PoolKind::Replicated => members,
                     PoolKind::Ec { .. } => {
-                        let prev: Vec<Option<u32>> = match self.pgs.get(&(p.id, pg)) {
-                            Some(i) => i
-                                .acting
-                                .iter()
-                                .map(|d| (*d != NO_DEVICE).then_some(*d))
-                                .collect(),
+                        let prev: Vec<Option<u32>> = match &old {
+                            Some(i) => {
+                                i.up.iter()
+                                    .map(|d| (*d != NO_DEVICE).then_some(*d))
+                                    .collect()
+                            }
                             None => vec![None; p.size as usize],
                         };
                         assign_positions(&prev, &members)
@@ -177,16 +213,75 @@ impl ClusterMap {
                             .collect()
                     }
                 };
+                let acting = match &old {
+                    None => up.clone(),
+                    Some(o) => {
+                        let kept: Vec<u32> = match p.kind {
+                            PoolKind::Replicated => {
+                                o.acting.iter().copied().filter(|d| self.live(*d)).collect()
+                            }
+                            PoolKind::Ec { .. } => o
+                                .acting
+                                .iter()
+                                .map(|d| if self.live(*d) { *d } else { NO_DEVICE })
+                                .collect(),
+                        };
+                        if kept.iter().all(|d| *d == NO_DEVICE) {
+                            // Every copy is gone: the PG starts again empty.
+                            up.clone()
+                        } else {
+                            kept
+                        }
+                    }
+                };
                 let e = self.pgs.entry((p.id, pg)).or_insert(PgInfo {
                     epoch: self.epoch,
                     acting: Vec::new(),
+                    up: Vec::new(),
                 });
-                if e.acting != acting {
+                if e.acting != acting || e.up != up {
                     e.acting = acting;
+                    e.up = up;
                     e.epoch = self.epoch;
                 }
             }
         }
+    }
+
+    /// Records that `device` has a full copy of a PG (design §8.5). It
+    /// joins `acting`; once every member of `up` has, `acting` becomes
+    /// `up`, dropping members placement no longer wants. Refused (false)
+    /// if the PG changed since the backfill started.
+    pub fn backfill_done(&mut self, pool: u32, pg: u32, pg_epoch: u64, device: u32) -> bool {
+        let live = self.live(device);
+        let ec = matches!(
+            self.pools.get(&pool).map(|p| p.kind),
+            Some(PoolKind::Ec { .. })
+        );
+        let Some(info) = self.pgs.get(&(pool, pg)) else {
+            return false;
+        };
+        if info.epoch != pg_epoch
+            || !live
+            || !info.up.contains(&device)
+            || info.acting.contains(&device)
+        {
+            return false;
+        }
+        let mut info = info.clone();
+        if ec {
+            let pos = info.up.iter().position(|d| *d == device).unwrap();
+            info.acting[pos] = device;
+        } else {
+            info.acting.push(device);
+        }
+        if info.backfilling().next().is_none() {
+            info.acting = info.up.clone();
+        }
+        self.epoch += 1;
+        info.epoch = self.epoch;
+        self.pgs.insert((pool, pg), info);
+        true
     }
 
     pub fn pg(&self, pool: u32, pg: u32) -> Option<&PgInfo> {
@@ -237,6 +332,9 @@ impl ClusterMap {
         e.u32(self.pgs.len() as u32);
         for ((pool, pg), i) in &self.pgs {
             e.u32(*pool).u32(*pg).u64(i.epoch).seq(&i.acting, |e, d| {
+                e.u32(*d);
+            });
+            e.seq(&i.up, |e, d| {
                 e.u32(*d);
             });
         }
@@ -325,7 +423,8 @@ impl ClusterMap {
             let pg = d.u32()?;
             let epoch = d.u64()?;
             let acting = d.seq(4, |d| d.u32())?;
-            m.pgs.insert((pool, pg), PgInfo { epoch, acting });
+            let up = d.seq(4, |d| d.u32())?;
+            m.pgs.insert((pool, pg), PgInfo { epoch, acting, up });
         }
         d.finish()?;
         Ok(m)
@@ -347,16 +446,118 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
     }
 }
 
-/// Serves the map on `listener` until the reactor stops: `Hello` and
-/// `GetMap` (answered with the whole map when the asker's is older).
-pub async fn serve(listener: hyperstor_reactor::net::TcpListener, map: Rc<RefCell<ClusterMap>>) {
+/// The map service's state: the map, and when each node last sent a
+/// heartbeat (kept in memory only, design §4.1 and clustering.md D7).
+pub struct Meta {
+    pub map: RefCell<ClusterMap>,
+    beats: RefCell<HashMap<u32, Instant>>,
+    started: Instant,
+}
+
+impl Meta {
+    pub fn new(map: ClusterMap) -> Rc<Self> {
+        Rc::new(Meta {
+            map: RefCell::new(map),
+            beats: RefCell::new(HashMap::new()),
+            started: Instant::now(),
+        })
+    }
+
+    /// Marks nodes down after `timeout` without a heartbeat, and up again
+    /// when they send one, recomputing the map on every change. A node
+    /// gets `timeout` of grace from the service's start.
+    pub async fn liveness(self: Rc<Self>, timeout: Duration) {
+        loop {
+            sleep(timeout / 4).await;
+            let now = Instant::now();
+            let mut changed = false;
+            {
+                let beats = self.beats.borrow();
+                let mut map = self.map.borrow_mut();
+                for n in map.nodes.values_mut() {
+                    let last = beats.get(&n.id).copied().unwrap_or(self.started);
+                    let alive = now.duration_since(last) < timeout;
+                    if n.up != alive {
+                        n.up = alive;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.map.borrow_mut().recompute();
+            }
+        }
+    }
+
+    fn handle(
+        &self,
+        msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
+    ) -> hyperstor_proto::Msg {
+        use hyperstor_proto::*;
+        match msg {
+            Ok(Msg::Hello { .. }) => Msg::HelloOk {
+                version: VERSION,
+                node: 0,
+                map_epoch: self.map.borrow().epoch,
+            },
+            Ok(Msg::GetMap { have_epoch }) => {
+                let m = self.map.borrow();
+                Msg::Map {
+                    epoch: m.epoch,
+                    // Nothing new: an empty map body saves the encoding.
+                    map: if have_epoch >= m.epoch {
+                        Vec::new()
+                    } else {
+                        m.encode()
+                    },
+                }
+            }
+            Ok(Msg::Heartbeat { node }) => {
+                self.beats.borrow_mut().insert(node, Instant::now());
+                Msg::HeartbeatOk {
+                    map_epoch: self.map.borrow().epoch,
+                }
+            }
+            Ok(Msg::BackfillDone {
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            }) => {
+                let ok = self
+                    .map
+                    .borrow_mut()
+                    .backfill_done(pool, pg, pg_epoch, device);
+                let epoch = self.map.borrow().epoch;
+                if ok {
+                    Msg::BackfillOk { map_epoch: epoch }
+                } else {
+                    Msg::Error {
+                        code: Code::StaleMap,
+                        map_epoch: epoch,
+                        detail: "PG changed since the backfill started".into(),
+                    }
+                }
+            }
+            Ok(Msg::Ping) => Msg::Pong,
+            _ => Msg::Error {
+                code: Code::Invalid,
+                map_epoch: self.map.borrow().epoch,
+                detail: "unsupported request".into(),
+            },
+        }
+    }
+}
+
+/// Serves the map service on `listener` until the reactor stops.
+pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>) {
     use hyperstor_proto::*;
     use hyperstor_reactor::spawn;
     loop {
         let Ok((s, _)) = listener.accept().await else {
             continue;
         };
-        let map = map.clone();
+        let meta = meta.clone();
         spawn(async move {
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
@@ -372,26 +573,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, map: Rc<RefCel
                 if r.is_err() {
                     return;
                 }
-                let reply = match Msg::decode(h.kind, &body[..h.body_len as usize]) {
-                    Ok(Msg::Hello { .. }) => Msg::HelloOk {
-                        version: VERSION,
-                        node: 0,
-                        map_epoch: map.borrow().epoch,
-                    },
-                    Ok(Msg::GetMap { .. }) => {
-                        let m = map.borrow();
-                        Msg::Map {
-                            epoch: m.epoch,
-                            map: m.encode(),
-                        }
-                    }
-                    Ok(Msg::Ping) => Msg::Pong,
-                    _ => Msg::Error {
-                        code: Code::Invalid,
-                        map_epoch: map.borrow().epoch,
-                        detail: "unsupported request".into(),
-                    },
-                };
+                let reply = meta.handle(Msg::decode(h.kind, &body[..h.body_len as usize]));
                 let (w, _) = s.write_all(encode_frame(h.req, &reply, &[])).await;
                 if w.is_err() {
                     return;
@@ -478,11 +660,50 @@ mod tests {
     }
 
     #[test]
+    fn degraded_acting_then_backfill() {
+        let mut m = map();
+        let before = m.clone();
+        m.nodes.get_mut(&1).unwrap().up = false;
+        m.recompute();
+        let mut degraded = 0;
+        let keys: Vec<(u32, u32)> = m.pgs.keys().filter(|k| k.0 == 1).copied().collect();
+        for k in &keys {
+            let pg = m.pgs[k].clone();
+            let old = &before.pgs[k];
+            assert_eq!(old.acting, old.up, "healthy PGs have acting = up");
+            let survivors: Vec<u32> = old
+                .acting
+                .iter()
+                .copied()
+                .filter(|d| m.devices[d].node != 1)
+                .collect();
+            assert_eq!(
+                pg.acting, survivors,
+                "{k:?}: acting keeps its live members in order"
+            );
+            if survivors.len() < 3 {
+                degraded += 1;
+                assert_eq!(pg.primary(), Some(survivors[0]));
+                let new: Vec<u32> = pg.backfilling().collect();
+                assert_eq!(new.len(), 1, "{k:?}: one new member to fill");
+                // A stale epoch is refused; the right one admits it.
+                assert!(!m.backfill_done(k.0, k.1, pg.epoch - 1, new[0]));
+                let e = m.pgs[k].epoch;
+                assert!(m.backfill_done(k.0, k.1, e, new[0]));
+                let after = &m.pgs[k];
+                assert_eq!(after.acting, after.up);
+                assert!(after.epoch > e);
+            }
+        }
+        assert!(degraded > 10);
+    }
+
+    #[test]
     fn map_service_answers() {
         use hyperstor_proto::*;
         use hyperstor_reactor::{block_on, net::*, spawn};
-        let m = Rc::new(RefCell::new(map()));
-        let want = m.borrow().clone();
+        let m = Meta::new(map());
+        let want = m.map.borrow().clone();
         block_on(async move {
             let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             let addr = l.local_addr().unwrap();
