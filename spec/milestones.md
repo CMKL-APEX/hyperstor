@@ -70,6 +70,11 @@ sections that depend on them are final:
   ODP and with pinned hugepages, and the cost of ODP page faults on the
   first I/O to each region. Decide whether NICs without ODP need a
   registration cache of bounce buffers instead.
+- **G13. redb on a shard region** (D43). Run redb through its
+  `StorageBackend` on a region of a shard device, and measure commit rate
+  and write amplification for the index's update pattern against the
+  log-plus-checkpoint design, before writing our own copy-on-write
+  B+tree.
 - **G9. Hard disks behind one log device** (D29). Measure write
   latency and throughput for eight hard disks sharing one SATA SSD and
   one NVMe log device, to set the limit per log device by class.

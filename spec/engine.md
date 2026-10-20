@@ -101,6 +101,11 @@ log device, which has its own superblock naming the data device (§6.2).
   get, put and delete keys, delete a key range, set attributes. The
   primary applies the list in one log record, and replicas apply the
   same record.
+- **Block maps switch representation** (D43). A chunk version holds its
+  blocks as extent runs while it has few, and as a dense array of
+  (physical block, checksum), 8 bytes per block, once a run list would
+  cost more; a rewrite that makes it contiguous switches it back. Holes in
+  a dense map hold a reserved block number. *Not built yet.*
 - **Volume chunk versions.** For `vol`, the version is the volume's
   snapshot epoch:
   - `branch` is a volume within a lineage (D21). A new volume has its own

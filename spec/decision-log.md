@@ -16,7 +16,7 @@ HS1 and the first part of HS2.
 | 2 | One listening port per reactor (I19) | One port per reactor | D39 |
 | 3 | The stale-primary window until map leases exist (I20) | Discussed ([below](#3-map-leases-before-or-after-the-vm-path)); then: leases now, pushes as the fast path | D42; built (HS2) |
 | 4 | Failure detection by the map service only (I21, I25) | Nodes report each other | D40; to build in HS2 |
-| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? What data size can each support? | Open: [below](#5-checkpoints-without-the-spike), with measured sizes |
+| 5 | Checkpoint spikes from whole-index checkpoints (I3) | Is there a paged, incremental or log-based approach with a sync marker? What data size can each support? Then: dense per-block maps for fragmented chunks, and eventually a cache-aware B+tree | D43. The interim checkpoint approach (fuzzy, then paged) is recommended [below](#5-checkpoints-without-the-spike) |
 | 6 | Test hardware (NVMe namespace, RDMA NIC, power-loss-protected drives) | Later | G5 and HS6 measurements wait for it |
 | 7 | CPU per operation before RDMA | Agreed | D41; milestone HS5b |
 
@@ -234,3 +234,81 @@ fuzzy checkpoint (A). That gives about 2 GiB of RAM per TiB in every case,
 so a node with 64 GiB for its index holds about 30 TiB, with no checkpoint
 pause. Then paged checkpoints (B) to cut checkpoint bandwidth, and the
 B+tree (C) when nodes need more data than their RAM allows.
+
+#### Decision and prior art (2026-10-20)
+
+**Answer:** switch fragmented chunks to a dense per-block map, and
+eventually move the index to a cache-aware B+tree on the device (D43).
+Proven approaches for each part:
+
+**Switching representation by density** (the dense map):
+- **XFS inode data forks** hold a file's mapping in one of three formats:
+  inline in the inode, a list of extents while it fits, a B+tree of
+  extents (the BMBT) when it doesn't. XFS converts between them as files
+  grow and shrink. This is the closest match: hyperstor's runs and dense
+  array are the same idea at chunk scale.
+- **Roaring bitmaps** keep each 64 Ki range as a sorted array, a bitmap or
+  runs, whichever is smallest, and convert as the range fills; widely
+  used (Lucene, Spark, Druid). The conversion thresholds are the model for
+  ours (convert at the size where the two encodings cost the same).
+- **The adaptive radix tree** (Leis et al., ICDE 2013) picks node types by
+  how many children are present. The same principle at node level.
+
+**Dense maps with checksums** (what a dense chunk holds):
+- **ZFS** indirect blocks are dense arrays of block pointers, each carrying
+  the checksum of the block it points to (a Merkle tree), so integrity
+  checking needs no separate checksum store.
+- **SPDK's blobstore** gives each blob a dense array of cluster addresses.
+- **Linux dm-thin** maps each virtual block of a thin volume to a data
+  block, with a snapshot time, in the leaves of a B-tree.
+
+**Copy-on-write B+trees on the device** (the long-term index):
+- **Shadowing** (Rodeh, "B-trees, Shadowing, and Clones", ACM TOS 2008):
+  a change copies the path from leaf to root and the new root commits it,
+  so the tree on disk is always consistent; reference counts on nodes give
+  cheap clones. The basis of Btrfs, and of what D10's snapshots and clones
+  need.
+- **dm-thin** (Linux device-mapper, `persistent-data`): copy-on-write
+  B-trees for thin volumes and snapshots, a space map for block reference
+  counts, and a transaction committed by writing the superblock. The
+  nearest system to hyperstor's use: block volumes, thin provisioning,
+  snapshots.
+- **LMDB**: a copy-on-write B+tree with two meta pages and no write-ahead
+  log. **redb**, the Rust B-tree database glidex already uses (via
+  `glidex-raftstore`), follows the same design and exposes a
+  `StorageBackend` trait (length, read, write, set length, sync), so it
+  might run on a region of a hyperstor shard. Worth a prototype before
+  writing our own (new host check: a commit rate and write amplification
+  against our log-plus-checkpoint design).
+- **WAFL** (NetApp) and **ZFS**: copy-on-write trees with periodic
+  consistency points and an intent log between them, which is our log
+  plus checkpoint, and the model for how often to commit the tree.
+
+**Making it cache-aware:**
+- **Node size = device page** (4 KiB, or 16–64 KiB for leaves holding
+  dense maps: a 4 MiB chunk's dense map is 8 KiB) for the device side, and
+  a node cache with a scan-resistant policy (CLOCK-Pro, 2Q or ARC) sized
+  to the memory budget, so hot volumes stay in memory and cold ones cost a
+  read.
+- **Cache-conscious in-memory node layout** (CSB+-trees, Rao and Ross,
+  SIGMOD 2000; FAST, Kim et al., SIGMOD 2010): keys packed into cache lines
+  and searched without pointer chasing, for lookups on the I/O path.
+- **Write-optimized variants**, if random metadata updates outrun the
+  tree: **Bε-trees** (Brodal and Fagerberg 2003; TokuDB's fractal tree,
+  BetrFS) buffer updates in internal nodes and are provably near-optimal
+  for writes; the **Bw-tree** and **LLAMA** (Microsoft, ICDE 2013, VLDB
+  2013) use delta records and a mapping table that also makes page
+  checkpoints incremental. Neither needs latch-freedom here (one reactor
+  owns a shard), but both reduce write amplification.
+
+**Checkpointing until the tree exists:** ARIES-style fuzzy checkpoints
+(Mohan et al., ACM TODS 1992): a begin marker, pages written while work
+continues, and redo from the marker; it relies on log records that set
+state absolutely, which hyperstor's do (option A above).
+
+**Suggested order:**
+1. The dense map, with the fuzzy checkpoint.
+2. A redb prototype on a shard region, measured against (1).
+3. Our own copy-on-write B+tree (or redb, if it measures well) with node
+   reference counts for snapshots, a node cache, and per-PG subtrees so a
+   PG can move between shards whole.

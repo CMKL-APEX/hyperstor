@@ -2,7 +2,7 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19 and D38–D42 were settled with the
+[decisions.md](decisions.md): D1–D19 and D38–D43 were settled with the
 owner; D20–D37 were made while drafting and are open to review. Host
 checks G1–G12 (milestones.md §22) are still open. What is built, and the
 decision points still open, are in
