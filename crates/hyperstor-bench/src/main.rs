@@ -319,6 +319,40 @@ fn main() {
             header();
             engine_suite(Arc::new(MemDev::new(1 << 30)), "engine (memory)", secs);
         }
+        Some("placement") => {
+            use hyperstor_placement::*;
+            let mut devs = Vec::new();
+            for i in 0..1024u32 {
+                devs.push(Device {
+                    id: i,
+                    host: i / 8,
+                    rack: i / 128,
+                    weight: 1.0,
+                    class: "nvme".into(),
+                    up_in: true,
+                });
+            }
+            for (domain, name) in [(Domain::Host, "host"), (Domain::Rack, "rack")] {
+                let rule = Rule {
+                    pool: 1,
+                    size: 3,
+                    domain,
+                    class: None,
+                };
+                let topo = Topology::new(&rule, &devs);
+                let t = Instant::now();
+                let mut n = 0u32;
+                while t.elapsed() < Duration::from_secs_f64(secs) {
+                    std::hint::black_box(topo.place(n));
+                    n += 1;
+                }
+                println!(
+                    "placement, 1024 devices / 128 hosts / 8 racks, 3 copies by {name}: {:.0} PGs/s ({:.1} µs each)",
+                    n as f64 / t.elapsed().as_secs_f64(),
+                    t.elapsed().as_secs_f64() * 1e6 / n as f64
+                );
+            }
+        }
         Some("crc") => {
             let data = vec![7u8; 1 << 20];
             let t = Instant::now();

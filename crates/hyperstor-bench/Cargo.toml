@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 hyperstor-engine = { path = "../hyperstor-engine" }
 hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-placement = { path = "../hyperstor-placement" }
 libc.workspace = true
 rand.workspace = true
 

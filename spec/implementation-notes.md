@@ -38,3 +38,12 @@ two engine bugs before any other test did:
    round's data, or by the checkpoint an earlier recovery wrote), so an
    acknowledged group was dropped. Fixed by checking only blocks the
    replayed index still references.
+
+## Placement (HS1)
+
+| # | Decision | Why | To discuss |
+|---|---|---|---|
+| I15 | **The placement hashes are spelled out** (SplitMix64 mixing, FNV-1a for names), with pinned test values, instead of `std`'s hashers. | Every node and client must compute the same placement from the same map, across Rust releases and architectures. | Changing them is a format change: it would move every PG. |
+| I16 | **EC shard positions are kept in the PG table, not recomputed.** `place` chooses the members; `assign_positions` keeps each surviving member at its shard index and fills vacated positions with new members. | A stateless positional choice (CRUSH-style `indep`, tried first) moved 2.1× the necessary shards when a device was removed, because changed positions collide with others. With kept positions, only shards whose device left the set move (2,068 of 30,000 in the test, against 3,176). | The metadata service must keep positions per EC PG in its acting set (design §5.3 already keeps acting sets). |
+| I17 | **Weights are hierarchical**: a device's weight counts for its host and rack, and choices go rack, host, device. | Load follows capacity at every level, which is what keeps devices evenly full. | Removing one device moves 1.44× the theoretical minimum of PGs in the test (its host's share drops, so some PGs that used the host's other devices move too). CRUSH behaves the same. A flat choice over devices would move less but couldn't keep copies in distinct hosts by weight. |
+

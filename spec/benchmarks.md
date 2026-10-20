@@ -123,3 +123,20 @@ less data and are comparable.
    checkpoint writes the whole index (I3).
 6. **G5 is half run:** the NVMe passthrough path needs a dedicated
    namespace. SPDK wasn't installed for the comparison either.
+
+## 2026-10-20: placement (dev-1)
+
+`HS_BENCH_SECS=2 target/release/hyperstor-bench placement`: 1,024 devices
+in 128 hosts and 8 racks, 3 copies, one thread, topology built once per
+map (`Topology`):
+
+| Failure domain | PGs/s | µs per PG |
+|---|---|---|
+| host | 449,661 | 2.2 |
+| rack | 756,105 | 1.3 |
+
+The first version rebuilt the domain list for every PG (47 µs per PG by
+host); building it once per map made placement 21× faster with identical
+results. Placing every PG of a 65,536-PG pool after a map change takes
+about 0.15 s on one core.
+

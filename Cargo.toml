@@ -3,6 +3,7 @@ members = [
     "crates/hyperstor-codec",
     "crates/hyperstor-engine",
     "crates/hyperstor-bench",
+    "crates/hyperstor-placement",
 ]
 resolver = "2"
 

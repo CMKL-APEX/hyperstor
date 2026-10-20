@@ -41,6 +41,7 @@ version = "0.1.0"
 dependencies = [
  "hyperstor-codec",
  "hyperstor-engine",
+ "hyperstor-placement",
  "libc",
  "rand",
 ]
@@ -62,6 +63,13 @@ dependencies = [
  "libc",
  "rand",
  "thiserror",
+]
+
+[[package]]
+name = "hyperstor-placement"
+version = "0.1.0"
+dependencies = [
+ "rand",
 ]
 
 [[package]]
