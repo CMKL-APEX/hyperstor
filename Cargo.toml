@@ -1,9 +1,14 @@
 [workspace]
 members = [
+    "crates/hyperstor-client",
     "crates/hyperstor-codec",
+    "crates/hyperstor-daemon",
     "crates/hyperstor-engine",
     "crates/hyperstor-bench",
+    "crates/hyperstor-meta",
     "crates/hyperstor-placement",
+    "crates/hyperstor-proto",
+    "crates/hyperstor-reactor",
 ]
 resolver = "2"
 

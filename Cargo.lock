@@ -39,11 +39,27 @@ dependencies = [
 name = "hyperstor-bench"
 version = "0.1.0"
 dependencies = [
+ "hyperstor-client",
  "hyperstor-codec",
+ "hyperstor-daemon",
  "hyperstor-engine",
+ "hyperstor-meta",
  "hyperstor-placement",
+ "hyperstor-reactor",
  "libc",
  "rand",
+]
+
+[[package]]
+name = "hyperstor-client"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-meta",
+ "hyperstor-placement",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "libc",
+ "thiserror",
 ]
 
 [[package]]
@@ -52,6 +68,19 @@ version = "0.1.0"
 dependencies = [
  "crc32c",
  "thiserror",
+]
+
+[[package]]
+name = "hyperstor-daemon"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-client",
+ "hyperstor-engine",
+ "hyperstor-meta",
+ "hyperstor-placement",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "rand",
 ]
 
 [[package]]
@@ -66,10 +95,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-meta"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-codec",
+ "hyperstor-placement",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+]
+
+[[package]]
 name = "hyperstor-placement"
 version = "0.1.0"
 dependencies = [
  "rand",
+]
+
+[[package]]
+name = "hyperstor-proto"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-codec",
+ "thiserror",
+]
+
+[[package]]
+name = "hyperstor-reactor"
+version = "0.1.0"
+dependencies = [
+ "io-uring",
+ "libc",
 ]
 
 [[package]]

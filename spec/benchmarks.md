@@ -140,3 +140,56 @@ host); building it once per map made placement 21× faster with identical
 results. Placing every PG of a 65,536-PG pool after a map change takes
 about 0.15 s on one core.
 
+## 2026-10-20: end to end, one host (dev-1)
+
+`HS_BENCH_SECS=3 target/release/hyperstor-bench cluster mem|<dir> [reactors]`:
+a map service, three storage nodes and a client in one process on
+dev-1, talking over loopback TCP. A replicated pool (size 3, 128 PGs,
+4 MiB chunks), eight volumes of 64 MiB, filled first. Every write goes
+client → primary → two replicas, each committing to its engine; reads go
+to the primary. Each reactor is pinned to its own CPU; the client is one
+reactor. "QD" is the number of concurrent requests from the client.
+
+| Test | ops/s | MB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| mem, 1 reactor per node: 4 KiB random writes, QD1 | 10083 | 41.3 | 92 | 116 |
+| mem, 1 reactor per node: 4 KiB random writes, QD32 | 30899 | 126.6 | 591 | 8445 |
+| mem, 1 reactor per node: 4 KiB random reads, QD1 | 25385 | 104.0 | 40 | 57 |
+| mem, 1 reactor per node: 4 KiB random reads, QD32 | 80482 | 329.7 | 219 | 1003 |
+| mem, 1 reactor per node: 1 MiB writes, QD4 | 755 | 791.8 | 5200 | 8780 |
+| mem, 1 reactor per node: 1 MiB reads, QD4 | 2218 | 2325.7 | 1648 | 3793 |
+| mem, 4 reactors per node: 4 KiB random writes, QD1 | 6638 | 27.2 | 137 | 234 |
+| mem, 4 reactors per node: 4 KiB random writes, QD32 | 46959 | 192.3 | 338 | 12884 |
+| mem, 4 reactors per node: 4 KiB random reads, QD1 | 17785 | 72.8 | 56 | 89 |
+| mem, 4 reactors per node: 4 KiB random reads, QD32 | 74617 | 305.6 | 206 | 1966 |
+| mem, 4 reactors per node: 1 MiB writes, QD4 | 598 | 627.5 | 6335 | 12156 |
+| mem, 4 reactors per node: 1 MiB reads, QD4 | 1441 | 1510.6 | 2351 | 8553 |
+| files, 1 reactor per node: 4 KiB random writes, QD1 | 1906 | 7.8 | 495 | 628 |
+| files, 1 reactor per node: 4 KiB random writes, QD32 | 4921 | 20.2 | 4957 | 19816 |
+| files, 1 reactor per node: 4 KiB random reads, QD1 | 10363 | 42.4 | 94 | 141 |
+| files, 1 reactor per node: 4 KiB random reads, QD32 | 35838 | 146.8 | 511 | 2295 |
+| files, 1 reactor per node: 1 MiB writes, QD4 | 368 | 386.0 | 7821 | 77929 |
+| files, 1 reactor per node: 1 MiB reads, QD4 | 1237 | 1296.9 | 2791 | 7876 |
+
+### Findings
+
+1. **The software path costs about 40 µs for a read and 90 µs for a
+   replicated write** at QD1 on memory devices: two (read) or four
+   (write) loopback TCP hops plus engine work. This is the floor to
+   improve before RDMA (HS6) can matter.
+2. **One client reactor tops out near 31k–47k writes and 75k–80k reads
+   per second.** Several reactors per client (and per volume) are needed
+   for more; the per-request copies in the client and daemon (payload
+   copied into each frame, once per replica) are the first CPU to remove.
+3. **More reactors per node raised QD32 write throughput by half** (more
+   PGs committing in parallel) but **raised QD1 latency** (137 µs against
+   92 µs): a request now often wakes a sleeping reactor on another core.
+   Adaptive polling (spin briefly before sleeping in the kernel) is the
+   usual fix.
+4. **p99 write latency of 8–13 ms on memory** comes from engine
+   checkpoints, which write the whole index (I3).
+5. **On files, the three nodes share one consumer SSD without power-loss
+   protection**, so every write waits for three flushes on the same
+   drive (QD1: 495 µs; QD32: 4.9k ops/s). This says more about the
+   test host than about hyperstor; a real cluster has a drive per node.
+

@@ -296,6 +296,134 @@ fn raw_suite(dev: &UringDev, secs: f64) {
     );
 }
 
+fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
+    use hyperstor_daemon::*;
+    use hyperstor_meta::{ClusterMap, replicated_pool};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let meta = meta_l.local_addr().unwrap();
+    let mut map = ClusterMap::new(1);
+    let mut listeners = Vec::new();
+    for n in 0..3u32 {
+        let ls: Vec<_> = (0..reactors)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let addrs: Vec<_> = ls.iter().map(|l| l.local_addr().unwrap()).collect();
+        map.add_node(n, &addrs, 0);
+        listeners.push(ls);
+    }
+    map.add_pool(replicated_pool(1, "vol", 3, 128));
+    map.recompute();
+    std::thread::spawn(move || {
+        hyperstor_reactor::block_on(async move {
+            hyperstor_meta::serve(
+                hyperstor_reactor::net::TcpListener::from_std(meta_l),
+                Rc::new(RefCell::new(map)),
+            )
+            .await
+        })
+    });
+    let mut cpu = 2;
+    let nodes: Vec<NodeHandle> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(n, ls)| {
+            let shards = ls
+                .into_iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let device = if where_ == "mem" {
+                        DeviceSpec::Mem { bytes: 1 << 30 }
+                    } else {
+                        let path = Path::new(where_).join(format!("n{n}-s{i}.img"));
+                        preallocate(&path, 1 << 30);
+                        DeviceSpec::File {
+                            path,
+                            bytes: 1 << 30,
+                            direct: true,
+                            uring: true,
+                        }
+                    };
+                    ShardSpec {
+                        device_id: n as u32 * 1000 + i as u32,
+                        device,
+                        listener: l,
+                    }
+                })
+                .collect();
+            let cpus = (0..reactors as usize)
+                .map(|_| {
+                    cpu += 1;
+                    cpu
+                })
+                .collect();
+            start(NodeConfig {
+                node_id: n as u32,
+                meta,
+                shards,
+                cpus,
+                defer_max: None,
+            })
+        })
+        .collect();
+    let label = format!("3 nodes x {reactors} reactor(s), size 3, {where_}");
+    hyperstor_reactor::block_on(async move {
+        let _ = hyperstor_reactor::pin_to_cpu(1);
+        let cl = hyperstor_client::Client::connect(meta, 1).await.unwrap();
+        let vols = 8u128;
+        let span = 64u64 << 20; // per volume
+        // Fill so reads hit data.
+        for v in 0..vols {
+            for off in (0..span).step_by(4 << 20) {
+                cl.write(1, v, off, vec![0x42; 4 << 20]).await.unwrap();
+            }
+        }
+        for (name, write, len, qd) in [
+            ("4 KiB random writes", true, 4096u64, 1usize),
+            ("4 KiB random writes", true, 4096, 32),
+            ("4 KiB random reads", false, 4096, 1),
+            ("4 KiB random reads", false, 4096, 32),
+            ("1 MiB writes", true, 1 << 20, 4),
+            ("1 MiB reads", false, 1 << 20, 4),
+        ] {
+            let lats = Rc::new(RefCell::new(Vec::new()));
+            let t = Instant::now();
+            let hs: Vec<_> = (0..qd)
+                .map(|w| {
+                    let cl = cl.clone();
+                    let lats = lats.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let mut rng = SmallRng::seed_from_u64(w as u64);
+                        let data = vec![0x17u8; len as usize];
+                        while t.elapsed().as_secs_f64() < secs {
+                            let v = rng.random_range(0..vols);
+                            let off = rng.random_range(0..span / len) * len;
+                            let s = Instant::now();
+                            if write {
+                                cl.write(1, v, off, data.clone()).await.unwrap();
+                            } else {
+                                std::hint::black_box(cl.read(1, v, off, len).await.unwrap());
+                            }
+                            lats.borrow_mut().push(s.elapsed());
+                        }
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.await;
+            }
+            let elapsed = t.elapsed();
+            let mut l = Lat(std::mem::take(&mut *lats.borrow_mut()));
+            let n = l.0.len() as u64;
+            row(&format!("{label}: {name}, QD{qd}"), n, elapsed, len, &mut l);
+        }
+    });
+    for n in nodes {
+        n.stop();
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let secs: f64 = std::env::var("HS_BENCH_SECS")
@@ -352,6 +480,12 @@ fn main() {
                     t.elapsed().as_secs_f64() * 1e6 / n as f64
                 );
             }
+        }
+        Some("cluster") => {
+            // hyperstor-bench cluster mem|<dir> [reactors per node]
+            let where_ = args.get(2).cloned().unwrap_or_else(|| "mem".into());
+            let reactors: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            cluster_suite(&where_, reactors, secs);
         }
         Some("crc") => {
             let data = vec![7u8; 1 << 20];

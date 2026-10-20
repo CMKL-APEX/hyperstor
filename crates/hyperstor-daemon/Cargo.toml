@@ -1,0 +1,21 @@
+[package]
+name = "hyperstor-daemon"
+description = "hyperstord: a storage node serving engine shards over the wire protocol (spec/design.md §6, §8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-engine = { path = "../hyperstor-engine" }
+hyperstor-meta = { path = "../hyperstor-meta" }
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+
+[dev-dependencies]
+rand.workspace = true
+hyperstor-placement = { path = "../hyperstor-placement" }
+
+[lints]
+workspace = true
