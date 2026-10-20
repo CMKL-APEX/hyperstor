@@ -134,6 +134,23 @@ members, as long as there are at least `min_size` of them. Below
   for destage.
 - `min_size` for an EC pool is `k + 1` by default.
 
+### 8.7 Cache pools (D45)
+
+- **Copies.** One by default, placed like a replicated pool of that size;
+  writes are acknowledged when every copy has them, as in §8.1.
+- **Expiry.** Every object has an expiry time (the pool's default, or set
+  per object by the writer). Each primary drops expired objects in the
+  background, and reads of an expired object answer "not found".
+- **Loss.** A device or node that goes down takes its copies with it:
+  no backfill, no recovery. The PG is placed again with an empty
+  `acting` set, and its first write starts it afresh. Clients treat "not
+  found" as a miss and recompute.
+- **Space.** Under pressure a cache pool evicts, by expiry first, then
+  least recently read, instead of refusing writes; the D27 thresholds
+  don't apply.
+- **Everything else is shared:** placement, map leases (D42), the engine,
+  and every front end (S3 and S3 over RDMA, the native GPU library).
+
 ## 15. Failures
 
 | Failure | What happens |

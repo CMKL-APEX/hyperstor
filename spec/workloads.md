@@ -1,8 +1,8 @@
 # Target workloads
 
-Status: **proposed, 2026-10-20.** The workloads hyperstor is built for,
+Status: **settled, 2026-10-20.** The workloads hyperstor is built for,
 what each does to storage, and what that implies for the design. The
-implications marked *proposed* are not decisions yet.
+implications are decisions D43–D46.
 
 ## 1. The workloads
 
@@ -21,7 +21,7 @@ implications marked *proposed* are not decisions yet.
 - **Dense per-block maps are required**, not an optimization: agent VM
   disks are the random-overwrite pattern that fragments chunks, and there
   are many per node (benchmarks.md: about 18× the index RAM otherwise).
-- **Two index flavours on one node format** (*proposed*):
+- **Two index flavours on one node format** (D44):
   - *block maps* (VM disks, model weights, KV-cache blocks): lookups on
     the read path dominate; a copy-on-write B+tree with a node cache;
   - *metadata* (agent memory, RAG document stores, KV-store ranges):
@@ -37,13 +37,14 @@ implications marked *proposed* are not decisions yet.
 - **Lineage placement (D21) and the host read cache (D32)** keep a clone's
   reads of its golden image local and shared across every VM on the node.
 
-### Pools and QoS (*proposed*)
+### Pools and QoS (D45, D46)
 
-- **A `cache` pool semantic for KV-cache offload:** single copy (or none
-  beyond the writer's node), objects with a TTL, no backfill on loss.
+- **Cache pools are first-class** (D45, replication.md §8.7): single copy
+  by default, objects with an expiry, no backfill on loss, eviction under
+  pressure.
   Lost KV-cache is recomputed; replicating or erasure-coding it wastes
   most of that traffic.
-- **Priority above fair share** for latency-critical volumes in the
+- **Priority classes** (D46, volumes.md §10.5): `latency` above fair share in the
   per-reactor queuing (volumes.md §10.5), so inference reads don't wait
   behind checkpoint bursts; the fabric side is D31's traffic classes.
 

@@ -25,7 +25,7 @@ that no single node sees every change (D28):
 |---|---|---|
 | `nodes` | node id | networks (protocol.md §13.2: for each, its address, its transports and their parameters), role, failure domain path (`rack/host`), reactor count, state |
 | `devices` | device id | node, kind (`nvme`, `ssd`, `hdd`), identity (NVMe EUI-64/NGUID, or WWN and serial), log device (for `hdd`), capacity, class, weight, state (`in`, `out`, `failed`) |
-| `pools` | pool id | kind (`replicated{size, min_size}` or `ec{k, m}`), chunk size, PG count, failure domain level, device class filter, thresholds |
+| `pools` | pool id | kind (`replicated{size, min_size}`, `ec{k, m}` or `cache{copies, default_ttl}`, D45), chunk size, PG count, failure domain level, device class filter, thresholds, priority class (D46) |
 | `pgs` | (pool, pg) | `pg_epoch`, `up` set (computed placement), `acting` set (who serves now), primary, in-sync set, state |
 | `hosts` | host identity | bare-metal and non-glidex hosts: NQN, CHAP key reference, the volumes and snapshots exported to it |
 | `blocklist` | client instance id | map epoch added, expiry |

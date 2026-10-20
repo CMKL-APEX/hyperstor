@@ -99,3 +99,12 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
 
   Provisioned IOPS for metering (metering.md §16) build on these
   limits.
+- **Priority classes** (D46). Each volume and pool has a class:
+  - `latency`: each reactor serves its queues first, within the volume's
+    own limits;
+  - `normal`: weighted fair share, as above;
+  - `bulk`: served when nothing else waits, with a minimum share (by
+    default 5% of a reactor's device time) so it can't starve.
+
+  Backfill and recovery run as `bulk`; scrub below it. The class also
+  sets the network traffic class (D31, protocol.md §13.2).

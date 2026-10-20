@@ -19,6 +19,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS8 | GPU-direct on bare metal: `libhyperstor-gpu`, the interposers, `FIEMAP` mapping, read-only multi-attach. G1, G3, G4. The hipFile upstream proposal. | HS4, HS6 |
 | HS9 | GPU-direct in glidex VMs: lease delegates, the vsock credential, virtio disks in the interposer (gpu.md §12.3, G2); server-side QoS; PG splitting. | HS8 |
 | HS10 | Hard-disk pools with flash log devices (D29). | HS2 |
+| HS10b | Cache pools (D45): the pool kind, expiry, eviction, loss without recovery; priority classes (D46) in the reactors' queues and on the wire. | HS2 |
 | HS11 | `hyperstor-kv`: ranges, splits and merges, the root range, transactions, the timestamp oracle, garbage collection. Tested against a model of snapshot isolation (Jepsen-style histories) under faults. | HS2 |
 | HS12 | The S3 gateway over HTTP (s3.md §14.1, s3.md §14.2), with glidex access keys and Cedar. | HS7, HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |

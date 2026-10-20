@@ -312,3 +312,14 @@ state absolutely, which hyperstor's do (option A above).
 3. Our own copy-on-write B+tree (or redb, if it measures well) with node
    reference counts for snapshots, a node cache, and per-PG subtrees so a
    PG can move between shards whole.
+
+## Workload review (2026-10-20)
+
+The target workloads and their implications are in
+[workloads.md](workloads.md). Points raised, and the answers:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 8 | One index for everything, or two flavours (copy-on-write B+tree for block maps, Bε-tree for metadata) | Two flavours, as recommended | D44 |
+| 9 | A pool semantic for recomputable data (KV-cache offload) | Make cache pools first-class | D45 |
+| 10 | A priority class above fair share for latency-critical I/O | Agreed | D46 |
