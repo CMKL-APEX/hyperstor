@@ -42,7 +42,7 @@ use std::task::{Poll, Waker};
 use std::time::Duration;
 
 /// The device behind one shard.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DeviceSpec {
     Mem {
         bytes: u64,
@@ -53,12 +53,25 @@ pub enum DeviceSpec {
         direct: bool,
         uring: bool,
     },
+    /// A device already open, for example one a stopped node returned.
+    Existing(Arc<dyn BlockDev>),
+}
+
+impl std::fmt::Debug for DeviceSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceSpec::Mem { bytes } => write!(f, "Mem({bytes})"),
+            DeviceSpec::File { path, .. } => write!(f, "File({})", path.display()),
+            DeviceSpec::Existing(d) => write!(f, "Existing({} bytes)", d.len()),
+        }
+    }
 }
 
 impl DeviceSpec {
     fn open(&self) -> std::io::Result<Arc<dyn BlockDev>> {
         Ok(match self {
             DeviceSpec::Mem { bytes } => Arc::new(MemDev::new(*bytes)),
+            DeviceSpec::Existing(d) => d.clone(),
             DeviceSpec::File {
                 path,
                 bytes,

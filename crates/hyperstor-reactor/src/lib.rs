@@ -395,8 +395,12 @@ where
     });
     let main = spawn(fut);
     let out = loop {
-        // Run every ready task.
-        loop {
+        // Run the tasks that are ready now. Tasks woken while they run
+        // (including ones that yield) wait for the next pass, after I/O
+        // completions have been collected: running until the queue is
+        // empty would let a yielding task starve all I/O.
+        let n = inner.shared.ready.lock().unwrap().len();
+        for _ in 0..n {
             let next = inner.shared.ready.lock().unwrap().pop_front();
             match next {
                 Some(id) => inner.poll_task(id),
@@ -483,6 +487,23 @@ mod tests {
             sum
         });
         assert_eq!(v, 9900);
+    }
+
+    #[test]
+    fn a_yielding_task_does_not_starve_io() {
+        block_on(async {
+            let stop = Rc::new(Cell::new(false));
+            let s2 = stop.clone();
+            // Spins with yield_now until a timer, which needs I/O
+            // completions, fires.
+            spawn(async move {
+                while !s2.get() {
+                    yield_now().await;
+                }
+            });
+            crate::time::sleep(std::time::Duration::from_millis(20)).await;
+            stop.set(true);
+        });
     }
 
     #[test]

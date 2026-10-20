@@ -25,6 +25,10 @@ type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
 struct Cluster {
     meta_addr: SocketAddr,
+    /// Each node's reactor addresses, to restart it at the same place.
+    addrs: Vec<Vec<SocketAddr>>,
+    /// Devices of stopped nodes, by node.
+    stopped: std::collections::HashMap<usize, Vec<Arc<dyn BlockDev>>>,
     meta_tx: Sender<MetaCmd>,
     meta_thread: Option<std::thread::JoinHandle<ClusterMap>>,
     nodes: Vec<Option<NodeHandle>>,
@@ -36,12 +40,14 @@ impl Cluster {
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
         let mut listeners = Vec::new();
+        let mut all_addrs = Vec::new();
         for n in 0..nodes {
             let ls: Vec<std::net::TcpListener> = (0..shards)
                 .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
                 .collect();
             let addrs: Vec<SocketAddr> = ls.iter().map(|l| l.local_addr().unwrap()).collect();
             map.add_node(n, &addrs, 0);
+            all_addrs.push(addrs);
             listeners.push(ls);
         }
         let mut pool = replicated_pool(POOL, "vol", 3, 64);
@@ -85,17 +91,43 @@ impl Cluster {
             .collect();
         Cluster {
             meta_addr,
+            addrs: all_addrs,
+            stopped: std::collections::HashMap::new(),
             meta_tx,
             meta_thread: Some(meta_thread),
             nodes,
         }
     }
 
-    /// Stops node `n` (its reactors exit; heartbeats stop).
+    /// Stops node `n` (its reactors exit; heartbeats stop). Its devices
+    /// are kept, so it can come back with what it had.
     fn kill(&mut self, n: usize) {
         if let Some(h) = self.nodes[n].take() {
-            h.stop();
+            let devs = h.stop().into_iter().map(|d| d.unwrap()).collect();
+            self.stopped.insert(n, devs);
         }
+    }
+
+    /// Starts node `n` again on its old devices and addresses.
+    fn restart(&mut self, n: usize) {
+        let devs = self.stopped.remove(&n).expect("node was stopped");
+        let shards = devs
+            .into_iter()
+            .zip(&self.addrs[n])
+            .enumerate()
+            .map(|(i, (d, a))| ShardSpec {
+                device_id: n as u32 * 1000 + i as u32,
+                device: DeviceSpec::Existing(d),
+                listener: std::net::TcpListener::bind(a).unwrap(),
+            })
+            .collect();
+        self.nodes[n] = Some(start(NodeConfig {
+            node_id: n as u32,
+            meta: self.meta_addr,
+            shards,
+            cpus: Vec::new(),
+            defer_max: None,
+        }));
     }
 
     /// Stops everything; returns the final map and each device by id.
@@ -346,6 +378,83 @@ fn a_node_fails_writes_continue_and_backfill_restores_copies() {
     assert!(!map.nodes[&2].up);
     let chunks: Vec<(u128, u64)> = (1..=2u128)
         .flat_map(|v| (0..12u64).map(move |c| (v, c)))
+        .collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// Waits until no PG is backfilling, from a client's view of the map.
+async fn wait_backfilled(cl: &std::rc::Rc<Client>) {
+    let t = std::time::Instant::now();
+    loop {
+        cl.refresh_map().await.unwrap();
+        let m = cl.map();
+        let pending = m.pgs.values().filter(|p| p.acting != p.up).count();
+        if pending == 0 {
+            return;
+        }
+        assert!(
+            t.elapsed().as_secs() < 30,
+            "{pending} PGs still backfilling"
+        );
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[test]
+fn a_node_returns_with_stale_data_and_is_refilled() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let v1 = pattern(21, 8 * CHUNK as usize);
+    let v1c = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+        })
+    })
+    .join()
+    .unwrap();
+    c.kill(3);
+    // While node 3 is away, volume 1 is overwritten and volume 2 written;
+    // node 3's devices keep the old volume 1 and no volume 2.
+    let v1b = pattern(22, 8 * CHUNK as usize);
+    let v2 = pattern(23, 8 * CHUNK as usize);
+    let (v1bc, v2c) = (v1b.clone(), v2.clone());
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            cl.write(POOL, 1, 0, v1bc).await.unwrap();
+            cl.write(POOL, 2, 0, v2c).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.restart(3);
+    let (v1r, v2r) = (v1b.clone(), v2.clone());
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 7).await.unwrap();
+            // Node 3 is placed again; it must be refilled before it serves,
+            // and the members that stood in for it are then dropped.
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+            assert!(cl.map().nodes[&3].up);
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+            assert!(cl.read(POOL, 2, 0, v2r.len() as u64).await.unwrap() == v2r);
+        })
+    })
+    .join()
+    .unwrap();
+    let (map, devs) = c.stop();
+    assert!(
+        map.pgs
+            .values()
+            .any(|p| p.acting.iter().any(|d| map.devices[d].node == 3)),
+        "node 3 serves PGs again"
+    );
+    let chunks: Vec<(u128, u64)> = (1..=2u128)
+        .flat_map(|v| (0..8u64).map(move |c| (v, c)))
         .collect();
     copies_agree(&map, devs, &chunks);
 }

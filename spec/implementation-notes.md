@@ -18,7 +18,7 @@ Built, on branch `impl/hs0-hs1`:
 |---|---|---|
 | HS0 | Engine (general objects, group commit, deferred writes, checkpoints, recovery), device back ends (memory, pread/pwrite, io_uring `O_DIRECT`, fault injection), crash test, benchmarks | NVMe passthrough back end and the G5 comparison with SPDK (needs a spare namespace, I11) |
 | HS1 | Placement, wire protocol, reactor, cluster map and map service, storage daemon with replication and group commit, client, `hyperstord` and `hyperstor-meta` binaries, end-to-end tests and benchmark | Raft for the map service (I18), `.meta` header objects and volume leases (design §4.2, §9) |
-| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy, failure end-to-end test, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | Read leases and map leases (§8.4, closes I20), PG log and delta recovery (§8.3), scrub, blocklist and forced takeovers (§9), throttling |
+| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy (including a node that returns with stale data: reset, refilled, stand-ins dropped), failure end-to-end tests, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | Read leases and map leases (§8.4, closes I20), PG log and delta recovery (§8.3), scrub, blocklist and forced takeovers (§9), throttling |
 
 ### To discuss with the owner
 
@@ -59,7 +59,23 @@ Built, on branch `impl/hs0-hs1`:
 | I14 | **The deferral threshold is a per-shard setting** (`Shard::set_defer_max`), 64 KiB by default as D22 says. | On flash, deferral writes small overwrites twice; redirecting them reached 1.6× the 4 KiB write throughput on dev-1 (benchmarks.md). | **Proposed design change:** defer only on hard disks (D29), and redirect every write on flash, as BlueStore does on SSDs. The cost is fragmentation of chunk objects, which matters little for flash reads. Needs the owner's agreement. |
 | I13 | **A checkpoint must fit in 200 extents** (named in one superblock). | Keeps the superblock one block. | On a badly fragmented shard a checkpoint can fail with `NoSpace`; a chained extent list removes the limit. |
 
-### Bugs the crash test found
+### Bugs the tests found
+
+Across the session, tests found five bugs before anything else did:
+
+1. Engine: `[Delete, Touch]` deleted the object (crash test).
+2. Engine: recovery checked freed and reused blocks, dropping an
+   acknowledged group (crash test).
+3. Placement: positional EC placement moved twice the necessary shards
+   (movement test, I16).
+4. Daemon: a write could be acknowledged without a target that had just
+   finished backfilling (cluster test, 2 in 25 runs; I26).
+5. Reactor: a task that yields in a loop starved all I/O, because each
+   pass ran ready tasks until none were left (the returning-node cluster
+   test hung). Each pass now runs only the tasks ready when it starts;
+   `a_yielding_task_does_not_starve_io` guards it.
+
+### Details of the engine bugs
 
 The randomized crash test (`crates/hyperstor-engine/tests/crash.rs`) found
 two engine bugs before any other test did:
