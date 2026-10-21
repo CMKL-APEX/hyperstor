@@ -112,11 +112,12 @@ fn install_manage_and_fail_a_node() {
     // With --root, the data directory is made under the root like every
     // other path; the processes here use the final path, so make it.
     std::fs::create_dir_all(&data).unwrap();
-    let base = free_base(5);
-    let (api_port, map_port, node_port) = (
+    let base = free_base(8);
+    let (api_port, map_port, node_port, admin_port) = (
         base.to_string(),
         (base + 1).to_string(),
         (base + 2).to_string(),
+        (base + 5).to_string(),
     );
 
     let first = install(
@@ -135,6 +136,8 @@ fn install_manage_and_fail_a_node() {
             &map_port,
             "--node-port",
             &node_port,
+            "--admin-port",
+            &admin_port,
         ],
     );
     let text = String::from_utf8_lossy(&first.stdout);
@@ -254,6 +257,32 @@ fn install_manage_and_fail_a_node() {
     let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "8"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("read and verified"), "{out}");
+    // Each storage node's admin port counts what it served (D58, D59).
+    let metrics = |n: u16| {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", base + 5 + n)).unwrap();
+        s.write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let mut t = String::new();
+        s.read_to_string(&mut t).unwrap();
+        t
+    };
+    let counted: u64 = (0..3)
+        .map(|n| {
+            let t = metrics(n);
+            assert!(t.starts_with("HTTP/1.1 200 OK"), "{t}");
+            t.lines()
+                .filter(|l| {
+                    l.starts_with("hyperstor_request_bytes_total{") && l.contains("kind=\"write\"")
+                })
+                .map(|l| l.rsplit(' ').next().unwrap().parse::<u64>().unwrap())
+                .sum::<u64>()
+        })
+        .sum();
+    // 8 MiB written as client writes to primaries (plus whatever the
+    // waits above didn't write: nothing).
+    assert_eq!(counted, 8 << 20, "client write bytes counted by primaries");
+
     let (code, out) = ctl(&bin, &api, &["pools"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("replicated"), "{out}");

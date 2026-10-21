@@ -528,3 +528,29 @@ Throughput changed by less than 3% everywhere except reads on 4 CPUs
    reactor entirely).
 4. Not measured yet: load on storage nodes' admin ports (metrics aren't
    built), real devices, and the 50 UI watchers of G17.
+
+## 2026-10-21: request counters on the I/O path, A/B against main (dev-2)
+
+Question: do the storage nodes' new metric counters (I49: two relaxed
+atomic adds per request, gauges copied once a second) cost anything?
+`hyperstor-bench cluster mem 1` (three storage nodes of one reactor on
+memory devices, 3 s per test), built from `main` (`cdff61f`) and from
+this branch, run alternately twice:
+
+```sh
+HS_BENCH_SECS=3 hyperstor-bench cluster mem 1
+```
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7485; 154 | 7563; 154 | 7548; 155 | 7640; 151 |
+| 4 KiB writes, QD32 | 26839; 2557 | 26362; 2734 | 25563; 2897 | 26893; 2640 |
+| 4 KiB reads, QD1 | 18789; 65 | 18813; 65 | 18884; 66 | 19053; 64 |
+| 4 KiB reads, QD32 | 53973; 1337 | 53689; 1341 | 54372; 1325 | 54206; 1336 |
+| 1 MiB writes, QD4 | 514; 12724 | 518; 12662 | 511; 13366 | 525; 12251 |
+| 1 MiB reads, QD4 | 1466; 4774 | 1525; 4269 | 1501; 4457 | 1520; 4460 |
+
+### Findings
+
+1. **No measurable cost:** every difference is smaller than the
+   difference between the two runs of the same build.

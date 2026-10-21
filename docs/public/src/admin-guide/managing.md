@@ -57,3 +57,35 @@ writes 64 MiB of random data to a new volume of the first pool (or
 each phase. A mismatch or an error exits with status 1. It is a quick
 end-to-end check; for measurements use
 [`hyperstor-bench`](benchmarking.md).
+
+## Metrics
+
+Each storage node started with `--admin ADDR` (the installer uses
+`127.0.0.1:8853` for node 0, `8854` for node 1, and so on) serves
+metrics for Prometheus:
+
+```sh
+curl -s http://127.0.0.1:8853/metrics | grep requests_total
+```
+
+```text
+hyperstor_requests_total{node="0",device="0",kind="write"} 1024
+hyperstor_requests_total{node="0",device="0",kind="read"} 1024
+hyperstor_requests_total{node="0",device="0",kind="repl"} 2048
+hyperstor_requests_total{node="0",device="0",kind="push"} 0
+```
+
+| Metric | Meaning |
+|---|---|
+| `hyperstor_requests_total{kind}` | Requests served: `write` and `read` from clients (as primary), `repl` from primaries (as replica), `push` during backfill |
+| `hyperstor_request_bytes_total{kind}` | Data bytes in those requests |
+| `hyperstor_device_objects` | Objects on the device |
+| `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |
+| `hyperstor_log_used_bytes`, `hyperstor_log_bytes` | Log in use since the last checkpoint, and its size |
+| `hyperstor_commits_total`, `hyperstor_checkpoints_total` | Engine commit rounds and checkpoints |
+| `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
+
+Gauges are updated once a second. `GET /health` answers `ok` while the
+process runs. The port has no authentication: it only reads, but keep
+it on the management network.
+

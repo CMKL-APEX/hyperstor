@@ -341,6 +341,12 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Metrics on each storage node's admin port"
+spec = ["operations.md §16", "administration.md §23.3", "D58", "D59"]
+status = "partial"
+tests = ["hyperstor_daemon::metrics::tests::render_labels_every_shard_and_kind"]
+
+[[milestone.item]]
 what = "Certificates, identities and roles for the API"
 spec = ["administration.md §23.8", "D53", "D56"]
 status = "partial"

@@ -1,6 +1,6 @@
 //! `hyperstor-install check|install|uninstall [--all-in-one] [--nodes N]
 //!                   [--size-gib G] [--data-dir DIR] [--api-port P]
-//!                   [--map-port P] [--node-port P] [--root DIR] [--no-start]`
+//!                   [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]`
 //!
 //! The installer of spec/administration.md §23.4: one linear file,
 //! non-interactive and convergent. Every run compares what is installed
@@ -31,7 +31,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]";
 
 const BINARIES: [&str; 3] = ["hyperstor-meta", "hyperstord", "hyperstorctl"];
 
@@ -55,6 +55,7 @@ struct Settings {
     api_port: u16,
     map_port: u16,
     node_port: u16,
+    admin_port: u16,
 }
 
 impl Settings {
@@ -67,6 +68,7 @@ impl Settings {
             api_port: 8850,
             map_port: 8849,
             node_port: 9100,
+            admin_port: 8853,
         }
     }
 
@@ -85,6 +87,7 @@ impl Settings {
                 "api_port" => self.api_port = v.parse().unwrap_or(self.api_port),
                 "map_port" => self.map_port = v.parse().unwrap_or(self.map_port),
                 "node_port" => self.node_port = v.parse().unwrap_or(self.node_port),
+                "admin_port" => self.admin_port = v.parse().unwrap_or(self.admin_port),
                 _ => {}
             }
         }
@@ -93,14 +96,15 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\n",
+             all_in_one = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\n",
             self.all_in_one,
             self.nodes,
             self.size_gib,
             self.data_dir,
             self.api_port,
             self.map_port,
-            self.node_port
+            self.node_port,
+            self.admin_port
         )
     }
 }
@@ -138,13 +142,16 @@ fn main() {
             "--api-port" => "api_port",
             "--map-port" => "map_port",
             "--node-port" => "node_port",
+            "--admin-port" => "admin_port",
             _ => usage(),
         };
         let v = val();
         let ok = match key {
             "nodes" => v.parse::<u32>().is_ok_and(|n| (1..=16).contains(&n)),
             "size_gib" => v.parse::<u64>().is_ok_and(|n| n >= 1),
-            "api_port" | "map_port" | "node_port" => v.parse::<u16>().is_ok_and(|n| n > 0),
+            "api_port" | "map_port" | "node_port" | "admin_port" => {
+                v.parse::<u16>().is_ok_and(|n| n > 0)
+            }
             _ => v.starts_with('/'),
         };
         if !ok {
@@ -327,6 +334,7 @@ fn check(s: &Settings) -> bool {
     let busy: Vec<String> = [s.api_port, s.map_port]
         .into_iter()
         .chain((0..s.nodes).map(|n| s.node_port + n as u16))
+        .chain((0..s.nodes).map(|n| s.admin_port + n as u16))
         .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_err())
         .map(|p| p.to_string())
         .collect();
@@ -500,10 +508,11 @@ fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
         out.push((
             format!("/etc/hyperstor/node-{n}.env"),
             format!(
-                "HS_ARGS=--node {n} --meta 127.0.0.1:{} --shard 127.0.0.1:{}={data}/node-{n}.img:{}\n",
+                "HS_ARGS=--node {n} --meta 127.0.0.1:{} --shard 127.0.0.1:{}={data}/node-{n}.img:{} --admin 127.0.0.1:{}\n",
                 s.map_port,
                 s.node_port + n as u16,
-                s.size_gib
+                s.size_gib,
+                s.admin_port + n as u16
             ),
             0o644,
         ));

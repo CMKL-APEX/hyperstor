@@ -19,7 +19,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55 and D61–D68 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I48, and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I49, and every host check (G1–G20,
   FG1–FG2).
 - **Next:** cache-pool expiry and eviction (the rest of D45; open
   question in I40), paged checkpoints (D47), the copy-on-write B+tree

@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--root DIR] [--no-start]
+usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]
 ```
 
 | Command | Does |
@@ -22,6 +22,7 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--s
 | `--api-port P` | 8850 | The cluster API, on `127.0.0.1` |
 | `--map-port P` | 8849 | The map service, on `127.0.0.1` |
 | `--node-port P` | 9100 | Storage node `n` listens on `P + n`, on `127.0.0.1` |
+| `--admin-port P` | 8853 | Storage node `n` serves its metrics on `P + n`, on `127.0.0.1` |
 | `--root DIR` | `/` | Write every file under DIR instead (for packaging and tests); no users or services are touched |
 | `--no-start` | off | Install the files but don't enable or start the services |
 

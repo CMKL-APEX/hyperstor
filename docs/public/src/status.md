@@ -82,6 +82,7 @@ covered by tests that run on every change.
 | Cluster health with its reasons, from what clients see | Done |
 | Cluster API (status, placement groups, taking devices out and in), callable with curl | In progress |
 | Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test | In progress |
+| Metrics on each storage node's admin port | In progress |
 | Certificates, identities and roles for the API | In progress |
 
 ## AD1: Installer and cluster join
