@@ -333,7 +333,7 @@ impl ShardState {
                     }
                 }
             }
-            let pending = self.shard.borrow().stats().pending_blocks;
+            let pending = self.shard.borrow().pending_blocks();
             if pending > 4096 {
                 let _ = self.shard.borrow_mut().apply_deferred();
             }

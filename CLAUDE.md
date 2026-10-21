@@ -62,7 +62,9 @@ design is split by topic, with section numbers kept across files.
 - New behaviour comes with tests; anything that persists data or crosses
   a crash gets a randomized test against a model (see the engine's crash
   test). Record measurements in `spec/benchmarks.md` with the host and
-  the command, and decisions in `spec/implementation-notes.md`.
+  the command, and decisions in `spec/implementation-notes.md`. To gather
+  data for the owner's decisions, use the `collect-decision-data` skill
+  (`.claude/skills/`) and `scripts/collect-decision-data.sh`.
 - No SPDK or DPDK dependency (D3). The data path is hyperstor's own
   io_uring reactor, with no third-party async runtime; tokio is for the
   control path only.

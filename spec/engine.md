@@ -105,7 +105,8 @@ log device, which has its own superblock naming the data device (§6.2).
   blocks as extent runs while it has few, and as a dense array of
   (physical block, checksum), 8 bytes per block, once a run list would
   cost more; a rewrite that makes it contiguous switches it back. Holes in
-  a dense map hold a reserved block number. *Not built yet.*
+  a dense map hold a reserved block number. *Built* (implementation-notes.md
+  I34).
 - **Volume chunk versions.** For `vol`, the version is the volume's
   snapshot epoch:
   - `branch` is a volume within a lineage (D21). A new volume has its own
@@ -139,10 +140,15 @@ log device, which has its own superblock naming the data device (§6.2).
 - A write is durable when its log record is: one write with FUA, or a
   flush on devices without power-loss protection. The engine batches the
   records of concurrent writes into one log write.
-- **Checkpoint.** The index is updated in memory, and dirty pages are
-  written copy-on-write with a new root when the log is half full or
-  every 30 s. The root is recorded in the log, and the log is trimmed up
-  to it. Recovery after a crash replays the log from the last root.
+- **Checkpoint** (as built, I33). A *fuzzy* checkpoint: it starts when a
+  quarter of the log is used, records the log position `L`, and writes
+  the index as a stream of objects, a slice per commit round, while
+  commits continue. A directory listing the stream's extents is written
+  last, then the superblock names the directory with the log's head at
+  `L`. Recovery loads the stream and replays the log from `L`: every
+  record sets state absolutely, so objects written to the stream at
+  different moments converge. If the log reaches three quarters before
+  the checkpoint is done, it is finished at once.
 
 ### 7.4 Allocation and space
 

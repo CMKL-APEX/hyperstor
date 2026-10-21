@@ -59,6 +59,22 @@ impl Lat {
 }
 
 fn row(name: &str, ops: u64, elapsed: Duration, bytes_per_op: u64, lat: &mut Lat) {
+    if std::env::var("HS_TAIL").is_ok() {
+        let p999 = lat.pct(0.999);
+        let max = lat.0.iter().max().map_or(0.0, |d| d.as_secs_f64() * 1e6);
+        let total: f64 = lat.0.iter().map(|d| d.as_secs_f64()).sum();
+        let slow: f64 = lat
+            .0
+            .iter()
+            .filter(|d| d.as_micros() > 1000)
+            .map(|d| d.as_secs_f64())
+            .sum();
+        eprintln!(
+            "{name}: p99.9 {p999:.0} µs, max {max:.0} µs, {:.1}% of time in calls over 1 ms ({} calls)",
+            100.0 * slow / total.max(1e-9),
+            lat.0.iter().filter(|d| d.as_micros() > 1000).count()
+        );
+    }
     let s = elapsed.as_secs_f64();
     println!(
         "| {name} | {:.0} | {:.1} | {:.0} | {:.0} |",
@@ -159,7 +175,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
             sh.commit(lists).unwrap();
             lat.0.push(s.elapsed());
             ops += batch as u64;
-            if sh.stats().pending_blocks > 4096 {
+            if sh.pending_blocks() > 4096 {
                 sh.apply_deferred().unwrap();
             }
         }
@@ -362,7 +378,9 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 shards,
                 cpus,
                 meta_blocked: None,
-                defer_max: None,
+                defer_max: std::env::var("HS_DEFER_MAX")
+                    .ok()
+                    .and_then(|v| v.parse().ok()),
             })
         })
         .collect();
@@ -470,11 +488,12 @@ fn index_suite(path: &Path) {
         sh.checkpoint().unwrap();
         let took = t.elapsed();
         let st = sh.stats();
+        let ix = sh.index_stats();
         let rss = rss_bytes().saturating_sub(base);
         let per_tib = |bytes: u64| bytes as f64 * 1024.0 / (1u64 << 30) as f64;
         println!(
             "| {label} | {} | {:.1} | {:.1} | {:.0} | {:.1} | {:.1} |",
-            st.runs,
+            ix.runs,
             rss as f64 / (1 << 20) as f64,
             st.checkpoint_bytes as f64 / (1 << 20) as f64,
             took.as_secs_f64() * 1e3,
@@ -614,17 +633,18 @@ fn decisions_suite(dir: &Path, secs: f64) {
             sh.checkpoint().unwrap();
             let ms = t.elapsed().as_secs_f64() * 1e3;
             let st = sh.stats();
+            let ix = sh.index_stats();
             println!(
                 "| {} | {:.2}x | {} | {} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} |",
                 if dense { "on" } else { "off" },
                 frac,
-                st.runs,
-                st.dense_objects,
-                st.index_map_bytes as f64 / (1 << 20) as f64,
+                ix.runs,
+                ix.dense_objects,
+                ix.map_bytes as f64 / (1 << 20) as f64,
                 rss_bytes().saturating_sub(base) as f64 / (1 << 20) as f64,
                 st.checkpoint_bytes as f64 / (1 << 20) as f64,
                 ms,
-                st.index_map_bytes as f64 * 1024.0 / (gib << 30) as f64,
+                ix.map_bytes as f64 * 1024.0 / (gib << 30) as f64,
             );
         }
         // Read cost: 4 KiB random reads on the aged chunks (page cache warm).
@@ -657,13 +677,18 @@ fn decisions_suite(dir: &Path, secs: f64) {
 
     println!("### Commit latency while checkpoints run: whole against fuzzy (memory device)\n");
     println!(
-        "2 GiB of 4 MiB chunks, aged by one full pass of random 4 KiB overwrites (dense maps on), then {secs} s of batches of 32 random 4 KiB overwrites. A 16 MiB log makes checkpoints frequent. \"Whole\" writes each checkpoint in one round (as before); \"fuzzy\" writes 256 KiB per round.\n"
+        "2 GiB of 4 MiB chunks, aged by one full pass of random 4 KiB overwrites (dense maps on), then {secs} s of batches of 32 random 4 KiB overwrites. A 16 MiB log makes checkpoints frequent. \"Whole\" writes each checkpoint in one round (as before); \"fuzzy N\" writes N bytes per round.\n"
     );
     println!(
-        "| Checkpoint | commits | checkpoints | slices | forced | p50 µs | p99 µs | p99.9 µs | max µs |"
+        "| Checkpoint | commits | checkpoints | slices | forced | p50 µs | p99 µs | p99.9 µs | max µs | metadata bytes per write |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|");
-    for (label, slice) in [("whole", usize::MAX), ("fuzzy", 256 * 1024)] {
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    for (label, slice) in [
+        ("whole", usize::MAX),
+        ("fuzzy 1 MiB", 1 << 20),
+        ("fuzzy 256 KiB", 256 * 1024),
+        ("fuzzy 64 KiB", 64 * 1024),
+    ] {
         let gib = 2u64;
         let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
         let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new((gib + 1) << 30));
@@ -703,8 +728,11 @@ fn decisions_suite(dir: &Path, secs: f64) {
         }
         let st = sh.stats();
         let max = lat.0.iter().max().unwrap().as_secs_f64() * 1e6;
+        let writes = lat.0.len() as u64 * 32;
+        let meta = (st.log_blocks_written - before.log_blocks_written) * BLOCK as u64
+            + (st.checkpoint_bytes_written - before.checkpoint_bytes_written);
         println!(
-            "| {label} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            "| {label} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
             lat.0.len(),
             st.checkpoints - before.checkpoints,
             st.checkpoint_slices - before.checkpoint_slices,
@@ -712,7 +740,8 @@ fn decisions_suite(dir: &Path, secs: f64) {
             lat.pct(0.5),
             lat.pct(0.99),
             lat.pct(0.999),
-            max
+            max,
+            meta as f64 / writes as f64
         );
     }
     println!();
@@ -741,6 +770,220 @@ fn decisions_suite(dir: &Path, secs: f64) {
         }
     }
     let _ = std::fs::remove_file(&path);
+}
+
+fn proc_io(field: &str) -> u64 {
+    std::fs::read_to_string("/proc/self/io")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix(field).and_then(|v| v.trim().parse().ok()))
+        .unwrap_or(0)
+}
+
+/// G13 baseline: the index's update pattern on redb, a copy-on-write
+/// B+tree, on a file on the same disk. 2 GiB of data's worth of block-map
+/// entries (524,288), then random updates in transactions of 32 (group
+/// commit), made durable each time.
+fn redb_suite(dir: &Path, secs: f64) {
+    use redb::{Database, Durability, TableDefinition};
+    const MAP: TableDefinition<u64, u64> = TableDefinition::new("blockmap");
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join("hs-redb.db");
+    let _ = std::fs::remove_file(&path);
+    let db = Database::create(&path).unwrap();
+    let entries = 524_288u64;
+    {
+        let tx = db.begin_write().unwrap();
+        {
+            let mut t = tx.open_table(MAP).unwrap();
+            for k in 0..entries {
+                t.insert(k, k << 32).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+    println!(
+        "| Store | updates per commit | commits/s | updates/s | p50 µs | p99 µs | bytes written per update |"
+    );
+    println!("|---|---|---|---|---|---|---|");
+    for batch in [1usize, 32] {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let wchar0 = proc_io("wchar:");
+        let mut lat = Lat(Vec::new());
+        let t = Instant::now();
+        let mut updates = 0u64;
+        while t.elapsed().as_secs_f64() < secs {
+            let s = Instant::now();
+            let mut tx = db.begin_write().unwrap();
+            let _ = tx.set_durability(Durability::Immediate);
+            {
+                let mut tab = tx.open_table(MAP).unwrap();
+                for _ in 0..batch {
+                    let k = rng.random_range(0..entries);
+                    tab.insert(k, (rng.random::<u32>() as u64) << 32 | 7)
+                        .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+            lat.0.push(s.elapsed());
+            updates += batch as u64;
+        }
+        let el = t.elapsed();
+        let wbytes = proc_io("wchar:") - wchar0;
+        println!(
+            "| redb (copy-on-write B+tree), fsync per commit | {batch} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            lat.0.len() as f64 / el.as_secs_f64(),
+            updates as f64 / el.as_secs_f64(),
+            lat.pct(0.5),
+            lat.pct(0.99),
+            wbytes as f64 / updates as f64
+        );
+    }
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+    // The engine on the same disk: same update pattern, but each update is
+    // also a 4 KiB data write (the redb rows are metadata only).
+    let path = dir.join("hs-engine.img");
+    let gib = 2u64;
+    let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+    let mut sh = scratch_shard(&path, gib + 1, true);
+    let mut rng = SmallRng::seed_from_u64(2);
+    fill(&mut sh, objects);
+    for batch in [1usize, 32] {
+        let before = sh.stats();
+        let data = vec![0xa5u8; BLOCK];
+        let mut lat = Lat(Vec::new());
+        let t = Instant::now();
+        let mut updates = 0u64;
+        while t.elapsed().as_secs_f64() < secs {
+            let lists = (0..batch)
+                .map(|_| OpList {
+                    key: key(rng.random_range(0..objects)),
+                    ops: vec![Op::Write {
+                        off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
+                        data: data.clone(),
+                    }],
+                })
+                .collect();
+            let s = Instant::now();
+            sh.commit(lists).unwrap();
+            lat.0.push(s.elapsed());
+            updates += batch as u64;
+        }
+        let el = t.elapsed();
+        let st = sh.stats();
+        let meta = (st.log_blocks_written - before.log_blocks_written) * BLOCK as u64
+            + (st.checkpoint_bytes_written - before.checkpoint_bytes_written);
+        println!(
+            "| hyperstor engine (log + fuzzy checkpoint), one flush per commit, with the 4 KiB data | {batch} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} (metadata only) |",
+            lat.0.len() as f64 / el.as_secs_f64(),
+            updates as f64 / el.as_secs_f64(),
+            lat.pct(0.5),
+            lat.pct(0.99),
+            meta as f64 / updates as f64
+        );
+    }
+    drop(sh);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// How long writes stall when a primary's node dies: a client writes one
+/// volume continuously; its chunk 0's primary node is stopped; the gap is
+/// from the stop to the first write that succeeds after it. Data for D40
+/// (peer reports would shorten detection).
+fn failover_suite() {
+    use hyperstor_daemon::*;
+    use hyperstor_meta::{ClusterMap, replicated_pool};
+    println!("| Map lease | down after | stall p50 ms | stall max ms | runs |");
+    println!("|---|---|---|---|---|");
+    for (lease_ms, down_ms) in [(2000u64, 3000u64), (500, 700)] {
+        let mut stalls = Vec::new();
+        for run in 0..3u64 {
+            let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let meta = meta_l.local_addr().unwrap();
+            let mut map = ClusterMap::new(1);
+            let mut listeners = Vec::new();
+            for n in 0..4u32 {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                map.add_node(n, &[l.local_addr().unwrap()], 0);
+                listeners.push(l);
+            }
+            map.add_pool(replicated_pool(1, "vol", 3, 64));
+            map.recompute();
+            let probe = map.clone();
+            std::thread::spawn(move || {
+                hyperstor_reactor::block_on(async move {
+                    let m = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease_ms));
+                    hyperstor_reactor::spawn(m.clone().liveness(Duration::from_millis(down_ms)));
+                    hyperstor_reactor::spawn(m.clone().publisher());
+                    hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), m)
+                        .await
+                })
+            });
+            let mut nodes: Vec<Option<NodeHandle>> = listeners
+                .into_iter()
+                .enumerate()
+                .map(|(n, l)| {
+                    Some(start(NodeConfig {
+                        node_id: n as u32,
+                        meta,
+                        shards: vec![ShardSpec {
+                            device_id: n as u32 * 1000,
+                            device: DeviceSpec::Mem { bytes: 256 << 20 },
+                            listener: l,
+                        }],
+                        cpus: Vec::new(),
+                        meta_blocked: None,
+                        defer_max: None,
+                    }))
+                })
+                .collect();
+            // The volume whose chunk 0 has its primary on some node.
+            let vol = 1000 + run as u128;
+            let pg = hyperstor_placement::pg_of(vol, 0, 64);
+            let victim = probe.devices[&probe.pg(1, pg).unwrap().primary().unwrap()].node as usize;
+            let (tx, rx) = std::sync::mpsc::channel::<Instant>();
+            let writer = std::thread::spawn(move || {
+                hyperstor_reactor::block_on(async move {
+                    let cl = hyperstor_client::Client::connect(meta, 9).await.unwrap();
+                    let data = vec![1u8; 4096];
+                    // Warm up, then signal and keep writing.
+                    for _ in 0..50 {
+                        let _ = cl.write(1, vol, 0, data.clone()).await;
+                    }
+                    let mut killed: Option<Instant> = None;
+                    loop {
+                        if killed.is_none() {
+                            killed = rx.try_recv().ok();
+                        }
+                        let ok = cl.write(1, vol, 0, data.clone()).await.is_ok();
+                        if let Some(k) = killed
+                            && ok
+                        {
+                            return k.elapsed();
+                        }
+                        if killed.is_some_and(|k| k.elapsed() > Duration::from_secs(30)) {
+                            return Duration::from_secs(30);
+                        }
+                    }
+                })
+            });
+            std::thread::sleep(Duration::from_millis(1500));
+            nodes[victim].take().unwrap().stop();
+            tx.send(Instant::now()).unwrap();
+            stalls.push(writer.join().unwrap().as_secs_f64() * 1e3);
+            for n in nodes.into_iter().flatten() {
+                n.stop();
+            }
+        }
+        stalls.sort_by(f64::total_cmp);
+        println!(
+            "| {lease_ms} ms | {down_ms} ms | {:.0} | {:.0} | {} |",
+            stalls[stalls.len() / 2],
+            stalls[stalls.len() - 1],
+            stalls.len()
+        );
+    }
 }
 
 fn main() {
@@ -818,6 +1061,13 @@ fn main() {
         Some("decisions") => {
             // hyperstor-bench decisions <scratch dir with 6 GiB free>
             decisions_suite(Path::new(args.get(2).expect("scratch directory")), secs);
+        }
+        Some("failover") => {
+            failover_suite();
+        }
+        Some("redb") => {
+            // hyperstor-bench redb <scratch dir>: G13 baseline
+            redb_suite(Path::new(args.get(2).expect("scratch directory")), secs);
         }
         Some("index") => {
             // hyperstor-bench index <file on a filesystem with 2 GiB free>

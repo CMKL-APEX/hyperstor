@@ -46,8 +46,9 @@ pub enum Loc {
 /// Physical block number marking a hole in a dense map.
 const HOLE: u32 = u32::MAX;
 /// Approximate memory per run in the runs representation: the map entry,
-/// the run, and the checksum vector's allocation (benchmarks.md, index).
-pub const RUN_OVERHEAD: u64 = 96;
+/// the run, and the checksum vector's allocation. Measured at about 128
+/// bytes (benchmarks.md, index aging: process growth per run).
+pub const RUN_OVERHEAD: u64 = 128;
 /// Largest object a dense map is used for, in blocks (4 GiB).
 const MAX_DENSE_SPAN: u64 = 1 << 20;
 

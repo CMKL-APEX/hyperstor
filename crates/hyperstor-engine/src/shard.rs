@@ -36,8 +36,10 @@ const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
 const LOG_MAGIC: u32 = 0x4853_4c47; // "HSLG"
 const CKPT_MAGIC: u64 = 0x4853_434b_5054_3033; // "HSCKPT03": streamed objects, fuzzy (D43)
 const DIR_MAGIC: u64 = 0x4853_434b_4449_5231; // "HSCKDIR1"
-/// Checkpoint bytes written per commit round while a fuzzy checkpoint runs.
-const SLICE_BYTES: usize = 256 * 1024;
+/// Checkpoint bytes written per commit round while a fuzzy checkpoint runs
+/// (64 KiB had the best tail latency, benchmarks.md); eight times that once
+/// half the log is used, so the checkpoint finishes before it is forced.
+const SLICE_BYTES: usize = 64 * 1024;
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
@@ -191,12 +193,22 @@ pub struct ShardStats {
     /// synchronously because the log ran short.
     pub checkpoint_slices: u64,
     pub checkpoint_forced: u64,
+    /// Log blocks written since the shard was opened.
+    pub log_blocks_written: u64,
+    /// Checkpoint bytes written (blobs and directories) since opened.
+    pub checkpoint_bytes_written: u64,
+}
+
+/// Totals over the whole index. Computing them walks every block map, so
+/// they are separate from [`ShardStats`], which costs nothing to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexStats {
     /// Extent runs in the index (one per contiguous mapped range).
     pub runs: u64,
     /// Objects whose block map is dense (D43).
     pub dense_objects: u64,
     /// Estimated memory of every block map, in bytes.
-    pub index_map_bytes: u64,
+    pub map_bytes: u64,
 }
 
 /// One shard of a device.
@@ -231,6 +243,8 @@ pub struct Shard {
     /// A fuzzy checkpoint in progress.
     fuzzy: Option<Fuzzy>,
     slice_bytes: usize,
+    opened_lsn: u64,
+    ckpt_written: u64,
     checkpoint_slices: u64,
     checkpoint_forced: u64,
     checkpoints: u64,
@@ -324,6 +338,8 @@ impl Shard {
             ckpt_len: 0,
             fuzzy: None,
             slice_bytes: SLICE_BYTES,
+            opened_lsn: 0,
+            ckpt_written: 0,
             checkpoint_slices: 0,
             checkpoint_forced: 0,
             checkpoints: 0,
@@ -367,6 +383,8 @@ impl Shard {
         sh.apply_deferred()?;
         sh.salt = random_u32();
         sh.checkpoint()?;
+        sh.opened_lsn = sh.tail_lsn;
+        sh.ckpt_written = 0;
         Ok(sh)
     }
 
@@ -651,7 +669,12 @@ impl Shard {
             }
             self.checkpoint_inner()?;
         } else if self.fuzzy.is_some() {
-            self.checkpoint_slice(self.slice_bytes)?;
+            let slice = if used > self.region.log_blocks / 2 {
+                self.slice_bytes.saturating_mul(8)
+            } else {
+                self.slice_bytes
+            };
+            self.checkpoint_slice(slice)?;
         } else if used > self.region.log_blocks / 4 {
             self.checkpoint_start()?;
             self.checkpoint_slice(self.slice_bytes)?;
@@ -1059,6 +1082,7 @@ impl Shard {
                 done += n as usize;
             }
             self.dev.write_batch(&io)?;
+            self.ckpt_written += (whole * BLOCK) as u64;
             f.pending.drain(..take);
             f.runs.extend(runs);
             self.checkpoint_slices += 1;
@@ -1105,6 +1129,7 @@ impl Shard {
             done += n as usize;
         }
         self.dev.write_batch(&io)?;
+        self.ckpt_written += nblocks * BLOCK as u64;
         // Blob, directory, and every deferred write applied since the
         // start become durable before the superblock refers to them.
         self.dev.flush()?;
@@ -1272,25 +1297,26 @@ impl Shard {
             checkpoint_bytes: self.ckpt_len,
             checkpoint_slices: self.checkpoint_slices,
             checkpoint_forced: self.checkpoint_forced,
-            runs: self
-                .index
-                .objects
-                .values()
-                .map(|o| o.blocks.run_count())
-                .sum(),
-            dense_objects: self
-                .index
-                .objects
-                .values()
-                .filter(|o| o.blocks.is_dense())
-                .count() as u64,
-            index_map_bytes: self
-                .index
-                .objects
-                .values()
-                .map(|o| o.blocks.mem_bytes())
-                .sum(),
+            log_blocks_written: self.tail_lsn - self.opened_lsn,
+            checkpoint_bytes_written: self.ckpt_written,
         }
+    }
+
+    /// Totals over the whole index (walks every block map: not for the
+    /// I/O path).
+    pub fn index_stats(&self) -> IndexStats {
+        let mut st = IndexStats::default();
+        for o in self.index.objects.values() {
+            st.runs += o.blocks.run_count();
+            st.dense_objects += o.blocks.is_dense() as u64;
+            st.map_bytes += o.blocks.mem_bytes();
+        }
+        st
+    }
+
+    /// Deferred writes not yet applied in place (cheap).
+    pub fn pending_blocks(&self) -> u64 {
+        self.pending.len() as u64
     }
 
     pub fn region(&self) -> Region {

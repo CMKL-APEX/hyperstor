@@ -18,5 +18,5 @@ pub use align::{AlignedBuf, BLOCK};
 pub use blockmap::DensePolicy;
 pub use dev::{BlockDev, FaultDev, FileDev, MemDev, UringDev};
 pub use device::{DeviceConfig, DeviceInfo, format, open};
-pub use shard::{DEFER_MAX, Region, Shard, ShardStats};
+pub use shard::{DEFER_MAX, IndexStats, Region, Shard, ShardStats};
 pub use types::{Committed, EngineError, Namespace, ObjKey, ObjStat, Op, OpError, OpList};

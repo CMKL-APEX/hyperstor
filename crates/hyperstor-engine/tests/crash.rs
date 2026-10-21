@@ -287,7 +287,7 @@ fn run(seed: u64) -> usize {
                             Err(e) => panic!("seed {seed}: unexpected {e:?}"),
                         }
                     }
-                    if sh.stats().dense_objects > 0 {
+                    if sh.index_stats().dense_objects > 0 {
                         DENSE_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     let armed = crash_mid && b == batches - 1;
