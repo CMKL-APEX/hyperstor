@@ -266,6 +266,9 @@ struct ShardState {
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
     /// push replaces them; reported with the digest [`DAMAGED`].
     damaged: RefCell<HashSet<ObjKey>>,
+    /// PGs this device has peered as primary (I61): the PG epoch, and
+    /// whether peering is done (`false`: a request is peering it now).
+    peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
     /// Cache-pool PGs (D45), with the epoch this device last served each
     /// at. Serving one at a new epoch, or for the first time since start,
     /// first drops what this device holds of it: the copy may be older
@@ -407,6 +410,7 @@ impl ShardState {
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
             damaged: RefCell::new(HashSet::new()),
+            peered: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
             metrics,
@@ -546,7 +550,97 @@ impl ShardState {
         if !ok {
             return Err(err(Code::NotPrimary, &map, "not primary for this PG"));
         }
+        if primary
+            && pg.acting.len() > 1
+            && map.pools.get(&to.pool).map(|p| p.kind) != Some(hyperstor_meta::PoolKind::Cache)
+            && !self.peer_pg(to.pool, to.pg, pg).await
+        {
+            return Err(err(
+                Code::Unavailable,
+                &map,
+                "peering with the PG's members",
+            ));
+        }
         Ok(pg.clone())
+    }
+
+    /// Peering (replication.md §8.4, I61): before a primary serves a PG at
+    /// a new epoch, its members' copies are made the same as its own, so
+    /// a write that reached only some members when the previous primary
+    /// failed (and so was never acknowledged) can't be read from one copy
+    /// and later not from another. The first request peers; requests that
+    /// arrive meanwhile wait for it. Whether the PG may be served.
+    async fn peer_pg(&self, pool: u32, pg: u32, info: &PgInfo) -> bool {
+        let k = (pool, pg);
+        let t = std::time::Instant::now();
+        loop {
+            match self.peered.borrow().get(&k).copied() {
+                Some((e, true)) if e == info.epoch => return true,
+                Some((e, false)) if e == info.epoch => {}
+                _ => break,
+            }
+            if t.elapsed() > Duration::from_secs(2) {
+                return false;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+        self.peered.borrow_mut().insert(k, (info.epoch, false));
+        let ok = self.sync_members(pool, pg, info).await;
+        if ok {
+            self.peered.borrow_mut().insert(k, (info.epoch, true));
+        } else {
+            self.peered.borrow_mut().remove(&k);
+        }
+        ok
+    }
+
+    /// Pushes this device's copy of every object whose digest differs to
+    /// the acting members that differ. Objects whose own copy is damaged
+    /// are left to scrub.
+    async fn sync_members(&self, pool: u32, pg: u32, info: &PgInfo) -> bool {
+        let Some(table) = self.member_digests(pool, pg, info, false).await else {
+            return false;
+        };
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+        };
+        let others: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me)
+            .collect();
+        let keys: BTreeSet<ObjKey> = table.iter().flat_map(|m| m.keys().cloned()).collect();
+        for key in keys {
+            let mine = table[0].get(&key);
+            if mine == Some(&DAMAGED) {
+                continue;
+            }
+            for (i, m) in table.iter().enumerate().skip(1) {
+                if m.get(&key) == mine {
+                    continue;
+                }
+                let Some(addr) = map.device_addr(others[i - 1]) else {
+                    return false;
+                };
+                let Ok(conn) = self.peer(addr).await else {
+                    return false;
+                };
+                self.drained().await;
+                let Some((msg, data)) = self.push_of(to, &key) else {
+                    return false;
+                };
+                if !matches!(conn.call(&msg, &data).await, Ok((Msg::PushOk, _))) {
+                    return false;
+                }
+                metrics::ShardMetrics::add(&self.metrics.peer_pushes, 1);
+            }
+        }
+        true
     }
 
     async fn peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
@@ -1347,28 +1441,43 @@ impl ShardState {
             map_epoch: map.epoch,
             pg_epoch: info.epoch,
         };
-        let mut out = Vec::new();
+        // `None`: a member from before digests (a rolling upgrade), which
+        // can't be compared and is taken to agree, as before digests.
+        let mut theirs: Vec<Option<HashMap<ObjKey, u64>>> = Vec::new();
         for d in &info.acting {
             if *d == self.me {
                 continue;
             }
             let conn = self.peer(map.device_addr(*d)?).await.ok()?;
-            let Ok((Msg::DigestsOk, p)) = conn.call(&Msg::Digests { to, deep }, &[]).await else {
-                return None;
-            };
-            out.push(
-                decode_digests(&p)
-                    .ok()?
-                    .into_iter()
-                    .filter_map(|(k, d)| Some((engine_key(&to, &k).ok()?, d)))
-                    .collect(),
-            );
+            match conn.call(&Msg::Digests { to, deep }, &[]).await {
+                Ok((Msg::DigestsOk, p)) => theirs.push(Some(
+                    decode_digests(&p)
+                        .ok()?
+                        .into_iter()
+                        .filter_map(|(k, d)| Some((engine_key(&to, &k).ok()?, d)))
+                        .collect(),
+                )),
+                Ok((
+                    Msg::Error {
+                        code: Code::Invalid,
+                        ..
+                    },
+                    _,
+                )) => theirs.push(None),
+                _ => return None,
+            }
         }
         if deep {
             self.verify_pg(pool, pg).await;
         }
         self.drained().await;
-        out.insert(0, self.local_digests(pool, pg).into_iter().collect());
+        let mine: HashMap<ObjKey, u64> = self.local_digests(pool, pg).into_iter().collect();
+        let mut out = vec![mine.clone()];
+        out.extend(
+            theirs
+                .into_iter()
+                .map(|t| t.unwrap_or_else(|| mine.clone())),
+        );
         Some(out)
     }
 

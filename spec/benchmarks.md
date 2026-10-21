@@ -688,3 +688,32 @@ the index; run twice through the collect script:
    each side. Against that, a whole refill of the same PG moves 40 GiB;
    a PG log would only pay off for PGs of millions of objects with few
    writes missed.
+
+## 2026-10-21: failover with peering (dev-2)
+
+Question: does peering (I61), one digest round trip per PG on the new
+primary's first request, lengthen failover? The failover suite of
+2026-10-21 (PR #4), run twice through the collect script with peering
+built in:
+
+```sh
+scripts/collect-decision-data.sh failover
+```
+
+| Map lease | down after | peer timeout | before (PR #4), p50 ms | with peering, run 1 | run 2 |
+|---|---|---|---|---|---|
+| 2000 ms | 3000 ms | off | 2962–3108 | 3103 | 3103 |
+| 2000 ms | 3000 ms | 1000 ms | 2458–2461 | 2452 | 2453 |
+| 600 ms | 800 ms | off | 913 | 920 | 1050 |
+| 600 ms | 800 ms | 300 ms | 662–663 | 660 | 660 |
+| 500 ms | 700 ms | off | 783–784 | 780 | 780 |
+| 500 ms | 700 ms | 300 ms | 551 | 550 | 549 |
+
+### Findings
+
+1. **Peering doesn't move failover**: every setting is within the
+   spread measured before, except 600/800 ms without peer reports in
+   run 2 (1050 ms in all three of its stops, against 920 ms in run 1).
+   Peering would shift every row alike, so that is the liveness tick's
+   alignment in that run, not peering; D48's 1 s target is met with peer
+   reports (660 ms) either way.

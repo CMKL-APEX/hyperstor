@@ -86,6 +86,10 @@ members, as long as there are at least `min_size` of them. Below
   If no member of the last in-sync set can be reached, the PG stays
   `down` and serves nothing, because a reachable member outside that set
   may lack acknowledged writes.
+- **As built** (HS2, implementation-notes.md I61): peering by digests,
+  without a log. The new primary's first request for a PG at a new epoch
+  compares every acting member's digests with its own and pushes its
+  copy where they differ, before it serves.
 - A storage node whose map lease (metadata.md §4.1) has run out stops accepting
   writes for its PGs until it renews, because it may have missed a new
   `pg_epoch` or a fence.

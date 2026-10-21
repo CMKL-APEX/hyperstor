@@ -217,11 +217,12 @@ tests = [
 
 [[milestone.item]]
 what = "Peering, placement-group log and delta recovery"
-spec = ["replication.md §8.3", "I57"]
+spec = ["replication.md §8.3", "replication.md §8.4", "I57", "I61"]
 status = "partial"
 tests = [
     "cluster::a_returning_node_gets_only_what_changed",
     "cluster::a_returning_node_without_digests_is_refilled_whole",
+    "cluster::a_new_primary_makes_its_members_agree_before_serving",
     "engine::digests_follow_content_not_history",
 ]
 

@@ -849,6 +849,81 @@ fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
     copies_agree(&map, devs, &chunks);
 }
 
+/// Peering (replication.md §8.4, I61): when a primary fails, a write it
+/// had sent to only one replica (never acknowledged) leaves that replica's
+/// copy different. The new primary makes the members' copies the same as
+/// its own before it serves, so the PG's copies agree at once, not only
+/// after a scrub.
+#[test]
+fn a_new_primary_makes_its_members_agree_before_serving() {
+    use hyperstor_proto::{Msg, Target, WireKey, block_crcs};
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let v1 = pattern(81, 4 * CHUNK as usize);
+    let v1c = v1.clone();
+    let (primary, second) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            // The third copy gets a write the others never see.
+            let third = info.acting[2];
+            let conn = hyperstor_rpc::Conn::connect(m.device_addr(third).unwrap())
+                .await
+                .unwrap();
+            let lost = pattern(82, CHUNK as usize);
+            let (reply, _) = conn
+                .call(
+                    &Msg::Push {
+                        to: Target {
+                            pool: POOL,
+                            pg,
+                            map_epoch: m.epoch,
+                            pg_epoch: info.epoch,
+                        },
+                        key: WireKey {
+                            ns: hyperstor_client::NS_VOL,
+                            name: chunk_name(1, 0),
+                            version: 0,
+                        },
+                        crcs: block_crcs(&lost),
+                    },
+                    &lost,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply, Msg::PushOk);
+            (info.acting[0], info.acting[1])
+        })
+    })
+    .join()
+    .unwrap();
+    let node_of = |d: u32| (d / 1000) as usize;
+    c.kill(node_of(primary));
+    let v1r = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            // Served by the new primary, the second copy, once peered.
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let pushed = c.nodes[node_of(second)].as_ref().unwrap().metrics[0]
+        .1
+        .peer_pushes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(pushed >= 1, "the new primary pushed nothing while peering");
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
 /// The case map leases exist for (decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be

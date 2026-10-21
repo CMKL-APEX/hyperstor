@@ -7,7 +7,9 @@
 2. After `--down-after-ms` (0.8 s by default) the map service marks the
    node down. Each placement group the node held goes on with the copies
    left, if at least the pool's `min` remain; a new primary takes over
-   where the failed node was primary.
+   where the failed node was primary. Before it serves, the new primary
+   makes the other copies match its own, so a write the failed node
+   never confirmed to its client is kept by every copy or by none.
 3. Writes continue with fewer copies. Where the pool's failure domain
    allows another node to take the failed one's place, the map names a
    **stand-in**, and the primary backfills it (copies every object of the
