@@ -30,6 +30,8 @@ type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 struct Cluster {
     /// Peer timeout given to restarted nodes.
     peer_timeout: std::time::Duration,
+    /// Scrub interval of every node; zero: off.
+    scrub: std::time::Duration,
     meta_addr: SocketAddr,
     /// Each node's reactor addresses, to restart it at the same place.
     addrs: Vec<Vec<SocketAddr>>,
@@ -45,7 +47,14 @@ struct Cluster {
 
 impl Cluster {
     fn start(nodes: u32, shards: u32) -> Cluster {
-        Self::start_with(nodes, shards, LEASE, DOWN_AFTER, std::time::Duration::ZERO)
+        Self::start_with(
+            nodes,
+            shards,
+            LEASE,
+            DOWN_AFTER,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        )
     }
 
     /// With a given map lease, liveness timeout and peer timeout (D40).
@@ -55,6 +64,7 @@ impl Cluster {
         lease: std::time::Duration,
         down_after: std::time::Duration,
         peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
     ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
@@ -123,11 +133,13 @@ impl Cluster {
                     peer_timeout,
                     meta_blocked: Some(blocked[n].clone()),
                     defer_max: None,
+                    scrub_interval: scrub,
                 }))
             })
             .collect();
         Cluster {
             peer_timeout,
+            scrub,
             meta_addr,
             blocked,
             addrs: all_addrs,
@@ -169,6 +181,7 @@ impl Cluster {
             peer_timeout: self.peer_timeout,
             meta_blocked: Some(self.blocked[n].clone()),
             defer_max: None,
+            scrub_interval: self.scrub,
         }));
     }
 
@@ -601,6 +614,88 @@ fn a_returning_node_gets_only_what_changed() {
     copies_agree(&map, devs, &chunks);
 }
 
+/// Light scrub (replication.md §8.5): a replica whose copy diverged (here,
+/// overwritten behind the primary's back) is found by comparing digests
+/// and repaired from the primary, which the third copy agrees with.
+#[test]
+fn scrub_repairs_a_copy_the_others_outvote() {
+    use hyperstor_proto::{Msg, Target, WireKey, block_crcs};
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let v1 = pattern(51, 4 * CHUNK as usize);
+    let v1c = v1.clone();
+    let (primary, replica) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let (primary, replica) = (info.acting[0], info.acting[1]);
+            // Overwrite the replica's copy of chunk 0 directly.
+            let conn = hyperstor_rpc::Conn::connect(m.device_addr(replica).unwrap())
+                .await
+                .unwrap();
+            let bad = pattern(52, CHUNK as usize);
+            let (reply, _) = conn
+                .call(
+                    &Msg::Push {
+                        to: Target {
+                            pool: POOL,
+                            pg,
+                            map_epoch: m.epoch,
+                            pg_epoch: info.epoch,
+                        },
+                        key: WireKey {
+                            ns: hyperstor_client::NS_VOL,
+                            name: chunk_name(1, 0),
+                            version: 0,
+                        },
+                        crcs: block_crcs(&bad),
+                    },
+                    &bad,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply, Msg::PushOk);
+            (primary, replica)
+        })
+    })
+    .join()
+    .unwrap();
+    let node_of = |d: u32| (d / 1000) as usize;
+    let repaired = || {
+        c.nodes[node_of(primary)].as_ref().unwrap().metrics[0]
+            .1
+            .scrub_repaired
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    while repaired() == 0 {
+        assert!(t.elapsed().as_secs() < 10, "scrub never repaired the copy");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(repaired(), 1, "only the overwritten copy differed");
+    let m = &c.nodes[node_of(primary)].as_ref().unwrap().metrics[0].1;
+    assert_eq!(
+        m.scrub_unresolved
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    let _ = replica;
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
 /// The case map leases exist for (decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be
@@ -744,6 +839,7 @@ fn peers_report_a_dead_node_before_the_map_service_notices() {
         lease,
         std::time::Duration::from_millis(3000),
         std::time::Duration::from_millis(300),
+        std::time::Duration::ZERO,
     );
     let meta = c.meta_addr;
     let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();

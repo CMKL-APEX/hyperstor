@@ -52,6 +52,12 @@ pub struct ShardMetrics {
     pub push_bytes: AtomicU64,
     /// Client writes answered with an error.
     pub write_errors: AtomicU64,
+    /// Light scrub (replication.md §8.5): objects compared, objects whose
+    /// copies differed, repaired, and left unresolved.
+    pub scrub_objects: AtomicU64,
+    pub scrub_inconsistent: AtomicU64,
+    pub scrub_repaired: AtomicU64,
+    pub scrub_unresolved: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -126,6 +132,19 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "counter",
         "Client writes answered with an error.",
         &|m| vec![("", g(&m.write_errors))],
+    );
+    family(
+        "hyperstor_scrub_objects_total",
+        "counter",
+        "Light scrub: objects compared across copies, and those whose copies differed, by outcome.",
+        &|m| {
+            vec![
+                ("compared", g(&m.scrub_objects)),
+                ("inconsistent", g(&m.scrub_inconsistent)),
+                ("repaired", g(&m.scrub_repaired)),
+                ("unresolved", g(&m.scrub_unresolved)),
+            ]
+        },
     );
     family(
         "hyperstor_device_objects",
@@ -253,7 +272,7 @@ mod tests {
             "hyperstor_request_bytes_total{node=\"4\",device=\"4000\",kind=\"write\"} 12288\n"
         ));
         assert!(t.contains("hyperstor_device_free_bytes{node=\"4\",device=\"4001\"} 1073741824\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 12);
+        assert_eq!(t.matches("# TYPE ").count(), 13);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

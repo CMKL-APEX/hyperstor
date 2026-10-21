@@ -112,6 +112,9 @@ pub struct NodeConfig {
     /// Report a peer to the map service after this long without an answer
     /// to pings (decisions.md D40); zero turns peer reports off.
     pub peer_timeout: Duration,
+    /// How often each primary scrubs its PGs, comparing every member's
+    /// digests (replication.md §8.5); zero turns scrub off.
+    pub scrub_interval: Duration,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -170,6 +173,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let blocked = cfg.meta_blocked.clone();
         let spin = cfg.spin;
         let peer_timeout = cfg.peer_timeout;
+        let scrub_interval = cfg.scrub_interval;
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -199,6 +203,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().peer_watch(node, peer_timeout));
                         }
                         spawn(st.clone().backfiller());
+                        if !scrub_interval.is_zero() {
+                            spawn(st.clone().scrubber(scrub_interval));
+                        }
                         spawn(st.clone().accept(l));
                         spawn(st.clone().gauges());
                         rx.recv().await;
@@ -265,6 +272,34 @@ fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
         map_epoch: map.epoch,
         detail: detail.into(),
     }
+}
+
+/// What light scrub does about one object, given each acting member's
+/// digest of it (this device's first; `None`: the member lacks it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    Agree,
+    /// Push this copy to these members (indexes into the digests).
+    Repair(Vec<usize>),
+    /// No majority agrees with this copy: report, don't guess.
+    Unresolved,
+}
+
+fn verdict(digests: &[Option<u64>]) -> Verdict {
+    let mine = digests[0];
+    if digests.iter().all(|d| *d == mine) {
+        return Verdict::Agree;
+    }
+    let with_me = digests.iter().filter(|d| **d == mine).count();
+    if with_me * 2 > digests.len() {
+        Verdict::Repair((1..digests.len()).filter(|i| digests[*i] != mine).collect())
+    } else {
+        Verdict::Unresolved
+    }
+}
+
+fn row(table: &[HashMap<ObjKey, u64>], key: &ObjKey) -> Vec<Option<u64>> {
+    table.iter().map(|m| m.get(key).copied()).collect()
 }
 
 fn wire_key(k: &ObjKey) -> WireKey {
@@ -1087,27 +1122,10 @@ impl ShardState {
                 return false;
             }
             self.drained().await;
-            let data = {
-                let sh = self.shard.borrow();
-                match sh.stat(&key) {
-                    Some(st) => {
-                        let len = st.size.div_ceil(4096) * 4096;
-                        match sh.read(&key, 0, len) {
-                            Ok(b) => b.to_vec(),
-                            Err(_) => return false,
-                        }
-                    }
-                    None => Vec::new(),
-                }
+            let Some((m, data)) = self.push_of(to, &key) else {
+                return false;
             };
-            inflight.push(conn.start(
-                &Msg::Push {
-                    to,
-                    key: wire_key(&key),
-                    crcs: block_crcs(&data),
-                },
-                &data,
-            ));
+            inflight.push(conn.start(&m, &data));
             if inflight.len() >= 16 {
                 for f in inflight.drain(..) {
                     if !matches!(f.await, Ok((Msg::PushOk, _))) {
@@ -1122,6 +1140,173 @@ impl ShardState {
             }
         }
         true
+    }
+
+    /// The push of this node's copy of `key` (a delete if it has none).
+    /// Read it and send it with no wait in between, once every queued
+    /// commit is done ([`Self::drained`]): writes queued later then follow
+    /// the push on the same connection.
+    fn push_of(&self, to: Target, key: &ObjKey) -> Option<(Msg, Vec<u8>)> {
+        let sh = self.shard.borrow();
+        let data = match sh.stat(key) {
+            Some(st) => sh
+                .read(key, 0, st.size.div_ceil(4096) * 4096)
+                .ok()?
+                .to_vec(),
+            None => Vec::new(),
+        };
+        let m = Msg::Push {
+            to,
+            key: wire_key(key),
+            crcs: block_crcs(&data),
+        };
+        Some((m, data))
+    }
+
+    /// Scrubs every PG this device is primary of, once per `every`
+    /// (replication.md §8.5, light scrub). Only clean PGs are scrubbed:
+    /// backfill already compares a filling member's copy.
+    async fn scrubber(self: Rc<Self>, every: Duration) {
+        loop {
+            sleep(every).await;
+            let map = self.map();
+            let pgs: Vec<((u32, u32), PgInfo)> = map
+                .pgs
+                .iter()
+                .filter(|((pool, _), i)| {
+                    i.primary() == Some(self.me)
+                        && i.acting == i.up
+                        && i.acting.len() > 1
+                        && map.pools.get(pool).map(|p| p.kind)
+                            != Some(hyperstor_meta::PoolKind::Cache)
+                })
+                .map(|(k, i)| (*k, i.clone()))
+                .collect();
+            for ((pool, pg), info) in pgs {
+                self.scrub_pg(pool, pg, &info).await;
+            }
+        }
+    }
+
+    /// Every acting member's digests of a PG, this device's first; `None`
+    /// if a member can't answer for this PG epoch.
+    async fn member_digests(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+    ) -> Option<Vec<HashMap<ObjKey, u64>>> {
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+        };
+        let mut out = Vec::new();
+        for d in &info.acting {
+            if *d == self.me {
+                continue;
+            }
+            let conn = self.peer(map.device_addr(*d)?).await.ok()?;
+            let Ok((Msg::DigestsOk, p)) = conn.call(&Msg::Digests { to }, &[]).await else {
+                return None;
+            };
+            out.push(
+                decode_digests(&p)
+                    .ok()?
+                    .into_iter()
+                    .filter_map(|(k, d)| Some((engine_key(&to, &k).ok()?, d)))
+                    .collect(),
+            );
+        }
+        self.drained().await;
+        let sh = self.shard.borrow();
+        let mine = sh
+            .list_pg(pool, pg)
+            .into_iter()
+            .filter_map(|k| Some((k.clone(), sh.digest(&k)?)))
+            .collect();
+        out.insert(0, mine);
+        Some(out)
+    }
+
+    /// Light scrub of one PG: compares every member's digests. Keys that
+    /// differ are checked again after a pause, since a write in flight can
+    /// make copies differ for a moment. A difference that persists is
+    /// repaired from this copy when a majority of the copies agree with
+    /// it, and otherwise reported, not guessed at.
+    async fn scrub_pg(&self, pool: u32, pg: u32, info: &PgInfo) {
+        let Some(first) = self.member_digests(pool, pg, info).await else {
+            return;
+        };
+        let differing = |t: &[HashMap<ObjKey, u64>], keys: &mut dyn Iterator<Item = ObjKey>| {
+            keys.filter(|k| verdict(&row(t, k)) != Verdict::Agree)
+                .collect::<BTreeSet<ObjKey>>()
+        };
+        let all: BTreeSet<ObjKey> = first.iter().flat_map(|m| m.keys().cloned()).collect();
+        metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
+        let suspects = differing(&first, &mut all.into_iter());
+        if suspects.is_empty() {
+            return;
+        }
+        sleep(Duration::from_millis(200)).await;
+        if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
+            return;
+        }
+        let Some(second) = self.member_digests(pool, pg, info).await else {
+            return;
+        };
+        let bad = differing(&second, &mut suspects.into_iter());
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+        };
+        let others: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me)
+            .collect();
+        for key in bad {
+            metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
+            match verdict(&row(&second, &key)) {
+                Verdict::Agree => {}
+                Verdict::Repair(members) => {
+                    let mut ok = true;
+                    for m in members {
+                        let Some(addr) = map.device_addr(others[m - 1]) else {
+                            ok = false;
+                            continue;
+                        };
+                        let Ok(conn) = self.peer(addr).await else {
+                            ok = false;
+                            continue;
+                        };
+                        self.drained().await;
+                        let Some((m, data)) = self.push_of(to, &key) else {
+                            ok = false;
+                            continue;
+                        };
+                        ok &= matches!(conn.call(&m, &data).await, Ok((Msg::PushOk, _)));
+                    }
+                    if ok {
+                        metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
+                    }
+                }
+                Verdict::Unresolved => {
+                    metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
+                    eprintln!(
+                        "hyperstord: scrub: pool {pool} PG {pg}: copies of an object disagree \
+                         and no majority decides; left as is (namespace {:?}, version {})",
+                        key.ns, key.version
+                    );
+                }
+            }
+        }
     }
 
     async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
@@ -1171,5 +1356,29 @@ impl Drop for InflightGuard {
         if let Some(n) = self.0.pg_inflight.borrow_mut().get_mut(&self.1) {
             *n = n.saturating_sub(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Verdict, verdict};
+
+    #[test]
+    fn scrub_repairs_only_from_a_majority() {
+        assert_eq!(verdict(&[Some(1), Some(1), Some(1)]), Verdict::Agree);
+        assert_eq!(verdict(&[None, None]), Verdict::Agree);
+        // The primary and one other outvote the third, missing or not.
+        assert_eq!(
+            verdict(&[Some(1), Some(2), Some(1)]),
+            Verdict::Repair(vec![1])
+        );
+        assert_eq!(verdict(&[Some(1), Some(1), None]), Verdict::Repair(vec![2]));
+        // An object only the primary lacks is deleted only if a majority
+        // lacks it too.
+        assert_eq!(verdict(&[None, None, Some(3)]), Verdict::Repair(vec![2]));
+        // The primary outvoted, or no majority: report, don't guess.
+        assert_eq!(verdict(&[Some(1), Some(2), Some(2)]), Verdict::Unresolved);
+        assert_eq!(verdict(&[Some(1), Some(2)]), Verdict::Unresolved);
+        assert_eq!(verdict(&[Some(1), Some(2), Some(3)]), Verdict::Unresolved);
     }
 }

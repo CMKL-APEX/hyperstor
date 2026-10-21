@@ -388,6 +388,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 defer_max: std::env::var("HS_DEFER_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok()),
+                scrub_interval: Duration::ZERO,
             })
         })
         .collect();
@@ -520,6 +521,7 @@ fn adminload_suite(secs: f64) {
                 spin: Duration::from_micros(200),
                 peer_timeout: Duration::from_millis(300),
                 defer_max: None,
+                scrub_interval: std::time::Duration::ZERO,
             })
         })
         .collect();
@@ -1195,6 +1197,7 @@ fn failover_suite() {
                         spin: Duration::ZERO,
                         peer_timeout: Duration::from_millis(peer_ms),
                         defer_max: None,
+                        scrub_interval: std::time::Duration::ZERO,
                     }))
                 })
                 .collect();
