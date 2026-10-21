@@ -38,7 +38,12 @@ on with two copies. There is no block-device front end yet (vhost-user-blk
 is HS3, NVMe-oF HS5); clients use `hyperstor-client`.
 
 Tests: `cargo test --workspace --release` (the engine's crash test takes
-`HS_CRASH_SEEDS`).
+`HS_CRASH_SEEDS`). CI also checks the spec and tracks each milestone's
+progress against the tests (`spec/tracking.toml`).
+
+User and administrator documentation is in
+[`docs/public/`](docs/public/src/introduction.md); CI publishes it to
+GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 
 ## Planned features
 
@@ -61,7 +66,9 @@ Tests: `cargo test --workspace --release` (the engine's crash test takes
 | Path | Contents |
 |---|---|
 | `spec/` | Design specification (contributors) |
-| `docs/` | Documentation sets and their build configuration |
+| `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
+| `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
+| `.github/workflows/` | CI and documentation publishing |
 | `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, proto, reactor, meta (map service), daemon (`hyperstord`), client, bench |
 | `LICENSES/` | License texts and copyright notice |
 
