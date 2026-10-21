@@ -29,12 +29,15 @@ use hyperstor_engine::{
     OpError, OpList, Shard, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
-use hyperstor_proto::{Code, Msg, Target, VERSION, WireKey, block_crcs, encode_frame, verify_crcs};
+use hyperstor_proto::{
+    Code, Msg, Target, VERSION, WireKey, block_crcs, decode_digests, encode_digests, encode_frame,
+    verify_crcs,
+};
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream};
 use hyperstor_reactor::{block_on, spawn, time::sleep};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -261,6 +264,14 @@ fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
         code,
         map_epoch: map.epoch,
         detail: detail.into(),
+    }
+}
+
+fn wire_key(k: &ObjKey) -> WireKey {
+    WireKey {
+        ns: k.ns as u8,
+        name: k.name.clone(),
+        version: k.version,
     }
 }
 
@@ -580,6 +591,10 @@ impl ShardState {
                     }
                     reply(&Msg::MapPushOk, &[]);
                 }
+                Msg::Digests { to } => {
+                    let (m, p) = self.digests(to).await;
+                    reply(&m, &p);
+                }
                 Msg::Push { to, key, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.pushes, 1);
                     metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
@@ -788,6 +803,23 @@ impl ShardState {
         if let Some(f) = self.backfills.borrow_mut().get_mut(&(pool, pg, device)) {
             *f = true;
         }
+    }
+
+    /// What this node holds of a PG, as `(key, digest)` in key order, once
+    /// every commit queued so far is done: everything that reached this
+    /// node before the request is in it (replication.md §8.5).
+    async fn digests(&self, to: Target) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
+            return (m, Vec::new());
+        }
+        self.drained().await;
+        let sh = self.shard.borrow();
+        let entries: Vec<_> = sh
+            .list_pg(to.pool, to.pg)
+            .into_iter()
+            .filter_map(|k| Some((wire_key(&k), sh.digest(&k)?)))
+            .collect();
+        (Msg::DigestsOk, encode_digests(&entries))
     }
 
     /// Replaces an object with a primary's copy (backfill, replication.md §8.5).
@@ -1016,28 +1048,39 @@ impl ShardState {
             map_epoch: map.epoch,
             pg_epoch,
         };
-        // Reset the target's copy, then send every object. Each read and
-        // its push happen with no wait in between, after every queued
-        // commit is done: writes queued earlier are in the copy, and writes
-        // queued later follow it on the same connection.
-        self.drained().await;
-        let reset = conn.start(
-            &Msg::Push {
-                to,
-                key: WireKey {
-                    ns: 0,
-                    name: Vec::new(),
-                    version: 0,
-                },
-                crcs: Vec::new(),
+        // Ask the target what it holds, then send what differs: objects
+        // whose digests don't match, and objects it has that this copy
+        // doesn't (sent as deletes). Each read and its push happen with no
+        // wait in between, after every queued commit is done: writes queued
+        // earlier are in the copy, and writes queued later follow it on the
+        // same connection. A key that changes after the comparison is
+        // carried by the live writes backfill targets get anyway.
+        let theirs = match conn.start(&Msg::Digests { to }, &[]).await {
+            Ok((Msg::DigestsOk, p)) => match decode_digests(&p) {
+                Ok(v) => v,
+                Err(_) => return false,
             },
-            &[],
-        );
-        if !matches!(reset.await, Ok((Msg::PushOk, _))) {
-            return false;
-        }
+            _ => return false,
+        };
+        let theirs: HashMap<ObjKey, u64> = theirs
+            .into_iter()
+            .filter_map(|(k, d)| Some((engine_key(&to, &k).ok()?, d)))
+            .collect();
         self.drained().await;
-        let keys = self.shard.borrow().list_pg(pool, pg);
+        let keys: BTreeSet<ObjKey> = {
+            let sh = self.shard.borrow();
+            let ours = sh.list_pg(pool, pg);
+            let mut differ: BTreeSet<ObjKey> = theirs
+                .keys()
+                .filter(|k| sh.stat(k).is_none())
+                .cloned()
+                .collect();
+            differ.extend(
+                ours.into_iter()
+                    .filter(|k| theirs.get(k).copied() != sh.digest(k)),
+            );
+            differ
+        };
         let mut inflight = Vec::new();
         for key in keys {
             if self.map().pg(pool, pg).map(|p| p.epoch) != Some(pg_epoch) {
@@ -1057,15 +1100,10 @@ impl ShardState {
                     None => Vec::new(),
                 }
             };
-            let wk = WireKey {
-                ns: key.ns as u8,
-                name: key.name.clone(),
-                version: key.version,
-            };
             inflight.push(conn.start(
                 &Msg::Push {
                     to,
-                    key: wk,
+                    key: wire_key(&key),
                     crcs: block_crcs(&data),
                 },
                 &data,

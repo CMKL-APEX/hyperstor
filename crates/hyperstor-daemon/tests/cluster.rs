@@ -501,6 +501,106 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
     copies_agree(&map, devs, &chunks);
 }
 
+/// Delta recovery (replication.md §8.5): a node that returns after a short
+/// absence is sent only the objects that changed while it was away, not
+/// every object of its PGs, and its copies end up the same as the others.
+#[test]
+fn a_returning_node_gets_only_what_changed() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let v1 = pattern(31, 32 * CHUNK as usize);
+    let v1c = v1.clone();
+    // The chunks node 3 holds a copy of.
+    let on3: Vec<u64> = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pg_count = m.pools[&POOL].pg_count;
+            (0..32u64)
+                .filter(|ch| {
+                    m.pg(POOL, pg_of(1, *ch, pg_count))
+                        .unwrap()
+                        .acting
+                        .iter()
+                        .any(|d| m.devices[d].node == 3)
+                })
+                .collect()
+        })
+    })
+    .join()
+    .unwrap();
+    assert!(on3.len() >= 8, "node 3 holds {} chunks", on3.len());
+    let changed = [on3[0], on3[on3.len() / 2]];
+    c.kill(3);
+    // Two of the chunks node 3 holds change while it is down.
+    let mut v1b = v1.clone();
+    for ch in changed {
+        let at = (ch * CHUNK as u64) as usize;
+        v1b[at..at + CHUNK as usize].copy_from_slice(&pattern(40 + ch, CHUNK as usize));
+    }
+    let v1bc = v1b.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let t = std::time::Instant::now();
+            loop {
+                cl.refresh_map().await.unwrap();
+                if !cl.map().nodes[&3].up {
+                    break;
+                }
+                assert!(t.elapsed().as_secs() < 10, "node 3 never marked down");
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            for ch in changed {
+                let at = (ch * CHUNK as u64) as usize;
+                let data = v1bc[at..at + CHUNK as usize].to_vec();
+                cl.write(POOL, 1, ch * CHUNK as u64, data).await.unwrap();
+            }
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.restart(3);
+    let v1r = v1b.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 7).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+            assert!(cl.map().nodes[&3].up);
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+        })
+    })
+    .join()
+    .unwrap();
+    let pushed: u64 = c.nodes[3]
+        .as_ref()
+        .unwrap()
+        .metrics
+        .iter()
+        .map(|(_, m)| m.push_bytes.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
+    // A whole refill would send node 3 every chunk it holds; only the two
+    // that changed are sent.
+    assert!(
+        (CHUNK as u64..=2 * CHUNK as u64).contains(&pushed),
+        "node 3 was sent {pushed} bytes for {} chunks, 2 of them changed",
+        on3.len()
+    );
+    let (map, devs) = c.stop();
+    assert!(
+        map.pgs
+            .values()
+            .any(|p| p.acting.iter().any(|d| map.devices[d].node == 3)),
+        "node 3 serves PGs again"
+    );
+    let chunks: Vec<(u128, u64)> = (0..32u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
 /// The case map leases exist for (decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be
