@@ -463,6 +463,155 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
     });
 }
 
+/// Host check G17 (administration.md §23.3, D58), first part: does load on
+/// the cluster API move client I/O latency? A map service with its API and
+/// three storage nodes on memory devices run in this process; the client
+/// workload runs idle, then while threads call `GetStatus` at
+/// `HS_API_RATE` calls per second in total (default 1000) over keep-alive
+/// HTTP/1.1, twice each, back to back. Memory devices take the drive out,
+/// leaving CPU and scheduling interference, which is what G17 is about.
+fn adminload_suite(secs: f64) {
+    use hyperstor_daemon::*;
+    use hyperstor_meta::{ClusterMap, replicated_pool};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let rate: u64 = std::env::var("HS_API_RATE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let meta = meta_l.local_addr().unwrap();
+    let api_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let api = api_l.local_addr().unwrap();
+    let mut map = ClusterMap::new(1);
+    let mut listeners = Vec::new();
+    for n in 0..3u32 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        map.add_node(n, &[l.local_addr().unwrap()], 0);
+        listeners.push(l);
+    }
+    map.add_pool(replicated_pool(1, "vol", 3, 64));
+    map.recompute();
+    let (tx, rx) = hyperstor_reactor::chan::channel();
+    std::thread::spawn(move || {
+        hyperstor_reactor::block_on(async move {
+            let m = hyperstor_meta::Meta::new(map);
+            hyperstor_reactor::spawn(m.clone().liveness(Duration::from_millis(800)));
+            hyperstor_reactor::spawn(m.clone().publisher());
+            hyperstor_reactor::spawn(m.clone().admin(rx));
+            hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), m).await
+        })
+    });
+    hyperstor_meta::api::spawn(api_l, tx, meta);
+    let _nodes: Vec<NodeHandle> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(n, l)| {
+            start(NodeConfig {
+                node_id: n as u32,
+                meta,
+                shards: vec![ShardSpec {
+                    device_id: n as u32 * 1000,
+                    device: DeviceSpec::Mem { bytes: 1 << 30 },
+                    listener: l,
+                }],
+                cpus: Vec::new(),
+                meta_blocked: None,
+                spin: Duration::from_micros(200),
+                peer_timeout: Duration::from_millis(300),
+                defer_max: None,
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // One API caller: paced keep-alive POSTs; returns call latencies.
+    let caller = |per_sec: u64, stop: Arc<AtomicBool>| {
+        std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(api).unwrap();
+            s.set_nodelay(true).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let req = format!(
+                "POST /hyperstor.v1.ClusterService/GetStatus HTTP/1.1\r\nHost: {api}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            );
+            let gap = Duration::from_secs_f64(1.0 / per_sec as f64);
+            let mut next = Instant::now();
+            let mut lats = Vec::new();
+            while !stop.load(Ordering::Relaxed) {
+                let t = Instant::now();
+                s.write_all(req.as_bytes()).unwrap();
+                let mut len = None;
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let l = line.to_ascii_lowercase();
+                    if let Some(v) = l.strip_prefix("content-length:") {
+                        len = v.trim().parse::<usize>().ok();
+                    }
+                }
+                let body = match len {
+                    Some(n) => {
+                        let mut b = vec![0; n];
+                        r.read_exact(&mut b).unwrap();
+                        b
+                    }
+                    None => {
+                        // Chunked: size lines in hex, then the chunk.
+                        let mut b = Vec::new();
+                        loop {
+                            let mut line = String::new();
+                            r.read_line(&mut line).unwrap();
+                            let n = usize::from_str_radix(line.trim(), 16).unwrap();
+                            let mut c = vec![0; n + 2];
+                            r.read_exact(&mut c).unwrap();
+                            if n == 0 {
+                                break;
+                            }
+                            b.extend_from_slice(&c[..n]);
+                        }
+                        b
+                    }
+                };
+                assert!(
+                    body.starts_with(b"{\"cluster_id\""),
+                    "{}",
+                    String::from_utf8_lossy(&body)
+                );
+                lats.push(t.elapsed());
+                next += gap;
+                if let Some(d) = next.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(d);
+                }
+            }
+            lats
+        })
+    };
+    header();
+    for round in 1..=2 {
+        client_workload(meta, &format!("idle, round {round}"), secs);
+        let stop = Arc::new(AtomicBool::new(false));
+        let threads = 4u64;
+        let t = Instant::now();
+        let hs: Vec<_> = (0..threads)
+            .map(|_| caller(rate / threads, stop.clone()))
+            .collect();
+        client_workload(meta, &format!("API {rate}/s, round {round}"), secs);
+        stop.store(true, Ordering::Relaxed);
+        let mut lats = Lat(hs.into_iter().flat_map(|h| h.join().unwrap()).collect());
+        let n = lats.0.len() as u64;
+        row(
+            &format!("GetStatus calls during round {round}"),
+            n,
+            t.elapsed(),
+            0,
+            &mut lats,
+        );
+    }
+}
+
 fn rss_bytes() -> u64 {
     let s = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
     let pages: u64 = s
@@ -1218,6 +1367,10 @@ fn main() {
             let where_ = args.get(2).cloned().unwrap_or_else(|| "mem".into());
             let reactors: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             cluster_suite(&where_, reactors, secs);
+        }
+        Some("adminload") => {
+            // hyperstor-bench adminload (G17)
+            adminload_suite(secs);
         }
         Some("remote") => {
             // hyperstor-bench remote <map service address>

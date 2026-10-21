@@ -4,7 +4,7 @@
 #
 #   scripts/collect-decision-data.sh [suite ...]
 #
-# Suites: crc placement mem raw engine index decisions redb cluster failover
+# Suites: crc placement mem raw engine index decisions redb cluster failover adminload
 # replay logsize
 # (default: crc placement decisions redb). Scratch files go to
 # $HS_SCRATCH (default: ~/hs-scratch, on the disk being measured; never a
@@ -35,7 +35,7 @@ bench="$CARGO_TARGET_DIR/release/hyperstor-bench"
 for s in "${suites[@]}"; do
   echo "== $s" >&2
   case "$s" in
-    crc|placement|mem|failover|replay|logsize) "$bench" "$s" ;;
+    crc|placement|mem|failover|replay|logsize|adminload) "$bench" "$s" ;;
     raw|engine) "$bench" "$s" "$scratch/dev.img" 2 ;;
     index) "$bench" index "$scratch/index.img" ;;
     decisions|redb) "$bench" "$s" "$scratch" ;;

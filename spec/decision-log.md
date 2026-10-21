@@ -346,6 +346,15 @@ Not measurable yet: G14 (sandbox clones and rollback need snapshots and
 clones, volumes.md §10.3) and G15 (needs the Bε-tree).
 
 
+## Data for pending decisions: administration (2026-10-21)
+
+Collected with the `collect-decision-data` skill; tables and method in
+[benchmarks.md](benchmarks.md) (2026-10-21, cluster-API load).
+
+| # | Open question | Data | What it implies | Recommendation |
+|---|---|---|---|---|
+| 23 | **Do control-path threads need cores of their own?** (D58, G17) | 1000 `GetStatus` calls/s against a map service with three storage nodes in one process: with 256 CPUs, every p99 change is inside run-to-run noise (~10%); confined to 4 CPUs, QD1 read p99 goes 54–56 → 104–111 µs in both rounds, p50 unchanged, writes unaffected | Sharing cores, admin load reaches the read tail; with spare cores it doesn't show | Keep D58's rule (pin control threads off reactor cores; the installer should set `CPUAffinity=` once reactors are pinned). Repeat G17 on a small host with real devices before settling it; confidence medium. |
+
 ## Administration (2026-10-21)
 
 The installer, API, CLI, UI and security of the control plane
