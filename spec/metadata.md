@@ -39,7 +39,7 @@ that no single node sees every change (D28):
   one entry. A rebalance after a map change is one entry per batch of
   PGs that finish backfill together, not one per PG.
 - **Liveness** follows clustering.md D7: storage daemons send a heartbeat
-  to the leader every 2 s, kept in the leader's memory. Only transitions
+  to the leader every 100 ms (D48), kept in the leader's memory. Only transitions
   go through Raft.
 - **Peer reports** (D40). Members of a PG also send each other
   heartbeats. A node that hears nothing from a peer for the peer timeout
@@ -49,7 +49,7 @@ that no single node sees every change (D28):
   cut off from the leader alone, and one confused node can't mark healthy
   peers down.
 - **Map lease** (D42). Each heartbeat answer renews the node's *map
-  lease* (2 s by default), which runs from when the node sent the
+  lease* (0.6 s by default, D48), which runs from when the node sent the
   heartbeat. A node without a valid lease serves no PG I/O (reads
   included) until it renews. The liveness timeout is at least 1.25 times
   the lease, so a node marked down has stopped serving by then. This also
@@ -109,7 +109,7 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 |---|---|---|
 | map changes | Raft | follows hardware changes and failures; one entry per event |
 | blocklist entries | Raft | forced takeovers only |
-| heartbeats | leader memory | one per node per 2 s |
+| heartbeats | leader memory | ten per node per second |
 | volume operations, lease renewals | `.meta` PG primaries | one renewal per attached volume per 2 s, spread over 256 PGs on every storage node |
 | block metadata | engines | follows I/O, always local |
 

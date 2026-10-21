@@ -338,6 +338,10 @@ in [benchmarks.md](benchmarks.md) (2026-10-21).
 | 15 | **Deferral on flash** (D38, settled) | End to end, redirect-on-write: 37.8k writes/s and 2.1 ms p99 at QD32, against 31.7k and 5.4 ms with deferral | Confirms D38 | — |
 | 16 | **Polling window for storage reactors** (D41) | 200 µs: QD1 writes 109 → 84 µs, reads 43 → 36 µs; 50 µs gets about half of that; throughput unchanged | Each reactor burns its core for up to the window after every request, so at low load a node's reactors stay busy | Default 200 µs for `hyperstord` (its reactors own their cores, D7); 0 in the client library, which runs inside applications. Revisit with power or shared-core deployments |
 
+Settled with the owner on 2026-10-21: point 11 as recommended (D47),
+point 13 with a target of about 1 s (D48), and point 16 as recommended
+(D49).
+
 Not measurable yet: G14 (sandbox clones and rollback need snapshots and
 clones, volumes.md §10.3) and G15 (needs the Bε-tree).
 

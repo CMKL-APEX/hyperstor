@@ -16,10 +16,10 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19 and D38–D46 in decisions.md, and the
+- **Settled with the project owner:** D1–D19 and D38–D49 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I40,
-  and every host check (G1–G12, FG1–FG2).
+  and every host check (G1–G16, FG1–FG2).
 - **Next:** see `.claude/handoff.md`; the rest of HS2 (read leases, PG
   log, scrub, blocklist) follows.
 

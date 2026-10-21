@@ -94,3 +94,8 @@ sections that depend on them are final:
   servers, and confirm with a cuObject client that a Rust
   implementation is accepted. Check whether the format is published,
   and whether its use needs any agreement with NVIDIA.
+- **G16. Short leases under load** (D48). On a real network, with the
+  storage nodes busy (backfill, checkpoint bursts, a saturated NIC),
+  count false down-markings and missed lease renewals at a 0.6 s lease
+  and 0.8 s timeout, with and without peer reports, to confirm the
+  defaults or lengthen them.

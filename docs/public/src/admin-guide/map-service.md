@@ -18,8 +18,8 @@ options are in the [reference](../reference/hyperstor-meta.md).
 
 | Option | Default | Effect |
 |---|---|---|
-| `--lease-ms` | 2000 | How long a storage node may serve after its last heartbeat was answered |
-| `--down-after-ms` | 3000 | How long without a heartbeat before a node is marked down; at least 1.25 × the lease |
+| `--lease-ms` | 600 | How long a storage node may serve after its last heartbeat was answered |
+| `--down-after-ms` | 800 | How long without a heartbeat before a node is marked down; at least 1.25 × the lease |
 
 A node marked down loses its roles: its placement groups go to other
 nodes, and a node cut off from the map service has already stopped

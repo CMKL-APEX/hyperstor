@@ -489,8 +489,8 @@ pub struct Meta {
     started: Instant,
 }
 
-/// Default map lease.
-pub const LEASE: Duration = Duration::from_secs(2);
+/// Default map lease (decisions.md D48).
+pub const LEASE: Duration = Duration::from_millis(600);
 
 impl Meta {
     pub fn new(map: ClusterMap) -> Rc<Self> {
