@@ -717,3 +717,15 @@ scripts/collect-decision-data.sh failover
    Peering would shift every row alike, so that is the liveness tick's
    alignment in that run, not peering; D48's 1 s target is met with peer
    reports (660 ms) either way.
+2. **Peering costs the I/O path nothing measurable** (a map lookup per
+   request to a primary): `hyperstor-bench cluster mem 1`, `main`
+   (`e5657f8`) against this branch (`da7b3eb`), alternately twice:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7443; 155 | 7473; 154 | 7426; 156 | 7407; 155 |
+| 4 KiB writes, QD32 | 25726; 2791 | 25936; 2761 | 25462; 2865 | 25676; 2831 |
+| 4 KiB reads, QD1 | 18779; 66 | 18646; 65 | 18833; 64 | 18547; 65 |
+| 4 KiB reads, QD32 | 54465; 1326 | 53984; 1339 | 53765; 1344 | 53914; 1339 |
+| 1 MiB writes, QD4 | 519; 13372 | 523; 13034 | 523; 12683 | 524; 12783 |
+| 1 MiB reads, QD4 | 1514; 4583 | 1502; 4637 | 1517; 4214 | 1536; 4153 |
