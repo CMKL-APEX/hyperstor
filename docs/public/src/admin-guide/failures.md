@@ -37,9 +37,13 @@ that traffic when you add or replace one.
 Every storage node compares, once a day by default (`hyperstord
 --scrub-hours`), the copies of each placement group it leads. A copy
 that differs from the others, when the rest agree, is replaced from the
-node's own copy. When no majority agrees, nothing is changed: the
-object is counted under `hyperstor_scrub_objects_total{kind="unresolved"}`
-and logged, for an operator to look at.
+node's own copy. Once a week (and on the first scrub after a start) the
+scrub is **deep**: every copy is read in full and each block's checksum
+checked, at a limited rate, so damage that no client has read yet is
+found and replaced from the other copies (`kind="damaged"`). When no
+majority agrees, nothing is changed: the object is counted under
+`hyperstor_scrub_objects_total{kind="unresolved"}` and logged, for an
+operator to look at.
 
 ## A storage node is cut off from the map service
 

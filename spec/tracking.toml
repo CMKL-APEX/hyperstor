@@ -232,10 +232,11 @@ status = "planned"
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["replication.md §8.5", "I58"]
+spec = ["replication.md §8.5", "I58", "I60"]
 status = "partial"
 tests = [
     "cluster::scrub_repairs_a_copy_the_others_outvote",
+    "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
     "hyperstor_daemon::tests::scrub_repairs_only_from_a_majority",
 ]
 

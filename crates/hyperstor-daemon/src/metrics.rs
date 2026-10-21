@@ -58,6 +58,8 @@ pub struct ShardMetrics {
     pub scrub_inconsistent: AtomicU64,
     pub scrub_repaired: AtomicU64,
     pub scrub_unresolved: AtomicU64,
+    /// Objects a deep scrub found with a block that failed its CRC.
+    pub scrub_damaged: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -136,13 +138,14 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
     family(
         "hyperstor_scrub_objects_total",
         "counter",
-        "Light scrub: objects compared across copies, and those whose copies differed, by outcome.",
+        "Scrub: objects compared across copies, those whose copies differed by outcome, and those a deep scrub found damaged.",
         &|m| {
             vec![
                 ("compared", g(&m.scrub_objects)),
                 ("inconsistent", g(&m.scrub_inconsistent)),
                 ("repaired", g(&m.scrub_repaired)),
                 ("unresolved", g(&m.scrub_unresolved)),
+                ("damaged", g(&m.scrub_damaged)),
             ]
         },
     );

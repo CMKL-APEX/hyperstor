@@ -30,14 +30,14 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, Msg, Target, VERSION, WireKey, block_crcs, decode_digests, encode_digests, encode_frame,
-    verify_crcs,
+    Code, DAMAGED, Msg, Target, VERSION, WireKey, block_crcs, decode_digests, encode_digests,
+    encode_frame, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream};
 use hyperstor_reactor::{block_on, spawn, time::sleep};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -263,6 +263,9 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
+    /// Objects a deep scrub found damaged (a block failed its CRC), until a
+    /// push replaces them; reported with the digest [`DAMAGED`].
+    damaged: RefCell<HashSet<ObjKey>>,
     /// Cache-pool PGs (D45), with the epoch this device last served each
     /// at. Serving one at a new epoch, or for the first time since start,
     /// first drops what this device holds of it: the copy may be older
@@ -305,9 +308,31 @@ fn verdict(digests: &[Option<u64>]) -> Verdict {
     }
 }
 
+/// Each member's digest of `key`. A damaged copy gets a value of its own,
+/// so it never agrees with another copy, damaged or not, and can't be part
+/// of a majority.
 fn row(table: &[HashMap<ObjKey, u64>], key: &ObjKey) -> Vec<Option<u64>> {
-    table.iter().map(|m| m.get(key).copied()).collect()
+    table
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            m.get(key).map(|d| {
+                if *d == DAMAGED {
+                    u64::MAX - i as u64
+                } else {
+                    *d
+                }
+            })
+        })
+        .collect()
 }
+
+/// Every this-many scrub passes, the first included, is deep (replication.md
+/// §8.5: light daily, deep weekly).
+const DEEP_SCRUB_EVERY: u64 = 7;
+
+/// How fast a deep scrub reads, per device, in bytes a second.
+const DEEP_SCRUB_RATE: u64 = 64 << 20;
 
 fn wire_key(k: &ObjKey) -> WireKey {
     WireKey {
@@ -381,6 +406,7 @@ impl ShardState {
             fenced: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
+            damaged: RefCell::new(HashSet::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
             metrics,
@@ -637,9 +663,14 @@ impl ShardState {
                 Msg::Digests { .. } if self.no_digests.get() => {
                     reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[])
                 }
-                Msg::Digests { to } => {
-                    let (m, p) = self.digests(to).await;
-                    reply(&m, &p);
+                Msg::Digests { to, deep } => {
+                    // Answered from a task of its own: a deep read takes a
+                    // while, and replication on this connection goes on.
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.digests(to, deep).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
                 }
                 Msg::Push { to, key, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.pushes, 1);
@@ -854,18 +885,66 @@ impl ShardState {
     /// What this node holds of a PG, as `(key, digest)` in key order, once
     /// every commit queued so far is done: everything that reached this
     /// node before the request is in it (replication.md §8.5).
-    async fn digests(&self, to: Target) -> (Msg, Vec<u8>) {
+    async fn digests(&self, to: Target, deep: bool) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, false).await {
             return (m, Vec::new());
         }
+        if deep {
+            self.verify_pg(to.pool, to.pg).await;
+        }
         self.drained().await;
-        let sh = self.shard.borrow();
-        let entries: Vec<_> = sh
-            .list_pg(to.pool, to.pg)
+        let entries: Vec<_> = self
+            .local_digests(to.pool, to.pg)
             .into_iter()
-            .filter_map(|k| Some((wire_key(&k), sh.digest(&k)?)))
+            .map(|(k, d)| (wire_key(&k), d))
             .collect();
         (Msg::DigestsOk, encode_digests(&entries))
+    }
+
+    /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
+    /// found damaged.
+    fn local_digests(&self, pool: u32, pg: u32) -> Vec<(ObjKey, u64)> {
+        let sh = self.shard.borrow();
+        let damaged = self.damaged.borrow();
+        sh.list_pg(pool, pg)
+            .into_iter()
+            .filter_map(|k| {
+                let d = match sh.digest(&k)? {
+                    _ if damaged.contains(&k) => DAMAGED,
+                    DAMAGED => DAMAGED + 1,
+                    d => d,
+                };
+                Some((k, d))
+            })
+            .collect()
+    }
+
+    /// Deep scrub of this device's copy of a PG: reads every object, which
+    /// checks every block's CRC (engine.md §7.2), and marks the objects
+    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second, yielding
+    /// between objects so I/O goes on.
+    async fn verify_pg(&self, pool: u32, pg: u32) {
+        let keys = self.shard.borrow().list_pg(pool, pg);
+        for key in keys {
+            let read = {
+                let sh = self.shard.borrow();
+                sh.stat(&key).map(|st| {
+                    sh.read(&key, 0, st.size.div_ceil(4096) * 4096)
+                        .map(|b| b.len())
+                })
+            };
+            match read {
+                Some(Ok(n)) => {
+                    sleep(Duration::from_secs_f64(n as f64 / DEEP_SCRUB_RATE as f64)).await;
+                }
+                Some(Err(EngineError::Checksum { .. })) => {
+                    if self.damaged.borrow_mut().insert(key) {
+                        metrics::ShardMetrics::add(&self.metrics.scrub_damaged, 1);
+                    }
+                }
+                _ => hyperstor_reactor::yield_now().await,
+            }
+        }
     }
 
     /// Replaces an object with a primary's copy (backfill, replication.md §8.5).
@@ -908,11 +987,19 @@ impl ShardState {
             }
             vec![OpList { key: okey, ops }]
         };
+        let replaced: Vec<ObjKey> = lists.iter().map(|l| l.key.clone()).collect();
         let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        let me = self.clone();
         spawn(async move {
             let mut ok = true;
             for d in done {
                 ok &= d.await.is_ok();
+            }
+            if ok {
+                let mut damaged = me.damaged.borrow_mut();
+                for k in &replaced {
+                    damaged.remove(k);
+                }
             }
             send(if ok {
                 Msg::PushOk
@@ -1101,7 +1188,7 @@ impl ShardState {
         // earlier are in the copy, and writes queued later follow it on the
         // same connection. A key that changes after the comparison is
         // carried by the live writes backfill targets get anyway.
-        let theirs = match conn.start(&Msg::Digests { to }, &[]).await {
+        let theirs = match conn.start(&Msg::Digests { to, deep: false }, &[]).await {
             Ok((Msg::DigestsOk, p)) => match decode_digests(&p) {
                 Ok(v) => v,
                 Err(_) => return false,
@@ -1205,8 +1292,11 @@ impl ShardState {
     /// (replication.md §8.5, light scrub). Only clean PGs are scrubbed:
     /// backfill already compares a filling member's copy.
     async fn scrubber(self: Rc<Self>, every: Duration) {
+        let mut pass = 0u64;
         loop {
             sleep(every).await;
+            let deep = pass.is_multiple_of(DEEP_SCRUB_EVERY);
+            pass += 1;
             let map = self.map();
             let pgs: Vec<((u32, u32), PgInfo)> = map
                 .pgs
@@ -1221,7 +1311,7 @@ impl ShardState {
                 .map(|(k, i)| (*k, i.clone()))
                 .collect();
             for ((pool, pg), info) in pgs {
-                self.scrub_pg(pool, pg, &info).await;
+                self.scrub_pg(pool, pg, &info, deep).await;
             }
         }
     }
@@ -1233,6 +1323,7 @@ impl ShardState {
         pool: u32,
         pg: u32,
         info: &PgInfo,
+        deep: bool,
     ) -> Option<Vec<HashMap<ObjKey, u64>>> {
         let map = self.map();
         let to = Target {
@@ -1247,7 +1338,7 @@ impl ShardState {
                 continue;
             }
             let conn = self.peer(map.device_addr(*d)?).await.ok()?;
-            let Ok((Msg::DigestsOk, p)) = conn.call(&Msg::Digests { to }, &[]).await else {
+            let Ok((Msg::DigestsOk, p)) = conn.call(&Msg::Digests { to, deep }, &[]).await else {
                 return None;
             };
             out.push(
@@ -1258,14 +1349,11 @@ impl ShardState {
                     .collect(),
             );
         }
+        if deep {
+            self.verify_pg(pool, pg).await;
+        }
         self.drained().await;
-        let sh = self.shard.borrow();
-        let mine = sh
-            .list_pg(pool, pg)
-            .into_iter()
-            .filter_map(|k| Some((k.clone(), sh.digest(&k)?)))
-            .collect();
-        out.insert(0, mine);
+        out.insert(0, self.local_digests(pool, pg).into_iter().collect());
         Some(out)
     }
 
@@ -1274,8 +1362,8 @@ impl ShardState {
     /// make copies differ for a moment. A difference that persists is
     /// repaired from this copy when a majority of the copies agree with
     /// it, and otherwise reported, not guessed at.
-    async fn scrub_pg(&self, pool: u32, pg: u32, info: &PgInfo) {
-        let Some(first) = self.member_digests(pool, pg, info).await else {
+    async fn scrub_pg(&self, pool: u32, pg: u32, info: &PgInfo, deep: bool) {
+        let Some(first) = self.member_digests(pool, pg, info, deep).await else {
             return;
         };
         let differing = |t: &[HashMap<ObjKey, u64>], keys: &mut dyn Iterator<Item = ObjKey>| {
@@ -1292,7 +1380,8 @@ impl ShardState {
         if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
             return;
         }
-        let Some(second) = self.member_digests(pool, pg, info).await else {
+        // Damage found by a deep read stays marked, so a light look will do.
+        let Some(second) = self.member_digests(pool, pg, info, false).await else {
             return;
         };
         let bad = differing(&second, &mut suspects.into_iter());

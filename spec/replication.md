@@ -111,9 +111,11 @@ members, as long as there are at least `min_size` of them. Below
   same digests, every `hyperstord --scrub-hours` (default 24) for each
   clean PG a device is primary of. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
-  the copies agree with it, and otherwise reported. Deep scrub is not
-  built: reads already check every block's CRC (engine.md §7.2), but
-  nothing reads blocks that aren't asked for.
+  the copies agree with it, and otherwise reported. The first pass after
+  a start and every seventh are **deep** (I60): each member first reads
+  every block of the PG, checking its CRC (engine.md §7.2), at most
+  64 MiB/s per device, and reports an object that fails as damaged,
+  which never counts toward a majority; the majority's copy replaces it.
 
 ### 8.6 Erasure-coded pools (D6)
 

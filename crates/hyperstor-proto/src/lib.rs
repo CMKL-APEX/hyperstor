@@ -274,8 +274,11 @@ pub enum Msg {
     PushOk,
     /// Primary to a member or backfill target: list what you hold of the
     /// PG, as digests of each object's content (replication.md §8.5).
+    /// With `deep`, first read every block of the PG and check its CRC: a
+    /// damaged object's digest is [`DAMAGED`].
     Digests {
         to: Target,
+        deep: bool,
     },
     /// The digests, in the payload ([`encode_digests`]).
     DigestsOk,
@@ -407,7 +410,10 @@ impl Msg {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
             Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk => {}
-            Msg::Digests { to } => to.enc(e),
+            Msg::Digests { to, deep } => {
+                to.enc(e);
+                e.u8(u8::from(*deep));
+            }
             Msg::Heartbeat { node } => {
                 e.u32(*node);
             }
@@ -551,6 +557,7 @@ impl Msg {
             PUSH_OK => Msg::PushOk,
             DIGESTS => Msg::Digests {
                 to: Target::dec(&mut d)?,
+                deep: d.u8()? != 0,
             },
             DIGESTS_OK => Msg::DigestsOk,
             HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
@@ -593,6 +600,10 @@ impl Msg {
         Ok(m)
     }
 }
+
+/// The digest reported for a copy whose blocks failed their checksums; a
+/// healthy object's digest is never this value.
+pub const DAMAGED: u64 = 0;
 
 /// The payload of [`Msg::DigestsOk`]: each object's key and content
 /// digest, in key order. In the payload rather than the body, so a PG's
@@ -716,7 +727,7 @@ mod tests {
                 crcs: vec![5],
             },
             Msg::PushOk,
-            Msg::Digests { to },
+            Msg::Digests { to, deep: true },
             Msg::DigestsOk,
             Msg::Heartbeat { node: 3 },
             Msg::HeartbeatOk {

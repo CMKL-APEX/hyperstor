@@ -766,6 +766,89 @@ fn scrub_repairs_a_copy_the_others_outvote() {
     copies_agree(&map, devs, &chunks);
 }
 
+/// Deep scrub (replication.md §8.5): a block damaged on a replica's
+/// device, under the engine (its index, and so its digest, still look
+/// right), is found by reading every block, and the primary replaces the
+/// damaged copy from its own, which the third copy agrees with.
+#[test]
+fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
+    let mut c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let v1 = pattern(71, 4 * CHUNK as usize);
+    let v1c = v1.clone();
+    let (primary, replica) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+            // Later commits on every node, so chunk 0's write isn't the
+            // last group on any device: recovery checks that group's data
+            // and would drop it as torn (I4), rather than keep it damaged.
+            cl.write(POOL, 2, 0, pattern(72, 32 * CHUNK as usize))
+                .await
+                .unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let info = m.pg(POOL, pg_of(1, 0, m.pools[&POOL].pg_count)).unwrap();
+            (info.acting[0], info.acting[1])
+        })
+    })
+    .join()
+    .unwrap();
+    let node_of = |d: u32| (d / 1000) as usize;
+    // Flip a byte of chunk 0's first block on the replica's device.
+    c.kill(node_of(replica));
+    let dev = c.stopped.get_mut(&node_of(replica)).unwrap();
+    let mut img = vec![0u8; dev[0].len() as usize];
+    for (i, part) in img.chunks_mut(1 << 20).enumerate() {
+        dev[0].read((i as u64) << 20, part).unwrap();
+    }
+    let at = img
+        .chunks(4096)
+        .position(|b| b == &v1[..4096])
+        .expect("chunk 0's first block on the device")
+        * 4096;
+    img[at + 100] ^= 0xff;
+    dev[0] = Arc::new(MemDev::from_image(img));
+    c.restart(node_of(replica));
+    let count = |n: usize, f: fn(&metrics::ShardMetrics) -> &std::sync::atomic::AtomicU64| {
+        f(&c.nodes[n].as_ref().unwrap().metrics[0].1).load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    while count(node_of(primary), |m| &m.scrub_repaired) == 0 {
+        assert!(
+            t.elapsed().as_secs() < 15,
+            "the damaged copy was never repaired"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(count(node_of(replica), |m| &m.scrub_damaged), 1);
+    let v1r = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            wait_backfilled(&cl).await;
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+        })
+    })
+    .join()
+    .unwrap();
+    // Every copy reads back through the engine's CRC check, the
+    // replica's included.
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64)
+        .map(|c| (1, c))
+        .chain((0..32u64).map(|c| (2, c)))
+        .collect();
+    copies_agree(&map, devs, &chunks);
+}
+
 /// The case map leases exist for (decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be
