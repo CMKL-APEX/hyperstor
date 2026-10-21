@@ -285,7 +285,9 @@ fn install_manage_and_fail_a_node() {
 
     let (code, out) = ctl(&bin, &api, &["pools"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("replicated"), "{out}");
+    assert!(out.contains("replicated") && out.contains("cache"), "{out}");
+    let (code, out) = ctl(&bin, &api, &["io-test", "--pool", "2", "--mib", "4"]);
+    assert_eq!(code, 0, "the cache pool takes I/O: {out}");
 
     // Take node 2's device out: its copies move to... nowhere, since
     // three copies need three hosts, so PGs run degraded (warn); in again

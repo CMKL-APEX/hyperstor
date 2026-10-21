@@ -39,7 +39,7 @@ no newer than the target hosts', and copy the binaries.
 
 `hyperstor-install` sets up a whole cluster on one Linux host: the map
 service with its cluster API, three storage nodes on files, a pool with
-three copies, systemd units, and `hyperstorctl`. It is for trying
+three copies and a cache pool, systemd units, and `hyperstorctl`. It is for trying
 Hyperstor and testing changes, not for data you want to keep.
 
 ```sh

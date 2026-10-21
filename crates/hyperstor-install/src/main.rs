@@ -11,7 +11,8 @@
 //! - `install --all-in-one` sets up a trial cluster on this host: the map
 //!   service (map protocol on 8849, cluster API on 8850, both loopback)
 //!   and N storage nodes (default 3), each on a file of G GiB
-//!   (default 4) in the data directory, a replicated pool, systemd units,
+//!   (default 4) in the data directory, a replicated pool and a cache
+//!   pool (D45), systemd units,
 //!   and `hyperstorctl`'s configuration. Flags are saved in
 //!   `/etc/hyperstor/install.conf` and reused by later runs.
 //!   It also installs itself and a daily timer that runs `install` again,
@@ -467,6 +468,8 @@ fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
     // which here are hyperstord instances.
     cluster +=
         &format!("pool 1 vol replicated size {size} min {min} pgs 64 chunk 4194304 domain host\n");
+    // A cache pool (D45): one copy, lost rather than recovered.
+    cluster += "pool 2 cache cache copies 1 pgs 64 chunk 4194304 domain host\n";
     let data = s.data_dir.trim_end_matches('/');
     let mut out = vec![
         ("/etc/hyperstor/cluster.txt".to_string(), cluster, 0o644),
@@ -917,7 +920,18 @@ mod tests {
         let map = hyperstor_meta::parse_cluster(cluster).unwrap();
         assert_eq!(map.cluster_id, 77);
         assert_eq!(map.nodes.len(), 2);
-        assert!(map.pgs.values().all(|pg| pg.acting_count() == 2));
+        assert!(
+            map.pgs
+                .range((1, 0)..=(1, u32::MAX))
+                .all(|(_, pg)| pg.acting_count() == 2)
+        );
+        // And the cache pool: one copy each.
+        assert_eq!(map.pools[&2].kind, hyperstor_meta::PoolKind::Cache);
+        assert!(
+            map.pgs
+                .range((2, 0)..=(2, u32::MAX))
+                .all(|(_, pg)| pg.acting_count() == 1)
+        );
         // Two nodes: two copies, writes go on with one.
         assert!(cluster.contains("size 2 min 1"));
         assert_eq!(f.iter().filter(|x| x.0.contains("/node-")).count(), 2);

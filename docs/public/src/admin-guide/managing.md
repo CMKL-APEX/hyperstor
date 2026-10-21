@@ -53,7 +53,8 @@ hyperstorctl io-test --mib 64
 ```
 
 writes 64 MiB of random data to a new volume of the first pool (or
-`--pool P`), reads it back and compares, and prints the throughput of
+`--pool P`: `--pool 2` tests the installer's cache pool), reads it back
+and compares, and prints the throughput of
 each phase. A mismatch or an error exits with status 1. It is a quick
 end-to-end check; for measurements use
 [`hyperstor-bench`](benchmarking.md).

@@ -38,7 +38,7 @@ in, so run it from `target/release` after `cargo build --release`.
 | Path | Contents |
 |---|---|
 | `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, and `hyperstor-install` itself |
-| `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes, pool 1 |
+| `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes; pool 1 (`vol`, replicated) and pool 2 (`cache`, a cache pool with one copy) |
 | `/etc/hyperstor/meta.env`, `node-N.env` | Each service's options |
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
 | `/etc/systemd/system/` | `hyperstor-meta.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
