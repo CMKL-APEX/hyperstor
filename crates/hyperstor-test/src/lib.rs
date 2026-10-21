@@ -193,6 +193,19 @@ impl Run {
     }
 }
 
+/// Hard-links the built binaries into `root/usr/local/bin`, so an install
+/// there finds them already in place and writes none: each root would
+/// otherwise get about half a gigabyte of copies, and tests that install
+/// many roots at once slow every fsync on the host (Raft's among them).
+/// Falls back to letting the installer copy (another filesystem).
+pub fn link_binaries(root: &Path) {
+    let dir = root.join("usr/local/bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    for b in BINARIES {
+        let _ = std::fs::hard_link(bin_dir().join(b), dir.join(b));
+    }
+}
+
 /// `hyperstor-install install --root ROOT ARGS…`, which must succeed.
 pub fn install(root: &Path, args: &[&str]) -> Run {
     install_cmd(root, "install", args).ok()

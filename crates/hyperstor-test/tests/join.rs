@@ -8,6 +8,14 @@ use hyperstor_test::*;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
+/// The tests here each run several map service members or hosts: one at
+/// a time, so they don't slow each other's Raft.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Processes killed when the test ends, however it ends.
 #[derive(Default)]
 struct Procs(Vec<Child>);
@@ -95,6 +103,7 @@ fn join_storage(
     admin: u16,
 ) -> Run {
     std::fs::create_dir_all(data).unwrap();
+    link_binaries(root);
     install_cmd(
         root,
         "install",
@@ -126,6 +135,7 @@ fn join_storage(
 /// host's certificate names its node and is renewed over the API.
 #[test]
 fn storage_hosts_join_with_tokens() {
+    let _one = one_at_a_time();
     let s = Scratch::new("join");
     let base = free_ports(24);
     let (api_port, map_port) = (base, base + 1);
@@ -137,6 +147,7 @@ fn storage_hosts_join_with_tokens() {
     )
     .unwrap();
     let meta_root = s.path("meta-host");
+    link_binaries(&meta_root);
     let meta_data = s.path("meta-data");
     std::fs::create_dir_all(&meta_data).unwrap();
     let map = format!("127.0.0.1:{map_port}");
@@ -372,6 +383,7 @@ fn storage_hosts_join_with_tokens() {
 /// cluster serves I/O.
 #[test]
 fn map_service_members_join_the_first() {
+    let _one = one_at_a_time();
     let s = Scratch::new("join-group");
     let base = free_ports(16);
     let member = |i: u16| (base + 3 * i, base + 3 * i + 1, base + 3 * i + 2); // api, map, raft
@@ -394,6 +406,7 @@ fn map_service_members_join_the_first() {
     let mut bin = PathBuf::new();
     for i in 0..3u16 {
         let root = s.path(&format!("member-{}", i + 1));
+        link_binaries(&root);
         let data = s.path(&format!("member-data-{}", i + 1));
         std::fs::create_dir_all(&data).unwrap();
         let (api_port, _, _) = member(i);
