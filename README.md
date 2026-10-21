@@ -8,8 +8,12 @@ distributed filesystem, all on one replicated or erasure-coded object
 layer.
 
 **Status: early implementation.** HS0 (the local engine) and HS1 (placement,
-wire protocol, reactor, map service, storage daemon, client) are built, and
-HS2 has started (failure detection, degraded writes, backfill). The design
+wire protocol, reactor, map service, storage daemon, client) are built,
+with the map service replicated over three or five members by Raft, and
+HS2 is under way (failure detection and peer reports, degraded writes,
+backfill, peering, delta recovery and light and deep scrub by content
+digests). Administration has started too: a cluster API over mutual TLS,
+`hyperstorctl`, and `hyperstor-install`. The design
 is in [`spec/`](spec/README.md); what was built, how it deviates, and what
 to review is in [`spec/implementation-notes.md`](spec/implementation-notes.md),
 with measurements in [`spec/benchmarks.md`](spec/benchmarks.md).
@@ -33,9 +37,10 @@ done
 HS_BENCH_SECS=2 target/release/hyperstor-bench remote 127.0.0.1:19000
 ```
 
-Kill one `hyperstord`: after the map service marks it down (2 s), writes go
-on with two copies. There is no block-device front end yet (vhost-user-blk
-is HS3, NVMe-oF HS5); clients use `hyperstor-client`.
+Kill one `hyperstord`: after the map service marks it down (0.8 s), writes go
+on with two copies; start it again and it receives only what it missed.
+There is no block-device front end yet (vhost-user-blk is HS3, NVMe-oF
+HS5); clients use `hyperstor-client`.
 
 Tests: `cargo test --workspace --release` (the engine's crash test takes
 `HS_CRASH_SEEDS`). CI also checks the spec and tracks each milestone's
@@ -69,7 +74,7 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 | `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
 | `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
 | `.github/workflows/` | CI and documentation publishing |
-| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, proto, reactor, meta (map service), daemon (`hyperstord`), client, bench |
+| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt; and test (end-to-end suite) |
 | `LICENSES/` | License texts and copyright notice |
 
 ## License

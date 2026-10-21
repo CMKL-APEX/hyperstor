@@ -102,10 +102,11 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 
 | Metric | Meaning |
 |---|---|
-| `hyperstor_requests_total{kind}` | Requests served: `write` and `read` from clients (as primary), `repl` from primaries (as replica), `push` during backfill |
+| `hyperstor_requests_total{kind}` | Requests served: `write` and `read` from clients (as primary), `repl` from primaries (as replica), `push` of whole objects from primaries during backfill, peering and scrub repair |
 | `hyperstor_request_bytes_total{kind}` | Data bytes in those requests |
 | `hyperstor_request_duration_seconds{kind}` | Histogram of client writes (until every replica has answered) and reads, from arrival to answer |
 | `hyperstor_write_errors_total` | Client writes answered with an error |
+| `hyperstor_scrub_objects_total{kind}` | Scrub on the PGs a device leads: objects `compared`, those whose copies differed (`inconsistent`), then `repaired` or `unresolved` (no majority: look at the log). `damaged`: objects of this device whose deep scrub found a bad checksum. `peering`: objects a new primary pushed before it served (see [Failures and recovery](failures.md#scrub)) |
 | `hyperstor_device_objects` | Objects on the device |
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |
 | `hyperstor_log_used_bytes`, `hyperstor_log_bytes` | Log in use since the last checkpoint, and its size |
