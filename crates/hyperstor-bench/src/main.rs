@@ -506,7 +506,7 @@ fn adminload_suite(secs: f64) {
             let m = hyperstor_meta::Meta::new(map);
             hyperstor_reactor::spawn(m.clone().liveness(Duration::from_millis(800)));
             hyperstor_reactor::spawn(m.clone().publisher());
-            hyperstor_reactor::spawn(m.clone().admin(rx));
+            hyperstor_reactor::spawn(m.clone().admin(rx, meta));
             hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), m).await
         })
     });

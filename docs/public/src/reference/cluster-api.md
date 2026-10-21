@@ -18,7 +18,7 @@ a certificate issued by the cluster's CA, whose identity
 | Role | May |
 |---|---|
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
-| `node`, `meta` | Read (`GetStatus`, `ListPgs`) |
+| `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`) |
 | `host` | Nothing |
 
 A certificate of another cluster is refused. `hyperstor-install` makes
@@ -33,7 +33,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -59,6 +59,9 @@ values are left out of answers.
 | `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
+| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version` |
+| `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
+| `DeleteVolume` | `{"id": "…"}` | `{}`, once the volume and its data are gone |
 
 ```sh
 cd /etc/hyperstor/pki
@@ -79,7 +82,9 @@ Errors are Connect errors, with an HTTP status and a JSON body:
 
 | Code | When |
 |---|---|
-| `not_found` | No such device or pool |
+| `not_found` | No such device, pool or volume |
+| `already_exists` | `CreateVolume` with the id of a volume that exists |
+| `invalid_argument` | A size that isn't a positive multiple of 4096, a malformed id |
 | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | The certificate's cluster or role doesn't allow the call |
 | `resource_exhausted` | The caller is over its rate limit |

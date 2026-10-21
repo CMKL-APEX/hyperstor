@@ -192,7 +192,7 @@ fn main() {
         hyperstor_reactor::spawn(meta.clone().publisher());
         if let Some(api) = api {
             let (tx, rx) = hyperstor_reactor::chan::channel();
-            hyperstor_reactor::spawn(meta.clone().admin(rx));
+            hyperstor_reactor::spawn(meta.clone().admin(rx, addr));
             eprintln!(
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")

@@ -269,7 +269,7 @@ mod tests {
         m.nodes.get_mut(&2).unwrap().up = false;
         m.recompute();
         let changed = m.pgs.values().filter(|p| p.epoch == m.epoch).count();
-        assert!(changed > 0 && changed < 64);
+        assert!(changed > 0 && changed < m.pgs.len());
         save(&db, &m).unwrap();
         let applied = rx.try_recv().unwrap();
         assert_eq!(

@@ -130,6 +130,11 @@ pub fn report(map: &ClusterMap) -> Report {
 mod tests {
     use super::*;
 
+    /// A pool's counts by id (`.meta` comes first).
+    fn pool(r: &Report, id: u32) -> &PoolPgs {
+        r.pools.iter().find(|p| p.pool == id).unwrap()
+    }
+
     fn map() -> ClusterMap {
         crate::parse_cluster(
             "cluster 9\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
@@ -143,7 +148,7 @@ mod tests {
         let m = map();
         let r = report(&m);
         assert_eq!(r.health, Health::Ok, "{:?}", r.reasons);
-        assert_eq!(r.pools[0].clean, 8);
+        assert_eq!(pool(&r, 1).clean, 8);
         assert_eq!(r.nodes_up, 3);
     }
 
@@ -159,8 +164,8 @@ mod tests {
         assert_eq!(r.health, Health::Warn, "{:?}", r.reasons);
         assert!(r.reasons.iter().any(|(_, w)| w.contains("node(s) down: 2")));
         // With 3 copies over 3 hosts and one host gone, every PG keeps 2.
-        assert_eq!(r.pools[0].degraded + r.pools[0].backfilling, 8);
-        assert_eq!(r.pools[0].inactive, 0);
+        assert_eq!(pool(&r, 1).degraded + pool(&r, 1).backfilling, 8);
+        assert_eq!(pool(&r, 1).inactive, 0);
     }
 
     #[test]
@@ -171,11 +176,11 @@ mod tests {
         pg.up = pg.acting.clone();
         let r = report(&m);
         assert_eq!(r.health, Health::Error);
-        assert_eq!(r.pools[0].inactive, 1);
-        assert_eq!(r.pools[0].clean, 7);
+        assert_eq!(pool(&r, 1).inactive, 1);
+        assert_eq!(pool(&r, 1).clean, 7);
         // No primary at all is inactive too.
         let pg = m.pgs.get_mut(&(1, 4)).unwrap();
         pg.acting[0] = crate::NO_DEVICE;
-        assert_eq!(report(&m).pools[0].inactive, 2);
+        assert_eq!(pool(&report(&m), 1).inactive, 2);
     }
 }

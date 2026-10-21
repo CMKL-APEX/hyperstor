@@ -89,3 +89,53 @@ fn a_killed_node_is_reported_and_comes_back() {
     c.ctl(&["status", "--wait", "60"]).ok();
     c.ctl(&["io-test", "--mib", "4"]).ok();
 }
+
+/// Volumes through the cluster API (D77): `hyperstorctl` creates, lists
+/// and deletes them; an id in use and a volume that isn't there are
+/// refused.
+#[test]
+fn volumes_through_hyperstorctl() {
+    let c = Cluster::all_in_one("volumes", 3);
+    let made = c
+        .ctl(&["create-volume", "--size", "64M", "--name", "scratch"])
+        .ok();
+    let id = made
+        .out
+        .split_whitespace()
+        .nth(1)
+        .expect("volume ID created")
+        .to_string();
+    assert_eq!(id.len(), 32, "{}", made.out);
+    c.ctl(&[
+        "create-volume",
+        "--size",
+        "1G",
+        "--name",
+        "fixed",
+        "--id",
+        "00000000000000000000000000000abc",
+    ])
+    .ok();
+    let l = c.ctl(&["volumes"]).ok();
+    assert!(
+        l.has(&id) && l.has("scratch") && l.has("67108864"),
+        "{}",
+        l.out
+    );
+    assert!(
+        l.has("00000000000000000000000000000abc") && l.has("fixed"),
+        "{}",
+        l.out
+    );
+    let r = c
+        .ctl(&["create-volume", "--size", "1G", "--id", "abc"])
+        .expect(1);
+    assert!(r.has("exists"), "{}", r.out);
+    c.ctl(&["delete-volume", "--id", &id]).ok();
+    let l = c.ctl(&["volumes", "--json"]).ok();
+    assert!(!l.has(&id) && l.has("fixed"), "{}", l.out);
+    let r = c.ctl(&["delete-volume", "--id", &id]).expect(1);
+    assert!(r.has("no volume"), "{}", r.out);
+    c.ctl(&["create-volume", "--size", "1000", "--name", "odd"])
+        .expect(1);
+}

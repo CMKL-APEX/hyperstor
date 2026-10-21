@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-map = { path = "../hyperstor-map" }
+# Volume operations of the cluster API, as a client of .meta (§4.2).
+hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }

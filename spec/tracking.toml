@@ -142,9 +142,9 @@ what = "Cluster map and map service, configured from a cluster file"
 spec = ["metadata.md §4.1"]
 status = "done"
 tests = [
-    "hyperstor_meta::parse_tests::cluster_file",
+    "hyperstor_map::parse_tests::cluster_file",
     "hyperstor_meta::tests::map_service_answers",
-    "hyperstor_meta::tests::encode_round_trip_and_addresses",
+    "hyperstor_map::tests::encode_round_trip_and_addresses",
 ]
 
 [[milestone.item]]
@@ -173,10 +173,13 @@ tests = [
 
 [[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
-spec = ["metadata.md §4.2", "metadata.md §9", "D28", "I68"]
+spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D77", "I68", "I70", "I71", "I72", "I73"]
 status = "partial"
 tests = [
     "cluster::objects_change_atomically_and_every_copy_follows",
+    "cluster::volumes_are_created_listed_grown_and_deleted",
+    "manage::volumes_through_hyperstorctl",
+    "hyperstor_client::volume::tests::headers_round_trip",
     "hyperstor_proto::tests::operation_lists_objects_and_lookups_round_trip",
 ]
 
@@ -194,8 +197,8 @@ what = "Failure detection by heartbeats, and writes that continue with fewer cop
 spec = ["replication.md §15"]
 status = "done"
 tests = [
-    "hyperstor_meta::tests::node_down_changes_only_its_pgs_and_bumps_epochs",
-    "hyperstor_meta::tests::degraded_acting_then_backfill",
+    "hyperstor_map::tests::node_down_changes_only_its_pgs_and_bumps_epochs",
+    "hyperstor_map::tests::degraded_acting_then_backfill",
     "cluster::a_node_fails_writes_continue_and_backfill_restores_copies",
 ]
 
@@ -205,7 +208,7 @@ spec = ["replication.md §8.5"]
 status = "done"
 tests = [
     "cluster::a_node_returns_with_stale_data_and_is_refilled",
-    "hyperstor_meta::tests::a_pg_whose_copies_are_all_down_stays_down",
+    "hyperstor_map::tests::a_pg_whose_copies_are_all_down_stays_down",
 ]
 
 [[milestone.item]]

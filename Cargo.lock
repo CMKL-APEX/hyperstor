@@ -960,7 +960,8 @@ dependencies = [
 name = "hyperstor-client"
 version = "0.1.0"
 dependencies = [
- "hyperstor-meta",
+ "hyperstor-codec",
+ "hyperstor-map",
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
@@ -1033,6 +1034,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-map"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-codec",
+ "hyperstor-placement",
+]
+
+[[package]]
 name = "hyperstor-meta"
 version = "0.1.0"
 dependencies = [
@@ -1044,7 +1053,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "hyperstor-api",
+ "hyperstor-client",
  "hyperstor-codec",
+ "hyperstor-map",
  "hyperstor-pki",
  "hyperstor-placement",
  "hyperstor-proto",

@@ -16,6 +16,16 @@ service ClusterService {
   // Takes a device out of placement, so its PGs move elsewhere, or brings
   // it back in. Write.
   rpc SetDeviceIn(SetDeviceInRequest) returns (SetDeviceInResponse);
+
+  // A pool's volumes, from their headers in .meta (metadata.md §4.2).
+  // Read.
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+
+  // Creates a volume (decisions.md D77). Write.
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
+
+  // Deletes a volume and its data. Write.
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 }
 
 enum Health {
@@ -123,3 +133,45 @@ message SetDeviceInResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
 }
+
+message Volume {
+  // A 128-bit id, as 32 hexadecimal digits.
+  string id = 1;
+  // The data pool.
+  uint32 pool = 2;
+  // In bytes.
+  uint64 size = 3;
+  string name = 4;
+  // "active" or "deleting".
+  string state = 5;
+  // The header's version: every change bumps it.
+  uint64 version = 6;
+}
+
+message ListVolumesRequest {
+  uint32 pool = 1;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+}
+
+message CreateVolumeRequest {
+  uint32 pool = 1;
+  // In bytes; a positive multiple of 4096.
+  uint64 size = 2;
+  // Shown, not unique.
+  string name = 3;
+  // 32 hexadecimal digits; empty: drawn at random.
+  string id = 4;
+}
+
+message CreateVolumeResponse {
+  Volume volume = 1;
+}
+
+message DeleteVolumeRequest {
+  string id = 1;
+}
+
+message DeleteVolumeResponse {}

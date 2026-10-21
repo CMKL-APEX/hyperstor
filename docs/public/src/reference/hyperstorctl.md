@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
 ```
 
 | Command | Does |
@@ -13,6 +13,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nod
 | `nodes` | Each node and its devices: address, weight, in or out |
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive |
 | `pgs` | One pool's PGs with their acting and up sets |
+| `volumes` | One pool's volumes: id, name, size and state |
+| `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
+| `delete-volume` | Deletes volume `--id` and its data |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
@@ -23,11 +26,14 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nod
 | `--tls DIR` | see below | Connect over mutual TLS with `DIR/admin.crt`, `DIR/admin.key` and `DIR/root.crt` |
 | `--socket PATH` | see below | Connect to the map service's local socket instead: no certificate needed (break-glass) |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. Exit status 1 if SECS pass first |
-| `--json` | off | Print the API's answer as JSON (`status`, `nodes`, `pools`, `pgs`) |
-| `--pool P` | the first pool | The pool for `pgs` and `io-test` |
+| `--json` | off | Print the API's answer as JSON (`status`, `nodes`, `pools`, `pgs`, `volumes`, `create-volume`) |
+| `--pool P` | the first data pool | The pool for `pgs`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
 | `--device D` | | The device for `out` and `in` |
 | `--node N` | | Every device of node N, for `out` and `in` |
+| `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
+| `--name N` | empty | The new volume's name: shown, not unique |
+| `--id ID` | | `delete-volume`: the volume (32 hex digits). `create-volume`: its id, instead of a random one |
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line
 of `/etc/hyperstor/hyperstorctl.conf` (written by
