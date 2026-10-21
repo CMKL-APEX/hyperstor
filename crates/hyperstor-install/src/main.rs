@@ -424,6 +424,9 @@ Wants=network-online.target
 User=hyperstor
 EnvironmentFile=/etc/hyperstor/meta.env
 ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS
+# The local socket, /run/hyperstor-meta/api.sock (break-glass).
+RuntimeDirectory=hyperstor-meta
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=1
 NoNewPrivileges=yes
@@ -606,14 +609,17 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/meta.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --cluster /etc/hyperstor/cluster.txt\n",
+                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt\n",
                     s.api_port
                 ),
                 0o644,
             ),
             (
                 "/etc/hyperstor/hyperstorctl.conf".to_string(),
-                format!("api 127.0.0.1:{}\ntls /etc/hyperstor/pki\n", s.api_port),
+                format!(
+                    "api 127.0.0.1:{}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n",
+                    s.api_port
+                ),
                 0o644,
             ),
             (

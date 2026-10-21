@@ -1,4 +1,4 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|io-test|out|in
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
@@ -24,6 +24,10 @@
 //! else `127.0.0.1:8850`. With `--tls DIR`, or a `tls DIR` line in that
 //! file, it connects over mutual TLS with `DIR/admin.crt`,
 //! `DIR/admin.key` and `DIR/root.crt` (§23.8); otherwise plain HTTP.
+//! With `--socket PATH`, or when neither `--api` nor `--tls` is given and
+//! the file's `socket PATH` exists, it uses the map service's local
+//! socket instead: no certificate, the kernel names the caller
+//! (break-glass, §23.6).
 //!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a refused request or a failed test, 2 usage, 3 the API
@@ -36,7 +40,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -89,6 +93,7 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut api = None;
     let mut tls = None;
+    let mut socket = None;
     let mut a = Args {
         json: false,
         pool: None,
@@ -105,6 +110,7 @@ fn main() {
         match arg.as_str() {
             "--api" => api = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--socket" => socket = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--json" => a.json = true,
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
@@ -122,8 +128,17 @@ fn main() {
         // out and in need a target; nothing else takes one.
         usage();
     }
+    // The local socket (break-glass, §23.6): given, or named in the
+    // configuration and present, unless an address or certificates were
+    // given on the command line.
+    let socket = socket.or_else(|| {
+        if api.is_some() || tls.is_some() {
+            return None;
+        }
+        conf("socket").filter(|p| std::path::Path::new(p).exists())
+    });
     let api = api_addr(api);
-    let tls = match tls.or_else(|| conf("tls")) {
+    let tls = match tls.or_else(|| conf("tls")).filter(|_| socket.is_none()) {
         None => None,
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
@@ -152,7 +167,32 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let outcome = rt.block_on(manage(&api, tls, &cmd, &a));
+    let outcome = rt.block_on(async {
+        let config =
+            |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+        match &socket {
+            Some(path) => {
+                let uri: http::Uri = "http://localhost".parse().expect("uri");
+                let conn =
+                    connectrpc::client::Http2Connection::connect_unix(path.clone(), uri.clone())
+                        .await?
+                        .shared(16);
+                manage(ClusterServiceClient::new(conn, config(uri)), &cmd, &a).await
+            }
+            None => {
+                let scheme = if tls.is_some() { "https" } else { "http" };
+                let uri: http::Uri = format!("{scheme}://{api}")
+                    .parse()
+                    .map_err(|_| connectrpc::ConnectError::invalid_argument("bad address"))?;
+                let http = match tls {
+                    Some(c) => HttpClient::with_tls(c),
+                    None => HttpClient::plaintext(),
+                };
+                manage(ClusterServiceClient::new(http, config(uri)), &cmd, &a).await
+            }
+        }
+    });
+    let api = socket.clone().unwrap_or(api);
     let code = match outcome {
         Ok(Next::Exit(code)) => code,
         Ok(Next::IoTest { map, pool }) => {
@@ -179,24 +219,15 @@ enum Next {
     },
 }
 
-async fn manage(
-    api: &str,
-    tls: Option<std::sync::Arc<connectrpc::rustls::ClientConfig>>,
+async fn manage<T>(
+    client: ClusterServiceClient<T>,
     cmd: &str,
     a: &Args,
-) -> Result<Next, connectrpc::ConnectError> {
-    let scheme = if tls.is_some() { "https" } else { "http" };
-    let uri: http::Uri = format!("{scheme}://{api}")
-        .parse()
-        .map_err(|_| connectrpc::ConnectError::invalid_argument("bad address"))?;
-    let http = match tls {
-        Some(c) => HttpClient::with_tls(c),
-        None => HttpClient::plaintext(),
-    };
-    let client = ClusterServiceClient::new(
-        http,
-        ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
-    );
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
     let status = || async {
         client
             .get_status_with_options(pb::GetStatusRequest::default(), CallOptions::default())

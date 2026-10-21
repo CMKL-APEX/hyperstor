@@ -502,7 +502,7 @@ fn adminload_suite(secs: f64) {
             hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), m).await
         })
     });
-    hyperstor_meta::api::spawn(api_l, tx, meta, None);
+    hyperstor_meta::api::spawn(api_l, None, tx, meta, None);
     let _nodes: Vec<NodeHandle> = listeners
         .into_iter()
         .enumerate()

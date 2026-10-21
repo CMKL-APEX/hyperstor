@@ -757,6 +757,7 @@ dependencies = [
  "buffa",
  "connectrpc",
  "http",
+ "http-body",
  "hyperstor-api",
  "hyperstor-client",
  "hyperstor-meta",
@@ -808,6 +809,9 @@ version = "0.1.0"
 dependencies = [
  "buffa",
  "connectrpc",
+ "http",
+ "hyper",
+ "hyper-util",
  "hyperstor-api",
  "hyperstor-codec",
  "hyperstor-pki",
@@ -815,7 +819,9 @@ dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
  "hyperstor-rpc",
+ "libc",
  "tokio",
+ "tower",
 ]
 
 [[package]]

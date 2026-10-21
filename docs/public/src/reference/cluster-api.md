@@ -24,6 +24,12 @@ a certificate issued by the cluster's CA, whose identity
 A certificate of another cluster is refused. `hyperstor-install` makes
 the certificates in `/etc/hyperstor/pki`.
 
+**Local socket.** With `--api-socket`, the API is also served on a Unix
+socket (`/run/hyperstor-meta/api.sock` when installed). There the
+kernel names the caller: root, the service's user and members of
+`hyperstor-admin` may do everything, others nothing. It is the way in
+when certificates are broken; its use is audited like any other.
+
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 

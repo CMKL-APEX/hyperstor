@@ -1,4 +1,4 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--lease-ms L] [--down-after-ms N]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--lease-ms L] [--down-after-ms N]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
@@ -8,7 +8,9 @@
 //! `--api ADDR`, also serves the cluster API (`hyperstor.v1`;
 //! spec/administration.md §23.5) there: over mutual TLS with
 //! `--api-tls DIR` (`api.crt`, `api.key`, `root.crt`; §23.8), else plain
-//! HTTP for loopback and tests.
+//! HTTP for loopback and tests. `--api-socket PATH` also serves it on a
+//! local Unix socket, for root, the service's user and the
+//! `hyperstor-admin` group, without certificates (break-glass, §23.6).
 
 use std::time::Duration;
 
@@ -22,7 +24,7 @@ fn main() {
     };
     let (Some(listen), Some(file)) = (get("--listen"), get("--cluster")) else {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--lease-ms L] [--down-after-ms N]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--lease-ms L] [--down-after-ms N]"
         );
         std::process::exit(2);
     };
@@ -71,6 +73,21 @@ fn main() {
             },
         )
     });
+    let socket = get("--api-socket").map(|p| {
+        let _ = std::fs::remove_file(&p);
+        let l = std::os::unix::net::UnixListener::bind(&p).unwrap_or_else(|e| {
+            eprintln!("--api-socket {p}: {e}");
+            std::process::exit(1)
+        });
+        // Anyone may connect; each request is checked by the caller's uid.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666));
+        l
+    });
+    if socket.is_some() && api.is_none() {
+        eprintln!("--api-socket needs --api");
+        std::process::exit(2);
+    }
     if api.is_some() && tls.is_none() {
         eprintln!(
             "hyperstor-meta: the cluster API has no TLS and no authentication: loopback only"
@@ -88,7 +105,7 @@ fn main() {
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")
             );
-            hyperstor_meta::api::spawn(api, tx, addr, tls);
+            hyperstor_meta::api::spawn(api, socket, tx, addr, tls);
         }
         hyperstor_meta::serve(l, meta).await
     });

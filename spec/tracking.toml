@@ -339,6 +339,7 @@ status = "partial"
 tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
     "hyperstor_ctl::tests::tables_list_every_device_and_pool",
+    "hyperstor_meta::api::tests::local_callers_allowed",
 ]
 
 [[milestone.item]]

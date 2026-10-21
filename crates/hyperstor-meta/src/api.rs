@@ -13,6 +13,11 @@
 //! cluster except bare-metal hosts, changes for `admin` and `mgmt` only.
 //! Without TLS, every request is allowed: for loopback and tests only.
 //!
+//! A local Unix socket (`--api-socket PATH`) serves the same API for
+//! break-glass use (§23.6, D55): the kernel names the caller
+//! (`SO_PEERCRED`), and root, the service's own user and members of the
+//! `hyperstor-admin` group may do everything, with no certificate.
+//!
 //! Every change and every refused request is audited (§23.9.4): one JSON
 //! line on standard error, which systemd keeps in the journal, with the
 //! time, the caller, the operation, its target and the result. Each
@@ -72,6 +77,42 @@ pub fn audit_line(principal: &str, op: &str, target: &str, result: &str) -> Stri
     )
 }
 
+/// The caller on the local socket, from the kernel.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalPeer {
+    pub uid: u32,
+    pub pid: Option<i32>,
+}
+
+/// Whether a local caller may administer: root, this service's own user,
+/// or a member of `admin_gid` (its supplementary groups, from `/proc`).
+pub fn local_allowed(uid: u32, own_uid: u32, groups: &[u32], admin_gid: Option<u32>) -> bool {
+    uid == 0 || uid == own_uid || admin_gid.is_some_and(|g| groups.contains(&g))
+}
+
+fn groups_of(pid: Option<i32>) -> Vec<u32> {
+    let Some(pid) = pid else { return Vec::new() };
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| l.strip_prefix("Groups:")).map(|g| {
+                g.split_whitespace()
+                    .filter_map(|x| x.parse().ok())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn admin_gid() -> Option<u32> {
+    let name = std::ffi::CString::new("hyperstor-admin").ok()?;
+    // SAFETY: getgrnam reads a static NUL-terminated name and returns a
+    // pointer into static storage, or null; it's read at once.
+    let g = unsafe { libc::getgrnam(name.as_ptr()) };
+    // SAFETY: a non-null result points to a valid group entry.
+    (!g.is_null()).then(|| unsafe { (*g).gr_gid })
+}
+
 type Buckets = std::sync::Mutex<std::collections::HashMap<String, (f64, std::time::Instant)>>;
 
 /// Takes one call from `principal`'s token bucket at `now`; false when it
@@ -113,12 +154,28 @@ impl Api {
             );
             e
         };
-        let principal = match &self.cluster {
-            None => format!(
+        let local = ctx.extensions().get::<LocalPeer>().copied();
+        let principal = match (&self.cluster, local) {
+            (_, Some(p)) => {
+                let who = format!("local:uid={}", p.uid);
+                // SAFETY: getuid has no preconditions.
+                let own = unsafe { libc::getuid() };
+                if !local_allowed(p.uid, own, &groups_of(p.pid), admin_gid()) {
+                    return Err(refuse(
+                        &who,
+                        ConnectError::permission_denied(format!(
+                            "uid {} is not root, the service's user, or in hyperstor-admin",
+                            p.uid
+                        )),
+                    ));
+                }
+                who
+            }
+            (None, None) => format!(
                 "anonymous@{}",
                 ctx.peer_addr().map_or("?".into(), |a| a.to_string())
             ),
-            Some(cluster) => {
+            (Some(cluster), None) => {
                 let peer = ctx.peer_addr().map_or("?".into(), |a| a.to_string());
                 let Some(who) = ctx
                     .peer_certs()
@@ -418,10 +475,12 @@ pub fn tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<Tls, String>
 }
 
 /// Serves the cluster API on `listener` from a new thread with its own
-/// single-threaded tokio runtime, over TLS when `tls` is given.
-/// `map_address` is reported to clients as where the map service listens.
+/// single-threaded tokio runtime, over TLS when `tls` is given, and on
+/// the local socket `unix` if given. `map_address` is reported to clients
+/// as where the map service listens.
 pub fn spawn(
     listener: std::net::TcpListener,
+    unix: Option<std::os::unix::net::UnixListener>,
     tx: Sender<Admin>,
     map_address: SocketAddr,
     tls: Option<Tls>,
@@ -446,18 +505,55 @@ pub fn spawn(
                     cluster,
                     buckets: Default::default(),
                 });
-                let router = api.register(connectrpc::Router::new());
+                let service =
+                    connectrpc::ConnectRpcService::new(api.register(connectrpc::Router::new()));
+                if let Some(u) = unix {
+                    u.set_nonblocking(true).expect("nonblocking");
+                    let u = tokio::net::UnixListener::from_std(u).expect("unix listener");
+                    tokio::spawn(serve_local(u, service.clone()));
+                }
                 let mut server = connectrpc::Server::from_listener(listener);
                 if let Some(c) = config {
                     server = server.with_tls(c);
                 }
-                if let Err(e) = server.serve(router).await {
+                if let Err(e) = server.serve_with_service(service).await {
                     eprintln!("hyperstor-meta: cluster API: {e}");
                     std::process::exit(1);
                 }
             })
         })
         .expect("spawn the API thread")
+}
+
+/// The local socket: each connection served over HTTP/1 or h2c, every
+/// request tagged with the caller's credentials from the kernel.
+async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::ConnectRpcService) {
+    use tower::Service;
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let Ok(cred) = stream.peer_cred() else {
+            continue;
+        };
+        let peer = LocalPeer {
+            uid: cred.uid(),
+            pid: cred.pid(),
+        };
+        let service = service.clone();
+        tokio::spawn(async move {
+            let svc =
+                hyper::service::service_fn(move |mut req: http::Request<hyper::body::Incoming>| {
+                    req.extensions_mut().insert(peer);
+                    let mut s = service.clone();
+                    async move { s.call(req).await }
+                });
+            let _ =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                    .await;
+        });
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +597,19 @@ mod tests {
         assert!(super::take(&b, "a", later));
         assert!(super::take(&b, "a", later));
         assert!(!super::take(&b, "a", later));
+    }
+
+    #[test]
+    fn local_callers_allowed() {
+        use super::local_allowed;
+        assert!(local_allowed(0, 999, &[], None), "root");
+        assert!(local_allowed(999, 999, &[], None), "the service's user");
+        assert!(
+            local_allowed(1000, 999, &[27, 1001], Some(1001)),
+            "hyperstor-admin"
+        );
+        assert!(!local_allowed(1000, 999, &[27], Some(1001)));
+        assert!(!local_allowed(1000, 999, &[27], None));
     }
 
     #[test]

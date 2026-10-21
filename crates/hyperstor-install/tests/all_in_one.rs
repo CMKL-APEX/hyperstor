@@ -61,11 +61,16 @@ fn args(root: &Path, env: &str) -> Vec<String> {
         .lines()
         .find_map(|l| l.strip_prefix("HS_ARGS="))
         .unwrap();
+    std::fs::create_dir_all(root.join("run/hyperstor-meta")).unwrap();
     line.split_whitespace()
         .map(|a| {
             a.replace(
                 "/etc/hyperstor",
                 root.join("etc/hyperstor").to_str().unwrap(),
+            )
+            .replace(
+                "/run/hyperstor-meta",
+                root.join("run/hyperstor-meta").to_str().unwrap(),
             )
         })
         .collect()
@@ -330,6 +335,28 @@ fn install_manage_and_fail_a_node() {
         let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 0).then_some(out)
     });
+    // Break-glass (§23.6): the local socket needs no certificate; the
+    // kernel names the caller, here the service's own user.
+    let sock = root.join("run/hyperstor-meta/api.sock");
+    let out = Command::new(bin.join("hyperstorctl"))
+        .args(["--socket", sock.to_str().unwrap(), "status"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = Command::new(bin.join("hyperstorctl"))
+        .args(["--socket", sock.to_str().unwrap(), "in", "--device", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     // Every change and every refusal is audited (§23.9.4).
     let log = std::fs::read_to_string(&meta_log).unwrap();
     let audits: Vec<&str> = log
@@ -361,6 +388,12 @@ fn install_manage_and_fail_a_node() {
             .iter()
             .any(|l| l.contains("\"result\":\"ok") && l.contains("GetStatus")),
         "reads aren't audited"
+    );
+    assert!(
+        audits
+            .iter()
+            .any(|l| l.contains("\"principal\":\"local:uid=") && l.contains("SetDeviceIn")),
+        "{log}"
     );
 
     let (code, out) = ctl(&bin, &api, &["out", "--device", "999999"]);
