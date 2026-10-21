@@ -44,6 +44,13 @@ members, as long as there are at least `min_size` of them. Below
   10,000 operations or the last 30 minutes, whichever is more.
 - A member that missed operations still covered by the log catches up by
   replaying them (delta recovery). Otherwise it is backfilled (§8.5).
+- **As built** (HS2, implementation-notes.md I57): no PG log yet. Delta
+  recovery compares content digests instead: the returning member lists
+  each object of the PG with a digest the engine computes from its index
+  (size, each block's CRC, attributes, key–value table), and the primary
+  sends only the objects whose digests differ, and deletes for objects
+  it no longer has. It costs a scan of the PG's index entries on both
+  sides, not of the data, and needs no new persisted state.
 
 ### 8.4 Primaries, epochs and leases (D8, D42)
 
@@ -79,6 +86,10 @@ members, as long as there are at least `min_size` of them. Below
   If no member of the last in-sync set can be reached, the PG stays
   `down` and serves nothing, because a reachable member outside that set
   may lack acknowledged writes.
+- **As built** (HS2, implementation-notes.md I61): peering by digests,
+  without a log. The new primary's first request for a PG at a new epoch
+  compares every acting member's digests with its own and pushes its
+  copy where they differ, before it serves.
 - A storage node whose map lease (metadata.md §4.1) has run out stops accepting
   writes for its PGs until it renews, because it may have missed a new
   `pg_epoch` or a fence.
@@ -100,6 +111,15 @@ members, as long as there are at least `min_size` of them. Below
 
   Damaged copies are repaired from a copy whose CRCs match, and an
   inconsistency that can't be decided is reported, not guessed at.
+- **As built** (HS2, implementation-notes.md I58): light scrub by the
+  same digests, every `hyperstord --scrub-hours` (default 24) for each
+  clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
+  second look is repaired from the primary's copy when a majority of
+  the copies agree with it, and otherwise reported. The first pass after
+  a start and every seventh are **deep** (I60): each member first reads
+  every block of the PG, checking its CRC (engine.md §7.2), at most
+  64 MiB/s per device, and reports an object that fails as damaged,
+  which never counts toward a majority; the majority's copy replaces it.
 
 ### 8.6 Erasure-coded pools (D6)
 

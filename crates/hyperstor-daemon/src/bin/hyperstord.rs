@@ -15,6 +15,8 @@
 //! `--admin ADDR` serves metrics in Prometheus format (`GET /metrics`) and
 //! a liveness answer (`GET /health`) there, from a thread of its own
 //! (administration.md §23.3).
+//! `--scrub-hours N` compares the copies of each PG this node is primary
+//! of every N hours (default 24; 0 turns scrub off; replication.md §8.5).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
 //! through the log (decisions.md D38); flash redirects every write.
 
@@ -31,7 +33,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR]"
+            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N]"
         );
         std::process::exit(2)
     };
@@ -100,6 +102,13 @@ fn main() {
             .iter()
             .any(|a| a == "--hdd")
             .then_some(hyperstor_engine::DEFER_MAX),
+        scrub_interval: std::time::Duration::from_secs(
+            get("--scrub-hours")
+                .map(|s| s.parse::<u64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(24)
+                * 3600,
+        ),
+        no_digests: false,
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());

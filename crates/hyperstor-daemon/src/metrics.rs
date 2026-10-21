@@ -52,6 +52,16 @@ pub struct ShardMetrics {
     pub push_bytes: AtomicU64,
     /// Client writes answered with an error.
     pub write_errors: AtomicU64,
+    /// Light scrub (replication.md §8.5): objects compared, objects whose
+    /// copies differed, repaired, and left unresolved.
+    pub scrub_objects: AtomicU64,
+    pub scrub_inconsistent: AtomicU64,
+    pub scrub_repaired: AtomicU64,
+    pub scrub_unresolved: AtomicU64,
+    /// Objects a deep scrub found with a block that failed its CRC.
+    pub scrub_damaged: AtomicU64,
+    /// Objects a new primary pushed to members while peering (I61).
+    pub peer_pushes: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -126,6 +136,21 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "counter",
         "Client writes answered with an error.",
         &|m| vec![("", g(&m.write_errors))],
+    );
+    family(
+        "hyperstor_scrub_objects_total",
+        "counter",
+        "Scrub and peering: objects compared across copies, those whose copies differed by outcome, those a deep scrub found damaged, and those a new primary pushed while peering.",
+        &|m| {
+            vec![
+                ("compared", g(&m.scrub_objects)),
+                ("inconsistent", g(&m.scrub_inconsistent)),
+                ("repaired", g(&m.scrub_repaired)),
+                ("unresolved", g(&m.scrub_unresolved)),
+                ("damaged", g(&m.scrub_damaged)),
+                ("peering", g(&m.peer_pushes)),
+            ]
+        },
     );
     family(
         "hyperstor_device_objects",
@@ -253,7 +278,7 @@ mod tests {
             "hyperstor_request_bytes_total{node=\"4\",device=\"4000\",kind=\"write\"} 12288\n"
         ));
         assert!(t.contains("hyperstor_device_free_bytes{node=\"4\",device=\"4001\"} 1073741824\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 12);
+        assert_eq!(t.matches("# TYPE ").count(), 13);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

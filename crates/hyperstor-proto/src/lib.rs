@@ -272,6 +272,16 @@ pub enum Msg {
         crcs: Vec<u32>,
     },
     PushOk,
+    /// Primary to a member or backfill target: list what you hold of the
+    /// PG, as digests of each object's content (replication.md §8.5).
+    /// With `deep`, first read every block of the PG and check its CRC: a
+    /// damaged object's digest is [`DAMAGED`].
+    Digests {
+        to: Target,
+        deep: bool,
+    },
+    /// The digests, in the payload ([`encode_digests`]).
+    DigestsOk,
     /// Primary to map service: `device` now has every object of the PG and
     /// may join its acting set.
     BackfillDone {
@@ -305,6 +315,8 @@ mod kind {
     pub const REPL_OK: u16 = 21;
     pub const PUSH: u16 = 22;
     pub const PUSH_OK: u16 = 23;
+    pub const DIGESTS: u16 = 24;
+    pub const DIGESTS_OK: u16 = 25;
     pub const HEARTBEAT: u16 = 30;
     pub const HEARTBEAT_OK: u16 = 31;
     pub const BACKFILL_DONE: u16 = 32;
@@ -336,6 +348,8 @@ impl Msg {
             Msg::ReplOk { .. } => REPL_OK,
             Msg::Push { .. } => PUSH,
             Msg::PushOk => PUSH_OK,
+            Msg::Digests { .. } => DIGESTS,
+            Msg::DigestsOk => DIGESTS_OK,
             Msg::Heartbeat { .. } => HEARTBEAT,
             Msg::HeartbeatOk { .. } => HEARTBEAT_OK,
             Msg::BackfillDone { .. } => BACKFILL_DONE,
@@ -360,6 +374,7 @@ impl Msg {
                 | Msg::ReadOk { .. }
                 | Msg::ReplOk { .. }
                 | Msg::PushOk
+                | Msg::DigestsOk
                 | Msg::HeartbeatOk { .. }
                 | Msg::FenceOk
                 | Msg::MapPushOk
@@ -394,7 +409,11 @@ impl Msg {
             } => {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
-            Msg::Ping | Msg::Pong | Msg::PushOk => {}
+            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk => {}
+            Msg::Digests { to, deep } => {
+                to.enc(e);
+                e.u8(u8::from(*deep));
+            }
             Msg::Heartbeat { node } => {
                 e.u32(*node);
             }
@@ -536,6 +555,11 @@ impl Msg {
                 crcs: crcs(&mut d)?,
             },
             PUSH_OK => Msg::PushOk,
+            DIGESTS => Msg::Digests {
+                to: Target::dec(&mut d)?,
+                deep: d.u8()? != 0,
+            },
+            DIGESTS_OK => Msg::DigestsOk,
             HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
             HEARTBEAT_OK => Msg::HeartbeatOk {
                 map_epoch: d.u64()?,
@@ -575,6 +599,29 @@ impl Msg {
         d.finish()?;
         Ok(m)
     }
+}
+
+/// The digest reported for a copy whose blocks failed their checksums; a
+/// healthy object's digest is never this value.
+pub const DAMAGED: u64 = 0;
+
+/// The payload of [`Msg::DigestsOk`]: each object's key and content
+/// digest, in key order. In the payload rather than the body, so a PG's
+/// list isn't bounded by [`MAX_BODY`].
+pub fn encode_digests(entries: &[(WireKey, u64)]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.seq(entries, |e, (k, d)| {
+        k.enc(e);
+        e.u64(*d);
+    });
+    e.into_vec()
+}
+
+pub fn decode_digests(payload: &[u8]) -> Result<Vec<(WireKey, u64)>, DecodeError> {
+    let mut d = Dec::new(payload);
+    let v = d.seq(1 + 4 + 8 + 8, |d| Ok((WireKey::dec(d)?, d.u64()?)))?;
+    d.finish()?;
+    Ok(v)
 }
 
 /// Encodes a frame: header, body, then `payload`.
@@ -680,6 +727,8 @@ mod tests {
                 crcs: vec![5],
             },
             Msg::PushOk,
+            Msg::Digests { to, deep: true },
+            Msg::DigestsOk,
             Msg::Heartbeat { node: 3 },
             Msg::HeartbeatOk {
                 map_epoch: 4,

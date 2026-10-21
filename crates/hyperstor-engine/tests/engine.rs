@@ -494,3 +494,88 @@ fn io_error_poisons_until_reopen() {
         Err(EngineError::Poisoned)
     ));
 }
+
+/// Digests (replication.md §8.5) depend on what an object reads as, not
+/// on how it got there: written whole or in pieces, holes or zero blocks,
+/// before or after a reopen. Any change to a block, an attribute, a key
+/// or the size changes the digest.
+#[test]
+fn digests_follow_content_not_history() {
+    let (d, mut sh) = fresh(4096, None);
+    let mut data = block(1, 4);
+    data[2 * BLOCK..3 * BLOCK].fill(0);
+    // A: written whole, with a block of zeros in the middle.
+    one(
+        &mut sh,
+        key("a"),
+        vec![Op::Write {
+            off: 0,
+            data: data.clone(),
+        }],
+    )
+    .unwrap();
+    // B: the same in pieces, leaving that block a hole.
+    let b = key("b");
+    one(
+        &mut sh,
+        b.clone(),
+        vec![Op::Write {
+            off: 3 * BLOCK as u64,
+            data: block(1, 1),
+        }],
+    )
+    .unwrap();
+    one(
+        &mut sh,
+        b.clone(),
+        vec![Op::Write {
+            off: 0,
+            data: block(1, 2),
+        }],
+    )
+    .unwrap();
+    let digest = |sh: &Shard, k: &str| sh.digest(&key(k)).unwrap();
+    assert_eq!(digest(&sh, "a"), digest(&sh, "b"));
+    assert_eq!(sh.digest(&key("none")), None);
+
+    let base = digest(&sh, "a");
+    let changes: Vec<(&str, Vec<Op>)> = vec![
+        (
+            "block",
+            vec![Op::Write {
+                off: BLOCK as u64,
+                data: block(2, 1),
+            }],
+        ),
+        (
+            "filled hole",
+            vec![Op::Write {
+                off: 2 * BLOCK as u64,
+                data: block(3, 1),
+            }],
+        ),
+        ("attribute", vec![Op::SetAttr(b"k".to_vec(), b"v".to_vec())]),
+        ("key", vec![Op::KvPut(b"k".to_vec(), b"v".to_vec())]),
+        ("size", vec![Op::Truncate(6 * BLOCK as u64)]),
+    ];
+    for (i, (what, ops)) in changes.into_iter().enumerate() {
+        let k = format!("c{i}");
+        one(
+            &mut sh,
+            key(&k),
+            vec![Op::Write {
+                off: 0,
+                data: data.clone(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(digest(&sh, &k), base, "{what}: same content first");
+        one(&mut sh, key(&k), ops).unwrap();
+        assert_ne!(digest(&sh, &k), base, "{what} must change the digest");
+    }
+    let before: Vec<_> = ["a", "b", "c0", "c3"].map(|k| digest(&sh, k)).into();
+    drop(sh);
+    let sh = reopen(&d);
+    let after: Vec<_> = ["a", "b", "c0", "c3"].map(|k| digest(&sh, k)).into();
+    assert_eq!(before, after, "digests survive a reopen");
+}

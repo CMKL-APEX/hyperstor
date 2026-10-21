@@ -388,6 +388,14 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 defer_max: std::env::var("HS_DEFER_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok()),
+                // Scrub while measuring (I60): `HS_SCRUB_MS` per pass.
+                scrub_interval: Duration::from_millis(
+                    std::env::var("HS_SCRUB_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                ),
+                no_digests: false,
             })
         })
         .collect();
@@ -520,6 +528,8 @@ fn adminload_suite(secs: f64) {
                 spin: Duration::from_micros(200),
                 peer_timeout: Duration::from_millis(300),
                 defer_max: None,
+                scrub_interval: std::time::Duration::ZERO,
+                no_digests: false,
             })
         })
         .collect();
@@ -1195,6 +1205,8 @@ fn failover_suite() {
                         spin: Duration::ZERO,
                         peer_timeout: Duration::from_millis(peer_ms),
                         defer_max: None,
+                        scrub_interval: std::time::Duration::ZERO,
+                        no_digests: false,
                     }))
                 })
                 .collect();
@@ -1247,6 +1259,217 @@ fn failover_suite() {
             stalls[stalls.len() / 2],
             stalls[stalls.len() - 1],
             stalls.len()
+        );
+    }
+}
+
+/// Refilling a node that returns after a short absence (replication.md
+/// §8.5, delta recovery): 4 nodes, 3 copies, a 256 MiB volume in 1 MiB
+/// chunks. Node 3 is stopped, a share of the chunks is overwritten, and
+/// node 3 is started again with its old devices. Reported: what node 3 was
+/// sent, against what it holds (what a whole refill sends), and the time
+/// until every PG is clean again.
+fn rejoin_suite() {
+    use hyperstor_daemon::*;
+    use hyperstor_meta::{ClusterMap, replicated_pool};
+    const CHUNK: u64 = 1 << 20;
+    const CHUNKS: u64 = 256;
+    println!(
+        "| Chunks changed | node 3's copies | sent to node 3 MiB | whole refill MiB | until clean s |"
+    );
+    println!("|---|---|---|---|---|");
+    for pct in [1u64, 10, 100] {
+        let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let meta = meta_l.local_addr().unwrap();
+        let mut map = ClusterMap::new(1);
+        let mut addrs = Vec::new();
+        let mut listeners = Vec::new();
+        for n in 0..4u32 {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            map.add_node(n, &[l.local_addr().unwrap()], 0);
+            addrs.push(l.local_addr().unwrap());
+            listeners.push(l);
+        }
+        let mut pool = replicated_pool(1, "vol", 3, 64);
+        pool.chunk_size = CHUNK as u32;
+        map.add_pool(pool);
+        map.recompute();
+        std::thread::spawn(move || {
+            hyperstor_reactor::block_on(async move {
+                let m = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(400));
+                hyperstor_reactor::spawn(m.clone().liveness(Duration::from_millis(700)));
+                hyperstor_reactor::spawn(m.clone().publisher());
+                hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), m)
+                    .await
+            })
+        });
+        let node = |n: u32, device: DeviceSpec, l: std::net::TcpListener| {
+            start(NodeConfig {
+                node_id: n,
+                meta,
+                shards: vec![ShardSpec {
+                    device_id: n * 1000,
+                    device,
+                    listener: l,
+                }],
+                cpus: Vec::new(),
+                meta_blocked: None,
+                spin: Duration::ZERO,
+                peer_timeout: Duration::ZERO,
+                defer_max: None,
+                scrub_interval: Duration::ZERO,
+                no_digests: false,
+            })
+        };
+        let mut nodes: Vec<Option<NodeHandle>> = listeners
+            .into_iter()
+            .enumerate()
+            .map(|(n, l)| Some(node(n as u32, DeviceSpec::Mem { bytes: 512 << 20 }, l)))
+            .collect();
+        let clean = |cl: &std::rc::Rc<hyperstor_client::Client>| {
+            let cl = cl.clone();
+            async move {
+                loop {
+                    cl.refresh_map().await.unwrap();
+                    if cl.map().pgs.values().all(|p| p.acting == p.up) {
+                        return;
+                    }
+                    hyperstor_reactor::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        let held = std::thread::spawn(move || {
+            hyperstor_reactor::block_on(async move {
+                let cl = hyperstor_client::Client::connect(meta, 9).await.unwrap();
+                cl.write(1, 1, 0, vec![1u8; (CHUNKS * CHUNK) as usize])
+                    .await
+                    .unwrap();
+                clean(&cl).await;
+                let m = cl.map();
+                (0..CHUNKS)
+                    .filter(|c| {
+                        m.pg(1, hyperstor_placement::pg_of(1, *c, 64))
+                            .unwrap()
+                            .acting
+                            .iter()
+                            .any(|d| m.devices[d].node == 3)
+                    })
+                    .count() as u64
+            })
+        })
+        .join()
+        .unwrap();
+        let devs: Vec<_> = nodes[3]
+            .take()
+            .unwrap()
+            .stop()
+            .into_iter()
+            .map(|d| d.unwrap())
+            .collect();
+        let changed = (CHUNKS * pct).div_ceil(100);
+        std::thread::spawn(move || {
+            hyperstor_reactor::block_on(async move {
+                let cl = hyperstor_client::Client::connect(meta, 10).await.unwrap();
+                loop {
+                    cl.refresh_map().await.unwrap();
+                    if !cl.map().nodes[&3].up {
+                        break;
+                    }
+                    hyperstor_reactor::time::sleep(Duration::from_millis(20)).await;
+                }
+                // Spread over the volume: every (100 / pct)-th chunk.
+                let step = CHUNKS / changed;
+                for i in 0..changed {
+                    cl.write(1, 1, i * step * CHUNK, vec![2u8; CHUNK as usize])
+                        .await
+                        .unwrap();
+                }
+                clean(&cl).await;
+            })
+        })
+        .join()
+        .unwrap();
+        let back = Instant::now();
+        let l = std::net::TcpListener::bind(addrs[3]).unwrap();
+        nodes[3] = Some(node(3, DeviceSpec::Existing(devs[0].clone()), l));
+        std::thread::spawn(move || {
+            hyperstor_reactor::block_on(async move {
+                let cl = hyperstor_client::Client::connect(meta, 11).await.unwrap();
+                loop {
+                    cl.refresh_map().await.unwrap();
+                    let m = cl.map();
+                    if m.nodes[&3].up && m.pgs.values().all(|p| p.acting == p.up) {
+                        return;
+                    }
+                    hyperstor_reactor::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        })
+        .join()
+        .unwrap();
+        let took = back.elapsed();
+        let sent: u64 = nodes[3].as_ref().unwrap().metrics[0]
+            .1
+            .push_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        println!(
+            "| {changed} of {CHUNKS} ({pct}%) | {held} | {:.1} | {} | {:.2} |",
+            sent as f64 / CHUNK as f64,
+            held,
+            took.as_secs_f64()
+        );
+        for n in nodes.into_iter().flatten() {
+            n.stop();
+        }
+    }
+}
+
+/// What a digest list costs (implementation-notes.md I57): the time to
+/// list one PG and digest every object in it, from the index alone, by
+/// object count and size. Delta recovery and scrub pay this on each
+/// member, where a PG log would pay per missed write.
+fn digest_suite() {
+    println!("| Objects in the PG | blocks each | list and digest ms | µs per object |");
+    println!("|---|---|---|---|");
+    // At most about 2 GiB of memory device per row.
+    for (objects, blocks) in [(10_000u64, 1u64), (100_000, 1), (1_000, 256), (500, 1024)] {
+        let bytes = objects * blocks * BLOCK as u64 * 5 / 4 + (512 << 20);
+        let dev: Arc<dyn BlockDev> =
+            Arc::new(MemDev::new(bytes.div_ceil(BLOCK as u64) * BLOCK as u64));
+        format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                cluster_id: 1,
+                shards: 1,
+                log_blocks: None,
+            },
+        )
+        .unwrap();
+        let mut sh = open(&dev).unwrap().1.pop().unwrap();
+        let data = vec![0x5au8; (blocks * BLOCK as u64) as usize];
+        let key = |i: u64| ObjKey::new(1, 0, Namespace::Vol, i.to_le_bytes().to_vec(), 0);
+        let per = (sh.max_list_bytes() / data.len().max(1)).clamp(1, 64) as u64;
+        for start in (0..objects).step_by(per as usize) {
+            let lists = (start..(start + per).min(objects))
+                .map(|i| OpList {
+                    key: key(i),
+                    ops: vec![Op::Write {
+                        off: 0,
+                        data: data.clone(),
+                    }],
+                })
+                .collect();
+            sh.commit(lists).unwrap();
+        }
+        let t = Instant::now();
+        let n = sh.list_pg(1, 0).iter().filter_map(|k| sh.digest(k)).count() as u64;
+        let el = t.elapsed();
+        assert_eq!(n, objects);
+        println!(
+            "| {objects} | {blocks} | {:.1} | {:.2} |",
+            el.as_secs_f64() * 1e3,
+            el.as_secs_f64() * 1e6 / objects as f64
         );
     }
 }
@@ -1393,6 +1616,12 @@ fn main() {
         }
         Some("failover") => {
             failover_suite();
+        }
+        Some("rejoin") => {
+            rejoin_suite();
+        }
+        Some("digest") => {
+            digest_suite();
         }
         Some("redb") => {
             // hyperstor-bench redb <scratch dir>: G13 baseline

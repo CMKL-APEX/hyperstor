@@ -1229,6 +1229,33 @@ impl Shard {
         })
     }
 
+    /// A digest of an object's content, from the index alone (no data is
+    /// read): its size in blocks, each mapped block's number and CRC, its
+    /// attributes and its key–value table. Two copies with equal digests
+    /// read the same, so delta recovery and scrub compare digests
+    /// (replication.md §8.5). A block of zeros counts as a hole, since a
+    /// hole reads as zeros; FNV-1a keeps the digest the same on every node
+    /// and version.
+    pub fn digest(&self, key: &ObjKey) -> Option<u64> {
+        let o = self.index.objects.get(key)?;
+        let mut h = Fnv::new();
+        h.u64(o.size.div_ceil(BLOCK as u64));
+        for (lb, _, crcs) in o.blocks.runs() {
+            for (i, c) in crcs.iter().enumerate() {
+                if *c != zero_block_crc() {
+                    h.u64(lb + i as u64).u64(u64::from(*c));
+                }
+            }
+        }
+        for table in [&o.attrs, &o.kv] {
+            h.u64(table.len() as u64);
+            for (k, v) in table {
+                h.bytes(k).bytes(v);
+            }
+        }
+        Some(h.0)
+    }
+
     pub fn attrs(&self, key: &ObjKey) -> Option<&BTreeMap<Vec<u8>, Vec<u8>>> {
         self.index.objects.get(key).map(|o| &o.attrs)
     }
@@ -1359,4 +1386,32 @@ pub fn estimate(list: &OpList) -> usize {
             };
     }
     n
+}
+
+/// The CRC32C of a block of zeros, which [`Shard::digest`] counts as a hole.
+fn zero_block_crc() -> u32 {
+    static CRC: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CRC.get_or_init(|| crc32c(&[0u8; BLOCK]))
+}
+
+/// FNV-1a, 64 bits: a fixed hash for [`Shard::digest`].
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+    fn write(&mut self, b: &[u8]) -> &mut Self {
+        for x in b {
+            self.0 = (self.0 ^ u64::from(*x)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self
+    }
+    fn u64(&mut self, v: u64) -> &mut Self {
+        self.write(&v.to_le_bytes())
+    }
+    /// Length-prefixed, so `("ab", "c")` and `("a", "bc")` differ.
+    fn bytes(&mut self, b: &[u8]) -> &mut Self {
+        self.u64(b.len() as u64).write(b)
+    }
 }

@@ -570,3 +570,162 @@ request and three more relaxed adds when it is answered), alternately:
    against 54291 and 54324 ops/s, in both pairs), the most
    request-heavy test; elsewhere nothing shows. Acceptable for always-on
    metrics; a coarser clock would remove it if it matters.
+
+## 2026-10-21: refilling a returning node, delta recovery (dev-2)
+
+Question: how much does a node that returns after a short absence get
+sent, now that backfill sends only objects whose digests differ (I57),
+against a whole refill, and how long until its PGs are clean? Four
+storage nodes of one reactor on 512 MiB memory devices, a pool of 3
+copies and 64 PGs in 1 MiB chunks, one 256 MiB volume. Node 3 is
+stopped; once the map service marks it down, a share of the chunks is
+overwritten (spread evenly over the volume); node 3 is started again on
+its old devices. "Whole refill" is what node 3 holds, which is what the
+previous backfill sent. Run twice through the collect script (commit
+`77b0d45`):
+
+```sh
+scripts/collect-decision-data.sh rejoin
+```
+
+| Chunks changed | node 3's copies (MiB) | sent to node 3, MiB | whole refill, MiB | until clean, run 1 s | run 2 s |
+|---|---|---|---|---|---|
+| 3 of 256 (1%) | 192 | 2.0 | 192 | 0.18 | 0.14 |
+| 26 of 256 (10%) | 192 | 16.0 | 192 | 0.22 | 0.14 |
+| 256 of 256 (100%) | 192 | 192.0 | 192 | 0.48 | 0.46 |
+
+### Findings
+
+1. **A returning node is sent what changed on its copies, to the
+   block:** 2 MiB for 1% of the volume (96 times less than a whole
+   refill), 16 MiB for 10% (12 times less). Of the 3 and 26 chunks
+   changed, node 3 held 2 and 16.
+2. **Time to clean drops by about two thirds** at 1–10% changed (0.14–
+   0.22 s against 0.46–0.48 s). At these sizes most of it is the
+   backfiller's 100 ms pass and the map's round trips, so on real
+   volumes, where copying dominates, the gain follows the bytes.
+3. **When everything changed, delta costs only a digest list more:**
+   at 100% it sends the same 192 MiB as a whole refill, plus one list of
+   about 40 bytes per object, in the same time.
+
+The data path itself didn't change; checked with `hyperstor-bench
+cluster mem 1` (three storage nodes of one reactor on memory devices,
+3 s per test), built from `main` (`e5657f8`) and from this branch
+(`77b0d45`, scrub off as in every bench), run alternately twice:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7480; 154 | 7507; 155 | 7443; 155 | 7514; 154 |
+| 4 KiB writes, QD32 | 25088; 2917 | 26119; 2732 | 25482; 2831 | 26349; 2672 |
+| 4 KiB reads, QD1 | 18779; 65 | 18843; 65 | 18493; 66 | 18819; 65 |
+| 4 KiB reads, QD32 | 53764; 1343 | 54168; 1330 | 53259; 1360 | 54405; 1326 |
+| 1 MiB writes, QD4 | 516; 12685 | 516; 12670 | 529; 12113 | 523; 12576 |
+| 1 MiB reads, QD4 | 1492; 4604 | 1521; 4391 | 1527; 4241 | 1502; 5423 |
+
+4. **No cost on the I/O path:** every difference is within the spread
+   between two runs of one build.
+
+## 2026-10-21: deep scrub against I/O, and the cost of a digest list (dev-2)
+
+**Deep scrub against I/O** (I60). Question: what does a deep scrub cost
+the I/O path? `hyperstor-bench cluster <dir> 1`: three storage nodes of
+one reactor on 1 GiB `O_DIRECT` files (ext4 on md RAID of data-center
+NVMe, shared with other sessions), 3 s per test, scrub off against
+`HS_SCRUB_MS=500` (a pass every 0.5 s, so a deep pass every 3.5 s, far
+more often than the default daily light and weekly deep), alternately
+twice; commit `bbdc0cd` plus scrub pacing:
+
+```sh
+hyperstor-bench cluster target/bench-files 1
+HS_SCRUB_MS=500 hyperstor-bench cluster target/bench-files 1
+```
+
+Whole objects read at once (as built):
+
+| Test (ops/s; p99 µs) | off, run 1 | scrub, run 1 | off, run 2 | scrub, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 1988; 581 | 1901; 1529 | 1988; 583 | 1904; 988 |
+| 4 KiB writes, QD32 | 6055; 11792 | 5745; 14321 | 6028; 11689 | 5798; 13487 |
+| 4 KiB reads, QD1 | 3956; 318 | 3801; 341 | 3997; 316 | 3790; 353 |
+| 4 KiB reads, QD32 | 12355; 6680 | 11551; 9723 | 12290; 6736 | 11483; 9840 |
+| 1 MiB writes, QD4 | 301; 25119 | 323; 24839 | 327; 24226 | 302; 26457 |
+| 1 MiB reads, QD4 | 1212; 6383 | 1190; 7189 | 1222; 6093 | 1182; 7380 |
+
+In 256 KiB pieces with a pause after each (tried, then reverted):
+
+| Test (ops/s; p99 µs) | off, run 1 | scrub, run 1 | off, run 2 | scrub, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 1989; 582 | 1749; 1180 | 1987; 586 | 1756; 1204 |
+| 4 KiB writes, QD32 | 6017; 11620 | 5635; 13194 | 6047; 11710 | 5671; 12992 |
+| 4 KiB reads, QD1 | 3992; 312 | 3649; 875 | 4003; 314 | 3668; 855 |
+| 4 KiB reads, QD32 | 12327; 6695 | 10889; 9152 | 12299; 6738 | 10968; 8423 |
+| 1 MiB writes, QD4 | 352; 25304 | 269; 27776 | 330; 24421 | 280; 25503 |
+| 1 MiB reads, QD4 | 1230; 6175 | 1147; 7451 | 1228; 6329 | 1166; 6946 |
+
+**The cost of a digest list** (I57). `hyperstor-bench digest`: one PG
+on a memory device, the time to list it and digest every object, from
+the index; run twice through the collect script:
+
+| Objects in the PG | blocks each | run 1: ms; µs per object | run 2: ms; µs per object |
+|---|---|---|---|
+| 10,000 | 1 | 4.5; 0.45 | 4.6; 0.46 |
+| 100,000 | 1 | 62.5; 0.63 | 62.7; 0.63 |
+| 1,000 | 256 (1 MiB) | 5.3; 5.3 | 5.3; 5.3 |
+| 500 | 1024 (4 MiB) | 24.9; 50 | 9.5; 19 |
+
+### Findings
+
+1. **With a deep pass every 3.5 s (weekly by default), deep scrub costs
+   4–6% of throughput**; p99 rises most for QD32 reads (+45%) and QD1 writes.
+   At the default (weekly), a device of 1 TiB is read for about 4.5 hours
+   a week at 64 MiB/s, with this cost meanwhile.
+2. **Smaller reads made it worse** (−12% throughput, QD1 read p99
+   ×2.7), so the cost is the extra device and CPU work, not one long
+   synchronous read; pieces were reverted. Deep scrub belongs in the
+   `bulk` class (D46), at a rate measured on dedicated drives.
+3. **A digest list costs about 0.5 µs per small object and 20–50 µs per
+   4 MiB chunk**, so a PG of 10,000 chunks (40 GiB) lists in 0.2–0.5 s on
+   each side. Against that, a whole refill of the same PG moves 40 GiB;
+   a PG log would only pay off for PGs of millions of objects with few
+   writes missed.
+
+## 2026-10-21: failover with peering (dev-2)
+
+Question: does peering (I61), one digest round trip per PG on the new
+primary's first request, lengthen failover? The failover suite of
+2026-10-21 (PR #4), run twice through the collect script with peering
+built in:
+
+```sh
+scripts/collect-decision-data.sh failover
+```
+
+| Map lease | down after | peer timeout | before (PR #4), p50 ms | with peering, run 1 | run 2 |
+|---|---|---|---|---|---|
+| 2000 ms | 3000 ms | off | 2962–3108 | 3103 | 3103 |
+| 2000 ms | 3000 ms | 1000 ms | 2458–2461 | 2452 | 2453 |
+| 600 ms | 800 ms | off | 913 | 920 | 1050 |
+| 600 ms | 800 ms | 300 ms | 662–663 | 660 | 660 |
+| 500 ms | 700 ms | off | 783–784 | 780 | 780 |
+| 500 ms | 700 ms | 300 ms | 551 | 550 | 549 |
+
+### Findings
+
+1. **Peering doesn't move failover**: every setting is within the
+   spread measured before, except 600/800 ms without peer reports in
+   run 2 (1050 ms in all three of its stops, against 920 ms in run 1).
+   Peering would shift every row alike, so that is the liveness tick's
+   alignment in that run, not peering; D48's 1 s target is met with peer
+   reports (660 ms) either way.
+2. **Peering costs the I/O path nothing measurable** (a map lookup per
+   request to a primary): `hyperstor-bench cluster mem 1`, `main`
+   (`e5657f8`) against this branch (`da7b3eb`), alternately twice:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7443; 155 | 7473; 154 | 7426; 156 | 7407; 155 |
+| 4 KiB writes, QD32 | 25726; 2791 | 25936; 2761 | 25462; 2865 | 25676; 2831 |
+| 4 KiB reads, QD1 | 18779; 66 | 18646; 65 | 18833; 64 | 18547; 65 |
+| 4 KiB reads, QD32 | 54465; 1326 | 53984; 1339 | 53765; 1344 | 53914; 1339 |
+| 1 MiB writes, QD4 | 519; 13372 | 523; 13034 | 523; 12683 | 524; 12783 |
+| 1 MiB reads, QD4 | 1514; 4583 | 1502; 4637 | 1517; 4214 | 1536; 4153 |
