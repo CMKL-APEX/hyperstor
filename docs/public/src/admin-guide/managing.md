@@ -4,6 +4,24 @@
 On a host set up with `hyperstor-install` it finds the API by itself;
 elsewhere, give `--api IP:PORT` or set `HYPERSTOR_API`.
 
+## Dashboard
+
+The installer runs a read-only dashboard on the map service's host, at
+<http://127.0.0.1:8852/>: health with its reasons, I/O rates, space,
+pools with their PG states (and each PG's acting and up sets), and every
+storage node with its state, last heartbeat, I/O, write and read p99
+latency, space, log use and map epoch. It refreshes every two seconds.
+
+People can't log in to it yet, so it listens on loopback only. From
+another machine:
+
+```sh
+ssh -L 8852:127.0.0.1:8852 the-map-service-host
+# then open http://127.0.0.1:8852/
+```
+
+Changes still go through `hyperstorctl`.
+
 ## Health
 
 ```sh
@@ -106,4 +124,21 @@ refused call, in its journal (see [Cluster API](../reference/cluster-api.md)):
 ```sh
 journalctl -u hyperstor-meta | grep '{"audit":1'
 ```
+
+## Prometheus and Grafana
+
+For history and alerts, scrape the storage nodes with Prometheus and
+import the shipped Grafana dashboard:
+
+- `deploy/prometheus/hyperstor.yml`: a scrape job reading its targets
+  from `/etc/hyperstor/prometheus-targets.json`, which the installer
+  writes on the map service's host.
+- `deploy/grafana/hyperstor.json`: the dashboard (Grafana 10 or later):
+  I/O rates and bytes by kind, write and read latency (p50, p99, and p99
+  per device), space (orange at 85 %, red at 95 %), log use, commits and
+  checkpoints, map epochs by node, and objects. Pick the Prometheus data
+  source and the nodes at the top.
+
+Space isn't part of health yet: watch it on either dashboard. Writes
+fail when a device fills.
 

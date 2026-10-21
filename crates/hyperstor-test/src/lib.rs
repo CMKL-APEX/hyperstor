@@ -27,11 +27,12 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-pub const BINARIES: [&str; 4] = [
+pub const BINARIES: [&str; 5] = [
     "hyperstor-install",
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
+    "hyperstor-mgmt",
 ];
 
 /// The workspace root.
@@ -248,8 +249,11 @@ pub struct Cluster {
     pub nodes: u32,
     /// Node n's metrics port is `admin_port + n`.
     pub admin_port: u16,
+    /// The dashboard's port (`hyperstor-mgmt`).
+    pub mgmt_port: u16,
     pub meta_log: PathBuf,
     meta: Option<Child>,
+    mgmt: Option<Child>,
     node_procs: BTreeMap<u32, Child>,
 }
 
@@ -264,8 +268,9 @@ impl Cluster {
         // --root puts the data directory under the root like any path;
         // the processes use the final path, so make it.
         std::fs::create_dir_all(&data).unwrap();
-        let base = free_ports(3 + 2 * nodes as u16);
+        let base = free_ports(4 + 2 * nodes as u16);
         let (api, map, node, admin) = (base, base + 1, base + 2, base + 2 + nodes as u16);
+        let mgmt = base + 2 + 2 * nodes as u16;
         install(
             &root,
             &[
@@ -284,6 +289,8 @@ impl Cluster {
                 &node.to_string(),
                 "--admin-port",
                 &admin.to_string(),
+                "--mgmt-port",
+                &mgmt.to_string(),
             ],
         );
         let cluster_id = std::fs::read_to_string(root.join("etc/hyperstor/cluster.txt"))
@@ -300,6 +307,8 @@ impl Cluster {
             cluster_id,
             nodes,
             admin_port: admin,
+            mgmt_port: mgmt,
+            mgmt: None,
             meta: None,
             node_procs: BTreeMap::new(),
         };
@@ -308,7 +317,48 @@ impl Cluster {
             c.start_node(n);
         }
         c.ctl(&["status", "--wait", "30"]).ok();
+        c.start_mgmt();
         c
+    }
+
+    /// Starts the dashboard from its installed options and waits for it.
+    pub fn start_mgmt(&mut self) {
+        let p = Command::new(self.bin.join("hyperstor-mgmt"))
+            .args(env_args(&self.root, self.scratch.run(), "mgmt.env"))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        self.mgmt = Some(p);
+        let port = self.mgmt_port;
+        wait_for("the dashboard", 10, || {
+            std::net::TcpStream::connect(("127.0.0.1", port)).ok()
+        });
+    }
+
+    /// `METHOD path` to the dashboard with this `Host` header: the status
+    /// code, the head and the body.
+    pub fn dashboard(&self, method: &str, path: &str, host: &str) -> (u16, String, String) {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap();
+        write!(
+            s,
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        )
+        .unwrap();
+        let mut t = String::new();
+        s.read_to_string(&mut t).unwrap();
+        let (head, body) = t.split_once("\r\n\r\n").unwrap_or((&t, ""));
+        let code = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        (code, head.to_string(), body.to_string())
+    }
+
+    /// The dashboard's `Host` for this cluster.
+    pub fn dashboard_host(&self) -> String {
+        format!("127.0.0.1:{}", self.mgmt_port)
     }
 
     pub fn start_meta(&mut self) {
@@ -434,7 +484,12 @@ impl Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
-        for p in self.node_procs.values_mut().chain(self.meta.iter_mut()) {
+        for p in self
+            .node_procs
+            .values_mut()
+            .chain(self.meta.iter_mut())
+            .chain(self.mgmt.iter_mut())
+        {
             let _ = p.kill();
             let _ = p.wait();
         }

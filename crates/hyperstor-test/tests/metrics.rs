@@ -39,3 +39,46 @@ fn requests_are_counted_and_timed() {
         .collect();
     assert!(epochs.windows(2).all(|w| w[0] == w[1]), "{epochs:?}");
 }
+
+/// Every metric the shipped Grafana dashboard queries is one the storage
+/// nodes really serve, and the installer's Prometheus targets list every
+/// node's metrics port: the dashboard can't drift from the daemon.
+#[test]
+fn grafana_dashboard_and_prometheus_targets_match_the_daemon() {
+    let c = Cluster::all_in_one("grafana", 2);
+    c.ctl(&["io-test", "--mib", "2"]).ok();
+    let served = c.metrics(0);
+    let dash = std::fs::read_to_string(workspace().join("deploy/grafana/hyperstor.json")).unwrap();
+    let mut names: Vec<&str> = dash
+        .match_indices("hyperstor_")
+        .map(|(i, _)| {
+            let rest = &dash[i..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .filter(|n| n.len() > "hyperstor_".len())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert!(names.len() >= 10, "{names:?}");
+    for n in &names {
+        assert!(
+            served.contains(&format!("\n{n}{{")),
+            "the dashboard queries {n}, which no node serves"
+        );
+    }
+    let targets =
+        std::fs::read_to_string(c.root.join("etc/hyperstor/prometheus-targets.json")).unwrap();
+    for n in 0..2 {
+        assert!(
+            targets.contains(&format!("\"127.0.0.1:{}\"", c.admin_port + n)),
+            "{targets}"
+        );
+    }
+    assert!(
+        targets.contains(&format!("\"cluster\": \"{}\"", c.cluster_id)),
+        "{targets}"
+    );
+}

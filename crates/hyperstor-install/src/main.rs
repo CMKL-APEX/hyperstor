@@ -37,9 +37,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]";
 
-const BINARIES: [&str; 3] = ["hyperstor-meta", "hyperstord", "hyperstorctl"];
+const BINARIES: [&str; 4] = [
+    "hyperstor-meta",
+    "hyperstord",
+    "hyperstorctl",
+    "hyperstor-mgmt",
+];
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -68,6 +73,7 @@ struct Settings {
     map_port: u16,
     node_port: u16,
     admin_port: u16,
+    mgmt_port: u16,
 }
 
 impl Settings {
@@ -84,6 +90,7 @@ impl Settings {
             map_port: 8849,
             node_port: 9100,
             admin_port: 8853,
+            mgmt_port: 8852,
         }
     }
 
@@ -106,6 +113,7 @@ impl Settings {
                 "map_port" => self.map_port = v.parse().unwrap_or(self.map_port),
                 "node_port" => self.node_port = v.parse().unwrap_or(self.node_port),
                 "admin_port" => self.admin_port = v.parse().unwrap_or(self.admin_port),
+                "mgmt_port" => self.mgmt_port = v.parse().unwrap_or(self.mgmt_port),
                 _ => {}
             }
         }
@@ -114,7 +122,7 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
             self.all_in_one,
             self.role,
             self.node.map(|n| n.to_string()).unwrap_or_default(),
@@ -125,7 +133,8 @@ impl Settings {
             self.api_port,
             self.map_port,
             self.node_port,
-            self.admin_port
+            self.admin_port,
+            self.mgmt_port
         )
     }
 }
@@ -174,13 +183,14 @@ fn main() {
             "--map-port" => "map_port",
             "--node-port" => "node_port",
             "--admin-port" => "admin_port",
+            "--mgmt-port" => "mgmt_port",
             _ => usage(),
         };
         let v = val();
         let ok = match key {
             "nodes" => v.parse::<u32>().is_ok_and(|n| (1..=16).contains(&n)),
             "size_gib" => v.parse::<u64>().is_ok_and(|n| n >= 1),
-            "api_port" | "map_port" | "node_port" | "admin_port" => {
+            "api_port" | "map_port" | "node_port" | "admin_port" | "mgmt_port" => {
                 v.parse::<u16>().is_ok_and(|n| n > 0)
             }
             "role" => matches!(v.as_str(), "meta" | "storage" | "both"),
@@ -438,6 +448,29 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ";
 
+const MGMT_UNIT: &str = "\
+# Written by hyperstor-install. The read-only dashboard, on loopback.
+[Unit]
+Description=Hyperstor management service (dashboard)
+Documentation=https://github.com/CMKL-APEX/hyperstor
+After=network-online.target hyperstor-meta.service
+Wants=network-online.target
+
+[Service]
+User=hyperstor
+EnvironmentFile=/etc/hyperstor/mgmt.env
+ExecStart=/usr/local/bin/hyperstor-mgmt $HS_ARGS
+Restart=on-failure
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+";
+
 // Reruns the installer daily: it changes nothing unless something drifted
 // or a certificate is past two thirds of its life (D56), which it renews.
 const RENEW_SERVICE: &str = "\
@@ -499,6 +532,8 @@ struct Plan {
     /// The map service's address, for storage nodes.
     map: String,
     nodes: Vec<NodePlan>,
+    /// Every storage node's metrics address, for the dashboard.
+    metrics: Vec<String>,
 }
 
 struct NodePlan {
@@ -530,7 +565,11 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         // A cache pool (D45): one copy, lost rather than recovered.
         cluster += "pool 2 cache cache copies 1 pgs 64 chunk 4194304 domain host\n";
         let map = format!("127.0.0.1:{}", s.map_port);
+        let metrics = (0..s.nodes)
+            .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
+            .collect();
         return Plan {
+            metrics,
             cluster,
             cluster_id: id.to_string(),
             meta: Some(map.clone()),
@@ -575,7 +614,22 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
         });
     }
+    // The dashboard reads every node's metrics: its first address's IP,
+    // the metrics port, as each storage host is installed.
+    let metrics = map
+        .nodes
+        .keys()
+        .filter_map(|n| {
+            let d = map
+                .devices
+                .values()
+                .filter(|d| d.node == *n)
+                .min_by_key(|d| d.shard)?;
+            Some(std::net::SocketAddr::new(d.addr.ip(), s.admin_port).to_string())
+        })
+        .collect();
     Plan {
+        metrics,
         cluster,
         cluster_id: map.cluster_id.to_string(),
         meta: runs_meta.then(|| s.map.clone()),
@@ -625,6 +679,35 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/systemd/system/hyperstor-meta.service".to_string(),
                 META_UNIT.to_string(),
+                0o644,
+            ),
+            (
+                "/etc/hyperstor/mgmt.env".to_string(),
+                format!(
+                    "HS_ARGS=--listen 127.0.0.1:{} --api 127.0.0.1:{} --tls /etc/hyperstor/pki --metrics {}\n",
+                    s.mgmt_port,
+                    s.api_port,
+                    p.metrics.join(",")
+                ),
+                0o644,
+            ),
+            (
+                "/etc/systemd/system/hyperstor-mgmt.service".to_string(),
+                MGMT_UNIT.to_string(),
+                0o644,
+            ),
+            // For Prometheus's file_sd_configs (deploy/prometheus/hyperstor.yml).
+            (
+                "/etc/hyperstor/prometheus-targets.json".to_string(),
+                format!(
+                    "[{{\"targets\": [{}], \"labels\": {{\"cluster\": \"{}\"}}}}]\n",
+                    p.metrics
+                        .iter()
+                        .map(|m| format!("\"{m}\""))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    p.cluster_id
+                ),
                 0o644,
             ),
         ]);
@@ -723,7 +806,12 @@ fn run(cmd: &str, args: &[&str]) -> bool {
 fn units(p: &Plan) -> Vec<String> {
     p.meta
         .iter()
-        .map(|_| "hyperstor-meta.service".to_string())
+        .flat_map(|_| {
+            [
+                "hyperstor-meta.service".to_string(),
+                "hyperstor-mgmt.service".to_string(),
+            ]
+        })
         .chain(
             p.nodes
                 .iter()
@@ -752,7 +840,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| fail("can't find my own directory"));
-    let mut binaries_changed = false;
+    let mut binaries_changed: Vec<&str> = Vec::new();
     for b in BINARIES {
         let src = here.join(b);
         let bytes = fs::read(&src).unwrap_or_else(|e| {
@@ -763,7 +851,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         });
         let dst = format!("/usr/local/bin/{b}");
         if converge(&under(root, &dst), &bytes, 0o755) {
-            binaries_changed = true;
+            binaries_changed.push(b);
             changed.push(dst);
         }
     }
@@ -832,11 +920,11 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
     // 3. Certificates (§23.8), then configuration and units.
     let mut restart: Vec<String> = Vec::new();
     // The CAs and the API's certificate live where the map service runs.
-    if p.meta.is_some() && pki(root, real, &p.cluster_id, &mut changed) {
-        restart.push("hyperstor-meta.service".into());
+    if p.meta.is_some() {
+        restart.extend(pki(root, real, &p.cluster_id, &mut changed));
     }
     let mut units_changed = false;
-    let mut service_units_changed = false;
+    let mut service_units_changed: Vec<&str> = Vec::new();
     for (path, content, mode) in files(s, &p) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
             continue;
@@ -844,11 +932,21 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         if path.starts_with("/etc/systemd/") {
             units_changed = true;
         }
-        if path.ends_with("hyperstor-meta.service") || path.ends_with("hyperstord@.service") {
-            service_units_changed = true;
+        // A changed unit or binary restarts only its own services.
+        if path.ends_with("hyperstor-meta.service") {
+            service_units_changed.push("hyperstor-meta");
+        }
+        if path.ends_with("hyperstor-mgmt.service") {
+            service_units_changed.push("hyperstor-mgmt");
+        }
+        if path.ends_with("hyperstord@.service") {
+            service_units_changed.push("hyperstord");
         }
         if path.ends_with("cluster.txt") || path.ends_with("meta.env") {
             restart.push("hyperstor-meta.service".into());
+        }
+        if path.ends_with("mgmt.env") {
+            restart.push("hyperstor-mgmt.service".into());
         }
         if let Some(n) = path
             .strip_prefix("/etc/hyperstor/node-")
@@ -858,9 +956,15 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         }
         changed.push(path);
     }
-    if binaries_changed || service_units_changed {
-        restart = units(&p);
+    for what in binaries_changed.iter().chain(&service_units_changed) {
+        restart.extend(units(&p).into_iter().filter(|u| match *what {
+            "hyperstord" => u.starts_with("hyperstord@"),
+            "hyperstor-meta" => u == "hyperstor-meta.service",
+            "hyperstor-mgmt" => u == "hyperstor-mgmt.service",
+            _ => false,
+        }));
     }
+    restart.sort();
     restart.dedup();
     // Saved last: a run that failed before here is retried with the same flags.
     if converge(
@@ -893,6 +997,10 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         }
     }
 
+    if !(real && !no_start) && !restart.is_empty() {
+        // Not started here: say what a real run would restart.
+        changed.push(format!("would restart {}", restart.join(" ")));
+    }
     if changed.is_empty() {
         println!("Nothing to change: hyperstor is installed as configured.");
     } else {
@@ -919,8 +1027,9 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
 ///   readable by root and the `hyperstor-admin` group.
 ///
 /// Leaves are renewed after two thirds of their 30 days, or when the
-/// intermediate changes. Returns whether the API's certificate changed.
-fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> bool {
+/// intermediate changes. Returns the services to restart for new
+/// certificates.
+fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> Vec<String> {
     use hyperstor_pki::*;
     let dir = "/etc/hyperstor/pki";
     let read = |f: &str| fs::read_to_string(under(root, &format!("{dir}/{f}"))).ok();
@@ -963,10 +1072,14 @@ fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> boo
             p
         }
     };
-    let mut api_changed = false;
+    // Services read their certificates at start: restart those whose
+    // certificate is new.
+    let mut restart = Vec::new();
     for (name, role, id, server, group) in [
         ("api", Role::Meta, "0", true, "hyperstor"),
         ("admin", Role::Admin, "local", false, "hyperstor-admin"),
+        // The dashboard's identity (D50); it only reads.
+        ("mgmt", Role::Mgmt, "dashboard", false, "hyperstor"),
     ] {
         if !renewed_ca && pair(name).is_some_and(|p| !due_for_renewal(&p.cert, LEAF_DAYS)) {
             continue;
@@ -993,9 +1106,13 @@ fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> boo
                 fail(&format!("chgrp {group} {key} failed"));
             }
         }
-        api_changed |= server;
+        match name {
+            "api" => restart.push("hyperstor-meta.service".to_string()),
+            "mgmt" => restart.push("hyperstor-mgmt.service".to_string()),
+            _ => {}
+        }
     }
-    api_changed
+    restart
 }
 
 fn uninstall(root: &Path, real: bool, s: &Settings) {
@@ -1009,6 +1126,9 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         let mut all: Vec<String> = Vec::new();
         if under(root, "/etc/hyperstor/meta.env").exists() {
             all.push("hyperstor-meta.service".into());
+        }
+        if under(root, "/etc/hyperstor/mgmt.env").exists() {
+            all.push("hyperstor-mgmt.service".into());
         }
         for e in fs::read_dir(under(root, "/etc/hyperstor"))
             .into_iter()
@@ -1033,6 +1153,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     let paths = [
         "/etc/systemd/system/hyperstor-meta.service".to_string(),
         "/etc/systemd/system/hyperstord@.service".to_string(),
+        "/etc/systemd/system/hyperstor-mgmt.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
@@ -1118,7 +1239,19 @@ mod tests {
         assert!(env.contains("--listen 10.0.0.9:8849"), "{env}");
         assert!(f.iter().any(|x| x.0.ends_with("hyperstorctl.conf")));
         assert!(!f.iter().any(|x| x.0.contains("/node-")));
-        assert_eq!(units(&p), ["hyperstor-meta.service"]);
+        assert_eq!(
+            units(&p),
+            ["hyperstor-meta.service", "hyperstor-mgmt.service"]
+        );
+        let mgmt = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/mgmt.env")
+            .unwrap()
+            .1;
+        assert!(
+            mgmt.contains("--metrics 10.0.0.1:8853,10.0.0.2:8853"),
+            "{mgmt}"
+        );
     }
 
     #[test]

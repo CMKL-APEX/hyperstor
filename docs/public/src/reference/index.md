@@ -8,6 +8,7 @@
 | [hyperstor-bench](hyperstor-bench.md) | The load generator's modes |
 | [hyperstorctl](hyperstorctl.md) | Managing and testing a cluster |
 | [hyperstor-install](hyperstor-install.md) | Host checks and the installer |
+| [hyperstor-mgmt](hyperstor-mgmt.md) | The dashboard |
 | [Cluster API](cluster-api.md) | The `hyperstor.v1` API, with `curl` examples |
 | [Client API](client-api.md) | The Rust client library |
 
