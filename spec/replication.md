@@ -109,7 +109,7 @@ members, as long as there are at least `min_size` of them. Below
   inconsistency that can't be decided is reported, not guessed at.
 - **As built** (HS2, implementation-notes.md I58): light scrub by the
   same digests, every `hyperstord --scrub-hours` (default 24) for each
-  clean PG a device is primary of. A difference that persists after a
+  clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
   the copies agree with it, and otherwise reported. The first pass after
   a start and every seventh are **deep** (I60): each member first reads

@@ -1289,31 +1289,46 @@ impl ShardState {
     }
 
     /// Scrubs every PG this device is primary of, once per `every`
-    /// (replication.md §8.5, light scrub). Only clean PGs are scrubbed:
-    /// backfill already compares a filling member's copy.
+    /// (replication.md §8.5), spread evenly over the interval rather than
+    /// back to back. Only clean PGs are scrubbed: backfill already
+    /// compares a filling member's copy.
     async fn scrubber(self: Rc<Self>, every: Duration) {
         let mut pass = 0u64;
         loop {
-            sleep(every).await;
             let deep = pass.is_multiple_of(DEEP_SCRUB_EVERY);
             pass += 1;
-            let map = self.map();
-            let pgs: Vec<((u32, u32), PgInfo)> = map
+            let pgs: Vec<(u32, u32)> = self
+                .map()
                 .pgs
                 .iter()
-                .filter(|((pool, _), i)| {
-                    i.primary() == Some(self.me)
-                        && i.acting == i.up
-                        && i.acting.len() > 1
-                        && map.pools.get(pool).map(|p| p.kind)
-                            != Some(hyperstor_meta::PoolKind::Cache)
-                })
-                .map(|(k, i)| (*k, i.clone()))
+                .filter(|(k, _)| self.scrubs(**k).is_some())
+                .map(|(k, _)| *k)
                 .collect();
-            for ((pool, pg), info) in pgs {
-                self.scrub_pg(pool, pg, &info, deep).await;
+            if pgs.is_empty() {
+                sleep(every).await;
+                continue;
+            }
+            let gap = every / pgs.len() as u32;
+            for (pool, pg) in pgs {
+                sleep(gap).await;
+                // The map may have changed while waiting.
+                if let Some(info) = self.scrubs((pool, pg)) {
+                    self.scrub_pg(pool, pg, &info, deep).await;
+                }
             }
         }
+    }
+
+    /// The PG's info if this device scrubs it now: its primary, clean,
+    /// with more than one copy, and not a cache pool's.
+    fn scrubs(&self, (pool, pg): (u32, u32)) -> Option<PgInfo> {
+        let map = self.map();
+        let i = map.pg(pool, pg)?;
+        (i.primary() == Some(self.me)
+            && i.acting == i.up
+            && i.acting.len() > 1
+            && map.pools.get(&pool).map(|p| p.kind) != Some(hyperstor_meta::PoolKind::Cache))
+        .then(|| i.clone())
     }
 
     /// Every acting member's digests of a PG, this device's first; `None`

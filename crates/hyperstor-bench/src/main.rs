@@ -388,7 +388,13 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 defer_max: std::env::var("HS_DEFER_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok()),
-                scrub_interval: Duration::ZERO,
+                // Scrub while measuring (I60): `HS_SCRUB_MS` per pass.
+                scrub_interval: Duration::from_millis(
+                    std::env::var("HS_SCRUB_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                ),
                 no_digests: false,
             })
         })
@@ -1418,6 +1424,56 @@ fn rejoin_suite() {
     }
 }
 
+/// What a digest list costs (implementation-notes.md I57): the time to
+/// list one PG and digest every object in it, from the index alone, by
+/// object count and size. Delta recovery and scrub pay this on each
+/// member, where a PG log would pay per missed write.
+fn digest_suite() {
+    println!("| Objects in the PG | blocks each | list and digest ms | µs per object |");
+    println!("|---|---|---|---|");
+    // At most about 2 GiB of memory device per row.
+    for (objects, blocks) in [(10_000u64, 1u64), (100_000, 1), (1_000, 256), (500, 1024)] {
+        let bytes = objects * blocks * BLOCK as u64 * 5 / 4 + (512 << 20);
+        let dev: Arc<dyn BlockDev> =
+            Arc::new(MemDev::new(bytes.div_ceil(BLOCK as u64) * BLOCK as u64));
+        format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                cluster_id: 1,
+                shards: 1,
+                log_blocks: None,
+            },
+        )
+        .unwrap();
+        let mut sh = open(&dev).unwrap().1.pop().unwrap();
+        let data = vec![0x5au8; (blocks * BLOCK as u64) as usize];
+        let key = |i: u64| ObjKey::new(1, 0, Namespace::Vol, i.to_le_bytes().to_vec(), 0);
+        let per = (sh.max_list_bytes() / data.len().max(1)).clamp(1, 64) as u64;
+        for start in (0..objects).step_by(per as usize) {
+            let lists = (start..(start + per).min(objects))
+                .map(|i| OpList {
+                    key: key(i),
+                    ops: vec![Op::Write {
+                        off: 0,
+                        data: data.clone(),
+                    }],
+                })
+                .collect();
+            sh.commit(lists).unwrap();
+        }
+        let t = Instant::now();
+        let n = sh.list_pg(1, 0).iter().filter_map(|k| sh.digest(k)).count() as u64;
+        let el = t.elapsed();
+        assert_eq!(n, objects);
+        println!(
+            "| {objects} | {blocks} | {:.1} | {:.2} |",
+            el.as_secs_f64() * 1e3,
+            el.as_secs_f64() * 1e6 / objects as f64
+        );
+    }
+}
+
 /// Recovery time against log length: a 1 GiB log on a memory device is
 /// filled with redirect-on-write records (checkpoints held off), then the
 /// shard is dropped without a clean stop and opened again. Data for the
@@ -1563,6 +1619,9 @@ fn main() {
         }
         Some("rejoin") => {
             rejoin_suite();
+        }
+        Some("digest") => {
+            digest_suite();
         }
         Some("redb") => {
             // hyperstor-bench redb <scratch dir>: G13 baseline

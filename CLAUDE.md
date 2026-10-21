@@ -24,7 +24,7 @@ design is split by topic, with section numbers kept across files.
 - **Next:** Raft for the map service (the rest of HS1; with D48's 0.6 s
   leases one map service is a whole-cluster single point of failure;
   needs `glidex-raftstore`, D20); the rest of HS2 (blocklist and forced
-  takeovers, scrub rate limits, read leases; the PG log only
+  takeovers, read leases; the PG log only
   if I57's digest scan proves too slow); the copy-on-write B+tree with
   snapshots and clones (D43, D44, HS4, which also gives D47's paged
   checkpoints); `hyperstor-vhost` and the glidex driver (HS3); cache-pool

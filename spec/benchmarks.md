@@ -624,3 +624,67 @@ cluster mem 1` (three storage nodes of one reactor on memory devices,
 
 4. **No cost on the I/O path:** every difference is within the spread
    between two runs of one build.
+
+## 2026-10-21: deep scrub against I/O, and the cost of a digest list (dev-2)
+
+**Deep scrub against I/O** (I60). Question: what does a deep scrub cost
+the I/O path? `hyperstor-bench cluster <dir> 1`: three storage nodes of
+one reactor on 1 GiB `O_DIRECT` files (ext4 on md RAID of data-center
+NVMe, shared with other sessions), 3 s per test, scrub off against
+`HS_SCRUB_MS=500` (a pass every 0.5 s, so a deep pass every 3.5 s, far
+more often than the default daily light and weekly deep), alternately
+twice; commit `bbdc0cd` plus scrub pacing:
+
+```sh
+hyperstor-bench cluster target/bench-files 1
+HS_SCRUB_MS=500 hyperstor-bench cluster target/bench-files 1
+```
+
+Whole objects read at once (as built):
+
+| Test (ops/s; p99 µs) | off, run 1 | scrub, run 1 | off, run 2 | scrub, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 1988; 581 | 1901; 1529 | 1988; 583 | 1904; 988 |
+| 4 KiB writes, QD32 | 6055; 11792 | 5745; 14321 | 6028; 11689 | 5798; 13487 |
+| 4 KiB reads, QD1 | 3956; 318 | 3801; 341 | 3997; 316 | 3790; 353 |
+| 4 KiB reads, QD32 | 12355; 6680 | 11551; 9723 | 12290; 6736 | 11483; 9840 |
+| 1 MiB writes, QD4 | 301; 25119 | 323; 24839 | 327; 24226 | 302; 26457 |
+| 1 MiB reads, QD4 | 1212; 6383 | 1190; 7189 | 1222; 6093 | 1182; 7380 |
+
+In 256 KiB pieces with a pause after each (tried, then reverted):
+
+| Test (ops/s; p99 µs) | off, run 1 | scrub, run 1 | off, run 2 | scrub, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 1989; 582 | 1749; 1180 | 1987; 586 | 1756; 1204 |
+| 4 KiB writes, QD32 | 6017; 11620 | 5635; 13194 | 6047; 11710 | 5671; 12992 |
+| 4 KiB reads, QD1 | 3992; 312 | 3649; 875 | 4003; 314 | 3668; 855 |
+| 4 KiB reads, QD32 | 12327; 6695 | 10889; 9152 | 12299; 6738 | 10968; 8423 |
+| 1 MiB writes, QD4 | 352; 25304 | 269; 27776 | 330; 24421 | 280; 25503 |
+| 1 MiB reads, QD4 | 1230; 6175 | 1147; 7451 | 1228; 6329 | 1166; 6946 |
+
+**The cost of a digest list** (I57). `hyperstor-bench digest`: one PG
+on a memory device, the time to list it and digest every object, from
+the index; run twice through the collect script:
+
+| Objects in the PG | blocks each | run 1: ms; µs per object | run 2: ms; µs per object |
+|---|---|---|---|
+| 10,000 | 1 | 4.5; 0.45 | 4.6; 0.46 |
+| 100,000 | 1 | 62.5; 0.63 | 62.7; 0.63 |
+| 1,000 | 256 (1 MiB) | 5.3; 5.3 | 5.3; 5.3 |
+| 500 | 1024 (4 MiB) | 24.9; 50 | 9.5; 19 |
+
+### Findings
+
+1. **With a deep pass every 3.5 s (weekly by default), deep scrub costs
+   4–6% of throughput**; p99 rises most for QD32 reads (+45%) and QD1 writes.
+   At the default (weekly), a device of 1 TiB is read for about 4.5 hours
+   a week at 64 MiB/s, with this cost meanwhile.
+2. **Smaller reads made it worse** (−12% throughput, QD1 read p99
+   ×2.7), so the cost is the extra device and CPU work, not one long
+   synchronous read; pieces were reverted. Deep scrub belongs in the
+   `bulk` class (D46), at a rate measured on dedicated drives.
+3. **A digest list costs about 0.5 µs per small object and 20–50 µs per
+   4 MiB chunk**, so a PG of 10,000 chunks (40 GiB) lists in 0.2–0.5 s on
+   each side. Against that, a whole refill of the same PG moves 40 GiB;
+   a PG log would only pay off for PGs of millions of objects with few
+   writes missed.
