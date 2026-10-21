@@ -518,12 +518,20 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::DeleteVolumeRequest>,
     ) -> ServiceResult<pb::DeleteVolumeResponse> {
-        let target = format!("volume {}", req.id);
+        let target = if req.force {
+            format!("volume {} (forced)", req.id)
+        } else {
+            format!("volume {}", req.id)
+        };
         let who = self.authorize(&ctx, "DeleteVolume", &target, true)?;
         let id = parse_volume_id(req.id)?;
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::DeleteVolume { id, reply })
+            .send(Admin::DeleteVolume {
+                id,
+                force: req.force,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let r = rx.recv().await;
         audit(

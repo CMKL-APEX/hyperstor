@@ -335,9 +335,45 @@ impl Client {
     /// by deleting it again. An attached volume is refused: detach it, or
     /// take it over, first.
     pub async fn delete_volume(self: &Rc<Self>, id: u128) -> Result<(), ClientError> {
-        let mut v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        self.delete_held(v, None).await
+    }
+
+    /// Deletes a volume even if attached (decisions.md D80): preempts the
+    /// holder first, which blocklists it, and deletes the volume holding
+    /// its lease, so no write of the old holder's lands meanwhile.
+    pub async fn force_delete_volume(self: &Rc<Self>, id: u128) -> Result<(), ClientError> {
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        if v.state != VolumeState::Active {
+            // Being deleted: no lease is granted; finish the delete.
+            return self.delete_held(v, None).await;
+        }
+        let held = self.preempt(id).await?;
+        let v = held.volume();
+        let r = self.delete_held(v, Some(&held)).await;
+        // Renewals stop; the header goes with the volume.
+        held.lost.set(true);
+        self.attached.borrow_mut().remove(&id);
+        r
+    }
+
+    /// Deletes `v`, which has no holder, or is held through `held`.
+    async fn delete_held(
+        self: &Rc<Self>,
+        mut v: Volume,
+        held: Option<&Attached>,
+    ) -> Result<(), ClientError> {
+        let id = v.id;
+        let me = held.map(|_| self.instance);
+        let mut tries = 0;
         while v.state == VolumeState::Active {
-            if v.holder.is_some() {
+            tries += 1;
+            if tries > 10 {
+                return Err(ClientError::BadVolume(format!(
+                    "volume {id:032x} kept changing"
+                )));
+            }
+            if v.holder.is_some() && v.holder != me {
                 return Err(ClientError::VolumeAttached(id));
             }
             let new = Volume {
@@ -352,7 +388,7 @@ impl Client {
                 0,
                 WireOp::AssertAttr {
                     name: LEASE_ATTR.to_vec(),
-                    value: None,
+                    value: me.map(|i| encode_holder(i, LEASE_RW)),
                 },
             );
             match self.exec(META_POOL, NS_META, &header_key(id), &ops).await {

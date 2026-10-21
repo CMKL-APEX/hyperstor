@@ -48,6 +48,8 @@ pub enum Admin {
     },
     DeleteVolume {
         id: u128,
+        /// Even if attached: preempts the holder (D80).
+        force: bool,
         reply: VolumeReply<()>,
     },
 }
@@ -395,13 +397,18 @@ impl Meta {
                         let _ = reply.send(r.await);
                     });
                 }
-                Admin::DeleteVolume { id, reply } => {
+                Admin::DeleteVolume { id, force, reply } => {
                     let c = connect(client.clone());
                     hyperstor_reactor::spawn(async move {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            c.delete_volume(id).await.map_err(volume_fault)
+                            if force {
+                                c.force_delete_volume(id).await
+                            } else {
+                                c.delete_volume(id).await
+                            }
+                            .map_err(volume_fault)
                         };
                         let _ = reply.send(r.await);
                     });

@@ -175,6 +175,9 @@ message CreateVolumeResponse {
 
 message DeleteVolumeRequest {
   string id = 1;
+  // Delete it even if a client has it attached: the holder is
+  // blocklisted first (decisions.md D80).
+  bool force = 2;
 }
 
 message DeleteVolumeResponse {}

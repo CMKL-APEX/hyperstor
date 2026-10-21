@@ -61,7 +61,7 @@ values are left out of answers.
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
-| `DeleteVolume` | `{"id": "…"}` | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached |
+| `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
 ```sh
 cd /etc/hyperstor/pki

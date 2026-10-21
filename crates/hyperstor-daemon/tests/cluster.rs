@@ -1640,7 +1640,18 @@ fn a_volume_has_one_writer_and_is_handed_off() {
             vb.write(size, pattern(2, size as usize)).await.unwrap();
             vb.detach().await.unwrap();
             assert_eq!(a.volume(id).await.unwrap().unwrap().holder, None);
-            a.delete_volume(id).await.unwrap();
+            // Deleted while attached only by force (D80): the holder is
+            // preempted first, and its I/O refused.
+            let vb = b.attach(id).await.unwrap();
+            assert!(matches!(
+                a.delete_volume(id).await,
+                Err(ClientError::VolumeAttached(_))
+            ));
+            a.force_delete_volume(id).await.unwrap();
+            assert!(a.volume(id).await.unwrap().is_none());
+            assert!(a.map().blocked(b.instance));
+            assert!(vb.write(0, vec![0; 4096]).await.is_err());
+            assert!(vb.lost());
         })
     })
     .join()

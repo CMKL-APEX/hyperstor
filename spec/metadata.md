@@ -162,7 +162,8 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 - **Effect on glidex.** storage.md S10 needs `node forget --fenced`
   before a `Lost` VM is re-placed, because the partitioned node may still
   be running it (clustering.md D8). For disks on hyperstor the blocklist
-  round already ensures the old VM's writes fail. Whether glidex relaxes
+  round already ensures the old VM's writes fail: glidex's driver
+  preempts the disks of a VM it re-places from a fenced node (D79). Whether glidex relaxes
   `--fenced` for VMs whose disks are all on hyperstor is for
   clustering.md to decide. The VM's network identity is affected too, not
   only its disks.
