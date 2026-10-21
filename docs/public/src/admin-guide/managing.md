@@ -36,10 +36,9 @@ right after an install or bringing a device back in.
 ## Taking a device out for service
 
 ```sh
-hyperstorctl out --node 2      # or --device D
-hyperstorctl status            # PGs move; wait for them
-...                            # service the node
-hyperstorctl in --node 2
+hyperstorctl out --node 2 --wait 600   # or --device D; waits for the PGs to move
+...                                    # service the node
+hyperstorctl in --node 2 --wait 600    # and for them to come back
 ```
 
 A device that is **out** gets no placement: its PGs go to other devices,
@@ -47,6 +46,11 @@ which are refilled from the remaining copies. With as many storage nodes
 as copies, there is nowhere to move them, so the PGs run with one copy
 fewer (`degraded`) until the device is back **in**. Writes go on while
 each PG keeps at least the pool's `min` copies.
+
+> **Out doesn't survive a map service restart.** The map service reads
+> the cluster file when it starts and doesn't keep changes made since,
+> so after a restart every device is in again. Bring devices back in
+> before restarting it, or expect their PGs to move back.
 
 ## Testing I/O
 

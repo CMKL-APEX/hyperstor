@@ -21,7 +21,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-
 |---|---|---|
 | `--api ADDR` | see below | `IP:PORT` of the cluster API |
 | `--tls DIR` | see below | Connect over mutual TLS with `DIR/admin.crt`, `DIR/admin.key` and `DIR/root.crt` |
-| `--wait SECS` | 0 | `status` only: ask again every half second until health is `ok`, or SECS have passed; also waits for an API that isn't answering yet |
+| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON (`status`, `nodes`, `pools`, `pgs`) |
 | `--pool P` | the first pool | The pool for `pgs` and `io-test` |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |

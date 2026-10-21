@@ -11,7 +11,8 @@
 //! - `nodes`, `pools`, `pgs [--pool P]`: tables;
 //! - `out` and `in` (`--device D`, or every device of `--node N`): take a
 //!   device out of placement, so its PGs move elsewhere and it can be
-//!   serviced, and bring it back;
+//!   serviced, and bring it back; with `--wait SECS`, until no PG is
+//!   backfilling or inactive;
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares.
@@ -298,6 +299,29 @@ async fn manage(
                         return Ok(Next::Exit(1));
                     }
                     Err(e) => return Err(e),
+                }
+            }
+            // --wait: until the PGs have settled, nothing backfilling or
+            // inactive (degraded is as good as it gets with nowhere to go).
+            if let Some(secs) = a.wait {
+                let deadline = std::time::Instant::now() + Duration::from_secs(secs.into());
+                loop {
+                    // Let the change be published (it is fenced first).
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let s = status().await?;
+                    let busy: u32 = s
+                        .pools
+                        .iter()
+                        .map(|p| p.pgs.backfilling + p.pgs.inactive)
+                        .sum();
+                    if busy == 0 {
+                        println!("PGs settled");
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        eprintln!("hyperstorctl: {busy} PG(s) still backfilling or inactive");
+                        return Ok(Next::Exit(1));
+                    }
                 }
             }
             Next::Exit(0)

@@ -323,8 +323,9 @@ fn install_manage_and_fail_a_node() {
     assert!(degraded.contains("PG(s)"), "{degraded}");
     let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "4"]);
     assert_eq!(code, 0, "writes go on with two copies: {out}");
-    let (code, out) = ctl(&bin, &api, &["in", "--node", "2"]);
+    let (code, out) = ctl(&bin, &api, &["in", "--node", "2", "--wait", "30"]);
     assert_eq!(code, 0, "{out}");
+    assert!(out.contains("PGs settled"), "{out}");
     wait_for("health ok after in", 30, || {
         let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 0).then_some(out)
