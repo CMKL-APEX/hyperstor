@@ -45,6 +45,7 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-proto` | wire types for D5 and the gRPC API |
 | `hyperstor-reactor` | the io_uring reactor, executor, RDMA and buffer pools |
 | `hyperstor-engine` | the local engine (engine.md §7) |
+| `hyperstor-map` | the cluster map: pools, devices, placement |
 | `hyperstor-meta` | the metadata service binary |
 | `hyperstor-daemon` | `hyperstord` |
 | `hyperstor-client` | the client library |

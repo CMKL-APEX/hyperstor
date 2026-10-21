@@ -33,6 +33,47 @@ pub enum Admin {
         up_in: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Volume operations (decisions.md D77), run on this reactor as a
+    /// client of `.meta` (metadata.md §4.2).
+    ListVolumes {
+        pool: u32,
+        reply: VolumeReply<Vec<Volume>>,
+    },
+    CreateVolume {
+        pool: u32,
+        size: u64,
+        name: String,
+        id: Option<u128>,
+        reply: VolumeReply<Volume>,
+    },
+    DeleteVolume {
+        id: u128,
+        reply: VolumeReply<()>,
+    },
+}
+
+pub use hyperstor_client::volume::{Volume, VolumeState};
+
+/// Why a volume operation failed, for the API's error codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeFault {
+    NotFound,
+    Exists,
+    Invalid,
+    Unavailable,
+}
+
+pub type VolumeReply<T> = hyperstor_reactor::chan::OneSender<Result<T, (VolumeFault, String)>>;
+
+fn volume_fault(e: hyperstor_client::ClientError) -> (VolumeFault, String) {
+    use hyperstor_client::ClientError as E;
+    let kind = match &e {
+        E::NoVolume(_) | E::NoPool(_) => VolumeFault::NotFound,
+        E::VolumeExists(_) => VolumeFault::Exists,
+        E::Shrink { .. } | E::BadVolume(_) | E::Unaligned => VolumeFault::Invalid,
+        _ => VolumeFault::Unavailable,
+    };
+    (kind, e.to_string())
 }
 
 /// The map service's state (metadata.md §4.1, decisions.md D42).
@@ -279,7 +320,24 @@ impl Meta {
 
     /// Answers the cluster API's requests (`api`), which arrive from its
     /// own thread: the map service's state lives on this reactor.
-    pub async fn admin(self: Rc<Self>, mut rx: hyperstor_reactor::chan::Receiver<Admin>) {
+    pub async fn admin(
+        self: Rc<Self>,
+        mut rx: hyperstor_reactor::chan::Receiver<Admin>,
+        map_address: SocketAddr,
+    ) {
+        // The client for volume operations, connected on first use to this
+        // member, which serves the map (and redirects the rest).
+        let client: Rc<RefCell<Option<Rc<hyperstor_client::Client>>>> = Rc::default();
+        let connect = move |client: Rc<RefCell<Option<Rc<hyperstor_client::Client>>>>| async move {
+            if let Some(c) = client.borrow().clone() {
+                return Ok(c);
+            }
+            let c = hyperstor_client::Client::connect(map_address, 0)
+                .await
+                .map_err(volume_fault)?;
+            *client.borrow_mut() = Some(c.clone());
+            Ok::<_, (VolumeFault, String)>(c)
+        };
         while let Some(req) = rx.recv().await {
             match req {
                 Admin::Published(reply) => {
@@ -298,6 +356,49 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_in(device, up_in));
+                }
+                // Each in a task of its own: a delete runs through every
+                // chunk of the volume.
+                Admin::ListVolumes { pool, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            c.list_volumes(pool).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
+                Admin::CreateVolume {
+                    pool,
+                    size,
+                    name,
+                    id,
+                    reply,
+                } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            c.create_volume(pool, size, id, &name)
+                                .await
+                                .map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
+                Admin::DeleteVolume { id, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            c.delete_volume(id).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
                 }
             }
         }

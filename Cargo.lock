@@ -1053,6 +1053,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "hyperstor-api",
+ "hyperstor-client",
  "hyperstor-codec",
  "hyperstor-map",
  "hyperstor-pki",

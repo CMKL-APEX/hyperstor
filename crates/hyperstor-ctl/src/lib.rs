@@ -138,6 +138,18 @@ pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
     o
 }
 
+/// A pool's volumes: id, name, size and state.
+pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
+    let mut out = format!("{:<32}  {:<20} {:>14}  STATE\n", "ID", "NAME", "SIZE");
+    for v in &r.volumes {
+        out.push_str(&format!(
+            "{:<32}  {:<20} {:>14}  {}\n",
+            v.id, v.name, v.size, v.state
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

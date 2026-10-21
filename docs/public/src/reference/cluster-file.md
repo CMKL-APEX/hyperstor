@@ -44,7 +44,7 @@ pool ID NAME KIND [OPTION VALUE ...]
 
 | Field | Meaning |
 |---|---|
-| `ID` | The pool's number, used by clients |
+| `ID` | The pool's number, used by clients. Pool 0 is `.meta`, which the map service adds itself, for volume headers; a file can't declare it |
 | `NAME` | A name, for people |
 | `KIND` | `replicated`, or `ecK+M` (for example `ec4+2`) for erasure coding, which is not served yet |
 

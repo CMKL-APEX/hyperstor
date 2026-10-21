@@ -450,6 +450,133 @@ impl ClusterService for Api {
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }
+
+    async fn list_volumes(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListVolumesRequest>,
+    ) -> ServiceResult<pb::ListVolumesResponse> {
+        self.authorize(&ctx, "ListVolumes", &format!("pool {}", req.pool), false)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ListVolumes {
+                pool: req.pool,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let vols = volume_result(rx.recv().await)?;
+        Ok(pb::ListVolumesResponse {
+            volumes: vols.iter().map(volume_pb).collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn create_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CreateVolumeRequest>,
+    ) -> ServiceResult<pb::CreateVolumeResponse> {
+        let target = format!("pool {} size {} name {:?}", req.pool, req.size, req.name);
+        let who = self.authorize(&ctx, "CreateVolume", &target, true)?;
+        let id = if req.id.is_empty() {
+            None
+        } else {
+            Some(parse_volume_id(req.id)?)
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::CreateVolume {
+                pool: req.pool,
+                size: req.size,
+                name: req.name.to_string(),
+                id,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "CreateVolume",
+            &target,
+            &match &r {
+                Some(Ok(v)) => format!("ok, volume {:032x}", v.id),
+                Some(Err((_, e))) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        let v = volume_result(r)?;
+        Ok(pb::CreateVolumeResponse {
+            volume: buffa::MessageField::some(volume_pb(&v)),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn delete_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeleteVolumeRequest>,
+    ) -> ServiceResult<pb::DeleteVolumeResponse> {
+        let target = format!("volume {}", req.id);
+        let who = self.authorize(&ctx, "DeleteVolume", &target, true)?;
+        let id = parse_volume_id(req.id)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::DeleteVolume { id, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "DeleteVolume",
+            &target,
+            &match &r {
+                Some(Ok(())) => "ok".into(),
+                Some(Err((_, e))) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        volume_result(r)?;
+        Ok(pb::DeleteVolumeResponse::default().into())
+    }
+}
+
+fn parse_volume_id(s: &str) -> Result<u128, ConnectError> {
+    if s.len() > 32 {
+        return Err(ConnectError::invalid_argument(format!(
+            "{s}: not a volume id"
+        )));
+    }
+    u128::from_str_radix(s, 16)
+        .map_err(|_| ConnectError::invalid_argument(format!("{s}: not a volume id")))
+}
+
+fn volume_pb(v: &crate::Volume) -> pb::Volume {
+    pb::Volume {
+        id: format!("{:032x}", v.id),
+        pool: v.pool,
+        size: v.size,
+        name: v.name.clone(),
+        state: match v.state {
+            crate::VolumeState::Active => "active",
+            crate::VolumeState::Deleting => "deleting",
+        }
+        .into(),
+        version: v.version,
+        ..Default::default()
+    }
+}
+
+fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Result<T, ConnectError> {
+    use crate::VolumeFault as F;
+    match r {
+        Some(Ok(v)) => Ok(v),
+        Some(Err((F::NotFound, e))) => Err(ConnectError::not_found(e)),
+        Some(Err((F::Exists, e))) => Err(ConnectError::already_exists(e)),
+        Some(Err((F::Invalid, e))) => Err(ConnectError::invalid_argument(e)),
+        Some(Err((F::Unavailable, e))) => Err(ConnectError::unavailable(e)),
+        None => Err(ConnectError::unavailable("map service stopped")),
+    }
 }
 
 /// TLS for the API: the server's chain and key, the root clients must

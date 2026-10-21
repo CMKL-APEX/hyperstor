@@ -1,5 +1,5 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|io-test|out|in
-//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]`
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in
+//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -13,6 +13,9 @@
 //!   device out of placement, so its PGs move elsewhere and it can be
 //!   serviced, and bring it back; with `--wait SECS`, until no PG is
 //!   backfilling or inactive;
+//! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
+//!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
+//!   and `delete-volume --id ID` (decisions.md D77);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares.
@@ -40,7 +43,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -87,6 +90,21 @@ struct Args {
     wait: Option<u32>,
     device: Option<u32>,
     node: Option<u32>,
+    size: Option<u64>,
+    name: String,
+    id: Option<String>,
+}
+
+/// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
+fn parse_size(s: &str) -> Option<u64> {
+    let (n, mul) = match s.as_bytes().last()? {
+        b'K' | b'k' => (&s[..s.len() - 1], 1u64 << 10),
+        b'M' | b'm' => (&s[..s.len() - 1], 1 << 20),
+        b'G' | b'g' => (&s[..s.len() - 1], 1 << 30),
+        b'T' | b't' => (&s[..s.len() - 1], 1 << 40),
+        _ => (s, 1),
+    };
+    n.parse::<u64>().ok()?.checked_mul(mul)
 }
 
 fn main() {
@@ -101,6 +119,9 @@ fn main() {
         wait: None,
         device: None,
         node: None,
+        size: None,
+        name: String::new(),
+        id: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -117,7 +138,19 @@ fn main() {
             "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
             "--node" => a.node = Some(num(it.next())),
-            "status" | "nodes" | "pools" | "pgs" | "io-test" | "out" | "in" if cmd.is_none() => {
+            "--size" => {
+                a.size = Some(
+                    it.next()
+                        .and_then(|s| parse_size(s))
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--name" => a.name = it.next().cloned().unwrap_or_else(|| usage()),
+            "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
+            | "delete-volume" | "io-test" | "out" | "in"
+                if cmd.is_none() =>
+            {
                 cmd = Some(arg.clone())
             }
             _ => usage(),
@@ -126,6 +159,13 @@ fn main() {
     let Some(cmd) = cmd else { usage() };
     if (cmd == "out" || cmd == "in") == (a.device.is_none() && a.node.is_none()) {
         // out and in need a target; nothing else takes one.
+        usage();
+    }
+    // create-volume needs a size; delete-volume an id, which only these two take.
+    if (cmd == "create-volume") != a.size.is_some()
+        || (cmd == "delete-volume" && a.id.is_none())
+        || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume")
+    {
         usage();
     }
     // The local socket (break-glass, §23.6): given, or named in the
@@ -234,7 +274,11 @@ where
             .await
             .map(|r| r.into_owned())
     };
-    let first_pool = |s: &pb::GetStatusResponse| a.pool.or_else(|| s.pools.first().map(|p| p.id));
+    // The first data pool: `.meta` (pool 0) holds volume headers.
+    let first_pool = |s: &pb::GetStatusResponse| {
+        a.pool
+            .or_else(|| s.pools.iter().find(|p| p.id != 0).map(|p| p.id))
+    };
     Ok(match cmd {
         "status" => {
             let deadline =
@@ -288,6 +332,84 @@ where
                 print!("{}", pgs_text(&r));
             }
             Next::Exit(0)
+        }
+        "volumes" => {
+            let s = status().await?;
+            let Some(pool) = first_pool(&s) else {
+                eprintln!("hyperstorctl: the cluster has no data pools");
+                return Ok(Next::Exit(1));
+            };
+            let r = client
+                .list_volumes(pb::ListVolumesRequest {
+                    pool,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            if a.json {
+                println!("{}", serde_json::to_string(&r).expect("json"));
+            } else {
+                print!("{}", volumes_text(&r));
+            }
+            Next::Exit(0)
+        }
+        "create-volume" => {
+            let s = status().await?;
+            let Some(pool) = first_pool(&s) else {
+                eprintln!("hyperstorctl: the cluster has no data pools");
+                return Ok(Next::Exit(1));
+            };
+            let r = client
+                .create_volume(pb::CreateVolumeRequest {
+                    pool,
+                    size: a.size.expect("checked with the arguments"),
+                    name: a.name.clone(),
+                    id: a.id.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    if a.json {
+                        println!("{}", serde_json::to_string(&r).expect("json"));
+                    } else if let Some(v) = r.volume.as_option() {
+                        println!("volume {} created in pool {}", v.id, v.pool);
+                    }
+                    Next::Exit(0)
+                }
+                Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    Next::Exit(1)
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "delete-volume" => {
+            let id = a.id.clone().expect("checked with the arguments");
+            match client
+                .delete_volume(pb::DeleteVolumeRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => {
+                    println!("volume {id} deleted");
+                    Next::Exit(0)
+                }
+                Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    Next::Exit(1)
+                }
+                Err(e) => return Err(e),
+            }
         }
         "out" | "in" => {
             let up_in = cmd == "in";
