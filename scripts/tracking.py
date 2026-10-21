@@ -38,6 +38,8 @@ def milestone_status(m):
 
 RUNNING = re.compile(r"^\s+Running (?:unittests )?\S+ \(.*/deps/(.+)-[0-9a-f]+(?:\.exe)?\)$")
 RESULT = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)")
+# Colour codes, which cargo writes with CARGO_TERM_COLOR=always (as in CI).
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def parse_logs(paths):
@@ -46,6 +48,7 @@ def parse_logs(paths):
     for path in paths:
         binary = None
         for text in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            text = ANSI.sub("", text)
             m = RUNNING.match(text)
             if m:
                 binary = m.group(1)
