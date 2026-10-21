@@ -30,10 +30,10 @@ covered by tests that run on every change.
 | HS15: Tenancy: quotas and fair share between tenants | Planned |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
-| AD0: Administration API, identities and CLI | Planned |
-| AD1: Installer and cluster join | Planned |
+| AD0: Administration API, identities and CLI | In progress |
+| AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | Planned |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | Planned |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -74,3 +74,28 @@ covered by tests that run on every change.
 | Scrub | Planned |
 | Down and out, blocklist and forced takeovers | Planned |
 | Fault-injection test rig: kill, partition, slow disk | Planned |
+
+## AD0: Administration API, identities and CLI
+
+| Feature | Status |
+|---|---|
+| Cluster health with its reasons, from what clients see | Done |
+| Cluster API (status, placement groups, taking devices out and in), callable with curl | In progress |
+| Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test | In progress |
+| Metrics on each storage node's admin port | In progress |
+| Certificates, identities and roles for the API | In progress |
+
+## AD1: Installer and cluster join
+
+| Feature | Status |
+|---|---|
+| Host checks before installing | Done |
+| One-command trial cluster on one host, with system services, updated in place on later runs | Done |
+| Installing a cluster across hosts from a shared cluster file | Done |
+| Joining hosts to a cluster with join tokens, and installing on whole devices | Planned |
+
+## AD3: Administration from the UI and CLI, with roles, trash and audit
+
+| Feature | Status |
+|---|---|
+| Audit of every change and every refused call to the cluster API | In progress |

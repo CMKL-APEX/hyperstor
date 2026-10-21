@@ -1,0 +1,125 @@
+// The cluster API (spec/administration.md §23.5), served by every
+// hyperstor-meta member. Reads come from the member's published map;
+// writes change the working map, which is published after fencing
+// (decisions.md D42).
+syntax = "proto3";
+
+package hyperstor.v1;
+
+service ClusterService {
+  // Health with its reasons, nodes, devices and pools. Read.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // Acting and up sets of one pool's PGs. Read.
+  rpc ListPgs(ListPgsRequest) returns (ListPgsResponse);
+
+  // Takes a device out of placement, so its PGs move elsewhere, or brings
+  // it back in. Write.
+  rpc SetDeviceIn(SetDeviceInRequest) returns (SetDeviceInResponse);
+}
+
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  // Nothing to report.
+  HEALTH_OK = 1;
+  // Something is down, degraded or backfilling; data is still writable.
+  HEALTH_WARN = 2;
+  // Some PG can't take writes, or a cache pool lost data.
+  HEALTH_ERROR = 3;
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  // A 128-bit id, in decimal.
+  string cluster_id = 1 [json_name = "cluster_id"];
+  uint64 epoch = 2;
+  Health health = 3;
+  repeated Reason reasons = 4;
+  repeated Node nodes = 5;
+  repeated Pool pools = 6;
+  // Where storage nodes and clients reach the map service (the D5
+  // protocol), for clients that start from the API.
+  string map_address = 7 [json_name = "map_address"];
+}
+
+message Reason {
+  Health level = 1;
+  string text = 2;
+}
+
+message Node {
+  uint32 id = 1;
+  uint32 rack = 2;
+  // Heard from within the liveness timeout (decisions.md D48).
+  bool up = 3;
+  repeated Device devices = 4;
+  // Milliseconds since its last heartbeat reached this map service;
+  // absent if none has since it started.
+  optional uint64 last_heard_ms = 5 [json_name = "last_heard_ms"];
+}
+
+message Device {
+  uint32 id = 1;
+  // Where its reactor listens.
+  string addr = 2;
+  // In placement (false after SetDeviceIn with up_in false).
+  bool up_in = 3 [json_name = "up_in"];
+  double weight = 4;
+  string class = 5;
+}
+
+message Pool {
+  uint32 id = 1;
+  string name = 2;
+  // "replicated", "ec4+2" or "cache".
+  string kind = 3;
+  uint32 size = 4;
+  uint32 min_size = 5 [json_name = "min_size"];
+  uint32 pg_count = 6 [json_name = "pg_count"];
+  uint32 chunk_size = 7 [json_name = "chunk_size"];
+  // "device", "host" or "rack".
+  string domain = 8;
+  PgCounts pgs = 9;
+}
+
+// Each PG is counted once, under its worst state.
+message PgCounts {
+  // Every copy in acting, nothing to backfill.
+  uint32 clean = 1;
+  // Fewer copies than size, at least min_size: writes go on.
+  uint32 degraded = 2;
+  // Copies being backfilled onto new members of up.
+  uint32 backfilling = 3;
+  // Below min_size or without a primary: writes stop.
+  uint32 inactive = 4;
+}
+
+message ListPgsRequest {
+  uint32 pool = 1;
+}
+
+message ListPgsResponse {
+  repeated Pg pgs = 1;
+}
+
+message Pg {
+  uint32 pool = 1;
+  uint32 pg = 2;
+  // Map epoch of the last change to this PG.
+  uint64 epoch = 3;
+  // Devices serving the PG, primary first; 4294967295 is a missing shard.
+  repeated uint32 acting = 4;
+  // Where placement wants the PG; members not in acting are backfilling.
+  repeated uint32 up = 5;
+}
+
+message SetDeviceInRequest {
+  uint32 device = 1;
+  bool up_in = 2 [json_name = "up_in"];
+}
+
+message SetDeviceInResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+}

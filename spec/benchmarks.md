@@ -9,6 +9,7 @@ given; the tool is `crates/hyperstor-bench`.
 | Name | CPU | Storage | Kernel |
 |---|---|---|---|
 | dev-1 | AMD EPYC 9124 (16 cores, 32 threads, one socket) | one consumer NVMe SSD (WD SN770 1 TB, DRAM-less, volatile write cache, FUA supported, **no power-loss protection**), ext4 on LVM, holding the root filesystem | Linux 7.0 |
+| dev-2 | 2 × AMD EPYC 7742 (128 cores, 256 threads), 1 TiB of memory | Samsung PM983 and PM1733 data-center NVMe drives (write-through cache), ext4 on md RAID; shared with other sessions | Linux 6.8 |
 
 On dev-1, the engine runs on a 2 GiB file on the root filesystem, opened
 `O_DIRECT` and driven through io_uring (the block back end of D29). The
@@ -473,3 +474,99 @@ replay benchmark above).
    800 MB/s of background writes. Paged checkpoints, or a much larger log,
    are needed before shards get that big (decision-log.md).
 
+
+## 2026-10-21: cluster-API load against I/O latency, G17 first part (dev-2)
+
+Host **dev-2**: AMD EPYC 7742, 2 sockets, 256 CPUs, 1 TiB of memory, Linux
+6.8 (not the dev-1 host of the sections above). Commit `a29162f` plus the
+`adminload` suite. Question (G17, D58): does load on the cluster API
+move client I/O latency?
+
+Method: `hyperstor-bench adminload` runs a map service with its cluster
+API and three storage nodes on **memory devices** in one process, and
+the client workload (pinned to CPU 1) for 3 s per test: idle, then while
+4 threads call `GetStatus` at 1000 calls/s in total over keep-alive
+HTTP/1.1, twice each, back to back. Memory devices remove the drive, so
+what's left is CPU and scheduling interference, which is G17's concern.
+Each `GetStatus` crosses to the map service's reactor and clones the map
+(64 PGs).
+
+```sh
+HS_TAIL=1 HS_BENCH_SECS=3 scripts/collect-decision-data.sh adminload
+HS_TAIL=1 HS_BENCH_SECS=3 taskset -c 0-3 target/release/hyperstor-bench adminload
+```
+
+p99 in µs, idle → under API load, for rounds 1 and 2 (p50 didn't move
+by more than 7% anywhere):
+
+| Test | 256 CPUs | 4 CPUs |
+|---|---|---|
+| 4 KiB writes, QD1 | 147 → 170, 165 → 175 | 205 → 175, 188 → 195 |
+| 4 KiB writes, QD32 | 2773 → 2917, 2951 → 2828 | 2259 → 2352, 2358 → 2204 |
+| 4 KiB reads, QD1 | 64 → 67, 74 → 72 | **56 → 104, 54 → 111** |
+| 4 KiB reads, QD32 | 1359 → 1438, 1403 → 1464 | 1154 → 1208, 1141 → 1228 |
+| `GetStatus` itself, p50 / p99 | 76 / 437, 80 / 298 | 154 / 3344, 188 / 3429 |
+
+Throughput changed by less than 3% everywhere except reads on 4 CPUs
+(−3 to −5%).
+
+### Findings
+
+1. **With cores to spare, API load doesn't show:** every change on the
+   256-CPU run is within the difference between the two idle rounds
+   (about 10%), so a 5% threshold (G17) can't be confirmed on this host
+   at this run length.
+2. **Sharing four cores, the QD1 read tail doubles** (p99 54–56 → 104–111
+   µs, the same in both rounds) while p50 stays at 41–42 µs: an API call
+   occasionally takes the core a reactor would have polled on. Writes,
+   slower per call, hide it. This is the all-in-one install on a small
+   machine, and it supports D58's rule that control-path threads run on
+   cores of their own.
+3. **The API answers 1000 status calls per second at 80 µs p50** with
+   spare cores; every call clones the map on the map service's reactor,
+   which will grow with the map (§23.3's local-map reads would avoid the
+   reactor entirely).
+4. Not measured yet: load on storage nodes' admin ports (metrics aren't
+   built), real devices, and the 50 UI watchers of G17.
+
+## 2026-10-21: request counters on the I/O path, A/B against main (dev-2)
+
+Question: do the storage nodes' new metric counters (I49: two relaxed
+atomic adds per request, gauges copied once a second) cost anything?
+`hyperstor-bench cluster mem 1` (three storage nodes of one reactor on
+memory devices, 3 s per test), built from `main` (`cdff61f`) and from
+this branch, run alternately twice:
+
+```sh
+HS_BENCH_SECS=3 hyperstor-bench cluster mem 1
+```
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7485; 154 | 7563; 154 | 7548; 155 | 7640; 151 |
+| 4 KiB writes, QD32 | 26839; 2557 | 26362; 2734 | 25563; 2897 | 26893; 2640 |
+| 4 KiB reads, QD1 | 18789; 65 | 18813; 65 | 18884; 66 | 19053; 64 |
+| 4 KiB reads, QD32 | 53973; 1337 | 53689; 1341 | 54372; 1325 | 54206; 1336 |
+| 1 MiB writes, QD4 | 514; 12724 | 518; 12662 | 511; 13366 | 525; 12251 |
+| 1 MiB reads, QD4 | 1466; 4774 | 1525; 4269 | 1501; 4457 | 1520; 4460 |
+
+Then again with latency histograms added (a clock read per client
+request and three more relaxed adds when it is answered), alternately:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7578; 154 | 7579; 154 | 7593; 154 | 7555; 153 |
+| 4 KiB writes, QD32 | 26551; 2707 | 26546; 2662 | 26432; 2724 | 26841; 2581 |
+| 4 KiB reads, QD1 | 18740; 65 | 18719; 66 | 18731; 66 | 18731; 66 |
+| 4 KiB reads, QD32 | 54291; 1333 | 53860; 1342 | 54324; 1327 | 53857; 1347 |
+| 1 MiB writes, QD4 | 511; 13808 | 519; 12486 | 511; 13026 | 520; 12305 |
+| 1 MiB reads, QD4 | 1490; 4340 | 1505; 4867 | 1478; 4800 | 1523; 4183 |
+
+### Findings
+
+1. **Counters cost nothing measurable:** every difference in the first
+   table is smaller than the difference between two runs of one build.
+2. **Histograms cost at most about 1% at QD32 reads** (53860 and 53857
+   against 54291 and 54324 ops/s, in both pairs), the most
+   request-heavy test; elsewhere nothing shows. Acceptable for always-on
+   metrics; a coarser clock would remove it if it matters.

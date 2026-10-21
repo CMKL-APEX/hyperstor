@@ -2,7 +2,7 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19, D38–D55 and D61–D68 were settled
+[decisions.md](decisions.md): D1–D19, D38–D55, D61–D68 and D69–D70 were settled
 with the owner; D20–D37, D56–D60 and D66's merge rule were made while
 drafting and are open to review. Host checks G1–G20 (milestones.md §22)
 are still open. What is built, and the
@@ -144,7 +144,8 @@ the request splitting and retry logic (volumes.md §10.1).
 
 | Port | Protocol | Between |
 |---|---|---|
-| 8850/tcp | gRPC over mTLS (connectrpc, D51), management network | cluster API and map watch: clients, daemons, glidex, `hyperstor-mgmt` → any `hyperstor-meta` member |
+| 8849/tcp | D5 protocol | map service: storage nodes and clients → `hyperstor-meta` (D69) |
+| 8850/tcp | gRPC over mTLS (connectrpc, D51), management network | cluster API: `hyperstorctl`, glidex, `hyperstor-mgmt` → any `hyperstor-meta` member (D69) |
 | 8852/tcp | HTTPS | browsers and `hyperstorctl` → `hyperstor-mgmt` (D59) |
 | 8853/tcp | HTTPS, mTLS, management network | metrics and health, on each daemon (D58, D59) |
 | 8851/tcp | Raft over mTLS | `hyperstor-meta` members |

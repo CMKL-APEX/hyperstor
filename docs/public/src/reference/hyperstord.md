@@ -3,7 +3,7 @@
 A storage node. See [Storage nodes](../admin-guide/storage-nodes.md).
 
 ```text
-usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd]
+usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR]
 ```
 
 | Option | Default | Meaning |
@@ -14,11 +14,12 @@ usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] 
 | `--cpus LIST` | not pinned | Comma-separated CPUs; the i-th `--shard`'s thread runs on the i-th CPU |
 | `--buffered` | off | Use the page cache instead of `O_DIRECT`, for testing |
 | `--hdd` | off | The devices are hard disks: defer small overwrites through the log |
+| `--admin ADDR` | off | Serve metrics (`GET /metrics`, Prometheus format) and `GET /health` on `IP:PORT`; plain HTTP, read-only: keep it on the management network |
 
 Devices without Hyperstor's format are formatted on first start. The node
 runs until `SIGINT` or `SIGTERM`, and recovers on the next start.
 
 | Exit status | Meaning |
 |---|---|
-| 1 | An address can't be bound, or a device's thread failed (the message says why) |
+| 1 | An address (including `--admin`) can't be bound, or a device's thread failed (the message says why) |
 | 2 | A missing or malformed option |

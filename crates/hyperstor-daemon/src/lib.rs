@@ -20,6 +20,8 @@
 //! recovery, read leases. A write whose replica is unreachable fails with
 //! `Unavailable`, and the client retries.
 
+pub mod metrics;
+
 use hyperstor_client::rpc::{Conn, read_frame, writer};
 use hyperstor_client::{Client, ClientError};
 use hyperstor_engine::{
@@ -120,6 +122,8 @@ pub struct NodeConfig {
 /// A running node. Dropping it without [`NodeHandle::stop`] leaves the
 /// threads running.
 pub struct NodeHandle {
+    /// Each shard's device id and metrics, for the admin port.
+    pub metrics: Vec<(u32, Arc<metrics::ShardMetrics>)>,
     stops: Vec<Sender<()>>,
     threads: Vec<std::thread::JoinHandle<Result<Arc<dyn BlockDev>, String>>>,
 }
@@ -152,7 +156,10 @@ impl NodeHandle {
 pub fn start(cfg: NodeConfig) -> NodeHandle {
     let mut stops = Vec::new();
     let mut threads = Vec::new();
+    let mut all_metrics = Vec::new();
     for (i, sh) in cfg.shards.into_iter().enumerate() {
+        let m = Arc::new(metrics::ShardMetrics::default());
+        all_metrics.push((sh.device_id, m.clone()));
         let (tx, mut rx) = channel::<()>();
         stops.push(tx);
         let cpu = cfg.cpus.get(i).copied();
@@ -171,9 +178,16 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
-                        let st =
-                            ShardState::open(node, sh.device_id, d2, meta, defer, blocked.clone())
-                                .await?;
+                        let st = ShardState::open(
+                            node,
+                            sh.device_id,
+                            d2,
+                            meta,
+                            defer,
+                            blocked.clone(),
+                            m,
+                        )
+                        .await?;
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
@@ -183,6 +197,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         }
                         spawn(st.clone().backfiller());
                         spawn(st.clone().accept(l));
+                        spawn(st.clone().gauges());
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -191,7 +206,11 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                 .expect("spawn reactor thread"),
         );
     }
-    NodeHandle { stops, threads }
+    NodeHandle {
+        metrics: all_metrics,
+        stops,
+        threads,
+    }
 }
 
 type CommitResult = Result<Committed, String>;
@@ -233,6 +252,8 @@ struct ShardState {
     /// than writes made elsewhere meanwhile, and a cache may lose data but
     /// must never serve stale data.
     cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
+    /// Counters for the admin port (`metrics`).
+    metrics: Arc<metrics::ShardMetrics>,
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -256,6 +277,7 @@ impl ShardState {
         meta: SocketAddr,
         defer: Option<usize>,
         blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+        metrics: Arc<metrics::ShardMetrics>,
     ) -> Result<Rc<Self>, String> {
         let mut shard = match hyperstor_engine::open(&dev) {
             Ok((_, mut v)) => v.pop().ok_or("device has no shard")?,
@@ -307,6 +329,7 @@ impl ShardState {
             pg_inflight: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
+            metrics,
         }))
     }
 
@@ -457,6 +480,28 @@ impl ShardState {
         Ok(c)
     }
 
+    /// Copies the engine's counters into the admin port's gauges, once a
+    /// second: `stats()` is constant-time (I37).
+    async fn gauges(self: Rc<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let block = hyperstor_engine::BLOCK as u64;
+        loop {
+            {
+                let st = self.shard.borrow().stats();
+                let m = &self.metrics;
+                m.objects.store(st.objects, Relaxed);
+                m.free_bytes.store(st.free_blocks * block, Relaxed);
+                m.data_bytes.store(st.data_blocks * block, Relaxed);
+                m.log_used_bytes.store(st.log_used_blocks * block, Relaxed);
+                m.log_bytes.store(st.log_blocks * block, Relaxed);
+                m.commits.store(st.commits, Relaxed);
+                m.checkpoints.store(st.checkpoints, Relaxed);
+                m.map_epoch.store(self.map().epoch, Relaxed);
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     async fn serve(self: Rc<Self>, s: TcpStream) {
         let s = Rc::new(s);
         let (tx, rx) = channel::<Vec<u8>>();
@@ -480,6 +525,8 @@ impl ShardState {
                 ),
                 Msg::Ping => reply(&Msg::Pong, &[]),
                 Msg::Write { to, key, off, crcs } => {
+                    metrics::ShardMetrics::add(&self.metrics.writes, 1);
+                    metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
                     self.write(h.req, to, key, off, crcs, payload, tx.clone())
                         .await;
                 }
@@ -490,11 +537,17 @@ impl ShardState {
                     off,
                     crcs,
                 } => {
+                    metrics::ShardMetrics::add(&self.metrics.repls, 1);
+                    metrics::ShardMetrics::add(&self.metrics.repl_bytes, payload.len() as u64);
                     self.repl(h.req, to, key, off, crcs, payload, tx.clone())
                         .await
                 }
                 Msg::Read { to, key, off, len } => {
+                    let arrived = std::time::Instant::now();
                     let (m, p) = self.read(to, key, off, len).await;
+                    self.metrics.read_latency.observe(arrived.elapsed());
+                    metrics::ShardMetrics::add(&self.metrics.reads, 1);
+                    metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
                     reply(&m, &p);
                 }
                 // Cut off from the map service (test hook): its messages
@@ -528,6 +581,8 @@ impl ShardState {
                     reply(&Msg::MapPushOk, &[]);
                 }
                 Msg::Push { to, key, crcs } => {
+                    metrics::ShardMetrics::add(&self.metrics.pushes, 1);
+                    metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
                     self.push(h.req, to, key, crcs, payload, tx.clone()).await
                 }
                 _ => reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[]),
@@ -546,7 +601,14 @@ impl ShardState {
         data: Vec<u8>,
         tx: Sender<Vec<u8>>,
     ) {
+        let arrived = std::time::Instant::now();
+        // Every write is answered once: an error is counted here, success
+        // is timed where it's answered.
+        let counts = self.metrics.clone();
         let send = move |m: Msg| {
+            if matches!(m, Msg::Error { .. }) {
+                metrics::ShardMetrics::add(&counts.write_errors, 1);
+            }
             let _ = tx.send(encode_frame(req, &m, &[]));
         };
         let pg = match self.check(&to, true).await {
@@ -647,6 +709,7 @@ impl ShardState {
         let me2 = self.clone();
         spawn(async move {
             let r = local.await;
+            let m = me2.metrics.clone();
             let _inflight = InflightGuard(me2, (to.pool, to.pg));
             let mut failed = None;
             for f in remote {
@@ -657,6 +720,7 @@ impl ShardState {
                     Err(e) => failed = Some(e.to_string()),
                 }
             }
+            let ok = r.is_ok() && failed.is_none();
             send(match (r, failed) {
                 (Ok(c), None) => Msg::WriteOk {
                     revision: c.revision,
@@ -672,6 +736,9 @@ impl ShardState {
                     detail: format!("replica: {e}"),
                 },
             });
+            if ok {
+                m.write_latency.observe(arrived.elapsed());
+            }
         });
     }
 

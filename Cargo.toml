@@ -1,11 +1,15 @@
 [workspace]
 members = [
+    "crates/hyperstor-api",
     "crates/hyperstor-client",
     "crates/hyperstor-codec",
+    "crates/hyperstor-ctl",
     "crates/hyperstor-daemon",
     "crates/hyperstor-engine",
+    "crates/hyperstor-install",
     "crates/hyperstor-bench",
     "crates/hyperstor-meta",
+    "crates/hyperstor-pki",
     "crates/hyperstor-placement",
     "crates/hyperstor-proto",
     "crates/hyperstor-reactor",

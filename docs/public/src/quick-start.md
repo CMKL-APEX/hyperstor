@@ -1,5 +1,8 @@
 # Quick start
 
+> To install a trial cluster as system services in one command instead,
+> see [Installing a trial cluster](admin-guide/installation.md#installing-a-trial-cluster).
+
 This starts a cluster of three storage nodes and a map service on one
 Linux machine, writes to it, and shows a node failure. It needs the
 [build requirements](admin-guide/installation.md#requirements) and about

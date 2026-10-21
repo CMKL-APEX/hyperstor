@@ -10,6 +10,9 @@
 //! with Raft (decisions.md D2, D20) comes later (implementation-notes.md I18).
 //! Each device records the address its reactor listens on.
 
+pub mod api;
+pub mod health;
+
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
 use hyperstor_reactor::time::sleep;
@@ -461,6 +464,20 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
     }
 }
 
+/// A request from the cluster API's thread to the map service's reactor
+/// (`Meta::admin`). Replies go back on one-shot channels that work across
+/// threads and runtimes.
+pub enum Admin {
+    /// The published map, what clients and storage nodes see, and how
+    /// long ago each node was last heard from (absent: not since start).
+    Published(hyperstor_reactor::chan::OneSender<(ClusterMap, BTreeMap<u32, Duration>)>),
+    SetDeviceIn {
+        device: u32,
+        up_in: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
+}
+
 /// The map service's state (metadata.md §4.1, decisions.md D42).
 ///
 /// - `map` is the working map: liveness and backfill change it.
@@ -510,6 +527,48 @@ impl Meta {
             lease,
             started: Instant::now(),
         })
+    }
+
+    /// Marks a device in or out of placement (administration.md §23.6) and
+    /// recomputes the working map if that changed it; the publisher
+    /// fences and publishes. Returns the working map's epoch.
+    pub fn set_device_in(&self, device: u32, up_in: bool) -> Result<u64, String> {
+        let mut map = self.map.borrow_mut();
+        let d = map
+            .devices
+            .get_mut(&device)
+            .ok_or_else(|| format!("no device {device}"))?;
+        if d.up_in != up_in {
+            d.up_in = up_in;
+            map.recompute();
+        }
+        Ok(map.epoch)
+    }
+
+    /// Answers the cluster API's requests (`api`), which arrive from its
+    /// own thread: the map service's state lives on this reactor.
+    pub async fn admin(self: Rc<Self>, mut rx: hyperstor_reactor::chan::Receiver<Admin>) {
+        while let Some(req) = rx.recv().await {
+            match req {
+                Admin::Published(reply) => {
+                    let now = Instant::now();
+                    let heard = self
+                        .beats
+                        .borrow()
+                        .iter()
+                        .map(|(n, t)| (*n, now.duration_since(*t)))
+                        .collect();
+                    let _ = reply.send((self.published.borrow().clone(), heard));
+                }
+                Admin::SetDeviceIn {
+                    device,
+                    up_in,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_device_in(device, up_in));
+                }
+            }
+        }
     }
 
     pub fn lease(&self) -> Duration {

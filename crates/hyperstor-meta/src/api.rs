@@ -1,0 +1,628 @@
+//! The cluster API, `hyperstor.v1.ClusterService` (spec/administration.md
+//! §23.5, decisions.md D51), served with connectrpc on its own thread so
+//! the control path never runs on the map service's reactor (D58).
+//!
+//! The map service's state is `Rc` on its reactor; every call is a
+//! request on a cross-thread channel to [`Meta::admin`](crate::Meta::admin)
+//! with a one-shot reply. Reads answer from the published map, writes
+//! change the working map, which the publisher fences and publishes.
+//!
+//! With TLS (`hyperstor-meta --api-tls DIR`), every client presents a
+//! certificate chaining to the cluster's root (D53), and its identity
+//! decides what it may do (D56, §16): reads for any identity of this
+//! cluster except bare-metal hosts, changes for `admin` and `mgmt` only.
+//! Without TLS, every request is allowed: for loopback and tests only.
+//!
+//! A local Unix socket (`--api-socket PATH`) serves the same API for
+//! break-glass use (§23.6, D55): the kernel names the caller
+//! (`SO_PEERCRED`), and root, the service's own user and members of the
+//! `hyperstor-admin` group may do everything, with no certificate.
+//!
+//! Every change and every refused request is audited (§23.9.4): one JSON
+//! line on standard error, which systemd keeps in the journal, with the
+//! time, the caller, the operation, its target and the result. Each
+//! caller may make 200 calls per second, in bursts of up to 1000
+//! (§23.3); more are refused with `resource_exhausted`.
+
+use crate::health::{self, Health};
+use crate::{Admin, ClusterMap, NO_DEVICE, PoolKind};
+use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
+use hyperstor_api::proto::hyperstor::v1 as pb;
+use hyperstor_api::{ClusterService, ClusterServiceExt};
+use hyperstor_placement::Domain;
+use hyperstor_reactor::chan::{Sender, oneshot};
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+struct Api {
+    tx: Sender<Admin>,
+    map_address: String,
+    /// The cluster id certificates must name; `None` without TLS.
+    cluster: Option<String>,
+    /// Per caller: tokens left and when they were last topped up.
+    buckets: Buckets,
+}
+
+/// Calls per second per caller, and the burst allowed (§23.3).
+const RATE: f64 = 200.0;
+const BURST: f64 = 1000.0;
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// One audit record (§23.9.4), as a JSON line on standard error.
+pub fn audit_line(principal: &str, op: &str, target: &str, result: &str) -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{{\"audit\":1,\"time\":{}.{:03},\"principal\":{},\"op\":{},\"target\":{},\"result\":{}}}",
+        t.as_secs(),
+        t.subsec_millis(),
+        json_str(principal),
+        json_str(op),
+        json_str(target),
+        json_str(result)
+    )
+}
+
+/// The caller on the local socket, from the kernel.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalPeer {
+    pub uid: u32,
+    pub pid: Option<i32>,
+}
+
+/// Whether a local caller may administer: root, this service's own user,
+/// or a member of `admin_gid` (its supplementary groups, from `/proc`).
+pub fn local_allowed(uid: u32, own_uid: u32, groups: &[u32], admin_gid: Option<u32>) -> bool {
+    uid == 0 || uid == own_uid || admin_gid.is_some_and(|g| groups.contains(&g))
+}
+
+fn groups_of(pid: Option<i32>) -> Vec<u32> {
+    let Some(pid) = pid else { return Vec::new() };
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| l.strip_prefix("Groups:")).map(|g| {
+                g.split_whitespace()
+                    .filter_map(|x| x.parse().ok())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn admin_gid() -> Option<u32> {
+    let name = std::ffi::CString::new("hyperstor-admin").ok()?;
+    // SAFETY: getgrnam reads a static NUL-terminated name and returns a
+    // pointer into static storage, or null; it's read at once.
+    let g = unsafe { libc::getgrnam(name.as_ptr()) };
+    // SAFETY: a non-null result points to a valid group entry.
+    (!g.is_null()).then(|| unsafe { (*g).gr_gid })
+}
+
+type Buckets = std::sync::Mutex<std::collections::HashMap<String, (f64, std::time::Instant)>>;
+
+/// Takes one call from `principal`'s token bucket at `now`; false when it
+/// is empty. A runaway script can't starve the other callers.
+fn take(buckets: &Buckets, principal: &str, now: std::time::Instant) -> bool {
+    let mut b = buckets.lock().unwrap_or_else(|e| e.into_inner());
+    let (tokens, last) = b.entry(principal.to_string()).or_insert((BURST, now));
+    *tokens = (*tokens + now.saturating_duration_since(*last).as_secs_f64() * RATE).min(BURST);
+    *last = now;
+    if *tokens < 1.0 {
+        return false;
+    }
+    *tokens -= 1.0;
+    true
+}
+
+fn audit(principal: &str, op: &str, target: &str, result: &str) {
+    eprintln!("{}", audit_line(principal, op, target, result));
+}
+
+impl Api {
+    /// Checks the caller: with TLS, a certificate of this cluster whose
+    /// role allows `op` (any but `host` to read; `admin` or `mgmt` to
+    /// change); then the caller's rate. Returns who the caller is, for
+    /// the audit; a refusal is audited here.
+    fn authorize(
+        &self,
+        ctx: &RequestContext,
+        op: &str,
+        target: &str,
+        write: bool,
+    ) -> Result<String, ConnectError> {
+        let refuse = |who: &str, e: ConnectError| {
+            audit(
+                who,
+                op,
+                target,
+                &format!("refused: {}", e.message.as_deref().unwrap_or("")),
+            );
+            e
+        };
+        let local = ctx.extensions().get::<LocalPeer>().copied();
+        let principal = match (&self.cluster, local) {
+            (_, Some(p)) => {
+                let who = format!("local:uid={}", p.uid);
+                // SAFETY: getuid has no preconditions.
+                let own = unsafe { libc::getuid() };
+                if !local_allowed(p.uid, own, &groups_of(p.pid), admin_gid()) {
+                    return Err(refuse(
+                        &who,
+                        ConnectError::permission_denied(format!(
+                            "uid {} is not root, the service's user, or in hyperstor-admin",
+                            p.uid
+                        )),
+                    ));
+                }
+                who
+            }
+            (None, None) => format!(
+                "anonymous@{}",
+                ctx.peer_addr().map_or("?".into(), |a| a.to_string())
+            ),
+            (Some(cluster), None) => {
+                let peer = ctx.peer_addr().map_or("?".into(), |a| a.to_string());
+                let Some(who) = ctx
+                    .peer_certs()
+                    .and_then(|c| c.first())
+                    .and_then(|leaf| hyperstor_pki::identity_of(leaf))
+                else {
+                    return Err(refuse(
+                        &format!("unknown@{peer}"),
+                        ConnectError::unauthenticated("a hyperstor client certificate is required"),
+                    ));
+                };
+                if &who.cluster != cluster {
+                    return Err(refuse(
+                        &who.uri(),
+                        ConnectError::permission_denied(format!(
+                            "{} is not of cluster {cluster}",
+                            who.uri()
+                        )),
+                    ));
+                }
+                let allowed = if write {
+                    who.role.may_administer()
+                } else {
+                    who.role != hyperstor_pki::Role::Host
+                };
+                if !allowed {
+                    return Err(refuse(
+                        &who.uri(),
+                        ConnectError::permission_denied(format!(
+                            "{} may not {}",
+                            who.uri(),
+                            if write {
+                                "change the cluster"
+                            } else {
+                                "read the cluster's status"
+                            }
+                        )),
+                    ));
+                }
+                who.uri()
+            }
+        };
+        if !take(&self.buckets, &principal, std::time::Instant::now()) {
+            return Err(refuse(
+                &principal,
+                ConnectError::resource_exhausted(format!(
+                    "more than {RATE} calls per second from {principal}"
+                )),
+            ));
+        }
+        Ok(principal)
+    }
+
+    async fn published(
+        &self,
+    ) -> Result<
+        (
+            ClusterMap,
+            std::collections::BTreeMap<u32, std::time::Duration>,
+        ),
+        ConnectError,
+    > {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Published(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        rx.recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))
+    }
+}
+
+fn health_pb(h: Health) -> pb::Health {
+    match h {
+        Health::Ok => pb::Health::HEALTH_OK,
+        Health::Warn => pb::Health::HEALTH_WARN,
+        Health::Error => pb::Health::HEALTH_ERROR,
+    }
+}
+
+fn kind(k: PoolKind) -> String {
+    match k {
+        PoolKind::Replicated => "replicated".into(),
+        PoolKind::Ec { k, m } => format!("ec{k}+{m}"),
+        PoolKind::Cache => "cache".into(),
+    }
+}
+
+fn domain(d: Domain) -> String {
+    match d {
+        Domain::Device => "device",
+        Domain::Host => "host",
+        Domain::Rack => "rack",
+    }
+    .into()
+}
+
+/// The status of `map`, as the API answers it. `heard` is how long ago
+/// each node was last heard from, when the map service knows (I43): a
+/// node it hasn't heard from since it started is reported, since the map
+/// counts it up for the liveness timeout's grace.
+pub fn status(
+    map: &ClusterMap,
+    heard: Option<&std::collections::BTreeMap<u32, std::time::Duration>>,
+    map_address: &str,
+) -> pb::GetStatusResponse {
+    let mut r = health::report(map);
+    if let Some(h) = heard {
+        let silent: Vec<String> = map
+            .nodes
+            .values()
+            .filter(|n| n.up && !h.contains_key(&n.id))
+            .map(|n| n.id.to_string())
+            .collect();
+        if !silent.is_empty() {
+            r.reasons.push((
+                Health::Warn,
+                format!(
+                    "{} node(s) not heard from since the map service started: {}",
+                    silent.len(),
+                    silent.join(", ")
+                ),
+            ));
+            r.health = r.health.max(Health::Warn);
+        }
+    }
+    pb::GetStatusResponse {
+        cluster_id: map.cluster_id.to_string(),
+        epoch: map.epoch,
+        health: health_pb(r.health).into(),
+        reasons: r
+            .reasons
+            .iter()
+            .map(|(h, text)| pb::Reason {
+                level: health_pb(*h).into(),
+                text: text.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        nodes: map
+            .nodes
+            .values()
+            .map(|n| pb::Node {
+                id: n.id,
+                rack: n.rack,
+                up: n.up,
+                last_heard_ms: heard
+                    .and_then(|h| h.get(&n.id))
+                    .map(|d| d.as_millis() as u64),
+                devices: map
+                    .devices
+                    .values()
+                    .filter(|d| d.node == n.id)
+                    .map(|d| pb::Device {
+                        id: d.id,
+                        addr: d.addr.to_string(),
+                        up_in: d.up_in,
+                        weight: d.weight,
+                        class: d.class.clone(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect(),
+        pools: map
+            .pools
+            .values()
+            .zip(&r.pools)
+            .map(|(p, s)| pb::Pool {
+                id: p.id,
+                name: p.name.clone(),
+                kind: kind(p.kind),
+                size: p.size.into(),
+                min_size: p.min_size.into(),
+                pg_count: p.pg_count,
+                chunk_size: p.chunk_size,
+                domain: domain(p.domain),
+                pgs: pb::PgCounts {
+                    clean: s.clean,
+                    degraded: s.degraded,
+                    backfilling: s.backfilling,
+                    inactive: s.inactive,
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            })
+            .collect(),
+        map_address: map_address.to_string(),
+        ..Default::default()
+    }
+}
+
+// The generated trait returns `impl Encodable<_>`; the concrete message is fine.
+#[allow(refining_impl_trait)]
+impl ClusterService for Api {
+    async fn get_status(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetStatusRequest>,
+    ) -> ServiceResult<pb::GetStatusResponse> {
+        self.authorize(&ctx, "GetStatus", "cluster", false)?;
+        let (map, heard) = self.published().await?;
+        Ok(status(&map, Some(&heard), &self.map_address).into())
+    }
+
+    async fn list_pgs(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListPgsRequest>,
+    ) -> ServiceResult<pb::ListPgsResponse> {
+        self.authorize(&ctx, "ListPgs", &format!("pool {}", req.pool), false)?;
+        let pool = req.pool;
+        let (map, _) = self.published().await?;
+        if !map.pools.contains_key(&pool) {
+            return Err(ConnectError::not_found(format!("no pool {pool}")));
+        }
+        let pgs = map
+            .pgs
+            .range((pool, 0)..=(pool, u32::MAX))
+            .map(|((pool, pg), info)| pb::Pg {
+                pool: *pool,
+                pg: *pg,
+                epoch: info.epoch,
+                acting: info.acting.clone(),
+                up: info.up.clone(),
+                ..Default::default()
+            })
+            .collect();
+        debug_assert_ne!(NO_DEVICE, 0);
+        Ok(pb::ListPgsResponse {
+            pgs,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn set_device_in(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDeviceInRequest>,
+    ) -> ServiceResult<pb::SetDeviceInResponse> {
+        let target = format!("device {} up_in={}", req.device, req.up_in);
+        let who = self.authorize(&ctx, "SetDeviceIn", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetDeviceIn {
+                device: req.device,
+                up_in: req.up_in,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDeviceIn",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetDeviceInResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(ConnectError::not_found(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+}
+
+/// TLS for the API: the server's chain and key, the root clients must
+/// chain to, and the cluster id their certificates must name.
+pub struct Tls {
+    pub config: connectrpc::rustls::ServerConfig,
+    pub cluster: String,
+}
+
+/// Reads `DIR/api.crt` (chain), `DIR/api.key` and `DIR/root.crt`.
+pub fn tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<Tls, String> {
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
+    };
+    Ok(Tls {
+        config: hyperstor_pki::server_config(
+            &read("api.crt")?,
+            &read("api.key")?,
+            &read("root.crt")?,
+        )?,
+        cluster: cluster.to_string(),
+    })
+}
+
+/// Serves the cluster API on `listener` from a new thread with its own
+/// single-threaded tokio runtime, over TLS when `tls` is given, and on
+/// the local socket `unix` if given. `map_address` is reported to clients
+/// as where the map service listens.
+pub fn spawn(
+    listener: std::net::TcpListener,
+    unix: Option<std::os::unix::net::UnixListener>,
+    tx: Sender<Admin>,
+    map_address: SocketAddr,
+    tls: Option<Tls>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("hyperstor-api".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            rt.block_on(async move {
+                listener.set_nonblocking(true).expect("nonblocking");
+                let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+                let (config, cluster) = match tls {
+                    Some(t) => (Some(Arc::new(t.config)), Some(t.cluster)),
+                    None => (None, None),
+                };
+                let api = Arc::new(Api {
+                    tx,
+                    map_address: map_address.to_string(),
+                    cluster,
+                    buckets: Default::default(),
+                });
+                let service =
+                    connectrpc::ConnectRpcService::new(api.register(connectrpc::Router::new()));
+                if let Some(u) = unix {
+                    u.set_nonblocking(true).expect("nonblocking");
+                    let u = tokio::net::UnixListener::from_std(u).expect("unix listener");
+                    tokio::spawn(serve_local(u, service.clone()));
+                }
+                let mut server = connectrpc::Server::from_listener(listener);
+                if let Some(c) = config {
+                    server = server.with_tls(c);
+                }
+                if let Err(e) = server.serve_with_service(service).await {
+                    eprintln!("hyperstor-meta: cluster API: {e}");
+                    std::process::exit(1);
+                }
+            })
+        })
+        .expect("spawn the API thread")
+}
+
+/// The local socket: each connection served over HTTP/1 or h2c, every
+/// request tagged with the caller's credentials from the kernel.
+async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::ConnectRpcService) {
+    use tower::Service;
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let Ok(cred) = stream.peer_cred() else {
+            continue;
+        };
+        let peer = LocalPeer {
+            uid: cred.uid(),
+            pid: cred.pid(),
+        };
+        let service = service.clone();
+        tokio::spawn(async move {
+            let svc =
+                hyper::service::service_fn(move |mut req: http::Request<hyper::body::Incoming>| {
+                    req.extensions_mut().insert(peer);
+                    let mut s = service.clone();
+                    async move { s.call(req).await }
+                });
+            let _ =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                    .await;
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn status_carries_health_and_pools() {
+        let m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
+             pool 1 vol replicated size 2 min 1 pgs 4 domain host\n",
+        )
+        .unwrap();
+        let s = super::status(&m, None, "127.0.0.1:8849");
+        assert_eq!(s.cluster_id, "5");
+        assert_eq!(s.health, super::pb::Health::HEALTH_OK);
+        assert_eq!(s.nodes.len(), 2);
+        assert_eq!(s.pools[0].pgs.clean, 4);
+        assert_eq!(s.pools[0].kind, "replicated");
+        assert_eq!(s.map_address, "127.0.0.1:8849");
+        // Node 1 not heard from since start: warn, though the map says up.
+        let heard = [(0, std::time::Duration::from_millis(40))].into();
+        let s = super::status(&m, Some(&heard), "127.0.0.1:8849");
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert!(
+            s.reasons[0]
+                .text
+                .contains("not heard from since the map service started: 1")
+        );
+        assert_eq!(s.nodes[0].last_heard_ms, Some(40));
+        assert_eq!(s.nodes[1].last_heard_ms, None);
+    }
+
+    #[test]
+    fn each_caller_gets_its_own_burst_then_the_rate() {
+        let b = super::Buckets::default();
+        let t = std::time::Instant::now();
+        assert!((0..1000).all(|_| super::take(&b, "a", t)));
+        assert!(!super::take(&b, "a", t), "burst used up");
+        assert!(super::take(&b, "b", t), "another caller isn't affected");
+        // 200 calls per second come back: 10 ms gives two.
+        let later = t + std::time::Duration::from_millis(10);
+        assert!(super::take(&b, "a", later));
+        assert!(super::take(&b, "a", later));
+        assert!(!super::take(&b, "a", later));
+    }
+
+    #[test]
+    fn local_callers_allowed() {
+        use super::local_allowed;
+        assert!(local_allowed(0, 999, &[], None), "root");
+        assert!(local_allowed(999, 999, &[], None), "the service's user");
+        assert!(
+            local_allowed(1000, 999, &[27, 1001], Some(1001)),
+            "hyperstor-admin"
+        );
+        assert!(!local_allowed(1000, 999, &[27], Some(1001)));
+        assert!(!local_allowed(1000, 999, &[27], None));
+    }
+
+    #[test]
+    fn audit_lines_are_json_with_escapes() {
+        let l = super::audit_line("hyperstor://7/admin/a\"b", "SetDeviceIn", "device 2", "ok");
+        assert!(l.starts_with("{\"audit\":1,\"time\":"), "{l}");
+        assert!(
+            l.contains("\"principal\":\"hyperstor://7/admin/a\\\"b\""),
+            "{l}"
+        );
+        assert!(
+            l.ends_with("\"op\":\"SetDeviceIn\",\"target\":\"device 2\",\"result\":\"ok\"}"),
+            "{l}"
+        );
+    }
+}

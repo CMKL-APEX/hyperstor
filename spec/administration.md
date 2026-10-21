@@ -2,9 +2,16 @@
 
 How hyperstor is installed, administered and secured: the installer, the cluster API, `hyperstorctl`, the management service and web UI, and the identities and checks behind them. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
 
-Status: **draft.** D50–D55 were settled with the owner on 2026-10-21
+Status: **draft, partly built.** D50–D55 were settled with the owner on 2026-10-21
 ([decision-log.md](decision-log.md)); D56–D60 were made while drafting
-and are open for review. Host checks G17 and G18 are open. This
+and are open for review. Host checks G17 and G18 are open. Built so far
+(implementation-notes.md I41–I53): the cluster API on the map service,
+over mutual TLS with identities and roles, audited and rate-limited, with a break-glass local socket; the root and intermediate
+CAs and leaf certificates; `hyperstorctl` (status, nodes, pools, PGs,
+devices out and in, an I/O test); metrics on storage nodes' admin
+ports; and `hyperstor-install` with host checks, the all-in-one trial
+cluster, multi-host installs from a shared cluster file (before join
+tokens) and a daily renewal timer. This
 section refines operations.md §16, §18 and §19, which point here.
 
 ## 23. Administration
@@ -236,7 +243,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 
 | CA | Key lives | Lifetime | Signs |
 |---|---|---|---|
-| Root | offline: exported at `cluster init` as an encrypted file for the operator to store; optionally kept as the systemd credential `hyperstor-root-ca` on the first meta host (small sites) | 10 years | intermediates only |
+| Root | on a trusted host, readable by root only (`/etc/hyperstor/pki` on the map service's host, D70); a site may move it offline instead | 10 years | intermediates only |
 | Intermediate | every meta member, as the encrypted systemd credential `hyperstor-ca` (TPM-sealed where the host has one, G18) | 1 year, rotated at 9 months | node, meta, mgmt, admin and host certificates |
 
 - **Everyone trusts the root.** Rotating the intermediate needs no

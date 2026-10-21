@@ -12,6 +12,18 @@ hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 hyperstor-rpc = { path = "../hyperstor-rpc" }
+# The cluster API (spec/administration.md §23.5), on its own thread.
+hyperstor-api = { path = "../hyperstor-api", features = ["server"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "server", "server-tls"] }
+hyperstor-pki = { path = "../hyperstor-pki" }
+buffa = { version = "=0.9.2", features = ["json"] }
+tokio = { version = "1", features = ["rt", "net"] }
+# The local socket (§23.6): connectrpc's service on a Unix listener.
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http = "1"
+tower = "0.5"
+libc.workspace = true
 
 [lints]
 workspace = true
