@@ -243,7 +243,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 
 | CA | Key lives | Lifetime | Signs |
 |---|---|---|---|
-| Root | offline: exported at `cluster init` as an encrypted file for the operator to store; optionally kept as the systemd credential `hyperstor-root-ca` on the first meta host (small sites) | 10 years | intermediates only |
+| Root | on a trusted host, readable by root only (`/etc/hyperstor/pki` on the map service's host, D70); a site may move it offline instead | 10 years | intermediates only |
 | Intermediate | every meta member, as the encrypted systemd credential `hyperstor-ca` (TPM-sealed where the host has one, G18) | 1 year, rotated at 9 months | node, meta, mgmt, admin and host certificates |
 
 - **Everyone trusts the root.** Rotating the intermediate needs no

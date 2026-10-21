@@ -353,7 +353,7 @@ Collected with the `collect-decision-data` skill; tables and method in
 
 | # | Open question | Data | What it implies | Recommendation |
 |---|---|---|---|---|
-| 23 | **Do control-path threads need cores of their own?** (D58, G17) | 1000 `GetStatus` calls/s against a map service with three storage nodes in one process: with 256 CPUs, every p99 change is inside run-to-run noise (~10%); confined to 4 CPUs, QD1 read p99 goes 54–56 → 104–111 µs in both rounds, p50 unchanged, writes unaffected | Sharing cores, admin load reaches the read tail; with spare cores it doesn't show | Keep D58's rule (pin control threads off reactor cores; the installer should set `CPUAffinity=` once reactors are pinned). Repeat G17 on a small host with real devices before settling it; confidence medium. |
+| 30 | **Do control-path threads need cores of their own?** (D58, G17) | 1000 `GetStatus` calls/s against a map service with three storage nodes in one process: with 256 CPUs, every p99 change is inside run-to-run noise (~10%); confined to 4 CPUs, QD1 read p99 goes 54–56 → 104–111 µs in both rounds, p50 unchanged, writes unaffected | Sharing cores, admin load reaches the read tail; with spare cores it doesn't show | Keep D58's rule (pin control threads off reactor cores; the installer should set `CPUAffinity=` once reactors are pinned). Repeat G17 on a small host with real devices before settling it; confidence medium. |
 
 ## Points from building administration (2026-10-21)
 
@@ -362,11 +362,11 @@ settled.
 
 | # | Point | Options | Recommendation |
 |---|---|---|---|
-| 24 | **One port or two for the map service** (I41): the map protocol (D5) on 8849 and the cluster API on 8850, against overview.md §3's single 8850 | (a) keep two; (b) detect the protocol on a connection's first bytes; (c) move the map watch into `hyperstor.v1` as a server stream | (a) until Raft (I18) reworks the map service, then (c): one protocol family, and the API is already HTTP/2 |
-| 25 | **The root CA's key on a single host** (I48): the all-in-one keeps it in `/etc/hyperstor/pki`, readable by root only; D53 wants it offline | (a) keep it for trial clusters; (b) export it encrypted at install and delete it | (a) for `--all-in-one`, (b) for multi-host installs, once `cluster init` exists |
-| 26 | **What `out` means** (I45): today it marks a device out and returns; with as many failure domains as copies, its PGs run degraded | (a) keep it as "service"; (b) add a "drain" that refuses when PGs would end up degraded and runs as an `Operation` until backfill ends | (b), as §23.3 asks; keep (a) as the service mode |
-| 27 | **Join tokens need a map that changes at run time** (I50): D57 needs the map service to add nodes and issue certificates, and the map isn't persisted (I18) | (a) persist the working map in a file first; (b) wait for Raft | (b) if Raft is next anyway; the shared-cluster-file install covers multi-host testing until then |
-| 28 | **Control threads off reactor cores** (D58, point 23): on 4 shared CPUs, API load doubles the QD1 read tail | (a) pin control threads to non-reactor cores now (`CPUAffinity=` in the units, once `--cpus` is set); (b) wait for G17 on a small host | (a) for the installer's units when it pins reactors; confirm with G17 |
+| 31 | **One port or two for the map service** (I41) — *settled 2026-10-21: two ports are fine (D69)*: the map protocol (D5) on 8849 and the cluster API on 8850, against overview.md §3's single 8850 | (a) keep two; (b) detect the protocol on a connection's first bytes; (c) move the map watch into `hyperstor.v1` as a server stream | (a) until Raft (I18) reworks the map service, then (c): one protocol family, and the API is already HTTP/2 |
+| 32 | **The root CA's key on a single host** (I48) — *settled 2026-10-21: keep it on a trusted host for now; offline is allowed, not required (D70)*: the all-in-one keeps it in `/etc/hyperstor/pki`, readable by root only; D53 wants it offline | (a) keep it for trial clusters; (b) export it encrypted at install and delete it | (a) for `--all-in-one`, (b) for multi-host installs, once `cluster init` exists |
+| 33 | **What `out` means** (I45): today it marks a device out and returns; with as many failure domains as copies, its PGs run degraded | (a) keep it as "service"; (b) add a "drain" that refuses when PGs would end up degraded and runs as an `Operation` until backfill ends | (b), as §23.3 asks; keep (a) as the service mode |
+| 34 | **Join tokens need a map that changes at run time** (I50): D57 needs the map service to add nodes and issue certificates, and the map isn't persisted (I18) | (a) persist the working map in a file first; (b) wait for Raft | (b) if Raft is next anyway; the shared-cluster-file install covers multi-host testing until then |
+| 35 | **Control threads off reactor cores** (D58, point 30): on 4 shared CPUs, API load doubles the QD1 read tail | (a) pin control threads to non-reactor cores now (`CPUAffinity=` in the units, once `--cpus` is set); (b) wait for G17 on a small host | (a) for the installer's units when it pins reactors; confirm with G17 |
 
 ## Administration (2026-10-21)
 
