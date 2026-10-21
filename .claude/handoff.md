@@ -20,6 +20,9 @@ newer than this note wins over it.
     skill.
 - The branch predates PR #2: rebase it onto `main` before merging so
   CI's checks run on it.
+- **PR #4, branch `bench/failover-targets`, stacked on PR #3** (base
+  `impl/dense-map`): failover at the recommended 1 s setting, and the
+  collect script runs `failover`, `replay` and `logsize`. Merge after #3.
 
 ## Waiting on the owner
 
@@ -28,7 +31,7 @@ From `spec/decision-log.md`, "Data for pending decisions":
 | Point | Question | Recommendation |
 |---|---|---|
 | 11 | Log ceiling and paged checkpoints. Per TiB at 50k writes/s, checkpoint traffic is 826, 207 and 52 MB/s for 64 MiB, 256 MiB and 1 GiB logs; reopening takes 0.38, 0.61 and 1.5 s | Raise `MAX_LOG` (`crates/hyperstor-engine/src/device.rs`) to 1 GiB now; build paged checkpoints next |
-| 13 | Lease and liveness defaults. Failover takes about 1.25 leases with peer reports | Owner picks a target failover time; for about 1 s, lease 0.6 s and timeout 0.8 s |
+| 13 | Lease and liveness defaults. Failover takes about 1.25 leases with peer reports; lease 0.6 s / timeout 0.8 s measured 0.91 s, or 0.66 s with peer reports (PR #4) | Owner picks a target failover time; for about 1 s, lease 0.6 s and timeout 0.8 s |
 | 16 | Polling window | 200 µs for `hyperstord`, 0 in the client library |
 
 Points 12, 14 and 15 are recommendations the owner hasn't objected to.
