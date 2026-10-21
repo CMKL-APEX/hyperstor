@@ -780,6 +780,25 @@ impl Meta {
                     }
                 }
             }
+            Ok(Msg::SetDeviceIn { device, up_in }) => {
+                let mut map = self.map.borrow_mut();
+                match map.devices.get_mut(&device) {
+                    Some(d) => {
+                        if d.up_in != up_in {
+                            d.up_in = up_in;
+                            map.recompute();
+                        }
+                        Msg::SetDeviceInOk {
+                            map_epoch: map.epoch,
+                        }
+                    }
+                    None => Msg::Error {
+                        code: Code::NotFound,
+                        map_epoch: map.epoch,
+                        detail: format!("no device {device}"),
+                    },
+                }
+            }
             Ok(Msg::Ping) => Msg::Pong,
             _ => Msg::Error {
                 code: Code::Invalid,

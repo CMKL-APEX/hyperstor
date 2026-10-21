@@ -1,0 +1,22 @@
+[package]
+name = "hyperstor-ctl"
+description = "hyperstorctl: status, health and tests of a hyperstor cluster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hyperstorctl"
+path = "src/main.rs"
+
+[dependencies]
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-meta = { path = "../hyperstor-meta" }
+hyperstor-placement = { path = "../hyperstor-placement" }
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+libc.workspace = true
+
+[lints]
+workspace = true

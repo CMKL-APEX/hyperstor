@@ -73,6 +73,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-ctl"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-client",
+ "hyperstor-meta",
+ "hyperstor-placement",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "libc",
+]
+
+[[package]]
 name = "hyperstor-daemon"
 version = "0.1.0"
 dependencies = [
@@ -95,6 +107,15 @@ dependencies = [
  "libc",
  "rand",
  "thiserror",
+]
+
+[[package]]
+name = "hyperstor-install"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-meta",
+ "io-uring",
+ "libc",
 ]
 
 [[package]]

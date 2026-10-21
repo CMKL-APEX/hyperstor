@@ -264,6 +264,16 @@ pub enum Msg {
         peer: u32,
     },
     PeerDownOk,
+    /// An administrator marks a device in or out of placement
+    /// (administration.md §23.6): out moves its PGs elsewhere, in brings
+    /// them back. Answered with the working map's epoch.
+    SetDeviceIn {
+        device: u32,
+        up_in: bool,
+    },
+    SetDeviceInOk {
+        map_epoch: u64,
+    },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (replication.md §8.5).
     Push {
@@ -315,6 +325,8 @@ mod kind {
     pub const MAP_PUSH_OK: u16 = 37;
     pub const PEER_DOWN: u16 = 38;
     pub const PEER_DOWN_OK: u16 = 39;
+    pub const SET_DEVICE_IN: u16 = 40;
+    pub const SET_DEVICE_IN_OK: u16 = 41;
     pub const ERROR: u16 = 99;
 }
 
@@ -346,6 +358,8 @@ impl Msg {
             Msg::MapPushOk => MAP_PUSH_OK,
             Msg::PeerDown { .. } => PEER_DOWN,
             Msg::PeerDownOk => PEER_DOWN_OK,
+            Msg::SetDeviceIn { .. } => SET_DEVICE_IN,
+            Msg::SetDeviceInOk { .. } => SET_DEVICE_IN_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -364,6 +378,7 @@ impl Msg {
                 | Msg::FenceOk
                 | Msg::MapPushOk
                 | Msg::PeerDownOk
+                | Msg::SetDeviceInOk { .. }
                 | Msg::BackfillOk { .. }
                 | Msg::Error { .. }
         )
@@ -410,6 +425,12 @@ impl Msg {
             Msg::FenceOk | Msg::MapPushOk | Msg::PeerDownOk => {}
             Msg::PeerDown { reporter, peer } => {
                 e.u32(*reporter).u32(*peer);
+            }
+            Msg::SetDeviceIn { device, up_in } => {
+                e.u32(*device).u8(u8::from(*up_in));
+            }
+            Msg::SetDeviceInOk { map_epoch } => {
+                e.u64(*map_epoch);
             }
             Msg::Fence { epoch, pgs } => {
                 e.u64(*epoch).seq(pgs, |e, (p, g)| {
@@ -556,6 +577,13 @@ impl Msg {
                 peer: d.u32()?,
             },
             PEER_DOWN_OK => Msg::PeerDownOk,
+            SET_DEVICE_IN => Msg::SetDeviceIn {
+                device: d.u32()?,
+                up_in: d.u8()? != 0,
+            },
+            SET_DEVICE_IN_OK => Msg::SetDeviceInOk {
+                map_epoch: d.u64()?,
+            },
             BACKFILL_DONE => Msg::BackfillDone {
                 pool: d.u32()?,
                 pg: d.u32()?,
@@ -700,6 +728,11 @@ mod tests {
                 peer: 2,
             },
             Msg::PeerDownOk,
+            Msg::SetDeviceIn {
+                device: 7,
+                up_in: false,
+            },
+            Msg::SetDeviceInOk { map_epoch: 12 },
             Msg::BackfillDone {
                 pool: 1,
                 pg: 2,
