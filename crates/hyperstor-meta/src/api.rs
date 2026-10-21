@@ -518,12 +518,20 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::DeleteVolumeRequest>,
     ) -> ServiceResult<pb::DeleteVolumeResponse> {
-        let target = format!("volume {}", req.id);
+        let target = if req.force {
+            format!("volume {} (forced)", req.id)
+        } else {
+            format!("volume {}", req.id)
+        };
         let who = self.authorize(&ctx, "DeleteVolume", &target, true)?;
         let id = parse_volume_id(req.id)?;
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::DeleteVolume { id, reply })
+            .send(Admin::DeleteVolume {
+                id,
+                force: req.force,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let r = rx.recv().await;
         audit(
@@ -563,6 +571,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         }
         .into(),
         version: v.version,
+        attached_by: v.holder.map(|h| format!("{h:016x}")).unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -574,6 +583,7 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
         Some(Err((F::NotFound, e))) => Err(ConnectError::not_found(e)),
         Some(Err((F::Exists, e))) => Err(ConnectError::already_exists(e)),
         Some(Err((F::Invalid, e))) => Err(ConnectError::invalid_argument(e)),
+        Some(Err((F::Attached, e))) => Err(ConnectError::failed_precondition(e)),
         Some(Err((F::Unavailable, e))) => Err(ConnectError::unavailable(e)),
         None => Err(ConnectError::unavailable("map service stopped")),
     }

@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force]
 ```
 
 | Command | Does |
@@ -13,9 +13,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nod
 | `nodes` | Each node and its devices: address, weight, in or out |
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive |
 | `pgs` | One pool's PGs with their acting and up sets |
-| `volumes` | One pool's volumes: id, name, size and state |
+| `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
 | `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
-| `delete-volume` | Deletes volume `--id` and its data |
+| `delete-volume` | Deletes volume `--id` and its data; refused while it is attached, unless `--force` |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
@@ -34,6 +34,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nod
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
 | `--name N` | empty | The new volume's name: shown, not unique |
 | `--id ID` | | `delete-volume`: the volume (32 hex digits). `create-volume`: its id, instead of a random one |
+| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused |
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line
 of `/etc/hyperstor/hyperstorctl.conf` (written by

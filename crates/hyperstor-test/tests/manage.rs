@@ -131,11 +131,12 @@ fn volumes_through_hyperstorctl() {
         .ctl(&["create-volume", "--size", "1G", "--id", "abc"])
         .expect(1);
     assert!(r.has("exists"), "{}", r.out);
-    c.ctl(&["delete-volume", "--id", &id]).ok();
+    c.ctl(&["delete-volume", "--id", &id, "--force"]).ok();
     let l = c.ctl(&["volumes", "--json"]).ok();
     assert!(!l.has(&id) && l.has("fixed"), "{}", l.out);
     let r = c.ctl(&["delete-volume", "--id", &id]).expect(1);
     assert!(r.has("no volume"), "{}", r.out);
+    c.ctl(&["volumes", "--force"]).expect(2);
     c.ctl(&["create-volume", "--size", "1000", "--name", "odd"])
         .expect(1);
 }

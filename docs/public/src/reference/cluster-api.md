@@ -59,9 +59,9 @@ values are left out of answers.
 | `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
-| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version` |
+| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
-| `DeleteVolume` | `{"id": "…"}` | `{}`, once the volume and its data are gone |
+| `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
 ```sh
 cd /etc/hyperstor/pki
@@ -84,6 +84,7 @@ Errors are Connect errors, with an HTTP status and a JSON body:
 |---|---|
 | `not_found` | No such device, pool or volume |
 | `already_exists` | `CreateVolume` with the id of a volume that exists |
+| `failed_precondition` | `DeleteVolume` of a volume a client has attached |
 | `invalid_argument` | A size that isn't a positive multiple of 4096, a malformed id |
 | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | The certificate's cluster or role doesn't allow the call |

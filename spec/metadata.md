@@ -117,17 +117,23 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 | map changes | Raft | follows hardware changes and failures; one entry per event |
 | blocklist entries | Raft | forced takeovers only |
 | heartbeats | leader memory | ten per node per second |
-| volume operations, lease renewals | `.meta` PG primaries | one renewal per attached volume per 2 s, spread over 256 PGs on every storage node |
+| volume operations, lease renewals | `.meta` PG primaries | one renewal message per second per holder and primary (D75), spread over 256 PGs on every storage node |
 | block metadata | engines | follows I/O, always local |
 
 ## 9. Volume leases and fencing (D11, D23, D24)
 
+- **As built** (implementation-notes.md I74–I78): the holder is the
+  header's `lease` attribute; the expiry lives in the primary's memory,
+  so a renewal writes nothing, and a new primary gives the holder a full
+  lease. The client library's `attach`, `take_over`, `preempt` and
+  `detach` do the rest; storage nodes refuse a blocklisted instance by
+  the instance its connection named at `Hello`.
 - **Attaching** a volume takes a lease, recorded in the volume's header
   object by its PG primary (§4.2):
   - `rw` is exclusive, one holder;
   - `ro` is shared, and is allowed only on snapshots (D18).
 - A lease names its holder (client instance), mode and expiry. The holder
-  renews it every 2 s, for 10 s, over its connection to the header's
+  renews it every second, for 4 s (D75), over its connection to the header's
   primary. Raft is not involved.
 - **Every request carries the client's instance id**, bound to its
   identity at `Hello`. Storage nodes refuse requests from blocklisted
@@ -156,7 +162,8 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 - **Effect on glidex.** storage.md S10 needs `node forget --fenced`
   before a `Lost` VM is re-placed, because the partitioned node may still
   be running it (clustering.md D8). For disks on hyperstor the blocklist
-  round already ensures the old VM's writes fail. Whether glidex relaxes
+  round already ensures the old VM's writes fail: glidex's driver
+  preempts the disks of a VM it re-places from a fenced node (D79). Whether glidex relaxes
   `--fenced` for VMs whose disks are all on hyperstor is for
   clustering.md to decide. The VM's network identity is affected too, not
   only its disks.

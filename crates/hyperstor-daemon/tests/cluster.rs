@@ -1579,3 +1579,221 @@ fn a_cache_pool_loses_data_cleanly() {
     .unwrap();
     c.stop();
 }
+
+/// Volume leases (metadata.md §9, D75): one `rw` holder at a time, kept
+/// by renewals; a planned hand-off is a detach then an attach, with no
+/// blocklist; an attached volume can't be deleted; a holder hears of a
+/// change to its header (grown) on a renewal.
+#[test]
+fn a_volume_has_one_writer_and_is_handed_off() {
+    use hyperstor_client::ClientError;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Client::connect(meta, 1).await.unwrap();
+            let b = Client::connect(meta, 2).await.unwrap();
+            let size = 2 * CHUNK as u64;
+            let id = a.create_volume(POOL, size, None, "v").await.unwrap().id;
+            let va = a.attach(id).await.unwrap();
+            assert_eq!(
+                a.volume(id).await.unwrap().unwrap().holder,
+                Some(a.instance)
+            );
+            assert!(matches!(
+                b.attach(id).await,
+                Err(ClientError::LeaseHeld { holder, remaining_ms })
+                    if holder == a.instance && remaining_ms > 0
+            ));
+            assert!(matches!(
+                b.delete_volume(id).await,
+                Err(ClientError::VolumeAttached(_))
+            ));
+            va.write(0, pattern(1, size as usize)).await.unwrap();
+            assert!(va.write(size, vec![0; 4096]).await.is_err(), "past the end");
+            // Renewals keep it held well past one lease.
+            let t = std::time::Instant::now();
+            while t.elapsed() < hyperstor_proto::LEASE_EXPIRES * 3 / 2 {
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(500)).await;
+                assert!(matches!(
+                    b.attach(id).await,
+                    Err(ClientError::LeaseHeld { remaining_ms, .. }) if remaining_ms > 0
+                ));
+            }
+            assert!(!va.lost());
+            // Grown: the holder sees the new size after a renewal.
+            b.expand_volume(id, 2 * size).await.unwrap();
+            let t = std::time::Instant::now();
+            while va.volume().size != 2 * size {
+                assert!(t.elapsed() < std::time::Duration::from_secs(5));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            // Handed off: no blocklist needed.
+            va.detach().await.unwrap();
+            assert!(matches!(
+                va.write(0, vec![0; 4096]).await,
+                Err(ClientError::LeaseLost(_))
+            ));
+            let vb = b.attach(id).await.unwrap();
+            assert!(b.map().blocklist.is_empty());
+            assert_eq!(vb.read(0, size).await.unwrap(), pattern(1, size as usize));
+            vb.write(size, pattern(2, size as usize)).await.unwrap();
+            vb.detach().await.unwrap();
+            assert_eq!(a.volume(id).await.unwrap().unwrap().holder, None);
+            // Deleted while attached only by force (D80): the holder is
+            // preempted first, and its I/O refused.
+            let vb = b.attach(id).await.unwrap();
+            assert!(matches!(
+                a.delete_volume(id).await,
+                Err(ClientError::VolumeAttached(_))
+            ));
+            a.force_delete_volume(id).await.unwrap();
+            assert!(a.volume(id).await.unwrap().is_none());
+            assert!(a.map().blocked(b.instance));
+            assert!(vb.write(0, vec![0; 4096]).await.is_err());
+            assert!(vb.lost());
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
+/// A forced takeover (metadata.md §9, D24, D76): the holder stops renewing
+/// but is still running and still writing. The new holder waits out its
+/// lease, blocklists it, and takes the lease; from then on every storage
+/// node refuses the old instance, so none of its writes lands after the
+/// new holder's. A preemption does the same to a holder that is renewing.
+#[test]
+fn a_forced_takeover_blocklists_the_old_holder() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Client::connect(meta, 1).await.unwrap();
+            let b = Client::connect(meta, 2).await.unwrap();
+            let size = 2 * CHUNK as u64;
+            let v = a.create_volume(POOL, size, None, "v").await.unwrap();
+            let va = a.attach(v.id).await.unwrap();
+            va.write(0, pattern(1, size as usize)).await.unwrap();
+            // A stops renewing (its handle is gone) but keeps writing.
+            drop(va);
+            let (a2, lineage) = (a.clone(), v.lineage);
+            let writer = hyperstor_reactor::spawn(async move {
+                let (mut n, t) = (0u64, std::time::Instant::now());
+                while t.elapsed() < std::time::Duration::from_secs(15) {
+                    match a2.write(POOL, lineage, 0, pattern(100 + n, 4096)).await {
+                        Ok(()) => n += 1,
+                        Err(e) => return (n, Some(e)),
+                    }
+                    hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                (n, None)
+            });
+            let t = std::time::Instant::now();
+            let vb = b.take_over(v.id).await.unwrap();
+            let took = t.elapsed();
+            assert!(
+                took >= std::time::Duration::from_secs(2)
+                    && took < hyperstor_proto::LEASE_EXPIRES * 2,
+                "took {took:?}"
+            );
+            assert!(b.map().blocked(a.instance));
+            let (n, e) = writer.await;
+            assert!(n > 0, "the old holder was writing until the takeover");
+            assert!(
+                matches!(
+                    e,
+                    Some(ClientError::Server {
+                        code: Code::Blocklisted,
+                        ..
+                    })
+                ),
+                "{e:?}"
+            );
+            // The new holder's data stays: nothing from A lands later.
+            vb.write(0, pattern(2, size as usize)).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert_eq!(vb.read(0, size).await.unwrap(), pattern(2, size as usize));
+            assert!(a.attach(v.id).await.is_err(), "blocklisted");
+            // Take-over leaves a renewing holder alone; preemption doesn't.
+            let c3 = Client::connect(meta, 3).await.unwrap();
+            assert!(matches!(
+                c3.take_over(v.id).await,
+                Err(ClientError::LeaseHeld { remaining_ms, .. }) if remaining_ms > 0
+            ));
+            assert!(!vb.lost());
+            let vc = c3.preempt(v.id).await.unwrap();
+            assert!(c3.map().blocked(b.instance));
+            vc.write(0, pattern(3, 4096)).await.unwrap();
+            assert!(vb.write(0, pattern(4, 4096)).await.is_err());
+            assert!(vb.lost(), "a blocklisted holder knows it lost the lease");
+            assert_eq!(vc.read(0, 4096).await.unwrap(), pattern(3, 4096));
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
+/// A lease outlives its header's primary: the new primary gives the holder
+/// a full lease from when it first sees it, and the holder's renewals
+/// follow the map to it.
+#[test]
+fn a_lease_outlives_its_headers_primary() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::volume::header_key;
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let (tx, mut rx) = channel::<usize>();
+    let (go_tx, mut go_rx) = channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let a = Client::connect(meta, 1).await.unwrap();
+            let b = Client::connect(meta, 2).await.unwrap();
+            let id = a
+                .create_volume(POOL, CHUNK as u64, None, "v")
+                .await
+                .unwrap()
+                .id;
+            let va = a.attach(id).await.unwrap();
+            let map = a.map();
+            let pgs = map.pools[&hyperstor_meta::META_POOL].pg_count;
+            let pg = hyperstor_client::object_pg(&header_key(id), pgs);
+            let primary = map
+                .pg(hyperstor_meta::META_POOL, pg)
+                .unwrap()
+                .primary()
+                .unwrap();
+            tx.send((primary / 1000) as usize).unwrap();
+            go_rx.recv().await;
+            // The PG has a new primary now.
+            let t = std::time::Instant::now();
+            loop {
+                let _ = b.refresh_map().await;
+                if b.map().pg(hyperstor_meta::META_POOL, pg).unwrap().primary() != Some(primary) {
+                    break;
+                }
+                assert!(t.elapsed() < std::time::Duration::from_secs(5));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            let t = std::time::Instant::now();
+            while t.elapsed() < hyperstor_proto::LEASE_EXPIRES * 3 / 2 {
+                assert!(matches!(
+                    b.attach(id).await,
+                    Err(ClientError::LeaseHeld { remaining_ms, .. }) if remaining_ms > 0
+                ));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            assert!(!va.lost());
+            va.write(0, pattern(5, 4096)).await.unwrap();
+        })
+    });
+    let node = block_on(async move { rx.recv().await.unwrap() });
+    c.kill(node);
+    go_tx.send(()).unwrap();
+    t.join().unwrap();
+    c.stop();
+}

@@ -102,7 +102,20 @@ pub struct ClusterMap {
     pub devices: BTreeMap<u32, DeviceInfo>,
     pub pools: BTreeMap<u32, PoolInfo>,
     pub pgs: BTreeMap<(u32, u32), PgInfo>,
+    /// Client instances storage nodes refuse (metadata.md §4.1, §9): the
+    /// map epoch each was added at, and when it expires (Unix seconds).
+    pub blocklist: BTreeMap<u64, Blocked>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Blocked {
+    pub epoch: u64,
+    pub expires: u64,
+}
+
+/// How long a blocklist entry lasts (metadata.md §4.1). A blocklisted
+/// client has long stopped writing by then: its lease renewals are refused.
+pub const BLOCKLIST_FOR: std::time::Duration = std::time::Duration::from_secs(3600);
 
 pub const NO_DEVICE: u32 = u32::MAX;
 
@@ -336,6 +349,44 @@ impl ClusterMap {
         true
     }
 
+    /// Blocklists `instance` until `expires` (Unix seconds) and bumps the
+    /// epoch; returns the epoch that has it. An instance already listed
+    /// keeps its epoch, with the later expiry.
+    pub fn blocklist_add(&mut self, instance: u64, expires: u64) -> u64 {
+        if let Some(b) = self.blocklist.get_mut(&instance) {
+            if b.expires < expires {
+                self.epoch += 1;
+                b.expires = expires;
+            }
+            return b.epoch;
+        }
+        self.epoch += 1;
+        self.blocklist.insert(
+            instance,
+            Blocked {
+                epoch: self.epoch,
+                expires,
+            },
+        );
+        self.epoch
+    }
+
+    /// Drops entries expired at `now` (Unix seconds), bumping the epoch if
+    /// any were; whether any were.
+    pub fn blocklist_prune(&mut self, now: u64) -> bool {
+        let before = self.blocklist.len();
+        self.blocklist.retain(|_, b| b.expires > now);
+        let pruned = self.blocklist.len() != before;
+        if pruned {
+            self.epoch += 1;
+        }
+        pruned
+    }
+
+    pub fn blocked(&self, instance: u64) -> bool {
+        !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
+    }
+
     pub fn pg(&self, pool: u32, pg: u32) -> Option<&PgInfo> {
         self.pgs.get(&(pool, pg))
     }
@@ -347,7 +398,10 @@ impl ClusterMap {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        e.u32(1).u64(self.epoch).u128(self.cluster_id);
+        // Format 2 adds the blocklist; a map without one stays format 1,
+        // which nodes from before it read.
+        let format = if self.blocklist.is_empty() { 1 } else { 2 };
+        e.u32(format).u64(self.epoch).u128(self.cluster_id);
         e.u32(self.nodes.len() as u32);
         for n in self.nodes.values() {
             e.u32(n.id).u32(n.reactors).u32(n.rack).bool(n.up);
@@ -391,13 +445,19 @@ impl ClusterMap {
                 e.u32(*d);
             });
         }
+        if format == 2 {
+            e.u32(self.blocklist.len() as u32);
+            for (i, b) in &self.blocklist {
+                e.u64(*i).u64(b.epoch).u64(b.expires);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if v != 1 {
+        if v != 1 && v != 2 {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -479,6 +539,18 @@ impl ClusterMap {
             let acting = d.seq(4, |d| d.u32())?;
             let up = d.seq(4, |d| d.u32())?;
             m.pgs.insert((pool, pg), PgInfo { epoch, acting, up });
+        }
+        if v == 2 {
+            for _ in 0..d.u32()? {
+                let i = d.u64()?;
+                m.blocklist.insert(
+                    i,
+                    Blocked {
+                        epoch: d.u64()?,
+                        expires: d.u64()?,
+                    },
+                );
+            }
         }
         d.finish()?;
         Ok(m)
@@ -649,8 +721,24 @@ mod tests {
 
     #[test]
     fn encode_round_trip_and_addresses() {
-        let m = map();
+        let mut m = map();
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // Format 1 without a blocklist, 2 with one.
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes());
+        let e = m.blocklist_add(77, 1000);
+        assert_eq!((e, m.epoch), (m.epoch, e));
+        assert_eq!(m.encode()[..4], 2u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert!(m.blocked(77) && !m.blocked(78));
+        // Listed again: same epoch; a later expiry is a change.
+        assert_eq!(m.blocklist_add(77, 1000), e);
+        assert_eq!(m.epoch, e);
+        assert_eq!(m.blocklist_add(77, 2000), e);
+        assert_eq!(m.epoch, e + 1);
+        assert!(!m.blocklist_prune(2000 - 1));
+        assert!(m.blocklist_prune(2000));
+        assert!(!m.blocked(77));
+        assert_eq!(m.epoch, e + 2);
         assert_eq!(m.device_addr(2001).unwrap().port(), 7021);
         let pg = m.pg(1, 5).unwrap();
         assert_eq!(pg.acting.len(), 3);
