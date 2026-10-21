@@ -768,7 +768,7 @@ dependencies = [
 [[package]]
 name = "glidex-raftstore"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=52ee6dce02b1a2f55e66b0e6debc8de50c0733c8#52ee6dce02b1a2f55e66b0e6debc8de50c0733c8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=a57ed85bafb6f2380b45c39642949480d894a9a5#a57ed85bafb6f2380b45c39642949480d894a9a5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
