@@ -82,6 +82,8 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 |---|---|
 | `hyperstor_requests_total{kind}` | Requests served: `write` and `read` from clients (as primary), `repl` from primaries (as replica), `push` during backfill |
 | `hyperstor_request_bytes_total{kind}` | Data bytes in those requests |
+| `hyperstor_request_duration_seconds{kind}` | Histogram of client writes (until every replica has answered) and reads, from arrival to answer |
+| `hyperstor_write_errors_total` | Client writes answered with an error |
 | `hyperstor_device_objects` | Objects on the device |
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |
 | `hyperstor_log_used_bytes`, `hyperstor_log_bytes` | Log in use since the last checkpoint, and its size |

@@ -11,6 +11,34 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
+/// Upper bounds of the latency buckets, in µs: powers of two from 16 µs
+/// to 65 ms, then +Inf.
+pub const BOUNDS_US: [u64; 13] = [
+    16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+];
+
+/// A latency histogram with fixed buckets: one relaxed add per bucket hit,
+/// one for the sum and one for the count.
+#[derive(Default)]
+pub struct Histogram {
+    buckets: [AtomicU64; 14],
+    sum_us: AtomicU64,
+    count: AtomicU64,
+}
+
+impl Histogram {
+    pub fn observe(&self, d: std::time::Duration) {
+        let us = d.as_micros() as u64;
+        let i = BOUNDS_US
+            .iter()
+            .position(|b| us <= *b)
+            .unwrap_or(BOUNDS_US.len());
+        self.buckets[i].fetch_add(1, Relaxed);
+        self.sum_us.fetch_add(us, Relaxed);
+        self.count.fetch_add(1, Relaxed);
+    }
+}
+
 /// Counters and gauges of one reactor and its device.
 #[derive(Default)]
 pub struct ShardMetrics {
@@ -22,6 +50,12 @@ pub struct ShardMetrics {
     pub repl_bytes: AtomicU64,
     pub pushes: AtomicU64,
     pub push_bytes: AtomicU64,
+    /// Client writes answered with an error.
+    pub write_errors: AtomicU64,
+    /// From a client write's arrival to its answer, after every replica.
+    pub write_latency: Histogram,
+    /// From a client read's arrival to its answer.
+    pub read_latency: Histogram,
     // Gauges, from the engine once a second.
     pub objects: AtomicU64,
     pub free_bytes: AtomicU64,
@@ -88,6 +122,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         },
     );
     family(
+        "hyperstor_write_errors_total",
+        "counter",
+        "Client writes answered with an error.",
+        &|m| vec![("", g(&m.write_errors))],
+    );
+    family(
         "hyperstor_device_objects",
         "gauge",
         "Objects stored on the device.",
@@ -132,6 +172,31 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "Epoch of the cluster map this reactor holds.",
         &|m| vec![("", g(&m.map_epoch))],
     );
+    let mut hist = String::new();
+    hist.push_str(
+        "# HELP hyperstor_request_duration_seconds Time from a client request's arrival to its answer; writes include every replica.\n# TYPE hyperstor_request_duration_seconds histogram\n",
+    );
+    for (dev, m) in shards {
+        for (kind, h) in [("write", &m.write_latency), ("read", &m.read_latency)] {
+            let labels = format!("node=\"{node}\",device=\"{dev}\",kind=\"{kind}\"");
+            let mut cum = 0;
+            for (i, b) in h.buckets.iter().enumerate() {
+                cum += b.load(Relaxed);
+                let le = BOUNDS_US
+                    .get(i)
+                    .map_or("+Inf".to_string(), |us| format!("{}", *us as f64 / 1e6));
+                hist.push_str(&format!(
+                    "hyperstor_request_duration_seconds_bucket{{{labels},le=\"{le}\"}} {cum}\n"
+                ));
+            }
+            hist.push_str(&format!(
+                "hyperstor_request_duration_seconds_sum{{{labels}}} {}\nhyperstor_request_duration_seconds_count{{{labels}}} {}\n",
+                h.sum_us.load(Relaxed) as f64 / 1e6,
+                h.count.load(Relaxed)
+            ));
+        }
+    }
+    o.push_str(&hist);
     o
 }
 
@@ -188,6 +253,31 @@ mod tests {
             "hyperstor_request_bytes_total{node=\"4\",device=\"4000\",kind=\"write\"} 12288\n"
         ));
         assert!(t.contains("hyperstor_device_free_bytes{node=\"4\",device=\"4001\"} 1073741824\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 10);
+        assert_eq!(t.matches("# TYPE ").count(), 12);
+        // Histograms are cumulative and end at +Inf with the count.
+        let c = Arc::new(ShardMetrics::default());
+        for us in [10, 20, 100, 100_000] {
+            c.write_latency
+                .observe(std::time::Duration::from_micros(us));
+        }
+        let t = render(1, &[(1000, c)]);
+        let l = "node=\"1\",device=\"1000\",kind=\"write\"";
+        assert!(
+            t.contains(&format!("_bucket{{{l},le=\"0.000016\"}} 1\n")),
+            "{t}"
+        );
+        assert!(
+            t.contains(&format!("_bucket{{{l},le=\"0.000128\"}} 3\n")),
+            "{t}"
+        );
+        assert!(
+            t.contains(&format!("_bucket{{{l},le=\"0.065536\"}} 3\n")),
+            "{t}"
+        );
+        assert!(
+            t.contains(&format!("_bucket{{{l},le=\"+Inf\"}} 4\n")),
+            "{t}"
+        );
+        assert!(t.contains(&format!("_count{{{l}}} 4\n")), "{t}");
     }
 }

@@ -550,7 +550,23 @@ HS_BENCH_SECS=3 hyperstor-bench cluster mem 1
 | 1 MiB writes, QD4 | 514; 12724 | 518; 12662 | 511; 13366 | 525; 12251 |
 | 1 MiB reads, QD4 | 1466; 4774 | 1525; 4269 | 1501; 4457 | 1520; 4460 |
 
+Then again with latency histograms added (a clock read per client
+request and three more relaxed adds when it is answered), alternately:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7578; 154 | 7579; 154 | 7593; 154 | 7555; 153 |
+| 4 KiB writes, QD32 | 26551; 2707 | 26546; 2662 | 26432; 2724 | 26841; 2581 |
+| 4 KiB reads, QD1 | 18740; 65 | 18719; 66 | 18731; 66 | 18731; 66 |
+| 4 KiB reads, QD32 | 54291; 1333 | 53860; 1342 | 54324; 1327 | 53857; 1347 |
+| 1 MiB writes, QD4 | 511; 13808 | 519; 12486 | 511; 13026 | 520; 12305 |
+| 1 MiB reads, QD4 | 1490; 4340 | 1505; 4867 | 1478; 4800 | 1523; 4183 |
+
 ### Findings
 
-1. **No measurable cost:** every difference is smaller than the
-   difference between the two runs of the same build.
+1. **Counters cost nothing measurable:** every difference in the first
+   table is smaller than the difference between two runs of one build.
+2. **Histograms cost at most about 1% at QD32 reads** (53860 and 53857
+   against 54291 and 54324 ops/s, in both pairs), the most
+   request-heavy test; elsewhere nothing shows. Acceptable for always-on
+   metrics; a coarser clock would remove it if it matters.

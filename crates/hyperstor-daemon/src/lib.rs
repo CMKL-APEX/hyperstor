@@ -543,7 +543,9 @@ impl ShardState {
                         .await
                 }
                 Msg::Read { to, key, off, len } => {
+                    let arrived = std::time::Instant::now();
                     let (m, p) = self.read(to, key, off, len).await;
+                    self.metrics.read_latency.observe(arrived.elapsed());
                     metrics::ShardMetrics::add(&self.metrics.reads, 1);
                     metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
                     reply(&m, &p);
@@ -599,6 +601,7 @@ impl ShardState {
         data: Vec<u8>,
         tx: Sender<Vec<u8>>,
     ) {
+        let arrived = std::time::Instant::now();
         let send = move |m: Msg| {
             let _ = tx.send(encode_frame(req, &m, &[]));
         };
@@ -700,6 +703,7 @@ impl ShardState {
         let me2 = self.clone();
         spawn(async move {
             let r = local.await;
+            let m = me2.metrics.clone();
             let _inflight = InflightGuard(me2, (to.pool, to.pg));
             let mut failed = None;
             for f in remote {
@@ -710,6 +714,7 @@ impl ShardState {
                     Err(e) => failed = Some(e.to_string()),
                 }
             }
+            let ok = r.is_ok() && failed.is_none();
             send(match (r, failed) {
                 (Ok(c), None) => Msg::WriteOk {
                     revision: c.revision,
@@ -725,6 +730,11 @@ impl ShardState {
                     detail: format!("replica: {e}"),
                 },
             });
+            if ok {
+                m.write_latency.observe(arrived.elapsed());
+            } else {
+                metrics::ShardMetrics::add(&m.write_errors, 1);
+            }
         });
     }
 
