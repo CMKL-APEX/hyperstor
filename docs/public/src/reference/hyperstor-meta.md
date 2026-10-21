@@ -10,8 +10,8 @@ usage: hyperstor-meta --listen ADDR --cluster FILE [--lease-ms L] [--down-after-
 |---|---|---|
 | `--listen ADDR` | required | `IP:PORT` to serve on; storage nodes and clients connect here |
 | `--cluster FILE` | required | The [cluster file](cluster-file.md) |
-| `--lease-ms L` | 2000 | Length of the map leases granted to storage nodes, in milliseconds |
-| `--down-after-ms N` | 3000 | Mark a node down after N ms without a heartbeat; at least 1.25 × `--lease-ms` |
+| `--lease-ms L` | 600 | Length of the map leases granted to storage nodes, in milliseconds |
+| `--down-after-ms N` | 800 | Mark a node down after N ms without a heartbeat; at least 1.25 × `--lease-ms` |
 
 On start it prints the number of nodes, devices, pools and PGs it
 loaded, the map epoch and the lease length. It runs until stopped.

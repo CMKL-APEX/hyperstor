@@ -2,9 +2,9 @@
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
-//! 2000), marks nodes down after N ms without a heartbeat (default 3000,
-//! at least 1.25 × L), and moves their PGs, fencing the nodes that lose a
-//! role before publishing (decisions.md D42).
+//! 600), marks nodes down after N ms without a heartbeat (default 800,
+//! at least 1.25 × L; decisions.md D48), and moves their PGs, fencing the
+//! nodes that lose a role before publishing (decisions.md D42).
 
 use std::time::Duration;
 
@@ -24,10 +24,10 @@ fn main() {
     };
     let lease: u64 = get("--lease-ms")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(2000);
+        .unwrap_or(600);
     let down: u64 = get("--down-after-ms")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3000);
+        .unwrap_or(800);
     if down * 4 < lease * 5 {
         eprintln!("--down-after-ms must be at least 1.25 x --lease-ms");
         std::process::exit(2);

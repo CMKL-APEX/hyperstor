@@ -7,9 +7,10 @@
 //! io_uring unless `--buffered`. Formats unformatted devices. Stops on
 //! SIGINT or SIGTERM by exiting; the engine recovers on the next start.
 //! `--spin-us N` sets the reactors' adaptive polling window (default 200;
-//! 0 sleeps in the kernel whenever idle, decisions.md D41).
+//! 0 sleeps in the kernel whenever idle, decisions.md D41 and D49).
 //! `--peer-timeout-ms N` reports a peer that doesn't answer pings for N ms
-//! to the map service (default 1000; 0 turns it off, decisions.md D40).
+//! to the map service (default 300; 0 turns it off, decisions.md D40 and
+//! D48).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
 //! through the log (decisions.md D38); flash redirects every write.
 
@@ -83,7 +84,7 @@ fn main() {
         peer_timeout: std::time::Duration::from_millis(
             get("--peer-timeout-ms")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1000),
+                .unwrap_or(300),
         ),
         defer_max: args
             .iter()

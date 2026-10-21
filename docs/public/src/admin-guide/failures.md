@@ -4,7 +4,7 @@
 
 1. The node stops sending heartbeats. Clients' requests to it fail, and
    the client library retries.
-2. After `--down-after-ms` (3 s by default) the map service marks the
+2. After `--down-after-ms` (0.8 s by default) the map service marks the
    node down. Each placement group the node held goes on with the copies
    left, if at least the pool's `min` remain; a new primary takes over
    where the failed node was primary.
@@ -32,7 +32,7 @@ receives all of its PGs' data. Plan for the network traffic.
 ## A storage node is cut off from the map service
 
 A node that can reach clients but not the map service keeps serving until
-its map lease runs out (`--lease-ms`, 2 s by default), then stops. The
+its map lease runs out (`--lease-ms`, 0.6 s by default), then stops. The
 map service waits longer than the lease before giving its PGs to other
 nodes, so no acknowledged write is lost and two nodes never serve the
 same PG.
