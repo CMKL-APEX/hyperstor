@@ -40,6 +40,10 @@ documents cite them by number.
 | [implementation-notes.md](implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
 | [benchmarks.md](benchmarks.md) | — | Hosts, methods, results and findings |
 
+What each milestone delivers, how far it is built and the tests that
+show it are tracked in [tracking.toml](tracking.toml), which CI checks
+against every test run (`scripts/tracking.py`).
+
 ## Conventions
 
 - **Decisions** (`D…`, `F…`, `I…`) are tables: the decision, then *why*.
@@ -47,6 +51,7 @@ documents cite them by number.
   reused. A decision that changes an earlier one says so in both.
 - **Host checks** (`G…`, `FG…`) are things to verify on real hardware
   before the sections that depend on them are final.
-- **Milestones** (`HS0`…) list what each step delivers and depends on.
+- **Milestones** (`HS0`…) list what each step delivers and depends on;
+  a milestone added to milestones.md §21 needs an entry in tracking.toml.
 - References to glidex documents (`storage.md`, `host-topology.md`, …)
   are to glidex's `spec/` directory (see overview.md).

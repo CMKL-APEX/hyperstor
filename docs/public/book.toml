@@ -1,0 +1,17 @@
+# Public documentation (docs/README.md): for people who use and operate
+# Hyperstor. Published to GitHub Pages by .github/workflows/docs.yml.
+[book]
+title = "Hyperstor"
+description = "User and administrator documentation for Hyperstor"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/docs/public"
+create-missing = false
+
+[output.html]
+# Where the Docs workflow publishes it (gh-pages): https://cmkl-apex.github.io/hyperstor/docs/
+site-url = "/hyperstor/docs/"
+git-repository-url = "https://github.com/CMKL-APEX/hyperstor"
+edit-url-template = "https://github.com/CMKL-APEX/hyperstor/edit/main/docs/public/{path}"

@@ -1,0 +1,94 @@
+name: CI
+
+# Builds, lints and tests the workspace, and checks the implementation
+# against the spec: the spec's own consistency (scripts/spec-check.py) and
+# the milestone tracking in spec/tracking.toml against the test run
+# (scripts/tracking.py), reported in the run's summary. The checks are the
+# ones CLAUDE.md asks for before every pull request.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # Nightly, with many more crash-test seeds than a pull request can wait for.
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
+  fmt:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check formatting
+      run: cargo fmt --all --check
+
+  clippy:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Clippy, every target, warnings denied
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The spec hangs together and code cites it correctly; no build needed.
+  spec:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check the spec and citations of it
+      run: python3 scripts/spec-check.py
+
+  test:
+
+    runs-on: ubuntu-26.04
+    # A run takes a few minutes; a test that hangs (a cluster test waiting
+    # on a node) fails the job instead of holding the runner for 6 hours.
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Build
+      run: cargo build --workspace --release --verbose
+    # The crash test's seed count (spec/implementation-notes.md): the
+    # default 300 on pushes and pull requests (empty means the default),
+    # 5,000 nightly.
+    - name: Run tests
+      id: tests
+      env:
+        HS_CRASH_SEEDS: ${{ github.event_name == 'schedule' && '5000' || '' }}
+      run: |
+        set -o pipefail
+        cargo test --workspace --release --no-fail-fast 2>&1 | tee target/test.log
+    # Every tracked test ran and passed, and each milestone item's tests
+    # fit its status. Runs after failed tests too, to show what they break.
+    - name: Check implementation tracking (spec/tracking.toml)
+      if: (success() || failure()) && steps.tests.outcome != 'skipped'
+      run: python3 scripts/tracking.py check target/test.log >> "$GITHUB_STEP_SUMMARY"
+    - name: Check the command-line reference against the binaries
+      run: python3 scripts/cli-docs-check.py target/release
+    - uses: actions/upload-artifact@v4
+      if: (success() || failure()) && steps.tests.outcome != 'skipped'
+      with:
+        name: test-log
+        path: target/test.log

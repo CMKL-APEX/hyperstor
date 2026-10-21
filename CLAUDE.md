@@ -48,7 +48,17 @@ design is split by topic, with section numbers kept across files.
   `crates/hyperstor-*` (operations.md §18.1).
 - Before every pull request, run
   `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo fmt --check` and `cargo test --workspace --release`.
+  `cargo fmt --check`, `cargo test --workspace --release` and
+  `scripts/spec-check.py`. CI (`.github/workflows/ci.yml`) runs them all.
+- **Track what is built** in `spec/tracking.toml`: each milestone's items,
+  their status (`done`, `partial`, `planned`) and the tests that show them
+  working. CI fails when a tracked test is renamed, removed or failing,
+  or when a `done` item has no test; untracked tests are only listed.
+  After changing it, regenerate the public status page
+  (`scripts/tracking.py status > docs/public/src/status.md`).
+- **User-facing changes update `docs/public/`** (docs/README.md): a new
+  or changed option of a binary changes its reference page, which CI
+  checks against the binary's usage line.
 - New behaviour comes with tests; anything that persists data or crosses
   a crash gets a randomized test against a model (see the engine's crash
   test). Record measurements in `spec/benchmarks.md` with the host and

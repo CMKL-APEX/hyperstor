@@ -1,0 +1,297 @@
+# Implementation tracking: what each milestone (milestones.md §21)
+# delivers, how far it is built, and the tests that show it works.
+#
+# CI (scripts/tracking.py, run by .github/workflows/ci.yml) checks this
+# file against a test run:
+#
+# - every test named here ran and passed, so renaming or dropping one
+#   means updating this file;
+# - an item that is `done` names at least one test; `partial` may name
+#   some; `planned` names none;
+# - citations in `spec` exist (scripts/spec-check.py).
+#
+# Tests are `<test binary>::<path>` as `cargo test` prints them: the
+# binary is the crate name for unit tests (`hyperstor_engine`) and the
+# file name for integration tests (`engine` for tests/engine.rs).
+#
+# `title` and `what` are published in the public status page
+# (docs/public/src/status.md): plain words, no internal details. After
+# changing this file, run `scripts/tracking.py status > docs/public/src/status.md`.
+#
+# Status: done | partial | planned.
+
+[[milestone]]
+id = "HS0"
+title = "Local storage engine and reactor"
+
+[[milestone.item]]
+what = "Per-core I/O reactor on io_uring: tasks, TCP, timers, cross-thread wake-ups"
+spec = ["engine.md §6.1", "D3"]
+status = "done"
+tests = [
+    "hyperstor_reactor::tests::spawn_and_join",
+    "hyperstor_reactor::tests::reactors_on_many_threads",
+    "hyperstor_reactor::tests::a_yielding_task_does_not_starve_io",
+    "hyperstor_reactor::net::tests::echo_many_clients",
+    "hyperstor_reactor::net::tests::connect_refused_and_dropped_reads",
+    "hyperstor_reactor::chan::tests::across_threads",
+    "hyperstor_reactor::chan::tests::oneshot_between_reactors",
+    "hyperstor_reactor::time::tests::sleep_and_timeout",
+]
+
+[[milestone.item]]
+what = "General objects: sparse data with checksums, attributes, key-value tables, atomic operation lists"
+spec = ["engine.md §7", "D34"]
+status = "done"
+tests = [
+    "engine::write_read_stat_and_holes",
+    "engine::kv_tables_and_attrs",
+    "engine::assertions_and_revisions",
+    "engine::unaligned_and_refused_lists_leave_no_trace",
+    "engine::zero_truncate_and_delete_free_space",
+    "engine::corrupted_data_is_detected_on_read",
+    "engine::no_space_and_too_large",
+]
+
+[[milestone.item]]
+what = "Group commit, small-write deferral, checkpoints and recovery"
+spec = ["engine.md §7.2", "D22", "D38", "I2", "I3", "I4"]
+status = "done"
+tests = [
+    "engine::small_overwrites_are_deferred_and_survive_reopen",
+    "engine::large_overwrites_redirect_and_free_old_blocks",
+    "engine::log_wraps_and_checkpoints_keep_state",
+    "engine::shards_are_independent",
+    "hyperstor_engine::index::tests::map_unmap_split",
+    "hyperstor_engine::index::tests::deferred_then_free_cancels_pending",
+    "hyperstor_engine::index::tests::encode_round_trip",
+    "hyperstor_engine::alloc::tests::best_fit_split_and_merge",
+    "hyperstor_engine::alloc::tests::fragmented_allocation_and_exhaustion",
+    "hyperstor_engine::alloc::tests::reserve_refuses_used_space",
+]
+
+[[milestone.item]]
+what = "Crash safety: randomized crash tests against a model"
+spec = ["D22"]
+status = "done"
+tests = [
+    "crash::random_crashes_recover_to_a_consistent_prefix",
+    "hyperstor_engine::dev::tests::fault_dev_crash_keeps_durable_and_some_cache",
+    "engine::io_error_poisons_until_reopen",
+    "engine::bad_devices_are_refused",
+]
+
+[[milestone.item]]
+what = "Device back ends: memory, files and block devices through io_uring with O_DIRECT"
+spec = ["engine.md §6.2"]
+status = "done"
+tests = [
+    "hyperstor_engine::dev::tests::mem_dev",
+    "hyperstor_engine::dev::tests::file_and_uring_dev_direct",
+    "hyperstor_engine::align::tests::aligned_and_zeroed",
+]
+
+[[milestone.item]]
+what = "NVMe passthrough back end"
+spec = ["engine.md §6.2", "I11"]
+status = "planned"
+
+[[milestone.item]]
+what = "Performance gate against SPDK on a storage test host"
+spec = ["G5"]
+status = "partial"
+
+[[milestone]]
+id = "HS1"
+title = "Replicated pools over TCP"
+
+[[milestone.item]]
+what = "Placement of data across failure domains"
+spec = ["placement.md §5", "D9", "D21"]
+status = "done"
+tests = [
+    "hyperstor_placement::tests::hashes_are_stable",
+    "hyperstor_placement::tests::distinct_domains_and_determinism",
+    "hyperstor_placement::tests::three_copies_spread_evenly",
+    "hyperstor_placement::tests::load_follows_weight",
+    "hyperstor_placement::tests::too_few_domains_gives_fewer_copies",
+    "hyperstor_placement::tests::class_filter_and_out_devices",
+    "hyperstor_placement::tests::adding_a_host_moves_only_its_share",
+    "hyperstor_placement::tests::removing_a_device_moves_only_pgs_on_its_host",
+    "hyperstor_placement::tests::ec_positions_are_stable",
+    "hyperstor_placement::tests::pg_split_keeps_chunks_together",
+]
+
+[[milestone.item]]
+what = "Wire protocol and encoding, with checksums on every block"
+spec = ["protocol.md §13.1", "D5"]
+status = "done"
+tests = [
+    "hyperstor_codec::tests::round_trip",
+    "hyperstor_codec::tests::crc32c_known_value",
+    "hyperstor_codec::tests::bad_bool_and_utf8",
+    "hyperstor_codec::tests::truncated_input_is_an_error_not_a_panic",
+    "hyperstor_codec::tests::hostile_lengths_are_refused_before_allocating",
+    "hyperstor_proto::tests::frames_round_trip",
+    "hyperstor_proto::tests::crcs",
+    "hyperstor_proto::tests::corrupt_headers_and_bodies_are_refused",
+]
+
+[[milestone.item]]
+what = "Cluster map and map service, configured from a cluster file"
+spec = ["metadata.md §4.1"]
+status = "done"
+tests = [
+    "hyperstor_meta::parse_tests::cluster_file",
+    "hyperstor_meta::tests::map_service_answers",
+    "hyperstor_meta::tests::encode_round_trip_and_addresses",
+]
+
+[[milestone.item]]
+what = "Storage daemon: replicated writes and reads, group commit"
+spec = ["replication.md §8.1", "D39"]
+status = "done"
+tests = ["cluster::writes_reach_every_copy_and_read_back"]
+
+[[milestone.item]]
+what = "Client library: request splitting, map refresh and retries"
+spec = ["volumes.md §10.1"]
+status = "done"
+tests = ["cluster::clients_follow_map_changes"]
+
+[[milestone.item]]
+what = "Replicated map service (Raft)"
+spec = ["D2", "D20", "I18"]
+status = "planned"
+
+[[milestone.item]]
+what = "Volume metadata: headers, directories and volume leases"
+spec = ["metadata.md §4.2", "metadata.md §9", "D28"]
+status = "planned"
+
+[[milestone.item]]
+what = "Test block devices through ublk"
+spec = []
+status = "planned"
+
+[[milestone]]
+id = "HS2"
+title = "Failure handling"
+
+[[milestone.item]]
+what = "Failure detection by heartbeats, and writes that continue with fewer copies"
+spec = ["replication.md §15"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::node_down_changes_only_its_pgs_and_bumps_epochs",
+    "hyperstor_meta::tests::degraded_acting_then_backfill",
+    "cluster::a_node_fails_writes_continue_and_backfill_restores_copies",
+]
+
+[[milestone.item]]
+what = "Backfill: returning or replacement nodes are refilled"
+spec = ["replication.md §8.5"]
+status = "done"
+tests = [
+    "cluster::a_node_returns_with_stale_data_and_is_refilled",
+    "hyperstor_meta::tests::a_pg_whose_copies_are_all_down_stays_down",
+]
+
+[[milestone.item]]
+what = "Map leases with fencing and pushes: a cut-off primary stops serving"
+spec = ["replication.md §8.4", "D42"]
+status = "done"
+tests = [
+    "cluster::a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write",
+    "hyperstor_meta::tests::losers_are_devices_that_lose_a_role",
+]
+
+[[milestone.item]]
+what = "Failure reports from peers"
+spec = ["D40"]
+status = "planned"
+
+[[milestone.item]]
+what = "Peering, placement-group log and delta recovery"
+spec = ["replication.md §8.3"]
+status = "planned"
+
+[[milestone.item]]
+what = "Read leases"
+spec = ["replication.md §8.4"]
+status = "planned"
+
+[[milestone.item]]
+what = "Scrub"
+spec = ["replication.md §8.5"]
+status = "planned"
+
+[[milestone.item]]
+what = "Down and out, blocklist and forced takeovers"
+spec = ["metadata.md §9"]
+status = "planned"
+
+[[milestone.item]]
+what = "Fault-injection test rig: kill, partition, slow disk"
+spec = []
+status = "planned"
+
+[[milestone]]
+id = "HS3"
+title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
+
+[[milestone]]
+id = "HS4"
+title = "Snapshots, clones and the host read cache"
+
+[[milestone]]
+id = "HS5"
+title = "NVMe over TCP"
+
+[[milestone]]
+id = "HS5b"
+title = "Lower CPU cost per operation"
+
+[[milestone]]
+id = "HS6"
+title = "RDMA over RoCEv2 and InfiniBand"
+
+[[milestone]]
+id = "HS6b"
+title = "NVMe over RDMA"
+
+[[milestone]]
+id = "HS7"
+title = "Erasure-coded pools"
+
+[[milestone]]
+id = "HS8"
+title = "GPU-direct storage on bare metal"
+
+[[milestone]]
+id = "HS9"
+title = "GPU-direct storage in virtual machines"
+
+[[milestone]]
+id = "HS10"
+title = "Hard-disk pools with flash log devices"
+
+[[milestone]]
+id = "HS10b"
+title = "Cache pools and priority classes"
+
+[[milestone]]
+id = "HS11"
+title = "Transactional key-value store"
+
+[[milestone]]
+id = "HS12"
+title = "S3 gateway"
+
+[[milestone]]
+id = "HS13"
+title = "S3 over RDMA"
+
+[[milestone]]
+id = "HS14"
+title = "Distributed filesystem"
