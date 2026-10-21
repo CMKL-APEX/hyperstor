@@ -569,8 +569,9 @@ mod tests {
         assert_eq!(s.cluster_id, "5");
         assert_eq!(s.health, super::pb::Health::HEALTH_OK);
         assert_eq!(s.nodes.len(), 2);
-        assert_eq!(s.pools[0].pgs.clean, 4);
-        assert_eq!(s.pools[0].kind, "replicated");
+        let pool = s.pools.iter().find(|p| p.id == 1).unwrap();
+        assert_eq!(pool.pgs.clean, 4);
+        assert_eq!(pool.kind, "replicated");
         assert_eq!(s.map_address, "127.0.0.1:8849");
         // Node 1 not heard from since start: warn, though the map says up.
         let heard = [(0, std::time::Duration::from_millis(40))].into();

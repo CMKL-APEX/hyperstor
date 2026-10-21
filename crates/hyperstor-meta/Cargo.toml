@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-map = { path = "../hyperstor-map" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }

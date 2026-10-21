@@ -8,6 +8,7 @@ members = [
     "crates/hyperstor-engine",
     "crates/hyperstor-install",
     "crates/hyperstor-bench",
+    "crates/hyperstor-map",
     "crates/hyperstor-meta",
     "crates/hyperstor-mgmt",
     "crates/hyperstor-pki",

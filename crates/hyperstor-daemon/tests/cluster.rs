@@ -95,6 +95,7 @@ impl Cluster {
             chunk_size: CHUNK,
             class: None,
         });
+        map.ensure_meta_pool();
         map.recompute();
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
         let meta_thread = std::thread::spawn(move || {
@@ -1200,6 +1201,94 @@ fn objects_change_atomically_and_every_copy_follows() {
     );
     let kv: Vec<Vec<u8>> = copies[0].2.iter().map(|(k, _)| k.clone()).collect();
     assert!(kv.contains(&b"c".to_vec()) && !kv.contains(&b"a".to_vec()));
+}
+
+/// Volumes (metadata.md §4.2, D77): created with a header and a directory
+/// entry in `.meta`, listed per pool, grown but not shrunk, and deleted
+/// with their data.
+#[test]
+fn volumes_are_created_listed_grown_and_deleted() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::volume::VolumeState;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let gone = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let size = 4 * CHUNK as u64;
+            let a = cl.create_volume(POOL, size, None, "a").await.unwrap();
+            let b = cl.create_volume(POOL, size, Some(0xb), "b").await.unwrap();
+            let d = cl.create_volume(POOL, size, None, "d").await.unwrap();
+            assert_eq!(b.id, 0xb);
+            assert!(matches!(
+                cl.create_volume(POOL, size, Some(0xb), "again").await,
+                Err(ClientError::VolumeExists(0xb))
+            ));
+            assert!(
+                cl.create_volume(hyperstor_meta::META_POOL, size, None, "x")
+                    .await
+                    .is_err()
+            );
+            let mut names: Vec<String> = cl
+                .list_volumes(POOL)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|v| v.name)
+                .collect();
+            names.sort();
+            assert_eq!(names, ["a", "b", "d"]);
+            // Grown, not shrunk.
+            let a2 = cl.expand_volume(a.id, 2 * size).await.unwrap();
+            assert_eq!((a2.size, a2.version), (2 * size, 2));
+            assert!(matches!(
+                cl.expand_volume(a.id, size).await,
+                Err(ClientError::Shrink { .. })
+            ));
+            assert_eq!(cl.volume(a.id).await.unwrap().unwrap().size, 2 * size);
+            // Deleted with its data.
+            cl.write(POOL, d.lineage, 0, pattern(9, size as usize))
+                .await
+                .unwrap();
+            cl.delete_volume(d.id).await.unwrap();
+            assert!(cl.volume(d.id).await.unwrap().is_none());
+            assert!(matches!(
+                cl.delete_volume(d.id).await,
+                Err(ClientError::NoVolume(_))
+            ));
+            let left: Vec<u128> = cl
+                .list_volumes(POOL)
+                .await
+                .unwrap()
+                .iter()
+                .map(|v| v.id)
+                .collect();
+            assert!(!left.contains(&d.id) && left.len() == 2);
+            assert!(
+                cl.list_volumes(POOL)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|v| v.state == VolumeState::Active)
+            );
+            d.lineage
+        })
+    })
+    .join()
+    .unwrap();
+    let (map, devs) = c.stop();
+    let pool = &map.pools[&POOL];
+    for (id, d) in devs {
+        let sh = hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap();
+        for chunk in 0..4u64 {
+            let pg = pg_of(gone, chunk, pool.pg_count);
+            let key = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(gone, chunk), 0);
+            assert!(
+                sh.stat(&key).is_none(),
+                "device {id} keeps chunk {chunk} of a deleted volume"
+            );
+        }
+    }
 }
 
 /// The case map leases exist for (decisions.md D42): a primary cut off from

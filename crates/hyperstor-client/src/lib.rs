@@ -7,7 +7,9 @@
 
 pub use hyperstor_rpc as rpc;
 
-use hyperstor_meta::ClusterMap;
+pub mod volume;
+
+use hyperstor_map::ClusterMap;
 use hyperstor_placement::pg_of;
 use hyperstor_proto::{Code, Msg, Target, VERSION, WireKey, block_crcs, verify_crcs};
 use hyperstor_reactor::spawn;
@@ -43,6 +45,14 @@ pub enum ClientError {
     Checksum,
     #[error("gave up after {0} attempts: {1}")]
     Exhausted(usize, String),
+    #[error("no volume {0:032x}")]
+    NoVolume(u128),
+    #[error("volume {0:032x} exists")]
+    VolumeExists(u128),
+    #[error("volumes don't shrink: {have} bytes, asked for {want}")]
+    Shrink { have: u64, want: u64 },
+    #[error("bad volume request: {0}")]
+    BadVolume(String),
 }
 
 /// The name of a volume chunk object: lineage then chunk index.
@@ -81,7 +91,7 @@ pub struct Client {
     pub instance: u64,
 }
 
-fn random_u64() -> u64 {
+pub(crate) fn random_u64() -> u64 {
     let mut v = 0u64;
     // SAFETY: getrandom writes at most 8 bytes into `v`.
     unsafe { libc::getrandom(&mut v as *mut u64 as *mut libc::c_void, 8, 0) };
@@ -464,11 +474,30 @@ impl Client {
         name: &[u8],
         ops: &[hyperstor_proto::WireOp],
     ) -> Result<(), ClientError> {
+        self.exec_at(pool, Route::Object { ns, name }, ops).await
+    }
+
+    /// [`Self::exec`] on a volume chunk (its data pool's PG).
+    pub(crate) async fn exec_chunk(
+        &self,
+        pool: u32,
+        lineage: u128,
+        chunk: u64,
+        ops: &[hyperstor_proto::WireOp],
+    ) -> Result<(), ClientError> {
+        self.exec_at(pool, Route::Chunk { lineage, chunk }, ops)
+            .await
+    }
+
+    async fn exec_at(
+        &self,
+        pool: u32,
+        route: Route<'_>,
+        ops: &[hyperstor_proto::WireOp],
+    ) -> Result<(), ClientError> {
         let payload = hyperstor_proto::encode_ops(ops);
         let (msg, _) = self
-            .to_primary(pool, Route::Object { ns, name }, &payload, &|to, key| {
-                Msg::Exec { to, key }
-            })
+            .to_primary(pool, route, &payload, &|to, key| Msg::Exec { to, key })
             .await?;
         match msg {
             Msg::ExecOk => Ok(()),
