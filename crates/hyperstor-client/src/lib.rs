@@ -53,6 +53,12 @@ pub enum ClientError {
     Shrink { have: u64, want: u64 },
     #[error("bad volume request: {0}")]
     BadVolume(String),
+    #[error("the volume is attached by client instance {holder:016x} for {remaining_ms} ms more")]
+    LeaseHeld { holder: u64, remaining_ms: u32 },
+    #[error("the lease on volume {0:032x} is lost")]
+    LeaseLost(u128),
+    #[error("volume {0:032x} is attached")]
+    VolumeAttached(u128),
 }
 
 /// The name of a volume chunk object: lineage then chunk index.
@@ -64,7 +70,7 @@ pub fn chunk_name(lineage: u128, chunk: u64) -> Vec<u8> {
 
 /// Where a request goes: a volume's chunk, or a named object (`.meta`).
 #[derive(Clone, Copy)]
-enum Route<'a> {
+pub(crate) enum Route<'a> {
     Chunk { lineage: u128, chunk: u64 },
     Object { ns: u8, name: &'a [u8] },
 }
@@ -87,6 +93,10 @@ pub struct Client {
     leader: std::cell::Cell<usize>,
     map: RefCell<Rc<ClusterMap>>,
     conns: RefCell<HashMap<SocketAddr, Conn>>,
+    /// Volumes attached through this client, whose leases it renews
+    /// (`volume`), and whether the renewing task runs.
+    attached: RefCell<HashMap<u128, std::rc::Weak<volume::Attached>>>,
+    renewing: std::cell::Cell<bool>,
     pub id: u64,
     pub instance: u64,
 }
@@ -117,8 +127,12 @@ impl Client {
             leader: std::cell::Cell::new(0),
             map: RefCell::new(Rc::new(ClusterMap::default())),
             conns: RefCell::new(HashMap::new()),
+            attached: RefCell::new(HashMap::new()),
+            renewing: std::cell::Cell::new(false),
             id,
-            instance: random_u64(),
+            // Never 0: storage nodes take 0 for peers, which are never
+            // blocklisted.
+            instance: random_u64().max(1),
         });
         c.refresh_map().await?;
         Ok(c)
@@ -272,7 +286,7 @@ impl Client {
     /// Sends `msg` to the primary of the PG that holds chunk `chunk` of
     /// `lineage` in `pool`, retrying across map changes. `make` builds the
     /// message for the current map.
-    async fn to_primary(
+    pub(crate) async fn to_primary(
         &self,
         pool: u32,
         route: Route<'_>,

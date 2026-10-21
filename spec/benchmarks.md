@@ -757,3 +757,50 @@ cargo test --release -p hyperstor-daemon --test meta_group -- --nocapture
    at once (D73). At the default 600 ms lease, expect about 0.7 s.
 2. **Role changes wait 1.25 leases longer** (D73), so a storage node that
    fails at the same moment is detected about 0.5 s later than usual.
+
+## 2026-10-22: forced takeover, and leases on the I/O path (dev-2)
+
+Question: how long does a forced takeover take with D75's 1 s / 4 s
+leases, and do the blocklist checks cost the I/O path anything (D76)?
+
+1. **Takeover.** The cluster test `a_forced_takeover_blocklists_the_old_holder`
+   (four storage nodes in one process, 400 ms map leases), timed around
+   `take_over` (the old holder stopped renewing just before) and
+   `preempt` (the holder still renewing), five runs:
+
+```sh
+cargo test --release -p hyperstor-daemon --test cluster -- a_forced --nocapture
+```
+
+| Run | `take_over` | `preempt` |
+|---|---|---|
+| 1 | 3.996 s | 3.764 s |
+| 2 | 3.993 s | 3.770 s |
+| 3 | 3.993 s | 3.766 s |
+| 4 | 3.997 s | 3.768 s |
+| 5 | 4.010 s | 3.793 s |
+
+2. **I/O path.** `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1`, `main`
+   (`586d476`) against this branch, alternately twice:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7536; 153 | 7419; 155 | 7428; 156 | 7460; 154 |
+| 4 KiB writes, QD32 | 26891; 2594 | 26291; 2686 | 26396; 2687 | 26325; 2688 |
+| 4 KiB reads, QD1 | 18710; 65 | 18360; 66 | 18542; 66 | 18427; 69 |
+| 4 KiB reads, QD32 | 54232; 1336 | 53582; 1350 | 53848; 1337 | 53567; 1352 |
+| 1 MiB writes, QD4 | 517; 13129 | 515; 12896 | 525; 12449 | 517; 12726 |
+| 1 MiB reads, QD4 | 1510; 4863 | 1501; 4364 | 1521; 4320 | 1493; 4504 |
+
+### Findings
+
+1. **A forced takeover takes one volume lease, 4 s** (D75): it waits
+   for the old holder's lease to run out from its last renewal; the
+   blocklist round adds a few milliseconds, since every node
+   acknowledges the pushed map at once (I75). It would add up to 1.25
+   map leases (0.75 s at the default) for a node that doesn't answer.
+   A preemption takes the same, less the time since the holder's last
+   renewal.
+2. **The blocklist costs the I/O path nothing measurable**: one map
+   lookup per request, skipped while the list is empty. The two builds
+   differ by no more than run to run (about 2%).

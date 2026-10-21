@@ -146,6 +146,9 @@ message Volume {
   string state = 5;
   // The header's version: every change bumps it.
   uint64 version = 6;
+  // The client instance that has it attached (16 hexadecimal digits);
+  // empty if none.
+  string attached_by = 7 [json_name = "attached_by"];
 }
 
 message ListVolumesRequest {

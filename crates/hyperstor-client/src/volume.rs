@@ -3,19 +3,28 @@
 //! compare-and-set on the header's version (implementation-notes.md I68).
 //!
 //! - **Header** `h/{id}` (32 hex digits): attributes `v` (the version, a
-//!   decimal number), `hdr` (the encoded [`Volume`]) and `by` (who created
-//!   it: a token that recognises a retried create).
+//!   decimal number), `hdr` (the encoded [`Volume`]), `by` (who created
+//!   it: a token that recognises a retried create) and, while the volume
+//!   is attached, `lease` (its holder, kept by the header's primary:
+//!   metadata.md §9).
 //! - **Directory** `d/{pool}/{shard}`: the pool's volumes in 64 shards by
 //!   id, one key–value entry per volume (its id, big-endian).
 //!
 //! A volume is identified by a 128-bit id, chosen by the caller (glidex:
 //! its disk's UUID) or drawn at random; its name is shown, not unique.
 
-use crate::{Client, ClientError, NS_META, random_u64};
+use crate::{Client, ClientError, NS_META, Route, object_pg, random_u64};
 use hyperstor_codec::{Dec, Enc};
 use hyperstor_map::META_POOL;
-use hyperstor_proto::{Code, Looked, WireOp};
+use hyperstor_proto::{
+    Code, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEW_EVERY, LEASE_RENEWED, LEASE_RW, Looked, Msg,
+    WireOp,
+};
+use hyperstor_reactor::time::sleep;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Directory shards per pool.
 pub const DIR_SHARDS: u128 = 64;
@@ -23,6 +32,44 @@ pub const DIR_SHARDS: u128 = 64;
 const VER: &[u8] = b"v";
 const HDR: &[u8] = b"hdr";
 const BY: &[u8] = b"by";
+/// The lease holder's attribute: [`encode_holder`].
+pub const LEASE_ATTR: &[u8] = b"lease";
+
+/// The `lease` attribute: the holder's instance and mode.
+pub fn encode_holder(instance: u64, mode: u8) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.u64(instance).u8(mode);
+    e.into_vec()
+}
+
+pub fn decode_holder(b: &[u8]) -> Option<(u64, u8)> {
+    let mut d = Dec::new(b);
+    let h = (d.u64().ok()?, d.u8().ok()?);
+    d.finish().ok()?;
+    Some(h)
+}
+
+/// A header's version, from its attributes (0: none).
+pub fn header_version(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
+    attrs
+        .get(VER)
+        .and_then(|v| std::str::from_utf8(v).ok()?.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Whether a header says its volume is being deleted.
+pub fn header_deleting(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> bool {
+    let Some(h) = attrs.get(HDR) else {
+        return false;
+    };
+    // Format, pool, size, lineage, then the state.
+    h.len() > 1 + 4 + 8 + 16 && h[0] == 1 && h[1 + 4 + 8 + 16] != 0
+}
+
+/// The name of volume `id`'s header object.
+pub fn header_key(id: u128) -> Vec<u8> {
+    format!("h/{id:032x}").into_bytes()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeState {
@@ -44,10 +91,8 @@ pub struct Volume {
     pub name: String,
     /// The header's version: every change bumps it.
     pub version: u64,
-}
-
-fn header_key(id: u128) -> Vec<u8> {
-    format!("h/{id:032x}").into_bytes()
+    /// The client instance that has it attached (holds its lease).
+    pub holder: Option<u64>,
 }
 
 fn dir_key(pool: u32, id: u128) -> Vec<u8> {
@@ -98,6 +143,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             },
             name: d.str()?.to_string(),
             version,
+            holder: attr(l, LEASE_ATTR).and_then(|h| decode_holder(h).map(|h| h.0)),
         })
     })()
     .map_err(|e| bad(&e.to_string()))?;
@@ -156,6 +202,7 @@ impl Client {
             state: VolumeState::Active,
             name: name.to_string(),
             version: 1,
+            holder: None,
         };
         let token = format!("{:016x}{:016x}", self.instance, random_u64()).into_bytes();
         let ops = [
@@ -285,19 +332,30 @@ impl Client {
 
     /// Deletes a volume: marks it deleting, deletes its data, then its
     /// directory entry and header. A delete that stops half-way is resumed
-    /// by deleting it again.
+    /// by deleting it again. An attached volume is refused: detach it, or
+    /// take it over, first.
     pub async fn delete_volume(self: &Rc<Self>, id: u128) -> Result<(), ClientError> {
         let mut v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
         while v.state == VolumeState::Active {
+            if v.holder.is_some() {
+                return Err(ClientError::VolumeAttached(id));
+            }
             let new = Volume {
                 state: VolumeState::Deleting,
                 version: v.version + 1,
                 ..v.clone()
             };
-            match self
-                .exec(META_POOL, NS_META, &header_key(id), &cas(v.version, &new))
-                .await
-            {
+            // Decided by the header's primary, as leases are: no lease is
+            // granted once it is deleting, and it isn't marked while held.
+            let mut ops = cas(v.version, &new);
+            ops.insert(
+                0,
+                WireOp::AssertAttr {
+                    name: LEASE_ATTR.to_vec(),
+                    value: None,
+                },
+            );
+            match self.exec(META_POOL, NS_META, &header_key(id), &ops).await {
                 Ok(()) => v = new,
                 Err(e) if conflict(&e) => {
                     v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
@@ -353,6 +411,317 @@ impl Client {
     }
 }
 
+/// A volume attached through a [`Client`]: it holds the volume's `rw`
+/// lease (metadata.md §9), which the client renews every second (D75),
+/// and does I/O within the volume. Once the lease is lost (taken over, or
+/// this client blocklisted), I/O fails with [`ClientError::LeaseLost`].
+/// Dropped without [`Attached::detach`], its renewals stop: the lease
+/// runs out, and another instance must [`Client::take_over`].
+pub struct Attached {
+    client: Rc<Client>,
+    volume: RefCell<Volume>,
+    lost: Cell<bool>,
+}
+
+impl Attached {
+    /// The volume, as of the last renewal that saw its header change.
+    pub fn volume(&self) -> Volume {
+        self.volume.borrow().clone()
+    }
+
+    /// Whether the lease is lost (or given up).
+    pub fn lost(&self) -> bool {
+        self.lost.get()
+    }
+
+    fn usable(&self, off: u64, len: u64) -> Result<Volume, ClientError> {
+        let v = self.volume();
+        if self.lost.get() {
+            return Err(ClientError::LeaseLost(v.id));
+        }
+        if off.checked_add(len).is_none_or(|end| end > v.size) {
+            return Err(ClientError::BadVolume(format!(
+                "{len} bytes at {off} are past the end of volume {:032x}",
+                v.id
+            )));
+        }
+        Ok(v)
+    }
+
+    /// A blocklisted client has lost every lease.
+    fn check<T>(&self, r: Result<T, ClientError>) -> Result<T, ClientError> {
+        if let Err(ClientError::Server {
+            code: Code::Blocklisted,
+            ..
+        }) = &r
+        {
+            self.client.lose_all();
+        }
+        r
+    }
+
+    pub async fn write(&self, off: u64, data: Vec<u8>) -> Result<(), ClientError> {
+        let v = self.usable(off, data.len() as u64)?;
+        let r = self.client.write(v.pool, v.lineage, off, data).await;
+        self.check(r)
+    }
+
+    pub async fn read(&self, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
+        let v = self.usable(off, len)?;
+        let r = self.client.read(v.pool, v.lineage, off, len).await;
+        self.check(r)
+    }
+
+    /// Gives the lease up; I/O through this handle fails from now on.
+    pub async fn detach(&self) -> Result<(), ClientError> {
+        let id = self.volume.borrow().id;
+        self.lost.set(true);
+        self.client.attached.borrow_mut().remove(&id);
+        let key = header_key(id);
+        let (msg, _) = self
+            .client
+            .to_primary(
+                META_POOL,
+                Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                },
+                &[],
+                &|to, key| Msg::LeaseRelease { to, key },
+            )
+            .await?;
+        match msg {
+            Msg::LeaseOk { .. } => Ok(()),
+            m => Err(unexpected(m)),
+        }
+    }
+}
+
+fn unexpected(m: Msg) -> ClientError {
+    ClientError::Rpc(crate::RpcError::Protocol(format!("unexpected {m:?}")))
+}
+
+impl Client {
+    /// Attaches volume `id` read-write: takes its lease, refused with
+    /// [`ClientError::LeaseHeld`] while another instance holds it.
+    pub async fn attach(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
+        self.acquire(id, false).await
+    }
+
+    /// Attaches volume `id` whose holder has died or is cut off
+    /// (metadata.md §9, a forced takeover): waits until the holder's lease
+    /// has expired (up to 4 s after its last renewal, D75), blocklists it,
+    /// then takes the lease. The old holder's requests are refused from
+    /// then on. A holder that keeps renewing is left alone:
+    /// [`ClientError::LeaseHeld`].
+    pub async fn take_over(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
+        self.take(id, false).await
+    }
+
+    /// Attaches volume `id` from a live holder (an operator's preemption):
+    /// blocklists the holder first, so its renewals and I/O are refused,
+    /// then waits for its lease to expire and takes it.
+    pub async fn preempt(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
+        self.take(id, true).await
+    }
+
+    async fn take(self: &Rc<Self>, id: u128, preempt: bool) -> Result<Rc<Attached>, ClientError> {
+        let t = Instant::now();
+        let mut blocked = None;
+        loop {
+            match self.acquire(id, true).await {
+                Err(ClientError::LeaseHeld {
+                    holder,
+                    remaining_ms,
+                }) => {
+                    if (remaining_ms == 0 || preempt) && blocked != Some(holder) {
+                        self.blocklist(holder).await?;
+                        blocked = Some(holder);
+                    } else if t.elapsed() > 3 * LEASE_EXPIRES {
+                        return Err(ClientError::LeaseHeld {
+                            holder,
+                            remaining_ms,
+                        });
+                    } else {
+                        let ms = u64::from(remaining_ms).clamp(10, 1000);
+                        sleep(Duration::from_millis(ms)).await;
+                    }
+                }
+                r => return r,
+            }
+        }
+    }
+
+    /// Blocklists a client instance (metadata.md §9): returns once every
+    /// storage node refuses it, and this client's map has the entry.
+    pub async fn blocklist(&self, instance: u64) -> Result<(), ClientError> {
+        match self.call_meta(&Msg::Blocklist { instance }).await? {
+            (Msg::BlocklistOk { map_epoch }, _) => {
+                while self.map().epoch < map_epoch {
+                    self.refresh_map().await?;
+                    if self.map().epoch < map_epoch {
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                }
+                Ok(())
+            }
+            (Msg::Error { code, detail, .. }, _) => Err(ClientError::Server { code, detail }),
+            (m, _) => Err(unexpected(m)),
+        }
+    }
+
+    async fn acquire(
+        self: &Rc<Self>,
+        id: u128,
+        takeover: bool,
+    ) -> Result<Rc<Attached>, ClientError> {
+        let key = header_key(id);
+        let reply = self
+            .to_primary(
+                META_POOL,
+                Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                },
+                &[],
+                &|to, key| Msg::Lease {
+                    to,
+                    key,
+                    mode: LEASE_RW,
+                    takeover,
+                },
+            )
+            .await;
+        match reply {
+            Ok((Msg::LeaseOk { .. }, _)) => {}
+            Ok((
+                Msg::LeaseHeld {
+                    holder,
+                    remaining_ms,
+                },
+                _,
+            )) => {
+                return Err(ClientError::LeaseHeld {
+                    holder,
+                    remaining_ms,
+                });
+            }
+            Ok((m, _)) => return Err(unexpected(m)),
+            Err(ClientError::Server {
+                code: Code::NotFound,
+                ..
+            }) => return Err(ClientError::NoVolume(id)),
+            Err(e) => return Err(e),
+        }
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let a = Rc::new(Attached {
+            client: self.clone(),
+            volume: RefCell::new(v),
+            lost: Cell::new(false),
+        });
+        self.attached.borrow_mut().insert(id, Rc::downgrade(&a));
+        if !self.renewing.replace(true) {
+            hyperstor_reactor::spawn(self.clone().renew_leases());
+        }
+        Ok(a)
+    }
+
+    /// Marks every attached volume's lease lost.
+    fn lose_all(&self) {
+        for a in self
+            .attached
+            .borrow_mut()
+            .drain()
+            .filter_map(|(_, a)| a.upgrade())
+        {
+            a.lost.set(true);
+        }
+    }
+
+    /// Renews every attached volume's lease each second (D75): one message
+    /// to each `.meta` primary, for all the headers it serves. A lease the
+    /// primary says is lost is marked so; a header whose version changed
+    /// (grown) is read again. Stops when nothing is attached.
+    async fn renew_leases(self: Rc<Self>) {
+        loop {
+            sleep(LEASE_RENEW_EVERY).await;
+            let live: Vec<Rc<Attached>> = {
+                let mut att = self.attached.borrow_mut();
+                att.retain(|_, a| a.upgrade().is_some_and(|a| !a.lost.get()));
+                att.values().filter_map(|a| a.upgrade()).collect()
+            };
+            if live.is_empty() {
+                self.renewing.set(false);
+                return;
+            }
+            let map = self.map();
+            let Some(pg_count) = map.pools.get(&META_POOL).map(|p| p.pg_count) else {
+                continue;
+            };
+            let mut by_primary: HashMap<std::net::SocketAddr, Vec<(Rc<Attached>, u32, u64)>> =
+                HashMap::new();
+            for a in live {
+                let pg = object_pg(&header_key(a.volume.borrow().id), pg_count);
+                if let Some(info) = map.pg(META_POOL, pg)
+                    && let Some(addr) = info.primary().and_then(|d| map.device_addr(d))
+                {
+                    by_primary
+                        .entry(addr)
+                        .or_default()
+                        .push((a, pg, info.epoch));
+                }
+            }
+            let mut retry = false;
+            for (addr, group) in by_primary {
+                let leases = group
+                    .iter()
+                    .map(|(a, pg, e)| (*pg, *e, header_key(a.volume.borrow().id)))
+                    .collect();
+                let msg = Msg::LeaseRenew {
+                    pool: META_POOL,
+                    map_epoch: map.epoch,
+                    leases,
+                };
+                let reply = match self.conn(addr).await {
+                    Ok(c) => c.call(&msg, &[]).await.ok(),
+                    Err(_) => None,
+                };
+                match reply {
+                    Some((Msg::LeaseRenewOk { results }, _)) if results.len() == group.len() => {
+                        for ((a, _, _), (r, version)) in group.into_iter().zip(results) {
+                            match r {
+                                LEASE_RENEWED if version > a.volume.borrow().version => {
+                                    let me = self.clone();
+                                    hyperstor_reactor::spawn(async move {
+                                        let id = a.volume.borrow().id;
+                                        if let Ok(Some(v)) = me.volume(id).await {
+                                            *a.volume.borrow_mut() = v;
+                                        }
+                                    });
+                                }
+                                LEASE_RENEWED => {}
+                                LEASE_LOST => a.lost.set(true),
+                                _ => retry = true,
+                            }
+                        }
+                    }
+                    Some((
+                        Msg::Error {
+                            code: Code::Blocklisted,
+                            ..
+                        },
+                        _,
+                    )) => self.lose_all(),
+                    _ => retry = true,
+                }
+            }
+            if retry {
+                let _ = self.refresh_map().await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,13 +736,32 @@ mod tests {
             state: VolumeState::Deleting,
             name: "disk-a".into(),
             version: 3,
+            holder: Some(9),
         };
         let l = Looked {
             size: 0,
-            attrs: vec![(VER.to_vec(), b"3".to_vec()), (HDR.to_vec(), encode(&v))],
+            attrs: vec![
+                (VER.to_vec(), b"3".to_vec()),
+                (HDR.to_vec(), encode(&v)),
+                (LEASE_ATTR.to_vec(), encode_holder(9, LEASE_RW)),
+            ],
             kv: vec![],
         };
         assert_eq!(decode(7, &l).unwrap(), v);
+        let attrs: std::collections::BTreeMap<_, _> = l.attrs.iter().cloned().collect();
+        assert_eq!(header_version(&attrs), 3);
+        assert!(header_deleting(&attrs));
+        let active = Volume {
+            state: VolumeState::Active,
+            ..v.clone()
+        };
+        let attrs = [(HDR.to_vec(), encode(&active))].into_iter().collect();
+        assert!(!header_deleting(&attrs));
+        assert_eq!(
+            decode_holder(&encode_holder(9, LEASE_RW)),
+            Some((9, LEASE_RW))
+        );
+        assert_eq!(decode_holder(b"short"), None);
         assert!(decode(7, &Looked::default()).is_err());
         assert_eq!(dir_key(1, 65), b"d/1/01".to_vec());
         assert_eq!(

@@ -60,6 +60,8 @@ pub enum VolumeFault {
     NotFound,
     Exists,
     Invalid,
+    /// Attached by a client: detach it first.
+    Attached,
     Unavailable,
 }
 
@@ -70,6 +72,7 @@ fn volume_fault(e: hyperstor_client::ClientError) -> (VolumeFault, String) {
     let kind = match &e {
         E::NoVolume(_) | E::NoPool(_) => VolumeFault::NotFound,
         E::VolumeExists(_) => VolumeFault::Exists,
+        E::VolumeAttached(_) => VolumeFault::Attached,
         E::Shrink { .. } | E::BadVolume(_) | E::Unaligned => VolumeFault::Invalid,
         _ => VolumeFault::Unavailable,
     };
@@ -112,6 +115,8 @@ pub struct Meta {
     /// When this member started serving, or became the leader: nodes not
     /// heard from since get this much grace.
     started: Cell<Instant>,
+    /// The newest map epoch each device acknowledged a push of.
+    acked: RefCell<HashMap<u32, u64>>,
 }
 
 /// What a map service member does (decisions.md D72, D73).
@@ -181,6 +186,7 @@ impl Meta {
             suspect: RefCell::new(std::collections::HashSet::new()),
             lease,
             started: Cell::new(Instant::now()),
+            acked: RefCell::new(HashMap::new()),
         })
     }
 
@@ -461,8 +467,13 @@ impl Meta {
 
     /// Publishes working-map changes: fence, publish, push.
     pub async fn publisher(self: Rc<Self>) {
+        let mut pruned = Instant::now();
         loop {
             sleep(Duration::from_millis(10)).await;
+            if self.may_change_roles() && pruned.elapsed() >= Duration::from_secs(1) {
+                pruned = Instant::now();
+                self.map.borrow_mut().blocklist_prune(unix_now());
+            }
             if self.may_change_roles() && self.map.borrow().epoch > self.published.borrow().epoch {
                 self.publish().await;
             }
@@ -534,22 +545,87 @@ impl Meta {
                 continue;
             }
             let (me, addr, bytes, epoch) = (self.clone(), d.addr, bytes.clone(), new.epoch);
+            let dev = d.id;
             hyperstor_reactor::spawn(async move {
-                if let Ok(c) = me.conn(addr).await {
-                    let _ = hyperstor_reactor::time::timeout(
-                        me.lease,
-                        c.call(
-                            &hyperstor_proto::Msg::MapPush {
-                                epoch,
-                                map: bytes.to_vec(),
-                            },
-                            &[],
-                        ),
-                    )
-                    .await;
+                if let Ok(c) = me.conn(addr).await
+                    && let Ok(Ok((hyperstor_proto::Msg::MapPushOk, _))) =
+                        hyperstor_reactor::time::timeout(
+                            me.lease,
+                            c.call(
+                                &hyperstor_proto::Msg::MapPush {
+                                    epoch,
+                                    map: bytes.to_vec(),
+                                },
+                                &[],
+                            ),
+                        )
+                        .await
+                {
+                    let mut acked = me.acked.borrow_mut();
+                    let a = acked.entry(dev).or_default();
+                    *a = (*a).max(epoch);
                 }
             });
         }
+    }
+
+    /// Blocklists a client instance (metadata.md §9, a forced takeover):
+    /// one map change, answered once every storage node holds a map that
+    /// has it, or has lost its map lease. A node renews its lease only
+    /// with a map at least as new as the one the leader has published
+    /// (`hyperstord`'s heartbeat), so a lease granted before the change
+    /// runs out within 1.25 leases, and none granted after it can be used
+    /// without the entry.
+    pub async fn blocklist(self: Rc<Self>, instance: u64) -> hyperstor_proto::Msg {
+        use hyperstor_proto::{Code, Msg};
+        let fail = |code: Code, detail: String| Msg::Error {
+            code,
+            map_epoch: self.published.borrow().epoch,
+            detail,
+        };
+        let t = Instant::now();
+        let deadline = 4 * self.lease + Duration::from_secs(2);
+        // A new leader first waits out the old one's leases (D73).
+        while !self.may_change_roles() {
+            if !self.leads() {
+                return fail(Code::NotLeader, self.leader_hint());
+            }
+            if t.elapsed() > deadline {
+                return fail(
+                    Code::Unavailable,
+                    "the map service can't change the map".into(),
+                );
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let expires = unix_now() + BLOCKLIST_FOR.as_secs();
+        let epoch = self.map.borrow_mut().blocklist_add(instance, expires);
+        // The publisher commits and pushes it.
+        while self.published.borrow().epoch < epoch {
+            if !self.leads() {
+                return fail(Code::NotLeader, self.leader_hint());
+            }
+            if t.elapsed() > deadline {
+                return fail(Code::Unavailable, "the blocklist wasn't published".into());
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        let until = Instant::now() + self.lease + self.lease / 4;
+        loop {
+            let held = {
+                let p = self.published.borrow();
+                let acked = self.acked.borrow();
+                p.devices
+                    .values()
+                    .filter(|d| p.nodes.get(&d.node).is_some_and(|n| n.up))
+                    .all(|d| acked.get(&d.id).is_some_and(|e| *e >= epoch))
+            };
+            if held || Instant::now() >= until {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        Msg::BlocklistOk { map_epoch: epoch }
     }
 
     async fn conn(&self, addr: SocketAddr) -> Result<hyperstor_rpc::Conn, hyperstor_rpc::RpcError> {
@@ -693,6 +769,11 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            Ok(Msg::Blocklist { .. }) => Msg::Error {
+                code: Code::Invalid,
+                map_epoch: self.map.borrow().epoch,
+                detail: "blocklist requests are answered by `Meta::blocklist`".into(),
+            },
             _ => Msg::Error {
                 code: Code::Invalid,
                 map_epoch: self.map.borrow().epoch,
@@ -700,6 +781,12 @@ impl Meta {
             },
         }
     }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Serves the map service on `listener` until the reactor stops.
@@ -712,6 +799,9 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
         };
         let meta = meta.clone();
         spawn(async move {
+            let s = Rc::new(s);
+            let (tx, rx) = hyperstor_reactor::chan::channel::<Vec<u8>>();
+            spawn(hyperstor_rpc::writer(s.clone(), rx));
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
                 if r.is_err() {
@@ -726,9 +816,19 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                 if r.is_err() {
                     return;
                 }
-                let reply = meta.handle(Msg::decode(h.kind, &body[..h.body_len as usize]));
-                let (w, _) = s.write_all(encode_frame(h.req, &reply, &[])).await;
-                if w.is_err() {
+                let msg = Msg::decode(h.kind, &body[..h.body_len as usize]);
+                // Answered later, from a task of its own: it waits for the
+                // map to reach every node.
+                if let Ok(Msg::Blocklist { instance }) = msg {
+                    let (meta, tx) = (meta.clone(), tx.clone());
+                    spawn(async move {
+                        let reply = meta.blocklist(instance).await;
+                        let _ = tx.send(encode_frame(h.req, &reply, &[]));
+                    });
+                    continue;
+                }
+                let reply = meta.handle(msg);
+                if tx.send(encode_frame(h.req, &reply, &[])).is_err() {
                     return;
                 }
             }

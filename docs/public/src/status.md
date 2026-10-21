@@ -58,7 +58,7 @@ covered by tests that run on every change.
 | Storage daemon: replicated writes and reads, group commit | Done |
 | Client library: request splitting, map refresh and retries | Done |
 | Replicated map service (Raft) | In progress |
-| Volume metadata: headers, directories and volume leases | In progress |
+| Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Planned |
 
 ## HS2: Failure handling
@@ -72,7 +72,8 @@ covered by tests that run on every change.
 | Peering, placement-group log and delta recovery | In progress |
 | Read leases | Planned |
 | Scrub | In progress |
-| Down and out, blocklist and forced takeovers | Planned |
+| Blocklist and forced takeovers | Done |
+| Down and out | Planned |
 | Fault-injection test rig: kill, partition, slow disk | Planned |
 
 ## AD0: Administration API, identities and CLI

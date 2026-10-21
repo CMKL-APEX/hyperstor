@@ -333,6 +333,53 @@ pub enum Msg {
     BackfillOk {
         map_epoch: u64,
     },
+    /// Client to the primary of a volume's header: take the volume's lease
+    /// for the instance named at `Hello` (metadata.md §9, D75), in mode
+    /// [`LEASE_RW`] or [`LEASE_RO`]. With `takeover`, an expired lease
+    /// whose holder is blocklisted is broken (a forced takeover).
+    Lease {
+        to: Target,
+        key: WireKey,
+        mode: u8,
+        takeover: bool,
+    },
+    /// The lease is held by the sender (or released): the header's version.
+    LeaseOk {
+        version: u64,
+    },
+    /// Another instance holds the lease for `remaining_ms` more; 0: it has
+    /// expired, and may be broken once its holder is blocklisted.
+    LeaseHeld {
+        holder: u64,
+        remaining_ms: u32,
+    },
+    /// Client to the primary of a volume's header: give the lease up.
+    LeaseRelease {
+        to: Target,
+        key: WireKey,
+    },
+    /// Client to a `.meta` primary: renew every lease the sender holds on
+    /// headers this device is primary of (D75): each is a PG, its epoch,
+    /// and the header's name, in `pool`.
+    LeaseRenew {
+        pool: u32,
+        map_epoch: u64,
+        leases: Vec<(u32, u64, Vec<u8>)>,
+    },
+    /// For each lease of a [`Msg::LeaseRenew`], in order: [`LEASE_RENEWED`],
+    /// [`LEASE_LOST`] or [`LEASE_RETRY`], and the header's version.
+    LeaseRenewOk {
+        results: Vec<(u8, u64)>,
+    },
+    /// Client to map service: blocklist `instance` (metadata.md §9, a
+    /// forced takeover). Answered once every storage node holds the map
+    /// that has it, or has lost its map lease.
+    Blocklist {
+        instance: u64,
+    },
+    BlocklistOk {
+        map_epoch: u64,
+    },
     Error {
         code: Code,
         map_epoch: u64,
@@ -373,6 +420,14 @@ mod kind {
     pub const MAP_PUSH_OK: u16 = 37;
     pub const PEER_DOWN: u16 = 38;
     pub const PEER_DOWN_OK: u16 = 39;
+    pub const LEASE: u16 = 40;
+    pub const LEASE_OK: u16 = 41;
+    pub const LEASE_HELD: u16 = 42;
+    pub const LEASE_RELEASE: u16 = 43;
+    pub const LEASE_RENEW: u16 = 44;
+    pub const LEASE_RENEW_OK: u16 = 45;
+    pub const BLOCKLIST: u16 = 46;
+    pub const BLOCKLIST_OK: u16 = 47;
     pub const ERROR: u16 = 99;
 }
 
@@ -412,6 +467,14 @@ impl Msg {
             Msg::MapPushOk => MAP_PUSH_OK,
             Msg::PeerDown { .. } => PEER_DOWN,
             Msg::PeerDownOk => PEER_DOWN_OK,
+            Msg::Lease { .. } => LEASE,
+            Msg::LeaseOk { .. } => LEASE_OK,
+            Msg::LeaseHeld { .. } => LEASE_HELD,
+            Msg::LeaseRelease { .. } => LEASE_RELEASE,
+            Msg::LeaseRenew { .. } => LEASE_RENEW,
+            Msg::LeaseRenewOk { .. } => LEASE_RENEW_OK,
+            Msg::Blocklist { .. } => BLOCKLIST,
+            Msg::BlocklistOk { .. } => BLOCKLIST_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -434,6 +497,10 @@ impl Msg {
                 | Msg::MapPushOk
                 | Msg::PeerDownOk
                 | Msg::BackfillOk { .. }
+                | Msg::LeaseOk { .. }
+                | Msg::LeaseHeld { .. }
+                | Msg::LeaseRenewOk { .. }
+                | Msg::BlocklistOk { .. }
                 | Msg::Error { .. }
         )
     }
@@ -572,6 +639,51 @@ impl Msg {
                 e.u64(*off);
                 crcs(e, c);
             }
+            Msg::Lease {
+                to,
+                key,
+                mode,
+                takeover,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                e.u8(*mode).bool(*takeover);
+            }
+            Msg::LeaseRelease { to, key } => {
+                to.enc(e);
+                key.enc(e);
+            }
+            Msg::LeaseOk { version } => {
+                e.u64(*version);
+            }
+            Msg::LeaseHeld {
+                holder,
+                remaining_ms,
+            } => {
+                e.u64(*holder).u32(*remaining_ms);
+            }
+            Msg::LeaseRenew {
+                pool,
+                map_epoch,
+                leases,
+            } => {
+                e.u32(*pool)
+                    .u64(*map_epoch)
+                    .seq(leases, |e, (pg, pe, name)| {
+                        e.u32(*pg).u64(*pe).bytes(name);
+                    });
+            }
+            Msg::LeaseRenewOk { results } => {
+                e.seq(results, |e, (r, v)| {
+                    e.u8(*r).u64(*v);
+                });
+            }
+            Msg::Blocklist { instance } => {
+                e.u64(*instance);
+            }
+            Msg::BlocklistOk { map_epoch } => {
+                e.u64(*map_epoch);
+            }
             Msg::Error {
                 code,
                 map_epoch,
@@ -697,6 +809,33 @@ impl Msg {
             BACKFILL_OK => Msg::BackfillOk {
                 map_epoch: d.u64()?,
             },
+            LEASE => Msg::Lease {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                mode: d.u8()?,
+                takeover: d.bool()?,
+            },
+            LEASE_OK => Msg::LeaseOk { version: d.u64()? },
+            LEASE_HELD => Msg::LeaseHeld {
+                holder: d.u64()?,
+                remaining_ms: d.u32()?,
+            },
+            LEASE_RELEASE => Msg::LeaseRelease {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
+            LEASE_RENEW => Msg::LeaseRenew {
+                pool: d.u32()?,
+                map_epoch: d.u64()?,
+                leases: d.seq(16, |d| Ok((d.u32()?, d.u64()?, d.bytes()?.to_vec())))?,
+            },
+            LEASE_RENEW_OK => Msg::LeaseRenewOk {
+                results: d.seq(9, |d| Ok((d.u8()?, d.u64()?)))?,
+            },
+            BLOCKLIST => Msg::Blocklist { instance: d.u64()? },
+            BLOCKLIST_OK => Msg::BlocklistOk {
+                map_epoch: d.u64()?,
+            },
             ERROR => Msg::Error {
                 code: Code::from_u16(d.u16()?),
                 map_epoch: d.u64()?,
@@ -708,6 +847,21 @@ impl Msg {
         Ok(m)
     }
 }
+
+/// Lease modes (metadata.md §9): `rw` is exclusive; `ro` is shared, and
+/// only for snapshots (D18).
+pub const LEASE_RW: u8 = 0;
+pub const LEASE_RO: u8 = 1;
+/// Results of a renewal ([`Msg::LeaseRenewOk`]).
+pub const LEASE_RENEWED: u8 = 0;
+/// Another instance holds it now, or the volume is gone.
+pub const LEASE_LOST: u8 = 1;
+/// Not decided here (map changed, not primary): renew again.
+pub const LEASE_RETRY: u8 = 2;
+/// How often a holder renews its leases, and how long after the last
+/// renewal its header's primary keeps the lease (decisions.md D75).
+pub const LEASE_RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+pub const LEASE_EXPIRES: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// The digest reported for a copy whose blocks failed their checksums; a
 /// healthy object's digest is never this value.
@@ -1128,6 +1282,39 @@ mod tests {
                 device: 4,
             },
             Msg::BackfillOk { map_epoch: 5 },
+            Msg::Lease {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                mode: LEASE_RW,
+                takeover: true,
+            },
+            Msg::LeaseOk { version: 3 },
+            Msg::LeaseHeld {
+                holder: 9,
+                remaining_ms: 1500,
+            },
+            Msg::LeaseRelease {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::LeaseRenew {
+                pool: 0,
+                map_epoch: 7,
+                leases: vec![(1, 2, b"h/1".to_vec()), (5, 6, b"h/2".to_vec())],
+            },
+            Msg::LeaseRenewOk {
+                results: vec![(LEASE_RENEWED, 2), (LEASE_LOST, 0)],
+            },
+            Msg::Blocklist { instance: 77 },
+            Msg::BlocklistOk { map_epoch: 8 },
             Msg::Error {
                 code: Code::NotPrimary,
                 map_epoch: 5,

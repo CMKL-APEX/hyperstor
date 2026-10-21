@@ -23,6 +23,9 @@
 pub mod metrics;
 
 use hyperstor_client::rpc::{Conn, read_frame, writer};
+use hyperstor_client::volume::{
+    LEASE_ATTR, decode_holder, encode_holder, header_deleting, header_version,
+};
 use hyperstor_client::{Client, ClientError};
 use hyperstor_engine::{
     BlockDev, Committed, DeviceConfig, EngineError, FileDev, MemDev, Namespace, ObjKey, Op,
@@ -30,9 +33,10 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, DAMAGED, Looked, Msg, Target, VERSION, WireKey, WireObject, WireOp, block_crcs,
-    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
-    encode_object, encode_ops, verify_crcs,
+    Code, DAMAGED, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW, Looked, Msg,
+    Target, VERSION, WireKey, WireObject, WireOp, block_crcs, decode_digests, decode_object,
+    decode_ops, encode_digests, encode_frame, encode_looked, encode_object, encode_ops,
+    verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream};
@@ -270,6 +274,11 @@ struct ShardState {
     damaged: RefCell<HashSet<ObjKey>>,
     /// Objects an operation list is being decided for (`exec`).
     exec_locks: RefCell<HashSet<ObjKey>>,
+    /// Volume leases of the headers this device is primary of (metadata.md
+    /// §9, D75): the holder, until when it holds the lease, and the PG
+    /// epoch that was decided at. The holder is in the header too; the
+    /// expiry is kept only here, so a renewal writes nothing.
+    leases: RefCell<HashMap<ObjKey, (u64, std::time::Instant, u64)>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
@@ -281,6 +290,14 @@ struct ShardState {
     cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
+}
+
+fn blocklisted(map: &ClusterMap) -> Msg {
+    err(
+        Code::Blocklisted,
+        map,
+        "this client instance is blocklisted",
+    )
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -433,6 +450,7 @@ impl ShardState {
             no_digests: Cell::new(false),
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
+            leases: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
@@ -703,6 +721,9 @@ impl ShardState {
         let s = Rc::new(s);
         let (tx, rx) = channel::<Vec<u8>>();
         spawn(writer(s.clone(), rx));
+        // The client instance named at `Hello`; 0 for peers, which don't
+        // send one and are never blocklisted.
+        let mut instance = 0;
         loop {
             let Ok((h, msg, payload)) = read_frame(&s).await else {
                 let _ = s.shutdown();
@@ -711,6 +732,14 @@ impl ShardState {
             let reply = |m: &Msg, p: &[u8]| {
                 let _ = tx.send(encode_frame(h.req, m, p));
             };
+            if let Msg::Hello { instance: i, .. } = msg {
+                instance = i;
+            }
+            // A blocklisted instance gets nothing more (metadata.md §4.1).
+            if self.map().blocked(instance) && !matches!(msg, Msg::Ping) {
+                reply(&blocklisted(&self.map()), &[]);
+                continue;
+            }
             match msg {
                 Msg::Hello { .. } => reply(
                     &Msg::HelloOk {
@@ -724,7 +753,7 @@ impl ShardState {
                 Msg::Write { to, key, off, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.writes, 1);
                     metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
-                    self.write(h.req, to, key, off, crcs, payload, tx.clone())
+                    self.write(h.req, instance, to, key, off, crcs, payload, tx.clone())
                         .await;
                 }
                 Msg::Repl {
@@ -739,7 +768,35 @@ impl ShardState {
                     self.repl(h.req, to, key, off, crcs, payload, tx.clone())
                         .await
                 }
-                Msg::Exec { to, key } => self.exec(h.req, to, key, payload, tx.clone()).await,
+                Msg::Exec { to, key } => {
+                    self.exec(h.req, instance, to, key, payload, tx.clone())
+                        .await
+                }
+                Msg::Lease {
+                    to,
+                    key,
+                    mode,
+                    takeover,
+                } => {
+                    self.lease(h.req, instance, to, key, mode, takeover, tx.clone())
+                        .await
+                }
+                Msg::LeaseRelease { to, key } => {
+                    self.lease_release(h.req, instance, to, key, tx.clone())
+                        .await
+                }
+                Msg::LeaseRenew {
+                    pool,
+                    map_epoch,
+                    leases,
+                } => {
+                    // From a task of its own: one check per lease.
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.lease_renew(instance, pool, map_epoch, leases).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
                 Msg::ReplExec { to, key, .. } => {
                     self.repl_exec(h.req, to, key, payload, tx.clone()).await
                 }
@@ -822,6 +879,7 @@ impl ShardState {
     async fn write(
         self: &Rc<Self>,
         req: u64,
+        instance: u64,
         to: Target,
         key: WireKey,
         off: u64,
@@ -855,6 +913,11 @@ impl ShardState {
             Ok(c) => c,
             Err(m) => return send(m),
         };
+        // Checked again after the last wait: a write queued from here on
+        // comes after the map that blocklists its sender.
+        if self.map().blocked(instance) {
+            return send(blocklisted(&self.map()));
+        }
         // Counted until answered, so a fence waits for it.
         *self
             .pg_inflight
@@ -994,6 +1057,7 @@ impl ShardState {
     async fn exec(
         self: &Rc<Self>,
         req: u64,
+        instance: u64,
         to: Target,
         key: WireKey,
         payload: Vec<u8>,
@@ -1002,19 +1066,54 @@ impl ShardState {
         let send = move |m: Msg| {
             let _ = tx.send(encode_frame(req, &m, &[]));
         };
-        let pg = match self.check(&to, true).await {
-            Ok(p) => p,
-            Err(m) => return send(m),
-        };
         let Ok(ops) = decode_ops(&payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
+            Err(why) => Err(err(Code::Conflict, &me.map(), why)),
+            Ok(()) => Ok(ops
+                .iter()
+                .filter(|o| !o.is_assertion())
+                .cloned()
+                .collect::<Vec<_>>()),
+        };
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        spawn(async move {
+            send(match done.await {
+                Ok(()) => Msg::ExecOk,
+                Err(m) => m,
+            })
+        });
+    }
+
+    /// Changes one object as its primary (metadata.md §4.2): holding the
+    /// key, once every queued commit is done, `decide` looks at the object
+    /// as it is and returns the effects to apply (or the answer, if
+    /// none); then they are queued here and sent to every replica with no
+    /// wait in between, so every copy applies them in the same order as
+    /// writes. Replicas apply effects only: revisions differ between
+    /// copies, so decisions rest on attributes (I6). The future returned
+    /// resolves once every copy has them.
+    async fn decide_and_apply(
+        self: &Rc<Self>,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        decide: impl FnOnce(&Self, &ObjKey) -> Result<Vec<WireOp>, Msg>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Msg>>>> {
+        let fail = |m: Msg| -> std::pin::Pin<Box<dyn Future<Output = Result<(), Msg>>>> {
+            Box::pin(async move { Err(m) })
+        };
+        let pg = match self.check(&to, true).await {
+            Ok(p) => p,
+            Err(m) => return fail(m),
+        };
         let Ok(okey) = engine_key(&to, &key) else {
-            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+            return fail(err(Code::Invalid, &self.map(), "bad namespace"));
         };
         let (conns, fills) = match self.replicas(&to, &pg).await {
             Ok(c) => c,
-            Err(m) => return send(m),
+            Err(m) => return fail(m),
         };
         while self.exec_locks.borrow().contains(&okey) {
             sleep(Duration::from_millis(1)).await;
@@ -1026,14 +1125,20 @@ impl ShardState {
         let unlock = |me: &Self| {
             me.exec_locks.borrow_mut().remove(&okey);
         };
-        if let Err(why) = self.assertions_hold(&okey, &ops) {
+        if self.map().blocked(instance) {
             unlock(self);
-            return send(err(Code::Conflict, &self.map(), why));
+            return fail(blocklisted(&self.map()));
         }
-        let effects: Vec<WireOp> = ops.into_iter().filter(|o| !o.is_assertion()).collect();
+        let effects = match decide(self, &okey) {
+            Ok(e) => e,
+            Err(m) => {
+                unlock(self);
+                return fail(m);
+            }
+        };
         if effects.is_empty() {
             unlock(self);
-            return send(Msg::ExecOk);
+            return Box::pin(async { Ok(()) });
         }
         *self
             .pg_inflight
@@ -1079,7 +1184,7 @@ impl ShardState {
             }
         });
         let me2 = self.clone();
-        spawn(async move {
+        Box::pin(async move {
             let r = local.await;
             let _inflight = InflightGuard(me2, (pool, pgn));
             let mut failed = None;
@@ -1091,20 +1196,230 @@ impl ShardState {
                     Err(e) => failed = Some(e.to_string()),
                 }
             }
-            send(match (r, failed) {
-                (Ok(_), None) => Msg::ExecOk,
-                (Err(e), _) => Msg::Error {
+            match (r, failed) {
+                (Ok(_), None) => Ok(()),
+                (Err(e), _) => Err(Msg::Error {
                     code: Code::Io,
                     map_epoch: 0,
                     detail: e,
-                },
-                (_, Some(e)) => Msg::Error {
+                }),
+                (_, Some(e)) => Err(Msg::Error {
                     code: Code::Unavailable,
                     map_epoch: 0,
                     detail: format!("replica: {e}"),
+                }),
+            }
+        })
+    }
+
+    /// Takes a volume's lease for `instance` as its header's primary
+    /// (metadata.md §9, D75). Granted if nobody holds it, or `instance`
+    /// does. Another holder's lease lasts [`LEASE_EXPIRES`] past its last
+    /// renewal here, or past when this device first saw it (a new primary
+    /// gives it a full lease); once it has expired, `takeover` breaks it,
+    /// but only if the holder is blocklisted in this device's map.
+    #[allow(clippy::too_many_arguments)]
+    async fn lease(
+        self: &Rc<Self>,
+        req: u64,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        mode: u8,
+        takeover: bool,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if mode != LEASE_RW {
+            // Shared `ro` leases are for snapshots (D18), which come with
+            // HS4.
+            return send(err(Code::Invalid, &self.map(), "only rw leases for now"));
+        }
+        if instance == 0 {
+            return send(err(Code::Invalid, &self.map(), "no instance: send Hello"));
+        }
+        let version = Rc::new(Cell::new(0));
+        let v2 = version.clone();
+        let decide = move |me: &Self, okey: &ObjKey| {
+            let sh = me.shard.borrow();
+            let attrs = match sh.attrs(okey) {
+                Some(a) if sh.stat(okey).is_some() => a,
+                _ => return Err(err(Code::NotFound, &me.map(), "no such volume")),
+            };
+            v2.set(header_version(attrs));
+            if header_deleting(attrs) {
+                return Err(err(Code::Invalid, &me.map(), "the volume is being deleted"));
+            }
+            let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
+            let (pg_epoch, now) = (to.pg_epoch, std::time::Instant::now());
+            let grant = |me: &Self| {
+                me.leases
+                    .borrow_mut()
+                    .insert(okey.clone(), (instance, now + LEASE_EXPIRES, pg_epoch));
+            };
+            match holder {
+                None => {}
+                Some((h, _)) if h == instance => {
+                    grant(me);
+                    return Ok(Vec::new());
+                }
+                Some((h, _)) => {
+                    let until = me.lease_until(okey, h, pg_epoch, now);
+                    if now < until {
+                        return Err(Msg::LeaseHeld {
+                            holder: h,
+                            remaining_ms: (until - now).as_millis().max(1) as u32,
+                        });
+                    }
+                    if !(takeover && me.map().blocked(h)) {
+                        return Err(Msg::LeaseHeld {
+                            holder: h,
+                            remaining_ms: 0,
+                        });
+                    }
+                }
+            }
+            grant(me);
+            Ok(vec![WireOp::SetAttr(
+                LEASE_ATTR.to_vec(),
+                encode_holder(instance, mode),
+            )])
+        };
+        let okey = engine_key(&to, &key).ok();
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        let me = self.clone();
+        spawn(async move {
+            send(match done.await {
+                Ok(()) => Msg::LeaseOk {
+                    version: version.get(),
                 },
-            });
+                Err(m) => {
+                    // Not known to have been written: the header decides
+                    // again next time.
+                    if !matches!(m, Msg::LeaseHeld { .. })
+                        && let Some(k) = okey
+                        && me.leases.borrow().get(&k).is_some_and(|l| l.0 == instance)
+                    {
+                        me.leases.borrow_mut().remove(&k);
+                    }
+                    m
+                }
+            })
         });
+    }
+
+    /// Until when `holder` holds the lease on `okey`, as this device knows
+    /// it: from its last renewal here at this PG epoch; else a full lease
+    /// from now, recorded (it may have renewed with another primary).
+    fn lease_until(
+        &self,
+        okey: &ObjKey,
+        holder: u64,
+        pg_epoch: u64,
+        now: std::time::Instant,
+    ) -> std::time::Instant {
+        let mut l = self.leases.borrow_mut();
+        match l.get(okey) {
+            Some((h, until, e)) if *h == holder && *e == pg_epoch => *until,
+            _ => {
+                l.insert(okey.clone(), (holder, now + LEASE_EXPIRES, pg_epoch));
+                now + LEASE_EXPIRES
+            }
+        }
+    }
+
+    /// Gives up `instance`'s lease on a volume; nothing if it holds none.
+    async fn lease_release(
+        self: &Rc<Self>,
+        req: u64,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        let version = Rc::new(Cell::new(0));
+        let v2 = version.clone();
+        let decide = move |me: &Self, okey: &ObjKey| {
+            let sh = me.shard.borrow();
+            let Some(attrs) = sh.attrs(okey) else {
+                return Ok(Vec::new());
+            };
+            v2.set(header_version(attrs));
+            let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
+            if holder.is_none_or(|(h, _)| h != instance) {
+                return Ok(Vec::new());
+            }
+            me.leases.borrow_mut().remove(okey);
+            Ok(vec![WireOp::RmAttr(LEASE_ATTR.to_vec())])
+        };
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        spawn(async move {
+            send(match done.await {
+                Ok(()) => Msg::LeaseOk {
+                    version: version.get(),
+                },
+                Err(m) => m,
+            })
+        });
+    }
+
+    /// Renews `instance`'s leases on headers this device is primary of
+    /// (D75). Nothing is written: the expiry is kept in memory.
+    async fn lease_renew(
+        &self,
+        instance: u64,
+        pool: u32,
+        map_epoch: u64,
+        leases: Vec<(u32, u64, Vec<u8>)>,
+    ) -> Msg {
+        let mut results = Vec::with_capacity(leases.len());
+        for (pg, pg_epoch, name) in leases {
+            let to = Target {
+                pool,
+                pg,
+                map_epoch,
+                pg_epoch,
+            };
+            let key = WireKey {
+                ns: Namespace::Meta as u8,
+                name,
+                version: 0,
+            };
+            let (Ok(_), Ok(okey)) = (self.check(&to, true).await, engine_key(&to, &key)) else {
+                results.push((LEASE_RETRY, 0));
+                continue;
+            };
+            let sh = self.shard.borrow();
+            let attrs = sh.attrs(&okey).filter(|_| sh.stat(&okey).is_some());
+            let version = attrs.map_or(0, header_version);
+            let holder = attrs
+                .and_then(|a| a.get(LEASE_ATTR))
+                .and_then(|h| decode_holder(h));
+            let mut l = self.leases.borrow_mut();
+            // Granted to another here, and not yet written.
+            let taken = l
+                .get(&okey)
+                .is_some_and(|(h, _, e)| *e == pg_epoch && *h != instance);
+            if holder.is_some_and(|(h, _)| h == instance) && !taken {
+                l.insert(
+                    okey,
+                    (
+                        instance,
+                        std::time::Instant::now() + LEASE_EXPIRES,
+                        pg_epoch,
+                    ),
+                );
+                results.push((LEASE_RENEWED, version));
+            } else {
+                results.push((LEASE_LOST, version));
+            }
+        }
+        Msg::LeaseRenewOk { results }
     }
 
     /// Whether `ops`' assertions hold for the object as it is now.
@@ -1537,10 +1852,16 @@ impl ShardState {
                     _,
                 )) = self.client.call_meta(&Msg::Heartbeat { node }).await
                 {
-                    self.lease_until
-                        .set(Some(sent + Duration::from_millis(lease_ms as u64)));
                     if map_epoch > self.map().epoch {
                         let _ = self.client.refresh_map().await;
+                    }
+                    // A lease is taken only with a map at least as new as
+                    // the one published when it was granted, which may
+                    // blocklist a client (metadata.md §9): the map service
+                    // counts on it. A revocation applies at once.
+                    if lease_ms == 0 || self.map().epoch >= map_epoch {
+                        self.lease_until
+                            .set(Some(sent + Duration::from_millis(lease_ms as u64)));
                     }
                 }
             }

@@ -563,6 +563,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         }
         .into(),
         version: v.version,
+        attached_by: v.holder.map(|h| format!("{h:016x}")).unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -574,6 +575,7 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
         Some(Err((F::NotFound, e))) => Err(ConnectError::not_found(e)),
         Some(Err((F::Exists, e))) => Err(ConnectError::already_exists(e)),
         Some(Err((F::Invalid, e))) => Err(ConnectError::invalid_argument(e)),
+        Some(Err((F::Attached, e))) => Err(ConnectError::failed_precondition(e)),
         Some(Err((F::Unavailable, e))) => Err(ConnectError::unavailable(e)),
         None => Err(ConnectError::unavailable("map service stopped")),
     }
