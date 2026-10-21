@@ -354,6 +354,32 @@ After peer reports were built (a second run, `hyperstor-bench failover`):
 With peer reports the stall sits at about 1.25 leases, as predicted: the
 map service still waits out the dead node's lease before it republishes.
 
+The recommended 1 s target (decision-log.md point 13), measured with
+`scripts/collect-decision-data.sh failover` twice, back to back, at the
+commit after peer reports and cache pools. Both runs, three stops each:
+
+| Map lease | liveness timeout | peer timeout | stall p50 ms, run 1 | run 2 | stall max ms |
+|---|---|---|---|---|---|
+| 2,000 ms | 3,000 ms | off | 2,962 | 3,108 | 3,112 |
+| 2,000 ms | 3,000 ms | 1,000 ms | 2,458 | 2,461 | 2,462 |
+| 600 ms | 800 ms | off | 913 | 913 | 914 |
+| 600 ms | 800 ms | 300 ms | 662 | 663 | 664 |
+| 500 ms | 700 ms | off | 783 | 784 | 785 |
+| 500 ms | 700 ms | 300 ms | 551 | 551 | 552 |
+
+The stall follows two simple rules, to within a few milliseconds:
+
+- without peer reports, the liveness timeout plus about 110 ms (the
+  liveness check's period and the client's retry);
+- with peer reports, 1.25 leases less the age of the dead node's last
+  heartbeat (up to 100 ms): 750 − 88, 625 − 74, 2,500 − 42 ms. The
+  quarter is the map service's margin for clock-rate drift (I29), so it
+  is the floor while leases are the fence.
+
+Peer reports cut the 1 s setting from 0.91 to 0.66 s. These are loopback
+numbers with no load: they say nothing yet about false detections, which
+decide how short the lease can safely be.
+
 ### Recovery time against log length
 
 `hyperstor-bench replay`: a 1 GiB log on a memory device filled with

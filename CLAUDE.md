@@ -8,11 +8,9 @@ design is split by topic, with section numbers kept across files.
 
 ## Where things stand
 
-- **Resuming?** Read `.claude/handoff.md`: the latest session's state,
-  open pull requests, decisions waiting on the owner, and next work.
-- **Implemented:** HS0, HS1 (no Raft yet) and part of HS2 on `main`;
-  dense maps, peer reports and cache pools in PR #3 (branch
-  `impl/dense-map`). `spec/implementation-notes.md` has
+- **Implemented:** HS0, HS1 (no Raft yet) and part of HS2 on `main`,
+  including dense maps, peer reports and cache pools without expiry or
+  eviction. `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
@@ -20,8 +18,10 @@ design is split by topic, with section numbers kept across files.
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I40,
   and every host check (G1–G16, FG1–FG2).
-- **Next:** see `.claude/handoff.md`; the rest of HS2 (read leases, PG
-  log, scrub, blocklist) follows.
+- **Next:** cache-pool expiry and eviction (the rest of D45; open
+  question in I40), paged checkpoints (D47), the copy-on-write B+tree
+  (D43, D44), priority classes (D46); then the rest of HS2 (read leases,
+  PG log, scrub, blocklist).
 
 ## Design work
 
