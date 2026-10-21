@@ -109,6 +109,17 @@ pub(crate) struct Inner {
 
 thread_local! {
     static CURRENT: RefCell<Option<Rc<Inner>>> = const { RefCell::new(None) };
+    static SPIN: Cell<std::time::Duration> = const { Cell::new(std::time::Duration::ZERO) };
+}
+
+/// Adaptive polling (decisions.md D41): after any activity, the reactor on
+/// this thread keeps polling for completions for `spin` before it sleeps
+/// in the kernel, so a request arriving soon after the last one doesn't
+/// pay a thread wake-up. Polling still enters the kernel (without waiting)
+/// so network completions are delivered. Zero, the default, turns it off;
+/// storage reactors that own their cores turn it on.
+pub fn set_spin(spin: std::time::Duration) {
+    SPIN.with(|s| s.set(spin));
 }
 
 pub(crate) fn current() -> Rc<Inner> {
@@ -197,7 +208,8 @@ impl Inner {
         }
     }
 
-    fn complete(&self) {
+    /// Handles every completion queued; returns how many there were.
+    fn complete(&self) -> usize {
         let mut cqes = Vec::new();
         {
             let mut ring = self.ring.borrow_mut();
@@ -205,6 +217,7 @@ impl Inner {
                 cqes.push((cqe.user_data(), cqe.result()));
             }
         }
+        let n = cqes.len();
         for (ud, res) in cqes {
             if ud == EVENTFD_TOKEN {
                 self.arm_eventfd();
@@ -229,6 +242,7 @@ impl Inner {
                 w.wake();
             }
         }
+        n
     }
 
     fn spawn_task(&self, fut: Task) -> usize {
@@ -394,12 +408,17 @@ where
         *c.borrow_mut() = Some(inner.clone());
     });
     let main = spawn(fut);
+    let spin = SPIN.with(|s| s.get());
+    let mut last_activity = std::time::Instant::now();
     let out = loop {
         // Run the tasks that are ready now. Tasks woken while they run
         // (including ones that yield) wait for the next pass, after I/O
         // completions have been collected: running until the queue is
         // empty would let a yielding task starve all I/O.
         let n = inner.shared.ready.lock().unwrap().len();
+        if n > 0 {
+            last_activity = std::time::Instant::now();
+        }
         for _ in 0..n {
             let next = inner.shared.ready.lock().unwrap().pop_front();
             match next {
@@ -410,10 +429,12 @@ where
         if let Some(v) = main.state.borrow_mut().0.take() {
             break v;
         }
-        // Submit, and sleep in the kernel until something completes.
+        // Submit, and sleep in the kernel until something completes, unless
+        // there was activity within the spin window: then only poll.
         {
             let ring = inner.ring.borrow_mut();
-            let r = if inner.shared.ready.lock().unwrap().is_empty() {
+            let idle = inner.shared.ready.lock().unwrap().is_empty();
+            let r = if idle && (spin.is_zero() || last_activity.elapsed() >= spin) {
                 ring.submit_and_wait(1)
             } else {
                 ring.submit()
@@ -425,7 +446,9 @@ where
                 Err(e) => panic!("io_uring_enter: {e}"),
             }
         }
-        inner.complete();
+        if inner.complete() > 0 {
+            last_activity = std::time::Instant::now();
+        }
     };
     // Drop the remaining tasks while the reactor is still current (their
     // operations unregister themselves), then wait out operations still
@@ -504,6 +527,20 @@ mod tests {
             crate::time::sleep(std::time::Duration::from_millis(20)).await;
             stop.set(true);
         });
+    }
+
+    #[test]
+    fn spinning_reactor_still_sleeps_and_wakes() {
+        set_spin(std::time::Duration::from_micros(200));
+        block_on(async {
+            for _ in 0..20 {
+                crate::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            let t = std::time::Instant::now();
+            crate::time::sleep(std::time::Duration::from_millis(20)).await;
+            assert!(t.elapsed() >= std::time::Duration::from_millis(19));
+        });
+        set_spin(std::time::Duration::ZERO);
     }
 
     #[test]

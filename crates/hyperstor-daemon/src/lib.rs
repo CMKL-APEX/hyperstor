@@ -101,6 +101,9 @@ pub struct NodeConfig {
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
+    /// Adaptive polling window for this node's reactors (decisions.md D41);
+    /// zero turns it off.
+    pub spin: Duration,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -152,6 +155,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let cpu = cfg.cpus.get(i).copied();
         let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
         let blocked = cfg.meta_blocked.clone();
+        let spin = cfg.spin;
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -159,6 +163,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     if let Some(c) = cpu {
                         let _ = hyperstor_reactor::pin_to_cpu(c);
                     }
+                    hyperstor_reactor::set_spin(spin);
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {

@@ -93,6 +93,7 @@ impl Cluster {
                         })
                         .collect(),
                     cpus: Vec::new(),
+                    spin: std::time::Duration::ZERO,
                     meta_blocked: Some(blocked[n].clone()),
                     defer_max: None,
                 }))
@@ -136,6 +137,7 @@ impl Cluster {
             meta: self.meta_addr,
             shards,
             cpus: Vec::new(),
+            spin: std::time::Duration::ZERO,
             meta_blocked: Some(self.blocked[n].clone()),
             defer_max: None,
         }));

@@ -378,6 +378,12 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 shards,
                 cpus,
                 meta_blocked: None,
+                spin: Duration::from_micros(
+                    std::env::var("HS_SPIN_US")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                ),
                 defer_max: std::env::var("HS_DEFER_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok()),
@@ -397,6 +403,12 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
     use std::cell::RefCell;
     use std::rc::Rc;
     let label = label.to_string();
+    hyperstor_reactor::set_spin(Duration::from_micros(
+        std::env::var("HS_SPIN_US")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+    ));
     hyperstor_reactor::block_on(async move {
         let _ = hyperstor_reactor::pin_to_cpu(1);
         let cl = hyperstor_client::Client::connect(meta, 1).await.unwrap();
@@ -934,6 +946,7 @@ fn failover_suite() {
                         }],
                         cpus: Vec::new(),
                         meta_blocked: None,
+                        spin: Duration::ZERO,
                         defer_max: None,
                     }))
                 })

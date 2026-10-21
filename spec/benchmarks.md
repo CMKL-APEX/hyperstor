@@ -373,6 +373,19 @@ every commit (fixed: `index_stats()` is separate, I37).
 | after the fix | off (D38) | 101 | 37,765 | 2,065 |
 | after the fix | on (64 KiB) | 100 | 31,714 | 5,409 |
 
+### Adaptive polling (D41)
+
+`HS_SPIN_US=N hyperstor-bench cluster mem R`: storage and client reactors
+poll for N µs after activity before sleeping in the kernel. 2 s per test.
+
+| Reactors per node | Polling window | 4 KiB writes QD1 p50 / p99 µs | 4 KiB writes QD32 ops/s | 4 KiB reads QD1 p50 / p99 µs |
+|---|---|---|---|---|
+| 1 | off | 109 / 183 | 36,677 | 43 / 72 |
+| 1 | 50 µs | 96 / 131 | 38,331 | 37 / 59 |
+| 1 | 200 µs | 84 / 130 | 38,426 | 36 / 54 |
+| 4 | off | 140 / 1,092 | 67,729 | 56 / 101 |
+| 4 | 50 µs | 139 / 224 | 66,852 | 48 / 96 |
+
 ### Findings
 
 1. **Dense maps cap the index at 2 GiB per TiB**, against 33 GiB
@@ -391,7 +404,11 @@ every commit (fixed: `index_stats()` is separate, I37).
    length is the main lever (0.78 s with a 0.5 s lease).
 5. **D38 holds end to end:** with redirect-on-write, replicated writes
    reach 19% more throughput than with deferral, with 2.6× lower p99.
-6. **Whole-index checkpoints get expensive for large shards even when
+6. **Adaptive polling cuts QD1 latency by 15–23%** (200 µs window) and
+   the 4-reactor write p99 by 5×, with no throughput change; the rest of
+   the per-request cost is system calls and copies (D41's remaining
+   work). `hyperstord` now polls for 200 µs by default.
+7. **Whole-index checkpoints get expensive for large shards even when
    fuzzy:** at 2 GiB of checkpoint per TiB, a 4 TiB shard taking 50k
    writes per second would rewrite its 8 GiB index about every 10 s
    (checkpoints start every 64 MiB of log at 128 bytes per write), about
