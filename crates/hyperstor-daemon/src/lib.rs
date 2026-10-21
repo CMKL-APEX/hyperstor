@@ -101,6 +101,12 @@ pub struct NodeConfig {
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
+    /// Adaptive polling window for this node's reactors (decisions.md D41);
+    /// zero turns it off.
+    pub spin: Duration,
+    /// Report a peer to the map service after this long without an answer
+    /// to pings (decisions.md D40); zero turns peer reports off.
+    pub peer_timeout: Duration,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -152,6 +158,8 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let cpu = cfg.cpus.get(i).copied();
         let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
         let blocked = cfg.meta_blocked.clone();
+        let spin = cfg.spin;
+        let peer_timeout = cfg.peer_timeout;
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -159,6 +167,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     if let Some(c) = cpu {
                         let _ = hyperstor_reactor::pin_to_cpu(c);
                     }
+                    hyperstor_reactor::set_spin(spin);
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -169,6 +178,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
                         spawn(st.clone().heartbeat(node));
+                        if !peer_timeout.is_zero() {
+                            spawn(st.clone().peer_watch(node, peer_timeout));
+                        }
                         spawn(st.clone().backfiller());
                         spawn(st.clone().accept(l));
                         rx.recv().await;
@@ -215,6 +227,12 @@ struct ShardState {
     pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
     /// The test hook of `NodeConfig::meta_blocked`.
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Cache-pool PGs (D45), with the epoch this device last served each
+    /// at. Serving one at a new epoch, or for the first time since start,
+    /// first drops what this device holds of it: the copy may be older
+    /// than writes made elsewhere meanwhile, and a cache may lose data but
+    /// must never serve stale data.
+    cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -288,6 +306,7 @@ impl ShardState {
             fenced: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             blocked,
+            cache_epochs: RefCell::new(HashMap::new()),
         }))
     }
 
@@ -305,6 +324,29 @@ impl ShardState {
         async move { rx.recv().await.unwrap_or(Err("commit dropped".into())) }
     }
 
+    /// Commits everything queued now, as one batch, in queue order.
+    fn commit_queued(&self) {
+        let batch = std::mem::take(&mut *self.queue.borrow_mut());
+        if batch.is_empty() {
+            return;
+        }
+        let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+        let res = self.shard.borrow_mut().commit(lists);
+        self.batches.set(self.batches.get() + 1);
+        match res {
+            Ok(rs) => {
+                for (tx, r) in txs.into_iter().zip(rs) {
+                    let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
+                }
+            }
+            Err(e) => {
+                for tx in txs {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        }
+    }
+
     /// Commits whatever is queued, as one batch, whenever anything is.
     async fn committer(self: Rc<Self>) {
         loop {
@@ -317,23 +359,8 @@ impl ShardState {
                 }
             })
             .await;
-            let batch = std::mem::take(&mut *self.queue.borrow_mut());
-            let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
-            let res = self.shard.borrow_mut().commit(lists);
-            self.batches.set(self.batches.get() + 1);
-            match res {
-                Ok(rs) => {
-                    for (tx, r) in txs.into_iter().zip(rs) {
-                        let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
-                    }
-                }
-                Err(e) => {
-                    for tx in txs {
-                        let _ = tx.send(Err(e.to_string()));
-                    }
-                }
-            }
-            let pending = self.shard.borrow().stats().pending_blocks;
+            self.commit_queued();
+            let pending = self.shard.borrow().pending_blocks();
             if pending > 4096 {
                 let _ = self.shard.borrow_mut().apply_deferred();
             }
@@ -382,6 +409,25 @@ impl ShardState {
             && map.epoch < *e
         {
             return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
+        }
+        if map.pools.get(&to.pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache)
+            && let Some(pg) = map.pg(to.pool, to.pg)
+            && self.cache_epochs.borrow().get(&(to.pool, to.pg)) != Some(&pg.epoch)
+        {
+            self.cache_epochs
+                .borrow_mut()
+                .insert((to.pool, to.pg), pg.epoch);
+            // Committed here, after anything already queued and before this
+            // request goes on: reads don't pass through the queue.
+            let keys = self.shard.borrow().list_pg(to.pool, to.pg);
+            self.queue.borrow_mut().extend(keys.into_iter().map(|k| {
+                let list = OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                };
+                (list, oneshot().0)
+            }));
+            self.commit_queued();
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             return Err(err(Code::Invalid, &map, "no such PG"));
@@ -742,6 +788,58 @@ impl ShardState {
             .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// Pings every node this reactor shares a PG with, every 100 ms, and
+    /// reports to the map service any that stays silent for
+    /// `peer_timeout` (D40). The map service marks a node down on reports
+    /// from two distinct nodes.
+    async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
+        let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            let map = self.map();
+            let mut peers: HashMap<u32, SocketAddr> = HashMap::new();
+            for pg in map.pgs.values() {
+                if !pg.acting.contains(&self.me) && !pg.up.contains(&self.me) {
+                    continue;
+                }
+                for d in pg.acting.iter().chain(pg.up.iter()) {
+                    if let Some(dev) = map.devices.get(d)
+                        && dev.node != node
+                        && map.nodes.get(&dev.node).is_some_and(|n| n.up)
+                    {
+                        peers.entry(dev.node).or_insert(dev.addr);
+                    }
+                }
+            }
+            let now = std::time::Instant::now();
+            for (peer, addr) in peers {
+                let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
+                if now.duration_since(first) > peer_timeout && !self.cut_off() {
+                    let _ = self
+                        .client
+                        .call_meta(&Msg::PeerDown {
+                            reporter: node,
+                            peer,
+                        })
+                        .await;
+                }
+                let me = self.clone();
+                let last_ok = last_ok.clone();
+                spawn(async move {
+                    let ping = async {
+                        let c = me.peer(addr).await.ok()?;
+                        c.call(&Msg::Ping, &[]).await.ok()
+                    };
+                    if let Ok(Some((Msg::Pong, _))) =
+                        hyperstor_reactor::time::timeout(Duration::from_millis(200), ping).await
+                    {
+                        last_ok.borrow_mut().insert(peer, std::time::Instant::now());
+                    }
+                });
+            }
+        }
+    }
+
     async fn heartbeat(self: Rc<Self>, node: u32) {
         loop {
             if !self.cut_off() {
@@ -931,6 +1029,16 @@ impl ShardState {
         let r = self.shard.borrow().read(&okey, off, len);
         let data = match r {
             Ok(b) => b.to_vec(),
+            // A cache pool's miss is a miss: the caller recomputes (D45).
+            Err(EngineError::NotFound)
+                if self.map().pools.get(&to.pool).map(|p| p.kind)
+                    == Some(hyperstor_meta::PoolKind::Cache) =>
+            {
+                return (
+                    err(Code::NotFound, &self.map(), "not in the cache"),
+                    Vec::new(),
+                );
+            }
             // Never written: reads as zeros.
             Err(EngineError::NotFound) => vec![0; len as usize],
             Err(EngineError::Checksum { lblock }) => {

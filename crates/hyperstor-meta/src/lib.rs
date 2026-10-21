@@ -43,7 +43,13 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolKind {
     Replicated,
-    Ec { k: u8, m: u8 },
+    Ec {
+        k: u8,
+        m: u8,
+    },
+    /// Recomputable data (decisions.md D45, replication.md §8.7): `size`
+    /// copies, lost without recovery.
+    Cache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -197,7 +203,7 @@ impl ClusterMap {
                 let members = topo.place(pg);
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
-                    PoolKind::Replicated => members,
+                    PoolKind::Replicated | PoolKind::Cache => members,
                     PoolKind::Ec { .. } => {
                         let prev: Vec<Option<u32>> = match &old {
                             Some(i) => {
@@ -215,9 +221,13 @@ impl ClusterMap {
                 };
                 let acting = match &old {
                     None => up.clone(),
+                    // Cache pools (D45): no backfill and no recovery; the
+                    // acting set is always where placement wants it, and a
+                    // new member starts empty.
+                    Some(_) if p.kind == PoolKind::Cache => up.clone(),
                     Some(o) => {
                         let kept: Vec<u32> = match p.kind {
-                            PoolKind::Replicated => {
+                            PoolKind::Replicated | PoolKind::Cache => {
                                 o.acting.iter().copied().filter(|d| self.live(*d)).collect()
                             }
                             PoolKind::Ec { .. } => o
@@ -319,6 +329,7 @@ impl ClusterMap {
             match p.kind {
                 PoolKind::Replicated => e.u8(0).u8(0).u8(0),
                 PoolKind::Ec { k, m } => e.u8(1).u8(k).u8(m),
+                PoolKind::Cache => e.u8(2).u8(0).u8(0),
             };
             e.u8(p.size).u8(p.min_size).u32(p.pg_count);
             e.u8(match p.domain {
@@ -390,6 +401,7 @@ impl ClusterMap {
             let name = d.str()?.to_string();
             let kind = match (d.u8()?, d.u8()?, d.u8()?) {
                 (0, _, _) => PoolKind::Replicated,
+                (2, _, _) => PoolKind::Cache,
                 (_, k, m) => PoolKind::Ec { k, m },
             };
             let size = d.u8()?;
@@ -469,12 +481,16 @@ pub struct Meta {
     /// Nodes that didn't answer a fence: no leases until it resolves.
     fencing: RefCell<std::collections::HashSet<u32>>,
     conns: RefCell<HashMap<SocketAddr, hyperstor_rpc::Conn>>,
+    /// Peer reports (D40): peer -> reporter -> when last reported.
+    reports: RefCell<HashMap<u32, HashMap<u32, Instant>>>,
+    /// Nodes marked down on peer reports: no leases while reported.
+    suspect: RefCell<std::collections::HashSet<u32>>,
     lease: Duration,
     started: Instant,
 }
 
-/// Default map lease.
-pub const LEASE: Duration = Duration::from_secs(2);
+/// Default map lease (decisions.md D48).
+pub const LEASE: Duration = Duration::from_millis(600);
 
 impl Meta {
     pub fn new(map: ClusterMap) -> Rc<Self> {
@@ -489,6 +505,8 @@ impl Meta {
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
             conns: RefCell::new(HashMap::new()),
+            reports: RefCell::new(HashMap::new()),
+            suspect: RefCell::new(std::collections::HashSet::new()),
             lease,
             started: Instant::now(),
         })
@@ -509,25 +527,44 @@ impl Meta {
             "liveness timeout must exceed the lease by a quarter"
         );
         loop {
-            sleep(timeout / 4).await;
-            let now = Instant::now();
-            let mut changed = false;
-            {
-                let beats = self.beats.borrow();
-                let mut map = self.map.borrow_mut();
-                for n in map.nodes.values_mut() {
-                    let last = beats.get(&n.id).copied().unwrap_or(self.started);
-                    let alive = now.duration_since(last) < timeout;
-                    if n.up != alive {
-                        n.up = alive;
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
+            sleep((timeout / 4).min(Duration::from_millis(100))).await;
+            if self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
             }
         }
+    }
+
+    /// One liveness check; true if any node changed state.
+    fn liveness_tick(&self, timeout: Duration, now: Instant) -> bool {
+        let mut changed = false;
+        {
+            let beats = self.beats.borrow();
+            let mut map = self.map.borrow_mut();
+            // Peer reports (D40): a node reported silent by at least two
+            // distinct nodes, recently, is down even if its heartbeats
+            // still arrive (cut off from its peers), and gets no lease.
+            let fresh = timeout / 2;
+            let mut reports = self.reports.borrow_mut();
+            for r in reports.values_mut() {
+                r.retain(|_, t| now.duration_since(*t) < fresh);
+            }
+            let mut suspect = self.suspect.borrow_mut();
+            suspect.clear();
+            for (peer, r) in reports.iter() {
+                if r.len() >= 2 {
+                    suspect.insert(*peer);
+                }
+            }
+            for n in map.nodes.values_mut() {
+                let last = beats.get(&n.id).copied().unwrap_or(self.started);
+                let alive = now.duration_since(last) < timeout && !suspect.contains(&n.id);
+                if n.up != alive {
+                    n.up = alive;
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     /// Publishes working-map changes: fence, publish, push.
@@ -698,10 +735,20 @@ impl Meta {
                     },
                 }
             }
+            Ok(Msg::PeerDown { reporter, peer }) => {
+                self.reports
+                    .borrow_mut()
+                    .entry(peer)
+                    .or_default()
+                    .insert(reporter, Instant::now());
+                Msg::PeerDownOk
+            }
             Ok(Msg::Heartbeat { node }) => {
                 let now = Instant::now();
                 self.beats.borrow_mut().insert(node, now);
-                let lease_ms = if self.fencing.borrow().contains(&node) {
+                let lease_ms = if self.fencing.borrow().contains(&node)
+                    || self.suspect.borrow().contains(&node)
+                {
                     0
                 } else {
                     self.granted.borrow_mut().insert(node, now);
@@ -944,6 +991,88 @@ mod tests {
     }
 
     #[test]
+    fn two_peer_reports_mark_a_node_down_and_stop_its_lease() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        let beat = |n: u32| match m.handle(Ok(Msg::Heartbeat { node: n })) {
+            Msg::HeartbeatOk { lease_ms, .. } => lease_ms,
+            other => panic!("{other:?}"),
+        };
+        for n in 0..4 {
+            assert_eq!(beat(n), 400);
+        }
+        let timeout = Duration::from_secs(3);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        // One reporter is not enough.
+        m.handle(Ok(Msg::PeerDown {
+            reporter: 0,
+            peer: 3,
+        }));
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        assert!(m.map.borrow().nodes[&3].up);
+        // Two are, even though node 3's heartbeats still arrive.
+        m.handle(Ok(Msg::PeerDown {
+            reporter: 1,
+            peer: 3,
+        }));
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        assert!(!m.map.borrow().nodes[&3].up);
+        assert_eq!(beat(3), 0, "no lease while reported");
+        assert_eq!(beat(0), 400);
+        // Reports go stale; heartbeats bring it back.
+        let later = Instant::now() + timeout;
+        beat(0);
+        beat(1);
+        beat(2);
+        m.beats.borrow_mut().insert(3, later);
+        for n in 0..3 {
+            m.beats.borrow_mut().insert(n, later);
+        }
+        assert!(m.liveness_tick(timeout, later));
+        assert!(m.map.borrow().nodes[&3].up);
+        assert_eq!(beat(3), 400);
+    }
+
+    #[test]
+    fn cache_pools_follow_placement_without_backfill() {
+        let mut m = map();
+        m.add_pool(PoolInfo {
+            id: 3,
+            name: "kv".into(),
+            kind: PoolKind::Cache,
+            size: 1,
+            min_size: 1,
+            pg_count: 32,
+            domain: Domain::Host,
+            chunk_size: 4 << 20,
+            class: None,
+        });
+        m.recompute();
+        let before = m.clone();
+        m.nodes.get_mut(&1).unwrap().up = false;
+        m.recompute();
+        for pg in 0..32 {
+            let o = &before.pgs[&(3, pg)];
+            let n = &m.pgs[&(3, pg)];
+            assert_eq!(n.acting, n.up, "cache PGs never backfill");
+            assert_eq!(n.acting.len(), 1);
+            assert!(n.backfilling().next().is_none());
+            if before.devices[&o.acting[0]].node == 1 {
+                assert_ne!(n.acting, o.acting, "the lost copy is replaced, empty");
+                assert!(n.epoch > o.epoch);
+            } else {
+                assert_eq!(n, o);
+            }
+        }
+        let parsed =
+            super::parse_cluster("node 0 rack 0 127.0.0.1:9100\npool 3 kv cache copies 2 pgs 16\n")
+                .unwrap();
+        assert_eq!(parsed.pools[&3].kind, PoolKind::Cache);
+        assert_eq!(parsed.pools[&3].size, 2);
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    #[test]
     fn map_service_answers() {
         use hyperstor_proto::*;
         use hyperstor_reactor::{block_on, net::*, spawn};
@@ -1008,6 +1137,12 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 let mut i = 3;
                 if w[3] == "replicated" {
                     i = 4;
+                } else if w[3] == "cache" {
+                    // cache [copies N]: one copy unless told otherwise
+                    p.kind = PoolKind::Cache;
+                    p.size = 1;
+                    p.min_size = 1;
+                    i = 4;
                 } else if let Some(km) = w[3].strip_prefix("ec") {
                     // ec4+2
                     let (k, m) = km.split_once('+').ok_or_else(|| bad("ec needs k+m"))?;
@@ -1019,7 +1154,7 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 }
                 while i + 1 < w.len() {
                     match w[i] {
-                        "size" => p.size = num(w[i + 1])? as u8,
+                        "size" | "copies" => p.size = num(w[i + 1])? as u8,
                         "min" => p.min_size = num(w[i + 1])? as u8,
                         "pgs" => p.pg_count = num(w[i + 1])? as u32,
                         "chunk" => p.chunk_size = num(w[i + 1])? as u32,

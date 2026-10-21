@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 const DEV_MAGIC: u64 = 0x4853_4445_5643_3031; // "HSDEVC01"
 const FORMAT_VERSION: u32 = 1;
-/// Smallest and largest default log ring, in blocks (1 MiB and 256 MiB).
+/// Smallest and largest default log ring, in blocks (1 MiB and 1 GiB,
+/// decisions.md D47).
 const MIN_LOG: u64 = 256;
-const MAX_LOG: u64 = 65536;
+const MAX_LOG: u64 = 262_144;
 
 /// How to format a device.
 #[derive(Debug, Clone)]
@@ -24,7 +25,7 @@ pub struct DeviceConfig {
     /// One shard per reactor that will use the device.
     pub shards: u32,
     /// Log ring per shard, in blocks; by default a sixteenth of the shard,
-    /// between 1 MiB and 256 MiB.
+    /// between 1 MiB and 1 GiB.
     pub log_blocks: Option<u64>,
 }
 

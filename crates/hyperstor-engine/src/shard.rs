@@ -34,7 +34,12 @@ use std::sync::Arc;
 
 const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
 const LOG_MAGIC: u32 = 0x4853_4c47; // "HSLG"
-const CKPT_MAGIC: u64 = 0x4853_434b_5054_3031; // "HSCKPT01"
+const CKPT_MAGIC: u64 = 0x4853_434b_5054_3033; // "HSCKPT03": streamed objects, fuzzy (D43)
+const DIR_MAGIC: u64 = 0x4853_434b_4449_5231; // "HSCKDIR1"
+/// Checkpoint bytes written per commit round while a fuzzy checkpoint runs
+/// (64 KiB had the best tail latency, benchmarks.md); eight times that once
+/// half the log is used, so the checkpoint finishes before it is forced.
+const SLICE_BYTES: usize = 64 * 1024;
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
@@ -146,6 +151,22 @@ impl Super {
     }
 }
 
+/// A fuzzy checkpoint being written (implementation-notes.md I33).
+struct Fuzzy {
+    /// Log position replay will start from once this checkpoint is named.
+    start_lsn: u64,
+    /// The last object written; the next slice continues after it.
+    last: Option<ObjKey>,
+    objects_done: bool,
+    /// Bytes encoded but not yet written (less than a block, mostly).
+    pending: Vec<u8>,
+    /// Checksum and length of the whole blob so far.
+    crc: u32,
+    len: u64,
+    /// Extents written so far, in order.
+    runs: Vec<(u64, u64)>,
+}
+
 /// A record as read back from the log.
 struct LogRecord {
     lsn: u64,
@@ -168,8 +189,26 @@ pub struct ShardStats {
     pub records: u64,
     /// Size of the last checkpoint (the serialized index), in bytes.
     pub checkpoint_bytes: u64,
+    /// Slices written by fuzzy checkpoints, and checkpoints finished
+    /// synchronously because the log ran short.
+    pub checkpoint_slices: u64,
+    pub checkpoint_forced: u64,
+    /// Log blocks written since the shard was opened.
+    pub log_blocks_written: u64,
+    /// Checkpoint bytes written (blobs and directories) since opened.
+    pub checkpoint_bytes_written: u64,
+}
+
+/// Totals over the whole index. Computing them walks every block map, so
+/// they are separate from [`ShardStats`], which costs nothing to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexStats {
     /// Extent runs in the index (one per contiguous mapped range).
     pub runs: u64,
+    /// Objects whose block map is dense (D43).
+    pub dense_objects: u64,
+    /// Estimated memory of every block map, in bytes.
+    pub map_bytes: u64,
 }
 
 /// One shard of a device.
@@ -197,6 +236,17 @@ pub struct Shard {
     round_fresh: BTreeMap<u64, u64>,
     /// Writes smaller than this onto blocks the object holds are deferred.
     defer_max: usize,
+    /// Extents of the current checkpoint's blob (the superblock names its
+    /// directory, `ckpt`).
+    ckpt_blob: Vec<(u64, u64)>,
+    ckpt_len: u64,
+    /// A fuzzy checkpoint in progress.
+    fuzzy: Option<Fuzzy>,
+    slice_bytes: usize,
+    opened_lsn: u64,
+    ckpt_written: u64,
+    checkpoint_slices: u64,
+    checkpoint_forced: u64,
     checkpoints: u64,
     commits: u64,
     records: u64,
@@ -284,6 +334,14 @@ impl Shard {
             poisoned: false,
             round_fresh: BTreeMap::new(),
             defer_max: DEFER_MAX,
+            ckpt_blob: Vec::new(),
+            ckpt_len: 0,
+            fuzzy: None,
+            slice_bytes: SLICE_BYTES,
+            opened_lsn: 0,
+            ckpt_written: 0,
+            checkpoint_slices: 0,
+            checkpoint_forced: 0,
             checkpoints: 0,
             commits: 0,
             records: 0,
@@ -325,6 +383,8 @@ impl Shard {
         sh.apply_deferred()?;
         sh.salt = random_u32();
         sh.checkpoint()?;
+        sh.opened_lsn = sh.tail_lsn;
+        sh.ckpt_written = 0;
         Ok(sh)
     }
 
@@ -334,6 +394,7 @@ impl Shard {
         if let Some(c) = &self.ckpt {
             used.extend(c.runs.iter().copied());
         }
+        used.extend(self.ckpt_blob.iter().copied());
         for (s, n) in used {
             if !a.reserve(s, n) {
                 return Err(EngineError::Corrupt(format!(
@@ -345,21 +406,44 @@ impl Shard {
         Ok(())
     }
 
-    fn load_checkpoint(&mut self, c: &Ckpt) -> Result<(), EngineError> {
-        let nblocks: u64 = c.runs.iter().map(|r| r.1).sum();
-        let mut blob = AlignedBuf::zeroed((nblocks as usize) * BLOCK);
-        {
-            let mut reads = Vec::new();
-            let mut rest: &mut [u8] = &mut blob;
-            for &(s, n) in &c.runs {
-                let (head, tail) = rest.split_at_mut(n as usize * BLOCK);
-                reads.push((s * BLOCK as u64, head));
-                rest = tail;
-            }
-            self.dev.read_batch(&mut reads)?;
+    fn read_extents(&self, runs: &[(u64, u64)], len: u64) -> Result<AlignedBuf, EngineError> {
+        let nblocks: u64 = runs.iter().map(|r| r.1).sum();
+        if len > nblocks * BLOCK as u64 {
+            return Err(EngineError::Corrupt("checkpoint length".into()));
         }
-        let data = &blob[..c.len as usize];
-        if crc32c(data) != c.crc {
+        let mut buf = AlignedBuf::zeroed((nblocks.max(1) as usize) * BLOCK);
+        let mut reads = Vec::new();
+        let mut rest: &mut [u8] = &mut buf;
+        for &(s, n) in runs {
+            let (head, tail) = rest.split_at_mut(n as usize * BLOCK);
+            reads.push((s * BLOCK as u64, head));
+            rest = tail;
+        }
+        self.dev.read_batch(&mut reads)?;
+        Ok(buf)
+    }
+
+    /// Loads the checkpoint named by the superblock: its directory, then
+    /// the blob the directory lists. The blob may be fuzzy (objects
+    /// written at different times after `head_lsn`); replay from
+    /// `head_lsn` brings it to the state the log describes.
+    fn load_checkpoint(&mut self, c: &Ckpt) -> Result<(), EngineError> {
+        let dir = self.read_extents(&c.runs, c.len)?;
+        let dir = &dir[..c.len as usize];
+        if crc32c(dir) != c.crc {
+            return Err(EngineError::Corrupt("checkpoint directory checksum".into()));
+        }
+        let mut d = Dec::new(dir);
+        if d.u64()? != DIR_MAGIC {
+            return Err(EngineError::Corrupt("checkpoint directory magic".into()));
+        }
+        let blob_len = d.u64()?;
+        let blob_crc = d.u32()?;
+        let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+        d.finish()?;
+        let blob = self.read_extents(&runs, blob_len)?;
+        let data = &blob[..blob_len as usize];
+        if crc32c(data) != blob_crc {
             return Err(EngineError::Corrupt("checkpoint checksum".into()));
         }
         let mut d = Dec::new(data);
@@ -372,8 +456,23 @@ impl Shard {
         if lsn != self.head_lsn {
             return Err(EngineError::Corrupt("checkpoint LSN".into()));
         }
-        self.index = Index::decode(&mut d)?;
+        let mut index = Index::default();
+        loop {
+            match d.u8()? {
+                0 => break,
+                1 => {
+                    let (k, o) = crate::index::decode_object(&mut d)?;
+                    index.objects.insert(k, o);
+                }
+                v => {
+                    return Err(EngineError::Corrupt(format!("checkpoint record {v}")));
+                }
+            }
+        }
         d.finish()?;
+        self.index = index;
+        self.ckpt_blob = runs;
+        self.ckpt_len = blob_len;
         Ok(())
     }
 
@@ -538,6 +637,12 @@ impl Shard {
         self.defer_max = bytes;
     }
 
+    /// Sets when block maps switch to and from the dense representation
+    /// (D43). Takes effect for later changes; existing maps keep theirs.
+    pub fn set_dense_policy(&mut self, policy: crate::DensePolicy) {
+        self.index.policy = policy;
+    }
+
     /// The largest list bound ([`estimate`]) the shard accepts.
     pub fn max_list_bytes(&self) -> usize {
         self.max_payload()
@@ -554,8 +659,25 @@ impl Shard {
         if self.pending.len() > PENDING_LIMIT {
             self.apply_deferred()?;
         }
-        if self.tail_lsn - self.head_lsn > self.region.log_blocks / 2 {
-            self.checkpoint()?;
+        // Fuzzy checkpoints (D43): start one when a quarter of the log is
+        // used, write a slice of it each round, and finish it at once if
+        // the log reaches three quarters first.
+        let used = self.tail_lsn - self.head_lsn;
+        if used > self.region.log_blocks * 3 / 4 {
+            if self.fuzzy.is_some() {
+                self.checkpoint_forced += 1;
+            }
+            self.checkpoint_inner()?;
+        } else if self.fuzzy.is_some() {
+            let slice = if used > self.region.log_blocks / 2 {
+                self.slice_bytes.saturating_mul(8)
+            } else {
+                self.slice_bytes
+            };
+            self.checkpoint_slice(slice)?;
+        } else if used > self.region.log_blocks / 4 {
+            self.checkpoint_start()?;
+            self.checkpoint_slice(self.slice_bytes)?;
         }
         let budget = self.max_payload();
         self.round_fresh.clear();
@@ -852,18 +974,141 @@ impl Shard {
         r
     }
 
+    /// True while a fuzzy checkpoint is being written.
+    pub fn checkpoint_in_progress(&self) -> bool {
+        self.fuzzy.is_some()
+    }
+
+    /// Sets how many checkpoint bytes each commit round writes while a
+    /// fuzzy checkpoint runs (tests make it small to get many slices).
+    pub fn set_checkpoint_slice(&mut self, bytes: usize) {
+        self.slice_bytes = bytes.max(1);
+    }
+
+    /// Finishes a checkpoint now: starts one if none is running, and
+    /// writes every remaining slice.
     fn checkpoint_inner(&mut self) -> Result<(), EngineError> {
+        if self.fuzzy.is_none() {
+            self.checkpoint_start()?;
+        }
+        while self.fuzzy.is_some() {
+            self.checkpoint_slice(usize::MAX)?;
+        }
+        Ok(())
+    }
+
+    /// Starts a fuzzy checkpoint at the current log position: replay will
+    /// start there, so everything before it must be in the checkpoint or
+    /// durable in place (deferred writes are applied now, and flushed
+    /// before the superblock names the checkpoint).
+    fn checkpoint_start(&mut self) -> Result<(), EngineError> {
         self.apply_deferred()?;
         let mut e = Enc::new();
         e.u64(CKPT_MAGIC)
             .u64(self.next_revision)
             .u64(self.next_group)
             .u64(self.tail_lsn);
-        self.index.encode(&mut e);
-        let blob = e.into_vec();
-        let crc = crc32c(&blob);
-        let nblocks = blob.len().div_ceil(BLOCK) as u64;
-        let runs = match self.alloc.alloc(nblocks) {
+        let head = e.into_vec();
+        self.fuzzy = Some(Fuzzy {
+            start_lsn: self.tail_lsn,
+            last: None,
+            objects_done: false,
+            crc: crc32c(&head),
+            len: head.len() as u64,
+            pending: head,
+            runs: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Serializes objects after the cursor until `budget` bytes are
+    /// pending, writes the whole blocks, and finishes the checkpoint once
+    /// every object is written.
+    fn checkpoint_slice(&mut self, budget: usize) -> Result<(), EngineError> {
+        let mut f = self.fuzzy.take().expect("a checkpoint in progress");
+        if !f.objects_done {
+            use std::ops::Bound;
+            let lo = match &f.last {
+                Some(k) => Bound::Excluded(k.clone()),
+                None => Bound::Unbounded,
+            };
+            let mut e = Enc::new();
+            let mut last = None;
+            let mut finished = true;
+            for (k, o) in self.index.objects.range((lo, Bound::Unbounded)) {
+                if f.pending.len() + e.len() >= budget {
+                    finished = false;
+                    break;
+                }
+                e.u8(1);
+                crate::index::encode_object(k, o, &mut e);
+                last = Some(k.clone());
+            }
+            if finished {
+                e.u8(0);
+                f.objects_done = true;
+            }
+            if last.is_some() {
+                f.last = last;
+            }
+            let bytes = e.into_vec();
+            f.crc = crc32c_append(f.crc, &bytes);
+            f.len += bytes.len() as u64;
+            f.pending.extend_from_slice(&bytes);
+        }
+        // Write whole blocks (everything, padded, once objects are done).
+        let whole = if f.objects_done {
+            f.pending.len().div_ceil(BLOCK)
+        } else {
+            f.pending.len() / BLOCK
+        };
+        if whole > 0 {
+            let runs = match self.alloc.alloc(whole as u64) {
+                Some(r) => r,
+                None => {
+                    self.fuzzy = Some(f);
+                    return Err(EngineError::NoSpace);
+                }
+            };
+            let take = (whole * BLOCK).min(f.pending.len());
+            let buf = AlignedBuf::from_slice(&f.pending[..take]);
+            let mut io = Vec::new();
+            let mut done = 0usize;
+            for &(s, n) in &runs {
+                io.push((
+                    s * BLOCK as u64,
+                    &buf[done * BLOCK..(done + n as usize) * BLOCK],
+                ));
+                done += n as usize;
+            }
+            self.dev.write_batch(&io)?;
+            self.ckpt_written += (whole * BLOCK) as u64;
+            f.pending.drain(..take);
+            f.runs.extend(runs);
+            self.checkpoint_slices += 1;
+        }
+        if f.objects_done && f.pending.is_empty() {
+            self.checkpoint_finish(f)
+        } else {
+            self.fuzzy = Some(f);
+            Ok(())
+        }
+    }
+
+    /// Writes the directory, makes everything durable, and points the
+    /// superblock at the new checkpoint with the log's head at its start.
+    fn checkpoint_finish(&mut self, f: Fuzzy) -> Result<(), EngineError> {
+        let mut e = Enc::new();
+        e.u64(DIR_MAGIC)
+            .u64(f.len)
+            .u32(f.crc)
+            .seq(&f.runs, |e, (s, n)| {
+                e.u64(*s).u64(*n);
+            });
+        let dir = e.into_vec();
+        let dir_crc = crc32c(&dir);
+        let nblocks = dir.len().div_ceil(BLOCK) as u64;
+        let dir_runs = match self.alloc.alloc(nblocks) {
             Some(r) if r.len() <= MAX_CKPT_RUNS => r,
             Some(r) => {
                 for (s, n) in r {
@@ -873,10 +1118,10 @@ impl Shard {
             }
             None => return Err(EngineError::NoSpace),
         };
-        let buf = AlignedBuf::from_slice(&blob);
+        let buf = AlignedBuf::from_slice(&dir);
         let mut io = Vec::new();
         let mut done = 0usize;
-        for &(s, n) in &runs {
+        for &(s, n) in &dir_runs {
             io.push((
                 s * BLOCK as u64,
                 &buf[done * BLOCK..(done + n as usize) * BLOCK],
@@ -884,30 +1129,37 @@ impl Shard {
             done += n as usize;
         }
         self.dev.write_batch(&io)?;
+        self.ckpt_written += nblocks * BLOCK as u64;
+        // Blob, directory, and every deferred write applied since the
+        // start become durable before the superblock refers to them.
         self.dev.flush()?;
         let ckpt = Ckpt {
-            runs,
-            len: blob.len() as u64,
-            crc,
+            runs: dir_runs,
+            len: dir.len() as u64,
+            crc: dir_crc,
         };
         let sup = Super {
             seq: self.super_seq + 1,
             device_id: self.device_id,
             shard: self.shard,
             salt: self.salt,
-            head_lsn: self.tail_lsn,
+            head_lsn: f.start_lsn,
             ckpt: Some(ckpt.clone()),
         };
         let slot = self.region.start + (sup.seq % 2);
         self.dev.write(slot * BLOCK as u64, &sup.encode())?;
         self.dev.flush()?;
         self.super_seq = sup.seq;
-        self.head_lsn = self.tail_lsn;
+        self.head_lsn = f.start_lsn;
         if let Some(old) = self.ckpt.replace(ckpt) {
             for (s, n) in old.runs {
                 self.alloc.free(s, n);
             }
         }
+        for (s, n) in std::mem::replace(&mut self.ckpt_blob, f.runs) {
+            self.alloc.free(s, n);
+        }
+        self.ckpt_len = f.len;
         self.checkpoints += 1;
         Ok(())
     }
@@ -1042,14 +1294,29 @@ impl Shard {
             checkpoints: self.checkpoints,
             commits: self.commits,
             records: self.records,
-            checkpoint_bytes: self.ckpt.as_ref().map_or(0, |c| c.len),
-            runs: self
-                .index
-                .objects
-                .values()
-                .map(|o| o.blocks.len() as u64)
-                .sum(),
+            checkpoint_bytes: self.ckpt_len,
+            checkpoint_slices: self.checkpoint_slices,
+            checkpoint_forced: self.checkpoint_forced,
+            log_blocks_written: self.tail_lsn - self.opened_lsn,
+            checkpoint_bytes_written: self.ckpt_written,
         }
+    }
+
+    /// Totals over the whole index (walks every block map: not for the
+    /// I/O path).
+    pub fn index_stats(&self) -> IndexStats {
+        let mut st = IndexStats::default();
+        for o in self.index.objects.values() {
+            st.runs += o.blocks.run_count();
+            st.dense_objects += o.blocks.is_dense() as u64;
+            st.map_bytes += o.blocks.mem_bytes();
+        }
+        st
+    }
+
+    /// Deferred writes not yet applied in place (cheap).
+    pub fn pending_blocks(&self) -> u64 {
+        self.pending.len() as u64
     }
 
     pub fn region(&self) -> Region {

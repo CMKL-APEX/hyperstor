@@ -257,6 +257,13 @@ pub enum Msg {
         map: Vec<u8>,
     },
     MapPushOk,
+    /// Storage node to map service: `peer` hasn't answered `reporter`'s
+    /// pings for the peer timeout (decisions.md D40).
+    PeerDown {
+        reporter: u32,
+        peer: u32,
+    },
+    PeerDownOk,
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (replication.md §8.5).
     Push {
@@ -306,6 +313,8 @@ mod kind {
     pub const FENCE_OK: u16 = 35;
     pub const MAP_PUSH: u16 = 36;
     pub const MAP_PUSH_OK: u16 = 37;
+    pub const PEER_DOWN: u16 = 38;
+    pub const PEER_DOWN_OK: u16 = 39;
     pub const ERROR: u16 = 99;
 }
 
@@ -335,6 +344,8 @@ impl Msg {
             Msg::FenceOk => FENCE_OK,
             Msg::MapPush { .. } => MAP_PUSH,
             Msg::MapPushOk => MAP_PUSH_OK,
+            Msg::PeerDown { .. } => PEER_DOWN,
+            Msg::PeerDownOk => PEER_DOWN_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -352,6 +363,7 @@ impl Msg {
                 | Msg::HeartbeatOk { .. }
                 | Msg::FenceOk
                 | Msg::MapPushOk
+                | Msg::PeerDownOk
                 | Msg::BackfillOk { .. }
                 | Msg::Error { .. }
         )
@@ -395,7 +407,10 @@ impl Msg {
             Msg::BackfillOk { map_epoch } => {
                 e.u64(*map_epoch);
             }
-            Msg::FenceOk | Msg::MapPushOk => {}
+            Msg::FenceOk | Msg::MapPushOk | Msg::PeerDownOk => {}
+            Msg::PeerDown { reporter, peer } => {
+                e.u32(*reporter).u32(*peer);
+            }
             Msg::Fence { epoch, pgs } => {
                 e.u64(*epoch).seq(pgs, |e, (p, g)| {
                     e.u32(*p).u32(*g);
@@ -536,6 +551,11 @@ impl Msg {
                 map: d.bytes()?.to_vec(),
             },
             MAP_PUSH_OK => Msg::MapPushOk,
+            PEER_DOWN => Msg::PeerDown {
+                reporter: d.u32()?,
+                peer: d.u32()?,
+            },
+            PEER_DOWN_OK => Msg::PeerDownOk,
             BACKFILL_DONE => Msg::BackfillDone {
                 pool: d.u32()?,
                 pg: d.u32()?,
@@ -675,6 +695,11 @@ mod tests {
                 map: vec![1, 2],
             },
             Msg::MapPushOk,
+            Msg::PeerDown {
+                reporter: 1,
+                peer: 2,
+            },
+            Msg::PeerDownOk,
             Msg::BackfillDone {
                 pool: 1,
                 pg: 2,

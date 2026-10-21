@@ -16,6 +16,7 @@ hyperstor-daemon = { path = "../hyperstor-daemon" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 libc.workspace = true
+redb = "3"
 rand.workspace = true
 
 [lints]

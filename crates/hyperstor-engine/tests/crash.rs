@@ -204,8 +204,29 @@ fn assert_matches(sh: &Shard, m: &Model, check_revisions: bool) -> Result<(), St
     Ok(())
 }
 
+/// Crashes that happened while a fuzzy checkpoint was being written.
+static MID_CHECKPOINT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Commits after which some object's block map was dense.
+static DENSE_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// The block-map policy each open applies (the dense-map test forces
+    /// dense maps for every object with more than one run).
+    static POLICY: std::cell::Cell<Option<DensePolicy>> = const { std::cell::Cell::new(None) };
+}
+
 fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
-    open(d).map(|(_, mut v)| v.pop().unwrap())
+    open(d).map(|(_, mut v)| {
+        let mut sh = v.pop().unwrap();
+        // Tiny slices: fuzzy checkpoints span many commit rounds, so power
+        // is lost in the middle of them.
+        sh.set_checkpoint_slice(1024);
+        if let Some(p) = POLICY.with(|p| p.get()) {
+            sh.set_dense_policy(p);
+        }
+        sh
+    })
 }
 
 /// One run: random batches, a crash at a random point, recovery (possibly
@@ -266,6 +287,9 @@ fn run(seed: u64) -> usize {
                             Err(e) => panic!("seed {seed}: unexpected {e:?}"),
                         }
                     }
+                    if sh.index_stats().dense_objects > 0 {
+                        DENSE_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     let armed = crash_mid && b == batches - 1;
                     if !armed && let Err(e) = assert_matches(&sh, &model, true) {
                         panic!(
@@ -285,6 +309,9 @@ fn run(seed: u64) -> usize {
                     break;
                 }
             }
+        }
+        if sh.checkpoint_in_progress() {
+            MID_CHECKPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // Power loss: keep a random subset of unflushed blocks.
         let p = rng.random_range(0.0..1.0);
@@ -364,8 +391,7 @@ fn run(seed: u64) -> usize {
     crashes
 }
 
-#[test]
-fn random_crashes_recover_to_a_consistent_prefix() {
+fn run_seeds(label: &str) {
     let seeds: u64 = std::env::var("HS_CRASH_SEEDS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -380,5 +406,32 @@ fn random_crashes_recover_to_a_consistent_prefix() {
         crashes += run(seed);
     }
     assert!(crashes >= runs as usize);
-    eprintln!("{runs} runs, {crashes} crashes recovered and checked");
+    let mid = MID_CHECKPOINT.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "{label}: {runs} runs, {crashes} crashes recovered and checked ({mid} so far during a fuzzy checkpoint)"
+    );
+    if runs >= 100 {
+        assert!(mid > 50, "crashes during fuzzy checkpoints were exercised");
+    }
+}
+
+#[test]
+fn random_crashes_recover_to_a_consistent_prefix() {
+    run_seeds("default block maps");
+}
+
+/// The same, with every fragmented object's block map dense (D43), so
+/// recovery replays into dense maps and checkpoints carry them.
+#[test]
+fn random_crashes_with_dense_block_maps() {
+    POLICY.with(|p| {
+        p.set(Some(DensePolicy {
+            disabled: false,
+            run_overhead: 1 << 20,
+        }))
+    });
+    run_seeds("dense block maps");
+    let seen = DENSE_SEEN.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!("commits with dense block maps present: {seen}");
+    assert!(seen > 100, "dense maps were exercised");
 }
