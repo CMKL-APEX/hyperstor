@@ -115,6 +115,9 @@ pub struct NodeConfig {
     /// How often each primary scrubs its PGs, comparing every member's
     /// digests (replication.md §8.5); zero turns scrub off.
     pub scrub_interval: Duration,
+    /// Test hook: answer `Digests` as a node from before digests does
+    /// ("unsupported request"), as in a rolling upgrade.
+    pub no_digests: bool,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -174,6 +177,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let spin = cfg.spin;
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
+        let no_digests = cfg.no_digests;
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -195,6 +199,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             m,
                         )
                         .await?;
+                        st.no_digests.set(no_digests);
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
@@ -256,6 +261,8 @@ struct ShardState {
     pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
     /// The test hook of `NodeConfig::meta_blocked`.
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The test hook of `NodeConfig::no_digests`.
+    no_digests: Cell<bool>,
     /// Cache-pool PGs (D45), with the epoch this device last served each
     /// at. Serving one at a new epoch, or for the first time since start,
     /// first drops what this device holds of it: the copy may be older
@@ -373,6 +380,7 @@ impl ShardState {
             lease_until: Cell::new(None),
             fenced: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
+            no_digests: Cell::new(false),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
             metrics,
@@ -625,6 +633,9 @@ impl ShardState {
                         self.client.install_map(m);
                     }
                     reply(&Msg::MapPushOk, &[]);
+                }
+                Msg::Digests { .. } if self.no_digests.get() => {
+                    reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[])
                 }
                 Msg::Digests { to } => {
                     let (m, p) = self.digests(to).await;
@@ -1095,6 +1106,33 @@ impl ShardState {
                 Ok(v) => v,
                 Err(_) => return false,
             },
+            // A node from before digests (a rolling upgrade, operations.md
+            // §18.4): reset its copy and send everything, as backfill did.
+            Ok((
+                Msg::Error {
+                    code: Code::Invalid,
+                    ..
+                },
+                _,
+            )) => {
+                self.drained().await;
+                let reset = conn.start(
+                    &Msg::Push {
+                        to,
+                        key: WireKey {
+                            ns: 0,
+                            name: Vec::new(),
+                            version: 0,
+                        },
+                        crcs: Vec::new(),
+                    },
+                    &[],
+                );
+                if !matches!(reset.await, Ok((Msg::PushOk, _))) {
+                    return false;
+                }
+                Vec::new()
+            }
             _ => return false,
         };
         let theirs: HashMap<ObjKey, u64> = theirs

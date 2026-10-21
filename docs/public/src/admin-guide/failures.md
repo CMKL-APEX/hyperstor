@@ -22,12 +22,24 @@ data fail until one of its nodes returns. It is never reset to empty.
 
 When the node starts again and sends heartbeats, the map service marks it
 up, and placement wants it back for the PGs it held. For each of them,
-the current primary **backfills** it: copies every object to it,
-replacing what it had, since the node may have missed writes. Only then
-does the node count as a full copy again, and any stand-in is dropped.
+the current primary **backfills** it: it compares what the node holds
+with its own copy, object by object, and sends only the objects that
+differ (deleting those it no longer has), since the node may have missed
+writes. Only then does the node count as a full copy again, and any
+stand-in is dropped.
 
-Backfill copies whole objects, so a node that was down briefly still
-receives all of its PGs' data. Plan for the network traffic.
+So a node that was down briefly receives about what was written while it
+was away. A new or empty node receives all of its PGs' data: plan for
+that traffic when you add or replace one.
+
+## Scrub
+
+Every storage node compares, once a day by default (`hyperstord
+--scrub-hours`), the copies of each placement group it leads. A copy
+that differs from the others, when the rest agree, is replaced from the
+node's own copy. When no majority agrees, nothing is changed: the
+object is counted under `hyperstor_scrub_objects_total{kind="unresolved"}`
+and logged, for an operator to look at.
 
 ## A storage node is cut off from the map service
 

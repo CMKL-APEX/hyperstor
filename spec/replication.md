@@ -44,6 +44,13 @@ members, as long as there are at least `min_size` of them. Below
   10,000 operations or the last 30 minutes, whichever is more.
 - A member that missed operations still covered by the log catches up by
   replaying them (delta recovery). Otherwise it is backfilled (§8.5).
+- **As built** (HS2, implementation-notes.md I57): no PG log yet. Delta
+  recovery compares content digests instead: the returning member lists
+  each object of the PG with a digest the engine computes from its index
+  (size, each block's CRC, attributes, key–value table), and the primary
+  sends only the objects whose digests differ, and deletes for objects
+  it no longer has. It costs a scan of the PG's index entries on both
+  sides, not of the data, and needs no new persisted state.
 
 ### 8.4 Primaries, epochs and leases (D8, D42)
 
@@ -100,6 +107,13 @@ members, as long as there are at least `min_size` of them. Below
 
   Damaged copies are repaired from a copy whose CRCs match, and an
   inconsistency that can't be decided is reported, not guessed at.
+- **As built** (HS2, implementation-notes.md I58): light scrub by the
+  same digests, every `hyperstord --scrub-hours` (default 24) for each
+  clean PG a device is primary of. A difference that persists after a
+  second look is repaired from the primary's copy when a majority of
+  the copies agree with it, and otherwise reported. Deep scrub is not
+  built: reads already check every block's CRC (engine.md §7.2), but
+  nothing reads blocks that aren't asked for.
 
 ### 8.6 Erasure-coded pools (D6)
 

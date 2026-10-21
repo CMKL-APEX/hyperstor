@@ -108,6 +108,7 @@ fn main() {
                 .unwrap_or(24)
                 * 3600,
         ),
+        no_digests: false,
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());

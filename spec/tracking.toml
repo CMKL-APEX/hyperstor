@@ -209,12 +209,21 @@ tests = [
 [[milestone.item]]
 what = "Failure reports from peers"
 spec = ["D40"]
-status = "planned"
+status = "done"
+tests = [
+    "cluster::peers_report_a_dead_node_before_the_map_service_notices",
+    "hyperstor_meta::tests::two_peer_reports_mark_a_node_down_and_stop_its_lease",
+]
 
 [[milestone.item]]
 what = "Peering, placement-group log and delta recovery"
-spec = ["replication.md §8.3"]
-status = "planned"
+spec = ["replication.md §8.3", "I57"]
+status = "partial"
+tests = [
+    "cluster::a_returning_node_gets_only_what_changed",
+    "cluster::a_returning_node_without_digests_is_refilled_whole",
+    "engine::digests_follow_content_not_history",
+]
 
 [[milestone.item]]
 what = "Read leases"
@@ -223,8 +232,12 @@ status = "planned"
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["replication.md §8.5"]
-status = "planned"
+spec = ["replication.md §8.5", "I58"]
+status = "partial"
+tests = [
+    "cluster::scrub_repairs_a_copy_the_others_outvote",
+    "hyperstor_daemon::tests::scrub_repairs_only_from_a_majority",
+]
 
 [[milestone.item]]
 what = "Down and out, blocklist and forced takeovers"

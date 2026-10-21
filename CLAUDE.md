@@ -9,8 +9,8 @@ design is split by topic, with section numbers kept across files.
 ## Where things stand
 
 - **Implemented:** HS0, HS1 (no Raft yet) and part of HS2 on `main`,
-  including dense maps, peer reports and cache pools without expiry or
-  eviction; the first part of AD0 and AD1: the cluster API on the map
+  including dense maps, peer reports, cache pools without expiry or
+  eviction, and delta recovery and light scrub by content digests; the first part of AD0 and AD1: the cluster API on the map
   service over mutual TLS with roles, `hyperstorctl`, and
   `hyperstor-install` with host checks and an all-in-one trial cluster. `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
@@ -19,12 +19,16 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D70 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I56, and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I59, and every host check (G1–G20,
   FG1–FG2).
-- **Next:** cache-pool expiry and eviction (the rest of D45; open
-  question in I40), paged checkpoints (D47), the copy-on-write B+tree
-  (D43, D44), priority classes (D46); then the rest of HS2 (read leases,
-  PG log, scrub, blocklist).
+- **Next:** Raft for the map service (the rest of HS1; with D48's 0.6 s
+  leases one map service is a whole-cluster single point of failure;
+  needs `glidex-raftstore`, D20); the rest of HS2 (blocklist and forced
+  takeovers, deep scrub, scrub rate limits, read leases; the PG log only
+  if I57's digest scan proves too slow); the copy-on-write B+tree with
+  snapshots and clones (D43, D44, HS4, which also gives D47's paged
+  checkpoints); `hyperstor-vhost` and the glidex driver (HS3); cache-pool
+  expiry and eviction and priority classes (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
   `spec/administration.md`, milestones AD0–AD4.
 

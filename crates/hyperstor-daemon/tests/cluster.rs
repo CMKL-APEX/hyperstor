@@ -134,6 +134,7 @@ impl Cluster {
                     meta_blocked: Some(blocked[n].clone()),
                     defer_max: None,
                     scrub_interval: scrub,
+                    no_digests: false,
                 }))
             })
             .collect();
@@ -161,6 +162,12 @@ impl Cluster {
 
     /// Starts node `n` again on its old devices and addresses.
     fn restart(&mut self, n: usize) {
+        self.restart_as(n, false)
+    }
+
+    /// Restarts node `n`; with `no_digests`, as a node from before
+    /// digests (a rolling upgrade).
+    fn restart_as(&mut self, n: usize, no_digests: bool) {
         let devs = self.stopped.remove(&n).expect("node was stopped");
         let shards = devs
             .into_iter()
@@ -182,6 +189,7 @@ impl Cluster {
             meta_blocked: Some(self.blocked[n].clone()),
             defer_max: None,
             scrub_interval: self.scrub,
+            no_digests,
         }));
     }
 
@@ -611,6 +619,68 @@ fn a_returning_node_gets_only_what_changed() {
         "node 3 serves PGs again"
     );
     let chunks: Vec<(u128, u64)> = (0..32u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// A node from before digests (a rolling upgrade) answers `Digests` with
+/// "unsupported request"; the primary then resets its copy and sends every
+/// object, as backfill did before delta recovery.
+#[test]
+fn a_returning_node_without_digests_is_refilled_whole() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let v1 = pattern(61, 16 * CHUNK as usize);
+    let v1c = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.kill(3);
+    let v1b = pattern(62, 16 * CHUNK as usize);
+    let v1bc = v1b.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let t = std::time::Instant::now();
+            while cl.map().nodes[&3].up {
+                assert!(t.elapsed().as_secs() < 10, "node 3 never marked down");
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+                cl.refresh_map().await.unwrap();
+            }
+            cl.write(POOL, 1, 0, v1bc).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.restart_as(3, true);
+    let v1r = v1b.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 7).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+            assert!(cl.map().nodes[&3].up);
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+        })
+    })
+    .join()
+    .unwrap();
+    let pushes: u64 = c.nodes[3]
+        .as_ref()
+        .unwrap()
+        .metrics
+        .iter()
+        .map(|(_, m)| m.pushes.load(std::sync::atomic::Ordering::Relaxed))
+        .sum();
+    assert!(pushes > 0, "node 3 was refilled");
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..16u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
 

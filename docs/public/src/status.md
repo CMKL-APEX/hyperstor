@@ -68,10 +68,10 @@ covered by tests that run on every change.
 | Failure detection by heartbeats, and writes that continue with fewer copies | Done |
 | Backfill: returning or replacement nodes are refilled | Done |
 | Map leases with fencing and pushes: a cut-off primary stops serving | Done |
-| Failure reports from peers | Planned |
-| Peering, placement-group log and delta recovery | Planned |
+| Failure reports from peers | Done |
+| Peering, placement-group log and delta recovery | In progress |
 | Read leases | Planned |
-| Scrub | Planned |
+| Scrub | In progress |
 | Down and out, blocklist and forced takeovers | Planned |
 | Fault-injection test rig: kill, partition, slow disk | Planned |
 

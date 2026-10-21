@@ -570,3 +570,57 @@ request and three more relaxed adds when it is answered), alternately:
    against 54291 and 54324 ops/s, in both pairs), the most
    request-heavy test; elsewhere nothing shows. Acceptable for always-on
    metrics; a coarser clock would remove it if it matters.
+
+## 2026-10-21: refilling a returning node, delta recovery (dev-2)
+
+Question: how much does a node that returns after a short absence get
+sent, now that backfill sends only objects whose digests differ (I57),
+against a whole refill, and how long until its PGs are clean? Four
+storage nodes of one reactor on 512 MiB memory devices, a pool of 3
+copies and 64 PGs in 1 MiB chunks, one 256 MiB volume. Node 3 is
+stopped; once the map service marks it down, a share of the chunks is
+overwritten (spread evenly over the volume); node 3 is started again on
+its old devices. "Whole refill" is what node 3 holds, which is what the
+previous backfill sent. Run twice through the collect script (commit
+`77b0d45`):
+
+```sh
+scripts/collect-decision-data.sh rejoin
+```
+
+| Chunks changed | node 3's copies (MiB) | sent to node 3, MiB | whole refill, MiB | until clean, run 1 s | run 2 s |
+|---|---|---|---|---|---|
+| 3 of 256 (1%) | 192 | 2.0 | 192 | 0.18 | 0.14 |
+| 26 of 256 (10%) | 192 | 16.0 | 192 | 0.22 | 0.14 |
+| 256 of 256 (100%) | 192 | 192.0 | 192 | 0.48 | 0.46 |
+
+### Findings
+
+1. **A returning node is sent what changed on its copies, to the
+   block:** 2 MiB for 1% of the volume (96 times less than a whole
+   refill), 16 MiB for 10% (12 times less). Of the 3 and 26 chunks
+   changed, node 3 held 2 and 16.
+2. **Time to clean drops by about two thirds** at 1–10% changed (0.14–
+   0.22 s against 0.46–0.48 s). At these sizes most of it is the
+   backfiller's 100 ms pass and the map's round trips, so on real
+   volumes, where copying dominates, the gain follows the bytes.
+3. **When everything changed, delta costs only a digest list more:**
+   at 100% it sends the same 192 MiB as a whole refill, plus one list of
+   about 40 bytes per object, in the same time.
+
+The data path itself didn't change; checked with `hyperstor-bench
+cluster mem 1` (three storage nodes of one reactor on memory devices,
+3 s per test), built from `main` (`e5657f8`) and from this branch
+(`77b0d45`, scrub off as in every bench), run alternately twice:
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7480; 154 | 7507; 155 | 7443; 155 | 7514; 154 |
+| 4 KiB writes, QD32 | 25088; 2917 | 26119; 2732 | 25482; 2831 | 26349; 2672 |
+| 4 KiB reads, QD1 | 18779; 65 | 18843; 65 | 18493; 66 | 18819; 65 |
+| 4 KiB reads, QD32 | 53764; 1343 | 54168; 1330 | 53259; 1360 | 54405; 1326 |
+| 1 MiB writes, QD4 | 516; 12685 | 516; 12670 | 529; 12113 | 523; 12576 |
+| 1 MiB reads, QD4 | 1492; 4604 | 1521; 4391 | 1527; 4241 | 1502; 5423 |
+
+4. **No cost on the I/O path:** every difference is within the spread
+   between two runs of one build.
