@@ -15,37 +15,34 @@ newer than this note wins over it.
   - adaptive reactor polling (I38);
   - peer reports (D40, I39);
   - cache pools, first part (D45, I40): no expiry or eviction yet;
+  - decisions D47–D49 (log ceiling 1 GiB, lease 0.6 s / timeout 0.8 s /
+    peer timeout 0.3 s, 200 µs polling), with the code defaults changed;
   - the decision benchmarks (`hyperstor-bench decisions`, `redb`,
     `failover`, `replay`, `logsize`) and the `collect-decision-data`
     skill.
-- The branch predates PR #2: rebase it onto `main` before merging so
-  CI's checks run on it.
+- Both #3 and #4 were rebased onto `main` (`ef2d765`) on 2026-10-21, so
+  CI's checks run on them; they passed locally before the push.
 - **PR #4, branch `bench/failover-targets`, stacked on PR #3** (base
   `impl/dense-map`): failover at the recommended 1 s setting, and the
   collect script runs `failover`, `replay` and `logsize`. Merge after #3.
 
 ## Waiting on the owner
 
-From `spec/decision-log.md`, "Data for pending decisions":
-
-| Point | Question | Recommendation |
-|---|---|---|
-| 11 | Log ceiling and paged checkpoints. Per TiB at 50k writes/s, checkpoint traffic is 826, 207 and 52 MB/s for 64 MiB, 256 MiB and 1 GiB logs; reopening takes 0.38, 0.61 and 1.5 s | Raise `MAX_LOG` (`crates/hyperstor-engine/src/device.rs`) to 1 GiB now; build paged checkpoints next |
-| 13 | Lease and liveness defaults. Failover takes about 1.25 leases with peer reports; lease 0.6 s / timeout 0.8 s measured 0.91 s, or 0.66 s with peer reports (PR #4) | Owner picks a target failover time; for about 1 s, lease 0.6 s and timeout 0.8 s |
-| 16 | Polling window | 200 µs for `hyperstord`, 0 in the client library |
-
+Nothing from `spec/decision-log.md`'s "Data for pending decisions":
+points 11, 13 and 16 were settled on 2026-10-21 as D47, D48 and D49.
 Points 12, 14 and 15 are recommendations the owner hasn't objected to.
+Still open for review: D20–D37, F1–F12, I1–I40 and the host checks,
+now including G16 (short leases under load, on a real network).
 
 ## Next work
 
 1. Cache-pool expiry and eviction (the rest of D45). Open question in
    I40: with more than one copy, any membership change empties every
    copy; keeping survivors needs a per-PG "last written epoch".
-2. The 1 GiB log ceiling, if point 11 is approved.
-3. Paged checkpoints.
-4. The copy-on-write B+tree (D43, D44): the log stays its write-ahead
+2. Paged checkpoints (D47).
+3. The copy-on-write B+tree (D43, D44): the log stays its write-ahead
    log, and the tree commits only at checkpoints (point 12).
-5. Priority classes (D46). G14 and G15 wait for snapshots, clones and
+4. Priority classes (D46). G14 and G15 wait for snapshots, clones and
    the Bε-tree.
 
 ## How the owner wants sessions run
