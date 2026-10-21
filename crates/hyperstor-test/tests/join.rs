@@ -482,18 +482,18 @@ fn map_service_members_join_the_first() {
             Some((i, f))
         })
     });
+    // A follower refuses, and names the leader once it has heard from it.
     let follower = (leader + 1) % 3;
-    let r = ctl(
-        &bin,
-        &apis[follower],
-        &pkis[follower],
-        &["token", "create", "--role", "node"],
-    );
-    assert!(
-        r.code == 3 && r.has("the leader is") && r.has("(not_leader)"),
-        "{}",
-        r.out
-    );
+    wait_for("a follower to name the leader", 20, || {
+        let r = ctl(
+            &bin,
+            &apis[follower],
+            &pkis[follower],
+            &["token", "create", "--role", "node"],
+        );
+        assert!(r.code == 3 && r.has("(not_leader)"), "{}", r.out);
+        r.has("the leader is").then_some(())
+    });
     let t_host = s.path("store");
     join_storage(
         &t_host,
