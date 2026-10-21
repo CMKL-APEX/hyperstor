@@ -297,6 +297,18 @@ id = "HS14"
 title = "Distributed filesystem"
 
 [[milestone]]
+id = "HS15"
+title = "Tenancy: quotas and fair share between tenants"
+
+[[milestone]]
+id = "HS16"
+title = "Sites and replication between clusters"
+
+[[milestone]]
+id = "HS17"
+title = "Global namespace and federation"
+
+[[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
 

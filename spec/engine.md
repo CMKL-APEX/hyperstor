@@ -96,6 +96,10 @@ log device, which has its own superblock naming the data device (§6.2).
 | `s3` | `(bucket id, object id, part, chunk_index)` | S3 object data (s3.md §14) |
 | `fs` | `(inode, chunk_index)` | file data (filesystem.md) |
 
+  The tenant is not part of the key: it is a property of the lineage,
+  bucket, filesystem or range the object belongs to (D61, tenants.md
+  §24.2).
+
 - **Operations** on one object come as a list applied atomically
   (D22): compare-and-set on the version, read a range, write a range,
   get, put and delete keys, delete a key range, set attributes. The

@@ -154,6 +154,9 @@ Expiry and eviction are not built yet.
 - **Space.** Under pressure a cache pool evicts, by expiry first, then
   least recently read, instead of refusing writes; the D27 thresholds
   don't apply.
+- **Source.** A cache pool can name a source cluster; a miss then
+  fetches the immutable version from it instead of answering "not
+  found" (D67, federation.md §25.5).
 - **Everything else is shared:** placement, map leases (D42), the engine,
   and every front end (S3 and S3 over RDMA, the native GPU library).
 

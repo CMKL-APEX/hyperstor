@@ -95,7 +95,8 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
     clients;
   - each reactor queues requests per volume with weighted fair queuing,
     so a client that ignores its limits can only take its fair share of
-    the devices.
+    the devices. The queues have a tenant level above the volume
+    level (D62, tenants.md §24.5).
 
   Provisioned IOPS for metering (metering.md §16) build on these
   limits.

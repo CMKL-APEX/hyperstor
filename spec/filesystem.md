@@ -31,7 +31,9 @@ datasets and checkpoints shared by many GPU nodes.
   - quotas per directory tree;
   - POSIX ACLs;
   - re-export over NFS and SMB;
-  - a Kubernetes CSI driver (`ReadWriteMany`).
+  - a Kubernetes CSI driver (`ReadWriteMany`);
+  - one filesystem across clusters, through range homes and the
+    partition allowlist (D65, D66, federation.md §25.4).
 - **Out:**
   - a kernel filesystem client;
   - strict POSIX coherence of file data between clients (F6).

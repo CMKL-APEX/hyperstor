@@ -364,3 +364,24 @@ recommendation each; the owner's answers:
 Made while drafting and open for review: D56–D60 (certificate lifetimes
 and revocation, join tokens, keeping the control path off reactors,
 ports, a separate root under glidex). Host checks G17 and G18.
+
+
+## Tenancy and multi-site (2026-10-21)
+
+Asked by the owner: what makes hyperstor competitive against existing
+high-performance enterprise storage, and where multi-tenancy and a
+global namespace should be implemented. The answer, with options and a
+recommendation each, and the owner's choices:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 23 | Tenant as a pool per tenant, a field of every object key, or a property of the containers (lineages, buckets, filesystems, ranges) | Containers; pools shared; accounting per `(pool, tenant)` | D61 |
+| 24 | Fair share per volume only, or tenants then volumes | Two levels | D62 |
+| 25 | Stretch PGs across sites, or keep sites within campus latency and build multi-site above the PG layer | Above the PG layer; `site` as a failure domain within 1 ms | D63 |
+| 26 | Cross-cluster replication: synchronous, or asynchronous and immutable-only | Asynchronous, immutable versions, pulled | D64 |
+| 27 | Home of a KV range: creator's site and movable, per filesystem or bucket, or Raft across sites | Creator's site, movable | D65 |
+| 28 | Writes while the home is unreachable: fail, or queue locally and replay | Queue locally; last-writer-wins with a per-front-end allowlist (the merge rule is open to review) | D66 |
+| 29 | Where federation lives: `hyperstor-mgmt` and glidex, `hyperstor-meta`, or glidex only | `hyperstor-mgmt` standalone and glidex under glidex | D68 |
+
+Cache-pool sources (D67) followed from 26 and D45. Host checks G19
+(site round-trip limit) and G20 (the namespace across a WAN).

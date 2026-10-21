@@ -21,6 +21,8 @@
 - [S3 gateway](s3.md)
 - [Management, deployment and security](operations.md)
 - [Administration](administration.md)
+- [Tenancy](tenants.md)
+- [Sites and federation](federation.md)
 - [glidex integration](glidex.md)
 - [Milestones and host checks](milestones.md)
 - [Filesystem](filesystem.md)
