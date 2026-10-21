@@ -14,6 +14,8 @@
 //!   (default 4) in the data directory, a replicated pool, systemd units,
 //!   and `hyperstorctl`'s configuration. Flags are saved in
 //!   `/etc/hyperstor/install.conf` and reused by later runs.
+//!   It also installs itself and a daily timer that runs `install` again,
+//!   which renews certificates (D56) and repairs drift.
 //! - `uninstall` stops and removes the units and binaries; configuration
 //!   and data stay.
 //!
@@ -391,6 +393,33 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ";
 
+// Reruns the installer daily: it changes nothing unless something drifted
+// or a certificate is past two thirds of its life (D56), which it renews.
+const RENEW_SERVICE: &str = "\
+# Written by hyperstor-install.
+[Unit]
+Description=Hyperstor: renew certificates and repair the installation
+Documentation=https://github.com/CMKL-APEX/hyperstor
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hyperstor-install install
+";
+
+const RENEW_TIMER: &str = "\
+# Written by hyperstor-install.
+[Unit]
+Description=Daily hyperstor-install run (certificate renewal)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+";
+
 const NODE_UNIT: &str = "\
 # Written by hyperstor-install. One instance per storage node: hyperstord@N.
 [Unit]
@@ -454,6 +483,16 @@ fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
         (
             "/etc/systemd/system/hyperstord@.service".to_string(),
             NODE_UNIT.replace("DATA_DIR", data),
+            0o644,
+        ),
+        (
+            "/etc/systemd/system/hyperstor-renew.service".to_string(),
+            RENEW_SERVICE.to_string(),
+            0o644,
+        ),
+        (
+            "/etc/systemd/system/hyperstor-renew.timer".to_string(),
+            RENEW_TIMER.to_string(),
             0o644,
         ),
     ];
@@ -573,6 +612,18 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         }
     }
 
+    // The installer itself, for the renewal timer. Its own changes
+    // restart nothing.
+    let me = std::env::current_exe().unwrap_or_else(|_| fail("can't find my own path"));
+    let bytes = fs::read(&me).unwrap_or_else(|e| fail(&format!("{}: {e}", me.display())));
+    if converge(
+        &under(root, "/usr/local/bin/hyperstor-install"),
+        &bytes,
+        0o755,
+    ) {
+        changed.push("/usr/local/bin/hyperstor-install".into());
+    }
+
     // 2. The service user and the data directory.
     if real {
         let exists = Command::new("id")
@@ -627,12 +678,16 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         restart.push("hyperstor-meta.service".into());
     }
     let mut units_changed = false;
+    let mut service_units_changed = false;
     for (path, content, mode) in files(s, cid) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
             continue;
         }
-        if path.ends_with(".service") {
+        if path.starts_with("/etc/systemd/") {
             units_changed = true;
+        }
+        if path.ends_with("hyperstor-meta.service") || path.ends_with("hyperstord@.service") {
+            service_units_changed = true;
         }
         if path.ends_with("cluster.txt") || path.ends_with("meta.env") {
             restart.push("hyperstor-meta.service".into());
@@ -645,7 +700,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         }
         changed.push(path);
     }
-    if binaries_changed || units_changed {
+    if binaries_changed || service_units_changed {
         restart = units(s);
     }
     restart.dedup();
@@ -663,7 +718,8 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         if units_changed && !run("systemctl", &["daemon-reload"]) {
             fail("systemctl daemon-reload failed");
         }
-        let all = units(s);
+        let mut all = units(s);
+        all.push("hyperstor-renew.timer".into());
         let mut args = vec!["enable", "--now"];
         args.extend(all.iter().map(String::as_str));
         if !run("systemctl", &args) {
@@ -790,7 +846,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         fail("uninstalling from / needs root: run it with sudo (or use --root DIR)");
     }
     if real {
-        let all = units(s);
+        let mut all = units(s);
+        all.push("hyperstor-renew.timer".into());
         let mut args = vec!["disable", "--now"];
         args.extend(all.iter().map(String::as_str));
         // Units that were never installed make this fail; that's fine.
@@ -800,6 +857,9 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     let paths = [
         "/etc/systemd/system/hyperstor-meta.service".to_string(),
         "/etc/systemd/system/hyperstord@.service".to_string(),
+        "/etc/systemd/system/hyperstor-renew.service".to_string(),
+        "/etc/systemd/system/hyperstor-renew.timer".to_string(),
+        "/usr/local/bin/hyperstor-install".to_string(),
     ]
     .into_iter()
     .chain(BINARIES.iter().map(|b| format!("/usr/local/bin/{b}")));

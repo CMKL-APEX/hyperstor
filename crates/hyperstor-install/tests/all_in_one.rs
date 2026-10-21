@@ -143,6 +143,9 @@ fn install_manage_and_fail_a_node() {
         "/etc/hyperstor/cluster.txt",
         "/etc/hyperstor/node-2.env",
         "/etc/systemd/system/hyperstord@.service",
+        "/etc/systemd/system/hyperstor-renew.timer",
+        "/usr/local/bin/hyperstor-install",
+        "/etc/hyperstor/pki/admin.crt",
         "/etc/hyperstor/install.conf",
     ] {
         assert!(text.contains(f), "{f} not reported as written:\n{text}");
@@ -303,6 +306,12 @@ fn install_manage_and_fail_a_node() {
         .unwrap();
     assert!(out.status.success());
     assert!(!bin.join("hyperstorctl").exists());
+    assert!(!bin.join("hyperstor-install").exists());
+    assert!(
+        !root
+            .join("etc/systemd/system/hyperstor-renew.timer")
+            .exists()
+    );
     assert!(
         root.join("etc/hyperstor/cluster.txt").exists(),
         "configuration is kept"

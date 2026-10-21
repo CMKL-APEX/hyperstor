@@ -36,11 +36,11 @@ in, so run it from `target/release` after `cargo build --release`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl` |
+| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, and `hyperstor-install` itself |
 | `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes, pool 1 |
 | `/etc/hyperstor/meta.env`, `node-N.env` | Each service's options |
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
-| `/etc/systemd/system/` | `hyperstor-meta.service` and `hyperstord@.service` (one instance per node) |
+| `/etc/systemd/system/` | `hyperstor-meta.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
 | `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group) |
 | `/etc/hyperstor/install.conf` | The saved options |
 
@@ -48,7 +48,9 @@ It also creates the `hyperstor` system user, which the services run as,
 and the `hyperstor-admin` group, whose members may use `hyperstorctl`.
 Certificates are made once and renewed by later runs when two thirds of
 their life has passed (30 days for the API's and the administrator's,
-a year for the intermediate CA).
+a year for the intermediate CA). The daily timer is such a run: it
+renews what is due, repairs anything that drifted, and otherwise changes
+nothing.
 Changed binaries, units or options restart the services they affect.
 
 **Checks** (`check`, and first thing in `install`): kernel version,
