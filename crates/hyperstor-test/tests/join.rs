@@ -466,7 +466,9 @@ fn map_service_members_join_the_first() {
         .map(|i| s.path(&format!("member-{i}")).join("etc/hyperstor/pki"))
         .collect();
     // On a timeout, the members' logs say why.
+    let last_refusals: std::cell::RefCell<Vec<String>> = Default::default();
     let dump = || {
+        eprintln!("last refusals: {:#?}", last_refusals.borrow());
         for i in 1..=3 {
             let log =
                 std::fs::read_to_string(s.path(&format!("member-{i}.log"))).unwrap_or_default();
@@ -484,6 +486,10 @@ fn map_service_members_join_the_first() {
                 );
                 if r.code != 0 {
                     assert!(r.has("(not_leader)") || r.code == 3, "{}", r.out);
+                    let mut l = last_refusals.borrow_mut();
+                    l.push(format!("member {}: {}", i + 1, r.out));
+                    let n = l.len();
+                    l.drain(..n.saturating_sub(3));
                     return None;
                 }
                 let f = s.path("store-token");

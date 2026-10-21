@@ -247,6 +247,15 @@ async fn run(
                 };
                 if last != Some(leading) {
                     last = Some(leading);
+                    let (term, leader) = {
+                        let m = metrics.borrow();
+                        (m.current_term, m.current_leader)
+                    };
+                    // For the journal: who leads, and since which term.
+                    match leader {
+                        Some(l) => eprintln!("hyperstor-meta: member {l} leads (term {term})"),
+                        None => eprintln!("hyperstor-meta: no leader (term {term})"),
+                    }
                     let _ = to.send(ToReactor::Leader(leading));
                 }
                 if metrics.changed().await.is_err() {
