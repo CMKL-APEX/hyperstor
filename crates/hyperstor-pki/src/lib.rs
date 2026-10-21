@@ -272,7 +272,10 @@ pub fn identity_of(der: &[u8]) -> Option<Identity> {
 
 /// When the first certificate in `pem` expires.
 pub fn not_after(pem: &str) -> Result<SystemTime, String> {
-    let der = certs(pem)?.remove(0);
+    let der = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .next()
+        .ok_or("no certificate in PEM")?
+        .map_err(err)?;
     let (_, cert) = x509_parser::parse_x509_certificate(&der).map_err(err)?;
     let secs = cert.validity().not_after.timestamp();
     Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64))
@@ -337,6 +340,10 @@ mod tests {
         assert_eq!(identity_of(&chain[1]), None);
         assert!(!due_for_renewal(&leaf.cert, LEAF_DAYS));
         assert!(due_for_renewal(&leaf.cert, 365), "30 days left of a year");
+        // A file without a certificate is renewed, not a panic.
+        assert!(not_after(&leaf.key).is_err());
+        assert!(not_after("").is_err());
+        assert!(due_for_renewal("", LEAF_DAYS));
         // Both ends build, so the chain and keys fit together.
         server_config(&leaf.cert, &leaf.key, &root.cert).unwrap();
         client_config(&leaf.cert, &leaf.key, &root.cert).unwrap();
