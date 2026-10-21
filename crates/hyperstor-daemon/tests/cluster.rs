@@ -27,6 +27,8 @@ enum MetaCmd {
 type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
 struct Cluster {
+    /// Peer timeout given to restarted nodes.
+    peer_timeout: std::time::Duration,
     meta_addr: SocketAddr,
     /// Each node's reactor addresses, to restart it at the same place.
     addrs: Vec<Vec<SocketAddr>>,
@@ -42,6 +44,17 @@ struct Cluster {
 
 impl Cluster {
     fn start(nodes: u32, shards: u32) -> Cluster {
+        Self::start_with(nodes, shards, LEASE, DOWN_AFTER, std::time::Duration::ZERO)
+    }
+
+    /// With a given map lease, liveness timeout and peer timeout (D40).
+    fn start_with(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+    ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -63,12 +76,12 @@ impl Cluster {
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
-                let meta = hyperstor_meta::Meta::with_lease(map, LEASE);
+                let meta = hyperstor_meta::Meta::with_lease(map, lease);
                 spawn(hyperstor_meta::serve(
                     hyperstor_reactor::net::TcpListener::from_std(meta_l),
                     meta.clone(),
                 ));
-                spawn(meta.clone().liveness(DOWN_AFTER));
+                spawn(meta.clone().liveness(down_after));
                 spawn(meta.clone().publisher());
                 if let Some(MetaCmd::Stop) = meta_rx.recv().await {}
                 meta.published.borrow().clone()
@@ -94,12 +107,14 @@ impl Cluster {
                         .collect(),
                     cpus: Vec::new(),
                     spin: std::time::Duration::ZERO,
+                    peer_timeout,
                     meta_blocked: Some(blocked[n].clone()),
                     defer_max: None,
                 }))
             })
             .collect();
         Cluster {
+            peer_timeout,
             meta_addr,
             blocked,
             addrs: all_addrs,
@@ -138,6 +153,7 @@ impl Cluster {
             shards,
             cpus: Vec::new(),
             spin: std::time::Duration::ZERO,
+            peer_timeout: self.peer_timeout,
             meta_blocked: Some(self.blocked[n].clone()),
             defer_max: None,
         }));
@@ -602,4 +618,56 @@ fn a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write() {
     .unwrap();
     let (map, devs) = c.stop();
     copies_agree(&map, devs, &[(v, 0)]);
+}
+
+/// Peer reports (D40): with the map service's own timeout long (3 s), a
+/// node that dies is still replaced quickly, because its peers report it.
+#[test]
+fn peers_report_a_dead_node_before_the_map_service_notices() {
+    let lease = std::time::Duration::from_millis(400);
+    let mut c = Cluster::start_with(
+        4,
+        1,
+        lease,
+        std::time::Duration::from_millis(3000),
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<std::time::Instant>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let m = cl.map();
+            let v = (1u128..)
+                .find(|v| {
+                    let pg = pg_of(*v, 0, m.pools[&POOL].pg_count);
+                    m.devices[&m.pg(POOL, pg).unwrap().primary().unwrap()].node == 2
+                })
+                .unwrap();
+            let data = pattern(7, 4096);
+            cl.write(POOL, v, 0, data.clone()).await.unwrap();
+            kill_tx.send(()).unwrap();
+            let killed = done_rx.recv().unwrap();
+            // Keep writing until a write succeeds after the kill.
+            loop {
+                if cl.write(POOL, v, 0, data.clone()).await.is_ok() {
+                    return killed.elapsed();
+                }
+            }
+        })
+    });
+    kill_rx.recv().unwrap();
+    c.kill(2);
+    done_tx.send(std::time::Instant::now()).unwrap();
+    let stall = client.join().unwrap();
+    eprintln!("stall with peer reports: {stall:?}");
+    // Peer timeout 0.3 s, then the dead node's lease (0.4 s, plus a
+    // quarter) is waited out; the map service alone would take 3 s.
+    assert!(
+        stall < std::time::Duration::from_millis(2000),
+        "stall {stall:?}: peers didn't report the dead node"
+    );
+    let (map, _) = c.stop();
+    assert!(!map.nodes[&2].up);
 }

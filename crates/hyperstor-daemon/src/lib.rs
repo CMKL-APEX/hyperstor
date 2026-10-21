@@ -104,6 +104,9 @@ pub struct NodeConfig {
     /// Adaptive polling window for this node's reactors (decisions.md D41);
     /// zero turns it off.
     pub spin: Duration,
+    /// Report a peer to the map service after this long without an answer
+    /// to pings (decisions.md D40); zero turns peer reports off.
+    pub peer_timeout: Duration,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -156,6 +159,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
         let blocked = cfg.meta_blocked.clone();
         let spin = cfg.spin;
+        let peer_timeout = cfg.peer_timeout;
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -174,6 +178,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().committer());
                         spawn(st.clone().follow_map());
                         spawn(st.clone().heartbeat(node));
+                        if !peer_timeout.is_zero() {
+                            spawn(st.clone().peer_watch(node, peer_timeout));
+                        }
                         spawn(st.clone().backfiller());
                         spawn(st.clone().accept(l));
                         rx.recv().await;
@@ -745,6 +752,58 @@ impl ShardState {
         self.blocked
             .as_ref()
             .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Pings every node this reactor shares a PG with, every 100 ms, and
+    /// reports to the map service any that stays silent for
+    /// `peer_timeout` (D40). The map service marks a node down on reports
+    /// from two distinct nodes.
+    async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
+        let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            let map = self.map();
+            let mut peers: HashMap<u32, SocketAddr> = HashMap::new();
+            for pg in map.pgs.values() {
+                if !pg.acting.contains(&self.me) && !pg.up.contains(&self.me) {
+                    continue;
+                }
+                for d in pg.acting.iter().chain(pg.up.iter()) {
+                    if let Some(dev) = map.devices.get(d)
+                        && dev.node != node
+                        && map.nodes.get(&dev.node).is_some_and(|n| n.up)
+                    {
+                        peers.entry(dev.node).or_insert(dev.addr);
+                    }
+                }
+            }
+            let now = std::time::Instant::now();
+            for (peer, addr) in peers {
+                let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
+                if now.duration_since(first) > peer_timeout && !self.cut_off() {
+                    let _ = self
+                        .client
+                        .call_meta(&Msg::PeerDown {
+                            reporter: node,
+                            peer,
+                        })
+                        .await;
+                }
+                let me = self.clone();
+                let last_ok = last_ok.clone();
+                spawn(async move {
+                    let ping = async {
+                        let c = me.peer(addr).await.ok()?;
+                        c.call(&Msg::Ping, &[]).await.ok()
+                    };
+                    if let Ok(Some((Msg::Pong, _))) =
+                        hyperstor_reactor::time::timeout(Duration::from_millis(200), ping).await
+                    {
+                        last_ok.borrow_mut().insert(peer, std::time::Instant::now());
+                    }
+                });
+            }
+        }
     }
 
     async fn heartbeat(self: Rc<Self>, node: u32) {

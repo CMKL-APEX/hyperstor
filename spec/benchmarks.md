@@ -337,10 +337,22 @@ a client writes one volume continuously; the node holding its chunk 0's
 primary is stopped; the stall is from the stop to the first successful
 write. Three runs per setting.
 
-| Map lease | liveness timeout | stall p50 ms | stall max ms |
-|---|---|---|---|
-| 2,000 ms (default) | 3,000 ms (default) | 3,115 | 3,128 |
-| 500 ms | 700 ms | 783 | 785 |
+| Map lease | liveness timeout | peer reports (D40) | stall p50 ms | stall max ms |
+|---|---|---|---|---|
+| 2,000 ms (default) | 3,000 ms (default) | off | 3,115 | 3,128 |
+| 500 ms | 700 ms | off | 783 | 785 |
+
+After peer reports were built (a second run, `hyperstor-bench failover`):
+
+| Map lease | liveness timeout | peer timeout | stall p50 ms | stall max ms |
+|---|---|---|---|---|
+| 2,000 ms | 3,000 ms | off | 2,964 | 3,132 |
+| 2,000 ms | 3,000 ms | 1,000 ms | 2,457 | 2,460 |
+| 500 ms | 700 ms | off | 784 | 784 |
+| 500 ms | 700 ms | 300 ms | 552 | 553 |
+
+With peer reports the stall sits at about 1.25 leases, as predicted: the
+map service still waits out the dead node's lease before it republishes.
 
 ### Recovery time against log length
 

@@ -469,6 +469,10 @@ pub struct Meta {
     /// Nodes that didn't answer a fence: no leases until it resolves.
     fencing: RefCell<std::collections::HashSet<u32>>,
     conns: RefCell<HashMap<SocketAddr, hyperstor_rpc::Conn>>,
+    /// Peer reports (D40): peer -> reporter -> when last reported.
+    reports: RefCell<HashMap<u32, HashMap<u32, Instant>>>,
+    /// Nodes marked down on peer reports: no leases while reported.
+    suspect: RefCell<std::collections::HashSet<u32>>,
     lease: Duration,
     started: Instant,
 }
@@ -489,6 +493,8 @@ impl Meta {
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
             conns: RefCell::new(HashMap::new()),
+            reports: RefCell::new(HashMap::new()),
+            suspect: RefCell::new(std::collections::HashSet::new()),
             lease,
             started: Instant::now(),
         })
@@ -509,25 +515,44 @@ impl Meta {
             "liveness timeout must exceed the lease by a quarter"
         );
         loop {
-            sleep(timeout / 4).await;
-            let now = Instant::now();
-            let mut changed = false;
-            {
-                let beats = self.beats.borrow();
-                let mut map = self.map.borrow_mut();
-                for n in map.nodes.values_mut() {
-                    let last = beats.get(&n.id).copied().unwrap_or(self.started);
-                    let alive = now.duration_since(last) < timeout;
-                    if n.up != alive {
-                        n.up = alive;
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
+            sleep((timeout / 4).min(Duration::from_millis(100))).await;
+            if self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
             }
         }
+    }
+
+    /// One liveness check; true if any node changed state.
+    fn liveness_tick(&self, timeout: Duration, now: Instant) -> bool {
+        let mut changed = false;
+        {
+            let beats = self.beats.borrow();
+            let mut map = self.map.borrow_mut();
+            // Peer reports (D40): a node reported silent by at least two
+            // distinct nodes, recently, is down even if its heartbeats
+            // still arrive (cut off from its peers), and gets no lease.
+            let fresh = timeout / 2;
+            let mut reports = self.reports.borrow_mut();
+            for r in reports.values_mut() {
+                r.retain(|_, t| now.duration_since(*t) < fresh);
+            }
+            let mut suspect = self.suspect.borrow_mut();
+            suspect.clear();
+            for (peer, r) in reports.iter() {
+                if r.len() >= 2 {
+                    suspect.insert(*peer);
+                }
+            }
+            for n in map.nodes.values_mut() {
+                let last = beats.get(&n.id).copied().unwrap_or(self.started);
+                let alive = now.duration_since(last) < timeout && !suspect.contains(&n.id);
+                if n.up != alive {
+                    n.up = alive;
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     /// Publishes working-map changes: fence, publish, push.
@@ -698,10 +723,20 @@ impl Meta {
                     },
                 }
             }
+            Ok(Msg::PeerDown { reporter, peer }) => {
+                self.reports
+                    .borrow_mut()
+                    .entry(peer)
+                    .or_default()
+                    .insert(reporter, Instant::now());
+                Msg::PeerDownOk
+            }
             Ok(Msg::Heartbeat { node }) => {
                 let now = Instant::now();
                 self.beats.borrow_mut().insert(node, now);
-                let lease_ms = if self.fencing.borrow().contains(&node) {
+                let lease_ms = if self.fencing.borrow().contains(&node)
+                    || self.suspect.borrow().contains(&node)
+                {
                     0
                 } else {
                     self.granted.borrow_mut().insert(node, now);
@@ -941,6 +976,49 @@ mod tests {
         // Survivors keep their positions and primacy: nothing else is fenced.
         assert!(losers.keys().all(|d| m.devices[d].node == 1));
         assert!(Meta::losers(&m, &m).is_empty());
+    }
+
+    #[test]
+    fn two_peer_reports_mark_a_node_down_and_stop_its_lease() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        let beat = |n: u32| match m.handle(Ok(Msg::Heartbeat { node: n })) {
+            Msg::HeartbeatOk { lease_ms, .. } => lease_ms,
+            other => panic!("{other:?}"),
+        };
+        for n in 0..4 {
+            assert_eq!(beat(n), 400);
+        }
+        let timeout = Duration::from_secs(3);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        // One reporter is not enough.
+        m.handle(Ok(Msg::PeerDown {
+            reporter: 0,
+            peer: 3,
+        }));
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        assert!(m.map.borrow().nodes[&3].up);
+        // Two are, even though node 3's heartbeats still arrive.
+        m.handle(Ok(Msg::PeerDown {
+            reporter: 1,
+            peer: 3,
+        }));
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        assert!(!m.map.borrow().nodes[&3].up);
+        assert_eq!(beat(3), 0, "no lease while reported");
+        assert_eq!(beat(0), 400);
+        // Reports go stale; heartbeats bring it back.
+        let later = Instant::now() + timeout;
+        beat(0);
+        beat(1);
+        beat(2);
+        m.beats.borrow_mut().insert(3, later);
+        for n in 0..3 {
+            m.beats.borrow_mut().insert(n, later);
+        }
+        assert!(m.liveness_tick(timeout, later));
+        assert!(m.map.borrow().nodes[&3].up);
+        assert_eq!(beat(3), 400);
     }
 
     #[test]

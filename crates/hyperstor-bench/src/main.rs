@@ -384,6 +384,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0),
                 ),
+                peer_timeout: Duration::ZERO,
                 defer_max: std::env::var("HS_DEFER_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok()),
@@ -906,9 +907,14 @@ fn redb_suite(dir: &Path, secs: f64) {
 fn failover_suite() {
     use hyperstor_daemon::*;
     use hyperstor_meta::{ClusterMap, replicated_pool};
-    println!("| Map lease | down after | stall p50 ms | stall max ms | runs |");
-    println!("|---|---|---|---|---|");
-    for (lease_ms, down_ms) in [(2000u64, 3000u64), (500, 700)] {
+    println!("| Map lease | down after | peer timeout | stall p50 ms | stall max ms | runs |");
+    println!("|---|---|---|---|---|---|");
+    for (lease_ms, down_ms, peer_ms) in [
+        (2000u64, 3000u64, 0u64),
+        (2000, 3000, 1000),
+        (500, 700, 0),
+        (500, 700, 300),
+    ] {
         let mut stalls = Vec::new();
         for run in 0..3u64 {
             let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -947,6 +953,7 @@ fn failover_suite() {
                         cpus: Vec::new(),
                         meta_blocked: None,
                         spin: Duration::ZERO,
+                        peer_timeout: Duration::from_millis(peer_ms),
                         defer_max: None,
                     }))
                 })
@@ -991,7 +998,12 @@ fn failover_suite() {
         }
         stalls.sort_by(f64::total_cmp);
         println!(
-            "| {lease_ms} ms | {down_ms} ms | {:.0} | {:.0} | {} |",
+            "| {lease_ms} ms | {down_ms} ms | {} | {:.0} | {:.0} | {} |",
+            if peer_ms == 0 {
+                "off".to_string()
+            } else {
+                format!("{peer_ms} ms")
+            },
             stalls[stalls.len() / 2],
             stalls[stalls.len() - 1],
             stalls.len()
