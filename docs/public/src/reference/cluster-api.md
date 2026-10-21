@@ -35,7 +35,7 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices`, `pools` with PG counts, `map_address` |
+| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 
@@ -73,4 +73,6 @@ Errors are Connect errors, with an HTTP status and a JSON body:
 - **Health** is `HEALTH_ERROR` when a PG can't take writes (fewer copies
   than the pool's `min`, or no primary), `HEALTH_WARN` while a node is
   down, a device is out, or PGs are degraded or backfilling, and
-  `HEALTH_OK` otherwise. Each reason is listed.
+  `HEALTH_OK` otherwise. Each reason is listed. A node the map service
+  hasn't heard from since it started is also `HEALTH_WARN`: the map
+  counts it up for a short grace period after a restart.

@@ -27,7 +27,9 @@ POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INA
 | `error` | Some PG has fewer copies than the pool's minimum, or no primary: writes to it stop | 1 |
 
 The exit status makes `hyperstorctl status` usable in scripts and
-monitoring checks; `--json` gives the whole answer.
+monitoring checks; `--json` gives the whole answer. `hyperstorctl status
+--wait 60` waits up to a minute for health to become `ok`, for example
+right after an install or bringing a device back in.
 
 `hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details.
 

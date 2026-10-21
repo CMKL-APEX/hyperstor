@@ -183,10 +183,11 @@ fn install_manage_and_fail_a_node() {
     }
     let api = format!("127.0.0.1:{api_port}");
 
-    let status = wait_for("health ok", 20, || {
-        let (code, out) = ctl(&bin, &api, &["status", "--json"]);
-        (code == 0 && out.contains("\"health\":\"HEALTH_OK\"")).then_some(out)
-    });
+    // --wait polls until health is ok: every node heard from (I43).
+    let (code, status) = ctl(&bin, &api, &["status", "--json", "--wait", "20"]);
+    assert_eq!(code, 0, "{status}");
+    assert!(status.contains("\"health\":\"HEALTH_OK\""), "{status}");
+    assert_eq!(status.matches("\"last_heard_ms\"").count(), 3, "{status}");
     assert!(
         status.contains(&format!("\"cluster_id\":\"{}\"", cid_of(&cid))),
         "{status}"

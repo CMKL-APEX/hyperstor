@@ -468,8 +468,9 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
 /// (`Meta::admin`). Replies go back on one-shot channels that work across
 /// threads and runtimes.
 pub enum Admin {
-    /// The published map: what clients and storage nodes see.
-    Published(hyperstor_reactor::chan::OneSender<ClusterMap>),
+    /// The published map, what clients and storage nodes see, and how
+    /// long ago each node was last heard from (absent: not since start).
+    Published(hyperstor_reactor::chan::OneSender<(ClusterMap, BTreeMap<u32, Duration>)>),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -550,7 +551,14 @@ impl Meta {
         while let Some(req) = rx.recv().await {
             match req {
                 Admin::Published(reply) => {
-                    let _ = reply.send(self.published.borrow().clone());
+                    let now = Instant::now();
+                    let heard = self
+                        .beats
+                        .borrow()
+                        .iter()
+                        .map(|(n, t)| (*n, now.duration_since(*t)))
+                        .collect();
+                    let _ = reply.send((self.published.borrow().clone(), heard));
                 }
                 Admin::SetDeviceIn {
                     device,

@@ -69,7 +69,15 @@ impl Api {
         Ok(())
     }
 
-    async fn published(&self) -> Result<ClusterMap, ConnectError> {
+    async fn published(
+        &self,
+    ) -> Result<
+        (
+            ClusterMap,
+            std::collections::BTreeMap<u32, std::time::Duration>,
+        ),
+        ConnectError,
+    > {
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::Published(reply))
@@ -105,9 +113,35 @@ fn domain(d: Domain) -> String {
     .into()
 }
 
-/// The status of `map`, as the API answers it.
-pub fn status(map: &ClusterMap, map_address: &str) -> pb::GetStatusResponse {
-    let r = health::report(map);
+/// The status of `map`, as the API answers it. `heard` is how long ago
+/// each node was last heard from, when the map service knows (I43): a
+/// node it hasn't heard from since it started is reported, since the map
+/// counts it up for the liveness timeout's grace.
+pub fn status(
+    map: &ClusterMap,
+    heard: Option<&std::collections::BTreeMap<u32, std::time::Duration>>,
+    map_address: &str,
+) -> pb::GetStatusResponse {
+    let mut r = health::report(map);
+    if let Some(h) = heard {
+        let silent: Vec<String> = map
+            .nodes
+            .values()
+            .filter(|n| n.up && !h.contains_key(&n.id))
+            .map(|n| n.id.to_string())
+            .collect();
+        if !silent.is_empty() {
+            r.reasons.push((
+                Health::Warn,
+                format!(
+                    "{} node(s) not heard from since the map service started: {}",
+                    silent.len(),
+                    silent.join(", ")
+                ),
+            ));
+            r.health = r.health.max(Health::Warn);
+        }
+    }
     pb::GetStatusResponse {
         cluster_id: map.cluster_id.to_string(),
         epoch: map.epoch,
@@ -128,6 +162,9 @@ pub fn status(map: &ClusterMap, map_address: &str) -> pb::GetStatusResponse {
                 id: n.id,
                 rack: n.rack,
                 up: n.up,
+                last_heard_ms: heard
+                    .and_then(|h| h.get(&n.id))
+                    .map(|d| d.as_millis() as u64),
                 devices: map
                     .devices
                     .values()
@@ -182,8 +219,8 @@ impl ClusterService for Api {
         _req: ServiceRequest<'_, pb::GetStatusRequest>,
     ) -> ServiceResult<pb::GetStatusResponse> {
         self.authorize(&ctx, false)?;
-        let map = self.published().await?;
-        Ok(status(&map, &self.map_address).into())
+        let (map, heard) = self.published().await?;
+        Ok(status(&map, Some(&heard), &self.map_address).into())
     }
 
     async fn list_pgs(
@@ -193,7 +230,7 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::ListPgsResponse> {
         self.authorize(&ctx, false)?;
         let pool = req.pool;
-        let map = self.published().await?;
+        let (map, _) = self.published().await?;
         if !map.pools.contains_key(&pool) {
             return Err(ConnectError::not_found(format!("no pool {pool}")));
         }
@@ -316,12 +353,23 @@ mod tests {
              pool 1 vol replicated size 2 min 1 pgs 4 domain host\n",
         )
         .unwrap();
-        let s = super::status(&m, "127.0.0.1:8849");
+        let s = super::status(&m, None, "127.0.0.1:8849");
         assert_eq!(s.cluster_id, "5");
         assert_eq!(s.health, super::pb::Health::HEALTH_OK);
         assert_eq!(s.nodes.len(), 2);
         assert_eq!(s.pools[0].pgs.clean, 4);
         assert_eq!(s.pools[0].kind, "replicated");
         assert_eq!(s.map_address, "127.0.0.1:8849");
+        // Node 1 not heard from since start: warn, though the map says up.
+        let heard = [(0, std::time::Duration::from_millis(40))].into();
+        let s = super::status(&m, Some(&heard), "127.0.0.1:8849");
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert!(
+            s.reasons[0]
+                .text
+                .contains("not heard from since the map service started: 1")
+        );
+        assert_eq!(s.nodes[0].last_heard_ms, Some(40));
+        assert_eq!(s.nodes[1].last_heard_ms, None);
     }
 }

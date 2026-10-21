@@ -54,6 +54,9 @@ message Node {
   // Heard from within the liveness timeout (decisions.md D48).
   bool up = 3;
   repeated Device devices = 4;
+  // Milliseconds since its last heartbeat reached this map service;
+  // absent if none has since it started.
+  optional uint64 last_heard_ms = 5 [json_name = "last_heard_ms"];
 }
 
 message Device {

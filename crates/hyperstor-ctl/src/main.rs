@@ -1,11 +1,13 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in
-//!               [--pool P] [--mib N] [--device D] [--node N]`
+//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
 //!
 //! - `status`: health with its reasons, nodes, devices and PG states per
-//!   pool;
+//!   pool; with `--wait SECS`, asks again every half second until health
+//!   is ok or SECS have passed (for scripts, after an install or a
+//!   change);
 //! - `nodes`, `pools`, `pgs [--pool P]`: tables;
 //! - `out` and `in` (`--device D`, or every device of `--node N`): take a
 //!   device out of placement, so its PGs move elsewhere and it can be
@@ -33,7 +35,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in [--pool P] [--mib N] [--device D] [--node N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -77,6 +79,7 @@ struct Args {
     json: bool,
     pool: Option<u32>,
     mib: u64,
+    wait: Option<u32>,
     device: Option<u32>,
     node: Option<u32>,
 }
@@ -89,6 +92,7 @@ fn main() {
         json: false,
         pool: None,
         mib: 16,
+        wait: None,
         device: None,
         node: None,
     };
@@ -103,6 +107,7 @@ fn main() {
             "--json" => a.json = true,
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
+            "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
             "--node" => a.node = Some(num(it.next())),
             "status" | "nodes" | "pools" | "pgs" | "io-test" | "out" | "in" if cmd.is_none() => {
@@ -200,7 +205,20 @@ async fn manage(
     let first_pool = |s: &pb::GetStatusResponse| a.pool.or_else(|| s.pools.first().map(|p| p.id));
     Ok(match cmd {
         "status" => {
-            let s = status().await?;
+            let deadline =
+                std::time::Instant::now() + Duration::from_secs(a.wait.unwrap_or(0).into());
+            let s = loop {
+                let r = status().await;
+                let done = std::time::Instant::now() >= deadline;
+                match r {
+                    Ok(s) if is_ok(&s) || done => break s,
+                    // Still starting: the API may not answer yet.
+                    Err(e) if done || e.code != connectrpc::ErrorCode::Unavailable => {
+                        return Err(e);
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(500)).await,
+                }
+            };
             if a.json {
                 println!("{}", serde_json::to_string(&s).expect("json"));
             } else {
