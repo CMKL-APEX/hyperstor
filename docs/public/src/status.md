@@ -32,7 +32,7 @@ covered by tests that run on every change.
 | HS17: Global namespace and federation | Planned |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
-| AD2: Management service and read-only web UI | Planned |
+| AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
 | AD4: Storage administration in glidex | Planned |
 
@@ -93,6 +93,14 @@ covered by tests that run on every change.
 | One-command trial cluster on one host, with system services, updated in place on later runs | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | Joining hosts to a cluster with join tokens, and installing on whole devices | Planned |
+
+## AD2: Management service and read-only web UI
+
+| Feature | Status |
+|---|---|
+| Read-only dashboard on loopback: health, I/O, space, pools, placement groups, nodes | In progress |
+| Grafana dashboard and Prometheus scrape configuration for the storage nodes' metrics | Done |
+| People log in to the management service (sessions, tokens, roles) | Planned |
 
 ## AD3: Administration from the UI and CLI, with roles, trash and audit
 

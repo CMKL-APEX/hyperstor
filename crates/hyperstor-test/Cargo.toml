@@ -1,0 +1,14 @@
+[package]
+name = "hyperstor-test"
+description = "Hyperstor's end-to-end test suite: installs clusters from the built binaries and manages them as an operator would"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+hyperstor-pki = { path = "../hyperstor-pki" }
+
+[lints]
+workspace = true

@@ -825,6 +825,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-mgmt"
+version = "0.1.0"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "hyperstor-api",
+ "hyperstor-pki",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hyperstor-pki"
 version = "0.1.0"
 dependencies = [
@@ -864,6 +880,13 @@ dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
  "thiserror",
+]
+
+[[package]]
+name = "hyperstor-test"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-pki",
 ]
 
 [[package]]

@@ -1,0 +1,22 @@
+[package]
+name = "hyperstor-mgmt"
+description = "hyperstor-mgmt: the management service; for now a read-only dashboard on loopback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
+hyperstor-pki = { path = "../hyperstor-pki" }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
+buffa = { version = "=0.9.2", features = ["json"] }
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
+
+[lints]
+workspace = true
