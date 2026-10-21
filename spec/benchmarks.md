@@ -398,6 +398,26 @@ poll for N µs after activity before sleeping in the kernel. 2 s per test.
 | 4 | off | 140 / 1,092 | 67,729 | 56 / 101 |
 | 4 | 50 µs | 139 / 224 | 66,852 | 48 / 96 |
 
+### Checkpoint traffic and recovery against log size
+
+`hyperstor-bench logsize` (also part of `decisions`). 2 GiB of 4 MiB chunks
+on a memory device, aged by one full pass of random 4 KiB overwrites (dense
+maps, 64 KiB slices, a 4 MiB index), then batches of 32 random overwrites
+until three checkpoints finish. Recovery: the shard is dropped as a
+checkpoint starts (a quarter of the log to replay, the most fuzzy
+checkpoints leave unless one falls behind) and opened again. The last column
+scales checkpoint traffic to a 1 TiB shard, since the index grows with it.
+
+| Log MiB | writes | checkpoints | checkpoint MiB each | log B per write | checkpoint B per write | checkpoint MB/s at 50k writes/s | replayed MiB | open ms | MB/s at 50k writes/s per TiB |
+|---|---|---|---|---|---|---|---|---|---|
+| 64 | 393312 | 3 | 4.0 | 128 | 32.3 | 1.6 | 16 | 382 | 826 |
+| 256 | 1572960 | 3 | 4.0 | 128 | 8.1 | 0.4 | 64 | 608 | 207 |
+| 1024 | 6291552 | 3 | 4.0 | 128 | 2.0 | 0.1 | 256 | 1498 | 52 |
+
+Checkpoint traffic falls in exact proportion to the log size. Opening costs
+about 0.3 s plus 4.5 ms per MiB replayed (about 225 MiB/s, in line with the
+replay benchmark above).
+
 ### Findings
 
 1. **Dense maps cap the index at 2 GiB per TiB**, against 33 GiB

@@ -617,6 +617,93 @@ fn overwrite(sh: &mut Shard, rng: &mut SmallRng, objects: u64, n: u64) {
 /// Measurements for decisions still open (decision-log.md): index RAM as
 /// a volume ages under random writes, with and without dense block maps;
 /// checkpoint pause against data size; read cost of each representation.
+/// Checkpoint bandwidth and recovery time against the log ring's size, on
+/// an aged index (decision-log.md, point 11).
+fn log_size_sweep() {
+    println!("### Checkpoint traffic and recovery against log size (memory device)\n");
+    println!(
+        "2 GiB of 4 MiB chunks, aged by one full pass of random 4 KiB overwrites (dense maps on, 64 KiB slices), then batches of 32 random overwrites until three checkpoints finish. Recovery: the shard is dropped as a checkpoint starts (a quarter of the log to replay) and opened again. The last column scales the checkpoint traffic to a 1 TiB shard (the index grows with the shard).\n"
+    );
+    println!(
+        "| Log MiB | writes | checkpoints | checkpoint MiB each | log B per write | checkpoint B per write | checkpoint MB/s at 50k writes/s | replayed MiB | open ms | MB/s at 50k writes/s per TiB |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    for log_mib in [64u64, 256, 1024] {
+        let gib = 2u64;
+        let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+        let log_blocks = (log_mib << 20) / BLOCK as u64;
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(((gib + 1) << 30) + (log_mib << 20)));
+        format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                cluster_id: 1,
+                shards: 1,
+                log_blocks: Some(log_blocks),
+            },
+        )
+        .unwrap();
+        let mut sh = open(&dev).unwrap().1.pop().unwrap();
+        sh.set_defer_max(0);
+        let mut rng = SmallRng::seed_from_u64(5);
+        fill(&mut sh, objects);
+        overwrite(&mut sh, &mut rng, objects, objects * OBJ_BLOCKS);
+        let data = vec![0xa5u8; BLOCK];
+        let batch = |sh: &mut Shard, rng: &mut SmallRng| {
+            let lists = (0..32)
+                .map(|_| OpList {
+                    key: key(rng.random_range(0..objects)),
+                    ops: vec![Op::Write {
+                        off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
+                        data: data.clone(),
+                    }],
+                })
+                .collect();
+            sh.commit(lists).unwrap();
+        };
+        // Start counting at a checkpoint boundary.
+        let c0 = sh.stats().checkpoints;
+        while sh.stats().checkpoints == c0 {
+            batch(&mut sh, &mut rng);
+        }
+        let before = sh.stats();
+        let mut writes = 0u64;
+        while sh.stats().checkpoints < before.checkpoints + 3 {
+            batch(&mut sh, &mut rng);
+            writes += 32;
+        }
+        let st = sh.stats();
+        let log_b = (st.log_blocks_written - before.log_blocks_written) * BLOCK as u64;
+        let ck_b = st.checkpoint_bytes_written - before.checkpoint_bytes_written;
+        // Drop the shard as the next checkpoint starts: the log then holds
+        // a quarter of its size since the last checkpoint's start, the most
+        // recovery replays unless a checkpoint falls behind.
+        while sh.checkpoint_in_progress() {
+            batch(&mut sh, &mut rng);
+        }
+        while !sh.checkpoint_in_progress() {
+            batch(&mut sh, &mut rng);
+        }
+        let replay = sh.stats().log_used_blocks * BLOCK as u64;
+        drop(sh);
+        let t = Instant::now();
+        let sh = open(&dev).unwrap().1.pop().unwrap();
+        let open_ms = t.elapsed().as_secs_f64() * 1e3;
+        drop(sh);
+        println!(
+            "| {log_mib} | {writes} | 3 | {:.1} | {:.0} | {:.1} | {:.1} | {:.0} | {:.0} | {:.0} |",
+            st.checkpoint_bytes as f64 / (1 << 20) as f64,
+            log_b as f64 / writes as f64,
+            ck_b as f64 / writes as f64,
+            ck_b as f64 / writes as f64 * 50_000.0 / 1e6,
+            replay as f64 / (1 << 20) as f64,
+            open_ms,
+            ck_b as f64 / writes as f64 * 50_000.0 / 1e6 * 512.0
+        );
+    }
+    println!();
+}
+
 fn decisions_suite(dir: &Path, secs: f64) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join("hs-decisions.img");
@@ -687,6 +774,8 @@ fn decisions_suite(dir: &Path, secs: f64) {
         }
         drop(sh);
     }
+
+    log_size_sweep();
 
     println!("### Commit latency while checkpoints run: whole against fuzzy (memory device)\n");
     println!(
@@ -1140,6 +1229,9 @@ fn main() {
         Some("decisions") => {
             // hyperstor-bench decisions <scratch dir with 6 GiB free>
             decisions_suite(Path::new(args.get(2).expect("scratch directory")), secs);
+        }
+        Some("logsize") => {
+            log_size_sweep();
         }
         Some("replay") => {
             replay_suite();

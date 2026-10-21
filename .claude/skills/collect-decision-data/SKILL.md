@@ -26,7 +26,7 @@ answer it either way.
 
 - Benchmarks live in `crates/hyperstor-bench` (subcommands `crc`,
   `placement`, `mem`, `raw`, `engine`, `index`, `decisions`, `redb`,
-  `cluster`, `remote`). Extend it rather than writing one-off programs, so
+  `failover`, `replay`, `logsize`, `cluster`, `remote`). Extend it rather than writing one-off programs, so
   the next run can repeat the measurement. Print Markdown table rows.
 - `scripts/collect-decision-data.sh [suite …]` builds the tool, records
   the host (CPU, memory, kernel, drives, write cache, filesystem of the
