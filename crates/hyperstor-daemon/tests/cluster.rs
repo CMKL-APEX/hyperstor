@@ -605,9 +605,9 @@ fn a_returning_node_gets_only_what_changed() {
         .map(|(_, m)| m.push_bytes.load(std::sync::atomic::Ordering::Relaxed))
         .sum();
     // A whole refill would send node 3 every chunk it holds; only the two
-    // that changed are sent.
+    // that changed are sent (each with its block CRCs and size).
     assert!(
-        (CHUNK as u64..=2 * CHUNK as u64).contains(&pushed),
+        (CHUNK as u64..=2 * CHUNK as u64 + 8192).contains(&pushed),
         "node 3 was sent {pushed} bytes for {} chunks, 2 of them changed",
         on3.len()
     );
@@ -1016,6 +1016,190 @@ fn random_failures(seed: u64) {
     let (map, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
+}
+
+/// Object operations (metadata.md §4.2): an operation list on a named
+/// object applies atomically when its assertions hold, on every copy; a
+/// compare-and-set on a version attribute lets exactly one of several
+/// racing writers win; a replica that missed a change is refilled with the
+/// whole object, attributes and key–value table included.
+#[test]
+fn objects_change_atomically_and_every_copy_follows() {
+    use hyperstor_client::{ClientError, NS_META, object_pg};
+    use hyperstor_proto::{Code, WireOp as W};
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let name = b"header/1".to_vec();
+    let n = name.clone();
+    let v = |x: &str| W::SetAttr(b"v".to_vec(), x.as_bytes().to_vec());
+    let at = |x: &str| W::AssertAttr {
+        name: b"v".to_vec(),
+        value: Some(x.as_bytes().to_vec()),
+    };
+    let conflict = |r: Result<(), ClientError>| {
+        matches!(
+            r,
+            Err(ClientError::Server {
+                code: Code::Conflict,
+                ..
+            })
+        )
+    };
+    let (pg, acting) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let kv = |k: &str, x: &str| W::KvPut(k.as_bytes().to_vec(), x.as_bytes().to_vec());
+            cl.exec(POOL, NS_META, &n, &[W::AssertAbsent, v("1"), kv("a", "1")])
+                .await
+                .unwrap();
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[W::AssertAbsent, v("x")]).await
+            ));
+            cl.exec(POOL, NS_META, &n, &[at("1"), v("2"), kv("b", "2")])
+                .await
+                .unwrap();
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[at("1"), v("x")]).await
+            ));
+            // Twenty rounds of sixteen writers, each with its own connection,
+            // racing from the same version: exactly one wins each round.
+            let mut clients = Vec::new();
+            for i in 0..16 {
+                clients.push(Client::connect(meta, 100 + i).await.unwrap());
+            }
+            const ROUNDS: u32 = 20;
+            for round in 2..2 + ROUNDS {
+                let racers: Vec<_> = clients
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cl)| {
+                        let (cl, n) = (cl.clone(), n.clone());
+                        let ops = vec![
+                            at(&round.to_string()),
+                            v(&(round + 1).to_string()),
+                            kv(&format!("w{round}-{i}"), ""),
+                        ];
+                        spawn(async move { cl.exec(POOL, NS_META, &n, &ops).await })
+                    })
+                    .collect();
+                let mut won = 0;
+                for r in racers {
+                    match r.await {
+                        Ok(()) => won += 1,
+                        e => {
+                            let shown = format!("{e:?}");
+                            assert!(conflict(e), "{shown}");
+                        }
+                    }
+                }
+                assert_eq!(won, 1, "round {round}: one compare-and-set wins");
+            }
+            let l = cl
+                .lookup(POOL, NS_META, &n, b"", None, 100)
+                .await
+                .unwrap()
+                .unwrap();
+            let ver = &l.attrs.iter().find(|(k, _)| k == b"v").unwrap().1;
+            assert_eq!(ver, (2 + ROUNDS).to_string().as_bytes());
+            let keys: Vec<&[u8]> = l.kv.iter().map(|(k, _)| k.as_slice()).collect();
+            assert_eq!(
+                keys.len(),
+                2 + ROUNDS as usize,
+                "a, b and each round's winner"
+            );
+            assert_eq!(&keys[..2], &[b"a".as_slice(), b"b".as_slice()]);
+            // A range of the table, and a limit.
+            let l = cl
+                .lookup(POOL, NS_META, &n, b"b", None, 1)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(l.kv, vec![(b"b".to_vec(), b"2".to_vec())]);
+            assert!(
+                cl.lookup(POOL, NS_META, b"nothing", b"", None, 1)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let m = cl.map();
+            let pg = object_pg(&n, m.pools[&POOL].pg_count);
+            (pg, m.pg(POOL, pg).unwrap().acting.clone())
+        })
+    })
+    .join()
+    .unwrap();
+    // A replica is away while the object changes again.
+    let away = (acting[1] / 1000) as usize;
+    c.kill(away);
+    let n = name.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let l = cl
+                .lookup(POOL, NS_META, &n, b"", None, 0)
+                .await
+                .unwrap()
+                .unwrap();
+            let ver = l.attrs.iter().find(|(k, _)| k == b"v").unwrap().1.clone();
+            let ops = [
+                W::AssertAttr {
+                    name: b"v".to_vec(),
+                    value: Some(ver),
+                },
+                W::SetAttr(b"v".to_vec(), b"4".to_vec()),
+                W::KvPut(b"c".to_vec(), b"3".to_vec()),
+                W::KvDel(b"a".to_vec()),
+            ];
+            cl.exec(POOL, NS_META, &n, &ops).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.restart(away);
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 7).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let (map, devs) = c.stop();
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let info = map.pg(POOL, pg).unwrap();
+    assert!(
+        info.acting.iter().any(|d| *d / 1000 == away as u32),
+        "the replica is back"
+    );
+    let key = ObjKey::new(POOL, pg, Namespace::Meta, name, 0);
+    let copies: Vec<_> = info
+        .acting
+        .iter()
+        .map(|d| {
+            let sh = &shards[d];
+            (
+                sh.stat(&key).map(|s| s.size),
+                sh.attrs(&key).cloned(),
+                sh.kv_scan(&key, b"", None, usize::MAX),
+            )
+        })
+        .collect();
+    assert!(
+        copies.windows(2).all(|w| w[0] == w[1]),
+        "copies differ: {copies:?}"
+    );
+    let kv: Vec<Vec<u8>> = copies[0].2.iter().map(|(k, _)| k.clone()).collect();
+    assert!(kv.contains(&b"c".to_vec()) && !kv.contains(&b"a".to_vec()));
 }
 
 /// The case map leases exist for (decisions.md D42): a primary cut off from

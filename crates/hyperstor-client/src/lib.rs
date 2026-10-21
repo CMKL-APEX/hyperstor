@@ -22,6 +22,8 @@ use thiserror::Error;
 
 /// Namespace of volume chunks (matches `hyperstor_engine::Namespace::Vol`).
 pub const NS_VOL: u8 = 1;
+/// `.meta` objects: headers, lineages, directories, groups (metadata.md §4.2).
+pub const NS_META: u8 = 3;
 const BLOCK: u64 = 4096;
 const RETRIES: usize = 20;
 
@@ -48,6 +50,23 @@ pub fn chunk_name(lineage: u128, chunk: u64) -> Vec<u8> {
     let mut n = lineage.to_be_bytes().to_vec();
     n.extend_from_slice(&chunk.to_be_bytes());
     n
+}
+
+/// Where a request goes: a volume's chunk, or a named object (`.meta`).
+#[derive(Clone, Copy)]
+enum Route<'a> {
+    Chunk { lineage: u128, chunk: u64 },
+    Object { ns: u8, name: &'a [u8] },
+}
+
+/// The PG of a named object: by a hash of its name.
+pub fn object_pg(name: &[u8], pg_count: u32) -> u32 {
+    // FNV-1a: the same on every client and version.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    pg_of(u128::from(h), 0, pg_count)
 }
 
 /// A connection to the cluster.
@@ -246,8 +265,7 @@ impl Client {
     async fn to_primary(
         &self,
         pool: u32,
-        lineage: u128,
-        chunk: u64,
+        route: Route<'_>,
         payload: &[u8],
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
@@ -259,7 +277,10 @@ impl Client {
             }
             let map = self.map();
             let p = map.pools.get(&pool).ok_or(ClientError::NoPool(pool))?;
-            let pg = pg_of(lineage, chunk, p.pg_count);
+            let pg = match route {
+                Route::Chunk { lineage, chunk } => pg_of(lineage, chunk, p.pg_count),
+                Route::Object { name, .. } => object_pg(name, p.pg_count),
+            };
             let info = map.pg(pool, pg).ok_or(ClientError::NoPrimary(pool, pg))?;
             let Some(primary) = info.primary() else {
                 last = format!("PG {pool}.{pg} has no primary");
@@ -275,10 +296,17 @@ impl Client {
                 map_epoch: map.epoch,
                 pg_epoch: info.epoch,
             };
-            let key = WireKey {
-                ns: NS_VOL,
-                name: chunk_name(lineage, chunk),
-                version: 0,
+            let key = match route {
+                Route::Chunk { lineage, chunk } => WireKey {
+                    ns: NS_VOL,
+                    name: chunk_name(lineage, chunk),
+                    version: 0,
+                },
+                Route::Object { ns, name } => WireKey {
+                    ns,
+                    name: name.to_vec(),
+                    version: 0,
+                },
             };
             let conn = match self.conn(addr).await {
                 Ok(c) => c,
@@ -355,11 +383,13 @@ impl Client {
                     let piece = &data[roff as usize..(roff + n) as usize];
                     let crcs = block_crcs(piece);
                     let (msg, _) = me
-                        .to_primary(pool, lineage, chunk, piece, &|to, key| Msg::Write {
-                            to,
-                            key,
-                            off: coff,
-                            crcs: crcs.clone(),
+                        .to_primary(pool, Route::Chunk { lineage, chunk }, piece, &|to, key| {
+                            Msg::Write {
+                                to,
+                                key,
+                                off: coff,
+                                crcs: crcs.clone(),
+                            }
                         })
                         .await?;
                     match msg {
@@ -392,11 +422,13 @@ impl Client {
                 let me = self.clone();
                 spawn(async move {
                     let (msg, payload) = me
-                        .to_primary(pool, lineage, chunk, &[], &|to, key| Msg::Read {
-                            to,
-                            key,
-                            off: coff,
-                            len: n,
+                        .to_primary(pool, Route::Chunk { lineage, chunk }, &[], &|to, key| {
+                            Msg::Read {
+                                to,
+                                key,
+                                off: coff,
+                                len: n,
+                            }
                         })
                         .await?;
                     match msg {
@@ -417,5 +449,67 @@ impl Client {
             out[roff as usize..roff as usize + p.len()].copy_from_slice(&p);
         }
         Ok(out)
+    }
+
+    /// Applies `ops` to the object `name` of namespace `ns` in `pool`,
+    /// atomically, if its assertions hold (metadata.md §4.2): an assertion
+    /// that fails is `ClientError::Server { code: Conflict, .. }`, and
+    /// nothing is changed. Assertions apply to the object as it was before
+    /// the list. An error after the primary accepted the list (a replica
+    /// failed) leaves it unknown whether it was applied: read and compare.
+    pub async fn exec(
+        &self,
+        pool: u32,
+        ns: u8,
+        name: &[u8],
+        ops: &[hyperstor_proto::WireOp],
+    ) -> Result<(), ClientError> {
+        let payload = hyperstor_proto::encode_ops(ops);
+        let (msg, _) = self
+            .to_primary(pool, Route::Object { ns, name }, &payload, &|to, key| {
+                Msg::Exec { to, key }
+            })
+            .await?;
+        match msg {
+            Msg::ExecOk => Ok(()),
+            m => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                "unexpected {m:?}"
+            )))),
+        }
+    }
+
+    /// The object `name`: its size, attributes, and up to `kv_limit` of its
+    /// key–value entries in `[kv_from, kv_to)` (none: to the end); `None` if
+    /// it doesn't exist. Read from the primary under its map lease, so it
+    /// sees every change acknowledged before.
+    pub async fn lookup(
+        &self,
+        pool: u32,
+        ns: u8,
+        name: &[u8],
+        kv_from: &[u8],
+        kv_to: Option<&[u8]>,
+        kv_limit: u32,
+    ) -> Result<Option<hyperstor_proto::Looked>, ClientError> {
+        let (msg, payload) = self
+            .to_primary(pool, Route::Object { ns, name }, &[], &|to, key| {
+                Msg::Lookup {
+                    to,
+                    key,
+                    kv_from: kv_from.to_vec(),
+                    kv_to: kv_to.map(|t| t.to_vec()),
+                    kv_limit,
+                }
+            })
+            .await?;
+        match msg {
+            Msg::LookupOk { found: false } => Ok(None),
+            Msg::LookupOk { found: true } => hyperstor_proto::decode_looked(&payload)
+                .map(Some)
+                .map_err(|e| ClientError::Rpc(RpcError::Protocol(e.to_string()))),
+            m => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                "unexpected {m:?}"
+            )))),
+        }
     }
 }

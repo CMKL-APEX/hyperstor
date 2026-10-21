@@ -58,7 +58,7 @@ covered by tests that run on every change.
 | Storage daemon: replicated writes and reads, group commit | Done |
 | Client library: request splitting, map refresh and retries | Done |
 | Replicated map service (Raft) | In progress |
-| Volume metadata: headers, directories and volume leases | Planned |
+| Volume metadata: headers, directories and volume leases | In progress |
 | Test block devices through ublk | Planned |
 
 ## HS2: Failure handling

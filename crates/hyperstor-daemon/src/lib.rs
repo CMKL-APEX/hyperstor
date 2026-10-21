@@ -30,8 +30,9 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, DAMAGED, Msg, Target, VERSION, WireKey, block_crcs, decode_digests, encode_digests,
-    encode_frame, verify_crcs,
+    Code, DAMAGED, Looked, Msg, Target, VERSION, WireKey, WireObject, WireOp, block_crcs,
+    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
+    encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream};
@@ -267,6 +268,8 @@ struct ShardState {
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
     /// push replaces them; reported with the digest [`DAMAGED`].
     damaged: RefCell<HashSet<ObjKey>>,
+    /// Objects an operation list is being decided for (`exec`).
+    exec_locks: RefCell<HashSet<ObjKey>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
@@ -337,6 +340,24 @@ const DEEP_SCRUB_EVERY: u64 = 7;
 
 /// How fast a deep scrub reads, per device, in bytes a second.
 const DEEP_SCRUB_RATE: u64 = 64 << 20;
+
+/// The engine operation of an operation list's effect (assertions have
+/// none: the primary decides them).
+fn engine_op(op: WireOp) -> Option<Op> {
+    Some(match op {
+        WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. } => return None,
+        WireOp::Touch => Op::Touch,
+        WireOp::Write { off, data } => Op::Write { off, data },
+        WireOp::Zero { off, len } => Op::Zero { off, len },
+        WireOp::Truncate(n) => Op::Truncate(n),
+        WireOp::SetAttr(k, v) => Op::SetAttr(k, v),
+        WireOp::RmAttr(k) => Op::RmAttr(k),
+        WireOp::KvPut(k, v) => Op::KvPut(k, v),
+        WireOp::KvDel(k) => Op::KvDel(k),
+        WireOp::KvDelRange(a, b) => Op::KvDelRange(a, b),
+        WireOp::Delete => Op::Delete,
+    })
+}
 
 fn wire_key(k: &ObjKey) -> WireKey {
     WireKey {
@@ -411,6 +432,7 @@ impl ShardState {
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
             damaged: RefCell::new(HashSet::new()),
+            exec_locks: RefCell::new(HashSet::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
@@ -632,7 +654,7 @@ impl ShardState {
                     return false;
                 };
                 self.drained().await;
-                let Some((msg, data)) = self.push_of(to, &key) else {
+                let Some((msg, data)) = self.push_of(to, &key, false) else {
                     return false;
                 };
                 if !matches!(conn.call(&msg, &data).await, Ok((Msg::PushOk, _))) {
@@ -716,6 +738,25 @@ impl ShardState {
                     metrics::ShardMetrics::add(&self.metrics.repl_bytes, payload.len() as u64);
                     self.repl(h.req, to, key, off, crcs, payload, tx.clone())
                         .await
+                }
+                Msg::Exec { to, key } => self.exec(h.req, to, key, payload, tx.clone()).await,
+                Msg::ReplExec { to, key, .. } => {
+                    self.repl_exec(h.req, to, key, payload, tx.clone()).await
+                }
+                Msg::Lookup {
+                    to,
+                    key,
+                    kv_from,
+                    kv_to,
+                    kv_limit,
+                } => {
+                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit).await;
+                    reply(&m, &p);
+                }
+                Msg::PushObject { to, key } => {
+                    metrics::ShardMetrics::add(&self.metrics.pushes, 1);
+                    metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
+                    self.push_object(h.req, to, key, payload, tx.clone()).await
                 }
                 Msg::Read { to, key, off, len } => {
                     let arrived = std::time::Instant::now();
@@ -810,42 +851,10 @@ impl ShardState {
         };
         // Connect to every replica first; then queue everything with no
         // wait in between, so every copy sees writes in the same order.
-        // Acting members must all answer; backfill targets get the write
-        // too (so they miss nothing after their copy), best effort.
-        let map = self.map();
-        if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
-            return send(err(Code::Unavailable, &map, "too few copies"));
-        }
-        let mut conns = Vec::new();
-        let required: Vec<u32> = pg
-            .backfilling()
-            .filter(|d| self.required.borrow().contains(&(to.pool, to.pg, *d)))
-            .collect();
-        for d in pg
-            .acting
-            .iter()
-            .skip(1)
-            .filter(|d| **d != NO_DEVICE)
-            .chain(required.iter())
-        {
-            let Some(addr) = map.device_addr(*d) else {
-                return send(err(Code::Unavailable, &map, "replica has no address"));
-            };
-            match self.peer(addr).await {
-                Ok(c) => conns.push(c),
-                Err(e) => return send(err(Code::Unavailable, &map, format!("replica: {e}"))),
-            }
-        }
-        let mut fills = Vec::new();
-        for d in pg.backfilling().filter(|d| !required.contains(d)) {
-            match map.device_addr(d) {
-                Some(addr) => match self.peer(addr).await {
-                    Ok(c) => fills.push((d, c)),
-                    Err(_) => self.fill_failed(to.pool, to.pg, d),
-                },
-                None => self.fill_failed(to.pool, to.pg, d),
-            }
-        }
+        let (conns, fills) = match self.replicas(&to, &pg).await {
+            Ok(c) => c,
+            Err(m) => return send(m),
+        };
         // Counted until answered, so a fence waits for it.
         *self
             .pg_inflight
@@ -926,6 +935,353 @@ impl ShardState {
             if ok {
                 m.write_latency.observe(arrived.elapsed());
             }
+        });
+    }
+
+    /// Connections to a PG's replicas for a write: acting members, which
+    /// must all answer, and backfill targets, which get it too (so they
+    /// miss nothing after their copy), best effort. Refused when too few
+    /// copies are acting.
+    async fn replicas(
+        &self,
+        to: &Target,
+        pg: &PgInfo,
+    ) -> Result<(Vec<Conn>, Vec<(u32, Conn)>), Msg> {
+        let map = self.map();
+        if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
+            return Err(err(Code::Unavailable, &map, "too few copies"));
+        }
+        let mut conns = Vec::new();
+        let required: Vec<u32> = pg
+            .backfilling()
+            .filter(|d| self.required.borrow().contains(&(to.pool, to.pg, *d)))
+            .collect();
+        for d in pg
+            .acting
+            .iter()
+            .skip(1)
+            .filter(|d| **d != NO_DEVICE)
+            .chain(required.iter())
+        {
+            let Some(addr) = map.device_addr(*d) else {
+                return Err(err(Code::Unavailable, &map, "replica has no address"));
+            };
+            match self.peer(addr).await {
+                Ok(c) => conns.push(c),
+                Err(e) => return Err(err(Code::Unavailable, &map, format!("replica: {e}"))),
+            }
+        }
+        let mut fills = Vec::new();
+        for d in pg.backfilling().filter(|d| !required.contains(d)) {
+            match map.device_addr(d) {
+                Some(addr) => match self.peer(addr).await {
+                    Ok(c) => fills.push((d, c)),
+                    Err(_) => self.fill_failed(to.pool, to.pg, d),
+                },
+                None => self.fill_failed(to.pool, to.pg, d),
+            }
+        }
+        Ok((conns, fills))
+    }
+
+    /// An atomic operation list on one object (metadata.md §4.2). The
+    /// primary decides the assertions against the object as it is once
+    /// every queued commit is done, holding the key so no other list on it
+    /// is decided meanwhile; then it queues the effects here and sends them
+    /// to every replica with no wait in between, so every copy applies them
+    /// in the same order as writes. Replicas apply effects only: revisions
+    /// differ between copies, so assertions are on attributes (I6).
+    async fn exec(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        payload: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        let pg = match self.check(&to, true).await {
+            Ok(p) => p,
+            Err(m) => return send(m),
+        };
+        let Ok(ops) = decode_ops(&payload) else {
+            return send(err(Code::Invalid, &self.map(), "malformed operation list"));
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        let (conns, fills) = match self.replicas(&to, &pg).await {
+            Ok(c) => c,
+            Err(m) => return send(m),
+        };
+        while self.exec_locks.borrow().contains(&okey) {
+            sleep(Duration::from_millis(1)).await;
+        }
+        self.exec_locks.borrow_mut().insert(okey.clone());
+        self.drained().await;
+        // From here to the queueing, no wait: nothing else reaches the
+        // object in between.
+        let unlock = |me: &Self| {
+            me.exec_locks.borrow_mut().remove(&okey);
+        };
+        if let Err(why) = self.assertions_hold(&okey, &ops) {
+            unlock(self);
+            return send(err(Code::Conflict, &self.map(), why));
+        }
+        let effects: Vec<WireOp> = ops.into_iter().filter(|o| !o.is_assertion()).collect();
+        if effects.is_empty() {
+            unlock(self);
+            return send(Msg::ExecOk);
+        }
+        *self
+            .pg_inflight
+            .borrow_mut()
+            .entry((to.pool, to.pg))
+            .or_default() += 1;
+        let seq = {
+            let mut seqs = self.seqs.borrow_mut();
+            let s = seqs.entry((to.pool, to.pg)).or_default();
+            *s += 1;
+            *s
+        };
+        let repl = Msg::ReplExec { to, seq, key };
+        let body = encode_ops(&effects);
+        let remote: Vec<_> = conns.iter().map(|c| c.start(&repl, &body)).collect();
+        let filling: Vec<_> = fills
+            .iter()
+            .map(|(d, c)| {
+                *self
+                    .fill_inflight
+                    .borrow_mut()
+                    .entry((to.pool, to.pg, *d))
+                    .or_default() += 1;
+                (*d, c.start(&repl, &body))
+            })
+            .collect();
+        let local = self.enqueue(OpList {
+            key: okey.clone(),
+            ops: effects.into_iter().filter_map(engine_op).collect(),
+        });
+        // Queued: the next list on this key waits for it to commit.
+        unlock(self);
+        let me = self.clone();
+        let (pool, pgn) = (to.pool, to.pg);
+        spawn(async move {
+            for (d, f) in filling {
+                if !matches!(f.await, Ok((Msg::ReplOk { .. }, _))) {
+                    me.fill_failed(pool, pgn, d);
+                }
+                if let Some(n) = me.fill_inflight.borrow_mut().get_mut(&(pool, pgn, d)) {
+                    *n -= 1;
+                }
+            }
+        });
+        let me2 = self.clone();
+        spawn(async move {
+            let r = local.await;
+            let _inflight = InflightGuard(me2, (pool, pgn));
+            let mut failed = None;
+            for f in remote {
+                match f.await {
+                    Ok((Msg::ReplOk { .. }, _)) => {}
+                    Ok((Msg::Error { detail, .. }, _)) => failed = Some(detail),
+                    Ok((m, _)) => failed = Some(format!("unexpected {m:?}")),
+                    Err(e) => failed = Some(e.to_string()),
+                }
+            }
+            send(match (r, failed) {
+                (Ok(_), None) => Msg::ExecOk,
+                (Err(e), _) => Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: e,
+                },
+                (_, Some(e)) => Msg::Error {
+                    code: Code::Unavailable,
+                    map_epoch: 0,
+                    detail: format!("replica: {e}"),
+                },
+            });
+        });
+    }
+
+    /// Whether `ops`' assertions hold for the object as it is now.
+    fn assertions_hold(&self, key: &ObjKey, ops: &[WireOp]) -> Result<(), String> {
+        let sh = self.shard.borrow();
+        let exists = sh.stat(key).is_some();
+        for op in ops {
+            match op {
+                WireOp::AssertExists if !exists => return Err("the object doesn't exist".into()),
+                WireOp::AssertAbsent if exists => return Err("the object exists".into()),
+                WireOp::AssertAttr { name, value } => {
+                    let have = sh.attrs(key).and_then(|a| a.get(name));
+                    if have != value.as_ref() {
+                        return Err(format!(
+                            "attribute {} is not as asserted",
+                            String::from_utf8_lossy(name)
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// A replica's part of [`Self::exec`]: the effects, in order.
+    async fn repl_exec(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        payload: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
+        }
+        let Ok(ops) = decode_ops(&payload) else {
+            return send(err(Code::Invalid, &self.map(), "malformed operation list"));
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        let local = self.enqueue(OpList {
+            key: okey,
+            ops: ops.into_iter().filter_map(engine_op).collect(),
+        });
+        spawn(async move {
+            send(match local.await {
+                Ok(c) => Msg::ReplOk {
+                    revision: c.revision,
+                },
+                Err(e) => Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: e,
+                },
+            });
+        });
+    }
+
+    /// An object's size, attributes and a range of its key–value table,
+    /// from the primary.
+    async fn lookup(
+        &self,
+        to: Target,
+        key: WireKey,
+        kv_from: Vec<u8>,
+        kv_to: Option<Vec<u8>>,
+        kv_limit: u32,
+    ) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, true).await {
+            return (m, Vec::new());
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
+        };
+        let sh = self.shard.borrow();
+        let Some(st) = sh.stat(&okey) else {
+            return (Msg::LookupOk { found: false }, Vec::new());
+        };
+        let looked = Looked {
+            size: st.size,
+            attrs: sh
+                .attrs(&okey)
+                .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
+            kv: sh.kv_scan(&okey, &kv_from, kv_to.as_deref(), kv_limit as usize),
+        };
+        (Msg::LookupOk { found: true }, encode_looked(&looked))
+    }
+
+    /// Replaces an object with a primary's whole copy: refill, repair and
+    /// peering (replication.md §8.5).
+    async fn push_object(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        payload: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
+        }
+        let Ok(obj) = decode_object(&payload) else {
+            return send(err(
+                Code::Checksum,
+                &self.map(),
+                "malformed or damaged object",
+            ));
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        // In lists the engine accepts: the first replaces the data and
+        // attributes, the rest carry the key–value table in batches. Reads
+        // come from the primary, so a member between two lists serves no
+        // one the half-copied object.
+        let limit = self.shard.borrow().max_list_bytes() / 2;
+        let mut first = vec![Op::Delete];
+        if !obj.data.is_empty() {
+            first.push(Op::Write {
+                off: 0,
+                data: obj.data,
+            });
+        }
+        first.push(Op::Truncate(obj.size));
+        first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
+        let mut lists = vec![OpList {
+            key: okey.clone(),
+            ops: first,
+        }];
+        let mut batch = Vec::new();
+        let mut bytes = 0;
+        for (k, v) in obj.kv {
+            bytes += k.len() + v.len() + 32;
+            batch.push(Op::KvPut(k, v));
+            if bytes >= limit {
+                lists.push(OpList {
+                    key: okey.clone(),
+                    ops: std::mem::take(&mut batch),
+                });
+                bytes = 0;
+            }
+        }
+        if !batch.is_empty() {
+            lists.push(OpList {
+                key: okey.clone(),
+                ops: batch,
+            });
+        }
+        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        let me = self.clone();
+        spawn(async move {
+            let mut ok = true;
+            for d in done {
+                ok &= d.await.is_ok();
+            }
+            if ok {
+                me.damaged.borrow_mut().remove(&okey);
+            }
+            send(if ok {
+                Msg::PushOk
+            } else {
+                Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: "push failed".into(),
+                }
+            });
         });
     }
 
@@ -1283,6 +1639,7 @@ impl ShardState {
         // earlier are in the copy, and writes queued later follow it on the
         // same connection. A key that changes after the comparison is
         // carried by the live writes backfill targets get anyway.
+        let mut legacy = false;
         let theirs = match conn.start(&Msg::Digests { to, deep: false }, &[]).await {
             Ok((Msg::DigestsOk, p)) => match decode_digests(&p) {
                 Ok(v) => v,
@@ -1313,6 +1670,7 @@ impl ShardState {
                 if !matches!(reset.await, Ok((Msg::PushOk, _))) {
                     return false;
                 }
+                legacy = true;
                 Vec::new()
             }
             _ => return false,
@@ -1342,7 +1700,7 @@ impl ShardState {
                 return false;
             }
             self.drained().await;
-            let Some((m, data)) = self.push_of(to, &key) else {
+            let Some((m, data)) = self.push_of(to, &key, legacy) else {
                 return false;
             };
             inflight.push(conn.start(&m, &data));
@@ -1366,21 +1724,45 @@ impl ShardState {
     /// Read it and send it with no wait in between, once every queued
     /// commit is done ([`Self::drained`]): writes queued later then follow
     /// the push on the same connection.
-    fn push_of(&self, to: Target, key: &ObjKey) -> Option<(Msg, Vec<u8>)> {
+    fn push_of(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<(Msg, Vec<u8>)> {
         let sh = self.shard.borrow();
-        let data = match sh.stat(key) {
-            Some(st) => sh
-                .read(key, 0, st.size.div_ceil(4096) * 4096)
-                .ok()?
-                .to_vec(),
-            None => Vec::new(),
+        let Some(st) = sh.stat(key) else {
+            // Absent: a delete, which every version understands.
+            let m = Msg::Push {
+                to,
+                key: wire_key(key),
+                crcs: Vec::new(),
+            };
+            return Some((m, Vec::new()));
         };
-        let m = Msg::Push {
+        let data = sh
+            .read(key, 0, st.size.div_ceil(4096) * 4096)
+            .ok()?
+            .to_vec();
+        if legacy {
+            // A node from before whole objects (a rolling upgrade): data
+            // only, as before.
+            let m = Msg::Push {
+                to,
+                key: wire_key(key),
+                crcs: block_crcs(&data),
+            };
+            return Some((m, data));
+        }
+        let obj = WireObject {
+            size: st.size,
+            data,
+            attrs: sh
+                .attrs(key)
+                .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
+            kv: sh.kv_scan(key, b"", None, usize::MAX),
+        };
+        let m = Msg::PushObject {
             to,
             key: wire_key(key),
-            crcs: block_crcs(&data),
         };
-        Some((m, data))
+        Some((m, encode_object(&obj)))
     }
 
     /// Scrubs every PG this device is primary of, once per `every`
@@ -1539,7 +1921,7 @@ impl ShardState {
                             continue;
                         };
                         self.drained().await;
-                        let Some((m, data)) = self.push_of(to, &key) else {
+                        let Some((m, data)) = self.push_of(to, &key, false) else {
                             ok = false;
                             continue;
                         };

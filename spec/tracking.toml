@@ -173,8 +173,12 @@ tests = [
 
 [[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
-spec = ["metadata.md §4.2", "metadata.md §9", "D28"]
-status = "planned"
+spec = ["metadata.md §4.2", "metadata.md §9", "D28", "I68"]
+status = "partial"
+tests = [
+    "cluster::objects_change_atomically_and_every_copy_follows",
+    "hyperstor_proto::tests::operation_lists_objects_and_lookups_round_trip",
+]
 
 [[milestone.item]]
 what = "Test block devices through ublk"

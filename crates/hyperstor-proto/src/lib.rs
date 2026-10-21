@@ -225,6 +225,42 @@ pub enum Msg {
     ReadOk {
         crcs: Vec<u32>,
     },
+    /// Client to primary: apply the operation list in the payload
+    /// ([`encode_ops`]) to one object atomically, if its assertions hold
+    /// (metadata.md §4.2: compare-and-set on `.meta` objects).
+    Exec {
+        to: Target,
+        key: WireKey,
+    },
+    ExecOk,
+    /// Primary to replica: apply an operation list's effects (no
+    /// assertions: the primary decided them), in order with writes.
+    ReplExec {
+        to: Target,
+        seq: u64,
+        key: WireKey,
+    },
+    /// Client to primary: an object's size, attributes, and the
+    /// key–value entries in `[kv_from, kv_to)` (none: to the end), at most
+    /// `kv_limit` of them.
+    Lookup {
+        to: Target,
+        key: WireKey,
+        kv_from: Vec<u8>,
+        kv_to: Option<Vec<u8>>,
+        kv_limit: u32,
+    },
+    /// Whether the object exists; if it does, the payload is a
+    /// [`Looked`] ([`encode_looked`]).
+    LookupOk {
+        found: bool,
+    },
+    /// Primary to a member: replace the object with the payload's
+    /// ([`encode_object`]): data, size, attributes and key–value table.
+    PushObject {
+        to: Target,
+        key: WireKey,
+    },
     /// Primary to replica: apply this write (replication.md §8.1).
     Repl {
         to: Target,
@@ -315,6 +351,12 @@ mod kind {
     pub const WRITE_OK: u16 = 11;
     pub const READ: u16 = 12;
     pub const READ_OK: u16 = 13;
+    pub const EXEC: u16 = 14;
+    pub const EXEC_OK: u16 = 15;
+    pub const LOOKUP: u16 = 16;
+    pub const LOOKUP_OK: u16 = 17;
+    pub const REPL_EXEC: u16 = 26;
+    pub const PUSH_OBJECT: u16 = 27;
     pub const REPL: u16 = 20;
     pub const REPL_OK: u16 = 21;
     pub const PUSH: u16 = 22;
@@ -348,6 +390,12 @@ impl Msg {
             Msg::WriteOk { .. } => WRITE_OK,
             Msg::Read { .. } => READ,
             Msg::ReadOk { .. } => READ_OK,
+            Msg::Exec { .. } => EXEC,
+            Msg::ExecOk => EXEC_OK,
+            Msg::ReplExec { .. } => REPL_EXEC,
+            Msg::Lookup { .. } => LOOKUP,
+            Msg::LookupOk { .. } => LOOKUP_OK,
+            Msg::PushObject { .. } => PUSH_OBJECT,
             Msg::Repl { .. } => REPL,
             Msg::ReplOk { .. } => REPL_OK,
             Msg::Push { .. } => PUSH,
@@ -376,6 +424,8 @@ impl Msg {
                 | Msg::Map { .. }
                 | Msg::WriteOk { .. }
                 | Msg::ReadOk { .. }
+                | Msg::ExecOk
+                | Msg::LookupOk { .. }
                 | Msg::ReplOk { .. }
                 | Msg::PushOk
                 | Msg::DigestsOk
@@ -413,7 +463,35 @@ impl Msg {
             } => {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
-            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk => {}
+            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::ExecOk => {}
+            Msg::Exec { to, key } | Msg::PushObject { to, key } => {
+                to.enc(e);
+                key.enc(e);
+            }
+            Msg::ReplExec { to, seq, key } => {
+                to.enc(e);
+                e.u64(*seq);
+                key.enc(e);
+            }
+            Msg::Lookup {
+                to,
+                key,
+                kv_from,
+                kv_to,
+                kv_limit,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                e.bytes(kv_from);
+                match kv_to {
+                    Some(t) => e.bool(true).bytes(t),
+                    None => e.bool(false),
+                };
+                e.u32(*kv_limit);
+            }
+            Msg::LookupOk { found } => {
+                e.bool(*found);
+            }
             Msg::Digests { to, deep } => {
                 to.enc(e);
                 e.u8(u8::from(*deep));
@@ -559,6 +637,32 @@ impl Msg {
                 crcs: crcs(&mut d)?,
             },
             PUSH_OK => Msg::PushOk,
+            EXEC => Msg::Exec {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
+            EXEC_OK => Msg::ExecOk,
+            REPL_EXEC => Msg::ReplExec {
+                to: Target::dec(&mut d)?,
+                seq: d.u64()?,
+                key: WireKey::dec(&mut d)?,
+            },
+            LOOKUP => Msg::Lookup {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                kv_from: d.bytes()?.to_vec(),
+                kv_to: if d.bool()? {
+                    Some(d.bytes()?.to_vec())
+                } else {
+                    None
+                },
+                kv_limit: d.u32()?,
+            },
+            LOOKUP_OK => Msg::LookupOk { found: d.bool()? },
+            PUSH_OBJECT => Msg::PushObject {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
             DIGESTS => Msg::Digests {
                 to: Target::dec(&mut d)?,
                 deep: d.u8()? != 0,
@@ -626,6 +730,232 @@ pub fn decode_digests(payload: &[u8]) -> Result<Vec<(WireKey, u64)>, DecodeError
     let v = d.seq(1 + 4 + 8 + 8, |d| Ok((WireKey::dec(d)?, d.u64()?)))?;
     d.finish()?;
     Ok(v)
+}
+
+/// One operation of an atomic list on an object ([`Msg::Exec`]): the
+/// engine's operations (engine.md §7.2), with assertions on attributes in
+/// place of revisions, which differ between an object's copies (I6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireOp {
+    AssertExists,
+    AssertAbsent,
+    /// The attribute has this value (`None`: it is absent).
+    AssertAttr {
+        name: Vec<u8>,
+        value: Option<Vec<u8>>,
+    },
+    /// Creates the object if it is absent.
+    Touch,
+    /// `data` is whole blocks.
+    Write {
+        off: u64,
+        data: Vec<u8>,
+    },
+    Zero {
+        off: u64,
+        len: u64,
+    },
+    Truncate(u64),
+    SetAttr(Vec<u8>, Vec<u8>),
+    RmAttr(Vec<u8>),
+    KvPut(Vec<u8>, Vec<u8>),
+    KvDel(Vec<u8>),
+    /// Deletes keys in `[start, end)`.
+    KvDelRange(Vec<u8>, Vec<u8>),
+    Delete,
+}
+
+impl WireOp {
+    pub fn is_assertion(&self) -> bool {
+        matches!(
+            self,
+            WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. }
+        )
+    }
+}
+
+pub fn encode_ops(ops: &[WireOp]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.u32(ops.len() as u32);
+    for op in ops {
+        match op {
+            WireOp::AssertExists => {
+                e.u8(1);
+            }
+            WireOp::AssertAbsent => {
+                e.u8(2);
+            }
+            WireOp::AssertAttr { name, value } => {
+                e.u8(3).bytes(name);
+                match value {
+                    Some(v) => e.bool(true).bytes(v),
+                    None => e.bool(false),
+                };
+            }
+            WireOp::Touch => {
+                e.u8(4);
+            }
+            WireOp::Write { off, data } => {
+                e.u8(5).u64(*off).bytes(data);
+            }
+            WireOp::Zero { off, len } => {
+                e.u8(6).u64(*off).u64(*len);
+            }
+            WireOp::Truncate(n) => {
+                e.u8(7).u64(*n);
+            }
+            WireOp::SetAttr(k, v) => {
+                e.u8(8).bytes(k).bytes(v);
+            }
+            WireOp::RmAttr(k) => {
+                e.u8(9).bytes(k);
+            }
+            WireOp::KvPut(k, v) => {
+                e.u8(10).bytes(k).bytes(v);
+            }
+            WireOp::KvDel(k) => {
+                e.u8(11).bytes(k);
+            }
+            WireOp::KvDelRange(a, b) => {
+                e.u8(12).bytes(a).bytes(b);
+            }
+            WireOp::Delete => {
+                e.u8(13);
+            }
+        }
+    }
+    e.into_vec()
+}
+
+pub fn decode_ops(b: &[u8]) -> Result<Vec<WireOp>, DecodeError> {
+    let mut d = Dec::new(b);
+    let n = d.u32()? as usize;
+    if n > b.len() {
+        return Err(DecodeError::TooLong(n));
+    }
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let bytes = |d: &mut Dec<'_>| -> Result<Vec<u8>, DecodeError> { Ok(d.bytes()?.to_vec()) };
+        out.push(match d.u8()? {
+            1 => WireOp::AssertExists,
+            2 => WireOp::AssertAbsent,
+            3 => WireOp::AssertAttr {
+                name: bytes(&mut d)?,
+                value: if d.bool()? {
+                    Some(bytes(&mut d)?)
+                } else {
+                    None
+                },
+            },
+            4 => WireOp::Touch,
+            5 => WireOp::Write {
+                off: d.u64()?,
+                data: bytes(&mut d)?,
+            },
+            6 => WireOp::Zero {
+                off: d.u64()?,
+                len: d.u64()?,
+            },
+            7 => WireOp::Truncate(d.u64()?),
+            8 => WireOp::SetAttr(bytes(&mut d)?, bytes(&mut d)?),
+            9 => WireOp::RmAttr(bytes(&mut d)?),
+            10 => WireOp::KvPut(bytes(&mut d)?, bytes(&mut d)?),
+            11 => WireOp::KvDel(bytes(&mut d)?),
+            12 => WireOp::KvDelRange(bytes(&mut d)?, bytes(&mut d)?),
+            13 => WireOp::Delete,
+            k => {
+                return Err(DecodeError::Invalid {
+                    field: "operation",
+                    value: k as u64,
+                });
+            }
+        });
+    }
+    d.finish()?;
+    Ok(out)
+}
+
+/// What a [`Msg::Lookup`] returns.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Looked {
+    pub size: u64,
+    pub attrs: Vec<(Vec<u8>, Vec<u8>)>,
+    pub kv: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Keys and values, in order.
+pub type Pairs = Vec<(Vec<u8>, Vec<u8>)>;
+
+fn enc_pairs(e: &mut Enc, pairs: &[(Vec<u8>, Vec<u8>)]) {
+    e.seq(pairs, |e, (k, v)| {
+        e.bytes(k).bytes(v);
+    });
+}
+
+fn dec_pairs(d: &mut Dec<'_>) -> Result<Pairs, DecodeError> {
+    d.seq(8, |d| Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec())))
+}
+
+pub fn encode_looked(l: &Looked) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.u64(l.size);
+    enc_pairs(&mut e, &l.attrs);
+    enc_pairs(&mut e, &l.kv);
+    e.into_vec()
+}
+
+pub fn decode_looked(b: &[u8]) -> Result<Looked, DecodeError> {
+    let mut d = Dec::new(b);
+    let l = Looked {
+        size: d.u64()?,
+        attrs: dec_pairs(&mut d)?,
+        kv: dec_pairs(&mut d)?,
+    };
+    d.finish()?;
+    Ok(l)
+}
+
+/// An object whole ([`Msg::PushObject`]): its exact size, its data (whole
+/// blocks, with each block's CRC), attributes and key–value table.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WireObject {
+    pub size: u64,
+    pub data: Vec<u8>,
+    pub attrs: Vec<(Vec<u8>, Vec<u8>)>,
+    pub kv: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+pub fn encode_object(o: &WireObject) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.u64(o.size).seq(&block_crcs(&o.data), |e, c| {
+        e.u32(*c);
+    });
+    e.bytes(&o.data);
+    enc_pairs(&mut e, &o.attrs);
+    enc_pairs(&mut e, &o.kv);
+    e.into_vec()
+}
+
+/// Decodes and checks the data against its CRCs.
+pub fn decode_object(b: &[u8]) -> Result<WireObject, DecodeError> {
+    let mut d = Dec::new(b);
+    let size = d.u64()?;
+    let crcs = d.seq(4, |d| d.u32())?;
+    let data = d.bytes()?.to_vec();
+    if verify_crcs(&data, &crcs).is_err() {
+        return Err(DecodeError::Invalid {
+            field: "object data checksum",
+            value: 0,
+        });
+    }
+    let o = WireObject {
+        size,
+        data,
+        attrs: dec_pairs(&mut d)?,
+        kv: dec_pairs(&mut d)?,
+    };
+    d.finish()?;
+    Ok(o)
 }
 
 /// Encodes a frame: header, body, then `payload`.
@@ -731,6 +1061,44 @@ mod tests {
                 crcs: vec![5],
             },
             Msg::PushOk,
+            Msg::Exec {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::ExecOk,
+            Msg::ReplExec {
+                to,
+                seq: 4,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::Lookup {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                kv_from: b"a".to_vec(),
+                kv_to: Some(b"z".to_vec()),
+                kv_limit: 10,
+            },
+            Msg::LookupOk { found: true },
+            Msg::PushObject {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
             Msg::Digests { to, deep: true },
             Msg::DigestsOk,
             Msg::Heartbeat { node: 3 },
@@ -780,6 +1148,55 @@ mod tests {
             assert_eq!(Msg::decode(h.kind, body).unwrap(), m);
             assert_eq!(&f[HEADER_LEN + h.body_len as usize..], &payload[..]);
         }
+    }
+
+    #[test]
+    fn operation_lists_objects_and_lookups_round_trip() {
+        let ops = vec![
+            WireOp::AssertExists,
+            WireOp::AssertAbsent,
+            WireOp::AssertAttr {
+                name: b"v".to_vec(),
+                value: Some(b"7".to_vec()),
+            },
+            WireOp::AssertAttr {
+                name: b"w".to_vec(),
+                value: None,
+            },
+            WireOp::Touch,
+            WireOp::Write {
+                off: 4096,
+                data: vec![1; 4096],
+            },
+            WireOp::Zero { off: 0, len: 4096 },
+            WireOp::Truncate(9),
+            WireOp::SetAttr(b"a".to_vec(), b"b".to_vec()),
+            WireOp::RmAttr(b"a".to_vec()),
+            WireOp::KvPut(b"k".to_vec(), vec![0, 255]),
+            WireOp::KvDel(b"k".to_vec()),
+            WireOp::KvDelRange(b"a".to_vec(), b"z".to_vec()),
+            WireOp::Delete,
+        ];
+        assert_eq!(decode_ops(&encode_ops(&ops)).unwrap(), ops);
+        assert!(decode_ops(&[1, 0, 0, 0, 99]).is_err());
+        let o = WireObject {
+            size: 5000,
+            data: vec![3; 8192],
+            attrs: vec![(b"v".to_vec(), b"1".to_vec())],
+            kv: vec![(b"x".to_vec(), b"y".to_vec())],
+        };
+        let mut enc = encode_object(&o);
+        assert_eq!(decode_object(&enc).unwrap(), o);
+        // A flipped data byte is refused.
+        let at = enc.len() - 40;
+        enc[at] ^= 1;
+        assert!(decode_object(&enc).is_err());
+        let l = Looked {
+            size: 3,
+            attrs: vec![(b"a".to_vec(), b"b".to_vec())],
+            kv: vec![],
+        };
+        assert_eq!(decode_looked(&encode_looked(&l)).unwrap(), l);
     }
 
     #[test]

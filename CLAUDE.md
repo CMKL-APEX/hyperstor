@@ -18,14 +18,15 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D74 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D77 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I67, and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I69, and every host check (G1–G20,
   FG1–FG2).
-- **Next:** the rest of HS2 (blocklist and forced takeovers, read
-  leases; the PG log only if I57's digest scan proves too slow);
-  changing the map service's members at run time (I65); the
+- **Next:** volume headers, leases and the blocklist (D75–D77,
+  decision-log.md points 34–37), on the object operations of I68: the
+  `.meta` pool and headers, then leases, then the blocklist and forced
+  takeovers; changing the map service's members at run time (I65); the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
   also gives D47's paged checkpoints); `hyperstor-vhost` and the glidex
   driver (HS3); cache-pool expiry and eviction and priority classes
