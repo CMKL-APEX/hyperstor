@@ -924,6 +924,100 @@ fn a_new_primary_makes_its_members_agree_before_serving() {
     copies_agree(&map, devs, &chunks);
 }
 
+/// Random failures against a model (CLAUDE.md, "Code conventions"):
+/// writes to random chunks interleaved with random node stops and
+/// restarts (at most one node down, so every PG keeps two copies), which
+/// exercises peering at each change of primary and delta recovery at
+/// each return. Every acknowledged write must read back, and in the end
+/// every copy must agree. `HS_SEED` picks one seed; by default three run.
+#[test]
+fn random_failures_lose_no_acknowledged_write() {
+    let seeds: Vec<u64> = match std::env::var("HS_SEED") {
+        Ok(s) => vec![s.parse().unwrap()],
+        Err(_) => vec![1, 2, 3],
+    };
+    for seed in seeds {
+        random_failures(seed);
+    }
+}
+
+fn random_failures(seed: u64) {
+    const CHUNKS: u64 = 8;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    // Every chunk exists from the start, so every copy can be compared.
+    let mut model: Vec<Vec<u8>> = (0..CHUNKS)
+        .map(|ch| pattern(seed * 1000 + 500 + ch, CHUNK as usize))
+        .collect();
+    let all = model.concat();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, all).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let mut down: Option<usize> = None;
+    let mut log = Vec::new();
+    for step in 0..14u64 {
+        match rng.random_range(0..4u32) {
+            0 if down.is_none() => {
+                let n = rng.random_range(0..4usize);
+                c.kill(n);
+                down = Some(n);
+                log.push(format!("kill {n}"));
+            }
+            1 if down.is_some() => {
+                let n = down.take().unwrap();
+                c.restart(n);
+                log.push(format!("restart {n}"));
+            }
+            _ => {
+                let ch = rng.random_range(0..CHUNKS);
+                let data = pattern(seed * 1000 + step, CHUNK as usize);
+                let d = data.clone();
+                std::thread::spawn(move || {
+                    block_on(async move {
+                        let cl = Client::connect(meta, 10 + step).await.unwrap();
+                        cl.write(POOL, 1, ch * CHUNK as u64, d).await.unwrap();
+                    })
+                })
+                .join()
+                .unwrap_or_else(|_| panic!("seed {seed}: write failed after {log:?}"));
+                model[ch as usize] = data;
+                log.push(format!("write {ch}"));
+            }
+        }
+    }
+    if let Some(n) = down.take() {
+        c.restart(n);
+        log.push(format!("restart {n}"));
+    }
+    let expect: Vec<u8> = model.concat();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 99).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+            cl.read(POOL, 1, 0, expect.len() as u64).await.unwrap() == expect
+        })
+    })
+    .join()
+    .map(|same| {
+        assert!(
+            same,
+            "seed {seed}: reads differ from the model after {log:?}"
+        )
+    })
+    .unwrap_or_else(|_| panic!("seed {seed}: final read failed after {log:?}"));
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
 /// The case map leases exist for (decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be

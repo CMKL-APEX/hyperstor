@@ -223,6 +223,7 @@ tests = [
     "cluster::a_returning_node_gets_only_what_changed",
     "cluster::a_returning_node_without_digests_is_refilled_whole",
     "cluster::a_new_primary_makes_its_members_agree_before_serving",
+    "cluster::random_failures_lose_no_acknowledged_write",
     "engine::digests_follow_content_not_history",
 ]
 
