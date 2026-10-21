@@ -1,0 +1,17 @@
+[package]
+name = "hyperstor-pki"
+description = "Hyperstor's certificates: a root and intermediate CA, leaf identities, and TLS configurations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# The same rustls as connectrpc's (0.23); the ring provider is chosen explicitly.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+time = "0.3"
+x509-parser = "0.18"
+
+[lints]
+workspace = true

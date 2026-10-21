@@ -7,8 +7,11 @@
 //! with a one-shot reply. Reads answer from the published map, writes
 //! change the working map, which the publisher fences and publishes.
 //!
-//! Not yet: TLS and identities (D53, D56). Until then the API is plain
-//! HTTP and unauthenticated, so `hyperstor-install` binds it to loopback.
+//! With TLS (`hyperstor-meta --api-tls DIR`), every client presents a
+//! certificate chaining to the cluster's root (D53), and its identity
+//! decides what it may do (D56, §16): reads for any identity of this
+//! cluster except bare-metal hosts, changes for `admin` and `mgmt` only.
+//! Without TLS, every request is allowed: for loopback and tests only.
 
 use crate::health::{self, Health};
 use crate::{Admin, ClusterMap, NO_DEVICE, PoolKind};
@@ -23,9 +26,49 @@ use std::sync::Arc;
 struct Api {
     tx: Sender<Admin>,
     map_address: String,
+    /// The cluster id certificates must name; `None` without TLS.
+    cluster: Option<String>,
 }
 
 impl Api {
+    /// Checks the caller's certificate: an identity of this cluster, and
+    /// for `write`, one that may administer.
+    fn authorize(&self, ctx: &RequestContext, write: bool) -> Result<(), ConnectError> {
+        let Some(cluster) = &self.cluster else {
+            return Ok(());
+        };
+        let who = ctx
+            .peer_certs()
+            .and_then(|c| c.first())
+            .and_then(|leaf| hyperstor_pki::identity_of(leaf))
+            .ok_or_else(|| {
+                ConnectError::unauthenticated("a hyperstor client certificate is required")
+            })?;
+        if &who.cluster != cluster {
+            return Err(ConnectError::permission_denied(format!(
+                "{} is not of cluster {cluster}",
+                who.uri()
+            )));
+        }
+        let allowed = if write {
+            who.role.may_administer()
+        } else {
+            who.role != hyperstor_pki::Role::Host
+        };
+        if !allowed {
+            return Err(ConnectError::permission_denied(format!(
+                "{} may not {}",
+                who.uri(),
+                if write {
+                    "change the cluster"
+                } else {
+                    "read the cluster's status"
+                }
+            )));
+        }
+        Ok(())
+    }
+
     async fn published(&self) -> Result<ClusterMap, ConnectError> {
         let (reply, rx) = oneshot();
         self.tx
@@ -135,18 +178,20 @@ pub fn status(map: &ClusterMap, map_address: &str) -> pb::GetStatusResponse {
 impl ClusterService for Api {
     async fn get_status(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         _req: ServiceRequest<'_, pb::GetStatusRequest>,
     ) -> ServiceResult<pb::GetStatusResponse> {
+        self.authorize(&ctx, false)?;
         let map = self.published().await?;
         Ok(status(&map, &self.map_address).into())
     }
 
     async fn list_pgs(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         req: ServiceRequest<'_, pb::ListPgsRequest>,
     ) -> ServiceResult<pb::ListPgsResponse> {
+        self.authorize(&ctx, false)?;
         let pool = req.pool;
         let map = self.published().await?;
         if !map.pools.contains_key(&pool) {
@@ -174,9 +219,10 @@ impl ClusterService for Api {
 
     async fn set_device_in(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         req: ServiceRequest<'_, pb::SetDeviceInRequest>,
     ) -> ServiceResult<pb::SetDeviceInResponse> {
+        self.authorize(&ctx, true)?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::SetDeviceIn {
@@ -197,13 +243,36 @@ impl ClusterService for Api {
     }
 }
 
+/// TLS for the API: the server's chain and key, the root clients must
+/// chain to, and the cluster id their certificates must name.
+pub struct Tls {
+    pub config: connectrpc::rustls::ServerConfig,
+    pub cluster: String,
+}
+
+/// Reads `DIR/api.crt` (chain), `DIR/api.key` and `DIR/root.crt`.
+pub fn tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<Tls, String> {
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
+    };
+    Ok(Tls {
+        config: hyperstor_pki::server_config(
+            &read("api.crt")?,
+            &read("api.key")?,
+            &read("root.crt")?,
+        )?,
+        cluster: cluster.to_string(),
+    })
+}
+
 /// Serves the cluster API on `listener` from a new thread with its own
-/// single-threaded tokio runtime. `map_address` is reported to clients
-/// as where the map service listens.
+/// single-threaded tokio runtime, over TLS when `tls` is given.
+/// `map_address` is reported to clients as where the map service listens.
 pub fn spawn(
     listener: std::net::TcpListener,
     tx: Sender<Admin>,
     map_address: SocketAddr,
+    tls: Option<Tls>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("hyperstor-api".into())
@@ -215,15 +284,21 @@ pub fn spawn(
             rt.block_on(async move {
                 listener.set_nonblocking(true).expect("nonblocking");
                 let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+                let (config, cluster) = match tls {
+                    Some(t) => (Some(Arc::new(t.config)), Some(t.cluster)),
+                    None => (None, None),
+                };
                 let api = Arc::new(Api {
                     tx,
                     map_address: map_address.to_string(),
+                    cluster,
                 });
                 let router = api.register(connectrpc::Router::new());
-                if let Err(e) = connectrpc::Server::from_listener(listener)
-                    .serve(router)
-                    .await
-                {
+                let mut server = connectrpc::Server::from_listener(listener);
+                if let Some(c) = config {
+                    server = server.with_tls(c);
+                }
+                if let Err(e) = server.serve(router).await {
                     eprintln!("hyperstor-meta: cluster API: {e}");
                     std::process::exit(1);
                 }

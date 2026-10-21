@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--json] status|nodes|pools|pgs|io-test|out|in [--pool P] [--mib N] [--device D] [--node N]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in [--pool P] [--mib N] [--device D] [--node N]
 ```
 
 | Command | Does |
@@ -20,6 +20,7 @@ usage: hyperstorctl [--api ADDR] [--json] status|nodes|pools|pgs|io-test|out|in 
 | Option | Default | Meaning |
 |---|---|---|
 | `--api ADDR` | see below | `IP:PORT` of the cluster API |
+| `--tls DIR` | see below | Connect over mutual TLS with `DIR/admin.crt`, `DIR/admin.key` and `DIR/root.crt` |
 | `--json` | off | Print the API's answer as JSON (`status`, `nodes`, `pools`, `pgs`) |
 | `--pool P` | the first pool | The pool for `pgs` and `io-test` |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
@@ -28,7 +29,11 @@ usage: hyperstorctl [--api ADDR] [--json] status|nodes|pools|pgs|io-test|out|in 
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line
 of `/etc/hyperstor/hyperstorctl.conf` (written by
-[hyperstor-install](hyperstor-install.md)), else `127.0.0.1:8850`.
+[hyperstor-install](hyperstor-install.md)), else `127.0.0.1:8850`. Likewise, without `--tls` the certificates are
+those of the `tls` line in that file, if any; with neither, it uses
+plain HTTP. On a host installed with `hyperstor-install`, run it as
+root or as a member of the `hyperstor-admin` group, which can read the
+administrator certificate.
 
 `io-test` reaches the storage nodes as a client would: it asks the API
 where the map service is, then writes and reads through the client
@@ -37,6 +42,6 @@ library. It prints the time and throughput of each phase.
 | Exit status | Meaning |
 |---|---|
 | 0 | Done; for `status`, health is `ok` |
-| 1 | `status`: health is `warn` or `error`. Otherwise a refused request (no such device or pool) or a failed `io-test` |
-| 2 | A missing or malformed option |
+| 1 | `status`: health is `warn` or `error`. Otherwise a refused request (no such device or pool, or the certificate's role may not do it) or a failed `io-test` |
+| 2 | A missing or malformed option, or certificates that can't be read |
 | 3 | The cluster API (or, for `io-test`, the map service) can't be reached |

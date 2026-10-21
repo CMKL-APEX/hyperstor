@@ -53,7 +53,8 @@ hyperstorctl io-test
 `check` reports each requirement as `ok`, `info`, `warn` or `FAIL`.
 `install` runs the checks, copies the binaries to `/usr/local/bin`,
 creates the `hyperstor` user, writes the configuration in
-`/etc/hyperstor` and the units, and starts `hyperstor-meta` and
+`/etc/hyperstor`, the cluster's certificates in `/etc/hyperstor/pki`,
+and the units, and starts `hyperstor-meta` and
 `hyperstord@0` to `hyperstord@2`. Everything listens on `127.0.0.1`:
 the cluster API on 8850, the map service on 8849, the storage nodes on
 9100 to 9102. Device files go to `/var/lib/hyperstor` (4 GiB each,
@@ -66,6 +67,10 @@ The options of the last run are saved, so `sudo hyperstor-install
 install` is enough later. `sudo hyperstor-install uninstall` stops and
 removes the services and binaries and keeps the configuration and data.
 All options are in the [reference](../reference/hyperstor-install.md).
+
+`hyperstorctl` needs the administrator certificate, readable by root
+and the `hyperstor-admin` group: run it with `sudo`, or join the group
+(`sudo usermod -aG hyperstor-admin $USER`, then log in again).
 
 Then see [Managing a cluster](managing.md).
 

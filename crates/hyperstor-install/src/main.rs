@@ -436,14 +436,14 @@ fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
         (
             "/etc/hyperstor/meta.env".to_string(),
             format!(
-                "HS_ARGS=--listen 127.0.0.1:{} --api 127.0.0.1:{} --cluster /etc/hyperstor/cluster.txt\n",
+                "HS_ARGS=--listen 127.0.0.1:{} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --cluster /etc/hyperstor/cluster.txt\n",
                 s.map_port, s.api_port
             ),
             0o644,
         ),
         (
             "/etc/hyperstor/hyperstorctl.conf".to_string(),
-            format!("api 127.0.0.1:{}\n", s.api_port),
+            format!("api 127.0.0.1:{}\ntls /etc/hyperstor/pki\n", s.api_port),
             0o644,
         ),
         (
@@ -598,6 +598,18 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
             changed.push("user hyperstor".into());
         }
     }
+    // Members of hyperstor-admin can read hyperstorctl's certificate.
+    if real
+        && !Command::new("getent")
+            .args(["group", "hyperstor-admin"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
+        if !run("groupadd", &["--system", "hyperstor-admin"]) {
+            fail("groupadd hyperstor-admin failed");
+        }
+        changed.push("group hyperstor-admin".into());
+    }
     let data = under(root, &s.data_dir);
     if !data.exists() {
         fs::create_dir_all(&data)
@@ -608,10 +620,14 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         fail("chown of the data directory failed");
     }
 
-    // 3. Configuration and units.
-    let mut units_changed = false;
+    // 3. Certificates (§23.8), then configuration and units.
+    let cid = cluster_id(root);
     let mut restart: Vec<String> = Vec::new();
-    for (path, content, mode) in files(s, cluster_id(root)) {
+    if pki(root, real, cid, &mut changed) {
+        restart.push("hyperstor-meta.service".into());
+    }
+    let mut units_changed = false;
+    for (path, content, mode) in files(s, cid) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
             continue;
         }
@@ -672,8 +688,100 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         }
     }
     if real && !no_start {
-        println!("\nNext: hyperstorctl status, then hyperstorctl io-test");
+        println!(
+            "\nNext: hyperstorctl status, then hyperstorctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
+        );
     }
+}
+
+/// The cluster's certificates in `/etc/hyperstor/pki` (§23.8, D53, D56):
+///
+/// - `root.*`, the root CA, made once. Here it stays on the host, readable
+///   by root only; a multi-host cluster keeps it offline.
+/// - `intermediate.*`, made once and renewed after two thirds of its year.
+/// - `api.*`, the map service's server certificate (`meta/0`, for
+///   127.0.0.1 and localhost), readable by the `hyperstor` group.
+/// - `admin.*`, `hyperstorctl`'s client certificate (`admin/local`),
+///   readable by root and the `hyperstor-admin` group.
+///
+/// Leaves are renewed after two thirds of their 30 days, or when the
+/// intermediate changes. Returns whether the API's certificate changed.
+fn pki(root: &Path, real: bool, cluster: u64, changed: &mut Vec<String>) -> bool {
+    use hyperstor_pki::*;
+    let dir = "/etc/hyperstor/pki";
+    let read = |f: &str| fs::read_to_string(under(root, &format!("{dir}/{f}"))).ok();
+    let pair = |name: &str| -> Option<Pem> {
+        Some(Pem {
+            cert: read(&format!("{name}.crt"))?,
+            key: read(&format!("{name}.key"))?,
+        })
+    };
+    let cid = cluster.to_string();
+    let write = |name: &str, p: &Pem, key_mode: u32, changed: &mut Vec<String>| {
+        converge(
+            &under(root, &format!("{dir}/{name}.key")),
+            p.key.as_bytes(),
+            key_mode,
+        );
+        converge(
+            &under(root, &format!("{dir}/{name}.crt")),
+            p.cert.as_bytes(),
+            0o644,
+        );
+        changed.push(format!("{dir}/{name}.crt"));
+    };
+    let rootca = match pair("root") {
+        Some(p) => p,
+        None => {
+            let p = new_root(&cid).unwrap_or_else(|e| fail(&format!("root CA: {e}")));
+            write("root", &p, 0o600, changed);
+            p
+        }
+    };
+    let mut renewed_ca = false;
+    let ca = match pair("intermediate") {
+        Some(p) if !due_for_renewal(&p.cert, INTERMEDIATE_DAYS) => p,
+        _ => {
+            let p = new_intermediate(&rootca, &cid)
+                .unwrap_or_else(|e| fail(&format!("intermediate CA: {e}")));
+            write("intermediate", &p, 0o600, changed);
+            renewed_ca = true;
+            p
+        }
+    };
+    let mut api_changed = false;
+    for (name, role, id, server, group) in [
+        ("api", Role::Meta, "0", true, "hyperstor"),
+        ("admin", Role::Admin, "local", false, "hyperstor-admin"),
+    ] {
+        if !renewed_ca && pair(name).is_some_and(|p| !due_for_renewal(&p.cert, LEAF_DAYS)) {
+            continue;
+        }
+        let who = Identity {
+            cluster: cid.clone(),
+            role,
+            id: id.into(),
+        };
+        let (ips, names) = if server {
+            (
+                vec!["127.0.0.1".parse().unwrap()],
+                vec!["localhost".to_string()],
+            )
+        } else {
+            (vec![], vec![])
+        };
+        let p = issue(&ca, &who, &ips, &names, LEAF_DAYS)
+            .unwrap_or_else(|e| fail(&format!("{name} certificate: {e}")));
+        write(name, &p, 0o640, changed);
+        if real {
+            let key = format!("{dir}/{name}.key");
+            if !run("chgrp", &[group, &key]) {
+                fail(&format!("chgrp {group} {key} failed"));
+            }
+        }
+        api_changed |= server;
+    }
+    api_changed
 }
 
 fn uninstall(root: &Path, real: bool, s: &Settings) {

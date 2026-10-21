@@ -1,4 +1,4 @@
-//! `hyperstorctl [--api ADDR] [--json] status|nodes|pools|pgs|io-test|out|in
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in
 //!               [--pool P] [--mib N] [--device D] [--node N]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
@@ -18,7 +18,9 @@
 //!
 //! The API is `--api`, else `$HYPERSTOR_API`, else the `api` line of
 //! `/etc/hyperstor/hyperstorctl.conf` (written by `hyperstor-install`),
-//! else `127.0.0.1:8850`.
+//! else `127.0.0.1:8850`. With `--tls DIR`, or a `tls DIR` line in that
+//! file, it connects over mutual TLS with `DIR/admin.crt`,
+//! `DIR/admin.key` and `DIR/root.crt` (§23.8); otherwise plain HTTP.
 //!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a refused request or a failed test, 2 usage, 3 the API
@@ -31,20 +33,28 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--json] status|nodes|pools|pgs|io-test|out|in [--pool P] [--mib N] [--device D] [--node N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--json] status|nodes|pools|pgs|io-test|out|in [--pool P] [--mib N] [--device D] [--node N]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
     std::process::exit(2)
 }
 
+/// A setting from `/etc/hyperstor/hyperstorctl.conf`: `KEY VALUE` lines.
+fn conf(key: &str) -> Option<String> {
+    std::fs::read_to_string("/etc/hyperstor/hyperstorctl.conf")
+        .ok()?
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix(key)?
+                .strip_prefix(' ')
+                .map(|v| v.trim().to_string())
+        })
+}
+
 fn api_addr(flag: Option<String>) -> String {
-    let from_conf = || {
-        std::fs::read_to_string("/etc/hyperstor/hyperstorctl.conf")
-            .ok()?
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("api ").map(|v| v.trim().to_string()))
-    };
+    let from_conf = || conf("api");
     let s = flag
         .or_else(|| std::env::var("HYPERSTOR_API").ok())
         .or_else(from_conf)
@@ -74,6 +84,7 @@ struct Args {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut api = None;
+    let mut tls = None;
     let mut a = Args {
         json: false,
         pool: None,
@@ -88,6 +99,7 @@ fn main() {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--api" => api = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--json" => a.json = true,
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
@@ -105,6 +117,28 @@ fn main() {
         usage();
     }
     let api = api_addr(api);
+    let tls = match tls.or_else(|| conf("tls")) {
+        None => None,
+        Some(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            let read = |f: &str| {
+                std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| {
+                    eprintln!("hyperstorctl: {}: {e}", dir.join(f).display());
+                    std::process::exit(2)
+                })
+            };
+            let c = hyperstor_pki::client_config(
+                &read("admin.crt"),
+                &read("admin.key"),
+                &read("root.crt"),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("hyperstorctl: {}: {e}", dir.display());
+                std::process::exit(2)
+            });
+            Some(std::sync::Arc::new(c))
+        }
+    };
 
     // The API calls run on a small tokio runtime; io-test then runs the
     // client library on a reactor, after it.
@@ -112,7 +146,7 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let outcome = rt.block_on(manage(&api, &cmd, &a));
+    let outcome = rt.block_on(manage(&api, tls, &cmd, &a));
     let code = match outcome {
         Ok(Next::Exit(code)) => code,
         Ok(Next::IoTest { map, pool }) => {
@@ -139,12 +173,22 @@ enum Next {
     },
 }
 
-async fn manage(api: &str, cmd: &str, a: &Args) -> Result<Next, connectrpc::ConnectError> {
-    let uri: http::Uri = format!("http://{api}")
+async fn manage(
+    api: &str,
+    tls: Option<std::sync::Arc<connectrpc::rustls::ClientConfig>>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError> {
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let uri: http::Uri = format!("{scheme}://{api}")
         .parse()
         .map_err(|_| connectrpc::ConnectError::invalid_argument("bad address"))?;
+    let http = match tls {
+        Some(c) => HttpClient::with_tls(c),
+        None => HttpClient::plaintext(),
+    };
     let client = ClusterServiceClient::new(
-        HttpClient::plaintext(),
+        http,
         ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
     );
     let status = || async {

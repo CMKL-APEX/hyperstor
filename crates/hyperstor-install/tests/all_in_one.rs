@@ -68,8 +68,11 @@ fn args(root: &Path, env: &str) -> Vec<String> {
 }
 
 fn ctl(bin: &Path, api: &str, a: &[&str]) -> (i32, String) {
+    // The installed certificates, under the scratch root: bin is
+    // <root>/usr/local/bin.
+    let pki = bin.join("../../../etc/hyperstor/pki");
     let out = Command::new(bin.join("hyperstorctl"))
-        .args(["--api", api])
+        .args(["--api", api, "--tls", pki.to_str().unwrap()])
         .args(a)
         .output()
         .unwrap();
@@ -183,6 +186,67 @@ fn install_manage_and_fail_a_node() {
         "{status}"
     );
     assert_eq!(status.matches("\"up\":true").count(), 3, "{status}");
+
+    // Identities (D56): the API takes only certificates of this cluster's
+    // root, a storage node's may read but not change, and plain HTTP
+    // gets nowhere.
+    let pki = root.join("etc/hyperstor/pki");
+    let read = |f: &str| std::fs::read_to_string(pki.join(f)).unwrap();
+    let ca = hyperstor_pki::Pem {
+        cert: read("intermediate.crt"),
+        key: read("intermediate.key"),
+    };
+    let as_role =
+        |name: &str, role: hyperstor_pki::Role, root_pem: &str, ca: &hyperstor_pki::Pem| {
+            let dir = scratch.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let who = hyperstor_pki::Identity {
+                cluster: cid_of(&cid).to_string(),
+                role,
+                id: name.into(),
+            };
+            let p = hyperstor_pki::issue(ca, &who, &[], &[], 1).unwrap();
+            std::fs::write(dir.join("admin.crt"), p.cert).unwrap();
+            std::fs::write(dir.join("admin.key"), p.key).unwrap();
+            std::fs::write(dir.join("root.crt"), root_pem).unwrap();
+            dir
+        };
+    let run = |tls: Option<&Path>, a: &[&str]| {
+        let mut c = Command::new(bin.join("hyperstorctl"));
+        c.args(["--api", &api]);
+        if let Some(t) = tls {
+            c.args(["--tls", t.to_str().unwrap()]);
+        }
+        let out = c.args(a).output().unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr),
+        )
+    };
+    let node = as_role("node7", hyperstor_pki::Role::Node, &read("root.crt"), &ca);
+    let (code, out) = run(Some(&node), &["status"]);
+    assert_eq!(code, 0, "a node may read: {out}");
+    let (code, out) = run(Some(&node), &["out", "--device", "0"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("may not change the cluster"), "{out}");
+    let host = as_role("host1", hyperstor_pki::Role::Host, &read("root.crt"), &ca);
+    let (code, out) = run(Some(&host), &["status"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("may not read"), "{out}");
+    // A certificate from another cluster's CA fails the handshake.
+    let other_root = hyperstor_pki::new_root("1").unwrap();
+    let other_ca = hyperstor_pki::new_intermediate(&other_root, "1").unwrap();
+    let stranger = as_role(
+        "stranger",
+        hyperstor_pki::Role::Admin,
+        &read("root.crt"),
+        &other_ca,
+    );
+    let (code, out) = run(Some(&stranger), &["status"]);
+    assert_ne!(code, 0, "{out}");
+    let (code, out) = run(None, &["status"]);
+    assert_ne!(code, 0, "plain HTTP to a TLS API: {out}");
 
     let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "8"]);
     assert_eq!(code, 0, "{out}");

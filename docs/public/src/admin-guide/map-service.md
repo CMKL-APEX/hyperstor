@@ -16,8 +16,8 @@ options are in the [reference](../reference/hyperstor-meta.md).
 
 With `--api 127.0.0.1:8850` it also serves the
 [cluster API](../reference/cluster-api.md), which `hyperstorctl` uses to
-report health and take devices out and in. The API has no
-authentication yet: keep it on loopback or a closed network.
+report health and take devices out and in. Add `--api-tls DIR` to
+require client certificates; without it, keep the API on loopback.
 
 ## Leases and failure detection
 

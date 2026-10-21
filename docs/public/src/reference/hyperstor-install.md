@@ -41,9 +41,14 @@ in, so run it from `target/release` after `cargo build --release`.
 | `/etc/hyperstor/meta.env`, `node-N.env` | Each service's options |
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
 | `/etc/systemd/system/` | `hyperstor-meta.service` and `hyperstord@.service` (one instance per node) |
+| `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group) |
 | `/etc/hyperstor/install.conf` | The saved options |
 
-It also creates the `hyperstor` system user, which the services run as.
+It also creates the `hyperstor` system user, which the services run as,
+and the `hyperstor-admin` group, whose members may use `hyperstorctl`.
+Certificates are made once and renewed by later runs when two thirds of
+their life has passed (30 days for the API's and the administrator's,
+a year for the intermediate CA).
 Changed binaries, units or options restart the services they affect.
 
 **Checks** (`check`, and first thing in `install`): kernel version,

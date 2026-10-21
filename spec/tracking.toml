@@ -343,7 +343,12 @@ tests = [
 [[milestone.item]]
 what = "Certificates, identities and roles for the API"
 spec = ["administration.md §23.8", "D53", "D56"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_pki::tests::identity_uri_round_trip_and_rejects",
+    "hyperstor_pki::tests::chain_issues_leaves_with_identities",
+    "hyperstor_pki::tests::roles_that_may_administer",
+]
 
 [[milestone]]
 id = "AD1"

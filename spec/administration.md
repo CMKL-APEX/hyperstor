@@ -5,9 +5,10 @@ How hyperstor is installed, administered and secured: the installer, the cluster
 Status: **draft, partly built.** D50–D55 were settled with the owner on 2026-10-21
 ([decision-log.md](decision-log.md)); D56–D60 were made while drafting
 and are open for review. Host checks G17 and G18 are open. Built so far
-(implementation-notes.md I41–I47): the cluster API on the map service
-without TLS or identities, `hyperstorctl` (status, nodes, pools, PGs,
-devices out and in, an I/O test), and `hyperstor-install` with host
+(implementation-notes.md I41–I48): the cluster API on the map service,
+over mutual TLS with identities and roles; the root and intermediate
+CAs and leaf certificates; `hyperstorctl` (status, nodes, pools, PGs,
+devices out and in, an I/O test); and `hyperstor-install` with host
 checks and the all-in-one trial cluster. This
 section refines operations.md §16, §18 and §19, which point here.
 

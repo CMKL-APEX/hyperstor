@@ -9,9 +9,23 @@ work: `curl`, `grpcurl` (with the proto file), generated clients.
 The definition is
 [`crates/hyperstor-api/proto/hyperstor/v1/cluster.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/cluster.proto).
 
-> **No authentication yet.** The API is plain HTTP and accepts every
-> request; certificates and roles are planned. `hyperstor-install` binds
-> it to `127.0.0.1`. Never expose it to a network others can reach.
+## Security
+
+With `--api-tls`, the API speaks only mutual TLS. Every client presents
+a certificate issued by the cluster's CA, whose identity
+(`hyperstor://<cluster>/<role>/<id>`) decides what it may do:
+
+| Role | May |
+|---|---|
+| `admin` (`hyperstorctl`), `mgmt` | Everything |
+| `node`, `meta` | Read (`GetStatus`, `ListPgs`) |
+| `host` | Nothing |
+
+A certificate of another cluster is refused. `hyperstor-install` makes
+the certificates in `/etc/hyperstor/pki`.
+
+Without `--api-tls` the API is plain HTTP and accepts every request:
+only for loopback and tests.
 
 ## Calls
 
@@ -26,8 +40,10 @@ values are left out of answers.
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 
 ```sh
-curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
-    http://127.0.0.1:8850/hyperstor.v1.ClusterService/GetStatus
+cd /etc/hyperstor/pki
+curl -s --cacert root.crt --cert admin.crt --key admin.key \
+    -X POST -H 'Content-Type: application/json' -d '{}' \
+    https://127.0.0.1:8850/hyperstor.v1.ClusterService/GetStatus
 ```
 
 ```json
@@ -43,6 +59,8 @@ Errors are Connect errors, with an HTTP status and a JSON body:
 | Code | When |
 |---|---|
 | `not_found` | No such device or pool |
+| `unauthenticated` | No client certificate with a hyperstor identity |
+| `permission_denied` | The certificate's cluster or role doesn't allow the call |
 | `unavailable` | The map service is stopping |
 
 ## What the answers mean

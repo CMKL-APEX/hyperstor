@@ -1,12 +1,14 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--lease-ms L] [--down-after-ms N]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--lease-ms L] [--down-after-ms N]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
 //! 600), marks nodes down after N ms without a heartbeat (default 800,
 //! at least 1.25 × L; decisions.md D48), and moves their PGs, fencing the
 //! nodes that lose a role before publishing (decisions.md D42). With
-//! `--api ADDR`, also serves the cluster API (`hyperstor.v1`, plain HTTP
-//! for now; spec/administration.md §23.5) there.
+//! `--api ADDR`, also serves the cluster API (`hyperstor.v1`;
+//! spec/administration.md §23.5) there: over mutual TLS with
+//! `--api-tls DIR` (`api.crt`, `api.key`, `root.crt`; §23.8), else plain
+//! HTTP for loopback and tests.
 
 use std::time::Duration;
 
@@ -20,7 +22,7 @@ fn main() {
     };
     let (Some(listen), Some(file)) = (get("--listen"), get("--cluster")) else {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--lease-ms L] [--down-after-ms N]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--api-tls DIR] [--lease-ms L] [--down-after-ms N]"
         );
         std::process::exit(2);
     };
@@ -61,6 +63,19 @@ fn main() {
             std::process::exit(1)
         })
     });
+    let tls = get("--api-tls").map(|d| {
+        hyperstor_meta::api::tls_from_dir(std::path::Path::new(&d), map.cluster_id).unwrap_or_else(
+            |e| {
+                eprintln!("--api-tls: {e}");
+                std::process::exit(1)
+            },
+        )
+    });
+    if api.is_some() && tls.is_none() {
+        eprintln!(
+            "hyperstor-meta: the cluster API has no TLS and no authentication: loopback only"
+        );
+    }
     hyperstor_reactor::block_on(async move {
         let l = hyperstor_reactor::net::TcpListener::bind(addr).expect("bind");
         let meta = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease));
@@ -73,7 +88,7 @@ fn main() {
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")
             );
-            hyperstor_meta::api::spawn(api, tx, addr);
+            hyperstor_meta::api::spawn(api, tx, addr, tls);
         }
         hyperstor_meta::serve(l, meta).await
     });
