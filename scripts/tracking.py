@@ -70,7 +70,7 @@ def check(paths):
         errors.append("no test results found in the logs")
 
     table = (ROOT / "spec" / "milestones.md").read_text(encoding="utf-8")
-    in_spec = re.findall(r"^\| (HS\d+[a-z]?\+?) \|", table, re.M)
+    in_spec = re.findall(r"^\| ([A-Z]{2}\d+[a-z]?\+?) \|", table, re.M)
     in_spec = [i.rstrip("+") for i in in_spec]
     ids = [m["id"] for m in milestones]
     for i in in_spec:

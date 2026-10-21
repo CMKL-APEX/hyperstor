@@ -295,3 +295,23 @@ title = "S3 over RDMA"
 [[milestone]]
 id = "HS14"
 title = "Distributed filesystem"
+
+[[milestone]]
+id = "AD0"
+title = "Administration API, identities and CLI"
+
+[[milestone]]
+id = "AD1"
+title = "Installer and cluster join"
+
+[[milestone]]
+id = "AD2"
+title = "Management service and read-only web UI"
+
+[[milestone]]
+id = "AD3"
+title = "Administration from the UI and CLI, with roles, trash and audit"
+
+[[milestone]]
+id = "AD4"
+title = "Storage administration in glidex"
