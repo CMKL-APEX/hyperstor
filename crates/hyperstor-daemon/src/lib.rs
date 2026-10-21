@@ -602,7 +602,13 @@ impl ShardState {
         tx: Sender<Vec<u8>>,
     ) {
         let arrived = std::time::Instant::now();
+        // Every write is answered once: an error is counted here, success
+        // is timed where it's answered.
+        let counts = self.metrics.clone();
         let send = move |m: Msg| {
+            if matches!(m, Msg::Error { .. }) {
+                metrics::ShardMetrics::add(&counts.write_errors, 1);
+            }
             let _ = tx.send(encode_frame(req, &m, &[]));
         };
         let pg = match self.check(&to, true).await {
@@ -732,8 +738,6 @@ impl ShardState {
             });
             if ok {
                 m.write_latency.observe(arrived.elapsed());
-            } else {
-                metrics::ShardMetrics::add(&m.write_errors, 1);
             }
         });
     }

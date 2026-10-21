@@ -293,14 +293,23 @@ fn install_manage_and_fail_a_node() {
         .sum();
     // 8 MiB written as client writes to primaries (plus whatever the
     // waits above didn't write: nothing).
-    assert_eq!(counted, 8 << 20, "client write bytes counted by primaries");
-    // Every answered client write is timed once.
+    // At least the 8 MiB written; more if a write was refused and
+    // retried (a node without its first lease yet, say).
+    assert!(
+        counted >= 8 << 20,
+        "client write bytes counted by primaries: {counted}"
+    );
+    // Every write that arrived was answered once: timed if it succeeded,
+    // counted as an error if not.
     let sum = |name: &str| -> u64 {
         (0..3)
             .map(|n| {
                 metrics(n)
                     .lines()
-                    .filter(|l| l.starts_with(name) && l.contains("kind=\"write\""))
+                    .filter(|l| {
+                        l.starts_with(name)
+                            && (l.contains("kind=\"write\"") || !l.contains("kind="))
+                    })
                     .map(|l| l.rsplit(' ').next().unwrap().parse::<u64>().unwrap())
                     .sum::<u64>()
             })
@@ -308,7 +317,10 @@ fn install_manage_and_fail_a_node() {
     };
     let writes = sum("hyperstor_requests_total{");
     assert!(writes >= 8, "1 MiB requests: {writes}");
-    assert_eq!(sum("hyperstor_request_duration_seconds_count{"), writes);
+    assert_eq!(
+        sum("hyperstor_request_duration_seconds_count{") + sum("hyperstor_write_errors_total{"),
+        writes
+    );
 
     let (code, out) = ctl(&bin, &api, &["pools"]);
     assert_eq!(code, 0, "{out}");
