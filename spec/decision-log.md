@@ -422,3 +422,16 @@ recommendation each; the owner's answers:
 | 33 | How nodes and clients reach the leader; how a new leader treats leases it didn't grant; how many members | Redirect to the leader; wait 1.25 leases before changing roles, leases off the log; 3 members by default, 5 for large clusters | D72, D73, D74 |
 
 The extraction merged in glidex as PR #141 (`fb59b71`). What it moved (glidex `crates/glidex-control-plane/src/cluster/raft/`, about 1,350 lines with tests): the log store and type config (no glidex dependency), the network (already behind a `Transport` trait), the state machine (depends on glidex's `store` module, which moves with it), and the node (depends on glidex's `NodeStore` and runtime helper, which stay in glidex behind a small interface).
+
+## Volume headers, leases and the blocklist (2026-10-21)
+
+The rest of HS1 (`.meta` header objects and volume leases, metadata.md
+§4.2, §9) and HS2's blocklist and forced takeovers. Asked with options
+and a recommendation each; the owner's answers:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 34 | Scope: headers, leases and the blocklist as one milestone, or the blocklist first | One milestone, in steps: object operations on the wire, headers, leases, the blocklist | — |
+| 35 | Volume lease timing: 2 s / 10 s as specified, 1 s / 4 s, or 0.5 s / 2 s | Renew every second, expire after 4 s, batched per holder and primary | D75 |
+| 36 | Enforcing a volume's single writer: blocklist only, or a lease token on every write | Blocklist only | D76 |
+| 37 | Who creates and attaches volumes: the client library and the cluster API, or the library only | The library, and the cluster API and `hyperstorctl` for operators | D77 |

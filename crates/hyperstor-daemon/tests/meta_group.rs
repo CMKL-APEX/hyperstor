@@ -18,11 +18,20 @@ const CHUNK: u32 = 1 << 20;
 const LEASE: Duration = Duration::from_millis(400);
 const DOWN_AFTER: Duration = Duration::from_millis(700);
 
+/// A free port below the kernel's ephemeral range (32768 and up on
+/// Linux): members and nodes bind their port again when they restart, and
+/// an outgoing connection elsewhere could take an ephemeral one meanwhile.
 fn free_addr() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = 10_000 + (std::process::id() % 200 * 100 + n * 7) % 22_000;
+        let a: SocketAddr = ([127, 0, 0, 1], port as u16).into();
+        if std::net::TcpListener::bind(a).is_ok() {
+            return a;
+        }
+    }
 }
 
 /// One map service member, on threads of its own as on its own host.
