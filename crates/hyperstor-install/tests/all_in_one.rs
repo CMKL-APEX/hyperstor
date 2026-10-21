@@ -170,9 +170,11 @@ fn install_manage_and_fail_a_node() {
     // Start what was installed, as the units would.
     let bin = root.join("usr/local/bin");
     let mut procs = Procs(Vec::new());
+    let meta_log = scratch.join("meta.log");
     procs.0.push(
         Command::new(bin.join("hyperstor-meta"))
             .args(args(&root, "meta.env"))
+            .stderr(std::fs::File::create(&meta_log).unwrap())
             .spawn()
             .unwrap(),
     );
@@ -327,6 +329,39 @@ fn install_manage_and_fail_a_node() {
         let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 0).then_some(out)
     });
+    // Every change and every refusal is audited (§23.9.4).
+    let log = std::fs::read_to_string(&meta_log).unwrap();
+    let audits: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("{\"audit\":1"))
+        .collect();
+    assert!(
+        audits.iter().any(|l| l.contains(&format!(
+            "\"principal\":\"hyperstor://{}/admin/local\"",
+            cid_of(&cid)
+        )) && l.contains("\"op\":\"SetDeviceIn\"")
+            && l.contains("\"result\":\"ok, map epoch")),
+        "{log}"
+    );
+    assert!(
+        audits
+            .iter()
+            .any(|l| l.contains("/node/node7\"") && l.contains("\"result\":\"refused: ")),
+        "{log}"
+    );
+    assert!(
+        audits
+            .iter()
+            .any(|l| l.contains("/host/host1\"") && l.contains("\"op\":\"GetStatus\"")),
+        "{log}"
+    );
+    assert!(
+        !audits
+            .iter()
+            .any(|l| l.contains("\"result\":\"ok") && l.contains("GetStatus")),
+        "reads aren't audited"
+    );
+
     let (code, out) = ctl(&bin, &api, &["out", "--device", "999999"]);
     assert_eq!(code, 1);
     assert!(out.contains("no device 999999"), "{out}");

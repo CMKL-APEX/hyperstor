@@ -33,7 +33,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | Planned |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | Planned |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -93,3 +93,9 @@ covered by tests that run on every change.
 | One-command trial cluster on one host, with system services, updated in place on later runs | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | Joining hosts to a cluster with join tokens, and installing on whole devices | Planned |
+
+## AD3: Administration from the UI and CLI, with roles, trash and audit
+
+| Feature | Status |
+|---|---|
+| Audit of every change and every refused call to the cluster API | In progress |

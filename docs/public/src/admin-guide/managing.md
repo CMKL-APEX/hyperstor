@@ -94,3 +94,12 @@ Gauges are updated once a second. `GET /health` answers `ok` while the
 process runs. The port has no authentication: it only reads, but keep
 it on the management network.
 
+## Audit
+
+The map service records every change made through the API, and every
+refused call, in its journal (see [Cluster API](../reference/cluster-api.md)):
+
+```sh
+journalctl -u hyperstor-meta | grep '{"audit":1'
+```
+

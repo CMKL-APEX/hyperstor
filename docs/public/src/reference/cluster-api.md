@@ -27,6 +27,21 @@ the certificates in `/etc/hyperstor/pki`.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
+**Audit.** Every change (`SetDeviceIn`) and every refused call is
+written as one JSON line on the map service's standard error, which
+systemd keeps in the journal:
+
+```sh
+journalctl -u hyperstor-meta | grep '{"audit":1'
+```
+
+```json
+{"audit":1,"time":1792561403.512,"principal":"hyperstor://7311402/admin/local","op":"SetDeviceIn","target":"device 2 up_in=false","result":"ok, map epoch 5"}
+```
+
+**Rate limit.** Each caller may make 200 calls per second, in bursts of
+up to 1000; more are refused with `resource_exhausted`.
+
 ## Calls
 
 Each call is a `POST` to `/hyperstor.v1.ClusterService/<Method>` with a
@@ -61,6 +76,7 @@ Errors are Connect errors, with an HTTP status and a JSON body:
 | `not_found` | No such device or pool |
 | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | The certificate's cluster or role doesn't allow the call |
+| `resource_exhausted` | The caller is over its rate limit |
 | `unavailable` | The map service is stopping |
 
 ## What the answers mean

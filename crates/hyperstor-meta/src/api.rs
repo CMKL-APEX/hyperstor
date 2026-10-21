@@ -12,6 +12,12 @@
 //! decides what it may do (D56, §16): reads for any identity of this
 //! cluster except bare-metal hosts, changes for `admin` and `mgmt` only.
 //! Without TLS, every request is allowed: for loopback and tests only.
+//!
+//! Every change and every refused request is audited (§23.9.4): one JSON
+//! line on standard error, which systemd keeps in the journal, with the
+//! time, the caller, the operation, its target and the result. Each
+//! caller may make 200 calls per second, in bursts of up to 1000
+//! (§23.3); more are refused with `resource_exhausted`.
 
 use crate::health::{self, Health};
 use crate::{Admin, ClusterMap, NO_DEVICE, PoolKind};
@@ -28,45 +34,142 @@ struct Api {
     map_address: String,
     /// The cluster id certificates must name; `None` without TLS.
     cluster: Option<String>,
+    /// Per caller: tokens left and when they were last topped up.
+    buckets: Buckets,
+}
+
+/// Calls per second per caller, and the burst allowed (§23.3).
+const RATE: f64 = 200.0;
+const BURST: f64 = 1000.0;
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// One audit record (§23.9.4), as a JSON line on standard error.
+pub fn audit_line(principal: &str, op: &str, target: &str, result: &str) -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{{\"audit\":1,\"time\":{}.{:03},\"principal\":{},\"op\":{},\"target\":{},\"result\":{}}}",
+        t.as_secs(),
+        t.subsec_millis(),
+        json_str(principal),
+        json_str(op),
+        json_str(target),
+        json_str(result)
+    )
+}
+
+type Buckets = std::sync::Mutex<std::collections::HashMap<String, (f64, std::time::Instant)>>;
+
+/// Takes one call from `principal`'s token bucket at `now`; false when it
+/// is empty. A runaway script can't starve the other callers.
+fn take(buckets: &Buckets, principal: &str, now: std::time::Instant) -> bool {
+    let mut b = buckets.lock().unwrap_or_else(|e| e.into_inner());
+    let (tokens, last) = b.entry(principal.to_string()).or_insert((BURST, now));
+    *tokens = (*tokens + now.saturating_duration_since(*last).as_secs_f64() * RATE).min(BURST);
+    *last = now;
+    if *tokens < 1.0 {
+        return false;
+    }
+    *tokens -= 1.0;
+    true
+}
+
+fn audit(principal: &str, op: &str, target: &str, result: &str) {
+    eprintln!("{}", audit_line(principal, op, target, result));
 }
 
 impl Api {
-    /// Checks the caller's certificate: an identity of this cluster, and
-    /// for `write`, one that may administer.
-    fn authorize(&self, ctx: &RequestContext, write: bool) -> Result<(), ConnectError> {
-        let Some(cluster) = &self.cluster else {
-            return Ok(());
+    /// Checks the caller: with TLS, a certificate of this cluster whose
+    /// role allows `op` (any but `host` to read; `admin` or `mgmt` to
+    /// change); then the caller's rate. Returns who the caller is, for
+    /// the audit; a refusal is audited here.
+    fn authorize(
+        &self,
+        ctx: &RequestContext,
+        op: &str,
+        target: &str,
+        write: bool,
+    ) -> Result<String, ConnectError> {
+        let refuse = |who: &str, e: ConnectError| {
+            audit(
+                who,
+                op,
+                target,
+                &format!("refused: {}", e.message.as_deref().unwrap_or("")),
+            );
+            e
         };
-        let who = ctx
-            .peer_certs()
-            .and_then(|c| c.first())
-            .and_then(|leaf| hyperstor_pki::identity_of(leaf))
-            .ok_or_else(|| {
-                ConnectError::unauthenticated("a hyperstor client certificate is required")
-            })?;
-        if &who.cluster != cluster {
-            return Err(ConnectError::permission_denied(format!(
-                "{} is not of cluster {cluster}",
-                who.uri()
-            )));
-        }
-        let allowed = if write {
-            who.role.may_administer()
-        } else {
-            who.role != hyperstor_pki::Role::Host
-        };
-        if !allowed {
-            return Err(ConnectError::permission_denied(format!(
-                "{} may not {}",
-                who.uri(),
-                if write {
-                    "change the cluster"
-                } else {
-                    "read the cluster's status"
+        let principal = match &self.cluster {
+            None => format!(
+                "anonymous@{}",
+                ctx.peer_addr().map_or("?".into(), |a| a.to_string())
+            ),
+            Some(cluster) => {
+                let peer = ctx.peer_addr().map_or("?".into(), |a| a.to_string());
+                let Some(who) = ctx
+                    .peer_certs()
+                    .and_then(|c| c.first())
+                    .and_then(|leaf| hyperstor_pki::identity_of(leaf))
+                else {
+                    return Err(refuse(
+                        &format!("unknown@{peer}"),
+                        ConnectError::unauthenticated("a hyperstor client certificate is required"),
+                    ));
+                };
+                if &who.cluster != cluster {
+                    return Err(refuse(
+                        &who.uri(),
+                        ConnectError::permission_denied(format!(
+                            "{} is not of cluster {cluster}",
+                            who.uri()
+                        )),
+                    ));
                 }
-            )));
+                let allowed = if write {
+                    who.role.may_administer()
+                } else {
+                    who.role != hyperstor_pki::Role::Host
+                };
+                if !allowed {
+                    return Err(refuse(
+                        &who.uri(),
+                        ConnectError::permission_denied(format!(
+                            "{} may not {}",
+                            who.uri(),
+                            if write {
+                                "change the cluster"
+                            } else {
+                                "read the cluster's status"
+                            }
+                        )),
+                    ));
+                }
+                who.uri()
+            }
+        };
+        if !take(&self.buckets, &principal, std::time::Instant::now()) {
+            return Err(refuse(
+                &principal,
+                ConnectError::resource_exhausted(format!(
+                    "more than {RATE} calls per second from {principal}"
+                )),
+            ));
         }
-        Ok(())
+        Ok(principal)
     }
 
     async fn published(
@@ -218,7 +321,7 @@ impl ClusterService for Api {
         ctx: RequestContext,
         _req: ServiceRequest<'_, pb::GetStatusRequest>,
     ) -> ServiceResult<pb::GetStatusResponse> {
-        self.authorize(&ctx, false)?;
+        self.authorize(&ctx, "GetStatus", "cluster", false)?;
         let (map, heard) = self.published().await?;
         Ok(status(&map, Some(&heard), &self.map_address).into())
     }
@@ -228,7 +331,7 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::ListPgsRequest>,
     ) -> ServiceResult<pb::ListPgsResponse> {
-        self.authorize(&ctx, false)?;
+        self.authorize(&ctx, "ListPgs", &format!("pool {}", req.pool), false)?;
         let pool = req.pool;
         let (map, _) = self.published().await?;
         if !map.pools.contains_key(&pool) {
@@ -259,7 +362,8 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::SetDeviceInRequest>,
     ) -> ServiceResult<pb::SetDeviceInResponse> {
-        self.authorize(&ctx, true)?;
+        let target = format!("device {} up_in={}", req.device, req.up_in);
+        let who = self.authorize(&ctx, "SetDeviceIn", &target, true)?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::SetDeviceIn {
@@ -268,7 +372,18 @@ impl ClusterService for Api {
                 reply,
             })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
-        match rx.recv().await {
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDeviceIn",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
             Some(Ok(map_epoch)) => Ok(pb::SetDeviceInResponse {
                 map_epoch,
                 ..Default::default()
@@ -329,6 +444,7 @@ pub fn spawn(
                     tx,
                     map_address: map_address.to_string(),
                     cluster,
+                    buckets: Default::default(),
                 });
                 let router = api.register(connectrpc::Router::new());
                 let mut server = connectrpc::Server::from_listener(listener);
@@ -371,5 +487,33 @@ mod tests {
         );
         assert_eq!(s.nodes[0].last_heard_ms, Some(40));
         assert_eq!(s.nodes[1].last_heard_ms, None);
+    }
+
+    #[test]
+    fn each_caller_gets_its_own_burst_then_the_rate() {
+        let b = super::Buckets::default();
+        let t = std::time::Instant::now();
+        assert!((0..1000).all(|_| super::take(&b, "a", t)));
+        assert!(!super::take(&b, "a", t), "burst used up");
+        assert!(super::take(&b, "b", t), "another caller isn't affected");
+        // 200 calls per second come back: 10 ms gives two.
+        let later = t + std::time::Duration::from_millis(10);
+        assert!(super::take(&b, "a", later));
+        assert!(super::take(&b, "a", later));
+        assert!(!super::take(&b, "a", later));
+    }
+
+    #[test]
+    fn audit_lines_are_json_with_escapes() {
+        let l = super::audit_line("hyperstor://7/admin/a\"b", "SetDeviceIn", "device 2", "ok");
+        assert!(l.starts_with("{\"audit\":1,\"time\":"), "{l}");
+        assert!(
+            l.contains("\"principal\":\"hyperstor://7/admin/a\\\"b\""),
+            "{l}"
+        );
+        assert!(
+            l.ends_with("\"op\":\"SetDeviceIn\",\"target\":\"device 2\",\"result\":\"ok\"}"),
+            "{l}"
+        );
     }
 }
