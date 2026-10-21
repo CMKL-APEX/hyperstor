@@ -27,6 +27,9 @@ covered by tests that run on every change.
 | HS12: S3 gateway | Planned |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
+| HS15: Tenancy: quotas and fair share between tenants | Planned |
+| HS16: Sites and replication between clusters | Planned |
+| HS17: Global namespace and federation | Planned |
 | AD0: Administration API, identities and CLI | Planned |
 | AD1: Installer and cluster join | Planned |
 | AD2: Management service and read-only web UI | Planned |

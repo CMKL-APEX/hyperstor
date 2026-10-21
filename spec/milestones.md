@@ -24,6 +24,9 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS12 | The S3 gateway over HTTP (s3.md §14.1, s3.md §14.2), with glidex access keys and Cedar. | HS7, HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |
 | HS14+ | The distributed filesystem, per filesystem.md. | HS11, HS13 |
+| HS15 | Tenancy (tenants.md §24): tenant ids on lineages, buckets, filesystems and ranges; per-`(pool, tenant)` counters and quotas; two-level fair share in the reactors (D62); the glidex project mapping. | HS4, HS10b, AD3 |
+| HS16 | Sites and replication (federation.md §25.2, §25.3): `site` as a failure domain with the preflight limit (G19); `hyperstor-sync` for snapshots and S3 objects, with policies, lag health and cross-cluster trust. | HS4, HS12, AD3 |
+| HS17 | The global namespace (federation.md §25.4–§25.6): range homes, read-through replicas, forwarded writes, the partition queue with its allowlist (D66), cache-pool sources (D67), the federated view in `hyperstor-mgmt` and glidex (D68); G20. | HS11, HS16 |
 | AD0 | Administration foundation (administration.md §23.11): `hyperstor.v1` on connectrpc with `buf` checks (D51), leaf identities and the two-level CA (D53, D56), `hyperstorctl` generated from the protos with the local socket (D55). | HS1 |
 | AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
 | AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
@@ -114,3 +117,15 @@ sections that depend on them are final:
   work on the target distributions (systemd version, with and without a
   TPM), and does a reinstalled host fail closed rather than start
   without the key?
+- **G19. Sites within one cluster** (D63, federation.md §25.2). On two
+  buildings joined by a real campus link, measure write p99 with one
+  copy remote and the rate of false down-markings at the D48 defaults,
+  as round-trip time is raised with `tc netem` from 0.2 to 5 ms. Set
+  the preflight limit where either degrades; 1 ms is the estimate.
+- **G20. The namespace across a WAN** (D65–D67, federation.md §25.4,
+  §25.5). Over a 30–80 ms link: the latency and throughput of
+  cache-source fetches for model weights against a local replica; the
+  clock offset between the sites' oracles against the D48 bound that
+  last-writer-wins relies on; and, for an agent-memory workload split
+  over two sites through a 10-minute partition, the number of keys
+  that conflict at replay and whether any front-end invariant breaks.

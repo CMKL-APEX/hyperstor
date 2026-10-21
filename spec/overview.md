@@ -2,9 +2,10 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19 and D38–D55 were settled with the
-owner; D20–D37 and D56–D60 were made while drafting and are open to
-review. Host checks G1–G18 (milestones.md §22) are still open. What is built, and the
+[decisions.md](decisions.md): D1–D19, D38–D55 and D61–D68 were settled
+with the owner; D20–D37, D56–D60 and D66's merge rule were made while
+drafting and are open to review. Host checks G1–G20 (milestones.md §22)
+are still open. What is built, and the
 decision points still open, are in
 [implementation-notes.md](implementation-notes.md) and
 [decision-log.md](decision-log.md).
@@ -79,10 +80,17 @@ D7`) refer to those documents.
   - the vhost client on a DPU (frontends.md §11.4);
   - lease hand-over during live migration (frontends.md §11.4);
   - NVMe/TCP TLS;
-  - encryption at rest.
+  - encryption at rest;
+  - tenancy: tenant ids on containers, quotas, two-level fair share
+    (D61, D62, tenants.md §24);
+  - sites as a failure domain, asynchronous replication between
+    clusters, a global namespace with range homes, cache sources and
+    the federation view (D63–D68, federation.md §25).
 - **Out:**
   - zoned devices (SMR hard disks, ZNS SSDs);
-  - stretched clusters across sites.
+  - PGs stretched over a wide-area link (D63): sites in one cluster
+    stay within 1 ms; farther apart means another cluster;
+  - active-active writes to one volume or file from two clusters.
 
 ## 3. Architecture
 

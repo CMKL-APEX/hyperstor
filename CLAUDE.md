@@ -14,10 +14,11 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19 and D38–D55 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55 and D61–D68 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
-- **Open for the owner's review:** D20–D37, D56–D60 and F1–F12 in detail, I1–I40,
-  and every host check (G1–G18, FG1–FG2).
+- **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
+  rule, F1–F12 in detail, I1–I40, and every host check (G1–G20,
+  FG1–FG2).
 - **Next:** cache-pool expiry and eviction (the rest of D45; open
   question in I40), paged checkpoints (D47), the copy-on-write B+tree
   (D43, D44), priority classes (D46); then the rest of HS2 (read leases,
