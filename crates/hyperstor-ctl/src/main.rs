@@ -515,6 +515,9 @@ where
                 }
                 (None, None) => unreachable!("checked with the arguments"),
             };
+            // The working map's epoch after the last change: --wait first
+            // waits for the published map to reach it (it is fenced first).
+            let mut changed_epoch = 0;
             for device in devices {
                 let r = client
                     .set_device_in(pb::SetDeviceInRequest {
@@ -524,10 +527,13 @@ where
                     })
                     .await;
                 match r {
-                    Ok(r) => println!(
-                        "device {device} {cmd} (map epoch {}); hyperstorctl status shows the PGs moving",
-                        r.into_owned().map_epoch
-                    ),
+                    Ok(r) => {
+                        let epoch = r.into_owned().map_epoch;
+                        changed_epoch = changed_epoch.max(epoch);
+                        println!(
+                            "device {device} {cmd} (map epoch {epoch}); hyperstorctl status shows the PGs moving"
+                        )
+                    }
                     Err(e) if e.code == connectrpc::ErrorCode::NotFound => {
                         eprintln!(
                             "hyperstorctl: {}",
@@ -543,9 +549,16 @@ where
             if let Some(secs) = a.wait {
                 let deadline = std::time::Instant::now() + Duration::from_secs(secs.into());
                 loop {
-                    // Let the change be published (it is fenced first).
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     let s = status().await?;
+                    if s.epoch < changed_epoch {
+                        // Not published yet: nothing has started moving.
+                        if std::time::Instant::now() >= deadline {
+                            eprintln!("hyperstorctl: map epoch {changed_epoch} not published yet");
+                            return Ok(Next::Exit(1));
+                        }
+                        continue;
+                    }
                     let busy: u32 = s
                         .pools
                         .iter()

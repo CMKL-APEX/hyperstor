@@ -252,7 +252,7 @@ pub fn sign_request(
 /// The SHA-256 of the first certificate in `pem` (its DER), in hex: what a
 /// join token pins the root by (D57).
 pub fn fingerprint(pem: &str) -> Result<String, String> {
-    let der = certs(pem)?.remove(0);
+    let der = first_cert(pem)?;
     Ok(hex(
         ring::digest::digest(&ring::digest::SHA256, &der).as_ref()
     ))
@@ -270,7 +270,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// The addresses and names the first certificate in `pem` is for, so a
 /// renewal names the same ones.
 pub fn names_of(pem: &str) -> Result<(Vec<IpAddr>, Vec<String>), String> {
-    names_of_der(&certs(pem)?.remove(0))
+    names_of_der(&first_cert(pem)?)
 }
 
 /// As [`names_of`], for a certificate in DER.
@@ -301,6 +301,14 @@ fn certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
         return Err("no certificate in PEM".into());
     }
     Ok(v)
+}
+
+/// The first certificate in `pem`, in DER.
+fn first_cert(pem: &str) -> Result<CertificateDer<'static>, String> {
+    certs(pem)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no certificate in PEM".to_string())
 }
 
 fn key(pem: &str) -> Result<PrivateKeyDer<'static>, String> {
@@ -482,7 +490,7 @@ pub fn identity_of(der: &[u8]) -> Option<Identity> {
 
 /// The identity in the first certificate in `pem`, if it has one.
 pub fn identity_in(pem: &str) -> Option<Identity> {
-    identity_of(&certs(pem).ok()?.remove(0))
+    identity_of(&first_cert(pem).ok()?)
 }
 
 /// When the first certificate in `pem` expires.

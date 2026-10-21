@@ -760,14 +760,18 @@ mod tests {
             Some((pin.as_str(), secret.as_str())),
             "read from a file"
         );
-        for bad in [
+        for (i, bad) in [
             format!("hsj2-{pin}-{secret}"),
             format!("hsj1-{pin}{secret}"),
             format!("hsj1-{}-{secret}", &pin[1..]),
             format!("hsj1-{pin}-{}g", &secret[1..]),
             String::new(),
-        ] {
-            assert_eq!(super::parse_token(&bad), None, "{bad}");
+        ]
+        .iter()
+        .enumerate()
+        {
+            // Named by position: tokens are never printed, even in tests.
+            assert_eq!(super::parse_token(bad), None, "case {i}");
         }
     }
 }
