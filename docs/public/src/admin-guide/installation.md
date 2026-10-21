@@ -74,10 +74,34 @@ and the `hyperstor-admin` group: run it with `sudo`, or join the group
 
 Then see [Managing a cluster](managing.md).
 
+## Installing a cluster across hosts
+
+Write the [cluster file](../reference/cluster-file.md) once, copy it to
+every host, and install each host's part of it:
+
+```sh
+# on the map service's host (192.0.2.10)
+sudo target/release/hyperstor-install install --cluster cluster.txt \
+    --role meta --map 192.0.2.10:8849
+# on each storage host, with its node number from the file
+sudo target/release/hyperstor-install install --cluster cluster.txt \
+    --role storage --node 0 --map 192.0.2.10:8849
+```
+
+A storage node gets one reactor for each address the cluster file lists
+for it, each on a file of `--size-gib` GiB in the data directory, and
+its metrics on its first address's IP at port 8853. The map service's
+host also gets the cluster's certificates and the cluster API on
+`127.0.0.1:8850`: run `hyperstorctl` there. `--role both` puts the map
+service and a storage node on one host.
+
+This is a stopgap: joining hosts with tokens, without copying a file
+around, is planned. Until then the storage network has no
+authentication (see [Running a cluster](index.md)).
+
 ## Running as services by hand
 
-For a cluster across several hosts, write the units yourself until the
-installer can join hosts. A minimal unit for a storage node:
+Without the installer, a minimal unit for a storage node:
 
 ```ini
 [Unit]

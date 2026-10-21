@@ -376,6 +376,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Installing a cluster across hosts from a shared cluster file"
+spec = ["administration.md §23.4"]
+status = "done"
+tests = [
+    "hyperstor_install::tests::cluster_file_roles_install_their_part",
+    "all_in_one::cluster_file_install_across_hosts",
+]
+
+[[milestone.item]]
 what = "Joining hosts to a cluster with join tokens, and installing on whole devices"
 spec = ["administration.md §23.4", "D57"]
 status = "planned"

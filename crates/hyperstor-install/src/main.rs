@@ -8,6 +8,11 @@
 //! command installs and later repairs or updates.
 //!
 //! - `check` runs the host checks (§23.4.1) and changes nothing.
+//! - `install --cluster FILE --role meta|storage|both [--node N] --map ADDR`
+//!   installs this host's part of the cluster the file describes: the map
+//!   service listening on ADDR (with the CAs and the API), storage node N
+//!   with one reactor per address the file lists for it, or both. Every
+//!   host gets the same file (interim, until join tokens; I50).
 //! - `install --all-in-one` sets up a trial cluster on this host: the map
 //!   service (map protocol on 8849, cluster API on 8850, both loopback)
 //!   and N storage nodes (default 3), each on a file of G GiB
@@ -32,7 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]";
 
 const BINARIES: [&str; 3] = ["hyperstor-meta", "hyperstord", "hyperstorctl"];
 
@@ -50,6 +55,12 @@ fn fail(msg: &str) -> ! {
 #[derive(Clone, Debug, PartialEq)]
 struct Settings {
     all_in_one: bool,
+    /// With a cluster file: `meta`, `storage` or `both`; empty otherwise.
+    role: String,
+    /// The storage node this host runs, from the cluster file.
+    node: Option<u32>,
+    /// The map service's address, `IP:PORT`, for a cluster file install.
+    map: String,
     nodes: u32,
     size_gib: u64,
     data_dir: String,
@@ -63,6 +74,9 @@ impl Settings {
     fn defaults() -> Self {
         Settings {
             all_in_one: false,
+            role: String::new(),
+            node: None,
+            map: String::new(),
             nodes: 3,
             size_gib: 4,
             data_dir: "/var/lib/hyperstor".into(),
@@ -82,6 +96,9 @@ impl Settings {
             let v = v.trim();
             match k.trim() {
                 "all_in_one" => self.all_in_one = v == "true",
+                "role" => self.role = v.to_string(),
+                "node" => self.node = v.parse().ok(),
+                "map" => self.map = v.to_string(),
                 "nodes" => self.nodes = v.parse().unwrap_or(self.nodes),
                 "size_gib" => self.size_gib = v.parse().unwrap_or(self.size_gib),
                 "data_dir" => self.data_dir = v.to_string(),
@@ -97,8 +114,11 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\n",
             self.all_in_one,
+            self.role,
+            self.node.map(|n| n.to_string()).unwrap_or_default(),
+            self.map,
             self.nodes,
             self.size_gib,
             self.data_dir,
@@ -120,6 +140,7 @@ fn main() {
     }
     let mut root = PathBuf::from("/");
     let mut no_start = false;
+    let mut cluster_file: Option<String> = None;
     let mut given: BTreeMap<&str, String> = BTreeMap::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -137,6 +158,15 @@ fn main() {
                 no_start = true;
                 continue;
             }
+            "--cluster" => {
+                let f = val();
+                cluster_file =
+                    Some(fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}"))));
+                continue;
+            }
+            "--role" => "role",
+            "--node" => "node",
+            "--map" => "map",
             "--nodes" => "nodes",
             "--size-gib" => "size_gib",
             "--data-dir" => "data_dir",
@@ -153,6 +183,9 @@ fn main() {
             "api_port" | "map_port" | "node_port" | "admin_port" => {
                 v.parse::<u16>().is_ok_and(|n| n > 0)
             }
+            "role" => matches!(v.as_str(), "meta" | "storage" | "both"),
+            "node" => v.parse::<u32>().is_ok(),
+            "map" => v.parse::<std::net::SocketAddr>().is_ok(),
             _ => v.starts_with('/'),
         };
         if !ok {
@@ -174,7 +207,7 @@ fn main() {
     match cmd.as_str() {
         "check" => std::process::exit(i32::from(check(&s))),
         "uninstall" => uninstall(&root, real, &s),
-        _ => install(&root, real, no_start, &s),
+        _ => install(&root, real, no_start, &s, cluster_file),
     }
 }
 
@@ -454,46 +487,107 @@ ReadWritePaths=DATA_DIR
 WantedBy=multi-user.target
 ";
 
-/// The files an all-in-one install writes: final path, content, mode.
-fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
-    let size = s.nodes.min(3);
-    let min = if size == 3 { 2 } else { 1 };
-    let mut cluster = format!(
-        "# Written by hyperstor-install --all-in-one (docs: reference/cluster-file.md).\ncluster {cluster_id}\n"
-    );
-    for n in 0..s.nodes {
-        cluster += &format!("node {n} rack 0 127.0.0.1:{}\n", s.node_port + n as u16);
+/// What this host runs: the map service and which storage nodes.
+struct Plan {
+    cluster: String,
+    cluster_id: String,
+    /// The map service's listen address, if this host runs it.
+    meta: Option<String>,
+    /// The map service's address, for storage nodes.
+    map: String,
+    nodes: Vec<NodePlan>,
+}
+
+struct NodePlan {
+    n: u32,
+    /// One reactor per address, as the cluster file lists them.
+    shards: Vec<std::net::SocketAddr>,
+    admin: String,
+}
+
+/// The plan for `s`: the all-in-one trial cluster, or this host's part of
+/// the cluster described by a cluster file (given now, or installed by an
+/// earlier run).
+fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
+    if s.all_in_one {
+        let id = cluster_id(root);
+        let size = s.nodes.min(3);
+        let min = if size == 3 { 2 } else { 1 };
+        let mut cluster = format!(
+            "# Written by hyperstor-install --all-in-one (docs: reference/cluster-file.md).\ncluster {id}\n"
+        );
+        for n in 0..s.nodes {
+            cluster += &format!("node {n} rack 0 127.0.0.1:{}\n", s.node_port + n as u16);
+        }
+        // One host: `domain host` puts copies on different storage nodes,
+        // which here are hyperstord instances.
+        cluster += &format!(
+            "pool 1 vol replicated size {size} min {min} pgs 64 chunk 4194304 domain host\n"
+        );
+        // A cache pool (D45): one copy, lost rather than recovered.
+        cluster += "pool 2 cache cache copies 1 pgs 64 chunk 4194304 domain host\n";
+        let map = format!("127.0.0.1:{}", s.map_port);
+        return Plan {
+            cluster,
+            cluster_id: id.to_string(),
+            meta: Some(map.clone()),
+            map,
+            nodes: (0..s.nodes)
+                .map(|n| NodePlan {
+                    n,
+                    shards: vec![([127, 0, 0, 1], s.node_port + n as u16).into()],
+                    admin: format!("127.0.0.1:{}", s.admin_port + n as u16),
+                })
+                .collect(),
+        };
     }
-    // One host: `domain host` puts copies on different storage nodes,
-    // which here are hyperstord instances.
-    cluster +=
-        &format!("pool 1 vol replicated size {size} min {min} pgs 64 chunk 4194304 domain host\n");
-    // A cache pool (D45): one copy, lost rather than recovered.
-    cluster += "pool 2 cache cache copies 1 pgs 64 chunk 4194304 domain host\n";
+    if s.role.is_empty() {
+        fail("give --all-in-one, or --cluster FILE with --role meta|storage|both");
+    }
+    // Interim, until joining with tokens (D57, implementation-notes.md
+    // I50): every host gets the same cluster file.
+    let cluster = cluster_file
+        .or_else(|| fs::read_to_string(root.join("etc/hyperstor/cluster.txt")).ok())
+        .unwrap_or_else(|| fail("--cluster FILE is needed the first time"));
+    let map = hyperstor_meta::parse_cluster(&cluster)
+        .unwrap_or_else(|e| fail(&format!("cluster file: {e}")));
+    if s.map.is_empty() {
+        fail("--map ADDR is needed: where the map service listens");
+    }
+    let runs_meta = s.role == "meta" || s.role == "both";
+    let mut nodes = Vec::new();
+    if s.role == "storage" || s.role == "both" {
+        let n = s
+            .node
+            .unwrap_or_else(|| fail("--node N is needed for a storage role"));
+        let mut devs: Vec<_> = map.devices.values().filter(|d| d.node == n).collect();
+        if devs.is_empty() {
+            fail(&format!("the cluster file has no node {n}"));
+        }
+        devs.sort_by_key(|d| d.shard);
+        let ip = devs[0].addr.ip();
+        nodes.push(NodePlan {
+            n,
+            shards: devs.iter().map(|d| d.addr).collect(),
+            admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
+        });
+    }
+    Plan {
+        cluster,
+        cluster_id: map.cluster_id.to_string(),
+        meta: runs_meta.then(|| s.map.clone()),
+        map: s.map.clone(),
+        nodes,
+    }
+}
+
+/// The files an install writes: final path, content, mode.
+fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
     let data = s.data_dir.trim_end_matches('/');
     let mut out = vec![
-        ("/etc/hyperstor/cluster.txt".to_string(), cluster, 0o644),
         (
-            "/etc/hyperstor/meta.env".to_string(),
-            format!(
-                "HS_ARGS=--listen 127.0.0.1:{} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --cluster /etc/hyperstor/cluster.txt\n",
-                s.map_port, s.api_port
-            ),
-            0o644,
-        ),
-        (
-            "/etc/hyperstor/hyperstorctl.conf".to_string(),
-            format!("api 127.0.0.1:{}\ntls /etc/hyperstor/pki\n", s.api_port),
-            0o644,
-        ),
-        (
-            "/etc/systemd/system/hyperstor-meta.service".to_string(),
-            META_UNIT.to_string(),
-            0o644,
-        ),
-        (
-            "/etc/systemd/system/hyperstord@.service".to_string(),
-            NODE_UNIT.replace("DATA_DIR", data),
+            "/etc/hyperstor/cluster.txt".to_string(),
+            p.cluster.clone(),
             0o644,
         ),
         (
@@ -507,15 +601,59 @@ fn files(s: &Settings, cluster_id: u64) -> Vec<(String, String, u32)> {
             0o644,
         ),
     ];
-    for n in 0..s.nodes {
+    if let Some(listen) = &p.meta {
+        out.extend([
+            (
+                "/etc/hyperstor/meta.env".to_string(),
+                format!(
+                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --cluster /etc/hyperstor/cluster.txt\n",
+                    s.api_port
+                ),
+                0o644,
+            ),
+            (
+                "/etc/hyperstor/hyperstorctl.conf".to_string(),
+                format!("api 127.0.0.1:{}\ntls /etc/hyperstor/pki\n", s.api_port),
+                0o644,
+            ),
+            (
+                "/etc/systemd/system/hyperstor-meta.service".to_string(),
+                META_UNIT.to_string(),
+                0o644,
+            ),
+        ]);
+    }
+    if !p.nodes.is_empty() {
+        out.push((
+            "/etc/systemd/system/hyperstord@.service".to_string(),
+            NODE_UNIT.replace("DATA_DIR", data),
+            0o644,
+        ));
+    }
+    for node in &p.nodes {
+        let n = node.n;
+        let shards: Vec<String> = node
+            .shards
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                // One file per reactor; a single-reactor node keeps the
+                // all-in-one's name.
+                let file = if node.shards.len() == 1 {
+                    format!("{data}/node-{n}.img")
+                } else {
+                    format!("{data}/node-{n}-{i}.img")
+                };
+                format!("--shard {a}={file}:{}", s.size_gib)
+            })
+            .collect();
         out.push((
             format!("/etc/hyperstor/node-{n}.env"),
             format!(
-                "HS_ARGS=--node {n} --meta 127.0.0.1:{} --shard 127.0.0.1:{}={data}/node-{n}.img:{} --admin 127.0.0.1:{}\n",
-                s.map_port,
-                s.node_port + n as u16,
-                s.size_gib,
-                s.admin_port + n as u16
+                "HS_ARGS=--node {n} --meta {} {} --admin {}\n",
+                p.map,
+                shards.join(" "),
+                node.admin
             ),
             0o644,
         ));
@@ -576,20 +714,20 @@ fn run(cmd: &str, args: &[&str]) -> bool {
     }
 }
 
-fn units(s: &Settings) -> Vec<String> {
-    std::iter::once("hyperstor-meta.service".to_string())
-        .chain((0..s.nodes).map(|n| format!("hyperstord@{n}.service")))
+fn units(p: &Plan) -> Vec<String> {
+    p.meta
+        .iter()
+        .map(|_| "hyperstor-meta.service".to_string())
+        .chain(
+            p.nodes
+                .iter()
+                .map(|n| format!("hyperstord@{}.service", n.n)),
+        )
         .collect()
 }
 
-fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
-    if !s.all_in_one {
-        // Roles, devices and joining need join tokens and the cluster
-        // API (AD0, §23.4.2); until then only the trial setup exists.
-        fail(
-            "only --all-in-one is supported for now (roles and joining come with the cluster API)",
-        );
-    }
+fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: Option<String>) {
+    let p = plan(root, s, cluster_file);
     // SAFETY: geteuid has no preconditions.
     if real && unsafe { libc::geteuid() } != 0 {
         fail("installing to / needs root: run it with sudo (or use --root DIR)");
@@ -648,6 +786,8 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
                 "useradd",
                 &[
                     "--system",
+                    // The group too: the API's key is readable by it.
+                    "--user-group",
                     "--no-create-home",
                     "--home-dir",
                     home,
@@ -684,14 +824,14 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
     }
 
     // 3. Certificates (§23.8), then configuration and units.
-    let cid = cluster_id(root);
     let mut restart: Vec<String> = Vec::new();
-    if pki(root, real, cid, &mut changed) {
+    // The CAs and the API's certificate live where the map service runs.
+    if p.meta.is_some() && pki(root, real, &p.cluster_id, &mut changed) {
         restart.push("hyperstor-meta.service".into());
     }
     let mut units_changed = false;
     let mut service_units_changed = false;
-    for (path, content, mode) in files(s, cid) {
+    for (path, content, mode) in files(s, &p) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
             continue;
         }
@@ -713,7 +853,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         changed.push(path);
     }
     if binaries_changed || service_units_changed {
-        restart = units(s);
+        restart = units(&p);
     }
     restart.dedup();
     // Saved last: a run that failed before here is retried with the same flags.
@@ -730,7 +870,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
         if units_changed && !run("systemctl", &["daemon-reload"]) {
             fail("systemctl daemon-reload failed");
         }
-        let mut all = units(s);
+        let mut all = units(&p);
         all.push("hyperstor-renew.timer".into());
         let mut args = vec!["enable", "--now"];
         args.extend(all.iter().map(String::as_str));
@@ -774,7 +914,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings) {
 ///
 /// Leaves are renewed after two thirds of their 30 days, or when the
 /// intermediate changes. Returns whether the API's certificate changed.
-fn pki(root: &Path, real: bool, cluster: u64, changed: &mut Vec<String>) -> bool {
+fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> bool {
     use hyperstor_pki::*;
     let dir = "/etc/hyperstor/pki";
     let read = |f: &str| fs::read_to_string(under(root, &format!("{dir}/{f}"))).ok();
@@ -858,7 +998,25 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         fail("uninstalling from / needs root: run it with sudo (or use --root DIR)");
     }
     if real {
-        let mut all = units(s);
+        // What was installed: the map service if its options are, and
+        // every storage node with an options file.
+        let mut all: Vec<String> = Vec::new();
+        if under(root, "/etc/hyperstor/meta.env").exists() {
+            all.push("hyperstor-meta.service".into());
+        }
+        for e in fs::read_dir(under(root, "/etc/hyperstor"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(n) = name
+                .strip_prefix("node-")
+                .and_then(|r| r.strip_suffix(".env"))
+            {
+                all.push(format!("hyperstord@{n}.service"));
+            }
+        }
         all.push("hyperstor-renew.timer".into());
         let mut args = vec!["disable", "--now"];
         args.extend(all.iter().map(String::as_str));
@@ -911,14 +1069,63 @@ mod tests {
     }
 
     #[test]
+    fn cluster_file_roles_install_their_part() {
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100 10.0.0.1:9101\nnode 1 rack 1 10.0.0.2:9100\n\
+                       pool 1 vol replicated size 2 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        assert!(p.meta.is_none());
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        // One reactor per address the file lists for node 0.
+        assert!(env.contains("--meta 10.0.0.9:8849"), "{env}");
+        assert!(
+            env.contains("--shard 10.0.0.1:9100=/var/lib/hyperstor/node-0-0.img:4"),
+            "{env}"
+        );
+        assert!(
+            env.contains("--shard 10.0.0.1:9101=/var/lib/hyperstor/node-0-1.img:4"),
+            "{env}"
+        );
+        assert!(env.contains("--admin 10.0.0.1:8853"), "{env}");
+        assert!(
+            !f.iter()
+                .any(|x| x.0.ends_with("meta.env") || x.0.ends_with("node-1.env"))
+        );
+        // The map service's host: its options and hyperstorctl's, no node.
+        s.role = "meta".into();
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        assert_eq!(p.cluster_id, "9");
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/meta.env")
+            .unwrap()
+            .1;
+        assert!(env.contains("--listen 10.0.0.9:8849"), "{env}");
+        assert!(f.iter().any(|x| x.0.ends_with("hyperstorctl.conf")));
+        assert!(!f.iter().any(|x| x.0.contains("/node-")));
+        assert_eq!(units(&p), ["hyperstor-meta.service"]);
+    }
+
+    #[test]
     fn all_in_one_files_match_the_settings() {
         let mut s = Settings::defaults();
         s.nodes = 2;
-        let f = files(&s, 77);
+        s.all_in_one = true;
+        let p = plan(Path::new("/nonexistent"), &s, None);
+        let f = files(&s, &p);
         let cluster = &f.iter().find(|x| x.0.ends_with("cluster.txt")).unwrap().1;
         // The map service accepts it, with every PG placed.
         let map = hyperstor_meta::parse_cluster(cluster).unwrap();
-        assert_eq!(map.cluster_id, 77);
+        assert_eq!(map.cluster_id.to_string(), p.cluster_id);
         assert_eq!(map.nodes.len(), 2);
         assert!(
             map.pgs

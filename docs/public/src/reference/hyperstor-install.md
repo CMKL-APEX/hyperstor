@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]
+usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]
 ```
 
 | Command | Does |
@@ -15,14 +15,18 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--nodes N] [--s
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--all-in-one` | off | A trial cluster on this host: the map service and several storage nodes on files. The only kind of install for now |
-| `--nodes N` | 3 | Storage nodes (1 to 16). The pool keeps `min(N, 3)` copies |
+| `--all-in-one` | off | A trial cluster on this host: the map service and several storage nodes on files |
+| `--cluster FILE` | | Install this host's part of the cluster the [cluster file](cluster-file.md) describes; give every host the same file. Needed the first time; later runs use the installed copy |
+| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both` |
+| `--node N` | | With a `storage` or `both` role: which node of the cluster file this host runs. It gets one reactor per address the file lists for it, each on a file in the data directory |
+| `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there |
+| `--nodes N` | 3 | All-in-one: storage nodes (1 to 16). The pool keeps `min(N, 3)` copies |
 | `--size-gib G` | 4 | Size of each storage node's device file, in GiB (sparse) |
 | `--data-dir DIR` | `/var/lib/hyperstor` | Where the device files go |
 | `--api-port P` | 8850 | The cluster API, on `127.0.0.1` |
 | `--map-port P` | 8849 | The map service, on `127.0.0.1` |
 | `--node-port P` | 9100 | Storage node `n` listens on `P + n`, on `127.0.0.1` |
-| `--admin-port P` | 8853 | Storage node `n` serves its metrics on `P + n`, on `127.0.0.1` |
+| `--admin-port P` | 8853 | Metrics port: all-in-one, node `n` on `127.0.0.1:P + n`; with `--cluster`, the node on its first address's IP, port P |
 | `--root DIR` | `/` | Write every file under DIR instead (for packaging and tests); no users or services are touched |
 | `--no-start` | off | Install the files but don't enable or start the services |
 

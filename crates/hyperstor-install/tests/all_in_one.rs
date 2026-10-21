@@ -23,8 +23,12 @@ impl Drop for Procs {
 }
 
 fn free_base(n: u16) -> u16 {
-    // A run of free ports, from a pid-dependent start to avoid parallel runs.
-    let mut p = 20000 + (std::process::id() % 2000) as u16 * 10;
+    // A run of free ports: from a pid-dependent start, so parallel test
+    // processes differ, and 200 further on each call, so parallel tests
+    // in one process do too.
+    static CALLS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut p = 20000 + (std::process::id() % 100) as u16 * 300 + call * 200 % 20000;
     loop {
         if (0..n).all(|i| std::net::TcpListener::bind(("127.0.0.1", p + i)).is_ok()) {
             return p;
@@ -402,4 +406,97 @@ fn check_reports_every_item() {
         "{text}"
     );
     assert!(!scratch.exists(), "check must not create anything");
+}
+
+/// A cluster across "hosts" from one cluster file (I50): the map service
+/// on one, a storage node on each of three others, each installed into a
+/// root of its own and started from what was installed; then managed
+/// from the map service's host.
+#[test]
+fn cluster_file_install_across_hosts() {
+    let scratch =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("hosts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let base = free_base(9);
+    let file = scratch.join("cluster.txt");
+    std::fs::write(
+        &file,
+        format!(
+            "cluster 7\nnode 0 rack 0 127.0.0.1:{}\nnode 1 rack 0 127.0.0.1:{}\nnode 2 rack 0 127.0.0.1:{}\n\
+             pool 1 vol replicated size 3 min 2 pgs 32 domain host\n",
+            base + 2,
+            base + 3,
+            base + 4
+        ),
+    )
+    .unwrap();
+    let map = format!("127.0.0.1:{}", base + 1);
+    let common = |root: &Path, extra: &[&str]| {
+        let mut a = vec![
+            "--cluster",
+            file.to_str().unwrap(),
+            "--map",
+            &map,
+            "--size-gib",
+            "1",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+        a.extend(extra.iter().map(|s| s.to_string()));
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        install(root, &refs)
+    };
+    let meta_root = scratch.join("meta-host");
+    let api_port = base.to_string();
+    common(&meta_root, &["--role", "meta", "--api-port", &api_port]);
+    assert!(!meta_root.join("etc/hyperstor/node-0.env").exists());
+    let mut procs = Procs(Vec::new());
+    let bin = meta_root.join("usr/local/bin");
+    procs.0.push(
+        Command::new(bin.join("hyperstor-meta"))
+            .args(args(&meta_root, "meta.env"))
+            .spawn()
+            .unwrap(),
+    );
+    for n in 0..3u16 {
+        let root = scratch.join(format!("host-{n}"));
+        let data = scratch.join(format!("data-{n}"));
+        std::fs::create_dir_all(&data).unwrap();
+        let admin = (base + 5 + n).to_string();
+        common(
+            &root,
+            &[
+                "--role",
+                "storage",
+                "--node",
+                &n.to_string(),
+                "--data-dir",
+                data.to_str().unwrap(),
+                "--admin-port",
+                &admin,
+            ],
+        );
+        assert!(!root.join("etc/hyperstor/meta.env").exists());
+        assert!(
+            !root.join("etc/hyperstor/pki").exists(),
+            "no CA on storage hosts"
+        );
+        procs.0.push(
+            Command::new(root.join("usr/local/bin/hyperstord"))
+                .args(args(&root, &format!("node-{n}.env")))
+                .args(["--spin-us", "0"])
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let api = format!("127.0.0.1:{api_port}");
+    let (code, out) = ctl(&bin, &api, &["status", "--wait", "20"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("cluster 7,"), "{out}");
+    let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "8"]);
+    assert_eq!(code, 0, "{out}");
+    drop(procs);
+    let _ = std::fs::remove_dir_all(&scratch);
 }

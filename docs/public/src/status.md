@@ -91,4 +91,5 @@ covered by tests that run on every change.
 |---|---|
 | Host checks before installing | Done |
 | One-command trial cluster on one host, with system services, updated in place on later runs | Done |
+| Installing a cluster across hosts from a shared cluster file | Done |
 | Joining hosts to a cluster with join tokens, and installing on whole devices | Planned |
