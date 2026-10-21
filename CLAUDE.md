@@ -19,7 +19,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D70 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I53, and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I54, and every host check (G1–G20,
   FG1–FG2).
 - **Next:** cache-pool expiry and eviction (the rest of D45; open
   question in I40), paged checkpoints (D47), the copy-on-write B+tree
@@ -69,7 +69,10 @@ design is split by topic, with section numbers kept across files.
   checks against the binary's usage line.
 - New behaviour comes with tests; anything that persists data or crosses
   a crash gets a randomized test against a model (see the engine's crash
-  test). Record measurements in `spec/benchmarks.md` with the host and
+  test). Anything an operator does (install, manage, fail over, security)
+  gets an end-to-end test in `crates/hyperstor-test`, which installs
+  clusters from the built binaries into scratch roots; `scripts/e2e.sh`
+  runs it, and `--installed` checks a host where Hyperstor is installed. Record measurements in `spec/benchmarks.md` with the host and
   the command, and decisions in `spec/implementation-notes.md`. To gather
   data for the owner's decisions, use the `collect-decision-data` skill
   (`.claude/skills/`) and `scripts/collect-decision-data.sh`.

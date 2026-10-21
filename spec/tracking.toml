@@ -329,7 +329,9 @@ status = "partial"
 tests = [
     "hyperstor_meta::api::tests::status_carries_health_and_pools",
     "hyperstor_meta::api::tests::each_caller_gets_its_own_burst_then_the_rate",
-    "all_in_one::install_manage_and_fail_a_node",
+    "manage::status_and_tables",
+    "security::roles_strangers_and_plain_http",
+    "security::local_socket_break_glass",
 ]
 
 [[milestone.item]]
@@ -340,13 +342,20 @@ tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
     "hyperstor_ctl::tests::tables_list_every_device_and_pool",
     "hyperstor_meta::api::tests::local_callers_allowed",
+    "manage::io_on_every_pool",
+    "manage::out_and_in_settle",
+    "manage::a_killed_node_is_reported_and_comes_back",
+    "security::unreachable_api_is_status_3",
 ]
 
 [[milestone.item]]
 what = "Metrics on each storage node's admin port"
 spec = ["operations.md §16", "administration.md §23.3", "D58", "D59"]
 status = "partial"
-tests = ["hyperstor_daemon::metrics::tests::render_labels_every_shard_and_kind"]
+tests = [
+    "hyperstor_daemon::metrics::tests::render_labels_every_shard_and_kind",
+    "metrics::requests_are_counted_and_timed",
+]
 
 [[milestone.item]]
 what = "Certificates, identities and roles for the API"
@@ -366,7 +375,7 @@ title = "Installer and cluster join"
 what = "Host checks before installing"
 spec = ["administration.md §23.4"]
 status = "done"
-tests = ["all_in_one::check_reports_every_item"]
+tests = ["install::check_reports_every_item"]
 
 [[milestone.item]]
 what = "One-command trial cluster on one host, with system services, updated in place on later runs"
@@ -375,6 +384,8 @@ status = "done"
 tests = [
     "hyperstor_install::tests::settings_round_trip_and_flags_override",
     "hyperstor_install::tests::all_in_one_files_match_the_settings",
+    "install::install_is_convergent_and_uninstall_keeps_configuration",
+    "install::bad_flags_are_refused",
 ]
 
 [[milestone.item]]
@@ -383,7 +394,7 @@ spec = ["administration.md §23.4"]
 status = "done"
 tests = [
     "hyperstor_install::tests::cluster_file_roles_install_their_part",
-    "all_in_one::cluster_file_install_across_hosts",
+    "install::cluster_file_install_across_hosts",
 ]
 
 [[milestone.item]]
