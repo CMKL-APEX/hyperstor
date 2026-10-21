@@ -227,6 +227,12 @@ struct ShardState {
     pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
     /// The test hook of `NodeConfig::meta_blocked`.
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Cache-pool PGs (D45), with the epoch this device last served each
+    /// at. Serving one at a new epoch, or for the first time since start,
+    /// first drops what this device holds of it: the copy may be older
+    /// than writes made elsewhere meanwhile, and a cache may lose data but
+    /// must never serve stale data.
+    cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -300,6 +306,7 @@ impl ShardState {
             fenced: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             blocked,
+            cache_epochs: RefCell::new(HashMap::new()),
         }))
     }
 
@@ -317,6 +324,29 @@ impl ShardState {
         async move { rx.recv().await.unwrap_or(Err("commit dropped".into())) }
     }
 
+    /// Commits everything queued now, as one batch, in queue order.
+    fn commit_queued(&self) {
+        let batch = std::mem::take(&mut *self.queue.borrow_mut());
+        if batch.is_empty() {
+            return;
+        }
+        let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+        let res = self.shard.borrow_mut().commit(lists);
+        self.batches.set(self.batches.get() + 1);
+        match res {
+            Ok(rs) => {
+                for (tx, r) in txs.into_iter().zip(rs) {
+                    let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
+                }
+            }
+            Err(e) => {
+                for tx in txs {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        }
+    }
+
     /// Commits whatever is queued, as one batch, whenever anything is.
     async fn committer(self: Rc<Self>) {
         loop {
@@ -329,22 +359,7 @@ impl ShardState {
                 }
             })
             .await;
-            let batch = std::mem::take(&mut *self.queue.borrow_mut());
-            let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
-            let res = self.shard.borrow_mut().commit(lists);
-            self.batches.set(self.batches.get() + 1);
-            match res {
-                Ok(rs) => {
-                    for (tx, r) in txs.into_iter().zip(rs) {
-                        let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
-                    }
-                }
-                Err(e) => {
-                    for tx in txs {
-                        let _ = tx.send(Err(e.to_string()));
-                    }
-                }
-            }
+            self.commit_queued();
             let pending = self.shard.borrow().pending_blocks();
             if pending > 4096 {
                 let _ = self.shard.borrow_mut().apply_deferred();
@@ -394,6 +409,25 @@ impl ShardState {
             && map.epoch < *e
         {
             return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
+        }
+        if map.pools.get(&to.pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache)
+            && let Some(pg) = map.pg(to.pool, to.pg)
+            && self.cache_epochs.borrow().get(&(to.pool, to.pg)) != Some(&pg.epoch)
+        {
+            self.cache_epochs
+                .borrow_mut()
+                .insert((to.pool, to.pg), pg.epoch);
+            // Committed here, after anything already queued and before this
+            // request goes on: reads don't pass through the queue.
+            let keys = self.shard.borrow().list_pg(to.pool, to.pg);
+            self.queue.borrow_mut().extend(keys.into_iter().map(|k| {
+                let list = OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                };
+                (list, oneshot().0)
+            }));
+            self.commit_queued();
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             return Err(err(Code::Invalid, &map, "no such PG"));
@@ -995,6 +1029,16 @@ impl ShardState {
         let r = self.shard.borrow().read(&okey, off, len);
         let data = match r {
             Ok(b) => b.to_vec(),
+            // A cache pool's miss is a miss: the caller recomputes (D45).
+            Err(EngineError::NotFound)
+                if self.map().pools.get(&to.pool).map(|p| p.kind)
+                    == Some(hyperstor_meta::PoolKind::Cache) =>
+            {
+                return (
+                    err(Code::NotFound, &self.map(), "not in the cache"),
+                    Vec::new(),
+                );
+            }
             // Never written: reads as zeros.
             Err(EngineError::NotFound) => vec![0; len as usize],
             Err(EngineError::Checksum { lblock }) => {

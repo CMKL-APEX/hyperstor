@@ -43,7 +43,13 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolKind {
     Replicated,
-    Ec { k: u8, m: u8 },
+    Ec {
+        k: u8,
+        m: u8,
+    },
+    /// Recomputable data (decisions.md D45, replication.md §8.7): `size`
+    /// copies, lost without recovery.
+    Cache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -197,7 +203,7 @@ impl ClusterMap {
                 let members = topo.place(pg);
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
-                    PoolKind::Replicated => members,
+                    PoolKind::Replicated | PoolKind::Cache => members,
                     PoolKind::Ec { .. } => {
                         let prev: Vec<Option<u32>> = match &old {
                             Some(i) => {
@@ -215,9 +221,13 @@ impl ClusterMap {
                 };
                 let acting = match &old {
                     None => up.clone(),
+                    // Cache pools (D45): no backfill and no recovery; the
+                    // acting set is always where placement wants it, and a
+                    // new member starts empty.
+                    Some(_) if p.kind == PoolKind::Cache => up.clone(),
                     Some(o) => {
                         let kept: Vec<u32> = match p.kind {
-                            PoolKind::Replicated => {
+                            PoolKind::Replicated | PoolKind::Cache => {
                                 o.acting.iter().copied().filter(|d| self.live(*d)).collect()
                             }
                             PoolKind::Ec { .. } => o
@@ -319,6 +329,7 @@ impl ClusterMap {
             match p.kind {
                 PoolKind::Replicated => e.u8(0).u8(0).u8(0),
                 PoolKind::Ec { k, m } => e.u8(1).u8(k).u8(m),
+                PoolKind::Cache => e.u8(2).u8(0).u8(0),
             };
             e.u8(p.size).u8(p.min_size).u32(p.pg_count);
             e.u8(match p.domain {
@@ -390,6 +401,7 @@ impl ClusterMap {
             let name = d.str()?.to_string();
             let kind = match (d.u8()?, d.u8()?, d.u8()?) {
                 (0, _, _) => PoolKind::Replicated,
+                (2, _, _) => PoolKind::Cache,
                 (_, k, m) => PoolKind::Ec { k, m },
             };
             let size = d.u8()?;
@@ -1022,6 +1034,45 @@ mod tests {
     }
 
     #[test]
+    fn cache_pools_follow_placement_without_backfill() {
+        let mut m = map();
+        m.add_pool(PoolInfo {
+            id: 3,
+            name: "kv".into(),
+            kind: PoolKind::Cache,
+            size: 1,
+            min_size: 1,
+            pg_count: 32,
+            domain: Domain::Host,
+            chunk_size: 4 << 20,
+            class: None,
+        });
+        m.recompute();
+        let before = m.clone();
+        m.nodes.get_mut(&1).unwrap().up = false;
+        m.recompute();
+        for pg in 0..32 {
+            let o = &before.pgs[&(3, pg)];
+            let n = &m.pgs[&(3, pg)];
+            assert_eq!(n.acting, n.up, "cache PGs never backfill");
+            assert_eq!(n.acting.len(), 1);
+            assert!(n.backfilling().next().is_none());
+            if before.devices[&o.acting[0]].node == 1 {
+                assert_ne!(n.acting, o.acting, "the lost copy is replaced, empty");
+                assert!(n.epoch > o.epoch);
+            } else {
+                assert_eq!(n, o);
+            }
+        }
+        let parsed =
+            super::parse_cluster("node 0 rack 0 127.0.0.1:9100\npool 3 kv cache copies 2 pgs 16\n")
+                .unwrap();
+        assert_eq!(parsed.pools[&3].kind, PoolKind::Cache);
+        assert_eq!(parsed.pools[&3].size, 2);
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    #[test]
     fn map_service_answers() {
         use hyperstor_proto::*;
         use hyperstor_reactor::{block_on, net::*, spawn};
@@ -1086,6 +1137,12 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 let mut i = 3;
                 if w[3] == "replicated" {
                     i = 4;
+                } else if w[3] == "cache" {
+                    // cache [copies N]: one copy unless told otherwise
+                    p.kind = PoolKind::Cache;
+                    p.size = 1;
+                    p.min_size = 1;
+                    i = 4;
                 } else if let Some(km) = w[3].strip_prefix("ec") {
                     // ec4+2
                     let (k, m) = km.split_once('+').ok_or_else(|| bad("ec needs k+m"))?;
@@ -1097,7 +1154,7 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 }
                 while i + 1 < w.len() {
                     match w[i] {
-                        "size" => p.size = num(w[i + 1])? as u8,
+                        "size" | "copies" => p.size = num(w[i + 1])? as u8,
                         "min" => p.min_size = num(w[i + 1])? as u8,
                         "pgs" => p.pg_count = num(w[i + 1])? as u32,
                         "chunk" => p.chunk_size = num(w[i + 1])? as u32,

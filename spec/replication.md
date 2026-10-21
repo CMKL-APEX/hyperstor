@@ -136,6 +136,12 @@ members, as long as there are at least `min_size` of them. Below
 
 ### 8.7 Cache pools (D45)
 
+As built (implementation-notes.md I40): the pool kind, copies, loss
+without backfill, and "not found" on a miss. A node that serves a cache
+PG at a new epoch first empties what it holds of it, so a node that
+returns never serves a copy older than a write made while it was away.
+Expiry and eviction are not built yet.
+
 - **Copies.** One by default, placed like a replicated pool of that size;
   writes are acknowledged when every copy has them, as in §8.1.
 - **Expiry.** Every object has an expiry time (the pool's default, or set

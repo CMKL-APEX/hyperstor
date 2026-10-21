@@ -20,7 +20,7 @@ Built, on branch `impl/hs0-hs1`:
 |---|---|---|
 | HS0 | Engine (general objects, group commit, deferred writes, checkpoints, recovery; dense block maps and fuzzy checkpoints, D43), device back ends (memory, pread/pwrite, io_uring `O_DIRECT`, fault injection), crash tests, benchmarks | NVMe passthrough back end and the G5 comparison with SPDK (needs a spare namespace, I11) |
 | HS1 | Placement, wire protocol, reactor, cluster map and map service, storage daemon with replication and group commit, client, `hyperstord` and `hyperstor-meta` binaries, end-to-end tests and benchmark | Raft for the map service (I18), `.meta` header objects and volume leases (metadata.md §4.2, §9) |
-| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy (including a node that returns with stale data: reset, refilled, stand-ins dropped), map leases with fencing and pushes (D42), peer reports (D40), failure end-to-end tests, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | PG log and delta recovery (replication.md §8.3), scrub, blocklist and forced takeovers (metadata.md §9), throttling |
+| HS2 | Liveness by heartbeats, degraded acting sets, backfill with a whole-object copy (including a node that returns with stale data: reset, refilled, stand-ins dropped), map leases with fencing and pushes (D42), peer reports (D40), cache pools without expiry or eviction (D45, I40), failure end-to-end tests, a real multi-process failure check (`kill -9` of a node: writes go on with two copies) | PG log and delta recovery (replication.md §8.3), scrub, blocklist and forced takeovers (metadata.md §9), throttling |
 
 ### Review
 
@@ -28,6 +28,7 @@ The points raised here were reviewed with the owner on 2026-10-20; the
 answers, and the two points still open (map leases, checkpoint spikes)
 with their trade-offs, are in [decision-log.md](decision-log.md). Settled
 points: D38 (I14), D39 (I19), D40 (I21, I25), D41 (I12, I23, I24), D42 (I20).
+D45 is partly built (I40).
 
 ## Engine (HS0)
 
@@ -139,3 +140,9 @@ two engine bugs before any other test did:
 | I38 | **Adaptive polling** (`hyperstor_reactor::set_spin`): after activity, a reactor polls (entering the kernel without waiting, so network completions arrive) for the window before sleeping. `hyperstord` defaults to 200 µs (`--spin-us`); everything else to 0. | QD1 latency −15 to −23%, 4-reactor write p99 −80% (benchmarks.md, adaptive polling). | The window is a CPU cost at low load; see decision-log.md point 16. |
 | I39 | **Peer reports** (D40): every storage reactor pings, every 100 ms, the nodes it shares a PG with, and reports one silent for the peer timeout (`hyperstord --peer-timeout-ms`, default 1 s) to the map service; a node reported by two distinct nodes within half the liveness timeout is marked down and gets no lease until the reports stop. | Measured: failover 3.0 → 2.5 s at the default lease, 0.78 → 0.55 s with a 0.5 s lease (benchmarks.md, failover). The cluster test fails with peer reports turned off. | "Two distinct nodes" doesn't yet require different failure domains (the cluster file's racks); with one rack per site, any two nodes count. Pings scale with the number of peer nodes, not PGs. |
 
+
+## Cache pools (D45, first part)
+
+| # | Decision | Why | To discuss |
+|---|---|---|---|
+| I40 | **A cache pool is a third pool kind** (`pool N name cache copies K` in the cluster file; tag 2 in the map codec). Its acting set is always its up set: no backfill, no stand-ins. A read of an object the shard doesn't have answers `NotFound` rather than zeros. A storage reactor that sees a cache PG at an epoch it hasn't served before deletes everything it holds for that PG, committed before the request goes on. | A node returning with an old copy must not serve it: a write made while it was away went to another node, and placement can hand the PG back. The cluster test writes different data while the holder is down and fails if the old copy is ever read back; it caught that the first version queued the deletes without committing them, so a read on the new epoch still saw the old copy (reads don't pass through the commit queue). | Not built: expiry, eviction under space pressure, least-recently-read tracking. With `copies` > 1, any change of membership empties every copy, including those that stayed; keeping survivors would need a per-PG "last written epoch". The purge costs one delete per object of the PG on the first request after a change. |

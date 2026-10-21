@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 const POOL: u32 = 1;
+const CACHE_POOL: u32 = 2;
 const CHUNK: u32 = 1 << 20;
 /// Short leases and detection, to keep the tests quick.
 const LEASE: std::time::Duration = std::time::Duration::from_millis(400);
@@ -72,6 +73,18 @@ impl Cluster {
         let mut pool = replicated_pool(POOL, "vol", 3, 64);
         pool.chunk_size = CHUNK;
         map.add_pool(pool);
+        // A one-copy cache pool (D45).
+        map.add_pool(hyperstor_meta::PoolInfo {
+            id: CACHE_POOL,
+            name: "kv".into(),
+            kind: hyperstor_meta::PoolKind::Cache,
+            size: 1,
+            min_size: 1,
+            pg_count: 16,
+            domain: hyperstor_placement::Domain::Host,
+            chunk_size: CHUNK,
+            class: None,
+        });
         map.recompute();
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
         let meta_thread = std::thread::spawn(move || {
@@ -670,4 +683,108 @@ fn peers_report_a_dead_node_before_the_map_service_notices() {
     );
     let (map, _) = c.stop();
     assert!(!map.nodes[&2].up);
+}
+
+/// Cache pools (D45): one copy; when its node dies the copy is gone, reads
+/// answer "not found" (no stale data, no zeros), and writes go on to the
+/// replacement at once, with no backfill.
+#[test]
+fn a_cache_pool_loses_data_cleanly() {
+    use hyperstor_proto::Code;
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let (kill_tx, kill_rx) = std::sync::mpsc::channel::<u32>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let data = pattern(3, 64 * 1024);
+            cl.write(CACHE_POOL, 9, 0, data.clone()).await.unwrap();
+            assert_eq!(
+                cl.read(CACHE_POOL, 9, 0, data.len() as u64).await.unwrap(),
+                data
+            );
+            // A never-written object is a miss, not zeros.
+            let miss = cl.read(CACHE_POOL, 10, 0, 4096).await;
+            assert!(
+                matches!(
+                    miss,
+                    Err(hyperstor_client::ClientError::Server {
+                        code: Code::NotFound,
+                        ..
+                    })
+                ),
+                "{miss:?}"
+            );
+            // Kill the node holding the one copy.
+            let m = cl.map();
+            let pg = pg_of(9, 0, m.pools[&CACHE_POOL].pg_count);
+            let holder = m.devices[&m.pg(CACHE_POOL, pg).unwrap().primary().unwrap()].node;
+            kill_tx.send(holder).unwrap();
+            done_rx.recv().unwrap();
+            // After the change: a miss, then writes and reads work again.
+            let t = std::time::Instant::now();
+            loop {
+                match cl.read(CACHE_POOL, 9, 0, data.len() as u64).await {
+                    Err(hyperstor_client::ClientError::Server {
+                        code: Code::NotFound,
+                        ..
+                    }) => break,
+                    Ok(_) => panic!("read the lost copy back"),
+                    Err(_) => {}
+                }
+                assert!(t.elapsed().as_secs() < 10, "no miss after the node died");
+            }
+            let newer = pattern(4, 64 * 1024);
+            cl.write(CACHE_POOL, 9, 0, newer.clone()).await.unwrap();
+            assert_eq!(
+                cl.read(CACHE_POOL, 9, 0, newer.len() as u64).await.unwrap(),
+                newer
+            );
+            let m = cl.map();
+            assert!(
+                m.pgs
+                    .iter()
+                    .filter(|(k, _)| k.0 == CACHE_POOL)
+                    .all(|(_, p)| p.acting == p.up)
+            );
+        })
+    });
+    let holder = kill_rx.recv().unwrap();
+    c.kill(holder as usize);
+    done_tx.send(()).unwrap();
+    client.join().unwrap();
+    // The holder returns with its old copy. Placement may give it the PG
+    // back; it must not serve that copy, which is older than the write
+    // made while it was away.
+    c.restart(holder as usize);
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(1500)).await;
+            cl.refresh_map().await.unwrap();
+            let m = cl.map();
+            let pg = pg_of(9, 0, m.pools[&CACHE_POOL].pg_count);
+            let now = m.devices[&m.pg(CACHE_POOL, pg).unwrap().primary().unwrap()].node;
+            eprintln!("cache PG served by node {now} (old holder {holder})");
+            let t = std::time::Instant::now();
+            loop {
+                match cl.read(CACHE_POOL, 9, 0, 64 * 1024).await {
+                    Ok(d) => {
+                        assert!(d != pattern(3, 64 * 1024), "served the stale copy");
+                        assert!(d == pattern(4, 64 * 1024), "served data never written");
+                        break;
+                    }
+                    Err(hyperstor_client::ClientError::Server {
+                        code: Code::NotFound,
+                        ..
+                    }) => break,
+                    Err(_) => assert!(t.elapsed().as_secs() < 10, "cache pool unavailable"),
+                }
+            }
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
 }
