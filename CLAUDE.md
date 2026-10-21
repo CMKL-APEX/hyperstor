@@ -8,17 +8,20 @@ design is split by topic, with section numbers kept across files.
 
 ## Where things stand
 
-- **Implementation has started** on branch `impl/hs0-hs1`: HS0, HS1 (no
-  Raft yet) and the first part of HS2. `spec/implementation-notes.md` has
+- **Resuming?** Read `.claude/handoff.md`: the latest session's state,
+  open pull requests, decisions waiting on the owner, and next work.
+- **Implemented:** HS0, HS1 (no Raft yet) and part of HS2 on `main`;
+  dense maps, peer reports and cache pools in PR #3 (branch
+  `impl/dense-map`). `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
 - **Settled with the project owner:** D1–D19 and D38–D46 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
-- **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I28,
+- **Open for the owner's review:** D20–D37 and F1–F12 in detail, I1–I40,
   and every host check (G1–G12, FG1–FG2).
-- **Next:** the "To discuss" list in implementation-notes.md, then the
-  rest of HS2 (map and read leases, PG log, scrub, blocklist).
+- **Next:** see `.claude/handoff.md`; the rest of HS2 (read leases, PG
+  log, scrub, blocklist) follows.
 
 ## Design work
 
