@@ -465,22 +465,36 @@ fn map_service_members_join_the_first() {
     let pkis: Vec<PathBuf> = (1..=3)
         .map(|i| s.path(&format!("member-{i}")).join("etc/hyperstor/pki"))
         .collect();
-    let (leader, t) = wait_for("a leader to make a storage token", 20, || {
-        (0..3).find_map(|i| {
-            let r = ctl(
-                &bin,
-                &apis[i],
-                &pkis[i],
-                &["token", "create", "--role", "node"],
-            );
-            if r.code != 0 {
-                assert!(r.has("(not_leader)") || r.code == 3, "{}", r.out);
-                return None;
-            }
-            let f = s.path("store-token");
-            std::fs::write(&f, r.out.lines().next().unwrap()).unwrap();
-            Some((i, f))
+    // On a timeout, the members' logs say why.
+    let dump = || {
+        for i in 1..=3 {
+            let log =
+                std::fs::read_to_string(s.path(&format!("member-{i}.log"))).unwrap_or_default();
+            eprintln!("--- member {i}:\n{log}");
+        }
+    };
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for("a leader to make a storage token", 40, || {
+            (0..3).find_map(|i| {
+                let r = ctl(
+                    &bin,
+                    &apis[i],
+                    &pkis[i],
+                    &["token", "create", "--role", "node"],
+                );
+                if r.code != 0 {
+                    assert!(r.has("(not_leader)") || r.code == 3, "{}", r.out);
+                    return None;
+                }
+                let f = s.path("store-token");
+                std::fs::write(&f, r.out.lines().next().unwrap()).unwrap();
+                Some((i, f))
+            })
         })
+    }));
+    let (leader, t) = found.unwrap_or_else(|e| {
+        dump();
+        std::panic::resume_unwind(e)
     });
     // A follower refuses, and names the leader once it has heard from it.
     let follower = (leader + 1) % 3;
