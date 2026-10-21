@@ -407,3 +407,17 @@ recommendation each, and the owner's choices:
 
 Cache-pool sources (D67) followed from 26 and D45. Host checks G19
 (site round-trip limit) and G20 (the namespace across a WAN).
+
+## Replicated map service (2026-10-21)
+
+The next step after HS2's digests (CLAUDE.md, "Next"): Raft for the map
+service, through `glidex-raftstore` (D20). Asked with options and a
+recommendation each; the owner's answers:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 30 | What `glidex-raftstore` holds: the Raft layer only (each project implements its state machine), or the Raft layer with glidex's ReDB write-set store (`Db`, `WriteSet`, tables defined per project) | Raft layer and the write-set store, as D20 says | D20 |
+| 31 | Where Raft runs in `hyperstor-meta`: on the control thread's tokio runtime, or on hyperstor's reactor through an openraft runtime adapter | The tokio control thread | D71 |
+| 32 | Order of work: a glidex pull request first (extract the crate, glidex uses it, behaviour unchanged), then hyperstor pins it; or a prototype in hyperstor first | glidex first, then hyperstor | — |
+
+What the extraction moves (glidex `crates/glidex-control-plane/src/cluster/raft/`, about 1,350 lines with tests): the log store and type config (no glidex dependency), the network (already behind a `Transport` trait), the state machine (depends on glidex's `store` module, which moves with it), and the node (depends on glidex's `NodeStore` and runtime helper, which stay in glidex behind a small interface).
