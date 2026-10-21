@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
@@ -84,20 +84,36 @@ pub fn bin_dir() -> PathBuf {
     dir
 }
 
-/// `n` consecutive free ports on 127.0.0.1. Each call starts 300 further
-/// on, from a start that depends on the process, so parallel tests and
-/// test processes don't collide.
+/// The first port the kernel hands out to outgoing connections; test
+/// ports stay below it, so a client socket can't take one between our
+/// check and the service binding it (a CI failure: the dashboard,
+/// started last, found its port taken).
+fn ephemeral_low() -> u16 {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse().ok())
+        .unwrap_or(32768)
+}
+
+/// `n` consecutive free ports on 127.0.0.1, from 10000 up to the
+/// ephemeral range: a block of 500 per process (by pid) and 12 more on
+/// each call, so parallel tests and test processes don't collide.
 pub fn free_ports(n: u16) -> u16 {
     static CALLS: AtomicU16 = AtomicU16::new(0);
     let call = CALLS.fetch_add(1, Ordering::Relaxed);
-    let mut p = 20000 + (std::process::id() % 60) as u16 * 600 + (call % 60) * 300 % 36000;
+    let (lo, hi) = (
+        10000u16,
+        ephemeral_low().saturating_sub(n + 1).max(10000 + 500),
+    );
+    let span = hi - lo;
+    let mut p = lo + ((std::process::id() % 40) as u16 * 500 + (call % 40) * 12) % span;
     loop {
         if (0..n).all(|i| std::net::TcpListener::bind(("127.0.0.1", p + i)).is_ok()) {
             return p;
         }
         p += n + 1;
-        if p > 64000 {
-            p = 20000;
+        if p >= hi {
+            p = lo;
         }
     }
 }
@@ -321,16 +337,25 @@ impl Cluster {
         c
     }
 
-    /// Starts the dashboard from its installed options and waits for it.
+    /// Starts the dashboard from its installed options and waits for it
+    /// to listen; if it exits first, fails with its status and output.
     pub fn start_mgmt(&mut self) {
+        let log_path = self.scratch.path("mgmt.log");
         let p = Command::new(self.bin.join("hyperstor-mgmt"))
             .args(env_args(&self.root, self.scratch.run(), "mgmt.env"))
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&log_path).unwrap())
             .spawn()
             .unwrap();
         self.mgmt = Some(p);
         let port = self.mgmt_port;
-        wait_for("the dashboard", 10, || {
+        let mgmt = self.mgmt.as_mut().unwrap();
+        wait_for("the dashboard", 20, || {
+            if let Ok(Some(st)) = mgmt.try_wait() {
+                panic!(
+                    "hyperstor-mgmt exited ({st}) before listening on {port}:\n{}",
+                    std::fs::read_to_string(&log_path).unwrap_or_default()
+                );
+            }
             std::net::TcpStream::connect(("127.0.0.1", port)).ok()
         });
     }
@@ -371,6 +396,7 @@ impl Cluster {
     }
 
     pub fn start_node(&mut self, n: u32) {
+        let log = std::fs::File::create(self.scratch.path(&format!("node-{n}.log"))).unwrap();
         let p = Command::new(self.bin.join("hyperstord"))
             .args(env_args(
                 &self.root,
@@ -378,7 +404,7 @@ impl Cluster {
                 &format!("node-{n}.env"),
             ))
             .args(["--spin-us", "0"])
-            .stderr(Stdio::null())
+            .stderr(log)
             .spawn()
             .unwrap();
         self.node_procs.insert(n, p);
@@ -492,6 +518,21 @@ impl Drop for Cluster {
         {
             let _ = p.kill();
             let _ = p.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_ports_stay_below_the_ephemeral_range() {
+        let low = super::ephemeral_low();
+        for _ in 0..100 {
+            let p = super::free_ports(10);
+            assert!(
+                (10000..low).contains(&p) && p + 10 <= low,
+                "{p} (ephemeral from {low})"
+            );
         }
     }
 }

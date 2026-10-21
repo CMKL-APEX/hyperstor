@@ -395,6 +395,7 @@ status = "done"
 tests = [
     "hyperstor_install::tests::cluster_file_roles_install_their_part",
     "install::cluster_file_install_across_hosts",
+    "hyperstor_test::tests::test_ports_stay_below_the_ephemeral_range",
 ]
 
 [[milestone.item]]
