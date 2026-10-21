@@ -204,6 +204,9 @@ fn assert_matches(sh: &Shard, m: &Model, check_revisions: bool) -> Result<(), St
     Ok(())
 }
 
+/// Crashes that happened while a fuzzy checkpoint was being written.
+static MID_CHECKPOINT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Commits after which some object's block map was dense.
 static DENSE_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -216,6 +219,9 @@ thread_local! {
 fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
     open(d).map(|(_, mut v)| {
         let mut sh = v.pop().unwrap();
+        // Tiny slices: fuzzy checkpoints span many commit rounds, so power
+        // is lost in the middle of them.
+        sh.set_checkpoint_slice(1024);
         if let Some(p) = POLICY.with(|p| p.get()) {
             sh.set_dense_policy(p);
         }
@@ -303,6 +309,9 @@ fn run(seed: u64) -> usize {
                     break;
                 }
             }
+        }
+        if sh.checkpoint_in_progress() {
+            MID_CHECKPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // Power loss: keep a random subset of unflushed blocks.
         let p = rng.random_range(0.0..1.0);
@@ -397,7 +406,13 @@ fn run_seeds(label: &str) {
         crashes += run(seed);
     }
     assert!(crashes >= runs as usize);
-    eprintln!("{label}: {runs} runs, {crashes} crashes recovered and checked");
+    let mid = MID_CHECKPOINT.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "{label}: {runs} runs, {crashes} crashes recovered and checked ({mid} so far during a fuzzy checkpoint)"
+    );
+    if runs >= 100 {
+        assert!(mid > 50, "crashes during fuzzy checkpoints were exercised");
+    }
 }
 
 #[test]

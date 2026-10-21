@@ -149,11 +149,19 @@ impl Index {
                     let freed = o.unmap(*lb, crcs.len() as u64);
                     fx.free(freed);
                     o.blocks.map(*lb, *pblock, crcs);
-                    o.blocks.rebalance(&policy);
+                    o.blocks.rebalance(&policy, crcs.len() as u64);
                 }
                 ROp::Deferred { lb, data, crcs } => {
-                    let pbs = o.blocks.set_crcs(*lb, crcs);
-                    for (i, pb) in pbs.into_iter().enumerate() {
+                    // At run time every target block is mapped. Replaying
+                    // over a fuzzy checkpoint (taken after a later trim) may
+                    // find holes; those blocks are skipped, and a later
+                    // operation in the log settles them.
+                    for (i, crc) in crcs.iter().enumerate() {
+                        let b = lb + i as u64;
+                        if !o.blocks.all_mapped(b, 1) {
+                            continue;
+                        }
+                        let pb = o.blocks.set_crcs(b, &[*crc])[0];
                         let blk = &data[i * crate::BLOCK..(i + 1) * crate::BLOCK];
                         fx.pending.insert(pb, blk.into());
                     }
@@ -161,7 +169,7 @@ impl Index {
                 ROp::Unmap { lb, n } => {
                     let freed = o.unmap(*lb, *n);
                     fx.free(freed);
-                    o.blocks.rebalance(&policy);
+                    o.blocks.rebalance(&policy, *n);
                 }
                 ROp::SetAttr(k, v) => {
                     o.attrs.insert(k.clone(), v.clone());
@@ -199,33 +207,7 @@ impl Index {
     pub fn encode(&self, e: &mut Enc) {
         e.u64(self.objects.len() as u64);
         for (k, o) in &self.objects {
-            k.encode(e);
-            e.u64(o.size).u64(o.revision);
-            match &o.blocks {
-                BlockMap::Runs(m) => {
-                    e.u8(0).u32(m.len() as u32);
-                    for (lb, r) in m {
-                        e.u64(*lb).u64(r.pblock).u32(r.crcs.len() as u32);
-                        for c in &r.crcs {
-                            e.u32(*c);
-                        }
-                    }
-                }
-                BlockMap::Dense(v) => {
-                    e.u8(1).u32(v.len() as u32);
-                    for slot in v {
-                        e.u64(*slot);
-                    }
-                }
-            }
-            e.u32(o.attrs.len() as u32);
-            for (k, v) in &o.attrs {
-                e.bytes(k).bytes(v);
-            }
-            e.u64(o.kv.len() as u64);
-            for (k, v) in &o.kv {
-                e.bytes(k).bytes(v);
-            }
+            encode_object(k, o, e);
         }
     }
 
@@ -233,39 +215,7 @@ impl Index {
         let n = d.u64()?;
         let mut objects = BTreeMap::new();
         for _ in 0..n {
-            let k = ObjKey::decode(d)?;
-            let mut o = Object {
-                size: d.u64()?,
-                revision: d.u64()?,
-                ..Default::default()
-            };
-            o.blocks = match d.u8()? {
-                0 => {
-                    let mut m = BTreeMap::new();
-                    for _ in 0..d.u32()? {
-                        let lb = d.u64()?;
-                        let pblock = d.u64()?;
-                        let crcs = d.seq(4, |d| d.u32())?;
-                        m.insert(lb, Run { pblock, crcs });
-                    }
-                    BlockMap::Runs(m)
-                }
-                1 => BlockMap::Dense(d.seq(8, |d| d.u64())?),
-                v => {
-                    return Err(DecodeError::Invalid {
-                        field: "block map",
-                        value: v as u64,
-                    });
-                }
-            };
-            let na = d.u32()?;
-            for _ in 0..na {
-                o.attrs.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
-            }
-            let nk = d.u64()?;
-            for _ in 0..nk {
-                o.kv.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
-            }
+            let (k, o) = decode_object(d)?;
             objects.insert(k, o);
         }
         Ok(Self {
@@ -273,6 +223,74 @@ impl Index {
             policy: DensePolicy::default(),
         })
     }
+}
+
+/// Encodes one object with its key (checkpoints write objects one by one).
+pub fn encode_object(k: &ObjKey, o: &Object, e: &mut Enc) {
+    k.encode(e);
+    e.u64(o.size).u64(o.revision);
+    match &o.blocks {
+        BlockMap::Runs(m) => {
+            e.u8(0).u32(m.len() as u32);
+            for (lb, r) in m {
+                e.u64(*lb).u64(r.pblock).u32(r.crcs.len() as u32);
+                for c in &r.crcs {
+                    e.u32(*c);
+                }
+            }
+        }
+        BlockMap::Dense(v) => {
+            e.u8(1).u32(v.len() as u32);
+            for slot in v {
+                e.u64(*slot);
+            }
+        }
+    }
+    e.u32(o.attrs.len() as u32);
+    for (k, v) in &o.attrs {
+        e.bytes(k).bytes(v);
+    }
+    e.u64(o.kv.len() as u64);
+    for (k, v) in &o.kv {
+        e.bytes(k).bytes(v);
+    }
+}
+
+pub fn decode_object(d: &mut Dec<'_>) -> Result<(ObjKey, Object), DecodeError> {
+    let k = ObjKey::decode(d)?;
+    let mut o = Object {
+        size: d.u64()?,
+        revision: d.u64()?,
+        ..Default::default()
+    };
+    o.blocks = match d.u8()? {
+        0 => {
+            let mut m = BTreeMap::new();
+            for _ in 0..d.u32()? {
+                let lb = d.u64()?;
+                let pblock = d.u64()?;
+                let crcs = d.seq(4, |d| d.u32())?;
+                m.insert(lb, Run { pblock, crcs });
+            }
+            BlockMap::Runs(m)
+        }
+        1 => BlockMap::Dense(d.seq(8, |d| d.u64())?),
+        v => {
+            return Err(DecodeError::Invalid {
+                field: "block map",
+                value: v as u64,
+            });
+        }
+    };
+    let na = d.u32()?;
+    for _ in 0..na {
+        o.attrs.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
+    }
+    let nk = d.u64()?;
+    for _ in 0..nk {
+        o.kv.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
+    }
+    Ok((k, o))
 }
 
 impl ROp {

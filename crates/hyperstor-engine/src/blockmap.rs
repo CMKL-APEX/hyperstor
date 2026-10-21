@@ -185,7 +185,7 @@ impl BlockMap {
     pub fn run_count(&self) -> u64 {
         match self {
             BlockMap::Runs(m) => m.len() as u64,
-            BlockMap::Dense(_) => self.runs().len() as u64,
+            BlockMap::Dense(v) => dense_runs(v).0,
         }
     }
 
@@ -314,7 +314,10 @@ impl BlockMap {
     }
 
     /// Switches representation if the other one now costs clearly less.
-    pub fn rebalance(&mut self, policy: &DensePolicy) {
+    /// `changed` is how many blocks the last operation touched: a dense map
+    /// is only reconsidered after a change large enough (an eighth of its
+    /// span) to have made it contiguous, so small writes cost no scan.
+    pub fn rebalance(&mut self, policy: &DensePolicy, changed: u64) {
         match self {
             BlockMap::Runs(m) => {
                 if policy.disabled || m.len() < 2 {
@@ -336,9 +339,11 @@ impl BlockMap {
                     return;
                 }
                 let span = v.len() as u64;
-                let runs = self.runs();
-                let blocks: u64 = runs.iter().map(|r| r.2.len() as u64).sum();
-                let runs_cost = runs.len() as u64 * policy.run_overhead + 4 * blocks;
+                if span > 0 && changed * 8 < span {
+                    return;
+                }
+                let (runs, blocks) = dense_runs(v);
+                let runs_cost = runs * policy.run_overhead + 4 * blocks;
                 // Back to runs below 60% of the dense cost (a contiguous
                 // chunk is about 51%: runs keep 4 bytes of checksum per
                 // block too); dense again above 100%.
@@ -371,6 +376,26 @@ impl BlockMap {
             *self = BlockMap::Runs(m);
         }
     }
+}
+
+/// Runs and mapped blocks of a dense map, counted without allocating.
+fn dense_runs(v: &[u64]) -> (u64, u64) {
+    let mut runs = 0u64;
+    let mut blocks = 0u64;
+    let mut prev: Option<u64> = None;
+    for s in v {
+        match unpack(*s) {
+            Some((pb, _)) => {
+                blocks += 1;
+                if prev != Some(pb.wrapping_sub(1)) {
+                    runs += 1;
+                }
+                prev = Some(pb);
+            }
+            None => prev = None,
+        }
+    }
+    (runs, blocks)
 }
 
 /// Splits the run containing `lb`, if any, so that a run starts at `lb`.
@@ -448,13 +473,17 @@ mod tests {
                         assert_eq!(a.all_mapped(lb, n), b.all_mapped(lb, n));
                     }
                 }
-                a.rebalance(&never);
+                a.rebalance(&never, u64::MAX);
                 let default = DensePolicy::default();
-                b.rebalance(if rng.random_bool(0.9) {
-                    &forced
-                } else {
-                    &default
-                });
+                let changed = if rng.random_bool(0.2) { u64::MAX } else { n };
+                b.rebalance(
+                    if rng.random_bool(0.9) {
+                        &forced
+                    } else {
+                        &default
+                    },
+                    changed,
+                );
                 assert!(!a.is_dense());
                 assert_eq!(a, b, "seed {seed}");
                 assert_eq!(a.block_count(), b.block_count());
@@ -483,13 +512,13 @@ mod tests {
         let mut m = BlockMap::default();
         // A 1024-block chunk written whole: one run, stays runs.
         m.map(0, 10_000, &vec![7; 1024]);
-        m.rebalance(&p);
+        m.rebalance(&p, 1024);
         assert!(!m.is_dense());
         // Every other block remapped: hundreds of runs, switches to dense.
         for b in (0..1024).step_by(2) {
             m.unmap(b, 1);
             m.map(b, 50_000 + b, &[1]);
-            m.rebalance(&p);
+            m.rebalance(&p, 1);
         }
         assert!(m.is_dense(), "{} runs", m.run_count());
         assert!(m.mem_bytes() <= 8 * 1024);
@@ -497,7 +526,7 @@ mod tests {
         let freed = m.unmap(0, 1024);
         assert_eq!(total(&freed), 1024);
         m.map(0, 90_000, &vec![3; 1024]);
-        m.rebalance(&p);
+        m.rebalance(&p, 1024);
         assert!(!m.is_dense());
         assert_eq!(m.run_count(), 1);
     }
@@ -511,12 +540,12 @@ mod tests {
         let mut m = BlockMap::default();
         m.map(0, u32::MAX as u64 + 5, &[1, 2]);
         m.map(4, 1, &[3]);
-        m.rebalance(&p);
+        m.rebalance(&p, 1);
         assert!(!m.is_dense(), "32-bit slots can't hold the block number");
         let mut d = BlockMap::default();
         d.map(0, 1, &[1]);
         d.map(4, 9, &[1]);
-        d.rebalance(&p);
+        d.rebalance(&p, 1);
         assert!(d.is_dense());
         d.map(8, u32::MAX as u64 + 1, &[2]);
         assert!(!d.is_dense(), "converted back to hold it");

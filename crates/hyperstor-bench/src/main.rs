@@ -10,6 +10,7 @@
 //! Output is Markdown table rows. Files are preallocated so that writes
 //! don't allocate filesystem blocks.
 
+use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -523,6 +524,225 @@ fn index_suite(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// A fresh shard on a buffered scratch file, `gib` of data space.
+fn scratch_shard(path: &Path, gib: u64, dense: bool) -> Shard {
+    let _ = std::fs::remove_file(path);
+    let dev: Arc<dyn BlockDev> =
+        Arc::new(FileDev::open(path, false, Some((gib + 1) << 30)).expect("open scratch file"));
+    format(
+        &dev,
+        &DeviceConfig {
+            device_id: 1,
+            cluster_id: 1,
+            shards: 1,
+            log_blocks: None,
+        },
+    )
+    .unwrap();
+    let mut sh = open(&dev).unwrap().1.pop().unwrap();
+    sh.set_defer_max(0);
+    sh.set_dense_policy(DensePolicy {
+        disabled: !dense,
+        ..Default::default()
+    });
+    sh
+}
+
+fn fill(sh: &mut Shard, objects: u64) {
+    let chunk = vec![0x5au8; (OBJ_BLOCKS * BLOCK as u64) as usize];
+    for o in 0..objects {
+        sh.commit(vec![OpList {
+            key: key(o),
+            ops: vec![Op::Write {
+                off: 0,
+                data: chunk.clone(),
+            }],
+        }])
+        .unwrap();
+    }
+}
+
+/// Random 4 KiB overwrites, uniformly over `objects` chunks, in batches.
+fn overwrite(sh: &mut Shard, rng: &mut SmallRng, objects: u64, n: u64) {
+    let data = vec![0xa5u8; BLOCK];
+    let mut left = n;
+    while left > 0 {
+        let b = left.min(64);
+        let lists = (0..b)
+            .map(|_| OpList {
+                key: key(rng.random_range(0..objects)),
+                ops: vec![Op::Write {
+                    off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
+                    data: data.clone(),
+                }],
+            })
+            .collect();
+        sh.commit(lists).unwrap();
+        left -= b;
+    }
+}
+
+/// Measurements for decisions still open (decision-log.md): index RAM as
+/// a volume ages under random writes, with and without dense block maps;
+/// checkpoint pause against data size; read cost of each representation.
+fn decisions_suite(dir: &Path, secs: f64) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join("hs-decisions.img");
+    let gib = 1u64;
+    let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+    let total_blocks = objects * OBJ_BLOCKS;
+
+    println!("### Index as 1 GiB of 4 MiB chunks ages under random 4 KiB overwrites\n");
+    println!(
+        "Overwrites are a multiple of the blocks written. Index bytes are the block maps' estimated memory; RSS is the process's growth.\n"
+    );
+    println!(
+        "| Dense maps | overwrites | runs | dense chunks | block maps MiB | RSS MiB | checkpoint MiB | checkpoint ms | block maps GiB per TiB |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for dense in [false, true] {
+        let base = rss_bytes();
+        let mut sh = scratch_shard(&path, gib + 1, dense);
+        let mut rng = SmallRng::seed_from_u64(9);
+        fill(&mut sh, objects);
+        let mut done = 0u64;
+        for frac in [0.0f64, 0.05, 0.25, 1.0, 3.0] {
+            let target = (frac * total_blocks as f64) as u64;
+            overwrite(&mut sh, &mut rng, objects, target - done);
+            done = target;
+            let t = Instant::now();
+            sh.checkpoint().unwrap();
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            let st = sh.stats();
+            println!(
+                "| {} | {:.2}x | {} | {} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} |",
+                if dense { "on" } else { "off" },
+                frac,
+                st.runs,
+                st.dense_objects,
+                st.index_map_bytes as f64 / (1 << 20) as f64,
+                rss_bytes().saturating_sub(base) as f64 / (1 << 20) as f64,
+                st.checkpoint_bytes as f64 / (1 << 20) as f64,
+                ms,
+                st.index_map_bytes as f64 * 1024.0 / (gib << 30) as f64,
+            );
+        }
+        // Read cost: 4 KiB random reads on the aged chunks (page cache warm).
+        let mut lat = Lat(Vec::new());
+        let t = Instant::now();
+        let mut n = 0u64;
+        while t.elapsed().as_secs_f64() < secs {
+            let k = key(rng.random_range(0..objects));
+            let off = rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64;
+            let s = Instant::now();
+            std::hint::black_box(sh.read(&k, off, BLOCK as u64).unwrap());
+            lat.0.push(s.elapsed());
+            n += 1;
+        }
+        println!(
+            "\nReads with dense maps {}: {:.0} 4 KiB reads/s from the page cache, p50 {:.1} µs, p99 {:.1} µs.\n",
+            if dense { "on" } else { "off" },
+            n as f64 / t.elapsed().as_secs_f64(),
+            lat.pct(0.5),
+            lat.pct(0.99)
+        );
+        if !dense {
+            println!(
+                "| Dense maps | overwrites | runs | dense chunks | block maps MiB | RSS MiB | checkpoint MiB | checkpoint ms | block maps GiB per TiB |"
+            );
+            println!("|---|---|---|---|---|---|---|---|---|");
+        }
+        drop(sh);
+    }
+
+    println!("### Commit latency while checkpoints run: whole against fuzzy (memory device)\n");
+    println!(
+        "2 GiB of 4 MiB chunks, aged by one full pass of random 4 KiB overwrites (dense maps on), then {secs} s of batches of 32 random 4 KiB overwrites. A 16 MiB log makes checkpoints frequent. \"Whole\" writes each checkpoint in one round (as before); \"fuzzy\" writes 256 KiB per round.\n"
+    );
+    println!(
+        "| Checkpoint | commits | checkpoints | slices | forced | p50 µs | p99 µs | p99.9 µs | max µs |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for (label, slice) in [("whole", usize::MAX), ("fuzzy", 256 * 1024)] {
+        let gib = 2u64;
+        let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new((gib + 1) << 30));
+        format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                cluster_id: 1,
+                shards: 1,
+                log_blocks: Some(4096),
+            },
+        )
+        .unwrap();
+        let mut sh = open(&dev).unwrap().1.pop().unwrap();
+        sh.set_defer_max(0);
+        let mut rng = SmallRng::seed_from_u64(5);
+        fill(&mut sh, objects);
+        overwrite(&mut sh, &mut rng, objects, objects * OBJ_BLOCKS);
+        sh.set_checkpoint_slice(slice);
+        let before = sh.stats();
+        let data = vec![0xa5u8; BLOCK];
+        let mut lat = Lat(Vec::new());
+        let t = Instant::now();
+        while t.elapsed().as_secs_f64() < secs {
+            let lists = (0..32)
+                .map(|_| OpList {
+                    key: key(rng.random_range(0..objects)),
+                    ops: vec![Op::Write {
+                        off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
+                        data: data.clone(),
+                    }],
+                })
+                .collect();
+            let s = Instant::now();
+            sh.commit(lists).unwrap();
+            lat.0.push(s.elapsed());
+        }
+        let st = sh.stats();
+        let max = lat.0.iter().max().unwrap().as_secs_f64() * 1e6;
+        println!(
+            "| {label} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            lat.0.len(),
+            st.checkpoints - before.checkpoints,
+            st.checkpoint_slices - before.checkpoint_slices,
+            st.checkpoint_forced - before.checkpoint_forced,
+            lat.pct(0.5),
+            lat.pct(0.99),
+            lat.pct(0.999),
+            max
+        );
+    }
+    println!();
+
+    println!("### Checkpoint pause against data size (whole-index checkpoint, I3)\n");
+    println!("| Data | state | dense maps | checkpoint MiB | pause ms |");
+    println!("|---|---|---|---|---|");
+    for gib in [1u64, 4] {
+        let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+        for dense in [false, true] {
+            let mut sh = scratch_shard(&path, gib + 1, dense);
+            let mut rng = SmallRng::seed_from_u64(11);
+            fill(&mut sh, objects);
+            for (label, extra) in [("sequential", 0u64), ("aged 1x", objects * OBJ_BLOCKS)] {
+                overwrite(&mut sh, &mut rng, objects, extra);
+                let t = Instant::now();
+                sh.checkpoint().unwrap();
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                println!(
+                    "| {gib} GiB | {label} | {} | {:.1} | {:.0} |",
+                    if dense { "on" } else { "off" },
+                    sh.stats().checkpoint_bytes as f64 / (1 << 20) as f64,
+                    ms
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let secs: f64 = std::env::var("HS_BENCH_SECS")
@@ -594,6 +814,10 @@ fn main() {
                 .expect("map service address");
             header();
             client_workload(meta, &format!("remote {meta}"), secs);
+        }
+        Some("decisions") => {
+            // hyperstor-bench decisions <scratch dir with 6 GiB free>
+            decisions_suite(Path::new(args.get(2).expect("scratch directory")), secs);
         }
         Some("index") => {
             // hyperstor-bench index <file on a filesystem with 2 GiB free>
