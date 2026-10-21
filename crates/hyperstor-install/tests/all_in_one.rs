@@ -67,9 +67,9 @@ fn args(root: &Path, env: &str) -> Vec<String> {
         .collect()
 }
 
-fn ctl(bin: &Path, meta: &str, a: &[&str]) -> (i32, String) {
+fn ctl(bin: &Path, api: &str, a: &[&str]) -> (i32, String) {
     let out = Command::new(bin.join("hyperstorctl"))
-        .args(["--meta", meta])
+        .args(["--api", api])
         .args(a)
         .output()
         .unwrap();
@@ -109,8 +109,12 @@ fn install_manage_and_fail_a_node() {
     // With --root, the data directory is made under the root like every
     // other path; the processes here use the final path, so make it.
     std::fs::create_dir_all(&data).unwrap();
-    let base = free_base(4);
-    let (meta_port, node_port) = (base.to_string(), (base + 1).to_string());
+    let base = free_base(5);
+    let (api_port, map_port, node_port) = (
+        base.to_string(),
+        (base + 1).to_string(),
+        (base + 2).to_string(),
+    );
 
     let first = install(
         &root,
@@ -122,8 +126,10 @@ fn install_manage_and_fail_a_node() {
             "1",
             "--data-dir",
             data.to_str().unwrap(),
-            "--meta-port",
-            &meta_port,
+            "--api-port",
+            &api_port,
+            "--map-port",
+            &map_port,
             "--node-port",
             &node_port,
         ],
@@ -166,44 +172,44 @@ fn install_manage_and_fail_a_node() {
                 .unwrap(),
         );
     }
-    let meta = format!("127.0.0.1:{meta_port}");
+    let api = format!("127.0.0.1:{api_port}");
 
     let status = wait_for("health ok", 20, || {
-        let (code, out) = ctl(&bin, &meta, &["status", "--json"]);
-        (code == 0 && out.contains("\"health\":\"ok\"")).then_some(out)
+        let (code, out) = ctl(&bin, &api, &["status", "--json"]);
+        (code == 0 && out.contains("\"health\":\"HEALTH_OK\"")).then_some(out)
     });
     assert!(
-        status.contains(&format!("\"cluster\":{}", cid_of(&cid))),
+        status.contains(&format!("\"cluster_id\":\"{}\"", cid_of(&cid))),
         "{status}"
     );
     assert_eq!(status.matches("\"up\":true").count(), 3, "{status}");
 
-    let (code, out) = ctl(&bin, &meta, &["io-test", "--mib", "8"]);
+    let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "8"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("read and verified"), "{out}");
-    let (code, out) = ctl(&bin, &meta, &["pools"]);
+    let (code, out) = ctl(&bin, &api, &["pools"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("replicated"), "{out}");
 
     // Take node 2's device out: its copies move to... nowhere, since
     // three copies need three hosts, so PGs run degraded (warn); in again
     // brings them back to clean after backfill.
-    let (code, out) = ctl(&bin, &meta, &["out", "--node", "2"]);
+    let (code, out) = ctl(&bin, &api, &["out", "--node", "2"]);
     assert_eq!(code, 0, "{out}");
     let degraded = wait_for("PGs degraded after out", 20, || {
-        let (code, out) = ctl(&bin, &meta, &["status"]);
+        let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 1 && out.contains("device(s) down or out")).then_some(out)
     });
     assert!(degraded.contains("PG(s)"), "{degraded}");
-    let (code, out) = ctl(&bin, &meta, &["io-test", "--mib", "4"]);
+    let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "4"]);
     assert_eq!(code, 0, "writes go on with two copies: {out}");
-    let (code, out) = ctl(&bin, &meta, &["in", "--node", "2"]);
+    let (code, out) = ctl(&bin, &api, &["in", "--node", "2"]);
     assert_eq!(code, 0, "{out}");
     wait_for("health ok after in", 30, || {
-        let (code, out) = ctl(&bin, &meta, &["status"]);
+        let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 0).then_some(out)
     });
-    let (code, out) = ctl(&bin, &meta, &["out", "--device", "999999"]);
+    let (code, out) = ctl(&bin, &api, &["out", "--device", "999999"]);
     assert_eq!(code, 1);
     assert!(out.contains("no device 999999"), "{out}");
 
@@ -214,11 +220,11 @@ fn install_manage_and_fail_a_node() {
     n2.kill().unwrap();
     n2.wait().unwrap();
     let warn = wait_for("node 2 reported down", 20, || {
-        let (code, out) = ctl(&bin, &meta, &["status"]);
+        let (code, out) = ctl(&bin, &api, &["status"]);
         (code == 1 && out.contains("node(s) down: 2")).then_some(out)
     });
     assert!(warn.contains("health  warn"), "{warn}");
-    let (code, out) = ctl(&bin, &meta, &["io-test", "--mib", "4"]);
+    let (code, out) = ctl(&bin, &api, &["io-test", "--mib", "4"]);
     assert_eq!(code, 0, "{out}");
 
     // An unreachable map service is exit status 3, not a hang.
@@ -245,4 +251,35 @@ fn cid_of(cluster: &str) -> u64 {
         .lines()
         .find_map(|l| l.strip_prefix("cluster ")?.trim().parse().ok())
         .unwrap()
+}
+
+/// `check` reports every check on its own line, with a level, and
+/// changes nothing. Its verdicts depend on the host, so only the shape
+/// is checked here.
+#[test]
+fn check_reports_every_item() {
+    let scratch =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("check-{}", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_hyperstor-install"))
+        .args(["check", "--data-dir", scratch.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for item in [
+        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "systemd",
+    ] {
+        let line = text
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some(item))
+            .unwrap_or_else(|| panic!("no {item} line:\n{text}"));
+        let level = line.split_whitespace().next().unwrap();
+        assert!(["ok", "info", "warn", "FAIL"].contains(&level), "{line}");
+    }
+    // Exit status 1 exactly when something failed.
+    assert_eq!(
+        out.status.code() == Some(1),
+        text.contains("FAIL  "),
+        "{text}"
+    );
+    assert!(!scratch.exists(), "check must not create anything");
 }

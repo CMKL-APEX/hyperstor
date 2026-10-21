@@ -312,9 +312,62 @@ title = "Global namespace and federation"
 id = "AD0"
 title = "Administration API, identities and CLI"
 
+[[milestone.item]]
+what = "Cluster health with its reasons, from what clients see"
+spec = ["operations.md §16", "administration.md §23.5"]
+status = "done"
+tests = [
+    "hyperstor_meta::health::tests::healthy_cluster_is_ok",
+    "hyperstor_meta::health::tests::a_down_node_degrades_and_warns",
+    "hyperstor_meta::health::tests::below_min_size_is_an_error",
+]
+
+[[milestone.item]]
+what = "Cluster API (status, placement groups, taking devices out and in), callable with curl"
+spec = ["administration.md §23.5", "D51"]
+status = "partial"
+tests = [
+    "hyperstor_meta::api::tests::status_carries_health_and_pools",
+    "all_in_one::install_manage_and_fail_a_node",
+]
+
+[[milestone.item]]
+what = "Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test"
+spec = ["administration.md §23.6", "D55"]
+status = "partial"
+tests = [
+    "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
+    "hyperstor_ctl::tests::tables_list_every_device_and_pool",
+]
+
+[[milestone.item]]
+what = "Certificates, identities and roles for the API"
+spec = ["administration.md §23.8", "D53", "D56"]
+status = "planned"
+
 [[milestone]]
 id = "AD1"
 title = "Installer and cluster join"
+
+[[milestone.item]]
+what = "Host checks before installing"
+spec = ["administration.md §23.4"]
+status = "done"
+tests = ["all_in_one::check_reports_every_item"]
+
+[[milestone.item]]
+what = "One-command trial cluster on one host, with system services, updated in place on later runs"
+spec = ["administration.md §23.4"]
+status = "done"
+tests = [
+    "hyperstor_install::tests::settings_round_trip_and_flags_override",
+    "hyperstor_install::tests::all_in_one_files_match_the_settings",
+]
+
+[[milestone.item]]
+what = "Joining hosts to a cluster with join tokens, and installing on whole devices"
+spec = ["administration.md §23.4", "D57"]
+status = "planned"
 
 [[milestone]]
 id = "AD2"

@@ -10,14 +10,16 @@ design is split by topic, with section numbers kept across files.
 
 - **Implemented:** HS0, HS1 (no Raft yet) and part of HS2 on `main`,
   including dense maps, peer reports and cache pools without expiry or
-  eviction. `spec/implementation-notes.md` has
+  eviction; the first part of AD0 and AD1: the cluster API on the map
+  service (no TLS yet), `hyperstorctl`, and `hyperstor-install` with host
+  checks and an all-in-one trial cluster. `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
 - **Settled with the project owner:** D1–D19, D38–D55 and D61–D68 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I40, and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I47, and every host check (G1–G20,
   FG1–FG2).
 - **Next:** cache-pool expiry and eviction (the rest of D45; open
   question in I40), paged checkpoints (D47), the copy-on-write B+tree

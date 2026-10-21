@@ -1,10 +1,12 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--lease-ms L] [--down-after-ms N]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--lease-ms L] [--down-after-ms N]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
 //! 600), marks nodes down after N ms without a heartbeat (default 800,
 //! at least 1.25 × L; decisions.md D48), and moves their PGs, fencing the
-//! nodes that lose a role before publishing (decisions.md D42).
+//! nodes that lose a role before publishing (decisions.md D42). With
+//! `--api ADDR`, also serves the cluster API (`hyperstor.v1`, plain HTTP
+//! for now; spec/administration.md §23.5) there.
 
 use std::time::Duration;
 
@@ -18,7 +20,7 @@ fn main() {
     };
     let (Some(listen), Some(file)) = (get("--listen"), get("--cluster")) else {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--lease-ms L] [--down-after-ms N]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--api ADDR] [--lease-ms L] [--down-after-ms N]"
         );
         std::process::exit(2);
     };
@@ -48,12 +50,31 @@ fn main() {
         map.pgs.len(),
         map.epoch
     );
-    let addr = listen.parse().expect("--listen address");
+    let addr: std::net::SocketAddr = listen.parse().unwrap_or_else(|_| {
+        eprintln!("--listen: not an address: {listen}");
+        std::process::exit(2)
+    });
+    // Bound before anything starts, so a taken port fails at once.
+    let api = get("--api").map(|a| {
+        std::net::TcpListener::bind(&a).unwrap_or_else(|e| {
+            eprintln!("--api {a}: {e}");
+            std::process::exit(1)
+        })
+    });
     hyperstor_reactor::block_on(async move {
         let l = hyperstor_reactor::net::TcpListener::bind(addr).expect("bind");
         let meta = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease));
         hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_millis(down)));
         hyperstor_reactor::spawn(meta.clone().publisher());
+        if let Some(api) = api {
+            let (tx, rx) = hyperstor_reactor::chan::channel();
+            hyperstor_reactor::spawn(meta.clone().admin(rx));
+            eprintln!(
+                "hyperstor-meta: cluster API on {}",
+                api.local_addr().expect("address")
+            );
+            hyperstor_meta::api::spawn(api, tx, addr);
+        }
         hyperstor_meta::serve(l, meta).await
     });
 }

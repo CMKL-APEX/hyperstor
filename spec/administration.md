@@ -2,9 +2,13 @@
 
 How hyperstor is installed, administered and secured: the installer, the cluster API, `hyperstorctl`, the management service and web UI, and the identities and checks behind them. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
 
-Status: **draft.** D50–D55 were settled with the owner on 2026-10-21
+Status: **draft, partly built.** D50–D55 were settled with the owner on 2026-10-21
 ([decision-log.md](decision-log.md)); D56–D60 were made while drafting
-and are open for review. Host checks G17 and G18 are open. This
+and are open for review. Host checks G17 and G18 are open. Built so far
+(implementation-notes.md I41–I47): the cluster API on the map service
+without TLS or identities, `hyperstorctl` (status, nodes, pools, PGs,
+devices out and in, an I/O test), and `hyperstor-install` with host
+checks and the all-in-one trial cluster. This
 section refines operations.md §16, §18 and §19, which point here.
 
 ## 23. Administration

@@ -12,6 +12,11 @@ hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 hyperstor-rpc = { path = "../hyperstor-rpc" }
+# The cluster API (spec/administration.md §23.5), on its own thread.
+hyperstor-api = { path = "../hyperstor-api", features = ["server"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "server"] }
+buffa = { version = "=0.9.2", features = ["json"] }
+tokio = { version = "1", features = ["rt", "net"] }
 
 [lints]
 workspace = true

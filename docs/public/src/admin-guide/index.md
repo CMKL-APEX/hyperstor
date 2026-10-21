@@ -13,14 +13,16 @@ The cluster is described by one text file, the
 start.
 
 > **Security.** Hyperstor has no authentication and no encryption yet
-> (mutual TLS is planned). Anyone who can reach the map service or a
-> storage node's ports can read and overwrite every volume. Run clusters
+> (mutual TLS is planned). Anyone who can reach the map service, the
+> cluster API or a storage node's ports can read and overwrite every
+> volume, and change the cluster map. Run clusters
 > only on an isolated network that untrusted hosts cannot reach, and
 > keep test data only.
 
 | Page | Covers |
 |---|---|
-| [Installation](installation.md) | Requirements and building the binaries |
+| [Installation](installation.md) | Requirements, building, and installing with `hyperstor-install` |
+| [Managing a cluster](managing.md) | Health, taking devices out and in, testing I/O with `hyperstorctl` |
 | [Planning a cluster](planning.md) | Nodes, devices, failure domains, pools and PG counts |
 | [The map service](map-service.md) | Running `hyperstor-meta`, leases and failure detection |
 | [Storage nodes](storage-nodes.md) | Running `hyperstord`, devices, CPUs, restarts |

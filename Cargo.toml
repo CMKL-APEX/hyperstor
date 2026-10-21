@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/hyperstor-api",
     "crates/hyperstor-client",
     "crates/hyperstor-codec",
     "crates/hyperstor-ctl",
