@@ -20,6 +20,7 @@
 - [Internal protocol and transports](protocol.md)
 - [S3 gateway](s3.md)
 - [Management, deployment and security](operations.md)
+- [Administration](administration.md)
 - [glidex integration](glidex.md)
 - [Milestones and host checks](milestones.md)
 - [Filesystem](filesystem.md)

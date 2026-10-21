@@ -27,6 +27,11 @@ covered by tests that run on every change.
 | HS12: S3 gateway | Planned |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
+| AD0: Administration API, identities and CLI | Planned |
+| AD1: Installer and cluster join | Planned |
+| AD2: Management service and read-only web UI | Planned |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | Planned |
+| AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
 

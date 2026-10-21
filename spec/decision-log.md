@@ -345,3 +345,22 @@ point 13 with a target of about 1 s (D48), and point 16 as recommended
 Not measurable yet: G14 (sandbox clones and rollback need snapshots and
 clones, volumes.md §10.3) and G15 (needs the Bε-tree).
 
+
+## Administration (2026-10-21)
+
+The installer, API, CLI, UI and security of the control plane
+(administration.md §23). Proposed in conversation with options and a
+recommendation each; the owner's answers:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 17 | Where people are authenticated: a separate stateless `hyperstor-mgmt`, or inside the meta members | Separate `hyperstor-mgmt`; meta stays machine-only | D50 |
+| 18 | API stack: `connectrpc` (glidex's) or `tonic` | `connectrpc` | D51 |
+| 19 | glidex's session, token and Cedar code: extract a shared crate or copy it | Extract (`glidex-auth`) | D52 |
+| 20 | CA: an offline root with an online intermediate, or one online CA | Root and intermediate, to simplify rotation and administration | D53 |
+| 21 | Deletes: a trash with a grace period, or immediate | Trash | D54 |
+| 22 | Offer a CLI as well as the UI | Yes, generated from the protos, with break-glass on a local socket | D55 |
+
+Made while drafting and open for review: D56–D60 (certificate lifetimes
+and revocation, join tokens, keeping the control path off reactors,
+ports, a separate root under glidex). Host checks G17 and G18.

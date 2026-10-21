@@ -22,7 +22,7 @@ documents cite them by number.
 |---|---|---|
 | [overview.md](overview.md) | §1, §3 | Scope (in, later, out), processes and ports |
 | [workloads.md](workloads.md) | (own) | The target workloads (agent VMs, inference, agent memory, fine-tuning, RAG) and what each implies; proposed pool semantics and index flavours |
-| [decisions.md](decisions.md) | §2 | Every design decision with its why; D20–D37 still open to review |
+| [decisions.md](decisions.md) | §2 | Every design decision with its why; D20–D37 and D56–D60 still open to review |
 | [metadata.md](metadata.md) | §4, §9 | What goes through Raft and what doesn't; `.meta` header objects; volume leases, delegates and the blocklist |
 | [placement.md](placement.md) | §5 | Chunk-to-PG hashing, weighted rendezvous over failure domains, rebalancing, EC shard positions |
 | [engine.md](engine.md) | §6, §7 | Reactors, device back ends, the on-device format, write atomicity and deferral, checkpoints, the transactional key–value store |
@@ -33,6 +33,7 @@ documents cite them by number.
 | [protocol.md](protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
 | [s3.md](s3.md) | §14 | The S3 gateway and S3 over RDMA |
 | [operations.md](operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
+| [administration.md](administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
 | [glidex.md](glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
 | [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS14 and host checks G1–G12 |
 | [filesystem.md](filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |

@@ -4,6 +4,9 @@ The management API and CLI, crates and units, roles and resources, upgrades, and
 
 ## 16. Management API and CLI
 
+administration.md §23 details the API (§23.5), the CLI (§23.6), the
+management service and UI (§23.7), and people's access (§23.9).
+
 - **gRPC** `hyperstor.v1` on port 8850, served by every
   `hyperstor-meta` member (metadata.md §4.2):
   - `ClusterService`: status, nodes, devices, health;
@@ -56,7 +59,8 @@ The management API and CLI, crates and units, roles and resources, upgrades, and
 ### 18.2 Units and privileges
 
 - Units: `hyperstor-meta.service`, `hyperstord.service`,
-  `hyperstor-vhost.service`, `hyperstor-gw.service`. All run as the
+  `hyperstor-vhost.service`, `hyperstor-gw.service`, and
+  `hyperstor-mgmt.service` when standalone (administration.md §23.4). All run as the
   `hyperstor` user.
 - `glidex-stord` (root) hands over devices, as on the netd pattern:
   - sets ownership of the NVMe generic character devices, the block
@@ -95,8 +99,9 @@ The management API and CLI, crates and units, roles and resources, upgrades, and
 
 ## 19. Security
 
-- mTLS everywhere on TCP, against a cluster CA issued by glidex-tls (or
-  by `hyperstorctl cluster init` when standalone). Encryption on
+- mTLS everywhere on TCP, against hyperstor's own two-level CA, created
+  by `hyperstorctl cluster init` in both modes (D53, D60;
+  administration.md §23.8). Encryption on
   untrusted networks per D25.
 - RDMA queue pairs are reliable-connected and are set up only over an
   authenticated TCP session. Only storage nodes start RDMA reads and

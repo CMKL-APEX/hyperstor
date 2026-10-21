@@ -2,9 +2,9 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19 and D38–D49 were settled with the
-owner; D20–D37 were made while drafting and are open to review. Host
-checks G1–G12 (milestones.md §22) are still open. What is built, and the
+[decisions.md](decisions.md): D1–D19 and D38–D55 were settled with the
+owner; D20–D37 and D56–D60 were made while drafting and are open to
+review. Host checks G1–G18 (milestones.md §22) are still open. What is built, and the
 decision points still open, are in
 [implementation-notes.md](implementation-notes.md) and
 [decision-log.md](decision-log.md).
@@ -113,11 +113,13 @@ D7`) refer to those documents.
  └───────────────────────────────────────────────────────────────┘
                  ▲ management API (gRPC, mTLS)
           glidex control plane (datastore driver, glidex.md §17) · hyperstorctl
+          · hyperstor-mgmt (standalone UI and people, administration.md §23)
 ```
 
 | Process | Runs on | Role |
 |---|---|---|
-| `hyperstor-meta` | 3 or 5 nodes; glidex server hosts by default | Cluster map, PG table, blocklist (metadata.md §4.1); the management API (operations.md §16) |
+| `hyperstor-meta` | 3 or 5 nodes; glidex server hosts by default | Cluster map, PG table, blocklist (metadata.md §4.1); the cluster API (operations.md §16, administration.md §23.5) |
+| `hyperstor-mgmt` | standalone only; any nodes | Web UI, people's authentication and authorization, audit (administration.md §23.7, D50) |
 | `hyperstord` | storage nodes | PG primary and replica roles; local engines (engine.md §6–replication.md §8) |
 | `hyperstor-vhost` | compute nodes | vhost-user-blk for local VMs (frontends.md §11.1) |
 | `hyperstor-gw` | storage nodes, or nodes chosen as gateways | NVMe-oF target (frontends.md §11.2) |
@@ -134,7 +136,9 @@ the request splitting and retry logic (volumes.md §10.1).
 
 | Port | Protocol | Between |
 |---|---|---|
-| 8850/tcp | gRPC over mTLS | management API and map watch: clients, daemons, glidex → any `hyperstor-meta` member |
+| 8850/tcp | gRPC over mTLS (connectrpc, D51), management network | cluster API and map watch: clients, daemons, glidex, `hyperstor-mgmt` → any `hyperstor-meta` member |
+| 8852/tcp | HTTPS | browsers and `hyperstorctl` → `hyperstor-mgmt` (D59) |
+| 8853/tcp | HTTPS, mTLS, management network | metrics and health, on each daemon (D58, D59) |
 | 8851/tcp | Raft over mTLS | `hyperstor-meta` members |
 | one port per reactor, recorded per device in the map (D39) | D5 protocol (TCP, and RDMA connection setup) | clients ↔ storage nodes, storage ↔ storage |
 | 4420/tcp | NVMe/TCP and NVMe/RDMA (rdma-cm port) | hosts → `hyperstor-gw` |

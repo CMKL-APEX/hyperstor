@@ -44,6 +44,11 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
   all on hyperstor (metadata.md §9).
 - **security.md:** hyperstor's identities and networks.
 - **architecture.md:** hyperstor's processes.
+- **New crate `glidex-auth`:** sessions, tokens, PAM through
+  `glidex-authd`, and Cedar, extracted for hyperstor-mgmt (D52); and the
+  UI's shared components.
+- **web-ui.md, security.md §7.3:** a Storage section and a
+  `storage-admin` role (administration.md §23.7, AD4).
 - **tenancy.md, credentials.md:** S3 access keys per project, and
   Cedar actions for buckets and objects (s3.md §14.2).
 - **hypervisors.md:** a vhost-user-fs device for VMs mounting the

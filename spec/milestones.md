@@ -24,6 +24,11 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS12 | The S3 gateway over HTTP (s3.md §14.1, s3.md §14.2), with glidex access keys and Cedar. | HS7, HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |
 | HS14+ | The distributed filesystem, per filesystem.md. | HS11, HS13 |
+| AD0 | Administration foundation (administration.md §23.11): `hyperstor.v1` on connectrpc with `buf` checks (D51), leaf identities and the two-level CA (D53, D56), `hyperstorctl` generated from the protos with the local socket (D55). | HS1 |
+| AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
+| AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
+| AD3 | UI and CLI writes, Cedar roles, step-up, trash (D54), audit, operations. | AD2 |
+| AD4 | glidex's Storage section and `storage-admin` role (a glidex change). | AD3, HS3 |
 | — | A libfabric transport, when a site has UET, EFA or Slingshot NICs with production drivers (D30). Queued, no milestone yet. | HS6 |
 
 ## 22. Questions
@@ -99,3 +104,13 @@ sections that depend on them are final:
   count false down-markings and missed lease renewals at a 0.6 s lease
   and 0.8 s timeout, with and without peer reports, to confirm the
   defaults or lengthen them.
+- **G17. Admin load doesn't move I/O latency** (D58, administration.md
+  §23.3). With reactors at QD1 and QD32, run 1000 API reads/s, a 1 s
+  metrics scrape and 50 UI watchers against the node; p99 latency
+  should stay within 5% of an idle control path. If not, the control
+  threads need cores of their own or a lower scheduling priority.
+- **G18. Sealing the intermediate key** (D53, administration.md §23.8).
+  Do `systemd-creds encrypt --with-key=tpm2` and its host-key fallback
+  work on the target distributions (systemd version, with and without a
+  TPM), and does a reinstalled host fail closed rather than start
+  without the key?
