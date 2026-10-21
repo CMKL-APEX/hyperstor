@@ -986,6 +986,60 @@ fn failover_suite() {
     }
 }
 
+/// Recovery time against log length: a 1 GiB log on a memory device is
+/// filled with redirect-on-write records (checkpoints held off), then the
+/// shard is dropped without a clean stop and opened again. Data for the
+/// log-size side of decision-log.md point 11.
+fn replay_suite() {
+    println!(
+        "| Log replayed | records | writes replayed | open (recovery) ms | writes per second of replay |"
+    );
+    println!("|---|---|---|---|---|");
+    for fill_mib in [64u64, 256, 700] {
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(3 << 30));
+        format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                cluster_id: 1,
+                shards: 1,
+                log_blocks: Some(262_144),
+            },
+        )
+        .unwrap();
+        let mut sh = open(&dev).unwrap().1.pop().unwrap();
+        sh.set_defer_max(0);
+        let objects = 64u64;
+        fill(&mut sh, objects);
+        // A 1-byte slice budget keeps the checkpoint from progressing
+        // until it would be forced at three quarters of the log.
+        sh.set_checkpoint_slice(1);
+        let mut rng = SmallRng::seed_from_u64(3);
+        let start = sh.stats();
+        let mut writes = 0u64;
+        while (sh.stats().log_blocks_written - start.log_blocks_written) * (BLOCK as u64)
+            < fill_mib << 20
+        {
+            overwrite(&mut sh, &mut rng, objects, 32 * 64);
+            writes += 32 * 64;
+        }
+        let st = sh.stats();
+        assert_eq!(st.checkpoint_forced, 0);
+        let replayed = st.log_used_blocks * BLOCK as u64;
+        let records = st.records - start.records;
+        drop(sh);
+        let t = Instant::now();
+        let sh = open(&dev).unwrap().1.pop().unwrap();
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        drop(sh);
+        println!(
+            "| {:.0} MiB | {records} | {writes} | {ms:.0} | {:.0} |",
+            replayed as f64 / (1 << 20) as f64,
+            writes as f64 / (ms / 1e3)
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let secs: f64 = std::env::var("HS_BENCH_SECS")
@@ -1061,6 +1115,9 @@ fn main() {
         Some("decisions") => {
             // hyperstor-bench decisions <scratch dir with 6 GiB free>
             decisions_suite(Path::new(args.get(2).expect("scratch directory")), secs);
+        }
+        Some("replay") => {
+            replay_suite();
         }
         Some("failover") => {
             failover_suite();

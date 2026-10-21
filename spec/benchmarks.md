@@ -249,3 +249,152 @@ for the sequential case is mostly write buffers the allocator keeps.
    pauses for seconds per TiB. The capacity each checkpoint approach
    allows, and the dense block map that bounds fragmentation, are in
    decision-log.md, point 5.
+
+## 2026-10-21: dense maps, fuzzy checkpoints, decision data (dev-1)
+
+Collected with `scripts/collect-decision-data.sh decisions cluster` (raw
+output and host record under `target/decision-data/`, not committed),
+plus `hyperstor-bench redb` and `hyperstor-bench failover`, with
+`HS_BENCH_SECS=5`. The engine runs in buffered files on dev-1's disk for
+the aging and pause tables, and in memory for the latency A/B.
+
+### Index aging under random 4 KiB overwrites
+
+1 GiB of 4 MiB chunks written sequentially, then overwritten at random,
+redirect-on-write (D38); a checkpoint after each step. "Block maps" is
+the estimated memory of the maps (calibrated, I35).
+
+| Dense maps | overwrites | runs | dense chunks | block maps MiB | process growth MiB | checkpoint MiB | block maps GiB per TiB |
+|---|---|---|---|---|---|---|---|
+| off | 0 | 256 | 0 | 1.0 | 8.5 | 1.0 | 1.0 |
+| off | 0.05× | 25,137 | 0 | 4.1 | 10.6 | 1.5 | 4.1 |
+| off | 0.25× | 103,214 | 0 | 13.6 | 20.8 | 3.0 | 13.6 |
+| off | 1× | 226,755 | 0 | 28.7 | 34.9 | 5.3 | 28.7 |
+| off | 3× | 261,501 | 0 | 32.9 | 40.3 | 6.0 | 32.9 |
+| on | 0 | 256 | 0 | 1.0 | — | 1.0 | 1.0 |
+| on | 0.05× | 25,137 | 256 | 2.0 | — | 2.0 | 2.0 |
+| on | 0.25× | 103,214 | 256 | 2.0 | — | 2.0 | 2.0 |
+| on | 1× | 226,755 | 256 | 2.0 | — | 2.0 | 2.0 |
+| on | 3× | 261,500 | 256 | 2.0 | — | 2.0 | 2.0 |
+
+(Process growth isn't meaningful for the second run in the same process:
+the allocator reuses the first run's memory.)
+
+4 KiB reads from the page cache, aged index: 364k/s (p50 2.6 µs) with run
+maps, 441k/s (p50 2.2 µs) with dense maps.
+
+### Commit latency while checkpoints run
+
+Memory device, 2 GiB aged once (dense maps), 16 MiB log so checkpoints
+recur, batches of 32 random 4 KiB overwrites for 5 s.
+
+| Checkpoint | commits | checkpoints | slices | p50 µs | p99 µs | p99.9 µs | max µs | metadata bytes per write |
+|---|---|---|---|---|---|---|---|---|
+| whole (one round) | 66,545 | 65 | 65 | 69 | 79 | 132 | 3,629 | 257 |
+| fuzzy, 1 MiB slices | 66,585 | 65 | 325 | 69 | 88 | 644 | 744 | 257 |
+| fuzzy, 256 KiB slices | 67,279 | 66 | 1,056 | 68 | 212 | 230 | 262 | 258 |
+| fuzzy, 64 KiB slices | 66,204 | 65 | 4,160 | 70 | 109 | 119 | 776* | 258 |
+
+\* A single outlier in this run; the previous run's 64 KiB maximum was
+145 µs. 64 KiB is now the default (I33).
+
+### Whole-checkpoint pause against data size (buffered file)
+
+| Data | state | dense maps | checkpoint MiB | pause ms |
+|---|---|---|---|---|
+| 1 GiB | sequential | off | 1.0 | 2 |
+| 1 GiB | aged 1× | off | 5.3 | 16 |
+| 1 GiB | aged 1× | on | 2.0 | 4 |
+| 4 GiB | sequential | on | 4.1 | 23 |
+| 4 GiB | aged 1× | off | 21.4 | 269 |
+| 4 GiB | aged 1× | on | 8.1 | 14 |
+
+Pauses on the shared drive vary by up to 10× between runs (flushes); the
+sizes are exact.
+
+### G13 baseline: a copy-on-write B+tree for the index's updates
+
+`hyperstor-bench redb`: redb 3, a block-map table with 524,288 entries
+(2 GiB of data's worth), random updates in transactions of 1 or 32, each
+made durable; the engine on the same disk with the same pattern, where
+every update is also a 4 KiB data write.
+
+| Store | updates per commit | commits/s | updates/s | p50 µs | p99 µs | metadata bytes written per update |
+|---|---|---|---|---|---|---|
+| redb, fsync per commit | 1 | 4,126 | 4,126 | 218 | 342 | 24,896 |
+| redb, fsync per commit | 32 | 1,294 | 41,395 | 740 | 1,117 | 7,833 |
+| engine (log + fuzzy checkpoint), with the data | 1 | 2,263 | 2,263 | 427 | 663 | 4,096 |
+| engine (log + fuzzy checkpoint), with the data | 32 | 530 | 16,963 | 1,843 | 2,816 | 128 |
+
+The engine's batch-1 figure is one whole log block per commit (records
+are padded to 4 KiB); at batch 32 the log costs 128 bytes per update,
+257 with checkpoints included (table above).
+
+### Failover stall
+
+`hyperstor-bench failover`: four nodes, one reactor each, memory devices;
+a client writes one volume continuously; the node holding its chunk 0's
+primary is stopped; the stall is from the stop to the first successful
+write. Three runs per setting.
+
+| Map lease | liveness timeout | stall p50 ms | stall max ms |
+|---|---|---|---|
+| 2,000 ms (default) | 3,000 ms (default) | 3,115 | 3,128 |
+| 500 ms | 700 ms | 783 | 785 |
+
+### Recovery time against log length
+
+`hyperstor-bench replay`: a 1 GiB log on a memory device filled with
+redirect-on-write records (64 writes per record, checkpoints held off),
+the shard dropped without a clean stop, then opened again. Opening
+includes loading the checkpoint, replaying, and the new checkpoint every
+open writes.
+
+| Log replayed | records | writes replayed | recovery ms | writes replayed per second |
+|---|---|---|---|---|
+| 64 MiB | 8,192 | 524,288 | 294 | 1.78 M |
+| 256 MiB | 32,768 | 2,097,152 | 998 | 2.10 M |
+| 700 MiB | 89,600 | 5,734,400 | 2,591 | 2.21 M |
+
+About 270 MiB of log per second on one core, so recovery time grows with
+the log: up to about 3 s for a 1 GiB log, about 11 s for 4 GiB (three
+quarters replayed at most; shards recover in parallel, one per reactor).
+On a device, reading the log adds little at NVMe speeds.
+
+### End to end, before and after a regression fix
+
+`hyperstor-bench cluster mem 1`, replicated writes at size 3. With dense
+maps, `stats()` walked every block map, and the daemon called it after
+every commit (fixed: `index_stats()` is separate, I37).
+
+| Build | Deferral | 4 KiB writes QD1 p50 µs | 4 KiB writes QD32 ops/s | QD32 p99 µs |
+|---|---|---|---|---|
+| before the fix | off (D38) | 353 | 8,733 | 7,823 |
+| after the fix | off (D38) | 101 | 37,765 | 2,065 |
+| after the fix | on (64 KiB) | 100 | 31,714 | 5,409 |
+
+### Findings
+
+1. **Dense maps cap the index at 2 GiB per TiB**, against 33 GiB
+   estimated (40 GiB of process growth) without them; reads are slightly
+   faster. **Every chunk went dense after 5% random overwrites**, so dense
+   is the steady state for VM disks.
+2. **Fuzzy checkpoints remove the pause:** with 64 KiB slices the worst
+   commit is 0.15–0.8 ms against 3.6 ms, at no cost in throughput.
+3. **A copy-on-write B+tree committed per transaction writes 30–100× more
+   metadata** (7.8–25 KB per update) than the log plus checkpoint
+   (128–258 bytes). The B+tree of D43 must keep the log as its write-ahead
+   log and commit only at checkpoints.
+4. **Failover takes about the liveness timeout plus 0.1 s.** With peer
+   reports (D40) detection gets faster, but the map service still waits
+   out the dead node's lease, so the floor is about 1.25 leases: the lease
+   length is the main lever (0.78 s with a 0.5 s lease).
+5. **D38 holds end to end:** with redirect-on-write, replicated writes
+   reach 19% more throughput than with deferral, with 2.6× lower p99.
+6. **Whole-index checkpoints get expensive for large shards even when
+   fuzzy:** at 2 GiB of checkpoint per TiB, a 4 TiB shard taking 50k
+   writes per second would rewrite its 8 GiB index about every 10 s
+   (checkpoints start every 64 MiB of log at 128 bytes per write), about
+   800 MB/s of background writes. Paged checkpoints, or a much larger log,
+   are needed before shards get that big (decision-log.md).
+
