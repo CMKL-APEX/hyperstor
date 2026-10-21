@@ -16,14 +16,16 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D70 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D74 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
   rule, F1–F12 in detail, I1–I61, and every host check (G1–G20,
   FG1–FG2).
 - **Next:** Raft for the map service (the rest of HS1; with D48's 0.6 s
-  leases one map service is a whole-cluster single point of failure;
-  needs `glidex-raftstore`, D20); the rest of HS2 (blocklist and forced
+  leases one map service is a whole-cluster single point of failure):
+  first a glidex pull request extracting `glidex-raftstore` with the
+  write-set store, then hyperstor pins it, Raft on meta's tokio thread
+  (D20, D71; decision-log.md points 30–32); the rest of HS2 (blocklist and forced
   takeovers, read leases; the PG log only
   if I57's digest scan proves too slow); the copy-on-write B+tree with
   snapshots and clones (D43, D44, HS4, which also gives D47's paged
