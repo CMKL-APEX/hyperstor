@@ -109,6 +109,9 @@ pub enum Code {
     /// An assertion in an operation list failed.
     Conflict = 9,
     Blocklisted = 10,
+    /// The map service member isn't the leader; `detail` is the leader's
+    /// map-service address when known, else empty (decisions.md D72).
+    NotLeader = 11,
 }
 
 impl Code {
@@ -123,6 +126,7 @@ impl Code {
             8 => Code::Unavailable,
             9 => Code::Conflict,
             10 => Code::Blocklisted,
+            11 => Code::NotLeader,
             _ => Code::Invalid,
         }
     }

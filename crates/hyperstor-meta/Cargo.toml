@@ -24,6 +24,19 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 http = "1"
 tower = "0.5"
 libc.workspace = true
+# The replicated map (decisions.md D20, D71): glidex's store and Raft stack,
+# pinned to a revision of glidex (PRs #141, #143).
+glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex", rev = "a57ed85bafb6f2380b45c39642949480d894a9a5" }
+openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }
+redb = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

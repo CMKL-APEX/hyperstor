@@ -9,7 +9,7 @@ usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] 
 | Option | Default | Meaning |
 |---|---|---|
 | `--node N` | required | This node's number in the [cluster file](cluster-file.md) |
-| `--meta ADDR` | required | `IP:PORT` of the map service |
+| `--meta ADDR` | required | `IP:PORT` of the map service; with several members, all of them separated by commas (`IP:PORT,IP:PORT,…`), and the node finds the leader |
 | `--shard ADDR=PATH:SIZE_GIB` | at least one | One device: serve it on `ADDR` (as listed for this node in the cluster file, in order), store it in `PATH` (a file of `SIZE_GIB` GiB, created if needed, or a block device with size `0`). Repeat for each device |
 | `--cpus LIST` | not pinned | Comma-separated CPUs; the i-th `--shard`'s thread runs on the i-th CPU |
 | `--buffered` | off | Use the page cache instead of `O_DIRECT`, for testing |

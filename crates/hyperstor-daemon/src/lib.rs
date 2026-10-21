@@ -102,7 +102,8 @@ pub struct ShardSpec {
 
 pub struct NodeConfig {
     pub node_id: u32,
-    pub meta: SocketAddr,
+    /// The map service's members (decisions.md D72): any one will do.
+    pub meta: Vec<SocketAddr>,
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
@@ -172,7 +173,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let (tx, mut rx) = channel::<()>();
         stops.push(tx);
         let cpu = cfg.cpus.get(i).copied();
-        let (node, meta, defer) = (cfg.node_id, cfg.meta, cfg.defer_max);
+        let (node, meta, defer) = (cfg.node_id, cfg.meta.clone(), cfg.defer_max);
         let blocked = cfg.meta_blocked.clone();
         let spin = cfg.spin;
         let peer_timeout = cfg.peer_timeout;
@@ -355,7 +356,7 @@ impl ShardState {
         node: u32,
         me: u32,
         dev: Arc<dyn BlockDev>,
-        meta: SocketAddr,
+        meta: Vec<SocketAddr>,
         defer: Option<usize>,
         blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
         metrics: Arc<metrics::ShardMetrics>,
@@ -384,7 +385,7 @@ impl ShardState {
         shard.set_defer_max(defer.unwrap_or(0));
         let mut client = None;
         for _ in 0..100 {
-            match Client::connect(meta, node as u64).await {
+            match Client::connect_members(meta.clone(), node as u64).await {
                 Ok(c) => {
                     client = Some(c);
                     break;

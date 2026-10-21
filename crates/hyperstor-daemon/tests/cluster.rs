@@ -118,7 +118,7 @@ impl Cluster {
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
                     node_id: n as u32,
-                    meta: meta_addr,
+                    meta: vec![meta_addr],
                     shards: ls
                         .into_iter()
                         .enumerate()
@@ -181,7 +181,7 @@ impl Cluster {
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
             node_id: n as u32,
-            meta: self.meta_addr,
+            meta: vec![self.meta_addr],
             shards,
             cpus: Vec::new(),
             spin: std::time::Duration::ZERO,

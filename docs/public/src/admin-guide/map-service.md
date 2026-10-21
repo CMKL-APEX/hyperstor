@@ -31,17 +31,53 @@ nodes, and a node cut off from the map service has already stopped
 serving, because its lease ran out first. Shorter times detect failures
 sooner, at the cost of false alarms on a slow or busy network.
 
-## One map service
+## Several members
 
-The map service is not replicated yet (Raft is planned). Until it is:
+Run the map service as a group of **three members** (five for large
+clusters), each on its own host, so that it keeps working when one is
+down (two, with five). Each member keeps the map in a store of its own
+(`--data`), and they replicate it with Raft:
 
-- **It is a single point of failure.** While it is down, clients can't
-  connect, and storage nodes stop serving I/O once their leases run out.
-  Run it on a reliable host and restart it automatically.
-- **It keeps its state in memory only.** On restart it reads the cluster
-  file again and starts with every node up; storage nodes reconnect on
-  their own. It forgets which nodes were down and which were being
-  refilled, so **restart it only while all storage nodes are up and no
-  recovery is running** (see [Failures and recovery](failures.md)).
-- **Changes to the cluster file take effect on restart only.** Adding or
-  removing nodes and pools online is not supported yet.
+```sh
+# On each of the three hosts, with its own --id and the same --member list:
+hyperstor-meta --listen 192.0.2.10:9000 --cluster /etc/hyperstor/cluster.txt \
+  --data /var/lib/hyperstor/meta --id 1 \
+  --member 1=192.0.2.10:8851/192.0.2.10:9000 \
+  --member 2=192.0.2.11:8851/192.0.2.11:9000 \
+  --member 3=192.0.2.12:8851/192.0.2.12:9000 \
+  --api-tls /etc/hyperstor/pki
+```
+
+Give storage nodes and clients every member (`hyperstord --meta
+192.0.2.10:9000,192.0.2.11:9000,192.0.2.12:9000`). Any member serves the
+map; the **leader** also grants leases, watches heartbeats and changes the
+map, and the others send nodes to it.
+
+- **When the leader fails,** the others elect a new one within about half
+  a second. Storage nodes keep serving on their leases meanwhile and get
+  new ones from the new leader at once, so I/O pauses for about one lease
+  at most. The new leader then waits until every lease the old one gave
+  has run out before it marks any node down or moves any data.
+- **The map survives restarts,** of one member or all of them: a member
+  that comes back catches up with the others. The cluster file seeds the
+  map the first time; after that, hosts and pools you add to the file
+  (on every member) are added when a leader is next elected: restart the
+  members, one at a time.
+  Removing them goes through `hyperstorctl out` and `in`.
+- **Members talk over mutual TLS** with their `--api-tls` certificates,
+  which must name each member's address.
+
+## One member
+
+Without `--member`, the map service is one member: with `--data` it
+keeps its map across restarts, and without it, it keeps the map in memory
+only. A single member is a single point of failure:
+
+- **While it is down,** clients can't connect, and storage nodes stop
+  serving I/O once their leases run out. Run it on a reliable host and
+  restart it automatically.
+- **Without `--data`, it forgets.** On restart it reads the cluster file
+  again and starts with every node up; it forgets which nodes were down
+  and which were being refilled, so **restart it only while all storage
+  nodes are up and no recovery is running** (see
+  [Failures and recovery](failures.md)).

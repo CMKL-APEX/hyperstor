@@ -729,3 +729,31 @@ scripts/collect-decision-data.sh failover
 | 4 KiB reads, QD32 | 54465; 1326 | 53984; 1339 | 53765; 1344 | 53914; 1339 |
 | 1 MiB writes, QD4 | 519; 13372 | 523; 13034 | 523; 12683 | 524; 12783 |
 | 1 MiB reads, QD4 | 1514; 4583 | 1502; 4637 | 1517; 4214 | 1536; 4153 |
+
+## 2026-10-21: the map service's leader fails (dev-2)
+
+Question: how long does I/O stop when the map service's leader dies
+(D71–D73)? Three members on loopback, four storage nodes knowing all
+three, 400 ms leases and a 700 ms liveness timeout; Raft heartbeats
+every 50 ms and elections after 200–400 ms (I64). After the leader is
+stopped, one client writes 1 MiB chunks without pause for 3.4 s; the
+longest gap between two successful writes is the stall. Three runs:
+
+```sh
+cargo test --release -p hyperstor-daemon --test meta_group -- --nocapture
+```
+
+| Run | Longest gap between writes |
+|---|---|
+| 1 | 461 ms |
+| 2 | 460 ms |
+| 3 | 368 ms |
+
+### Findings
+
+1. **A map-service failover costs about one lease of I/O** (0.37–0.46 s
+   with 400 ms leases): storage nodes serve on until their leases run
+   out, the election takes 200–400 ms, and the new leader grants leases
+   at once (D73). At the default 600 ms lease, expect about 0.7 s.
+2. **Role changes wait 1.25 leases longer** (D73), so a storage node that
+   fails at the same moment is detected about 0.5 s later than usual.
