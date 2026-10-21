@@ -362,6 +362,7 @@ tests = [
     "manage::status_and_tables",
     "security::roles_strangers_and_plain_http",
     "security::local_socket_break_glass",
+    "hyperstor_api::tests::reasons_survive_their_encoding",
 ]
 
 [[milestone.item]]
@@ -376,6 +377,8 @@ tests = [
     "manage::out_and_in_settle",
     "manage::a_killed_node_is_reported_and_comes_back",
     "security::unreachable_api_is_status_3",
+    "hyperstor_ctl::tests::every_rpc_has_a_command",
+    "hyperstor_ctl::tests::yaml_and_times",
 ]
 
 [[milestone.item]]
@@ -395,6 +398,8 @@ tests = [
     "hyperstor_pki::tests::identity_uri_round_trip_and_rejects",
     "hyperstor_pki::tests::chain_issues_leaves_with_identities",
     "hyperstor_pki::tests::roles_that_may_administer",
+    "hyperstor_pki::tests::requests_are_signed_with_the_signers_identity",
+    "hyperstor_pki::tests::a_pinned_client_trusts_only_its_root",
 ]
 
 [[milestone]]
@@ -429,8 +434,20 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Joining hosts to a cluster with join tokens, and installing on whole devices"
-spec = ["administration.md §23.4", "D57"]
+what = "Joining storage hosts and map service members with single-use join tokens, and renewing their certificates"
+spec = ["administration.md §23.4.2", "D57"]
+status = "done"
+tests = [
+    "join::storage_hosts_join_with_tokens",
+    "join::map_service_members_join_the_first",
+    "hyperstor_meta::tests::joined_hosts_are_added_to_an_empty_map",
+    "hyperstor_meta::api::admin::tests::tokens_parse_only_in_their_form",
+    "hyperstor_map::join_tests::pools_made_before_any_host_place_their_pgs_when_hosts_join",
+]
+
+[[milestone.item]]
+what = "Installing storage hosts on whole devices"
+spec = ["administration.md §23.4", "D29"]
 status = "planned"
 
 [[milestone]]
@@ -468,6 +485,15 @@ what = "Audit of every change and every refused call to the cluster API"
 spec = ["administration.md §23.9.4"]
 status = "partial"
 tests = ["hyperstor_meta::api::tests::audit_lines_are_json_with_escapes"]
+
+[[milestone.item]]
+what = "Long operations: draining a node, with a dry run, followed to the end or cancelled"
+spec = ["administration.md §23.6"]
+status = "partial"
+tests = [
+    "operations::drains_run_as_operations",
+    "hyperstor_meta::tests::drains_move_every_pg_off_the_node",
+]
 
 [[milestone]]
 id = "AD4"

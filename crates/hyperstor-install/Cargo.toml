@@ -9,6 +9,11 @@ repository.workspace = true
 [dependencies]
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-pki = { path = "../hyperstor-pki" }
+# Joining and renewing over the cluster API (spec/administration.md §23.4.2).
+hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
+http = "1"
+tokio = { version = "1", features = ["rt", "net", "time"] }
 io-uring.workspace = true
 libc.workspace = true
 

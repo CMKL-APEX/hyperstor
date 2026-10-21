@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-const FILES: &[&str] = &["hyperstor/v1/cluster.proto"];
+const FILES: &[&str] = &["hyperstor/v1/cluster.proto", "hyperstor/v1/admin.proto"];
 
 fn main() {
     println!("cargo:rerun-if-changed=proto");

@@ -12,6 +12,8 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 time = "0.3"
 x509-parser = "0.18"
+# SHA-256 for root fingerprints; already there for rustls's provider.
+ring = "0.17"
 
 [lints]
 workspace = true

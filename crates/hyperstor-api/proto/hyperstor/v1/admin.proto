@@ -1,0 +1,199 @@
+// Joining hosts, certificates and long operations (spec/administration.md
+// §23.4.2, §23.5, §23.8), served beside ClusterService by every
+// hyperstor-meta member.
+syntax = "proto3";
+
+package hyperstor.v1;
+
+// Join tokens (decisions.md D57).
+service TokenService {
+  // Makes a single-use join token for one role. Write: admin or mgmt.
+  rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse);
+
+  // The tokens this member has made, without their secrets. Read.
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+
+  // Makes a token unusable. Write.
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+
+  // Joins a host with a token and a certificate request: the only call
+  // that needs no client certificate. A storage host is added to the map.
+  rpc Join(JoinRequest) returns (JoinResponse);
+}
+
+// Certificates (decisions.md D53, D56).
+service CaService {
+  // A new certificate for the caller's own identity and addresses, for
+  // the key in the request: renewal over the existing mutual TLS session.
+  // Any identity of the cluster.
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+}
+
+// Changes to nodes that run as operations.
+service NodeService {
+  // Takes every device of a node out, so its PGs move elsewhere, and
+  // follows them as an operation; with dry_run, only says what would move.
+  // Write.
+  rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse);
+}
+
+// Long operations (§23.6): drains for now.
+service OperationService {
+  // One operation. Read.
+  rpc GetOperation(GetOperationRequest) returns (Operation);
+
+  // Running and recent operations, newest first. Read.
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+
+  // Stops an operation and undoes what it can (a drain brings the
+  // devices back in). Write.
+  rpc CancelOperation(CancelOperationRequest) returns (Operation);
+}
+
+message CreateTokenRequest {
+  // "node" (a storage host) or "meta" (a map service member).
+  string role = 1;
+  // How long the token is valid; 0 means an hour. At most a week.
+  uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];
+}
+
+message CreateTokenResponse {
+  // Shown once: only its SHA-256 is kept.
+  string token = 1;
+  Token info = 2;
+  // Cluster API addresses a joining host may use (this member's).
+  string api_address = 3 [json_name = "api_address"];
+}
+
+message Token {
+  // The first 12 hex digits of the secret's SHA-256: names the token in
+  // lists and revocations without revealing it.
+  string id = 1;
+  string role = 2;
+  // Seconds since 1970.
+  uint64 expires_unix = 3 [json_name = "expires_unix"];
+  // Used by a join (tokens are single-use) or revoked.
+  bool used = 4;
+  bool revoked = 5;
+  // Who made it, as the audit names callers.
+  string created_by = 6 [json_name = "created_by"];
+}
+
+message ListTokensRequest {}
+
+message ListTokensResponse {
+  repeated Token tokens = 1;
+}
+
+message RevokeTokenRequest {
+  string id = 1;
+}
+
+message RevokeTokenResponse {}
+
+message JoinRequest {
+  string token = 1;
+  // PEM. Only its public key is used: the token decides the identity.
+  string csr = 2;
+  // A storage host: where each of its reactors listens, one device each.
+  repeated string addresses = 3;
+  // A storage host's rack (failure domain).
+  uint32 rack = 4;
+  // A map service member: its member number and its addresses, which its
+  // certificate names (members are listed at install; decisions.md D74).
+  uint32 member_id = 5 [json_name = "member_id"];
+  repeated string member_ips = 6 [json_name = "member_ips"];
+}
+
+message JoinResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  // The host's certificate chain (leaf, intermediate) and the root, PEM.
+  string certificate = 2;
+  string root = 3;
+  // A storage host: its node number, and the map service's addresses.
+  uint32 node = 4;
+  string map_addresses = 5 [json_name = "map_addresses"];
+  // A map service member: the intermediate CA (certificate and key), and
+  // the cluster file the group was seeded from.
+  string intermediate = 6;
+  string intermediate_key = 7 [json_name = "intermediate_key"];
+  string cluster_file = 8 [json_name = "cluster_file"];
+}
+
+message RenewCertificateRequest {
+  // PEM; a new key is fine.
+  string csr = 1;
+}
+
+message RenewCertificateResponse {
+  // Chain, leaf then intermediate, PEM.
+  string certificate = 1;
+  string root = 2;
+}
+
+message DrainNodeRequest {
+  uint32 node = 1;
+  bool dry_run = 2 [json_name = "dry_run"];
+}
+
+message DrainNodeResponse {
+  // Absent for a dry run.
+  Operation operation = 1;
+  // The PGs that move (or would), with their acting sets before and after.
+  repeated PgMove moves = 2;
+}
+
+message PgMove {
+  uint32 pool = 1;
+  uint32 pg = 2;
+  repeated uint32 before = 3;
+  repeated uint32 after = 4;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_RUNNING = 1;
+  OPERATION_STATE_DONE = 2;
+  OPERATION_STATE_FAILED = 3;
+  OPERATION_STATE_CANCELLED = 4;
+}
+
+message Operation {
+  string id = 1;
+  // "drain".
+  string kind = 2;
+  // What it acts on, as "node 3".
+  string target = 3;
+  OperationState state = 4;
+  // Steps done of total: for a drain, PGs moved of those to move.
+  uint32 done = 5;
+  uint32 total = 6;
+  string message = 7;
+  uint64 started_unix = 8 [json_name = "started_unix"];
+  // 0 while running.
+  uint64 finished_unix = 9 [json_name = "finished_unix"];
+  string created_by = 10 [json_name = "created_by"];
+}
+
+message GetOperationRequest {
+  string id = 1;
+}
+
+message ListOperationsRequest {}
+
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+}
+
+message CancelOperationRequest {
+  string id = 1;
+}
+
+// The reason an API call failed, attached to every error as a detail
+// (glidex grpc.md G-D5): `reason` is stable, for scripts; the message is
+// for people. Wire-compatible with google.rpc.ErrorInfo.
+message ErrorInfo {
+  string reason = 1;
+  string domain = 2;
+  map<string, string> metadata = 3;
+}

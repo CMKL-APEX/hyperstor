@@ -50,6 +50,33 @@ pub enum Admin {
         id: u128,
         reply: VolumeReply<()>,
     },
+    /// Adds a storage host that joined with a token (administration.md
+    /// §23.4.2): one device per address. Replies with its node number.
+    AddNode {
+        rack: u32,
+        addrs: Vec<SocketAddr>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u32, String>>,
+    },
+    /// Whether this member leads: `Ok`, or why not (with the leader's
+    /// map service address when known).
+    Leads(hyperstor_reactor::chan::OneSender<Result<(), String>>),
+    /// Takes every device of `node` out (or, with `dry_run`, only works
+    /// out what that would do). Replies with each PG that moves: pool, PG,
+    /// acting before, up after.
+    Drain {
+        node: u32,
+        dry_run: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Vec<PgMove>, String>>,
+    },
+}
+
+/// A PG a drain moves: its acting set before, where it goes after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgMove {
+    pub pool: u32,
+    pub pg: u32,
+    pub before: Vec<u32>,
+    pub after: Vec<u32>,
 }
 
 pub use hyperstor_client::volume::{Volume, VolumeState};
@@ -301,10 +328,7 @@ impl Meta {
     /// fences and publishes. Returns the working map's epoch.
     pub fn set_device_in(&self, device: u32, up_in: bool) -> Result<u64, String> {
         if !self.leads() {
-            return Err(match self.leader_hint().as_str() {
-                "" => "this map service member isn't the leader, and no leader is known".into(),
-                l => format!("this map service member isn't the leader; the leader is {l}"),
-            });
+            return Err(self.not_leader());
         }
         let mut map = self.map.borrow_mut();
         let d = map
@@ -316,6 +340,96 @@ impl Meta {
             map.recompute();
         }
         Ok(map.epoch)
+    }
+
+    fn not_leader(&self) -> String {
+        match self.leader_hint().as_str() {
+            "" => "this map service member isn't the leader, and no leader is known".into(),
+            l => format!("this map service member isn't the leader; the leader is {l}"),
+        }
+    }
+
+    /// Adds a storage host with one device per address in `addrs`, down
+    /// until its first heartbeat, so nothing is placed on it before it
+    /// runs. A host whose addresses are already a node's (installed again)
+    /// gets that node back. Returns the node number.
+    pub fn add_node(&self, rack: u32, addrs: &[SocketAddr]) -> Result<u32, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if addrs.is_empty() || addrs.len() > 64 {
+            return Err("a storage host needs 1 to 64 addresses".into());
+        }
+        let mut map = self.map.borrow_mut();
+        let mut owners: Vec<u32> = addrs
+            .iter()
+            .filter_map(|a| map.devices.values().find(|d| d.addr == *a).map(|d| d.node))
+            .collect();
+        owners.dedup();
+        match owners.as_slice() {
+            [] => {}
+            [n] if map.devices.values().filter(|d| d.node == *n).count() == addrs.len()
+                && map
+                    .devices
+                    .values()
+                    .filter(|d| d.node == *n)
+                    .all(|d| addrs.get(d.shard as usize) == Some(&d.addr)) =>
+            {
+                return Ok(*n);
+            }
+            _ => {
+                return Err(format!(
+                    "addresses already in use by node(s) {owners:?} with other addresses"
+                ));
+            }
+        }
+        let id = map.nodes.keys().next_back().map_or(0, |n| n + 1);
+        map.add_node(id, addrs, rack);
+        if let Some(n) = map.nodes.get_mut(&id) {
+            n.up = false;
+        }
+        map.grow_meta_pool();
+        map.recompute();
+        Ok(id)
+    }
+
+    /// Takes every device of `node` out of placement, as `set_device_in`
+    /// does for one, and returns the PGs that move; with `dry_run` changes
+    /// nothing and returns what would.
+    pub fn drain(&self, node: u32, dry_run: bool) -> Result<Vec<PgMove>, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        if !map.nodes.contains_key(&node) {
+            return Err(format!("no node {node}"));
+        }
+        let mut after = map.clone();
+        let mut changed = false;
+        for d in after.devices.values_mut().filter(|d| d.node == node) {
+            changed |= d.up_in;
+            d.up_in = false;
+        }
+        if changed {
+            after.recompute();
+        }
+        let moves = map
+            .pgs
+            .iter()
+            .filter_map(|(k, before)| {
+                let a = &after.pgs.get(k)?.up;
+                (*a != before.acting).then(|| PgMove {
+                    pool: k.0,
+                    pg: k.1,
+                    before: before.acting.clone(),
+                    after: a.clone(),
+                })
+            })
+            .collect();
+        if !dry_run && changed {
+            *map = after;
+        }
+        Ok(moves)
     }
 
     /// Answers the cluster API's requests (`api`), which arrive from its
@@ -388,6 +502,23 @@ impl Meta {
                         };
                         let _ = reply.send(r.await);
                     });
+                }
+                Admin::Leads(reply) => {
+                    let _ = reply.send(if self.leads() {
+                        Ok(())
+                    } else {
+                        Err(self.not_leader())
+                    });
+                }
+                Admin::AddNode { rack, addrs, reply } => {
+                    let _ = reply.send(self.add_node(rack, &addrs));
+                }
+                Admin::Drain {
+                    node,
+                    dry_run,
+                    reply,
+                } => {
+                    let _ = reply.send(self.drain(node, dry_run));
                 }
                 Admin::DeleteVolume { id, reply } => {
                     let c = connect(client.clone());
@@ -740,6 +871,71 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
 mod tests {
     use super::*;
     use hyperstor_placement::Domain;
+
+    /// Hosts that join (administration.md §23.4.2) are added down, get the
+    /// next node number, grow `.meta`, and get their node back when they
+    /// join again with the same addresses.
+    #[test]
+    fn joined_hosts_are_added_to_an_empty_map() {
+        let m = parse_cluster("cluster 3\npool 1 vol replicated size 3 min 2 pgs 16 domain host\n")
+            .unwrap();
+        assert!(m.nodes.is_empty());
+        let meta = Meta::new(m);
+        let addr = |p: u16| -> SocketAddr { format!("127.0.0.1:{p}").parse().unwrap() };
+        assert_eq!(meta.add_node(0, &[addr(9000), addr(9001)]), Ok(0));
+        assert_eq!(meta.add_node(1, &[addr(9100)]), Ok(1));
+        assert_eq!(meta.add_node(0, &[addr(9200)]), Ok(2));
+        let map = meta.map.borrow().clone();
+        assert_eq!(map.devices.len(), 4);
+        assert_eq!(
+            (map.nodes[&0].up, map.nodes[&1].rack),
+            (false, 1),
+            "down until it beats"
+        );
+        assert_eq!(map.pools[&META_POOL].size, 3, ".meta grows to three copies");
+        assert_eq!(map.pools[&META_POOL].min_size, 2);
+        // Installed again: the same node; other addresses: refused.
+        assert_eq!(meta.add_node(0, &[addr(9100)]), Ok(1));
+        assert!(meta.add_node(0, &[addr(9100), addr(9300)]).is_err());
+        assert!(meta.add_node(0, &[]).is_err());
+        let epoch = meta.map.borrow().epoch;
+        assert_eq!(meta.add_node(0, &[addr(9100)]), Ok(1));
+        assert_eq!(meta.map.borrow().epoch, epoch, "nothing changed");
+    }
+
+    /// A drain's dry run changes nothing and says what a drain moves; the
+    /// drain takes every device of the node out.
+    #[test]
+    fn drains_move_every_pg_off_the_node() {
+        let meta = Meta::new(map());
+        let before = meta.map.borrow().clone();
+        let dry = meta.drain(3, true).unwrap();
+        assert!(!dry.is_empty());
+        assert_eq!(*meta.map.borrow(), before, "a dry run changes nothing");
+        // Every PG with a device of node 3 in its acting set moves, and
+        // none of them goes back to it.
+        let on3 = |v: &[u32]| v.iter().any(|d| *d / 1000 == 3);
+        for (k, pg) in &before.pgs {
+            assert_eq!(
+                on3(&pg.acting),
+                dry.iter().any(|m| (m.pool, m.pg) == *k),
+                "{k:?}"
+            );
+        }
+        assert!(dry.iter().all(|m| !on3(&m.after)));
+        let moves = meta.drain(3, false).unwrap();
+        assert_eq!(moves, dry, "the drain does what the dry run said");
+        let after = meta.map.borrow().clone();
+        assert!(
+            after
+                .devices
+                .values()
+                .filter(|d| d.node == 3)
+                .all(|d| !d.up_in)
+        );
+        assert!(after.pgs.values().all(|pg| !on3(&pg.up)));
+        assert!(meta.drain(9, true).is_err(), "no node 9");
+    }
 
     fn map() -> ClusterMap {
         let mut m = ClusterMap::new(7);

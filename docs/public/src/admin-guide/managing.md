@@ -70,6 +70,26 @@ each PG keeps at least the pool's `min` copies.
 > so after a restart every device is in again. Bring devices back in
 > before restarting it, or expect their PGs to move back.
 
+## Draining a node
+
+`hyperstorctl drain --node N` takes every device of node N out and
+follows its PGs as an operation, until none lives on the node and none
+is still moving: then the node can be switched off or serviced.
+
+```sh
+hyperstorctl drain --node 3 --dry-run   # what would move; nothing changes
+hyperstorctl drain --node 3 --wait 600  # drain and follow it to the end
+hyperstorctl op list                    # running and recent operations
+hyperstorctl op watch --id ID           # follow one
+hyperstorctl op cancel --id ID          # stop; the devices come back in
+hyperstorctl in --node 3                # after the service
+```
+
+`drain` prints each PG that moves, with its acting set before and where
+it goes. Operations are kept in the map service's memory, the last 100;
+`op watch` exits with status 1 if the operation failed or was
+cancelled, for scripts.
+
 ## Testing I/O
 
 ```sh

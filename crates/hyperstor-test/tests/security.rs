@@ -10,12 +10,17 @@ fn roles_strangers_and_plain_http() {
     let c = Cluster::all_in_one("roles", 3);
     let node = c.identity(Role::Node, "node7", false);
     c.ctl_via(Via::Tls(&node), &["status"]).ok();
+    // Refusals exit 4, with the API's reason.
     let r = c
         .ctl_via(Via::Tls(&node), &["out", "--device", "0"])
-        .expect(1);
-    assert!(r.has("may not change the cluster"), "{}", r.out);
+        .expect(4);
+    assert!(
+        r.has("may not change the cluster (permission_denied)"),
+        "{}",
+        r.out
+    );
     let host = c.identity(Role::Host, "host1", false);
-    let r = c.ctl_via(Via::Tls(&host), &["status"]).expect(1);
+    let r = c.ctl_via(Via::Tls(&host), &["status"]).expect(4);
     assert!(r.has("may not read"), "{}", r.out);
     let mgmt = c.identity(Role::Mgmt, "mgmt1", false);
     c.ctl_via(Via::Tls(&mgmt), &["in", "--device", "0"]).ok();
