@@ -57,7 +57,7 @@ covered by tests that run on every change.
 | Cluster map and map service, configured from a cluster file | Done |
 | Storage daemon: replicated writes and reads, group commit | Done |
 | Client library: request splitting, map refresh and retries | Done |
-| Replicated map service (Raft) | Planned |
+| Replicated map service (Raft) | In progress |
 | Volume metadata: headers, directories and volume leases | Planned |
 | Test block devices through ublk | Planned |
 

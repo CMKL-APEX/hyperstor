@@ -40,8 +40,14 @@ fn main() {
     let node: u32 = get("--node")
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| usage());
-    let meta = get("--meta")
-        .and_then(|s| s.parse().ok())
+    // One map service member, or several separated by commas (D72).
+    let meta: Vec<std::net::SocketAddr> = get("--meta")
+        .map(|s| {
+            s.split(',')
+                .map(|a| a.parse().unwrap_or_else(|_| usage()))
+                .collect()
+        })
+        .filter(|v: &Vec<_>| !v.is_empty())
         .unwrap_or_else(|| usage());
     let direct = !args.iter().any(|a| a == "--buffered");
     let cpus: Vec<usize> = get("--cpus")
@@ -81,8 +87,12 @@ fn main() {
         })
     });
     eprintln!(
-        "hyperstord: node {node}, {} shard(s), map service {meta}",
-        shards.len()
+        "hyperstord: node {node}, {} shard(s), map service {}",
+        shards.len(),
+        meta.iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
     let h = start(NodeConfig {
         node_id: node,

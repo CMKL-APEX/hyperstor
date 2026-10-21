@@ -37,7 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]";
 
 const BINARIES: [&str; 4] = [
     "hyperstor-meta",
@@ -66,6 +66,11 @@ struct Settings {
     node: Option<u32>,
     /// The map service's address, `IP:PORT`, for a cluster file install.
     map: String,
+    /// The map service's members, `N=RAFT_ADDR/MAP_ADDR` separated by
+    /// commas, when it runs as a group (decisions.md D72–D74); empty: one.
+    members: String,
+    /// This host's member number, for a `meta` role in a group.
+    member_id: Option<u32>,
     nodes: u32,
     size_gib: u64,
     data_dir: String,
@@ -83,6 +88,8 @@ impl Settings {
             role: String::new(),
             node: None,
             map: String::new(),
+            members: String::new(),
+            member_id: None,
             nodes: 3,
             size_gib: 4,
             data_dir: "/var/lib/hyperstor".into(),
@@ -106,6 +113,8 @@ impl Settings {
                 "role" => self.role = v.to_string(),
                 "node" => self.node = v.parse().ok(),
                 "map" => self.map = v.to_string(),
+                "members" => self.members = v.to_string(),
+                "member_id" => self.member_id = v.parse().ok(),
                 "nodes" => self.nodes = v.parse().unwrap_or(self.nodes),
                 "size_gib" => self.size_gib = v.parse().unwrap_or(self.size_gib),
                 "data_dir" => self.data_dir = v.to_string(),
@@ -122,11 +131,13 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
             self.all_in_one,
             self.role,
             self.node.map(|n| n.to_string()).unwrap_or_default(),
             self.map,
+            self.members,
+            self.member_id.map(|n| n.to_string()).unwrap_or_default(),
             self.nodes,
             self.size_gib,
             self.data_dir,
@@ -176,6 +187,8 @@ fn main() {
             "--role" => "role",
             "--node" => "node",
             "--map" => "map",
+            "--members" => "members",
+            "--member-id" => "member_id",
             "--nodes" => "nodes",
             "--size-gib" => "size_gib",
             "--data-dir" => "data_dir",
@@ -196,6 +209,8 @@ fn main() {
             "role" => matches!(v.as_str(), "meta" | "storage" | "both"),
             "node" => v.parse::<u32>().is_ok(),
             "map" => v.parse::<std::net::SocketAddr>().is_ok(),
+            "members" => parse_members(&v).is_ok(),
+            "member_id" => v.parse::<u32>().is_ok(),
             _ => v.starts_with('/'),
         };
         if !ok {
@@ -443,6 +458,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# The map's store and Raft log (DATA_DIR/meta).
+ReadWritePaths=DATA_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -529,11 +546,45 @@ struct Plan {
     cluster_id: String,
     /// The map service's listen address, if this host runs it.
     meta: Option<String>,
-    /// The map service's address, for storage nodes.
+    /// The map service's address, for storage nodes: every member's,
+    /// separated by commas, when it runs as a group.
     map: String,
+    /// The group, and this host's member number if it runs one.
+    members: Vec<Member>,
+    member_id: Option<u32>,
+    /// Addresses the map service's certificate must name besides
+    /// loopback: where members and nodes reach it.
+    server_ips: Vec<std::net::IpAddr>,
     nodes: Vec<NodePlan>,
     /// Every storage node's metrics address, for the dashboard.
     metrics: Vec<String>,
+}
+
+/// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
+#[derive(Debug, Clone, PartialEq)]
+struct Member {
+    id: u32,
+    raft: std::net::SocketAddr,
+    map: std::net::SocketAddr,
+}
+
+fn parse_members(s: &str) -> Result<Vec<Member>, String> {
+    let mut out: Vec<Member> = Vec::new();
+    for m in s.split(',').filter(|m| !m.is_empty()) {
+        let bad = || format!("{m}: expected N=RAFT_ADDR/MAP_ADDR");
+        let (id, addrs) = m.split_once('=').ok_or_else(bad)?;
+        let (raft, map) = addrs.split_once('/').ok_or_else(bad)?;
+        let m = Member {
+            id: id.parse().map_err(|_| bad())?,
+            raft: raft.parse().map_err(|_| bad())?,
+            map: map.parse().map_err(|_| bad())?,
+        };
+        if out.iter().any(|o| o.id == m.id) {
+            return Err(format!("member {} given twice", m.id));
+        }
+        out.push(m);
+    }
+    Ok(out)
 }
 
 struct NodePlan {
@@ -574,6 +625,9 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             cluster_id: id.to_string(),
             meta: Some(map.clone()),
             map,
+            members: Vec::new(),
+            member_id: None,
+            server_ips: Vec::new(),
             nodes: (0..s.nodes)
                 .map(|n| NodePlan {
                     n,
@@ -593,10 +647,41 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         .unwrap_or_else(|| fail("--cluster FILE is needed the first time"));
     let map = hyperstor_meta::parse_cluster(&cluster)
         .unwrap_or_else(|e| fail(&format!("cluster file: {e}")));
-    if s.map.is_empty() {
-        fail("--map ADDR is needed: where the map service listens");
-    }
     let runs_meta = s.role == "meta" || s.role == "both";
+    let members = parse_members(&s.members).unwrap_or_else(|e| fail(&format!("--members: {e}")));
+    // Where this host's map service listens, and where nodes find it.
+    let (listen, nodes_map, server_ips) = if members.is_empty() {
+        if s.map.is_empty() {
+            fail("--map ADDR is needed: where the map service listens");
+        }
+        let ip = s.map.parse::<std::net::SocketAddr>().map(|a| a.ip()).ok();
+        (
+            s.map.clone(),
+            s.map.clone(),
+            ip.into_iter().collect::<Vec<_>>(),
+        )
+    } else {
+        let all: Vec<String> = members.iter().map(|m| m.map.to_string()).collect();
+        let mine = if runs_meta {
+            let id = s
+                .member_id
+                .unwrap_or_else(|| fail("--member-id N is needed: which member this host runs"));
+            Some(
+                members
+                    .iter()
+                    .find(|m| m.id == id)
+                    .unwrap_or_else(|| fail(&format!("member {id} is not in --members"))),
+            )
+        } else {
+            None
+        };
+        (
+            mine.map(|m| m.map.to_string()).unwrap_or_default(),
+            all.join(","),
+            mine.map(|m| vec![m.map.ip(), m.raft.ip()])
+                .unwrap_or_default(),
+        )
+    };
     let mut nodes = Vec::new();
     if s.role == "storage" || s.role == "both" {
         let n = s
@@ -632,10 +717,33 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         metrics,
         cluster,
         cluster_id: map.cluster_id.to_string(),
-        meta: runs_meta.then(|| s.map.clone()),
-        map: s.map.clone(),
+        meta: runs_meta.then_some(listen),
+        map: nodes_map,
+        member_id: if members.is_empty() {
+            None
+        } else {
+            s.member_id
+        },
+        members,
+        server_ips: server_ips
+            .into_iter()
+            .filter(|ip| !ip.is_unspecified() && !ip.is_loopback())
+            .collect(),
         nodes,
     }
+}
+
+/// The map service's group options (D72–D74): this member and every
+/// member, or nothing for a map service of one.
+fn group_args(p: &Plan) -> String {
+    let Some(id) = p.member_id else {
+        return String::new();
+    };
+    let mut out = format!(" --id {id}");
+    for m in &p.members {
+        out.push_str(&format!(" --member {}={}/{}", m.id, m.raft, m.map));
+    }
+    out
 }
 
 /// The files an install writes: final path, content, mode.
@@ -663,8 +771,9 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/meta.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt\n",
-                    s.api_port
+                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt --data {data}/meta{}\n",
+                    s.api_port,
+                    group_args(p)
                 ),
                 0o644,
             ),
@@ -678,7 +787,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             ),
             (
                 "/etc/systemd/system/hyperstor-meta.service".to_string(),
-                META_UNIT.to_string(),
+                META_UNIT.replace("DATA_DIR", data),
                 0o644,
             ),
             (
@@ -921,7 +1030,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
     let mut restart: Vec<String> = Vec::new();
     // The CAs and the API's certificate live where the map service runs.
     if p.meta.is_some() {
-        restart.extend(pki(root, real, &p.cluster_id, &mut changed));
+        restart.extend(pki(root, real, &p.cluster_id, &p.server_ips, &mut changed));
     }
     let mut units_changed = false;
     let mut service_units_changed: Vec<&str> = Vec::new();
@@ -1029,7 +1138,13 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
 /// Leaves are renewed after two thirds of their 30 days, or when the
 /// intermediate changes. Returns the services to restart for new
 /// certificates.
-fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> Vec<String> {
+fn pki(
+    root: &Path,
+    real: bool,
+    cluster: &str,
+    server_ips: &[std::net::IpAddr],
+    changed: &mut Vec<String>,
+) -> Vec<String> {
     use hyperstor_pki::*;
     let dir = "/etc/hyperstor/pki";
     let read = |f: &str| fs::read_to_string(under(root, &format!("{dir}/{f}"))).ok();
@@ -1081,7 +1196,25 @@ fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> Vec
         // The dashboard's identity (D50); it only reads.
         ("mgmt", Role::Mgmt, "dashboard", false, "hyperstor"),
     ] {
-        if !renewed_ca && pair(name).is_some_and(|p| !due_for_renewal(&p.cert, LEAF_DAYS)) {
+        // A server certificate names where it is reached: loopback, and
+        // for a map service member its addresses (D72). Kept only while it
+        // names the same ones, recorded beside it.
+        let (ips, names) = if server {
+            let mut ips: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+            ips.extend(server_ips.iter().copied());
+            ips.sort();
+            ips.dedup();
+            (ips, vec!["localhost".to_string()])
+        } else {
+            (vec![], vec![])
+        };
+        let recorded: String = ips.iter().map(|ip| format!("{ip}\n")).collect();
+        let same_ips =
+            !server || read(&format!("{name}.ips")).as_deref() == Some(recorded.as_str());
+        if !renewed_ca
+            && same_ips
+            && pair(name).is_some_and(|p| !due_for_renewal(&p.cert, LEAF_DAYS))
+        {
             continue;
         }
         let who = Identity {
@@ -1089,14 +1222,13 @@ fn pki(root: &Path, real: bool, cluster: &str, changed: &mut Vec<String>) -> Vec
             role,
             id: id.into(),
         };
-        let (ips, names) = if server {
-            (
-                vec!["127.0.0.1".parse().unwrap()],
-                vec!["localhost".to_string()],
-            )
-        } else {
-            (vec![], vec![])
-        };
+        if server {
+            converge(
+                &under(root, &format!("{dir}/{name}.ips")),
+                recorded.as_bytes(),
+                0o644,
+            );
+        }
         let p = issue(&ca, &who, &ips, &names, LEAF_DAYS)
             .unwrap_or_else(|e| fail(&format!("{name} certificate: {e}")));
         write(name, &p, 0o640, changed);
@@ -1254,6 +1386,85 @@ mod tests {
         );
     }
 
+    /// A map service of several members (D72–D74): each meta host runs
+    /// its member with the whole group, storage nodes know every member,
+    /// and the member's certificate names its addresses.
+    #[test]
+    fn a_map_service_group_installs_each_member() {
+        let cluster =
+            "cluster 9\nnode 0 rack 0 10.0.0.1:9100\npool 1 vol replicated size 1 min 1 pgs 8\n";
+        let members = "1=10.0.0.11:8851/10.0.0.11:8849,2=10.0.0.12:8851/10.0.0.12:8849,3=10.0.0.13:8851/10.0.0.13:8849";
+        let mut s = Settings::defaults();
+        s.role = "meta".into();
+        s.members = members.into();
+        s.member_id = Some(2);
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        assert_eq!(
+            p.meta.as_deref(),
+            Some("10.0.0.12:8849"),
+            "listens as member 2"
+        );
+        assert_eq!(
+            p.server_ips,
+            vec!["10.0.0.12".parse::<std::net::IpAddr>().unwrap(); 2]
+        );
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/meta.env")
+            .unwrap()
+            .1;
+        assert!(env.contains("--listen 10.0.0.12:8849"), "{env}");
+        assert!(env.contains("--data /var/lib/hyperstor/meta --id 2 --member 1=10.0.0.11:8851/10.0.0.11:8849 --member 2=10.0.0.12:8851/10.0.0.12:8849 --member 3=10.0.0.13:8851/10.0.0.13:8849"), "{env}");
+        // A storage host knows every member.
+        let mut st = Settings::defaults();
+        st.role = "storage".into();
+        st.node = Some(0);
+        st.members = members.into();
+        let p = plan(Path::new("/nonexistent"), &st, Some(cluster.into()));
+        let f = files(&st, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        assert!(
+            env.contains("--meta 10.0.0.11:8849,10.0.0.12:8849,10.0.0.13:8849"),
+            "{env}"
+        );
+        // Settings keep the group.
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert_eq!((t.members.as_str(), t.member_id), (members, Some(2)));
+        assert!(parse_members("1=10.0.0.1:1/10.0.0.1:2,1=10.0.0.2:1/10.0.0.2:2").is_err());
+        assert!(parse_members("1=nope").is_err());
+    }
+
+    /// The map service's certificate names its member addresses, and is
+    /// issued again when they change, not only when it is due.
+    #[test]
+    fn the_map_service_certificate_follows_its_addresses() {
+        let root = tempfile::tempdir().unwrap();
+        let ips = |s: &[&str]| {
+            s.iter()
+                .map(|i| i.parse().unwrap())
+                .collect::<Vec<std::net::IpAddr>>()
+        };
+        let mut changed = Vec::new();
+        pki(root.path(), false, "9", &ips(&["10.0.0.12"]), &mut changed);
+        let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
+        let first = cert(root.path());
+        assert_eq!(
+            fs::read_to_string(root.path().join("etc/hyperstor/pki/api.ips")).unwrap(),
+            "10.0.0.12\n127.0.0.1\n"
+        );
+        pki(root.path(), false, "9", &ips(&["10.0.0.12"]), &mut changed);
+        assert_eq!(cert(root.path()), first, "same addresses: kept");
+        let restart = pki(root.path(), false, "9", &ips(&["10.0.0.13"]), &mut changed);
+        assert_ne!(cert(root.path()), first, "new addresses: issued again");
+        assert!(restart.contains(&"hyperstor-meta.service".to_string()));
+    }
+
     #[test]
     fn all_in_one_files_match_the_settings() {
         let mut s = Settings::defaults();
@@ -1287,5 +1498,21 @@ mod tests {
             .unwrap()
             .1;
         assert!(unit.contains("ReadWritePaths=/var/lib/hyperstor\n"));
+        // The map service keeps its store under the data directory too.
+        let meta = &f
+            .iter()
+            .find(|x| x.0.ends_with("hyperstor-meta.service"))
+            .unwrap()
+            .1;
+        assert!(
+            meta.contains("ReadWritePaths=/var/lib/hyperstor\n"),
+            "{meta}"
+        );
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/meta.env")
+            .unwrap()
+            .1;
+        assert!(env.contains("--data /var/lib/hyperstor/meta\n"), "{env}");
     }
 }

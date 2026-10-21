@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]
+usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]
 ```
 
 | Command | Does |
@@ -19,7 +19,9 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE]
 | `--cluster FILE` | | Install this host's part of the cluster the [cluster file](cluster-file.md) describes; give every host the same file. Needed the first time; later runs use the installed copy |
 | `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both` |
 | `--node N` | | With a `storage` or `both` role: which node of the cluster file this host runs. It gets one reactor per address the file lists for it, each on a file in the data directory |
-| `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there |
+| `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there. Not needed with `--members` |
+| `--members LIST` | | With `--cluster`, for a map service of several members: every member as `N=RAFT_ADDR/MAP_ADDR`, separated by commas, the same on every host (see [the map service](../admin-guide/map-service.md#several-members)). Storage nodes connect to all of them |
+| `--member-id N` | | With `--members` and a `meta` or `both` role: which member this host runs |
 | `--nodes N` | 3 | All-in-one: storage nodes (1 to 16). The pool keeps `min(N, 3)` copies |
 | `--size-gib G` | 4 | Size of each storage node's device file, in GiB (sparse) |
 | `--data-dir DIR` | `/var/lib/hyperstor` | Where the device files go |

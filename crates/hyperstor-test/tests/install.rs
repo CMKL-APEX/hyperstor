@@ -151,8 +151,17 @@ fn cluster_file_install_across_hosts() {
     ];
     let meta_root = s.path("meta-host");
     let api_port = base.to_string();
+    let meta_data = s.path("meta-data");
+    std::fs::create_dir_all(&meta_data).unwrap();
     let mut a = common.to_vec();
-    a.extend(["--role", "meta", "--api-port", &api_port]);
+    a.extend([
+        "--role",
+        "meta",
+        "--api-port",
+        &api_port,
+        "--data-dir",
+        meta_data.to_str().unwrap(),
+    ]);
     install(&meta_root, &a);
     assert!(!meta_root.join("etc/hyperstor/node-0.env").exists());
     let bin = meta_root.join("usr/local/bin");

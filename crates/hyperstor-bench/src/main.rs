@@ -374,7 +374,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 .collect();
             start(NodeConfig {
                 node_id: n as u32,
-                meta,
+                meta: vec![meta],
                 shards,
                 cpus,
                 meta_blocked: None,
@@ -517,7 +517,7 @@ fn adminload_suite(secs: f64) {
         .map(|(n, l)| {
             start(NodeConfig {
                 node_id: n as u32,
-                meta,
+                meta: vec![meta],
                 shards: vec![ShardSpec {
                     device_id: n as u32 * 1000,
                     device: DeviceSpec::Mem { bytes: 1 << 30 },
@@ -1194,7 +1194,7 @@ fn failover_suite() {
                 .map(|(n, l)| {
                     Some(start(NodeConfig {
                         node_id: n as u32,
-                        meta,
+                        meta: vec![meta],
                         shards: vec![ShardSpec {
                             device_id: n as u32 * 1000,
                             device: DeviceSpec::Mem { bytes: 256 << 20 },
@@ -1306,7 +1306,7 @@ fn rejoin_suite() {
         let node = |n: u32, device: DeviceSpec, l: std::net::TcpListener| {
             start(NodeConfig {
                 node_id: n,
-                meta,
+                meta: vec![meta],
                 shards: vec![ShardSpec {
                     device_id: n * 1000,
                     device,

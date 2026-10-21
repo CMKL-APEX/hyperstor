@@ -6,17 +6,21 @@
 //! EC pools keep shard positions across changes (implementation-notes.md
 //! I16).
 //!
-//! [`serve`] answers `GetMap` from one in-memory map. Replicating the map
-//! with Raft (decisions.md D2, D20) comes later (implementation-notes.md I18).
-//! Each device records the address its reactor listens on.
+//! [`serve`] answers the map service's requests. A map service is one
+//! member, or a group of 3 or 5 that replicate the published map with Raft
+//! ([`replica`], [`store`]; decisions.md D2, D20, D71–D74): one leader
+//! keeps liveness, leases and fencing and publishes; every member serves
+//! the map. Each device records the address its reactor listens on.
 
 pub mod api;
 pub mod health;
+pub mod replica;
+pub mod store;
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
 use hyperstor_reactor::time::sleep;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -158,6 +162,36 @@ impl ClusterMap {
     pub fn add_pool(&mut self, pool: PoolInfo) {
         assert!(pool.pg_count.is_power_of_two());
         self.pools.insert(pool.id, pool);
+    }
+
+    /// Adds the nodes, devices and pools of `seed` (a cluster file) that
+    /// this map lacks, and recomputes if any were. What this map has is
+    /// kept as it is: removals go through `out` and `in`. Whether
+    /// anything was added.
+    pub fn merge_new(&mut self, seed: &ClusterMap) -> bool {
+        let mut added = false;
+        for (id, n) in &seed.nodes {
+            if !self.nodes.contains_key(id) {
+                self.nodes.insert(*id, n.clone());
+                added = true;
+            }
+        }
+        for (id, d) in &seed.devices {
+            if !self.devices.contains_key(id) {
+                self.devices.insert(*id, d.clone());
+                added = true;
+            }
+        }
+        for (id, p) in &seed.pools {
+            if !self.pools.contains_key(id) {
+                self.pools.insert(*id, p.clone());
+                added = true;
+            }
+        }
+        if added {
+            self.recompute();
+        }
+        added
     }
 
     /// Places every PG for the current devices and bumps the epoch. PGs
@@ -492,6 +526,14 @@ pub enum Admin {
 pub struct Meta {
     pub map: RefCell<ClusterMap>,
     pub published: RefCell<ClusterMap>,
+    role: Cell<Role>,
+    /// Where the leader commits what it publishes (none: a map service
+    /// of one, without a store).
+    commits: Option<tokio::sync::mpsc::UnboundedSender<replica::Commit>>,
+    /// The cluster file's map: merged into the stored map when leading.
+    seed: Option<ClusterMap>,
+    /// Whether the store holds a map yet.
+    persisted: Cell<bool>,
     beats: RefCell<HashMap<u32, Instant>>,
     /// When each node was last granted a non-zero lease.
     granted: RefCell<HashMap<u32, Instant>>,
@@ -503,7 +545,21 @@ pub struct Meta {
     /// Nodes marked down on peer reports: no leases while reported.
     suspect: RefCell<std::collections::HashSet<u32>>,
     lease: Duration,
-    started: Instant,
+    /// When this member started serving, or became the leader: nodes not
+    /// heard from since get this much grace.
+    started: Cell<Instant>,
+}
+
+/// What a map service member does (decisions.md D72, D73).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The only member, without Raft: everything, at once.
+    Standalone,
+    /// Leads the group: grants leases and serves the map at once, changes
+    /// roles from 1.25 leases after `since` (D73).
+    Leader { since: Instant },
+    /// Serves the map; redirects the rest to the leader, if known.
+    Follower { leader: Option<SocketAddr> },
 }
 
 /// Default map lease (decisions.md D48).
@@ -515,9 +571,44 @@ impl Meta {
     }
 
     pub fn with_lease(map: ClusterMap, lease: Duration) -> Rc<Self> {
+        Self::build(map, lease, Role::Standalone, None)
+    }
+
+    /// A member of a replicated map service: it serves `seed` (the
+    /// cluster file's map) until the store's map is applied, follows until
+    /// Raft says it leads, and commits what it publishes through
+    /// `commits`. Feed it [`replica::ToReactor`] with [`Meta::follow`].
+    pub fn replicated(
+        seed: ClusterMap,
+        lease: Duration,
+        commits: tokio::sync::mpsc::UnboundedSender<replica::Commit>,
+    ) -> Rc<Self> {
+        let m = Self::build(
+            seed.clone(),
+            lease,
+            Role::Follower { leader: None },
+            Some(commits),
+        );
+        // Not `Rc::get_mut`: the fields are set once, here.
+        let mut m = Rc::try_unwrap(m).ok().expect("just built");
+        m.seed = Some(seed);
+        m.persisted.set(false);
+        Rc::new(m)
+    }
+
+    fn build(
+        map: ClusterMap,
+        lease: Duration,
+        role: Role,
+        commits: Option<tokio::sync::mpsc::UnboundedSender<replica::Commit>>,
+    ) -> Rc<Self> {
         Rc::new(Meta {
             published: RefCell::new(map.clone()),
             map: RefCell::new(map),
+            role: Cell::new(role),
+            commits,
+            seed: None,
+            persisted: Cell::new(true),
             beats: RefCell::new(HashMap::new()),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
@@ -525,14 +616,132 @@ impl Meta {
             reports: RefCell::new(HashMap::new()),
             suspect: RefCell::new(std::collections::HashSet::new()),
             lease,
-            started: Instant::now(),
+            started: Cell::new(Instant::now()),
         })
+    }
+
+    pub fn role(&self) -> Role {
+        self.role.get()
+    }
+
+    /// Whether this member may change roles now: mark nodes down, move
+    /// PGs, publish. A new leader first waits until every lease the old
+    /// one granted has run out (D73).
+    pub fn may_change_roles(&self) -> bool {
+        match self.role.get() {
+            Role::Standalone => true,
+            Role::Leader { since } => since.elapsed() >= self.lease + self.lease / 4,
+            Role::Follower { .. } => false,
+        }
+    }
+
+    /// The leader's map-service address for a redirect: empty if unknown.
+    fn leader_hint(&self) -> String {
+        match self.role.get() {
+            Role::Follower { leader: Some(a) } => a.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn leads(&self) -> bool {
+        !matches!(self.role.get(), Role::Follower { .. })
+    }
+
+    /// Applies what the Raft side reports (`replica::spawn`): maps the
+    /// group committed, and who leads.
+    pub async fn follow(
+        self: Rc<Self>,
+        mut rx: hyperstor_reactor::chan::Receiver<replica::ToReactor>,
+    ) {
+        use replica::{Leading, ToReactor};
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                ToReactor::Applied(m) => {
+                    self.persisted.set(true);
+                    if m.epoch >= self.published.borrow().epoch {
+                        *self.published.borrow_mut() = m.clone();
+                    }
+                    // The leader's working map runs ahead of what it
+                    // published; a follower's is what was committed.
+                    if !self.leads() || m.epoch > self.map.borrow().epoch {
+                        *self.map.borrow_mut() = m;
+                    }
+                }
+                ToReactor::Leader(Leading::Me) => {
+                    if self.leads() {
+                        continue;
+                    }
+                    let now = Instant::now();
+                    self.role.set(Role::Leader { since: now });
+                    // Liveness starts afresh (D73): every node gets a
+                    // timeout's grace from now.
+                    self.started.set(now);
+                    self.beats.borrow_mut().clear();
+                    self.granted.borrow_mut().clear();
+                    self.reports.borrow_mut().clear();
+                    self.suspect.borrow_mut().clear();
+                    self.fencing.borrow_mut().clear();
+                    let published = self.published.borrow().clone();
+                    *self.map.borrow_mut() = published.clone();
+                    if !self.persisted.get() {
+                        // A new group: the cluster file's map is the first.
+                        let me = self.clone();
+                        hyperstor_reactor::spawn(async move {
+                            me.commit(&published).await;
+                        });
+                    } else if let Some(seed) = &self.seed {
+                        // Hosts added to the cluster file since: published
+                        // like any change, once the wait is over.
+                        self.map.borrow_mut().merge_new(seed);
+                    }
+                }
+                ToReactor::Leader(Leading::Other(a)) => {
+                    self.role.set(Role::Follower { leader: Some(a) })
+                }
+                ToReactor::Leader(Leading::Unknown) => {
+                    self.role.set(Role::Follower { leader: None })
+                }
+            }
+        }
+    }
+
+    /// Commits `map` through the group, if there is one; whether it was
+    /// committed (no: this member no longer leads, or the group can't
+    /// reach a majority).
+    async fn commit(&self, map: &ClusterMap) -> bool {
+        let Some(tx) = &self.commits else {
+            return true;
+        };
+        let (reply, rx) = hyperstor_reactor::chan::oneshot();
+        if tx
+            .send(replica::Commit {
+                map: map.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        match rx.recv().await {
+            Some(Ok(())) => true,
+            Some(Err(e)) => {
+                eprintln!("hyperstor-meta: map epoch {} not committed: {e}", map.epoch);
+                false
+            }
+            None => false,
+        }
     }
 
     /// Marks a device in or out of placement (administration.md §23.6) and
     /// recomputes the working map if that changed it; the publisher
     /// fences and publishes. Returns the working map's epoch.
     pub fn set_device_in(&self, device: u32, up_in: bool) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(match self.leader_hint().as_str() {
+                "" => "this map service member isn't the leader, and no leader is known".into(),
+                l => format!("this map service member isn't the leader; the leader is {l}"),
+            });
+        }
         let mut map = self.map.borrow_mut();
         let d = map
             .devices
@@ -587,7 +796,7 @@ impl Meta {
         );
         loop {
             sleep((timeout / 4).min(Duration::from_millis(100))).await;
-            if self.liveness_tick(timeout, Instant::now()) {
+            if self.may_change_roles() && self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
             }
         }
@@ -615,7 +824,7 @@ impl Meta {
                 }
             }
             for n in map.nodes.values_mut() {
-                let last = beats.get(&n.id).copied().unwrap_or(self.started);
+                let last = beats.get(&n.id).copied().unwrap_or(self.started.get());
                 let alive = now.duration_since(last) < timeout && !suspect.contains(&n.id);
                 if n.up != alive {
                     n.up = alive;
@@ -630,7 +839,7 @@ impl Meta {
     pub async fn publisher(self: Rc<Self>) {
         loop {
             sleep(Duration::from_millis(10)).await;
-            if self.map.borrow().epoch > self.published.borrow().epoch {
+            if self.may_change_roles() && self.map.borrow().epoch > self.published.borrow().epoch {
                 self.publish().await;
             }
         }
@@ -686,7 +895,14 @@ impl Meta {
         for w in waits {
             w.await;
         }
-        *self.published.borrow_mut() = new.clone();
+        // Committed by the group before anyone sees it: a new leader
+        // starts from it.
+        if !self.may_change_roles() || !self.commit(&new).await {
+            return;
+        }
+        if new.epoch > self.published.borrow().epoch {
+            *self.published.borrow_mut() = new.clone();
+        }
         // Fast path: push the new map to every live device.
         let bytes = Rc::new(new.encode());
         for d in new.devices.values() {
@@ -776,6 +992,19 @@ impl Meta {
         msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
     ) -> hyperstor_proto::Msg {
         use hyperstor_proto::*;
+        // Followers serve the map; the rest is the leader's (D72).
+        if !self.leads()
+            && matches!(
+                msg,
+                Ok(Msg::Heartbeat { .. } | Msg::PeerDown { .. } | Msg::BackfillDone { .. })
+            )
+        {
+            return Msg::Error {
+                code: Code::NotLeader,
+                map_epoch: self.published.borrow().epoch,
+                detail: self.leader_hint(),
+            };
+        }
         match msg {
             Ok(Msg::Hello { .. }) => Msg::HelloOk {
                 version: VERSION,
@@ -1129,6 +1358,84 @@ mod tests {
         assert_eq!(parsed.pools[&3].kind, PoolKind::Cache);
         assert_eq!(parsed.pools[&3].size, 2);
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    /// A replicated member (D72, D73): a follower serves the map and
+    /// redirects the leader's requests; a new leader grants leases at
+    /// once but changes no role until 1.25 leases have passed; a member
+    /// that loses the lead stops changing roles.
+    #[test]
+    fn members_redirect_and_a_new_leader_waits_out_old_leases() {
+        use hyperstor_proto::*;
+        use replica::{Leading, ToReactor};
+        let lease = Duration::from_millis(200);
+        let (commits, mut committed) = tokio::sync::mpsc::unbounded_channel::<replica::Commit>();
+        let m = Meta::replicated(map(), lease, commits);
+        let leader: SocketAddr = "127.0.0.1:7777".parse().unwrap();
+        hyperstor_reactor::block_on(async move {
+            let (tx, rx) = hyperstor_reactor::chan::channel();
+            hyperstor_reactor::spawn(m.clone().follow(rx));
+            let settle = || hyperstor_reactor::time::sleep(Duration::from_millis(20));
+            // Before an election: a follower with no leader to name.
+            let beat = || m.handle(Ok(Msg::Heartbeat { node: 1 }));
+            assert!(
+                matches!(beat(), Msg::Error { code: Code::NotLeader, ref detail, .. } if detail.is_empty())
+            );
+            assert!(matches!(
+                m.handle(Ok(Msg::GetMap { have_epoch: 0 })),
+                Msg::Map { .. }
+            ));
+            tx.send(ToReactor::Leader(Leading::Other(leader))).unwrap();
+            settle().await;
+            assert!(
+                matches!(beat(), Msg::Error { code: Code::NotLeader, ref detail, .. } if *detail == leader.to_string())
+            );
+            assert!(m.set_device_in(0, false).is_err());
+            // The store's map arrives; then this member is elected.
+            tx.send(ToReactor::Applied(m.published.borrow().clone()))
+                .unwrap();
+            tx.send(ToReactor::Leader(Leading::Me)).unwrap();
+            settle().await;
+            assert!(matches!(m.role(), Role::Leader { .. }));
+            assert!(
+                matches!(beat(), Msg::HeartbeatOk { lease_ms: 200, .. }),
+                "leases at once"
+            );
+            assert!(
+                !m.may_change_roles(),
+                "no role changes before the old leases end"
+            );
+            hyperstor_reactor::time::sleep(lease + lease / 4).await;
+            assert!(m.may_change_roles());
+            // A change it publishes goes through the group first.
+            m.set_device_in(0, false).unwrap();
+            let pub_ = hyperstor_reactor::spawn(m.clone().publisher());
+            let c = loop {
+                if let Ok(c) = committed.try_recv() {
+                    break c;
+                }
+                settle().await;
+            };
+            assert!(
+                c.map.epoch > m.published.borrow().epoch,
+                "not visible before it commits"
+            );
+            c.reply.send(Ok(())).unwrap();
+            settle().await;
+            assert_eq!(m.published.borrow().epoch, c.map.epoch);
+            drop(pub_);
+            // Lost the lead: back to redirecting.
+            tx.send(ToReactor::Leader(Leading::Unknown)).unwrap();
+            settle().await;
+            assert!(!m.may_change_roles());
+            assert!(matches!(
+                beat(),
+                Msg::Error {
+                    code: Code::NotLeader,
+                    ..
+                }
+            ));
+        });
     }
 
     #[test]

@@ -52,7 +52,10 @@ pub fn chunk_name(lineage: u128, chunk: u64) -> Vec<u8> {
 
 /// A connection to the cluster.
 pub struct Client {
-    meta: SocketAddr,
+    /// The map service's members (decisions.md D72).
+    members: RefCell<Vec<SocketAddr>>,
+    /// The member believed to lead, an index into `members`.
+    leader: std::cell::Cell<usize>,
     map: RefCell<Rc<ClusterMap>>,
     conns: RefCell<HashMap<SocketAddr, Conn>>,
     pub id: u64,
@@ -69,8 +72,20 @@ fn random_u64() -> u64 {
 impl Client {
     /// Connects to the map service at `meta` and fetches the map.
     pub async fn connect(meta: SocketAddr, id: u64) -> Result<Rc<Client>, ClientError> {
+        Self::connect_members(vec![meta], id).await
+    }
+
+    /// Connects to a map service of several members and fetches the map
+    /// from any of them. Requests only the leader answers follow its
+    /// redirects (decisions.md D72).
+    pub async fn connect_members(
+        members: Vec<SocketAddr>,
+        id: u64,
+    ) -> Result<Rc<Client>, ClientError> {
+        assert!(!members.is_empty(), "no map service members");
         let c = Rc::new(Client {
-            meta,
+            members: RefCell::new(members),
+            leader: std::cell::Cell::new(0),
             map: RefCell::new(Rc::new(ClusterMap::default())),
             conns: RefCell::new(HashMap::new()),
             id,
@@ -91,11 +106,42 @@ impl Client {
         }
     }
 
-    /// Fetches the map if the service has a newer one.
+    /// The member requests go to first.
+    fn member(&self) -> SocketAddr {
+        let m = self.members.borrow();
+        m[self.leader.get() % m.len()]
+    }
+
+    /// Try the next member next time (this one didn't answer).
+    fn next_member(&self) {
+        let n = self.members.borrow().len();
+        self.leader.set((self.leader.get() + 1) % n);
+    }
+
+    /// Fetches the map if the service has a newer one. Any member serves
+    /// it, from its applied copy; one that can't be reached is skipped.
     pub async fn refresh_map(&self) -> Result<(), ClientError> {
         let have = self.map.borrow().epoch;
-        let conn = self.conn(self.meta).await?;
-        let (msg, _) = conn.call(&Msg::GetMap { have_epoch: have }, &[]).await?;
+        let tries = self.members.borrow().len();
+        let mut last = None;
+        let mut reply = None;
+        for _ in 0..tries {
+            let addr = self.member();
+            match self.conn(addr).await {
+                Ok(conn) => match conn.call(&Msg::GetMap { have_epoch: have }, &[]).await {
+                    Ok((m, _)) => {
+                        reply = Some(m);
+                        break;
+                    }
+                    Err(e) => last = Some(ClientError::Rpc(e)),
+                },
+                Err(e) => last = Some(e),
+            }
+            self.next_member();
+        }
+        let Some(msg) = reply else {
+            return Err(last.expect("at least one member"));
+        };
         match msg {
             Msg::Map { epoch, map } if epoch > have => {
                 let m = ClusterMap::decode(&map)
@@ -113,10 +159,63 @@ impl Client {
         Ok(())
     }
 
-    /// Sends a request to the map service.
+    /// Sends a request only the map service's leader answers (heartbeats,
+    /// reports, backfill completion), following its redirects: a member
+    /// that isn't the leader names it, or says it doesn't know yet (an
+    /// election), and one that doesn't answer is skipped.
     pub async fn call_meta(&self, msg: &Msg) -> Result<rpc::Reply, ClientError> {
-        let conn = self.conn(self.meta).await?;
-        Ok(conn.call(msg, &[]).await?)
+        let tries = 2 * self.members.borrow().len() + 2;
+        let mut last = None;
+        for _ in 0..tries {
+            let addr = self.member();
+            let reply = match self.conn(addr).await {
+                Ok(conn) => conn.call(msg, &[]).await.map_err(ClientError::Rpc),
+                Err(e) => Err(e),
+            };
+            match reply {
+                Ok((
+                    Msg::Error {
+                        code: hyperstor_proto::Code::NotLeader,
+                        detail,
+                        ..
+                    },
+                    _,
+                )) => {
+                    match detail.parse::<SocketAddr>() {
+                        Ok(leader) if leader != addr => self.follow(leader),
+                        // No leader yet: an election is on.
+                        _ => {
+                            self.next_member();
+                            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20))
+                                .await;
+                        }
+                    }
+                    last = Some(ClientError::Server {
+                        code: hyperstor_proto::Code::NotLeader,
+                        detail: "no leader".into(),
+                    });
+                }
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    self.next_member();
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.expect("at least one try"))
+    }
+
+    /// Send leader-only requests to `leader` from now on.
+    fn follow(&self, leader: SocketAddr) {
+        let mut m = self.members.borrow_mut();
+        let i = match m.iter().position(|a| *a == leader) {
+            Some(i) => i,
+            None => {
+                m.push(leader);
+                m.len() - 1
+            }
+        };
+        self.leader.set(i);
     }
 
     /// A connection to `addr`, opened (with `Hello`) if needed.

@@ -30,6 +30,13 @@ that no single node sees every change (D28):
 | `hosts` | host identity | bare-metal and non-glidex hosts: NQN, CHAP key reference, the volumes and snapshots exported to it |
 | `blocklist` | client instance id | map epoch added, expiry |
 
+- **As built** (HS1, implementation-notes.md I62–I67): one table, `map`,
+  with a `head` row (epoch, nodes, devices, pools) and one row per PG;
+  `hosts` and `blocklist` come with their features. The leader publishes
+  a change as one write set of the head and the PG rows that changed.
+  Members talk Raft over TCP with mutual TLS; nodes and clients follow
+  the leader by redirect (D72), and a new leader waits out the old
+  leases before it changes roles (D73).
 - **The map** is all of these together, with a `map_epoch` that every
   change bumps. Daemons and clients hold the map and follow it by a
   watch stream of deltas. Every request carries the `map_epoch` its
