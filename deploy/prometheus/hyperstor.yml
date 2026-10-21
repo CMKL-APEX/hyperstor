@@ -1,0 +1,14 @@
+# Prometheus scrape configuration for Hyperstor's storage nodes.
+#
+# hyperstor-install writes the targets to /etc/hyperstor/prometheus-targets.json
+# on the map service's host: every storage node's metrics address
+# (hyperstord --admin), labelled with the cluster id. Copy that file to the
+# Prometheus host (or run Prometheus there) and add this job under
+# scrape_configs. The metrics ports have no authentication: scrape them over
+# the management network only.
+scrape_configs:
+  - job_name: hyperstor
+    scrape_interval: 10s
+    file_sd_configs:
+      - files: [/etc/hyperstor/prometheus-targets.json]
+        refresh_interval: 1m

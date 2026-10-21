@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperstor</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d232b; --muted: #5d6875;
+    --line: #dde1e6; --ok: #1a7f4b; --warn: #a96500; --error: #c0292b;
+    --clean: #2f9e64; --degraded: #e0a020; --backfill: #3b82c4; --inactive: #d0453f;
+    --bar-bg: #eceff2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161b; --panel: #1a2027; --text: #e4e8ec; --muted: #98a3ae;
+      --line: #2c343d; --ok: #4cc38a; --warn: #f0b44c; --error: #f07070;
+      --clean: #3fb27a; --degraded: #e4b23c; --backfill: #5b9fe0; --inactive: #e0605a;
+      --bar-bg: #262e37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  header .updated { margin-left: auto; color: var(--muted); font-size: 12px; }
+  main { padding: 16px 20px 40px; max-width: 1200px; margin: 0 auto; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+               color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .health { display: flex; align-items: flex-start; gap: 14px; }
+  .badge { font-weight: 700; font-size: 15px; padding: 4px 12px; border-radius: 999px;
+           color: #fff; text-transform: uppercase; letter-spacing: .03em; }
+  .badge.ok { background: var(--ok); } .badge.warn { background: var(--warn); }
+  .badge.error { background: var(--error); } .badge.unknown { background: var(--muted); }
+  .reasons { margin: 2px 0 0; padding: 0; list-style: none; }
+  .reasons li { margin: 2px 0; }
+  .reasons .lvl { font-weight: 600; margin-right: 6px; }
+  .lvl.warn { color: var(--warn); } .lvl.error { color: var(--error); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .l { color: var(--muted); font-size: 12px; }
+  .tile.warn .v { color: var(--warn); } .tile.error .v { color: var(--error); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  .wrap { overflow-x: auto; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.up { background: var(--ok); } .dot.down { background: var(--error); } .dot.out { background: var(--warn); }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--bar-bg); min-width: 160px; }
+  .bar span { display: block; height: 100%; }
+  .s-clean { background: var(--clean); } .s-degraded { background: var(--degraded); }
+  .s-backfilling { background: var(--backfill); } .s-inactive { background: var(--inactive); }
+  .legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin-top: 8px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  button.link { background: none; border: 0; color: var(--backfill); cursor: pointer; padding: 0; font: inherit; }
+  .muted { color: var(--muted); }
+  .error-box { color: var(--error); }
+  pre { margin: 8px 0 0; max-height: 280px; overflow: auto; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hyperstor</h1>
+  <span class="meta" id="cluster">connecting…</span>
+  <span class="updated" id="updated"></span>
+</header>
+<main>
+  <section>
+    <h2>Health</h2>
+    <div class="health">
+      <span class="badge unknown" id="badge">…</span>
+      <ul class="reasons" id="reasons"></ul>
+    </div>
+  </section>
+  <section>
+    <h2>Throughput</h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+  <section>
+    <h2>Pools</h2>
+    <div class="wrap"><table id="pools"></table></div>
+    <div class="legend">
+      <span><i class="s-clean"></i>clean</span><span><i class="s-degraded"></i>degraded</span>
+      <span><i class="s-backfilling"></i>backfilling</span><span><i class="s-inactive"></i>inactive</span>
+    </div>
+    <pre id="pgs" class="muted" hidden></pre>
+  </section>
+  <section>
+    <h2>Storage nodes</h2>
+    <div class="wrap"><table id="nodes"></table></div>
+  </section>
+  <p class="muted">Read-only. Changes: <code>hyperstorctl</code> on the map service's host.</p>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

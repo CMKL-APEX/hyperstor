@@ -9,6 +9,7 @@ members = [
     "crates/hyperstor-install",
     "crates/hyperstor-bench",
     "crates/hyperstor-meta",
+    "crates/hyperstor-mgmt",
     "crates/hyperstor-pki",
     "crates/hyperstor-placement",
     "crates/hyperstor-proto",

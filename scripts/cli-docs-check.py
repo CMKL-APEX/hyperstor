@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "docs" / "public" / "src" / "reference"
-BINARIES = ["hyperstor-meta", "hyperstord", "hyperstor-bench", "hyperstorctl", "hyperstor-install"]
+BINARIES = ["hyperstor-meta", "hyperstord", "hyperstor-bench", "hyperstorctl", "hyperstor-install", "hyperstor-mgmt"]
 OPTION = re.compile(r"--[a-z][a-z-]*")
 
 bin_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "target" / "release"

@@ -406,6 +406,28 @@ status = "planned"
 id = "AD2"
 title = "Management service and read-only web UI"
 
+[[milestone.item]]
+what = "Read-only dashboard on loopback: health, I/O, space, pools, placement groups, nodes"
+spec = ["administration.md §23.7"]
+status = "partial"
+tests = [
+    "hyperstor_mgmt::tests::only_loopback_names_on_our_port",
+    "hyperstor_mgmt::tests::metrics_parse_into_name_labels_value",
+    "dashboard::dashboard_serves_the_cluster_read_only",
+    "dashboard::dashboard_refuses_to_listen_beyond_loopback",
+]
+
+[[milestone.item]]
+what = "Grafana dashboard and Prometheus scrape configuration for the storage nodes' metrics"
+spec = ["administration.md §23.7"]
+status = "done"
+tests = ["metrics::grafana_dashboard_and_prometheus_targets_match_the_daemon"]
+
+[[milestone.item]]
+what = "People log in to the management service (sessions, tokens, roles)"
+spec = ["administration.md §23.9", "D50", "D52"]
+status = "planned"
+
 [[milestone]]
 id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"

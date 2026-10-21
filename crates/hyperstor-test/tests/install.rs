@@ -74,6 +74,18 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
         std::fs::read_to_string(root.join("etc/hyperstor/cluster.txt")).unwrap(),
         cluster
     );
+    assert!(
+        again.has("would restart hyperstord@0.service hyperstord@1.service\n"),
+        "{}",
+        again.out
+    );
+    // A dashboard change restarts only the dashboard.
+    let dash = install(&root, &["--mgmt-port", "18852"]);
+    assert!(
+        dash.has("would restart hyperstor-mgmt.service\n"),
+        "{}",
+        dash.out
+    );
 
     install_cmd(&root, "uninstall", &[]).ok();
     assert!(!root.join("usr/local/bin/hyperstorctl").exists());

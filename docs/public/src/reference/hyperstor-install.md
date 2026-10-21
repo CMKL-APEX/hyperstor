@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]
+usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]
 ```
 
 | Command | Does |
@@ -27,6 +27,7 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE]
 | `--map-port P` | 8849 | The map service, on `127.0.0.1` |
 | `--node-port P` | 9100 | Storage node `n` listens on `P + n`, on `127.0.0.1` |
 | `--admin-port P` | 8853 | Metrics port: all-in-one, node `n` on `127.0.0.1:P + n`; with `--cluster`, the node on its first address's IP, port P |
+| `--mgmt-port P` | 8852 | The dashboard (`hyperstor-mgmt`), on `127.0.0.1`, on the map service's host |
 | `--root DIR` | `/` | Write every file under DIR instead (for packaging and tests); no users or services are touched |
 | `--no-start` | off | Install the files but don't enable or start the services |
 
@@ -41,12 +42,13 @@ in, so run it from `target/release` after `cargo build --release`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, and `hyperstor-install` itself |
+| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, and `hyperstor-install` itself |
 | `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes; pool 1 (`vol`, replicated) and pool 2 (`cache`, a cache pool with one copy) |
-| `/etc/hyperstor/meta.env`, `node-N.env` | Each service's options |
+| `/etc/hyperstor/meta.env`, `mgmt.env`, `node-N.env` | Each service's options |
+| `/etc/hyperstor/prometheus-targets.json` | Every storage node's metrics address, for Prometheus (`deploy/prometheus/hyperstor.yml`) |
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
-| `/etc/systemd/system/` | `hyperstor-meta.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
-| `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group) |
+| `/etc/systemd/system/` | `hyperstor-meta.service`, `hyperstor-mgmt.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
+| `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group), `mgmt` for the dashboard (key readable by the `hyperstor` group) |
 | `/etc/hyperstor/install.conf` | The saved options |
 
 It also creates the `hyperstor` system user, which the services run as,
@@ -56,7 +58,7 @@ their life has passed (30 days for the API's and the administrator's,
 a year for the intermediate CA). The daily timer is such a run: it
 renews what is due, repairs anything that drifted, and otherwise changes
 nothing.
-Changed binaries, units or options restart the services they affect.
+Changed binaries, units, options or certificates restart only the services they affect; with `--root` or `--no-start`, the output says what a real run would restart.
 
 **Checks** (`check`, and first thing in `install`): kernel version,
 io_uring, locked-memory limit, CPUs, NVMe generic devices, clock
