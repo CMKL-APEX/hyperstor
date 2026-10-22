@@ -51,4 +51,5 @@ gateway and a distributed filesystem, all on the same object layer. The
 | [Concepts](concepts.md) | Everyone | Nodes, pools, placement groups, volumes and the map |
 | [User guide](user-guide/index.md) | Developers who store data in Hyperstor | The client library, what it guarantees, its errors |
 | [Administrator guide](admin-guide/index.md) | People who install and run clusters | Installation, planning, running the services, failures |
+| [Developer guide](developer-guide/index.md) | People who work on Hyperstor, or want to know how it works | Architecture, algorithms, design trade-offs, performance, comparison with other systems |
 | [Reference](reference/index.md) | Both | Every command-line option and the cluster file format |

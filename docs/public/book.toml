@@ -2,7 +2,7 @@
 # Hyperstor. Published to GitHub Pages by .github/workflows/docs.yml.
 [book]
 title = "Hyperstor"
-description = "User and administrator documentation for Hyperstor"
+description = "User, administrator and developer documentation for Hyperstor"
 language = "en"
 src = "src"
 
