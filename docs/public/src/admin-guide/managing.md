@@ -6,8 +6,14 @@ elsewhere, give `--api IP:PORT` or set `HYPERSTOR_API`.
 
 ## Dashboard
 
-The installer runs the dashboard (`hyperstor-mgmt`) on the map service's
-host, at <http://127.0.0.1:8852/>: health with its reasons, I/O rates, space,
+The installer runs the management service (`hyperstor-mgmt`) on the map
+service's host, at <http://127.0.0.1:8852/>. Installed with `--ui` (see
+[hyperstor-install](../reference/hyperstor-install.md)), it serves the web
+UI: an overview, nodes and devices (take out, bring in, drain), pools and
+PGs, volumes with their snapshots and clones, operations, the map
+service's members, and security (people and roles, API tokens, join
+tokens, certificates); each action shows its `hyperstorctl` command.
+Without it, a built-in dashboard shows health with its reasons, I/O rates, space,
 pools with their PG states (and each PG's acting and up sets), and every
 storage node with its state, last heartbeat, I/O, write and read p99
 latency, space, log use and map epoch. It refreshes every two seconds.
@@ -125,6 +131,27 @@ Every map service member then refuses it, on the cluster API and
 between members, until it would have expired anyway (30 days at most).
 The local socket on a map service host needs no certificate, so
 revoking the administrator's own never locks root out.
+
+## Volumes and snapshots
+
+```sh
+hyperstorctl create-volume --size 10G --name db      # prints its id
+hyperstorctl volumes --pool 1
+hyperstorctl snapshot create --id ID --name nightly
+hyperstorctl snapshot list --id ID
+hyperstorctl snapshot group --ids ID1,ID2 --name db  # one instant for both
+hyperstorctl clone-volume --id ID --epoch E --name test-copy
+hyperstorctl rollback-volume --id ID --epoch E       # the volume must be detached
+hyperstorctl flatten-volume --id CLONE               # so its parents can go
+hyperstorctl snapshot delete --id ID --epoch E
+```
+
+A snapshot of an attached volume pauses its client's writes while it is
+cut, at most 2 s. A snapshot that a clone or a rollback still reads from
+can't be deleted (reason `in_use`): flatten or delete the clone first.
+To test a volume as a block device on a host, serve it with
+[`hyperstor-ublk`](../reference/hyperstor-ublk.md). All options are in
+the [`hyperstorctl` reference](../reference/hyperstorctl.md).
 
 ## Testing I/O
 

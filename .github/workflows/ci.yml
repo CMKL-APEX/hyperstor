@@ -73,6 +73,24 @@ jobs:
     - name: buf lint
       working-directory: crates/hyperstor-api/proto
       run: '"$RUNNER_TEMP/buf" lint'
+    # The web UI's TypeScript from the protos (crates/hyperstor-api/
+    # buf.gen.yaml) is committed: it must be what buf makes now.
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: "1.4.2"
+    - name: Generated TypeScript is current
+      run: |
+        (cd crates/hyperstor-mgmt/ui && bun install --frozen-lockfile)
+        (cd crates/hyperstor-api && PATH="$RUNNER_TEMP:$PATH" "$RUNNER_TEMP/buf" generate)
+        git diff --exit-code -- crates/hyperstor-mgmt/ui/src/gen || {
+          echo "crates/hyperstor-mgmt/ui/src/gen is stale: run buf generate in crates/hyperstor-api"; exit 1;
+        }
+        test -z "$(git status --porcelain -- crates/hyperstor-mgmt/ui/src/gen)" || {
+          echo "buf generate made new files under crates/hyperstor-mgmt/ui/src/gen: commit them"; exit 1;
+        }
+    # The copy of glidex's @glidex/ui-kit is glidex's, unchanged (I140).
+    - name: ui-kit matches glidex
+      run: scripts/ui-kit-sync.sh --check
     - name: buf breaking
       if: github.event_name == 'pull_request'
       run: >-
@@ -111,11 +129,41 @@ jobs:
       run: |
         set -o pipefail
         cargo test --workspace --release --no-fail-fast 2>&1 | tee target/test.log
+    # The web UI (crates/hyperstor-mgmt/ui): built, then driven in a
+    # browser against a cluster installed from the binaries just built
+    # (crates/hyperstor-mgmt/e2e). Its results join the tracking check.
+    - uses: oven-sh/setup-bun@v2
+      if: success() || failure()
+      with:
+        bun-version: "1.4.2"
+    - name: Build the web UI
+      id: ui
+      if: success() || failure()
+      working-directory: crates/hyperstor-mgmt/ui
+      run: bun install --frozen-lockfile && bun run build
+    - name: Browser tests of the web UI
+      id: browser
+      if: (success() || failure()) && steps.ui.outcome == 'success'
+      working-directory: crates/hyperstor-mgmt/e2e
+      run: |
+        bun install --frozen-lockfile
+        bunx playwright install --with-deps chromium
+        bunx playwright test
+    - uses: actions/upload-artifact@v4
+      if: failure() && steps.browser.outcome == 'failure'
+      with:
+        name: playwright-report
+        path: |
+          crates/hyperstor-mgmt/e2e/playwright-report
+          crates/hyperstor-mgmt/e2e/test-results
     # Every tracked test ran and passed, and each milestone item's tests
     # fit its status. Runs after failed tests too, to show what they break.
     - name: Check implementation tracking (spec/tracking.toml)
       if: (success() || failure()) && steps.tests.outcome != 'skipped'
-      run: python3 scripts/tracking.py check target/test.log >> "$GITHUB_STEP_SUMMARY"
+      run: >-
+        python3 scripts/tracking.py check target/test.log
+        $(test -f crates/hyperstor-mgmt/e2e/test-results/cargo.log && echo crates/hyperstor-mgmt/e2e/test-results/cargo.log)
+        >> "$GITHUB_STEP_SUMMARY"
     - name: Check the command-line reference against the binaries
       run: python3 scripts/cli-docs-check.py target/release
     - uses: actions/upload-artifact@v4

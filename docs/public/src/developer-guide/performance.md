@@ -63,6 +63,34 @@ HS_BENCH_SECS=3 hyperstor-bench cluster <dir> 1          # 1 GiB O_DIRECT files
 These have held within about 2 % across the changes of the last
 milestones; that is the noise between runs on a shared host.
 
+## A volume as a block device (first look)
+
+A `hyperstor-ublk` device on an all-in-one trial cluster (three nodes,
+each a 1 GiB file on a shared development host's root filesystem,
+flushed at every commit), a 512 MiB volume filled first, `--depth 64`,
+fio 3.36 with `libaio` and direct I/O, 10 s per job:
+
+```sh
+fio --name=t --filename=/dev/ublkb0 --rw=randread --bs=4k --iodepth=1 \
+    --ioengine=libaio --direct=1 --time_based --runtime=10 --size=512M
+```
+
+| Job | IOPS | p50 | p99 |
+|---|---|---|---|
+| 4 KiB random read, QD1 | 3,391 | 276 µs | 371 µs |
+| 4 KiB random read, QD32 | 11,442 | 2.2 ms | 7.0 ms |
+| 4 KiB random write, QD1 | 748 | 1.3 ms | 1.7 ms |
+| 4 KiB random write, QD32 | 3,544 | 7.2 ms | 33.8 ms |
+| 1 MiB write, QD4 | 285 (285 MiB/s) | 13.3 ms | 25.8 ms |
+| 1 MiB read, QD4 | 789 (789 MiB/s) | 4.6 ms | 7.9 ms |
+
+These are that cluster's numbers, not ublk's: writes are bound by the
+files' flushes on a shared disk (the same client path to memory devices
+does about 7,400 4 KiB writes a second at QD1), and the nodes and the
+client share the host's cores. ublk runs one queue and copies data
+through the client for now. What it costs needs a host with NVMe-backed
+nodes.
+
 ## Failures and recovery (host B)
 
 | Event | Figure |

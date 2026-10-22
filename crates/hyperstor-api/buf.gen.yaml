@@ -1,0 +1,17 @@
+# TypeScript messages and service descriptors for hyperstor-mgmt's web UI
+# (Connect-ES, spec/administration.md §23.7), with types for their JSON
+# form (`json_types`). Run from this directory after `bun install` in
+# ../hyperstor-mgmt/ui: buf generate. CI fails when the output is stale.
+version: v2
+inputs:
+  - directory: proto
+clean: true
+plugins:
+  # Run with bun (the UI toolchain; no Node needed).
+  - local: ["bun", "../hyperstor-mgmt/ui/node_modules/@bufbuild/protoc-gen-es/bin/protoc-gen-es"]
+    out: ../hyperstor-mgmt/ui/src/gen
+    include_imports: true
+    opt:
+      - target=ts
+      - json_types=true
+      - import_extension=none

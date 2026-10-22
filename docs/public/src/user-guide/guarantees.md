@@ -37,6 +37,14 @@ refused by every storage node, so no write of its lands after the new
 holder's first write. A write that failed with `LeaseLost` may have
 landed or not.
 
+## Snapshots
+
+A snapshot holds every write acknowledged before it was cut, and none
+issued after. A write in flight while it is cut is in it or not, as
+after a power cut. A consistency group gives the same guarantee across
+all its volumes at one instant. Writes to a clone never change its
+snapshot, and writes to the volume never change its snapshots.
+
 ## Errors
 
 The client already retries what is worth retrying: a map change, a
@@ -59,7 +67,10 @@ The errors your program sees:
 | `Shrink { .. }`, `BadVolume(..)` | A smaller size, or a size or name that isn't allowed | Fix the request |
 | `LeaseHeld { holder, remaining_ms }` | Another client instance has the volume attached | Wait, or `take_over` if that client is gone |
 | `LeaseLost(id)` | This handle's lease was taken over, or this client was blocklisted | Stop using the handle; attach again if that's right |
-| `VolumeAttached(id)` | A delete of an attached volume | Detach it first, or force the delete |
-| `Server { code, .. }` | The storage node refused the request, for example `NoSpace`, `Io`, or `Checksum` when no copy is good | Depends on the code; report `Io` and `Checksum` to the administrator |
+| `VolumeAttached(id)` | A delete or rollback of an attached volume | Detach it first, or force the delete |
+| `NoSnapshot(epoch)` | The volume has no snapshot at that epoch | Check `volume(id)`'s snapshots |
+| `SnapshotInUse(epoch)` | A clone or a rollback still reads from that snapshot | Flatten or delete the clone first |
+| `Refused(why)` | The cluster refused a volume or snapshot operation, for example an unknown group | Read `why` |
+| `Server { code, .. }` | The storage node refused the request, for example `NoSpace`, `Io`, `Checksum` when no copy is good, or `Busy` when a snapshot couldn't pause the volume's writer in time | Depends on the code; report `Io` and `Checksum` to the administrator |
 | `Exhausted(n, why)` | The client retried `n` times without success, for example while a failed node is being detected | Retry after a few seconds; `why` is the last error |
 | `Rpc(..)` | A connection or protocol error the client did not retry, for example while fetching the map | Check that the map service is up and reachable, and that client and cluster run the same version |

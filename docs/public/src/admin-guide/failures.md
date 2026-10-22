@@ -114,10 +114,6 @@ cluster stops serving within a lease period, and resumes when it is back.
 
 ## Not handled yet
 
-- Restarting a map service group that lost a majority of its members for
-  good from a surviving member (restore it from a
-  [backup](map-service.md#backups-and-restoring) instead), and adding or
-  removing members at run time.
 - A slow primary.
 
 See [Status](../status.md).

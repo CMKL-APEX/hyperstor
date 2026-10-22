@@ -8,8 +8,10 @@ on its own.
 
 > **Early implementation.** Hyperstor is not ready for production data.
 > Today it provides replicated storage over TCP, used through a Rust
-> client library, with failure detection and recovery. There is no block
-> device front end yet, and the data path between clients and storage
+> client library or, for testing, as Linux block devices through ublk,
+> with failure detection and recovery, snapshots and clones. There is no
+> front end for virtual machines or remote hosts yet, and the data path
+> between clients and storage
 > nodes has no authentication or encryption (the cluster API and the map
 > service's members use mutual TLS). See
 > [Status](status.md) for what is built and what comes next.
@@ -33,13 +35,18 @@ on its own.
 - **Volumes** with one writer at a time: a client attaches a volume by
   holding its lease, and one that dies is fenced off when another takes
   the volume over.
+- **Snapshots and clones.** Crash-consistent snapshots of one volume or
+  of a group at one instant, instant clones and rollbacks, and snapshot
+  deletion that moves no data.
+- **Block devices for testing.** `hyperstor-ublk` serves a volume as
+  `/dev/ublkbN`, for `mkfs`, `mount` and fio.
 - **A client library** for Rust programs to read and write volumes, and
   `hyperstorctl` and `hyperstor-install` for administrators.
 
 ## What is planned
 
 Block volumes for virtual machines (vhost-user-blk), NVMe over TCP and
-RDMA, snapshots and clones, erasure coding, GPU-direct storage, an S3
+RDMA, a host-wide read cache, erasure coding, GPU-direct storage, an S3
 gateway and a distributed filesystem, all on the same object layer. The
 [Status](status.md) page lists the milestones.
 
