@@ -112,7 +112,8 @@ log device, which has its own superblock naming the data device (§6.2).
   a dense map hold a reserved block number. *Built* (implementation-notes.md
   I34).
 - **Volume chunk versions.** For `vol`, the version is the volume's
-  snapshot epoch:
+  snapshot epoch (as built, I115: the branch is appended to the chunk's
+  name, and branch 0 keeps the bare name):
   - `branch` is a volume within a lineage (D21). A new volume has its own
     lineage and branch 0; a clone gets a new branch in its parent's
     lineage;

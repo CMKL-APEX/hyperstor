@@ -2384,3 +2384,411 @@ fn random_faults(seed: u64) {
     let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
+
+/// Snapshots, clones, flatten, rollback and their deletion (volumes.md
+/// §10.3, §10.4; D101–D104): every snapshot, clone and head reads what it
+/// should at every step, a snapshot a clone depends on can't be deleted
+/// until the clone is flattened, and deleting snapshots merges their
+/// versions, so each chunk ends with one version on every device.
+#[test]
+fn snapshots_clones_and_rollback_read_what_they_should() {
+    use hyperstor_client::ClientError;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let size = 2 * CHUNK as u64;
+    let (lineage, ids) = with_client(meta, 5, move |cl| async move {
+        let len = size as usize;
+        let v = cl.create_volume(POOL, size, None, "v").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        let mut model = pattern(1, len);
+        va.write(0, model.clone()).await.unwrap();
+        // Snapshot while attached: the holder quiesces (D103).
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        let at_s1 = model.clone();
+        let b = pattern(2, 3 * 4096);
+        va.write(CHUNK as u64 - 4096, b.clone()).await.unwrap();
+        model[CHUNK as usize - 4096..CHUNK as usize + 8192].copy_from_slice(&b);
+        let s2 = cl.snapshot(v.id, "s2").await.unwrap();
+        let at_s2 = model.clone();
+        let d = pattern(3, 4096);
+        va.write(8192, d.clone()).await.unwrap();
+        model[8192..12288].copy_from_slice(&d);
+        let read_snap = |vol: hyperstor_client::volume::Volume, e: u64| {
+            let cl = cl.clone();
+            async move {
+                let s = vol.snapshot(e).unwrap().clone();
+                cl.read_at(POOL, vol.lineage, &vol.snapshot_layers(&s), 0, size)
+                    .await
+                    .unwrap()
+            }
+        };
+        let vol = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(vol.head_epoch, s2.epoch + 1);
+        assert!(read_snap(vol.clone(), s1.epoch).await == at_s1, "s1");
+        assert!(read_snap(vol.clone(), s2.epoch).await == at_s2, "s2");
+        assert!(va.read(0, size).await.unwrap() == model, "head");
+        // A clone of s1 reads s1, and diverges on its own.
+        let k = cl.clone_snapshot(v.id, s1.epoch, "k", None).await.unwrap();
+        assert_eq!(k.lineage, v.lineage);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == at_s1, "clone");
+        let mut kmodel = at_s1.clone();
+        let e = pattern(4, 8192);
+        ka.write(CHUNK as u64, e.clone()).await.unwrap();
+        kmodel[CHUNK as usize..CHUNK as usize + 8192].copy_from_slice(&e);
+        assert!(ka.read(0, size).await.unwrap() == kmodel);
+        assert!(
+            va.read(0, size).await.unwrap() == model,
+            "the parent's head"
+        );
+        assert!(matches!(
+            cl.delete_snapshot(v.id, s1.epoch).await,
+            Err(ClientError::SnapshotInUse(_))
+        ));
+        assert!(matches!(
+            cl.delete_volume(v.id).await,
+            Err(ClientError::VolumeAttached(_) | ClientError::SnapshotInUse(_))
+        ));
+        // Flattened: the clone no longer depends on s1.
+        let kf = cl.flatten(k.id).await.unwrap();
+        assert!(kf.chain.is_empty());
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "flattened clone");
+        cl.delete_snapshot(v.id, s1.epoch).await.unwrap();
+        let vol = cl.volume(v.id).await.unwrap().unwrap();
+        assert!(vol.snapshot(s1.epoch).is_none());
+        assert!(
+            read_snap(vol.clone(), s2.epoch).await == at_s2,
+            "s2 after s1 went"
+        );
+        assert!(
+            va.read(0, size).await.unwrap() == model,
+            "head after s1 went"
+        );
+        assert!(
+            ka.read(0, size).await.unwrap() == kmodel,
+            "clone after s1 went"
+        );
+        // Rollback to s2: detached only; then the head reads s2.
+        assert!(matches!(
+            cl.rollback(v.id, s2.epoch).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        va.detach().await.unwrap();
+        let r = cl.rollback(v.id, s2.epoch).await.unwrap();
+        assert_ne!(r.branch, vol.branch);
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == at_s2, "rolled back");
+        let f = pattern(5, 4096);
+        va.write(0, f.clone()).await.unwrap();
+        let mut after = at_s2.clone();
+        after[..4096].copy_from_slice(&f);
+        assert!(va.read(0, size).await.unwrap() == after);
+        let vol = cl.volume(v.id).await.unwrap().unwrap();
+        assert!(
+            read_snap(vol.clone(), s2.epoch).await == at_s2,
+            "s2 after the rollback"
+        );
+        // s2 is what the rolled-back head is cut from.
+        assert!(matches!(
+            cl.delete_snapshot(v.id, s2.epoch).await,
+            Err(ClientError::SnapshotInUse(_))
+        ));
+        let vf = cl.flatten(v.id).await.unwrap();
+        assert!(vf.chain.is_empty());
+        cl.delete_snapshot(v.id, s2.epoch).await.unwrap();
+        assert!(
+            va.read(0, size).await.unwrap() == after,
+            "head after every snapshot went"
+        );
+        va.detach().await.unwrap();
+        ka.detach().await.unwrap();
+        (v.lineage, (v.id, k.id))
+    });
+    let (map, devs) = c.stop();
+    // One version per chunk and branch on every device: deleting the
+    // snapshots merged or dropped the rest.
+    let pool = &map.pools[&POOL];
+    for (id, d) in devs {
+        let sh = hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap();
+        for chunk in 0..2u64 {
+            let pg = pg_of(lineage, chunk, pool.pg_count);
+            let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(lineage, chunk), 0);
+            let mut hi = chunk_name(lineage, chunk);
+            hi.extend_from_slice(&[0xff; 5]);
+            let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+            let mut per_name: std::collections::BTreeMap<Vec<u8>, usize> = Default::default();
+            for k in sh.list(&lo, &hi) {
+                *per_name.entry(k.name).or_default() += 1;
+            }
+            assert!(
+                per_name.values().all(|n| *n == 1),
+                "device {id}, chunk {chunk}: {per_name:?}"
+            );
+        }
+    }
+    let _ = ids;
+}
+
+/// A snapshot of a volume whose holder doesn't answer (it stopped
+/// renewing and watching, but its lease stands) is abandoned after 2 s,
+/// and changes nothing (volumes.md §10.3).
+#[test]
+fn a_snapshot_whose_holder_doesnt_quiesce_is_abandoned() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        drop(cl.attach(v.id).await.unwrap());
+        let other = Client::connect(meta, 6).await.unwrap();
+        let t = std::time::Instant::now();
+        let r = other.snapshot(v.id, "s").await;
+        assert!(
+            matches!(
+                r,
+                Err(ClientError::Server {
+                    code: Code::Busy,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+        assert!(t.elapsed() >= std::time::Duration::from_secs(2));
+        let after = other.volume(v.id).await.unwrap().unwrap();
+        assert!(after.snapshots.is_empty() && after.head_epoch == v.head_epoch);
+    });
+    c.stop();
+}
+
+/// Random snapshot, clone, rollback, flatten and delete operations on a
+/// family of volumes, with writes in between, against a model: every
+/// head and every snapshot must read back what the model holds after
+/// every step. `HS_SEED` picks one seed; by default three run.
+#[test]
+fn random_snapshot_operations_match_a_model() {
+    let seeds: Vec<u64> = match std::env::var("HS_SEED") {
+        Ok(s) => vec![s.parse().unwrap()],
+        Err(_) => vec![1, 2, 3],
+    };
+    for seed in seeds {
+        random_snapshot_ops(seed);
+    }
+}
+
+fn random_snapshot_ops(seed: u64) {
+    use std::collections::BTreeMap;
+    const BLOCKS: u64 = 16;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        // Small chunks would be nicer; whole blocks across two chunks do.
+        let size = 2 * CHUNK as u64;
+        let base = cl.create_volume(POOL, size, None, "base").await.unwrap();
+        // Per volume: its model (block -> fill) and its snapshots' models.
+        let mut heads: BTreeMap<u128, BTreeMap<u64, u8>> = BTreeMap::new();
+        let mut snaps: BTreeMap<u128, BTreeMap<u64, BTreeMap<u64, u8>>> = BTreeMap::new();
+        heads.insert(base.id, BTreeMap::new());
+        snaps.insert(base.id, BTreeMap::new());
+        let mut log: Vec<String> = Vec::new();
+        // Blocks spread over both chunks.
+        let block_off = |b: u64| (b % 2) * CHUNK as u64 + (b / 2) * 4096;
+        let check = |cl: std::rc::Rc<Client>,
+                     heads: BTreeMap<u128, BTreeMap<u64, u8>>,
+                     snaps: BTreeMap<u128, BTreeMap<u64, BTreeMap<u64, u8>>>,
+                     log: Vec<String>| async move {
+            for (id, m) in &heads {
+                let v = cl.volume(*id).await.unwrap().unwrap();
+                let got = cl
+                    .read_at(POOL, v.lineage, &v.layers(), 0, size)
+                    .await
+                    .unwrap();
+                for b in 0..BLOCKS {
+                    let at = block_off(b) as usize;
+                    let want = m.get(&b).copied().unwrap_or(0);
+                    assert!(
+                        got[at..at + 4096].iter().all(|x| *x == want),
+                        "seed {seed}: volume {id:x} block {b} isn't {want} after {log:?}"
+                    );
+                }
+                for (e, sm) in &snaps[id] {
+                    let s = v.snapshot(*e).unwrap().clone();
+                    let got = cl
+                        .read_at(POOL, v.lineage, &v.snapshot_layers(&s), 0, size)
+                        .await
+                        .unwrap();
+                    for b in 0..BLOCKS {
+                        let at = block_off(b) as usize;
+                        let want = sm.get(&b).copied().unwrap_or(0);
+                        assert!(
+                            got[at..at + 4096].iter().all(|x| *x == want),
+                            "seed {seed}: volume {id:x} snapshot {e} block {b} isn't {want} after {log:?}"
+                        );
+                    }
+                }
+            }
+        };
+        for step in 0..60u32 {
+            let ids: Vec<u128> = heads.keys().copied().collect();
+            let id = ids[rng.random_range(0..ids.len())];
+            match rng.random_range(0..10u32) {
+                0..=3 => {
+                    let b = rng.random_range(0..BLOCKS);
+                    let fill = rng.random_range(1..=255u8);
+                    let a = cl.attach(id).await.unwrap();
+                    a.write(block_off(b), vec![fill; 4096]).await.unwrap();
+                    a.detach().await.unwrap();
+                    heads.get_mut(&id).unwrap().insert(b, fill);
+                    log.push(format!("write {id:x} {b}={fill}"));
+                }
+                4 | 5 => {
+                    let s = cl.snapshot(id, "s").await.unwrap();
+                    let m = heads[&id].clone();
+                    snaps.get_mut(&id).unwrap().insert(s.epoch, m);
+                    log.push(format!("snapshot {id:x} @{}", s.epoch));
+                }
+                6 => {
+                    let es: Vec<u64> = snaps[&id].keys().copied().collect();
+                    if let Some(e) = es.get(rng.random_range(0..es.len().max(1))) {
+                        let k = cl.clone_snapshot(id, *e, "k", None).await.unwrap();
+                        heads.insert(k.id, snaps[&id][e].clone());
+                        snaps.insert(k.id, BTreeMap::new());
+                        log.push(format!("clone {id:x} @{e} -> {:x}", k.id));
+                    }
+                }
+                7 => {
+                    let es: Vec<u64> = snaps[&id].keys().copied().collect();
+                    if let Some(e) = es.get(rng.random_range(0..es.len().max(1))) {
+                        cl.rollback(id, *e).await.unwrap();
+                        let m = snaps[&id][e].clone();
+                        heads.insert(id, m);
+                        log.push(format!("rollback {id:x} @{e}"));
+                    }
+                }
+                8 => {
+                    let es: Vec<u64> = snaps[&id].keys().copied().collect();
+                    if let Some(e) = es.get(rng.random_range(0..es.len().max(1))) {
+                        match cl.delete_snapshot(id, *e).await {
+                            Ok(()) => {
+                                snaps.get_mut(&id).unwrap().remove(e);
+                                log.push(format!("delete {id:x} @{e}"));
+                            }
+                            Err(hyperstor_client::ClientError::SnapshotInUse(_)) => {
+                                log.push(format!("delete {id:x} @{e}: in use"));
+                            }
+                            Err(err) => panic!("seed {seed}: {err} after {log:?}"),
+                        }
+                    }
+                }
+                _ => match cl.flatten(id).await {
+                    Ok(_) => log.push(format!("flatten {id:x}")),
+                    Err(hyperstor_client::ClientError::Refused(_)) => {
+                        log.push(format!("flatten {id:x}: refused"))
+                    }
+                    Err(err) => panic!("seed {seed}: {err} after {log:?}"),
+                },
+            }
+            if step % 5 == 4 {
+                check(cl.clone(), heads.clone(), snaps.clone(), log.clone()).await;
+            }
+        }
+        check(cl.clone(), heads.clone(), snaps.clone(), log.clone()).await;
+        eprintln!("snapshot operations, seed {seed}: {log:?}");
+    });
+    c.stop();
+}
+
+/// Quiesce (D103, volumes.md §10.3): snapshots taken while the volume is
+/// written without pause never change afterwards, and each holds a value
+/// the writer had written.
+#[test]
+fn a_snapshot_never_changes_while_its_volume_is_written() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        let stop = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (st, w) = (stop.clone(), va.clone());
+        let writer = hyperstor_reactor::spawn(async move {
+            let mut n = 0u8;
+            while !st.get() {
+                n = n.wrapping_add(1).max(1);
+                w.write(0, vec![n; 4096]).await.unwrap();
+            }
+            n
+        });
+        let other = Client::connect(meta, 6).await.unwrap();
+        let mut taken = Vec::new();
+        for i in 0..5 {
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            let s = other.snapshot(v.id, &format!("s{i}")).await.unwrap();
+            let vol = other.volume(v.id).await.unwrap().unwrap();
+            let first = other
+                .read_at(POOL, vol.lineage, &vol.snapshot_layers(&s), 0, 4096)
+                .await
+                .unwrap();
+            assert!(first[0] != 0 && first.iter().all(|b| *b == first[0]));
+            taken.push((s, first));
+        }
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
+        stop.set(true);
+        let last = writer.await;
+        assert!(last > 5, "the writer kept writing ({last} writes)");
+        let vol = other.volume(v.id).await.unwrap().unwrap();
+        for (s, first) in taken {
+            let again = other
+                .read_at(POOL, vol.lineage, &vol.snapshot_layers(&s), 0, 4096)
+                .await
+                .unwrap();
+            assert!(
+                again == first,
+                "snapshot {} changed after it was taken",
+                s.epoch
+            );
+        }
+    });
+    c.stop();
+}
+
+/// Deleting a snapshot merges its versions into the next newer version
+/// only when nothing between reads them (implementation-notes.md I115):
+/// here a later snapshot, taken with no write between, reads exactly
+/// what the deleted one did.
+#[test]
+fn deleting_a_snapshot_keeps_what_a_later_one_reads() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, pattern(1, 8192)).await.unwrap();
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        let s2 = cl.snapshot(v.id, "s2").await.unwrap();
+        va.write(4096, pattern(2, 4096)).await.unwrap();
+        cl.delete_snapshot(v.id, s1.epoch).await.unwrap();
+        let vol = cl.volume(v.id).await.unwrap().unwrap();
+        let got = cl
+            .read_at(POOL, vol.lineage, &vol.snapshot_layers(&s2), 0, 8192)
+            .await
+            .unwrap();
+        assert!(
+            got == pattern(1, 8192),
+            "the later snapshot lost what it read"
+        );
+        let mut head = pattern(1, 8192);
+        head[4096..].copy_from_slice(&pattern(2, 4096));
+        assert!(va.read(0, 8192).await.unwrap() == head);
+    });
+    c.stop();
+}

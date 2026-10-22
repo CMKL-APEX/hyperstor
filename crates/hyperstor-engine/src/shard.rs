@@ -1459,6 +1459,14 @@ impl Shard {
         n
     }
 
+    /// Whether object `key` holds logical block `lb` (a hole doesn't).
+    pub fn holds(&self, key: &ObjKey, lb: u64) -> bool {
+        self.index
+            .objects
+            .get(key)
+            .is_some_and(|o| o.all_mapped(lb, 1))
+    }
+
     /// The versions of the object `key` names (every version of its pool,
     /// PG, namespace and name), oldest first.
     pub fn versions(&self, key: &ObjKey) -> Vec<u64> {

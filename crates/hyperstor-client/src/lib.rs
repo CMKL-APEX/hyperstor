@@ -7,6 +7,7 @@
 
 pub use hyperstor_rpc as rpc;
 
+pub mod snapshot;
 pub mod volume;
 
 use hyperstor_map::ClusterMap;
@@ -59,6 +60,12 @@ pub enum ClientError {
     LeaseLost(u128),
     #[error("volume {0:032x} is attached")]
     VolumeAttached(u128),
+    #[error("no snapshot at epoch {0}")]
+    NoSnapshot(u64),
+    #[error("the snapshot at epoch {0} has clones (or a rollback) that depend on it")]
+    SnapshotInUse(u64),
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// The name of a volume chunk object: lineage then chunk index.
@@ -68,11 +75,31 @@ pub fn chunk_name(lineage: u128, chunk: u64) -> Vec<u8> {
     n
 }
 
+/// The name of a chunk's versions in `branch` (engine.md §7.2): the chunk
+/// name, then the branch (big-endian), except for branch 0, which keeps
+/// the chunk name alone, as volumes had before branches.
+pub fn branch_name(chunk: &[u8], branch: u32) -> Vec<u8> {
+    let mut n = chunk.to_vec();
+    if branch != 0 {
+        n.extend_from_slice(&branch.to_be_bytes());
+    }
+    n
+}
+
 /// Where a request goes: a volume's chunk, or a named object (`.meta`).
 #[derive(Clone, Copy)]
 pub(crate) enum Route<'a> {
-    Chunk { lineage: u128, chunk: u64 },
-    Object { ns: u8, name: &'a [u8] },
+    /// A volume chunk's version: the chunk's name in `branch`, at `epoch`.
+    Chunk {
+        lineage: u128,
+        chunk: u64,
+        branch: u32,
+        epoch: u64,
+    },
+    Object {
+        ns: u8,
+        name: &'a [u8],
+    },
 }
 
 /// The PG of a named object: by a hash of its name.
@@ -101,7 +128,7 @@ pub struct Client {
     pub instance: u64,
 }
 
-pub(crate) fn random_u64() -> u64 {
+pub fn random_u64() -> u64 {
     let mut v = 0u64;
     // SAFETY: getrandom writes at most 8 bytes into `v`.
     unsafe { libc::getrandom(&mut v as *mut u64 as *mut libc::c_void, 8, 0) };
@@ -302,7 +329,7 @@ impl Client {
             let map = self.map();
             let p = map.pools.get(&pool).ok_or(ClientError::NoPool(pool))?;
             let pg = match route {
-                Route::Chunk { lineage, chunk } => pg_of(lineage, chunk, p.pg_count),
+                Route::Chunk { lineage, chunk, .. } => pg_of(lineage, chunk, p.pg_count),
                 Route::Object { name, .. } => object_pg(name, p.pg_count),
             };
             let info = map.pg(pool, pg).ok_or(ClientError::NoPrimary(pool, pg))?;
@@ -321,10 +348,15 @@ impl Client {
                 pg_epoch: info.epoch,
             };
             let key = match route {
-                Route::Chunk { lineage, chunk } => WireKey {
+                Route::Chunk {
+                    lineage,
+                    chunk,
+                    branch,
+                    epoch,
+                } => WireKey {
                     ns: NS_VOL,
-                    name: chunk_name(lineage, chunk),
-                    version: 0,
+                    name: branch_name(&chunk_name(lineage, chunk), branch),
+                    version: epoch,
                 },
                 Route::Object { ns, name } => WireKey {
                     ns,
@@ -396,6 +428,20 @@ impl Client {
         off: u64,
         data: Vec<u8>,
     ) -> Result<(), ClientError> {
+        self.write_at(pool, lineage, 0, 0, off, data).await
+    }
+
+    /// [`Self::write`] into `branch` of lineage `lineage`, at its head epoch
+    /// `epoch` (engine.md §7.2): each chunk's version `epoch`.
+    pub async fn write_at(
+        self: &Rc<Self>,
+        pool: u32,
+        lineage: u128,
+        branch: u32,
+        epoch: u64,
+        off: u64,
+        data: Vec<u8>,
+    ) -> Result<(), ClientError> {
         let pieces = self.pieces(pool, off, data.len() as u64)?;
         let data = Rc::new(data);
         let handles: Vec<_> = pieces
@@ -406,14 +452,18 @@ impl Client {
                 spawn(async move {
                     let piece = &data[roff as usize..(roff + n) as usize];
                     let crcs = block_crcs(piece);
+                    let route = Route::Chunk {
+                        lineage,
+                        chunk,
+                        branch,
+                        epoch,
+                    };
                     let (msg, _) = me
-                        .to_primary(pool, Route::Chunk { lineage, chunk }, piece, &|to, key| {
-                            Msg::Write {
-                                to,
-                                key,
-                                off: coff,
-                                crcs: crcs.clone(),
-                            }
+                        .to_primary(pool, route, piece, &|to, key| Msg::Write {
+                            to,
+                            key,
+                            off: coff,
+                            crcs: crcs.clone(),
                         })
                         .await?;
                     match msg {
@@ -445,14 +495,18 @@ impl Client {
             .map(|(chunk, coff, roff, n)| {
                 let me = self.clone();
                 spawn(async move {
+                    let route = Route::Chunk {
+                        lineage,
+                        chunk,
+                        branch: 0,
+                        epoch: 0,
+                    };
                     let (msg, payload) = me
-                        .to_primary(pool, Route::Chunk { lineage, chunk }, &[], &|to, key| {
-                            Msg::Read {
-                                to,
-                                key,
-                                off: coff,
-                                len: n,
-                            }
+                        .to_primary(pool, route, &[], &|to, key| Msg::Read {
+                            to,
+                            key,
+                            off: coff,
+                            len: n,
                         })
                         .await?;
                     match msg {
@@ -475,6 +529,79 @@ impl Client {
         Ok(out)
     }
 
+    /// Reads `len` bytes at `off` of a volume in lineage `lineage` through
+    /// `layers`: (branch, newest epoch) pairs, the volume's own first, then
+    /// its clone parents' (engine.md §7.2).
+    pub async fn read_at(
+        self: &Rc<Self>,
+        pool: u32,
+        lineage: u128,
+        layers: &[(u32, u64)],
+        off: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        let pieces = self.pieces(pool, off, len)?;
+        let layers: Rc<Vec<(u32, u64)>> = Rc::new(layers.to_vec());
+        let handles: Vec<_> = pieces
+            .into_iter()
+            .map(|(chunk, coff, roff, n)| {
+                let (me, layers) = (self.clone(), layers.clone());
+                spawn(async move {
+                    let route = Route::Chunk {
+                        lineage,
+                        chunk,
+                        branch: 0,
+                        epoch: 0,
+                    };
+                    let (msg, payload) = me
+                        .to_primary(pool, route, &[], &|to, key| Msg::ReadAt {
+                            to,
+                            key,
+                            layers: layers.to_vec(),
+                            off: coff,
+                            len: n,
+                        })
+                        .await?;
+                    match msg {
+                        Msg::ReadOk { crcs } => {
+                            verify_crcs(&payload, &crcs).map_err(|_| ClientError::Checksum)?;
+                            Ok((roff, payload))
+                        }
+                        m => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                            "unexpected {m:?}"
+                        )))),
+                    }
+                })
+            })
+            .collect();
+        let mut out = vec![0u8; len as usize];
+        for h in handles {
+            let (roff, p) = h.await?;
+            out[roff as usize..roff as usize + p.len()].copy_from_slice(&p);
+        }
+        Ok(out)
+    }
+
+    /// Sends `make`'s message about chunk `chunk` of `lineage` (its name in
+    /// `branch`, at `epoch`) to the chunk's primary.
+    pub(crate) async fn to_chunk(
+        &self,
+        pool: u32,
+        lineage: u128,
+        chunk: u64,
+        branch: u32,
+        epoch: u64,
+        make: &dyn Fn(Target, WireKey) -> Msg,
+    ) -> Result<rpc::Reply, ClientError> {
+        let route = Route::Chunk {
+            lineage,
+            chunk,
+            branch,
+            epoch,
+        };
+        self.to_primary(pool, route, &[], make).await
+    }
+
     /// Applies `ops` to the object `name` of namespace `ns` in `pool`,
     /// atomically, if its assertions hold (metadata.md §4.2): an assertion
     /// that fails is `ClientError::Server { code: Conflict, .. }`, and
@@ -489,18 +616,6 @@ impl Client {
         ops: &[hyperstor_proto::WireOp],
     ) -> Result<(), ClientError> {
         self.exec_at(pool, Route::Object { ns, name }, ops).await
-    }
-
-    /// [`Self::exec`] on a volume chunk (its data pool's PG).
-    pub(crate) async fn exec_chunk(
-        &self,
-        pool: u32,
-        lineage: u128,
-        chunk: u64,
-        ops: &[hyperstor_proto::WireOp],
-    ) -> Result<(), ClientError> {
-        self.exec_at(pool, Route::Chunk { lineage, chunk }, ops)
-            .await
     }
 
     async fn exec_at(

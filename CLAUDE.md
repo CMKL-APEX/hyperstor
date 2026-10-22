@@ -17,7 +17,9 @@ design is split by topic, with section numbers kept across files.
   leases (attach, detach, renewals), the blocklist and forced takeovers,
   down and out, failed devices and slow replicas, a primary repairing
   its own copy, and the in-process fault rig; volumes as ublk block
-  devices (`hyperstor-ublk`, our own ublk on the reactor); the first part of AD0 and AD1: the cluster API on the map
+  devices (`hyperstor-ublk`, our own ublk on the reactor); snapshots,
+  clones, rollback and flatten (HS4; consistency groups and the read
+  cache next); the first part of AD0 and AD1: the cluster API on the map
   service over mutual TLS with roles and stable error reasons,
   `hyperstorctl` (checked against every RPC of the protos), join tokens
   (replicated through Raft) for storage hosts and map service members
@@ -30,7 +32,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D92, D94–D97 and D101–D105 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60, D93, D98–D100 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I121, and every host check (G1–G23,
+  rule, F1–F12 in detail, I1–I78, I80–I123, and every host check (G1–G23,
   FG1–FG2).
 - **Next:** the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which

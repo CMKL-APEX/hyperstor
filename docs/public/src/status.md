@@ -84,7 +84,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Engine: chunk versions read through layers, and merged without copying | Done |
-| Snapshots, clones, rollback, flatten and snapshot deletion | Planned |
+| Snapshots, clones, rollback, flatten and snapshot deletion | Done |
 | Consistency groups | Planned |
 | The host read cache, in the client library | Planned |
 

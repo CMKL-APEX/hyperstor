@@ -18,7 +18,7 @@ use hyperstor_codec::{Dec, Enc};
 use hyperstor_map::META_POOL;
 use hyperstor_proto::{
     Code, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEW_EVERY, LEASE_RENEWED, LEASE_RW, Looked, Msg,
-    WireOp,
+    WATCH_QUIESCE, WireOp,
 };
 use hyperstor_reactor::time::sleep;
 use std::cell::{Cell, RefCell};
@@ -63,7 +63,7 @@ pub fn header_deleting(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> 
         return false;
     };
     // Format, pool, size, lineage, then the state.
-    h.len() > 1 + 4 + 8 + 16 && h[0] == 1 && h[1 + 4 + 8 + 16] != 0
+    h.len() > 1 + 4 + 8 + 16 && (h[0] == 1 || h[0] == 2) && h[1 + 4 + 8 + 16] != 0
 }
 
 /// The name of volume `id`'s header object.
@@ -93,15 +93,64 @@ pub struct Volume {
     pub version: u64,
     /// The client instance that has it attached (holds its lease).
     pub holder: Option<u64>,
+    /// The epoch writes go to now (D10): each snapshot takes the epoch it
+    /// was, and moves this on.
+    pub head_epoch: u64,
+    /// Its branch in the lineage (D21): 0 for a volume created as such, a
+    /// new one for a clone or after a rollback.
+    pub branch: u32,
+    /// The branches it reads through, parent first: each (branch, epoch)
+    /// a clone or rollback was cut from (engine.md §7.2).
+    pub chain: Vec<(u32, u64)>,
+    pub snapshots: Vec<Snapshot>,
+}
+
+/// A snapshot of a volume (volumes.md §10.3): the volume as it was at
+/// `epoch` of `branch` (its branch when taken).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub branch: u32,
+    pub epoch: u64,
+    pub name: String,
+    /// The consistency group it was taken in; 0 if none.
+    pub group: u128,
+    /// Being deleted: its versions are being merged.
+    pub deleting: bool,
+    /// The chain below its branch when it was taken: what it reads through
+    /// after its own branch.
+    pub chain: Vec<(u32, u64)>,
+}
+
+impl Volume {
+    /// The layers a read at the head goes through: its own branch up to
+    /// the head epoch, then its chain.
+    pub fn layers(&self) -> Vec<(u32, u64)> {
+        std::iter::once((self.branch, self.head_epoch))
+            .chain(self.chain.iter().copied())
+            .collect()
+    }
+
+    /// The layers a read of snapshot `s` goes through.
+    pub fn snapshot_layers(&self, s: &Snapshot) -> Vec<(u32, u64)> {
+        std::iter::once((s.branch, s.epoch))
+            .chain(s.chain.iter().copied())
+            .collect()
+    }
+
+    pub fn snapshot(&self, epoch: u64) -> Option<&Snapshot> {
+        self.snapshots.iter().find(|s| s.epoch == epoch)
+    }
 }
 
 fn dir_key(pool: u32, id: u128) -> Vec<u8> {
     format!("d/{pool}/{:02}", id % DIR_SHARDS).into_bytes()
 }
 
+/// A header: format 2 adds epochs, branches and snapshots (HS4); a format
+/// 1 header reads as branch 0 at epoch 0, with none.
 fn encode(v: &Volume) -> Vec<u8> {
     let mut e = Enc::new();
-    e.u8(1)
+    e.u8(2)
         .u32(v.pool)
         .u64(v.size)
         .u128(v.lineage)
@@ -110,10 +159,24 @@ fn encode(v: &Volume) -> Vec<u8> {
             VolumeState::Deleting => 1,
         })
         .str(&v.name);
+    e.u64(v.head_epoch).u32(v.branch);
+    e.seq(&v.chain, |e, (b, ep)| {
+        e.u32(*b).u64(*ep);
+    });
+    e.seq(&v.snapshots, |e, s| {
+        e.u32(s.branch)
+            .u64(s.epoch)
+            .str(&s.name)
+            .u128(s.group)
+            .bool(s.deleting);
+        e.seq(&s.chain, |e, (b, ep)| {
+            e.u32(*b).u64(*ep);
+        });
+    });
     e.into_vec()
 }
 
-fn attr<'a>(l: &'a Looked, name: &[u8]) -> Option<&'a [u8]> {
+pub(crate) fn attr<'a>(l: &'a Looked, name: &[u8]) -> Option<&'a [u8]> {
     l.attrs
         .iter()
         .find(|(k, _)| k == name)
@@ -127,11 +190,11 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
         .ok_or_else(|| bad("no version"))?;
     let mut d = Dec::new(attr(l, HDR).ok_or_else(|| bad("no header"))?);
     let fmt = d.u8().map_err(|e| bad(&e.to_string()))?;
-    if fmt != 1 {
+    if fmt != 1 && fmt != 2 {
         return Err(bad(&format!("format {fmt}")));
     }
     let v = (|| {
-        Ok::<_, hyperstor_codec::DecodeError>(Volume {
+        let mut v = Volume {
             id,
             pool: d.u32()?,
             size: d.u64()?,
@@ -144,14 +207,34 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             name: d.str()?.to_string(),
             version,
             holder: attr(l, LEASE_ATTR).and_then(|h| decode_holder(h).map(|h| h.0)),
-        })
+            head_epoch: 0,
+            branch: 0,
+            chain: Vec::new(),
+            snapshots: Vec::new(),
+        };
+        if fmt == 2 {
+            v.head_epoch = d.u64()?;
+            v.branch = d.u32()?;
+            v.chain = d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?;
+            v.snapshots = d.seq(4 + 8 + 4 + 16 + 1 + 4, |d| {
+                Ok(Snapshot {
+                    branch: d.u32()?,
+                    epoch: d.u64()?,
+                    name: d.str()?.to_string(),
+                    group: d.u128()?,
+                    deleting: d.bool()?,
+                    chain: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
+                })
+            })?;
+        }
+        Ok::<_, hyperstor_codec::DecodeError>(v)
     })()
     .map_err(|e| bad(&e.to_string()))?;
     Ok(v)
 }
 
 /// Replace a header at version `from` with `v` (whose version is next).
-fn cas(from: u64, v: &Volume) -> Vec<WireOp> {
+pub(crate) fn cas(from: u64, v: &Volume) -> Vec<WireOp> {
     vec![
         WireOp::AssertAttr {
             name: VER.to_vec(),
@@ -162,7 +245,7 @@ fn cas(from: u64, v: &Volume) -> Vec<WireOp> {
     ]
 }
 
-fn conflict(e: &ClientError) -> bool {
+pub(crate) fn conflict(e: &ClientError) -> bool {
     matches!(
         e,
         ClientError::Server {
@@ -203,12 +286,24 @@ impl Client {
             name: name.to_string(),
             version: 1,
             holder: None,
+            head_epoch: 1,
+            branch: 0,
+            chain: Vec::new(),
+            snapshots: Vec::new(),
         };
+        self.put_new(&v).await?;
+        Ok(v)
+    }
+
+    /// Writes a new volume's header, then its directory entry. A retry
+    /// after an unknown outcome is recognised by the creation token.
+    pub(crate) async fn put_new(&self, v: &Volume) -> Result<(), ClientError> {
+        let (id, pool) = (v.id, v.pool);
         let token = format!("{:016x}{:016x}", self.instance, random_u64()).into_bytes();
         let ops = [
             WireOp::AssertAbsent,
             WireOp::SetAttr(VER.to_vec(), b"1".to_vec()),
-            WireOp::SetAttr(HDR.to_vec(), encode(&v)),
+            WireOp::SetAttr(HDR.to_vec(), encode(v)),
             WireOp::SetAttr(BY.to_vec(), token.clone()),
         ];
         match self.exec(META_POOL, NS_META, &header_key(id), &ops).await {
@@ -236,7 +331,7 @@ impl Client {
             ],
         )
         .await?;
-        Ok(v)
+        Ok(())
     }
 
     /// The volume `id`, if it exists.
@@ -376,6 +471,15 @@ impl Client {
             if v.holder.is_some() && v.holder != me {
                 return Err(ClientError::VolumeAttached(id));
             }
+            // Not while another volume's branch reads one of its branches.
+            let (own, branches) = self.own_branches(&v).await?;
+            for b in branches.iter().filter(|b| b.volume != id) {
+                if let Some((_, e)) = b.chain.iter().find(|(x, _)| own.contains(x))
+                    && self.branch_reads(b).await?
+                {
+                    return Err(ClientError::SnapshotInUse(*e));
+                }
+            }
             let new = Volume {
                 state: VolumeState::Deleting,
                 version: v.version + 1,
@@ -399,8 +503,9 @@ impl Client {
                 Err(e) => return Err(e),
             }
         }
-        // The data: every chunk the volume can have, a few at a time. A
-        // chunk never written is a delete of nothing.
+        // The data: every version of every chunk in each branch it owns,
+        // a few chunks at a time. A chunk never written has none.
+        let (own, _) = self.own_branches(&v).await?;
         let chunk = u64::from(
             self.map()
                 .pools
@@ -409,20 +514,25 @@ impl Client {
                 .chunk_size,
         );
         let chunks = v.size.div_ceil(chunk);
-        let mut next = 0;
-        while next < chunks {
-            let batch: Vec<_> = (next..(next + 32).min(chunks))
-                .map(|c| {
-                    let me = self.clone();
-                    hyperstor_reactor::spawn(async move {
-                        me.exec_chunk(v.pool, v.lineage, c, &[WireOp::Delete]).await
+        for b in &own {
+            let mut next = 0;
+            while next < chunks {
+                let batch: Vec<_> = (next..(next + 32).min(chunks))
+                    .map(|c| {
+                        let (me, b) = (self.clone(), *b);
+                        hyperstor_reactor::spawn(async move {
+                            me.drop_versions(v.pool, v.lineage, c, b, 0).await
+                        })
                     })
-                })
-                .collect();
-            for b in batch {
-                b.await?;
+                    .collect();
+                for x in batch {
+                    x.await?;
+                }
+                next += 32;
             }
-            next += 32;
+        }
+        for b in own.iter().filter(|b| **b != 0) {
+            self.forget_branch(v.lineage, *b).await?;
         }
         self.exec(
             META_POOL,
@@ -457,6 +567,10 @@ pub struct Attached {
     client: Rc<Client>,
     volume: RefCell<Volume>,
     lost: Cell<bool>,
+    /// Quiesced for a snapshot: writes wait (D103).
+    paused: Cell<bool>,
+    /// Writes in flight, which a quiesce waits for.
+    inflight: Cell<u32>,
 }
 
 impl Attached {
@@ -496,16 +610,38 @@ impl Attached {
         r
     }
 
+    /// Writes at the head epoch of the volume's branch. While the holder
+    /// is quiesced for a snapshot, waits.
     pub async fn write(&self, off: u64, data: Vec<u8>) -> Result<(), ClientError> {
+        while self.paused.get() {
+            sleep(Duration::from_millis(1)).await;
+        }
         let v = self.usable(off, data.len() as u64)?;
-        let r = self.client.write(v.pool, v.lineage, off, data).await;
+        self.inflight.set(self.inflight.get() + 1);
+        let r = self
+            .client
+            .write_at(v.pool, v.lineage, v.branch, v.head_epoch, off, data)
+            .await;
+        self.inflight.set(self.inflight.get() - 1);
         self.check(r)
     }
 
+    /// Reads at the head, through the volume's versions and its chain.
     pub async fn read(&self, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
         let v = self.usable(off, len)?;
-        let r = self.client.read(v.pool, v.lineage, off, len).await;
+        let r = self
+            .client
+            .read_at(v.pool, v.lineage, &v.layers(), off, len)
+            .await;
         self.check(r)
+    }
+
+    /// Reads the header again (after news from the watch).
+    async fn refresh(&self) {
+        let id = self.volume.borrow().id;
+        if let Ok(Some(v)) = self.client.volume(id).await {
+            *self.volume.borrow_mut() = v;
+        }
     }
 
     /// Gives the lease up; I/O through this handle fails from now on.
@@ -654,12 +790,72 @@ impl Client {
             client: self.clone(),
             volume: RefCell::new(v),
             lost: Cell::new(false),
+            paused: Cell::new(false),
+            inflight: Cell::new(0),
         });
         self.attached.borrow_mut().insert(id, Rc::downgrade(&a));
+        hyperstor_reactor::spawn(self.clone().watch(Rc::downgrade(&a)));
         if !self.renewing.replace(true) {
             hyperstor_reactor::spawn(self.clone().renew_leases());
         }
         Ok(a)
+    }
+
+    /// Keeps a watch on an attached volume's header (D103) until it is
+    /// detached or lost: reads the header again on news, and quiesces for
+    /// a snapshot (stops writing, drains, tells the primary, and resumes at
+    /// the new epoch once the snapshot is taken or abandoned).
+    async fn watch(self: Rc<Self>, a: std::rc::Weak<Attached>) {
+        loop {
+            let Some(at) = a.upgrade().filter(|at| !at.lost.get()) else {
+                return;
+            };
+            let (id, version) = {
+                let v = at.volume.borrow();
+                (v.id, v.version)
+            };
+            drop(at);
+            let key = header_key(id);
+            let route = Route::Object {
+                ns: NS_META,
+                name: &key,
+            };
+            let r = self
+                .to_primary(META_POOL, route, &[], &|to, key| Msg::Watch {
+                    to,
+                    key,
+                    version,
+                })
+                .await;
+            let Some(at) = a.upgrade().filter(|at| !at.lost.get()) else {
+                return;
+            };
+            match r {
+                Ok((
+                    Msg::WatchOk {
+                        event: WATCH_QUIESCE,
+                        token,
+                    },
+                    _,
+                )) => {
+                    at.paused.set(true);
+                    while at.inflight.get() > 0 {
+                        sleep(Duration::from_millis(1)).await;
+                    }
+                    let _ = self
+                        .to_primary(META_POOL, route, &[], &|to, key| Msg::Quiesced {
+                            to,
+                            key,
+                            token,
+                        })
+                        .await;
+                    at.refresh().await;
+                    at.paused.set(false);
+                }
+                Ok((Msg::WatchOk { .. }, _)) => at.refresh().await,
+                _ => sleep(Duration::from_millis(200)).await,
+            }
+        }
     }
 
     /// Marks every attached volume's lease lost.
@@ -773,6 +969,17 @@ mod tests {
             name: "disk-a".into(),
             version: 3,
             holder: Some(9),
+            head_epoch: 5,
+            branch: 2,
+            chain: vec![(0, 3)],
+            snapshots: vec![Snapshot {
+                branch: 2,
+                epoch: 4,
+                name: "s".into(),
+                group: 0,
+                deleting: false,
+                chain: vec![(0, 3)],
+            }],
         };
         let l = Looked {
             size: 0,
