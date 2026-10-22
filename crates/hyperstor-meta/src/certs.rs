@@ -48,6 +48,9 @@ pub struct Revoked {
 /// stays on the list, with a day's margin.
 pub const UNKNOWN_KEEP: u64 = 31 * 86400;
 
+/// Revocations of a whole identity are keyed `id:<identity>`.
+pub const ID_PREFIX: &str = "id:";
+
 fn enc_issued(i: &Issued) -> Vec<u8> {
     let mut e = Enc::new();
     e.str(&i.identity)
@@ -151,8 +154,20 @@ impl Certs {
                 why: "a serial is hex digits".into(),
             });
         }
+        self.put(&serial, true, by, now)
+    }
+
+    /// Revokes every certificate of `identity` issued before `now`
+    /// (`hyperstor://<cluster>/<role>/<id>`), kept for a leaf's life: how a
+    /// forced start alone keeps the other members out (D85), whether or
+    /// not their certificates were recorded. One issued later is good.
+    pub fn revoke_identity(&self, identity: &str, by: &str, now: u64) -> Result<Revoked, Error> {
+        self.put(&format!("{ID_PREFIX}{identity}"), false, by, now)
+    }
+
+    fn put(&self, key: &str, by_serial: bool, by: &str, now: u64) -> Result<Revoked, Error> {
         let entry = |until| Revoked {
-            serial: serial.clone(),
+            serial: key.to_string(),
             until_unix: until,
             revoked_unix: now,
             by: by.to_string(),
@@ -162,9 +177,9 @@ impl Certs {
                 let mut g = lock(m);
                 let until =
                     g.0.iter()
-                        .find(|x| x.serial == serial)
+                        .find(|x| by_serial && x.serial == key)
                         .map_or(now + UNKNOWN_KEEP, |x| x.not_after_unix);
-                g.1.retain(|x| x.until_unix > now && x.serial != serial);
+                g.1.retain(|x| x.until_unix > now && x.serial != key);
                 let r = entry(until);
                 g.1.push(r.clone());
                 Ok(r)
@@ -174,10 +189,14 @@ impl Certs {
                     let issued = tx
                         .open_table(definition::<store::MapSchema>(Table::Issued))
                         .map_err(StoreError::from)?;
-                    let found = issued
-                        .get(serial.as_str())
-                        .map_err(StoreError::from)?
-                        .and_then(|v| dec_issued(&serial, v.value()).ok());
+                    let found = if by_serial {
+                        issued
+                            .get(key)
+                            .map_err(StoreError::from)?
+                            .and_then(|v| dec_issued(key, v.value()).ok())
+                    } else {
+                        None
+                    };
                     found.map_or(now + UNKNOWN_KEEP, |x| x.not_after_unix)
                 };
                 let mut t = tx
@@ -194,10 +213,24 @@ impl Certs {
                     t.remove(k.as_str()).map_err(StoreError::from)?;
                 }
                 let r = entry(until.max(now + 1));
-                t.insert(serial.as_str(), enc_revoked(&r).as_slice())
+                t.insert(key, enc_revoked(&r).as_slice())
                     .map_err(StoreError::from)?;
                 Ok(r)
             }),
+        }
+    }
+
+    fn entry(&self, key: &str) -> Option<Revoked> {
+        match &self.0 {
+            Kind::Memory(m) => lock(m).1.iter().find(|r| r.serial == key).cloned(),
+            Kind::Replicated(db) => (|| {
+                let txn = db.begin_read().ok()?;
+                let t = txn
+                    .open_table(definition::<store::MapSchema>(Table::Revoked))
+                    .ok()?;
+                let v = t.get(key).ok()??;
+                dec_revoked(key, v.value()).ok()
+            })(),
         }
     }
 
@@ -205,21 +238,27 @@ impl Certs {
     /// can't be read counts as not revoked: the check never locks the
     /// cluster out of its own API.
     pub fn is_revoked(&self, serial: &str, now: u64) -> bool {
-        match &self.0 {
-            Kind::Memory(m) => lock(m)
-                .1
-                .iter()
-                .any(|r| r.serial == serial && r.until_unix > now),
-            Kind::Replicated(db) => (|| {
-                let txn = db.begin_read().ok()?;
-                let t = txn
-                    .open_table(definition::<store::MapSchema>(Table::Revoked))
-                    .ok()?;
-                let v = t.get(serial).ok()??;
-                dec_revoked(serial, v.value()).ok()
-            })()
-            .is_some_and(|r| r.until_unix > now),
+        self.entry(serial).is_some_and(|r| r.until_unix > now)
+    }
+
+    /// Whether the certificate `der` is revoked: by its serial, or by its
+    /// identity for certificates issued until that identity was revoked.
+    pub fn is_revoked_cert(&self, der: &[u8], now: u64) -> bool {
+        if hyperstor_pki::serial_of(der).is_some_and(|s| self.is_revoked(&s, now)) {
+            return true;
         }
+        let (Some(who), Some(issued)) = (
+            hyperstor_pki::identity_of(der),
+            hyperstor_pki::issued_unix(der),
+        ) else {
+            return false;
+        };
+        self.entry(&format!("{ID_PREFIX}{}", who.uri()))
+            // At or before: certificates carry whole seconds, and one issued
+            // in the same second as the revocation may predate it. A member
+            // joining afresh gets its new one long after (a forced start
+            // alone is done by hand, offline).
+            .is_some_and(|r| r.until_unix > now && issued <= r.revoked_unix)
     }
 
     /// The certificates recorded and the revocations, from this member's
@@ -303,6 +342,45 @@ mod tests {
             let (iss, rev) = c.list().unwrap();
             assert!(!rev.iter().any(|r| r.serial == "abc1"), "{rev:?}");
             assert_eq!(iss.len(), 1);
+        }
+    }
+
+    /// Revoking an identity refuses its certificates issued before, and
+    /// none issued after (D85's forced start alone).
+    #[test]
+    fn identity_revocations_cover_older_certificates_only() {
+        use rustls::pki_types::pem::PemObject;
+        let root = hyperstor_pki::new_root("8").unwrap();
+        let ca = hyperstor_pki::new_intermediate(&root, "8").unwrap();
+        let who = hyperstor_pki::Identity {
+            cluster: "8".into(),
+            role: hyperstor_pki::Role::Meta,
+            id: "2".into(),
+        };
+        let der = |p: &hyperstor_pki::Pem| {
+            rustls::pki_types::CertificateDer::pem_slice_iter(p.cert.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+                .to_vec()
+        };
+        let old = der(&hyperstor_pki::issue(&ca, &who, &[], &[], 30).unwrap());
+        let issued = hyperstor_pki::issued_unix(&old).unwrap();
+        for (c, _dir) in both() {
+            c.revoke_identity(&who.uri(), "test", issued + 10).unwrap();
+            assert!(c.is_revoked_cert(&old, issued + 20), "older: refused");
+            // Issued in the same second as the revocation: revoked too.
+            c.revoke_identity(&who.uri(), "test", issued).unwrap();
+            assert!(c.is_revoked_cert(&old, issued + 20), "same second: refused");
+            // Another identity's certificate is untouched.
+            let other = hyperstor_pki::Identity {
+                id: "3".into(),
+                ..who.clone()
+            };
+            let o = der(&hyperstor_pki::issue(&ca, &other, &[], &[], 30).unwrap());
+            assert!(!c.is_revoked_cert(&o, issued + 20));
+            // Kept a leaf's life.
+            assert!(!c.is_revoked_cert(&old, issued + 10 + UNKNOWN_KEEP));
         }
     }
 }

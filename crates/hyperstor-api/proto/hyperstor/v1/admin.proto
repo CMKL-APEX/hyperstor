@@ -44,6 +44,20 @@ service MapService {
   rpc GetMapBackup(GetMapBackupRequest) returns (GetMapBackupResponse);
 }
 
+// The map service's members (decisions.md D87).
+service MemberService {
+  // Voters and learners, with their addresses, and who leads. Read.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+
+  // Adds a member, already running and joined with a meta token: a
+  // learner until it has caught up, then a voter. On the leader. Write.
+  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
+
+  // Removes a member; refused below three voters unless forced. On the
+  // leader. Write.
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+}
+
 // Changes to nodes that run as operations.
 service NodeService {
   // Takes every device of a node out, so its PGs move elsewhere, and
@@ -187,6 +201,43 @@ message GetMapBackupResponse {
   bytes backup = 1;
   string cluster_id = 2 [json_name = "cluster_id"];
   uint64 epoch = 3;
+}
+
+message Member {
+  uint64 id = 1;
+  // Where it talks Raft, and where it serves the map (D72).
+  string raft_address = 2 [json_name = "raft_address"];
+  string map_address = 3 [json_name = "map_address"];
+  // A voter, or a learner still catching up.
+  bool voter = 4;
+  bool leader = 5;
+}
+
+message ListMembersRequest {}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+  // The member that answered.
+  uint64 me = 2;
+}
+
+message AddMemberRequest {
+  uint64 id = 1;
+  string raft_address = 2 [json_name = "raft_address"];
+  string map_address = 3 [json_name = "map_address"];
+}
+
+message AddMemberResponse {
+  repeated Member members = 1;
+}
+
+message RemoveMemberRequest {
+  uint64 id = 1;
+  bool force = 2;
+}
+
+message RemoveMemberResponse {
+  repeated Member members = 1;
 }
 
 message DrainNodeRequest {

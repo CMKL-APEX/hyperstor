@@ -27,8 +27,9 @@ use crate::tokens::{Record, TokenError};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    CaService, CaServiceExt, MapService, MapServiceExt, NodeService, NodeServiceExt,
-    OperationService, OperationServiceExt, TokenService, TokenServiceExt,
+    CaService, CaServiceExt, MapService, MapServiceExt, MemberService, MemberServiceExt,
+    NodeService, NodeServiceExt, OperationService, OperationServiceExt, TokenService,
+    TokenServiceExt,
 };
 use hyperstor_pki::{Identity, Pem, Role};
 use hyperstor_reactor::chan::oneshot;
@@ -52,6 +53,8 @@ pub struct Signing {
     pub certs: Arc<crate::certs::Certs>,
     /// The replicated store, for backups (D86); none without `--data`.
     pub store: Option<Arc<crate::store::Db>>,
+    /// Member changes (D87); none without `--data`.
+    pub members: Option<tokio::sync::mpsc::UnboundedSender<crate::replica::MemberOp>>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -67,12 +70,12 @@ pub(super) struct State {
 }
 
 impl State {
-    /// Whether the certificate with `serial` is revoked; false when this
-    /// member keeps no list (no `--ca`).
-    pub(super) fn is_revoked(&self, serial: &str) -> bool {
+    /// Whether the certificate `der` is revoked (by serial or identity);
+    /// false when this member keeps no list (no `--ca`).
+    pub(super) fn is_revoked(&self, der: &[u8]) -> bool {
         self.signing
             .as_ref()
-            .is_some_and(|s| s.certs.is_revoked(serial, now_unix()))
+            .is_some_and(|s| s.certs.is_revoked_cert(der, now_unix()))
     }
 
     pub(super) fn new(signing: Option<Signing>, root: Option<String>, api_address: String) -> Self {
@@ -90,6 +93,7 @@ pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc:
     let router = CaServiceExt::register(api.clone(), router);
     let router = NodeServiceExt::register(api.clone(), router);
     let router = MapServiceExt::register(api.clone(), router);
+    let router = MemberServiceExt::register(api.clone(), router);
     OperationServiceExt::register(api, router)
 }
 
@@ -654,6 +658,155 @@ fn revoked_pb(r: &crate::certs::Revoked) -> pb::RevokedSerial {
         revoked_unix: r.revoked_unix,
         revoked_by: r.by.clone(),
         ..Default::default()
+    }
+}
+
+fn members_pb(m: &crate::replica::Members) -> Vec<pb::Member> {
+    let one = |x: &crate::replica::Member, voter: bool| pb::Member {
+        id: x.id,
+        raft_address: x.raft.to_string(),
+        map_address: x.map.to_string(),
+        voter,
+        leader: m.leader == Some(x.id),
+        ..Default::default()
+    };
+    m.voters
+        .iter()
+        .map(|x| one(x, true))
+        .chain(m.learners.iter().map(|x| one(x, false)))
+        .collect()
+}
+
+impl Api {
+    fn member_ops(
+        &self,
+    ) -> Result<&tokio::sync::mpsc::UnboundedSender<crate::replica::MemberOp>, ConnectError> {
+        self.signing()?.0.members.as_ref().ok_or_else(|| {
+            with_reason(
+                ConnectError::failed_precondition(
+                    "this map service runs no Raft group (no --data)",
+                ),
+                "no_store",
+            )
+        })
+    }
+
+    async fn member_change(
+        &self,
+        op: impl FnOnce(
+            hyperstor_reactor::chan::OneSender<Result<crate::replica::Members, String>>,
+        ) -> crate::replica::MemberOp,
+    ) -> Result<crate::replica::Members, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.member_ops()?
+            .send(op(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        rx.recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))?
+            .map_err(|e| {
+                if e.contains("isn't the leader") {
+                    with_reason(ConnectError::unavailable(e), "not_leader")
+                } else if e.starts_with("no member") {
+                    with_reason(ConnectError::not_found(e), "not_found")
+                } else {
+                    with_reason(ConnectError::failed_precondition(e), "member_change")
+                }
+            })
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl MemberService for Api {
+    async fn list_members(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::ListMembersRequest>,
+    ) -> ServiceResult<pb::ListMembersResponse> {
+        self.authorize(&ctx, "ListMembers", "members", false)?;
+        let (reply, rx) = oneshot();
+        self.member_ops()?
+            .send(crate::replica::MemberOp::List(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let m = rx
+            .recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))?;
+        Ok(pb::ListMembersResponse {
+            members: members_pb(&m),
+            me: m.me,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn add_member(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::AddMemberRequest>,
+    ) -> ServiceResult<pb::AddMemberResponse> {
+        let target = format!("member {} at {}", req.id, req.raft_address);
+        let who = self.authorize(&ctx, "AddMember", &target, true)?;
+        let parse = |a: &str, what: &str| {
+            a.parse::<SocketAddr>()
+                .map_err(|_| invalid(format!("{what} {a}: not an address"), "invalid_argument"))
+        };
+        if req.id == 0 {
+            return Err(invalid("member numbers start at 1", "invalid_argument"));
+        }
+        let member = crate::replica::Member {
+            id: req.id,
+            raft: parse(req.raft_address, "raft_address")?,
+            map: parse(req.map_address, "map_address")?,
+        };
+        let r = self
+            .member_change(|reply| crate::replica::MemberOp::Add { member, reply })
+            .await;
+        audit(
+            &who,
+            "AddMember",
+            &target,
+            &match &r {
+                Ok(m) => format!("ok, {} voters", m.voters.len()),
+                Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            },
+        );
+        Ok(pb::AddMemberResponse {
+            members: members_pb(&r?),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn remove_member(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RemoveMemberRequest>,
+    ) -> ServiceResult<pb::RemoveMemberResponse> {
+        let target = format!(
+            "member {}{}",
+            req.id,
+            if req.force { " (forced)" } else { "" }
+        );
+        let who = self.authorize(&ctx, "RemoveMember", &target, true)?;
+        let (id, force) = (req.id, req.force);
+        let r = self
+            .member_change(|reply| crate::replica::MemberOp::Remove { id, force, reply })
+            .await;
+        audit(
+            &who,
+            "RemoveMember",
+            &target,
+            &match &r {
+                Ok(m) => format!("ok, {} voters", m.voters.len()),
+                Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            },
+        );
+        Ok(pb::RemoveMemberResponse {
+            members: members_pb(&r?),
+            ..Default::default()
+        }
+        .into())
     }
 }
 

@@ -263,13 +263,11 @@ impl Api {
                     ));
                 }
                 // A revoked certificate (D56) gets nothing, not even renewal.
-                let serial = ctx
-                    .peer_certs()
-                    .and_then(|c| c.first())
-                    .and_then(|leaf| hyperstor_pki::serial_of(leaf));
-                if let Some(serial) = serial
-                    && self.admin.is_revoked(&serial)
+                let leaf = ctx.peer_certs().and_then(|c| c.first());
+                if let Some(leaf) = leaf
+                    && self.admin.is_revoked(leaf)
                 {
+                    let serial = hyperstor_pki::serial_of(leaf).unwrap_or_default();
                     return Err(refuse(
                         &who.uri(),
                         with_reason(
