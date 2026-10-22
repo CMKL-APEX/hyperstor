@@ -62,6 +62,26 @@ cargo test --workspace --release
   an operator would. It refuses stale binaries, so build first.
   `scripts/e2e.sh` runs it on its own.
 
+**The web UI** (`crates/hyperstor-mgmt/ui`: React, Vite, TypeScript,
+Tailwind and Connect-ES) is built with [bun](https://bun.sh):
+
+```sh
+cd crates/hyperstor-mgmt/ui && bun install && bun run build   # → dist/
+sudo target/release/hyperstor-install install --ui crates/hyperstor-mgmt/ui/dist
+```
+
+- `bun run dev` serves it with hot reload, passing `/api` and `/auth` to
+  a running `hyperstor-mgmt` (`HYPERSTOR_MGMT_URL`, default
+  `http://127.0.0.1:8852`).
+- Its TypeScript for the protos is generated and committed: after changing
+  a `.proto`, run `buf generate` in `crates/hyperstor-api`.
+- The login pieces come from glidex's `@glidex/ui-kit`, copied unchanged
+  into `crates/hyperstor-mgmt/ui-kit` at a pinned glidex commit; change
+  them in glidex, then `scripts/ui-kit-sync.sh <commit>`.
+- Browser tests (`crates/hyperstor-mgmt/e2e`, Playwright) drive the built
+  UI against a cluster installed from the release binaries:
+  `bun install && bunx playwright install chromium && bunx playwright test`.
+
 Before a pull request, run what CI runs:
 
 ```sh
@@ -72,7 +92,9 @@ cargo test --workspace --release
 ```
 
 CI also checks that each binary's reference page matches its usage line,
-that every tracked test exists and passes, and that this book builds.
+that every tracked test exists and passes (the browser tests too), that
+the UI's generated TypeScript and the ui-kit copy are current, and that
+this book builds.
 
 ### Rules that shape the code
 

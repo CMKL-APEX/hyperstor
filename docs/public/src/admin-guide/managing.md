@@ -6,8 +6,14 @@ elsewhere, give `--api IP:PORT` or set `HYPERSTOR_API`.
 
 ## Dashboard
 
-The installer runs the dashboard (`hyperstor-mgmt`) on the map service's
-host, at <http://127.0.0.1:8852/>: health with its reasons, I/O rates, space,
+The installer runs the management service (`hyperstor-mgmt`) on the map
+service's host, at <http://127.0.0.1:8852/>. Installed with `--ui` (see
+[hyperstor-install](../reference/hyperstor-install.md)), it serves the web
+UI: an overview, nodes and devices (take out, bring in, drain), pools and
+PGs, volumes with their snapshots and clones, operations, the map
+service's members, and security (people and roles, API tokens, join
+tokens, certificates); each action shows its `hyperstorctl` command.
+Without it, a built-in dashboard shows health with its reasons, I/O rates, space,
 pools with their PG states (and each PG's acting and up sets), and every
 storage node with its state, last heartbeat, I/O, write and read p99
 latency, space, log use and map epoch. It refreshes every two seconds.

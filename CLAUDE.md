@@ -30,14 +30,15 @@ design is split by topic, with section numbers kept across files.
   password and OIDC logins to `hyperstor-mgmt` (sessions, API tokens,
   Cedar roles with step-up, the first administrator's claim, the cluster
   API on their behalf, named in the map service's audit), and
-  `hyperstorctl --mgmt` with a person's token. `spec/implementation-notes.md` has
+  `hyperstorctl --mgmt` with a person's token, and the React web UI on
+  `@glidex/ui-kit` with browser tests. `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D107 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I139, and every host check (G1–G23,
+  rule, F1–F12 in detail, I1–I78, I80–I143, and every host check (G1–G23,
   FG1–FG2).
 - **Next:** the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
@@ -46,8 +47,8 @@ design is split by topic, with section numbers kept across files.
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
   `spec/administration.md`, milestones AD0–AD4; next there:
-  the rest of AD2 (D96–D100): the React web UI on `@glidex/ui-kit`;
-  web certificates beyond loopback by ACME or a CA from glidex (D107).
+  web certificates beyond loopback by ACME or a CA from glidex (D107);
+  AD3 (trash, audit with its UI page).
   Installing on whole devices waits for a storage test host.
 
 ## Design work
