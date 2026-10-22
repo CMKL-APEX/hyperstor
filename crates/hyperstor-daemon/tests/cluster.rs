@@ -2386,7 +2386,7 @@ fn random_faults(seed: u64) {
 }
 
 /// Snapshots, clones, flatten, rollback and their deletion (volumes.md
-/// §10.3, §10.4; D96–D99): every snapshot, clone and head reads what it
+/// §10.3, §10.4; D101–D104): every snapshot, clone and head reads what it
 /// should at every step, a snapshot a clone depends on can't be deleted
 /// until the clone is flattened, and deleting snapshots merges their
 /// versions, so each chunk ends with one version on every device.
@@ -2402,7 +2402,7 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
         let va = cl.attach(v.id).await.unwrap();
         let mut model = pattern(1, len);
         va.write(0, model.clone()).await.unwrap();
-        // Snapshot while attached: the holder quiesces (D98).
+        // Snapshot while attached: the holder quiesces (D103).
         let s1 = cl.snapshot(v.id, "s1").await.unwrap();
         let at_s1 = model.clone();
         let b = pattern(2, 3 * 4096);
@@ -2702,7 +2702,7 @@ fn random_snapshot_ops(seed: u64) {
     c.stop();
 }
 
-/// Quiesce (D98, volumes.md §10.3): snapshots taken while the volume is
+/// Quiesce (D103, volumes.md §10.3): snapshots taken while the volume is
 /// written without pause never change afterwards, and each holds a value
 /// the writer had written.
 #[test]

@@ -458,7 +458,7 @@ pub enum Msg {
         layers: Vec<(u32, u64)>,
     },
     /// Lease holder to a header's primary: answer when there is news for
-    /// this volume past header version `version` (decisions.md D98).
+    /// this volume past header version `version` (decisions.md D103).
     Watch {
         to: Target,
         key: WireKey,
@@ -1208,7 +1208,7 @@ pub enum WireOp {
     KvDelRange(Vec<u8>, Vec<u8>),
     Delete,
     /// Takes the blocks that version `.0` of this object's name holds and
-    /// this one lacks, then deletes that version (decisions.md D99).
+    /// this one lacks, then deletes that version (decisions.md D104).
     Absorb(u64),
 }
 

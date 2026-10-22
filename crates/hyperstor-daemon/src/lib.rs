@@ -294,7 +294,7 @@ struct ShardState {
     /// it): nothing is served, and the map service is told (`heartbeat`).
     failed: Cell<bool>,
     failure_reported: Cell<bool>,
-    /// Lease holders waiting for news of a header (`Watch`, D98).
+    /// Lease holders waiting for news of a header (`Watch`, D103).
     watches: RefCell<HashMap<ObjKey, Vec<Watcher>>>,
     /// Snapshots waiting for a header's holder to quiesce: the token, the
     /// snapshot's wait for the drain, and the holder's wait to resume.
@@ -1575,7 +1575,7 @@ impl ShardState {
     }
 
     /// A read of a volume chunk at an epoch, through its versions and its
-    /// clone parents (D96).
+    /// clone parents (D101).
     async fn read_at(
         &self,
         to: Target,
@@ -1747,7 +1747,7 @@ impl ShardState {
         }
     }
 
-    /// A lease holder's watch of its header (D98): answered at once if the
+    /// A lease holder's watch of its header (D103): answered at once if the
     /// header is past `version` or a quiesce is pending, else when either
     /// happens, or after 20 s (the holder watches again).
     async fn watch(&self, to: Target, key: WireKey, version: u64) -> Msg {

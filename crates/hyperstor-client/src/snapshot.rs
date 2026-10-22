@@ -1,5 +1,5 @@
 //! Snapshots, clones, rollback and flatten (volumes.md §10.3, §10.4;
-//! decisions.md D10, D21, D96, D98, D99).
+//! decisions.md D10, D21, D101, D103, D104).
 //!
 //! A chunk's data in a branch is a set of versions, one per head epoch it
 //! was written in (engine.md §7.2). A snapshot is a compare-and-set on the
@@ -247,7 +247,7 @@ impl Client {
 
     /// Takes a snapshot of volume `id` (volumes.md §10.3): its head epoch is
     /// recorded and moves on. If the volume is attached, its holder is
-    /// quiesced first by the header's primary (D98); if it doesn't within
+    /// quiesced first by the header's primary (D103); if it doesn't within
     /// 2 s the snapshot is abandoned (`Busy`).
     pub async fn snapshot(&self, id: u128, name: &str) -> Result<Snapshot, ClientError> {
         let key = header_key(id);
@@ -358,7 +358,7 @@ impl Client {
 
     /// Deletes the snapshot at `epoch` (volumes.md §10.3). Refused while a
     /// clone or rollback depends on it. Its versions are merged into the
-    /// next newer version of each chunk without copying (D99), unless a
+    /// next newer version of each chunk without copying (D104), unless a
     /// later cut point (a snapshot, a clone's or rollback's parent, the
     /// head) still reads them through; versions nothing reads are deleted.
     /// A delete that stops half-way is resumed by deleting it again.

@@ -567,7 +567,7 @@ pub struct Attached {
     client: Rc<Client>,
     volume: RefCell<Volume>,
     lost: Cell<bool>,
-    /// Quiesced for a snapshot: writes wait (D98).
+    /// Quiesced for a snapshot: writes wait (D103).
     paused: Cell<bool>,
     /// Writes in flight, which a quiesce waits for.
     inflight: Cell<u32>,
@@ -801,7 +801,7 @@ impl Client {
         Ok(a)
     }
 
-    /// Keeps a watch on an attached volume's header (D98) until it is
+    /// Keeps a watch on an attached volume's header (D103) until it is
     /// detached or lost: reads the header again on news, and quiesces for
     /// a snapshot (stops writing, drains, tells the primary, and resumes at
     /// the new epoch once the snapshot is taken or abandoned).

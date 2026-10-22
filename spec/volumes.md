@@ -73,8 +73,8 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   levels are refused; flatten first.
 - **As built** (HS4, implementation-notes.md I115, I120, I121): snapshots,
   rollback, clones and flatten in the client library, quiesce through
-  the holder's watch of its header (D98), deletion by merging versions
-  in the engine (D99). Consistency groups come next.
+  the holder's watch of its header (D103), deletion by merging versions
+  in the engine (D104). Consistency groups come next.
 
 ### 10.4 Clones and flatten
 

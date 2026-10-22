@@ -580,7 +580,7 @@ fn digests_follow_content_not_history() {
     assert_eq!(before, after, "digests survive a reopen");
 }
 
-/// Snapshot versions (engine.md §7.2, D99): a read through layers takes
+/// Snapshot versions (engine.md §7.2, D104): a read through layers takes
 /// each block from the first version that holds it; absorbing an older
 /// version moves the blocks the newer one lacks without copying, frees
 /// the ones it overrides, and survives a reopen.
