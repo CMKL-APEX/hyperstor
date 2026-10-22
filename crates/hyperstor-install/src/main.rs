@@ -54,12 +54,14 @@
 //!
 //! Exit status: 0 done, 1 a check failed or a step failed, 2 usage.
 
+mod tailscale;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert]";
 
 const BINARIES: [&str; 5] = [
     "hyperstor-meta",
@@ -111,6 +113,15 @@ struct Settings {
     node_port: u16,
     admin_port: u16,
     mgmt_port: u16,
+    /// Where people reach mgmt (D110): `all` addresses over HTTPS, or
+    /// `loopback` over plain HTTP (an SSH tunnel).
+    mgmt_listen: String,
+    /// The operator's own web certificate's directory (`web.crt`,
+    /// `web.key`, kept current by their ACME client, D109); empty: the
+    /// cluster CA's (D108).
+    web_tls: String,
+    /// Serve the node's Tailscale certificate too (D109), opt-in.
+    tailscale_cert: bool,
 }
 
 impl Settings {
@@ -134,6 +145,9 @@ impl Settings {
             node_port: 9100,
             admin_port: 8853,
             mgmt_port: 8852,
+            mgmt_listen: "all".into(),
+            web_tls: String::new(),
+            tailscale_cert: false,
         }
     }
 
@@ -163,6 +177,9 @@ impl Settings {
                 "node_port" => self.node_port = v.parse().unwrap_or(self.node_port),
                 "admin_port" => self.admin_port = v.parse().unwrap_or(self.admin_port),
                 "mgmt_port" => self.mgmt_port = v.parse().unwrap_or(self.mgmt_port),
+                "mgmt_listen" => self.mgmt_listen = v.to_string(),
+                "web_tls" => self.web_tls = v.to_string(),
+                "tailscale_cert" => self.tailscale_cert = v == "true",
                 _ => {}
             }
         }
@@ -171,7 +188,7 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\njoin = {}\naddress = {}\nreactors = {}\nrack = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\njoin = {}\naddress = {}\nreactors = {}\nrack = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\nmgmt_listen = {}\nweb_tls = {}\ntailscale_cert = {}\n",
             self.all_in_one,
             self.role,
             self.node.map(|n| n.to_string()).unwrap_or_default(),
@@ -189,7 +206,10 @@ impl Settings {
             self.map_port,
             self.node_port,
             self.admin_port,
-            self.mgmt_port
+            self.mgmt_port,
+            self.mgmt_listen,
+            self.web_tls,
+            self.tailscale_cert
         )
     }
 }
@@ -250,6 +270,14 @@ fn main() {
                 ui_from = Some(val());
                 continue;
             }
+            "--tailscale-cert" => {
+                given.insert("tailscale_cert", "true".into());
+                continue;
+            }
+            "--no-tailscale-cert" => {
+                given.insert("tailscale_cert", "false".into());
+                continue;
+            }
             "--out" => {
                 out_file = Some(val());
                 continue;
@@ -285,6 +313,8 @@ fn main() {
             "--node-port" => "node_port",
             "--admin-port" => "admin_port",
             "--mgmt-port" => "mgmt_port",
+            "--mgmt-listen" => "mgmt_listen",
+            "--web-tls" => "web_tls",
             _ => usage(),
         };
         let v = val();
@@ -295,6 +325,9 @@ fn main() {
                 v.parse::<u16>().is_ok_and(|n| n > 0)
             }
             "role" => matches!(v.as_str(), "meta" | "storage" | "both"),
+            "mgmt_listen" => matches!(v.as_str(), "all" | "loopback"),
+            // Empty: back to the cluster CA's certificate.
+            "web_tls" => v.is_empty() || v.starts_with('/'),
             "node" => v.parse::<u32>().is_ok(),
             "map" => v.parse::<std::net::SocketAddr>().is_ok(),
             "members" => parse_members(&v).is_ok(),
@@ -777,6 +810,9 @@ struct Plan {
     api: String,
     /// The web UI is installed (`UI_DIR`): mgmt serves it (D100).
     ui: bool,
+    /// mgmt serves the node's Tailscale certificate too (D109): asked
+    /// for, and `tailscaled` lets the `hyperstor` user have it.
+    tailscale: bool,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -840,6 +876,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .collect();
         return Plan {
             ui: false,
+            tailscale: false,
             api: format!("127.0.0.1:{}", s.api_port),
             metrics,
             cluster,
@@ -945,6 +982,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         .unwrap_or_else(|_| format!("127.0.0.1:{}", s.api_port));
     Plan {
         ui: false,
+        tailscale: false,
         api,
         metrics,
         cluster,
@@ -978,6 +1016,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
         .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
     Plan {
         ui: false,
+        tailscale: false,
         api: String::new(),
         cluster: String::new(),
         cluster_id: String::new(),
@@ -1237,8 +1276,8 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/mgmt.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --authd /run/hyperstor-authd/auth.sock --metrics {}{}\n",
-                    s.mgmt_port,
+                    "HS_ARGS={} --api {} --tls /etc/hyperstor/pki --authd /run/hyperstor-authd/auth.sock --metrics {}{}\n",
+                    mgmt_listen_args(s, p),
                     p.api,
                     p.metrics.join(","),
                     if p.ui { format!(" --ui {UI_DIR}") } else { String::new() }
@@ -1390,6 +1429,28 @@ fn units(p: &Plan) -> Vec<String> {
                 .map(|n| format!("hyperstord@{}.service", n.n)),
         )
         .collect()
+}
+
+/// mgmt's listeners and certificates (D108–D110): every address over
+/// HTTPS with the cluster CA's certificate (or the operator's, and the
+/// node's Tailscale one when granted), or loopback over plain HTTP.
+fn mgmt_listen_args(s: &Settings, p: &Plan) -> String {
+    if s.mgmt_listen == "loopback" {
+        return format!("--listen 127.0.0.1:{}", s.mgmt_port);
+    }
+    let dir = if s.web_tls.is_empty() {
+        "/etc/hyperstor/pki"
+    } else {
+        s.web_tls.as_str()
+    };
+    let mut a = format!(
+        "--listen 0.0.0.0:{port},[::]:{port} --web-tls {dir}",
+        port = s.mgmt_port
+    );
+    if p.tailscale {
+        a.push_str(&format!(" --tailscale {}", tailscale::SOCKET));
+    }
+    a
 }
 
 /// Where the web UI's files go (D100).
@@ -1570,14 +1631,77 @@ fn install(
     // The CAs and the API's certificate live where the map service runs.
     if p.meta.is_some() {
         let member = p.member_id.unwrap_or(0).to_string();
+        // mgmt's web certificate from the cluster CA (D108), unless the
+        // operator brings their own.
+        let web =
+            (s.mgmt_listen == "all" && s.web_tls.is_empty()).then(glidex_tls::LocalNames::discover);
         restart.extend(pki(
             root,
             real,
             &p.cluster_id,
             &member,
             &p.server_ips,
+            web.as_ref(),
             &mut changed,
         ));
+    }
+    // The node's Tailscale certificate for mgmt (D109): granted by a
+    // tailscaled drop-in, unless someone else holds the grant.
+    if p.meta.is_some() && s.mgmt_listen == "all" {
+        let dropin = under(root, tailscale::DROPIN);
+        let mut tailscaled_changed = false;
+        if s.tailscale_cert {
+            let uid = if real {
+                Command::new("id")
+                    .args(["-u", tailscale::USER])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            } else {
+                None
+            };
+            let installed = !real
+                || Path::new("/lib/systemd/system/tailscaled.service").exists()
+                || Path::new("/usr/lib/systemd/system/tailscaled.service").exists()
+                || Path::new("/etc/systemd/system/tailscaled.service").exists();
+            // Our own drop-in doesn't count as someone else's grant.
+            let configured = if tailscale::ours(&dropin) {
+                Some(tailscale::USER.to_string())
+            } else {
+                tailscale::configured(root, real)
+            };
+            match (installed, tailscale::grant(configured.as_deref(), uid)) {
+                (false, _) => eprintln!(
+                    "hyperstor-install: --tailscale-cert: tailscaled isn't installed here; mgmt serves its usual certificate"
+                ),
+                (true, tailscale::Grant::Refuse(who)) => eprintln!(
+                    "hyperstor-install: --tailscale-cert: tailscaled lets only {who} fetch certificates (TS_PERMIT_CERT_UID); left as it is, and mgmt serves its usual certificate"
+                ),
+                (true, tailscale::Grant::Have) => p.tailscale = true,
+                (true, tailscale::Grant::Write) => {
+                    if converge(&dropin, tailscale::dropin().as_bytes(), 0o644) {
+                        changed.push(tailscale::DROPIN.into());
+                        tailscaled_changed = true;
+                    }
+                    p.tailscale = true;
+                }
+            }
+        } else if tailscale::ours(&dropin) {
+            let _ = fs::remove_file(&dropin);
+            changed.push(format!("removed {}", tailscale::DROPIN));
+            tailscaled_changed = true;
+        }
+        if tailscaled_changed {
+            if real && !no_start {
+                // Before mgmt restarts, so its first fetch is allowed.
+                let _ = run("systemctl", &["daemon-reload"]);
+                if !run("systemctl", &["try-restart", "tailscaled.service"]) {
+                    eprintln!("hyperstor-install: restarting tailscaled failed");
+                }
+            } else {
+                println!("would restart tailscaled.service");
+            }
+        }
     }
     let mut units_changed = false;
     let mut service_units_changed: Vec<&str> = Vec::new();
@@ -1713,6 +1837,7 @@ fn pki(
     cluster: &str,
     member: &str,
     server_ips: &[std::net::IpAddr],
+    web: Option<&glidex_tls::LocalNames>,
     changed: &mut Vec<String>,
 ) -> Vec<String> {
     use hyperstor_pki::*;
@@ -1771,16 +1896,24 @@ fn pki(
     // Services read their certificates at start: restart those whose
     // certificate is new.
     let mut restart = Vec::new();
-    for (name, role, id, server, group) in [
+    let mut leaves = vec![
         ("api", Role::Meta, member, true, "hyperstor"),
         ("admin", Role::Admin, "local", false, "hyperstor-admin"),
         // The dashboard's identity (D50); it only reads.
         ("mgmt", Role::Mgmt, "dashboard", false, "hyperstor"),
-    ] {
+    ];
+    if web.is_some() {
+        // mgmt's web certificate for people (D108): for every name and
+        // address of this host. mgmt re-reads it when it changes.
+        leaves.push(("web", Role::Mgmt, "web", true, "hyperstor"));
+    }
+    for (name, role, id, server, group) in leaves {
         // A server certificate names where it is reached: loopback, and
         // for a map service member its addresses (D72). Kept only while it
         // names the same ones, recorded beside it.
-        let (ips, names) = if server {
+        let (ips, names) = if let (Some(w), "web") = (web, name) {
+            (w.ips.clone(), w.dns.clone())
+        } else if server {
             let mut ips: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
             ips.extend(server_ips.iter().copied());
             ips.sort();
@@ -1789,7 +1922,12 @@ fn pki(
         } else {
             (vec![], vec![])
         };
-        let recorded: String = ips.iter().map(|ip| format!("{ip}\n")).collect();
+        let recorded: String = ips
+            .iter()
+            .map(|ip| ip.to_string())
+            .chain(if name == "web" { names.clone() } else { vec![] })
+            .map(|l| format!("{l}\n"))
+            .collect();
         let same_ips =
             !server || read(&format!("{name}.ips")).as_deref() == Some(recorded.as_str());
         if !renewed_ca
@@ -1812,7 +1950,7 @@ fn pki(
         }
         let mut p = issue(&ca, &who, &ips, &names, LEAF_DAYS)
             .unwrap_or_else(|e| fail(&format!("{name} certificate: {e}")));
-        if server {
+        if name == "api" {
             // The root too, so hosts joining through this member can pin it.
             p.cert.push_str(&root_cert);
         }
@@ -2002,6 +2140,14 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     if fs::remove_dir_all(under(root, UI_DIR)).is_ok() {
         removed.push(UI_DIR.to_string());
     }
+    let dropin = under(root, tailscale::DROPIN);
+    if tailscale::ours(&dropin) && fs::remove_file(&dropin).is_ok() {
+        removed.push(tailscale::DROPIN.to_string());
+        if real {
+            let _ = run("systemctl", &["daemon-reload"]);
+            let _ = run("systemctl", &["try-restart", "tailscaled.service"]);
+        }
+    }
     if real && !removed.is_empty() {
         let _ = run("systemctl", &["daemon-reload"]);
     }
@@ -2166,6 +2312,7 @@ mod tests {
             "9",
             "0",
             &ips(&["10.0.0.12"]),
+            None,
             &mut changed,
         );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
@@ -2180,6 +2327,7 @@ mod tests {
             "9",
             "0",
             &ips(&["10.0.0.12"]),
+            None,
             &mut changed,
         );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
@@ -2189,10 +2337,42 @@ mod tests {
             "9",
             "0",
             &ips(&["10.0.0.13"]),
+            None,
             &mut changed,
         );
         assert_ne!(cert(root.path()), first, "new addresses: issued again");
         assert!(restart.contains(&"hyperstor-meta.service".to_string()));
+    }
+
+    /// mgmt's web certificate (D108): for every name and address it's
+    /// given, from the cluster CA, kept while they stay, issued again when
+    /// they change; mgmt re-reads it, so nothing restarts.
+    #[test]
+    fn the_web_certificate_names_the_host() {
+        let root = tempfile::tempdir().unwrap();
+        let names = |dns: &[&str], ips: &[&str]| glidex_tls::LocalNames {
+            dns: dns.iter().map(|d| d.to_string()).collect(),
+            ips: ips.iter().map(|i| i.parse().unwrap()).collect(),
+        };
+        let web = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/web.crt")).unwrap();
+        let mut changed = Vec::new();
+        let a = names(&["box.example", "localhost"], &["127.0.0.1", "10.0.0.5"]);
+        pki(root.path(), false, "9", "0", &[], Some(&a), &mut changed);
+        let first = web(root.path());
+        let (ips, dns) = hyperstor_pki::names_of(&first).unwrap();
+        assert!(dns.contains(&"box.example".to_string()), "{dns:?}");
+        assert!(ips.contains(&"10.0.0.5".parse().unwrap()), "{ips:?}");
+        let root_pem = fs::read_to_string(root.path().join("etc/hyperstor/pki/root.crt")).unwrap();
+        assert!(
+            !first.contains(root_pem.trim()),
+            "the root isn't in the chain"
+        );
+        pki(root.path(), false, "9", "0", &[], Some(&a), &mut changed);
+        assert_eq!(web(root.path()), first, "same names: kept");
+        let b = names(&["box.example", "localhost"], &["127.0.0.1", "10.0.0.6"]);
+        let restart = pki(root.path(), false, "9", "0", &[], Some(&b), &mut changed);
+        assert_ne!(web(root.path()), first, "a new address: issued again");
+        assert!(!restart.iter().any(|r| r.contains("mgmt")), "{restart:?}");
     }
 
     #[test]

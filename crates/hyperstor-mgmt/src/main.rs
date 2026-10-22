@@ -1,4 +1,4 @@
-//! `hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]`
+//! `hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]`
 //!
 //! The management service (spec/administration.md §23.7): the web
 //! dashboard, and with `--authd`, people's logins and the cluster API on
@@ -48,12 +48,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]";
+const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]";
 
 mod oidc;
 mod people;
 mod policy;
 mod proxy;
+mod web;
 
 const PAGE: &str = include_str!("dashboard.html");
 const SCRIPT: &str = include_str!("dashboard.js");
@@ -94,11 +95,22 @@ struct State {
     port: u16,
     hosts: Vec<String>,
     https: bool,
+    /// The Tailscale names served their certificate now (`--tailscale`).
+    held: Option<Arc<glidex_tls::tailscale::Held>>,
     login: Option<Login>,
     ui: Option<PathBuf>,
 }
 
 fn main() {
+    // glidex-tls's messages (a certificate not reloaded, Tailscale's).
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("HS_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let get = |flag: &str| {
         args.iter()
@@ -116,6 +128,7 @@ fn main() {
                 | "--authd"
                 | "--oidc"
                 | "--web-tls"
+                | "--tailscale"
                 | "--hosts"
                 | "--ui"
         ) {
@@ -125,11 +138,16 @@ fn main() {
     let (Some(listen), Some(api), Some(tls)) = (get("--listen"), get("--api"), get("--tls")) else {
         usage()
     };
-    let listen: SocketAddr = listen.parse().unwrap_or_else(|_| usage());
+    let listen = glidex_tls::parse_addresses(&listen, "--listen").unwrap_or_else(|e| {
+        eprintln!("hyperstor-mgmt: {e}");
+        usage()
+    });
+    let tailscale = get("--tailscale").map(PathBuf::from);
     let authd = get("--authd").map(PathBuf::from);
     let oidc = get("--oidc").map(PathBuf::from);
     let web_tls = get("--web-tls").map(PathBuf::from);
-    if !listen.ip().is_loopback() && (authd.is_none() && oidc.is_none() || web_tls.is_none()) {
+    let loopback = glidex_tls::all_loopback(&listen);
+    if !loopback && (authd.is_none() && oidc.is_none() || web_tls.is_none()) {
         // Without logins and HTTPS a non-loopback address would show the
         // cluster to anyone who can reach it.
         eprintln!(
@@ -160,7 +178,15 @@ fn main() {
     if metrics.iter().any(|m| m.parse::<SocketAddr>().is_err()) {
         usage();
     }
-    let hosts = list("--hosts");
+    let mut hosts = list("--hosts");
+    if !loopback {
+        // Reached by the host's own names and addresses (D110).
+        hosts.extend(glidex_tls::LocalNames::discover().hosts());
+    }
+    if tailscale.is_some() && web_tls.is_none() {
+        eprintln!("hyperstor-mgmt: --tailscale needs --web-tls (the certificate for other names)");
+        std::process::exit(2);
+    }
     let dir = PathBuf::from(tls);
     let read = |d: &std::path::Path, f: &str| {
         std::fs::read_to_string(d.join(f))
@@ -174,21 +200,33 @@ fn main() {
         )
         .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display()))),
     );
-    let acceptor = web_tls.as_ref().map(|d| {
-        let config = hyperstor_pki::web_server_config(&read(d, "web.crt"), &read(d, "web.key"))
-            .unwrap_or_else(|e| fail(&format!("{}: {e}", d.display())));
-        tokio_rustls::TlsAcceptor::from(Arc::new(config))
-    });
     let ui = get("--ui").map(PathBuf::from);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
     rt.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(listen)
-            .await
-            .unwrap_or_else(|e| fail(&format!("bind {listen}: {e}")));
-        let port = listener.local_addr().map(|a| a.port()).unwrap_or(listen.port());
+        let web = web_tls
+            .as_ref()
+            .map(|d| web::start(d, tailscale).unwrap_or_else(|e| fail(&format!("--web-tls {e}"))));
+        let mut listeners = Vec::new();
+        for a in &listen {
+            match glidex_tls::bind(*a) {
+                Ok(l) => listeners.push(l),
+                // A host without IPv6 still serves on IPv4.
+                Err(e) if glidex_tls::ipv6_unavailable(a, &e) => {
+                    eprintln!("hyperstor-mgmt: {a}: no IPv6 here ({e}); IPv4 only")
+                }
+                Err(e) => fail(&format!("bind {a}: {e}")),
+            }
+        }
+        if listeners.is_empty() {
+            fail("nothing to listen on");
+        }
+        let port = listeners[0]
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(listen[0].port());
         let uri: http::Uri = format!("https://{}", api_addrs[0]).parse().expect("uri");
         let login = (authd.is_some() || oidc.is_some()).then(|| Login {
             people: people::People::new(people::Rows::api(&api_addrs, tls.clone())),
@@ -206,46 +244,95 @@ fn main() {
             metrics,
             port,
             hosts,
-            https: acceptor.is_some(),
+            https: web.is_some(),
+            held: web.as_ref().and_then(|w| w.held.clone()),
             login,
             ui,
         });
         let scheme = if state.https { "https" } else { "http" };
+        let at: Vec<String> = listen.iter().map(|a| format!("{scheme}://{a}/")).collect();
+        let at = at.join(" ");
         if state.login.is_some() {
-            eprintln!("hyperstor-mgmt: on {scheme}://{listen}/ (people log in)");
-            tokio::spawn(offer_claim(state.clone(), format!("{scheme}://{listen}/")));
+            eprintln!("hyperstor-mgmt: on {at} (people log in)");
+            tokio::spawn(offer_claim(state.clone(), at));
         } else {
-            eprintln!("hyperstor-mgmt: dashboard on {scheme}://{listen}/ (read-only)");
+            eprintln!("hyperstor-mgmt: dashboard on {at} (read-only)");
         }
-        loop {
-            let Ok((stream, peer)) = listener.accept().await else {
-                continue;
-            };
-            let state = state.clone();
-            let acceptor = acceptor.clone();
-            tokio::spawn(async move {
+        let acceptor = web.map(|w| tokio_rustls::TlsAcceptor::from(w.config));
+        let mut tasks = tokio::task::JoinSet::new();
+        for listener in listeners {
+            let (state, acceptor) = (state.clone(), acceptor.clone());
+            tasks.spawn(serve(listener, state, acceptor));
+        }
+        while tasks.join_next().await.is_some() {}
+    });
+}
+
+/// Accepts connections on `listener` for good.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    state: Arc<State>,
+    acceptor: Option<tokio_rustls::TlsAcceptor>,
+) {
+    loop {
+        let Ok((stream, peer)) = listener.accept().await else {
+            continue;
+        };
+        let state = state.clone();
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            let builder = hyper::server::conn::http1::Builder::new();
+            let Some(a) = acceptor else {
                 let svc = hyper::service::service_fn(move |req| {
                     let state = state.clone();
                     async move { Ok::<_, std::convert::Infallible>(handle(&state, req, peer).await) }
                 });
-                let builder = hyper::server::conn::http1::Builder::new();
-                match acceptor {
-                    Some(a) => {
-                        if let Ok(s) = a.accept(stream).await {
-                            let _ = builder
-                                .serve_connection(hyper_util::rt::TokioIo::new(s), svc)
-                                .await;
-                        }
+                let _ = builder
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                    .await;
+                return;
+            };
+            match web::starts_tls(&stream).await {
+                Some(true) => {}
+                Some(false) => {
+                    // Plain HTTP on the HTTPS port: to HTTPS.
+                    let svc = hyper::service::service_fn(|req| async move {
+                        Ok::<_, std::convert::Infallible>(web::to_https(&req))
+                    });
+                    let _ = builder
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                        .await;
+                    return;
+                }
+                None => return,
+            }
+            let Ok(tls) = a.accept(stream).await else {
+                return;
+            };
+            // Served a Tailscale certificate: a browser trusts it, so HSTS.
+            let hsts = tls
+                .get_ref()
+                .1
+                .server_name()
+                .is_some_and(|n| state.held.as_ref().is_some_and(|h| h.contains(n)));
+            let svc = hyper::service::service_fn(move |req| {
+                let state = state.clone();
+                async move {
+                    let mut r = handle(&state, req, peer).await;
+                    if hsts {
+                        r.headers_mut().insert(
+                            http::header::STRICT_TRANSPORT_SECURITY,
+                            http::HeaderValue::from_static("max-age=86400"),
+                        );
                     }
-                    None => {
-                        let _ = builder
-                            .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
-                            .await;
-                    }
+                    Ok::<_, std::convert::Infallible>(r)
                 }
             });
-        }
-    });
+            let _ = builder
+                .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
+                .await;
+        });
+    }
 }
 
 /// While no one is a security administrator, prints a claim code: whoever
@@ -401,7 +488,14 @@ async fn handle(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
-    if !host_allowed(&host, state.port, &state.hosts) {
+    let tailscale_name = || {
+        state.held.as_ref().is_some_and(|h| {
+            let (name, port) = host.rsplit_once(':').unwrap_or((&host, ""));
+            (port.is_empty() || port.parse::<u16>().is_ok_and(|p| p == state.port))
+                && h.contains(name)
+        })
+    };
+    if !host_allowed(&host, state.port, &state.hosts) && !tailscale_name() {
         return respond(421, "text/plain", "misdirected request\n");
     }
     let path = req.uri().path().to_string();

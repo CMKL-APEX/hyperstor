@@ -387,3 +387,89 @@ fn the_web_ui_is_installed_as_files() {
     assert!(r.has("removed /usr/local/share/hyperstor/ui"), "{}", r.out);
     assert!(!ui.exists());
 }
+
+/// Where people reach mgmt (D108–D110): every address over HTTPS with a
+/// web certificate from the cluster CA by default; the operator's own
+/// certificate directory instead; loopback on request. The Tailscale
+/// certificate is granted by a marked tailscaled drop-in, refused when
+/// someone else holds the grant, and removed when turned off.
+#[test]
+fn mgmt_listens_on_every_address_with_a_cluster_certificate() {
+    let s = Scratch::new("web-certs");
+    let root = s.path("root");
+    let env = || std::fs::read_to_string(root.join("etc/hyperstor/mgmt.env")).unwrap();
+    install(&root, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
+    let e = env();
+    assert!(
+        e.contains("--listen 0.0.0.0:8852,[::]:8852 --web-tls /etc/hyperstor/pki"),
+        "{e}"
+    );
+    let web = std::fs::read_to_string(root.join("etc/hyperstor/pki/web.crt")).unwrap();
+    let (ips, names) = hyperstor_pki::names_of(&web).unwrap();
+    assert!(names.contains(&"localhost".to_string()), "{names:?}");
+    assert!(ips.contains(&"127.0.0.1".parse().unwrap()), "{ips:?}");
+    assert!(install(&root, &[]).has("Nothing to change"));
+
+    // The operator's own certificate, kept current by their ACME client.
+    install(&root, &["--web-tls", "/etc/letsencrypt-hyperstor"]);
+    assert!(
+        env().contains("--web-tls /etc/letsencrypt-hyperstor"),
+        "{}",
+        env()
+    );
+    install(&root, &["--mgmt-listen", "loopback"]);
+    let e = env();
+    assert!(
+        e.contains("--listen 127.0.0.1:8852 --api") && !e.contains("--web-tls"),
+        "{e}"
+    );
+    install(&root, &["--mgmt-listen", "all", "--web-tls", ""]);
+
+    // Tailscale: nobody holds the grant, so ours is written.
+    let dropin = root.join("etc/systemd/system/tailscaled.service.d/50-hyperstor-cert.conf");
+    let r = install(&root, &["--tailscale-cert"]);
+    assert!(r.has("would restart tailscaled.service"), "{}", r.out);
+    assert!(
+        std::fs::read_to_string(&dropin)
+            .unwrap()
+            .contains("TS_PERMIT_CERT_UID=hyperstor")
+    );
+    assert!(
+        env().contains("--tailscale /run/tailscale/tailscaled.sock"),
+        "{}",
+        env()
+    );
+    assert!(
+        install(&root, &[]).has("Nothing to change"),
+        "the choice is saved"
+    );
+    // Off: our drop-in goes.
+    let r = install(&root, &["--no-tailscale-cert"]);
+    assert!(r.has("would restart tailscaled.service"), "{}", r.out);
+    assert!(!dropin.exists());
+    assert!(!env().contains("--tailscale"), "{}", env());
+    // Someone else holds it (glidex-ui): left alone, and not served.
+    let glidex = root.join("etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf");
+    std::fs::write(
+        &glidex,
+        "[Service]\nEnvironment=TS_PERMIT_CERT_UID=glidex-ui\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(bin_dir().join("hyperstor-install"))
+        .args([
+            "install",
+            "--root",
+            root.to_str().unwrap(),
+            "--tailscale-cert",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("lets only glidex-ui"), "{err}");
+    assert!(!dropin.exists() && !env().contains("--tailscale"));
+    assert!(
+        std::fs::read_to_string(&glidex)
+            .unwrap()
+            .contains("glidex-ui")
+    );
+}

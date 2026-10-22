@@ -125,7 +125,7 @@ fn people_log_in_with_an_identity_provider() {
     let nonce = query_param(&redirect, "nonce").unwrap();
     assert_eq!(
         query_param(&redirect, "redirect_uri").unwrap(),
-        format!("http://{host}/auth/oidc/callback")
+        format!("{}/auth/oidc/callback", c.mgmt_url())
     );
     assert_eq!(
         query_param(&redirect, "code_challenge_method").unwrap(),

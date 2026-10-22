@@ -17,6 +17,11 @@ serde_json = "1"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 base64 = "0.22"
+# A fake tailscaled (glidex's), for mgmt's Tailscale certificates (D109).
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6688803eb9a5deb5484d7a0d52a79244665fe946", features = ["test-util"] }
+tokio = { version = "1", features = ["rt", "net"] }
+# HTTPS to hyperstor-mgmt, verified against the cluster's root (D108).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [lints]
 workspace = true

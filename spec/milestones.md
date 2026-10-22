@@ -146,3 +146,10 @@ sections that depend on them are final:
   checkpoint bursts and expiring cache data packed per reclaim unit or
   zone, against today's allocator: device write amplification (from the
   drive's log pages), throughput, and p99 read latency during the writes.
+- **G24. mgmt's Tailscale certificate on a real tailnet** (D109). On a
+  host on Tailscale with HTTPS certificates on, install with
+  `--tailscale-cert`: a browser elsewhere on the tailnet opens
+  `https://NODE.TAILNET.ts.net:8852/` with no warning; glidex-ui on the
+  same host keeps its grant (the installer refuses, changing nothing);
+  and a certificate near its end is renewed in place (glidex measured the
+  first issuance at about 40 s). The tests use glidex's fake `tailscaled`.

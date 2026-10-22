@@ -35,10 +35,10 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D107 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D110 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I143, and every host check (G1–G23,
+  rule, F1–F12 in detail, I1–I78, I80–I147, and every host check (G1–G24,
   FG1–FG2).
 - **Next:** the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which

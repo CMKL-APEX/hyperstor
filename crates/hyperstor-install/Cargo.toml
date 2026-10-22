@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The host's names and addresses for mgmt's web certificate (D108).
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6688803eb9a5deb5484d7a0d52a79244665fe946" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-pki = { path = "../hyperstor-pki" }
 # Joining and renewing over the cluster API (spec/administration.md §23.4.2).

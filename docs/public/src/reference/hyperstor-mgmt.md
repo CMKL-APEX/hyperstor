@@ -5,24 +5,49 @@ cluster API on their behalf. See
 [Managing a cluster](../admin-guide/managing.md#dashboard).
 
 ```text
-usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]
+usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--listen ADDR` | required | `IP:PORT` to serve on. Beyond loopback it needs `--web-tls`, and `--authd` or `--oidc` |
+| `--listen ADDR[,ADDR...]` | required | `IP:PORT`s to serve on (`0.0.0.0:8852,[::]:8852`: every address). Beyond loopback it needs `--web-tls`, and `--authd` or `--oidc`; the host's own names and addresses are then allowed in `Host` |
 | `--api ADDR[,ADDR...]` | required | The [cluster API](cluster-api.md), `IP:PORT`: every map service member, separated by commas. A call a member can't serve (it isn't the leader) goes to the next |
 | `--tls DIR` | required | Its identity: `DIR/mgmt.crt`, `DIR/mgmt.key` and `DIR/root.crt` |
 | `--metrics ADDR,ADDR...` | none | The storage nodes' metrics addresses (`hyperstord --admin`) |
 | `--authd SOCKET` | none | People log in with their password, checked by [`hyperstor-authd`](hyperstor-authd.md) on `SOCKET`. Without it, the dashboard is read-only and on loopback only |
 | `--oidc FILE` | none | People log in with an identity provider (OIDC), configured in `FILE`; see [Identity providers](#identity-providers) |
-| `--web-tls DIR` | none | Serve HTTPS with `DIR/web.crt` (the chain) and `DIR/web.key` |
+| `--web-tls DIR` | none | Serve HTTPS with `DIR/web.crt` (the chain) and `DIR/web.key`, re-read within a minute when they change |
+| `--tailscale SOCKET` | none | Also serve the node's Tailscale certificate to clients naming its `ts.net` names, fetched from `tailscaled`'s local API at `SOCKET` (`/run/tailscale/tailscaled.sock`); needs `--web-tls` |
 | `--hosts NAME,...` | none | Names people reach it by, allowed in the `Host` header besides `localhost`, `127.0.0.1` and `[::1]` |
 | `--ui DIR` | the built-in dashboard | Serve the web UI's files from `DIR` |
 
-The installer runs it with `--authd /run/hyperstor-authd/auth.sock` on
-`127.0.0.1`; from another machine, use an SSH tunnel
-(`ssh -L 8852:127.0.0.1:8852 host`).
+The installer runs it on every address over HTTPS, with logins
+(`--authd /run/hyperstor-authd/auth.sock`); see [Certificates](#certificates).
+
+## Certificates
+
+| Certificate | How |
+|---|---|
+| The cluster CA's (default) | The installer issues `web.crt` for the host's names and addresses from the cluster's intermediate CA, and renews it. Browsers trust it once they trust the cluster's root, `/etc/hyperstor/pki/root.crt`; `hyperstorctl` on the host trusts it already |
+| Your own | `hyperstor-install install --web-tls DIR`: `DIR/web.crt` (full chain) and `DIR/web.key`, readable by the `hyperstor` group. Replace them in place (say, an ACME client's deploy hook) and mgmt serves the new pair within a minute, without a restart |
+| The node's Tailscale certificate | `hyperstor-install install --tailscale-cert`: on a host on Tailscale with HTTPS certificates on for the tailnet, browsers reaching `https://NODE.TAILNET.ts.net:8852` get the node's Let's Encrypt certificate; other names keep the one above. The name is published in Certificate Transparency logs |
+
+- A plain-HTTP request on the port is answered `308` to the same URL over
+  HTTPS.
+- HSTS (`max-age=86400`) is sent only with the Tailscale certificate,
+  which browsers trust: with the cluster CA's, a browser that hasn't
+  imported the root would be locked out.
+
+An ACME client's deploy hook, for example certbot's:
+
+```sh
+#!/bin/sh
+# /etc/letsencrypt/renewal-hooks/deploy/hyperstor
+install -m 0644 "$RENEWED_LINEAGE/fullchain.pem" /etc/hyperstor/web/web.crt
+install -m 0640 -g hyperstor "$RENEWED_LINEAGE/privkey.pem" /etc/hyperstor/web/web.key
+```
+
+with `hyperstor-install install --web-tls /etc/hyperstor/web`.
 
 ## Logins
 

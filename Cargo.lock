@@ -1335,6 +1335,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-tls"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6688803eb9a5deb5484d7a0d52a79244665fe946#6688803eb9a5deb5484d7a0d52a79244665fe946"
+dependencies = [
+ "arc-swap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "nix",
+ "rcgen",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1661,6 +1686,7 @@ name = "hyperstor-install"
 version = "0.1.0"
 dependencies = [
  "connectrpc",
+ "glidex-tls",
  "http",
  "hyperstor-api",
  "hyperstor-meta",
@@ -1720,6 +1746,7 @@ dependencies = [
  "connectrpc",
  "glidex-auth",
  "glidex-authd",
+ "glidex-tls",
  "http",
  "http-body-util",
  "hyper",
@@ -1731,6 +1758,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "tracing-subscriber",
  "zeroize",
 ]
 
@@ -1784,10 +1812,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "glidex-authd",
+ "glidex-tls",
  "hyperstor-pki",
  "jsonwebtoken",
  "rcgen",
+ "rustls",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

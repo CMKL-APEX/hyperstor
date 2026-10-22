@@ -23,6 +23,12 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "3ed1891d61988ca24edf274ea401cf1960fe3e3f" }
 glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "3ed1891d61988ca24edf274ea401cf1960fe3e3f" }
 cedar-policy = "4.13"
+# HTTPS for people (decisions.md D108-D110): listeners, certificate files
+# re-read when they change, the node's Tailscale certificates; pinned to a
+# revision of glidex, as glidex-auth.
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6688803eb9a5deb5484d7a0d52a79244665fe946" }
+# glidex-tls logs through tracing: to standard error, as mgmt's own lines.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 zeroize = "1"
