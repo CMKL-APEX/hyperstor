@@ -29,7 +29,7 @@ design is split by topic, with section numbers kept across files.
   `spec/benchmarks.md` has the measurements.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D92 and D94–D95 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
-- **Open for the owner's review:** D20–D37, D56–D60, D93 and D66's merge
+- **Open for the owner's review:** D20–D37, D56–D60, D93, D98–D100 and D66's merge
   rule, F1–F12 in detail, I1–I78, I80–I119, and every host check (G1–G22,
   FG1–FG2).
 - **Next:** the
@@ -39,7 +39,8 @@ design is split by topic, with section numbers kept across files.
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
   `spec/administration.md`, milestones AD0–AD4; next there:
-  `glidex-auth` and people's logins (AD2).
+  people's logins and the web UI (AD2, D96–D100, decision-log.md
+  "People's logins and the web UI": a glidex PR for `glidex-auth` first).
   Installing on whole devices waits for a storage test host.
 
 ## Design work
