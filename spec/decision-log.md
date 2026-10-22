@@ -513,7 +513,8 @@ whether the UI comes with it.
 
 Drafted for review with the plan: D98 (mgmt's state in the map
 service's store, through the API, cached 10 s), D99 (`hyperstor-authd`
-embeds `glidex-authd`), D100 (the UI embedded in the binary).
+embeds `glidex-authd`), D100 (the UI embedded in the binary; settled
+instead as files the installer copies, point 57).
 
 ### Order of work
 
@@ -529,7 +530,7 @@ embeds `glidex-authd`), D100 (the UI embedded in the binary).
    `security-admin`) with step-up; HTTPS beyond loopback.
 3. **hyperstor PR**: the React UI (§23.7's pages for what exists:
    overview, nodes and devices, pools, PGs, volumes, operations,
-   security, audit), embedded (D100), with end-to-end tests in the
+   security, audit), installed as files mgmt serves (D100), with end-to-end tests in the
    browser as glidex's.
 
 ## Snapshots and the engine (2026-10-22)
@@ -547,4 +548,14 @@ background), discussed before deciding:
 | 54 | The host read cache: in the client library, or wait for `hyperstor-vhost` | The client library | D102 |
 | 55 | Quiescing an attached volume: a long-poll watch, or news on renewals | Long-poll watch | D103 |
 | 56 | Snapshot deletion: the engine moves blocks, or copy the data | The engine moves them | D104 |
-| 57 | I123: a rollback is a new branch, so resetting an agent VM after every task reaches the chain limit in 16 resets | Reset to the newest snapshot in place | D106 |
+| 58 | I123: a rollback is a new branch, so resetting an agent VM after every task reaches the chain limit in 16 resets | Reset to the newest snapshot in place | D106 |
+
+## The open AD decisions (2026-10-22)
+
+The owner reviewed the decisions drafted with revocation and the AD2
+plan, with the options for each.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 57 | Where the revocation list lives (store now, map push later; the map push now; short-lived certificates instead), and whether an unreadable list fails open or closed; where mgmt keeps people's state (the map service's store through the API, cached 10 s; a local database; wait for `hyperstor-kv`); how password logins reach PAM (`hyperstor-authd`, glidex's helper with hyperstor's defaults; glidex's own binary; single sign-on only); how the UI ships (in the binary; files the installer copies; a separate UI service) | The store now, pushed with the map once storage nodes use TLS, and fail open; the map service's store through the API; `hyperstor-authd`; files the installer copies, with a separate UI service later | D93, D98, D99, D100 |
+
