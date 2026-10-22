@@ -637,6 +637,19 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate"
+spec = ["administration.md §23.7", "D108", "D109", "D110"]
+status = "done"
+tests = [
+    "web::people_reach_mgmt_on_the_hosts_addresses",
+    "install::mgmt_listens_on_every_address_with_a_cluster_certificate",
+    "hyperstor_install::tests::the_web_certificate_names_the_host",
+    "hyperstor_install::tailscale::tests::who_holds_the_grant",
+    "hyperstor_install::tailscale::tests::under_a_root",
+    "hyperstor_mgmt::web::tests::plain_http_goes_to_https",
+]
+
+[[milestone.item]]
 what = "The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui"
 spec = ["administration.md §23.7", "D97", "D100"]
 status = "done"

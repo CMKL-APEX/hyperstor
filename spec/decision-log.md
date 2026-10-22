@@ -559,3 +559,15 @@ plan, with the options for each.
 |---|---|---|---|
 | 57 | Where the revocation list lives (store now, map push later; the map push now; short-lived certificates instead), and whether an unreadable list fails open or closed; where mgmt keeps people's state (the map service's store through the API, cached 10 s; a local database; wait for `hyperstor-kv`); how password logins reach PAM (`hyperstor-authd`, glidex's helper with hyperstor's defaults; glidex's own binary; single sign-on only); how the UI ships (in the binary; files the installer copies; a separate UI service) | The store now, pushed with the map once storage nodes use TLS, and fail open; the map service's store through the API; `hyperstor-authd`; files the installer copies, with a separate UI service later | D93, D98, D99, D100 |
 
+
+## Web certificates (D107, 2026-10-22)
+
+D107 left three ways for people to reach `hyperstor-mgmt` beyond
+loopback. Asked what each means and which default to serve, with
+options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 59 | "The cluster's CA from glidex": hyperstor's own CA, glidex's CA signing mgmt's certificate through its API, or serving glidex-ui's certificate | hyperstor's own CA | D108 |
+| 60 | ACME: reload certificate files plus the node's Tailscale certificate, a built-in client with HTTP-01 (port 80) or DNS-01 (RFC 2136), or reload only | Reload and Tailscale | D109 |
+| 61 | What mgmt serves beyond loopback before an operator configures a certificate: a cluster-CA certificate on every address, loopback only, or self-signed as glidex | A cluster-CA certificate on every address | D110 |

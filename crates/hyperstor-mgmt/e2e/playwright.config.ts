@@ -13,6 +13,9 @@ export default defineConfig({
   reporter: [["list"], ["./cargo-reporter.ts"], ...(process.env.CI ? ([["html", { open: "never" }]] as const) : [])],
   use: {
     headless: true,
+    // mgmt serves the cluster CA's certificate (D108), which this browser
+    // has no reason to trust; the tests are about the UI, not the CA.
+    ignoreHTTPSErrors: true,
     trace: "retain-on-failure",
   },
 });

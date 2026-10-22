@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=3ed1891d61988ca24edf274ea401cf1960fe3e3f#3ed1891d61988ca24edf274ea401cf1960fe3e3f"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1302,7 +1302,7 @@ dependencies = [
 [[package]]
 name = "glidex-authd"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=3ed1891d61988ca24edf274ea401cf1960fe3e3f#3ed1891d61988ca24edf274ea401cf1960fe3e3f"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
 dependencies = [
  "libc",
  "libloading",
@@ -1332,6 +1332,31 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "glidex-tls"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
+dependencies = [
+ "arc-swap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "nix",
+ "rcgen",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1661,6 +1686,7 @@ name = "hyperstor-install"
 version = "0.1.0"
 dependencies = [
  "connectrpc",
+ "glidex-tls",
  "http",
  "hyperstor-api",
  "hyperstor-meta",
@@ -1720,6 +1746,7 @@ dependencies = [
  "connectrpc",
  "glidex-auth",
  "glidex-authd",
+ "glidex-tls",
  "http",
  "http-body-util",
  "hyper",
@@ -1731,6 +1758,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "tracing-subscriber",
  "zeroize",
 ]
 
@@ -1784,10 +1812,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "glidex-authd",
+ "glidex-tls",
  "hyperstor-pki",
  "jsonwebtoken",
  "rcgen",
+ "rustls",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

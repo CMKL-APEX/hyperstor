@@ -36,8 +36,23 @@ journalctl -u hyperstor-mgmt | grep 'claim code'
 # a new one: sudo systemctl restart hyperstor-mgmt
 ```
 
-Someone who logs in without a role sees nothing until given one. It
-listens on loopback; from another machine:
+Someone who logs in without a role sees nothing until given one.
+
+**Reaching it.** mgmt listens on every address of the map service's host,
+over HTTPS: `https://HOST:8852/`. Its certificate comes from the
+cluster's own CA, so a browser warns until you import the cluster's root
+once (`/etc/hyperstor/pki/root.crt`, as a trusted authority for
+websites). To avoid that, give it a certificate browsers already trust:
+
+- your own, kept current by an ACME client:
+  `sudo hyperstor-install install --web-tls /etc/hyperstor/web` (see
+  [hyperstor-mgmt](../reference/hyperstor-mgmt.md#certificates));
+- on Tailscale, the node's own:
+  `sudo hyperstor-install install --tailscale-cert`, then
+  `https://NODE.TAILNET.ts.net:8852/`.
+
+To keep it on loopback instead, `--mgmt-listen loopback`, and reach it
+through a tunnel:
 
 ```sh
 ssh -L 8852:127.0.0.1:8852 the-map-service-host

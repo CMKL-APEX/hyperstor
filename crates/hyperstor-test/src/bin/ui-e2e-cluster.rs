@@ -59,7 +59,7 @@ fn main() {
     println!(
         "{}",
         serde_json::json!({
-            "url": format!("http://{}", c.dashboard_host()),
+            "url": c.mgmt_url(),
             "claim": claim,
             "password": PASSWORD,
             "people": ["ann", "bob", "cy"],

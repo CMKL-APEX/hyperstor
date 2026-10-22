@@ -560,6 +560,11 @@ pub struct Cluster {
     mgmt: Option<Child>,
     /// Options hyperstor-mgmt gets after its installed ones.
     mgmt_extra: Vec<String>,
+    /// Run mgmt on every address, as installed (D110); else on loopback
+    /// only, so a test's cluster isn't reachable from the network.
+    pub mgmt_all_addresses: bool,
+    /// mgmt serves HTTPS (`--web-tls`), with the cluster CA's certificate.
+    mgmt_https: bool,
     node_procs: BTreeMap<u32, Child>,
 }
 
@@ -617,6 +622,8 @@ impl Cluster {
             mgmt_port: mgmt,
             mgmt: None,
             mgmt_extra: Vec::new(),
+            mgmt_all_addresses: false,
+            mgmt_https: false,
             meta: None,
             node_procs: BTreeMap::new(),
         };
@@ -637,10 +644,19 @@ impl Cluster {
         if !sock.exists() {
             start_authd(&sock);
         }
+        let all = format!("0.0.0.0:{port},[::]:{port}", port = self.mgmt_port);
         let args: Vec<String> = env_args(&self.root, self.scratch.run(), "mgmt.env")
             .into_iter()
             .map(|a| a.replace("/run/hyperstor-authd", self.scratch.run().to_str().unwrap()))
+            .map(|a| {
+                if a == all && !self.mgmt_all_addresses {
+                    format!("127.0.0.1:{}", self.mgmt_port)
+                } else {
+                    a
+                }
+            })
             .collect();
+        self.mgmt_https = args.iter().any(|a| a == "--web-tls");
         let p = Command::new(self.bin.join("hyperstor-mgmt"))
             .args(args)
             .args(&self.mgmt_extra)
@@ -678,15 +694,33 @@ impl Cluster {
         body: &str,
     ) -> (u16, String, String) {
         use std::io::{Read, Write};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap();
+        let tcp = std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap();
         let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
         for (k, v) in headers {
             req.push_str(&format!("{k}: {v}\r\n"));
         }
         req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
-        s.write_all(req.as_bytes()).unwrap();
-        let mut t = String::new();
-        s.read_to_string(&mut t).unwrap();
+        let mut raw = Vec::new();
+        if self.mgmt_https {
+            // Verified as a client of the host would: the cluster's root.
+            let root = std::fs::read_to_string(self.pki().join("root.crt")).unwrap();
+            let config = hyperstor_pki::web_client_config(Some(&root)).unwrap();
+            let name = rustls::pki_types::ServerName::IpAddress(
+                std::net::IpAddr::from([127, 0, 0, 1]).into(),
+            );
+            let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+            let mut s = rustls::StreamOwned::new(conn, tcp);
+            s.write_all(req.as_bytes()).unwrap();
+            // A server may close without close_notify: what came counts.
+            if let Err(e) = s.read_to_end(&mut raw) {
+                assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+            }
+        } else {
+            let mut s = tcp;
+            s.write_all(req.as_bytes()).unwrap();
+            s.read_to_end(&mut raw).unwrap();
+        }
+        let t = String::from_utf8_lossy(&raw).into_owned();
         let (head, body) = t.split_once("\r\n\r\n").unwrap_or((&t, ""));
         let code = head
             .split_whitespace()
@@ -784,6 +818,12 @@ impl Cluster {
         }
         self.mgmt_extra = extra.iter().map(|s| s.to_string()).collect();
         self.start_mgmt();
+    }
+
+    /// mgmt's URL for this cluster, `https://` once it serves HTTPS.
+    pub fn mgmt_url(&self) -> String {
+        let scheme = if self.mgmt_https { "https" } else { "http" };
+        format!("{scheme}://{}", self.dashboard_host())
     }
 
     /// The dashboard's `Host` for this cluster.
