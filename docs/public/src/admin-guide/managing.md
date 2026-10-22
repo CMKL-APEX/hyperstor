@@ -132,6 +132,27 @@ between members, until it would have expired anyway (30 days at most).
 The local socket on a map service host needs no certificate, so
 revoking the administrator's own never locks root out.
 
+## Volumes and snapshots
+
+```sh
+hyperstorctl create-volume --size 10G --name db      # prints its id
+hyperstorctl volumes --pool 1
+hyperstorctl snapshot create --id ID --name nightly
+hyperstorctl snapshot list --id ID
+hyperstorctl snapshot group --ids ID1,ID2 --name db  # one instant for both
+hyperstorctl clone-volume --id ID --epoch E --name test-copy
+hyperstorctl rollback-volume --id ID --epoch E       # the volume must be detached
+hyperstorctl flatten-volume --id CLONE               # so its parents can go
+hyperstorctl snapshot delete --id ID --epoch E
+```
+
+A snapshot of an attached volume pauses its client's writes while it is
+cut, at most 2 s. A snapshot that a clone or a rollback still reads from
+can't be deleted (reason `in_use`): flatten or delete the clone first.
+To test a volume as a block device on a host, serve it with
+[`hyperstor-ublk`](../reference/hyperstor-ublk.md). All options are in
+the [`hyperstorctl` reference](../reference/hyperstorctl.md).
+
 ## Testing I/O
 
 ```sh

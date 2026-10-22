@@ -1,9 +1,11 @@
 # Comparison with other systems
 
 Hyperstor is early: today it has replicated pools, the replicated map
-service, failure handling, recovery, scrub and volumes with leases, used
-through a Rust client library. Erasure coding, snapshots, the block front
-ends, RDMA, GPU-direct, S3 and the filesystem are designed but not built.
+service, failure handling, recovery, scrub, volumes with leases,
+snapshots, clones and consistency groups, used through a Rust client
+library or, for testing, a ublk block device. Erasure coding, the front
+ends for VMs and remote hosts, RDMA, GPU-direct, S3 and the filesystem
+are designed but not built.
 The systems below are mature products; this page compares **designs**,
 and says where Hyperstor is behind.
 
@@ -15,7 +17,7 @@ anything you rely on.
 
 | System | License | Data path | Protection | Metadata | Recovery of a returning copy | Front ends | GPU-direct (NVIDIA GDS list) |
 |---|---|---|---|---|---|---|---|
-| **Hyperstor** | MIT or Apache-2.0 | Own io_uring reactor, thread per core, pure Rust; kernel NVMe driver | 2–3 copies; erasure coding planned; one-copy cache pools | Raft map service (3 or 5 members); volume headers in a replicated pool | Compare content digests, send what differs | Client library; vhost-user-blk, NVMe-oF, S3, filesystem planned | Planned: dma-buf and RDMA behind cuFile and hipFile |
+| **Hyperstor** | MIT or Apache-2.0 | Own io_uring reactor, thread per core, pure Rust; kernel NVMe driver | 2–3 copies; erasure coding planned; one-copy cache pools | Raft map service (3 or 5 members); volume headers in a replicated pool | Compare content digests, send what differs | Client library, ublk (testing); vhost-user-blk, NVMe-oF, S3, filesystem planned | Planned: dma-buf and RDMA behind cuFile and hipFile |
 | **Ceph** (v20 Tentacle) | LGPL | BlueStore on raw devices; the Seastar-based Crimson OSD is a technology preview | Replication, erasure coding | Monitors (Paxos); CRUSH placement | PG log, then backfill | RBD, NVMe-oF gateway, S3 (RGW), CephFS | Not listed |
 | **Longhorn** (1.9) | Apache-2.0 | One engine per volume; a V2 engine on SPDK (experimental) | Replicas per volume | Kubernetes resources | Replica rebuild | iSCSI, ublk; NVMe/TCP with V2 | Not listed |
 | **OpenEBS Mayastor** | Apache-2.0 | SPDK, in Rust; huge pages and polling cores | Replicas per volume | etcd | Replica rebuild | NVMe/TCP | Not listed |
@@ -46,7 +48,11 @@ blocklist for exclusive locks.
 - **The data path Ceph is moving to:** Crimson rebuilds the OSD as
   thread-per-core on Seastar. Hyperstor started there, on io_uring
   without Seastar or SPDK.
-- **Behind:** Ceph has erasure coding, snapshots, S3, a filesystem,
+- **Snapshots:** Hyperstor deletes a snapshot by handing its blocks to the
+  newer version in one log record, without copying data, and resets a
+  volume to its newest snapshot in place, which suits VMs reset after
+  every task.
+- **Behind:** Ceph has erasure coding, S3, a filesystem,
   multi-site replication and years of production at scale. Hyperstor has
   none of these yet.
 

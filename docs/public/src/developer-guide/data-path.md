@@ -26,8 +26,10 @@ devices taken away from the kernel.
 **As built, with a known limit:** device I/O uses a second io_uring
 owned by the engine and waits for it, so a commit's flush blocks its
 reactor for the flush's duration. Making the engine completion-driven on
-the reactor's own ring is planned. NVMe passthrough (`uring_cmd`),
-zero-copy send and provided buffers are planned too.
+the reactor's own ring is planned. The reactor issues `uring_cmd`
+passthrough commands (the ublk front end uses them); NVMe passthrough
+through the same interface, zero-copy send and provided buffers are
+planned.
 
 ## The engine
 
@@ -43,7 +45,12 @@ of it survives a crash. Operations include `Write`, `Zero`, `Truncate`,
 `SetAttr`, `KvPut`, `KvDelRange`, `Delete`, and asserts
 (`AssertRevision`, `AssertExists`, `AssertAbsent`) checked before the
 list applies. Asserts make compare-and-set possible, which the volume
-headers use. Every change gets a revision from a counter that never
+headers use. `Absorb` serves snapshot deletion: it hands the blocks an
+older version of a chunk holds, and a newer one lacks, to the newer one,
+then deletes the older, all in one log record and without copying any
+data. Reads can go through **layers**: each block comes from the first of
+a list of objects (a chunk's versions) that holds it, zeros if none
+does. Every change gets a revision from a counter that never
 repeats, so compare-and-set has no ABA problem.
 
 ### On-device format
@@ -110,8 +117,10 @@ to runs when it compacts again.
 
 **Why:** after random overwrites, run maps cost about 33 GiB of memory
 per TiB of data; dense maps cap it at 2 GiB per TiB. A copy-on-write
-B+tree on the device, which pages the index and gives cheap snapshots,
-is the planned next step (see [decisions](decisions.md#the-index)).
+B+tree on the device, which pages the index, is planned after
+checkpoints that seal the index and write only what changed (see
+[decisions](decisions.md#the-index)). Snapshots don't wait for it: they
+are versions of chunk objects ([volumes](volumes.md#snapshots-and-clones)).
 
 ### Content digests
 

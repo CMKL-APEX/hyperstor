@@ -109,4 +109,34 @@ While one client holds it, another's `attach` fails with `LeaseHeld`.
   `lost()` returns true.
 - An attached volume can't be deleted (`VolumeAttached`); detach it
   first, or use `force_delete_volume(id)`, which preempts the holder.
-- Read-only attachments come with snapshots.
+- Read-only attachments (of snapshots, by several clients at once) are
+  planned.
+
+## Snapshots and clones
+
+```rust
+let snap = client.snapshot(v.id, "before-upgrade").await?;   // crash-consistent
+let copy = client.clone_snapshot(v.id, snap.epoch, "copy", None).await?;
+client.rollback(v.id, snap.epoch).await?;                    // detached volumes only
+client.delete_snapshot(v.id, snap.epoch).await?;
+```
+
+- `snapshot(id, name)` takes a **crash-consistent** snapshot: the volume
+  as it would be after a power cut at one instant. If a client has the
+  volume attached, its writes are paused while the snapshot is cut, at
+  most 2 s; past that the snapshot is abandoned (`Server` with code
+  `Busy`), and you can try again. A snapshot is identified by its
+  **epoch**; `volume(id)` lists them in `snapshots`.
+- `snapshot_group(ids, name)` takes a snapshot of several volumes at one
+  instant (a **consistency group**), for example a database's data and
+  log volumes; `delete_group` removes them all.
+- `clone_snapshot(id, epoch, name, new_id)` makes a new volume from a
+  snapshot at once: it shares the snapshot's data, and writes to the
+  clone go to its own copies.
+- `rollback(id, epoch)` returns a detached volume to a snapshot. To the
+  newest snapshot it is done in place and is instant.
+- `flatten(id)` copies into a clone what it still reads from its parents,
+  so they can be deleted.
+- `delete_snapshot(id, epoch)` merges the snapshot's data into what
+  still needs it, without copying blocks, and is refused
+  (`SnapshotInUse`) while a clone or a rollback depends on it.
