@@ -120,6 +120,7 @@ covered by tests that run on every change.
 | The PAM helper, and the management service's rows in the map service's store | Done |
 | People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf) | Done |
 | Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit | Done |
+| People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate | Done |
 | The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui | Done |
 
 ## AD3: Administration from the UI and CLI, with roles, trash and audit

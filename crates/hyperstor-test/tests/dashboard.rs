@@ -230,7 +230,9 @@ fn people_log_in_and_do_what_their_roles_allow() {
     // the same step-up, the API's refusals as hyperstorctl shows them.
     let ctl = |args: &[&str], token: &str| {
         let o = std::process::Command::new(c.bin.join("hyperstorctl"))
-            .args(["--mgmt", &format!("http://{host}")])
+            .args(["--mgmt", &c.mgmt_url()])
+            .arg("--mgmt-ca")
+            .arg(c.pki().join("root.crt"))
             .args(args)
             .env("HYPERSTOR_TOKEN", token)
             .output()

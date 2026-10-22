@@ -368,7 +368,7 @@ tests = [
 
 [[milestone.item]]
 what = "Paged checkpoints: only the pages changed since the last (D105)"
-spec = ["engine.md §7.3", "D47", "D105", "I144", "I145"]
+spec = ["engine.md §7.3", "D47", "D105", "I148", "I149"]
 status = "done"
 tests = [
     "engine::checkpoints_write_only_the_pages_that_changed",
@@ -647,6 +647,19 @@ tests = [
     "hyperstor_mgmt::tests::refusals_are_connect_errors_with_reasons",
     "hyperstor_mgmt::tests::query_values_are_decoded",
     "hyperstor_api::tests::persons_are_user_and_a_name",
+]
+
+[[milestone.item]]
+what = "People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate"
+spec = ["administration.md §23.7", "D108", "D109", "D110"]
+status = "done"
+tests = [
+    "web::people_reach_mgmt_on_the_hosts_addresses",
+    "install::mgmt_listens_on_every_address_with_a_cluster_certificate",
+    "hyperstor_install::tests::the_web_certificate_names_the_host",
+    "hyperstor_install::tailscale::tests::who_holds_the_grant",
+    "hyperstor_install::tailscale::tests::under_a_root",
+    "hyperstor_mgmt::web::tests::plain_http_goes_to_https",
 ]
 
 [[milestone.item]]

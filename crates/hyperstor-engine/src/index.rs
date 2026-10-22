@@ -695,7 +695,7 @@ mod tests {
     }
 
     /// Replaying over a fuzzy checkpoint written after an absorb moved a
-    /// block (implementation-notes.md I145): the source no longer maps it,
+    /// block (implementation-notes.md I149): the source no longer maps it,
     /// so the deferred write waits; the block's new owner maps it with the
     /// write's checksum, so it is kept.
     #[test]

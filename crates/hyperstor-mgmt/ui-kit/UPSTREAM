@@ -2,4 +2,4 @@
 # this glidex commit (hyperstor decision D97, implementation-notes.md
 # I140). Change it in glidex, then: scripts/ui-kit-sync.sh <commit>
 # CI checks the copy matches: scripts/ui-kit-sync.sh --check
-rev 3ed1891d61988ca24edf274ea401cf1960fe3e3f
+rev 6500c1f08164ad6de38916b1fe53541711713823

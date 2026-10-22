@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert]
 ```
 
 | Command | Does |
@@ -44,6 +44,10 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `--in FILE` | | `root-restore`: the backup to read |
 | `--passphrase-file F` | | `root-backup`, `root-restore`: the passphrase, at least 12 characters, from a file; or `$HYPERSTOR_BACKUP_PASSPHRASE`. Never on the command line |
 | `--ui DIR` | `hyperstor-ui` beside the installer | Where the map service runs: install the [web UI](hyperstor-mgmt.md)'s built files from `DIR` (`crates/hyperstor-mgmt/ui/dist` after `bun run build`) to `/usr/local/share/hyperstor/ui`, replacing what was there, and have `hyperstor-mgmt` serve them. Without it and without `hyperstor-ui`, an installed UI stays; with none, the built-in dashboard is served. Not saved |
+| `--mgmt-listen all\|loopback` | `all` | Where the map service's host serves `hyperstor-mgmt`: every address over HTTPS (`all`), or `127.0.0.1` over plain HTTP, for an SSH tunnel (`loopback`). Saved |
+| `--web-tls DIR` | the cluster CA's | mgmt's web certificate: `DIR/web.crt` and `DIR/web.key`, yours (an ACME client's, say), re-read when they change. `--web-tls ""` goes back to the cluster CA's. Saved |
+| `--tailscale-cert` | off | Also serve the node's Tailscale certificate for its `ts.net` names: grants the `hyperstor` user `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` (the tailnet drops for a few seconds). Refused, changing nothing, when `tailscaled` already grants it to someone else (glidex-ui, say). Saved |
+| `--no-tailscale-cert` | | Turn it off again: removes that drop-in |
 | `--remove-key` | off | `root-backup`: once the backup opens, remove the root's key from this host, keeping the root offline |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
@@ -65,6 +69,8 @@ in, so run it from `target/release` after `cargo build --release`.
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
 | `/etc/systemd/system/` | `hyperstor-meta.service`, `hyperstor-mgmt.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
 | `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group), `mgmt` for the dashboard (key readable by the `hyperstor` group) |
+| `/etc/hyperstor/pki/web.crt`, `web.key` | mgmt's web certificate from the cluster CA, for this host's names and addresses (unless `--web-tls`) |
+| `/etc/systemd/system/tailscaled.service.d/50-hyperstor-cert.conf` | With `--tailscale-cert`: lets mgmt fetch the node's Tailscale certificate (removed by `--no-tailscale-cert` and `uninstall`) |
 | `/usr/local/share/hyperstor/ui/` | The web UI's files, when installed with `--ui` (removed by `uninstall`) |
 | `/etc/hyperstor/install.conf` | The saved options |
 

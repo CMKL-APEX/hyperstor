@@ -154,13 +154,13 @@ log device, which has its own superblock naming the data device (§6.2).
   record sets state absolutely, so objects written to the stream at
   different moments converge. If the log reaches three quarters before
   the checkpoint is done, it is finished at once.
-- **Paged** (as built, D105, I144). The stream is cut into pages by key
+- **Paged** (as built, D105, I148). The stream is cut into pages by key
   range, about 128 KiB each. A change marks its page; a checkpoint
   writes only the pages marked since the last one began, cutting full
   pages and dropping empty ones, then a directory of every page. A page
   nothing changed still holds what replay from `L` needs, so checkpoint
   traffic follows the share of the index that changes.
-- **Deferred writes in replay** (I145). A deferred write's record names
+- **Deferred writes in replay** (I149). A deferred write's record names
   its physical blocks. Replayed over a page written after it, a write
   whose object no longer maps the block (a later trim, or an absorb that
   moved it) is kept only if, once replay ends, some object maps the

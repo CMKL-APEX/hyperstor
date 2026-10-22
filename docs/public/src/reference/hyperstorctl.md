@@ -50,7 +50,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--socket PATH` | see below | Connect to the map service's local socket instead: no certificate needed (break-glass) |
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
-| `--mgmt-ca FILE` | the host's CAs | With an `https://` `--mgmt`: also trust the CA certificates in `FILE` |
+| `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--pool P` | the first data pool | The pool for `pgs`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
@@ -83,7 +83,7 @@ rolling back, tokens, revocations, backups) is refused with
 The map service's audit names you (`… for user:NAME`).
 
 ```sh
-export HYPERSTOR_MGMT=http://127.0.0.1:8852
+export HYPERSTOR_MGMT=https://the-map-service-host:8852
 export HYPERSTOR_TOKEN="$(cat ~/.hyperstor-token)"
 hyperstorctl status
 ```

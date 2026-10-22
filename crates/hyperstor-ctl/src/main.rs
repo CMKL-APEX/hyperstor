@@ -68,7 +68,9 @@
 //! `--token-file F` or `$HYPERSTOR_TOKEN` (`hst_…`, made in the UI or at
 //! `/auth/tokens`; never an argument), and their roles decide what it
 //! may do (§23.9.2). `http://` is for loopback only (an SSH tunnel);
-//! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s.
+//! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s, or
+//! without it the cluster's root where `hyperstorctl.conf` names one
+//! (mgmt's certificate is the cluster CA's by default, D108).
 //!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a failed request or test, 2 usage, 3 the API unreachable (or the
@@ -505,8 +507,15 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>) -> Mgmt {
         .unwrap_or_else(|_| fail("the API token isn't one (hst_…)".into()));
     bearer.set_sensitive(true);
     let tls = https.then(|| {
-        let ca =
-            ca.map(|f| std::fs::read_to_string(f).unwrap_or_else(|e| fail(format!("{f}: {e}"))));
+        // On a host of the cluster, its root too: mgmt's certificate is
+        // the cluster CA's by default (D108).
+        let ca = ca
+            .map(|f| std::fs::read_to_string(f).unwrap_or_else(|e| fail(format!("{f}: {e}"))))
+            .or_else(|| {
+                conf("tls").and_then(|d| {
+                    std::fs::read_to_string(std::path::Path::new(&d).join("root.crt")).ok()
+                })
+            });
         std::sync::Arc::new(
             hyperstor_pki::web_client_config(ca.as_deref()).unwrap_or_else(|e| fail(e)),
         )
