@@ -666,9 +666,10 @@ async fn serve(
     db: Arc<Db>,
 ) {
     loop {
-        let Ok((tcp, _)) = listener.accept().await else {
+        let Ok((tcp, peer)) = listener.accept().await else {
             continue;
         };
+        let peer = Some(peer);
         let _ = tcp.set_nodelay(true);
         let (service, tls, db) = (service.clone(), tls.clone(), db.clone());
         tokio::spawn(async move {
@@ -681,8 +682,13 @@ async fn serve(
                     else {
                         return;
                     };
-                    if let Err(e) = check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db) {
-                        eprintln!("hyperstor-meta: refused a member's connection: {e}");
+                    if check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db).is_err() {
+                        // Named by address: `hyperstorctl cert list` has the
+                        // certificates.
+                        eprintln!(
+                            "hyperstor-meta: refused a member connection from {}: its certificate is revoked, another cluster's, or not a member's",
+                            peer.map_or("?".into(), |a| a.to_string())
+                        );
                         return;
                     }
                     Box::new(s)
