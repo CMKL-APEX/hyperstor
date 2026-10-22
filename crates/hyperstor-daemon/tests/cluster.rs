@@ -19,9 +19,14 @@ const CHUNK: u32 = 1 << 20;
 /// Short leases and detection, to keep the tests quick.
 const LEASE: std::time::Duration = std::time::Duration::from_millis(400);
 const DOWN_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
+/// The down-out interval (placement.md §5.3): short, so a stopped node's
+/// PGs are placed elsewhere soon; tests of the interval set their own.
+const DOWN_OUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum MetaCmd {
     Stop,
+    /// The PGs scrub reported inconsistent.
+    Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
 }
 
 /// Each stopped device, by device id.
@@ -43,6 +48,10 @@ struct Cluster {
     meta_tx: Sender<MetaCmd>,
     meta_thread: Option<std::thread::JoinHandle<ClusterMap>>,
     nodes: Vec<Option<NodeHandle>>,
+    /// Node pairs cut from each other (D92), shared by every node.
+    partitions: Arc<hyperstor_daemon::faults::Partitions>,
+    /// Every device, by id, to make it slow or fail (D92).
+    faulty: std::collections::HashMap<u32, Arc<hyperstor_daemon::faults::FaultyDev>>,
 }
 
 impl Cluster {
@@ -65,6 +74,27 @@ impl Cluster {
         down_after: std::time::Duration,
         peer_timeout: std::time::Duration,
         scrub: std::time::Duration,
+    ) -> Cluster {
+        Self::start_full(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            DOWN_OUT,
+        )
+    }
+
+    /// With a given down-out interval too.
+    fn start_full(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
     ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
@@ -101,32 +131,50 @@ impl Cluster {
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
                 let meta = hyperstor_meta::Meta::with_lease(map, lease);
+                meta.set_down_out(down_out);
                 spawn(hyperstor_meta::serve(
                     hyperstor_reactor::net::TcpListener::from_std(meta_l),
                     meta.clone(),
                 ));
                 spawn(meta.clone().liveness(down_after));
                 spawn(meta.clone().publisher());
-                if let Some(MetaCmd::Stop) = meta_rx.recv().await {}
+                while let Some(cmd) = meta_rx.recv().await {
+                    match cmd {
+                        MetaCmd::Stop => break,
+                        MetaCmd::Inconsistent(tx) => {
+                            let _ = tx.send(meta.inconsistent.borrow().clone());
+                        }
+                    }
+                }
                 meta.published.borrow().clone()
             })
         });
         let blocked: Vec<Arc<std::sync::atomic::AtomicBool>> =
             (0..nodes).map(|_| Arc::default()).collect();
+        let partitions = Arc::new(hyperstor_daemon::faults::Partitions::default());
+        let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
                     shards: ls
                         .into_iter()
                         .enumerate()
-                        .map(|(i, l)| ShardSpec {
-                            device_id: n as u32 * 1000 + i as u32,
-                            device: DeviceSpec::Mem { bytes: 256 << 20 },
-                            listener: l,
+                        .map(|(i, l)| {
+                            let id = n as u32 * 1000 + i as u32;
+                            let dev = hyperstor_daemon::faults::FaultyDev::new(Arc::new(
+                                MemDev::new(256 << 20),
+                            ));
+                            faulty.insert(id, dev.clone());
+                            ShardSpec {
+                                device_id: id,
+                                device: DeviceSpec::Existing(dev),
+                                listener: l,
+                            }
                         })
                         .collect(),
                     cpus: Vec::new(),
@@ -149,6 +197,8 @@ impl Cluster {
             meta_tx,
             meta_thread: Some(meta_thread),
             nodes,
+            partitions,
+            faulty,
         }
     }
 
@@ -181,6 +231,7 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
             shards,
@@ -192,6 +243,13 @@ impl Cluster {
             scrub_interval: self.scrub,
             no_digests,
         }));
+    }
+
+    /// The PGs scrub has reported inconsistent to the map service.
+    fn inconsistent(&self) -> hyperstor_meta::Inconsistent {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Inconsistent(tx)).is_ok());
+        rx.recv().unwrap()
     }
 
     /// Stops everything; returns the final map and each device by id.
@@ -1796,4 +1854,533 @@ fn a_lease_outlives_its_headers_primary() {
     go_tx.send(()).unwrap();
     t.join().unwrap();
     c.stop();
+}
+
+/// Runs `f` with a client of its own, on a reactor of its own.
+fn with_client<T: Send + 'static, F, Fut>(meta: SocketAddr, id: u64, f: F) -> T
+where
+    F: FnOnce(std::rc::Rc<Client>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T>,
+{
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, id).await.unwrap();
+            f(cl).await
+        })
+    })
+    .join()
+    .unwrap()
+}
+
+/// Waits until `ok` holds for the map the service publishes.
+async fn wait_map(cl: &std::rc::Rc<Client>, what: &str, ok: impl Fn(&ClusterMap) -> bool) {
+    let t = std::time::Instant::now();
+    loop {
+        cl.refresh_map().await.unwrap();
+        if ok(&cl.map()) {
+            return;
+        }
+        assert!(t.elapsed().as_secs() < 30, "waited 30 s for {what}");
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Down and out (placement.md §5.3): a node down for less than the
+/// down-out interval keeps its place, so a short reboot moves no data;
+/// one down for longer has its devices marked out and its PGs placed
+/// elsewhere, and is marked in again when it returns.
+#[test]
+fn a_node_down_past_the_interval_is_marked_out_and_back_in() {
+    use std::time::Duration;
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::from_secs(3),
+    );
+    let meta = c.meta_addr;
+    let data = pattern(91, 8 * CHUNK as usize);
+    let d = data.clone();
+    let before = with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, d).await.unwrap();
+        wait_backfilled(&cl).await;
+        cl.map().as_ref().clone()
+    });
+    // The data pool's: a cache pool follows live nodes (D45).
+    let places = |m: &ClusterMap| -> Vec<Vec<u32>> {
+        m.pgs
+            .range((POOL, 0)..=(POOL, u32::MAX))
+            .map(|(_, p)| p.up.clone())
+            .collect()
+    };
+    let at_first = places(&before);
+    // A short stop: down, never out; nothing placed elsewhere.
+    c.kill(3);
+    let at_first2 = at_first.clone();
+    with_client(meta, 6, move |cl| async move {
+        wait_map(&cl, "node 3 down", |m| !m.nodes[&3].up).await;
+        hyperstor_reactor::time::sleep(Duration::from_millis(500)).await;
+        cl.refresh_map().await.unwrap();
+        let m = cl.map();
+        assert!(m.auto_out.is_empty());
+        assert_eq!(places(&m), at_first2, "a down node keeps its place");
+        assert!(
+            m.pgs
+                .range((POOL, 0)..=(POOL, u32::MAX))
+                .all(|(_, p)| m.filling(p).is_empty()),
+            "nothing to fill"
+        );
+        // Writes go on with the other copies.
+        cl.write(POOL, 1, 0, pattern(92, CHUNK as usize))
+            .await
+            .unwrap();
+    });
+    c.restart(3);
+    let at_first3 = at_first.clone();
+    with_client(meta, 7, move |cl| async move {
+        wait_map(&cl, "node 3 up", |m| m.nodes[&3].up).await;
+        wait_backfilled(&cl).await;
+        assert_eq!(places(&cl.map()), at_first3);
+    });
+    // A long stop: out after the interval, its PGs placed and filled
+    // elsewhere; back in when it returns.
+    c.kill(3);
+    with_client(meta, 8, move |cl| async move {
+        wait_map(&cl, "node 3 out", |m| m.auto_out.contains(&3000)).await;
+        let m = cl.map();
+        assert!(!m.devices[&3000].up_in);
+        assert!(
+            m.pgs
+                .range((POOL, 0)..=(POOL, u32::MAX))
+                .all(|(_, p)| !p.up.contains(&3000))
+        );
+        wait_backfilled(&cl).await;
+    });
+    c.restart(3);
+    with_client(meta, 9, move |cl| async move {
+        wait_map(&cl, "node 3 back in", |m| {
+            m.auto_out.is_empty() && m.devices[&3000].up_in
+        })
+        .await;
+        wait_backfilled(&cl).await;
+        assert!(cl.map().pgs.values().any(|p| p.acting.contains(&3000)));
+    });
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..8u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// A device that fails (replication.md §15) is marked failed and its PGs
+/// are placed elsewhere at once, without waiting for the down-out
+/// interval; its node stays up, and writes go on.
+#[test]
+fn a_failed_device_is_placed_elsewhere_at_once() {
+    use std::time::Duration;
+    let c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    let data = pattern(93, 8 * CHUNK as usize);
+    let d = data.clone();
+    with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, d).await.unwrap();
+        wait_backfilled(&cl).await;
+    });
+    c.faulty[&2000].set_failed(true);
+    let d = pattern(94, 8 * CHUNK as usize);
+    let d2 = d.clone();
+    with_client(meta, 6, move |cl| async move {
+        // Writes to PGs on the failed device fail it; then go on elsewhere.
+        cl.write(POOL, 1, 0, d2.clone()).await.unwrap();
+        wait_map(&cl, "device 2000 failed", |m| m.failed.contains(&2000)).await;
+        let m = cl.map();
+        assert!(m.nodes[&2].up, "the node is up; only its device failed");
+        assert!(
+            m.pgs
+                .values()
+                .all(|p| !p.up.contains(&2000) && !p.acting.contains(&2000))
+        );
+        wait_backfilled(&cl).await;
+        assert!(cl.read(POOL, 1, 0, d2.len() as u64).await.unwrap() == d2);
+    });
+    // Readable again for the final check, which opens every device.
+    c.faulty[&2000].set_failed(false);
+    let (map, devs) = c.stop();
+    assert!(map.failed.contains(&2000));
+    let chunks: Vec<(u128, u64)> = (0..8u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+    let _ = data;
+}
+
+/// A replica whose disk hangs while its node stays up (D91): the primary
+/// waits the operation timeout, reports it, and the map service takes it
+/// out of the PG, so writes go on; once the disk answers again it is
+/// backfilled back.
+#[test]
+fn a_hung_replica_is_dropped_from_its_pg_and_comes_back() {
+    let c = Cluster::start(4, 2);
+    let meta = c.meta_addr;
+    let (pg, slow) = with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, pattern(95, 4 * CHUNK as usize))
+            .await
+            .unwrap();
+        wait_backfilled(&cl).await;
+        let m = cl.map();
+        let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+        (pg, m.pg(POOL, pg).unwrap().acting[2])
+    });
+    c.faulty[&slow].set_delay(std::time::Duration::from_secs(3));
+    let t = std::time::Instant::now();
+    let d = pattern(96, CHUNK as usize);
+    let d2 = d.clone();
+    with_client(meta, 6, move |cl| async move {
+        cl.write(POOL, 1, 0, d2).await.unwrap();
+        let m = cl.map();
+        let info = m.pg(POOL, pg).unwrap();
+        assert!(!info.acting.contains(&slow), "the slow member left the PG");
+        assert!(info.up.contains(&slow), "and will be filled back");
+        assert!(m.nodes[&(slow / 1000)].up, "its node stayed up");
+    });
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t.elapsed()
+    );
+    c.faulty[&slow].set_delay(std::time::Duration::ZERO);
+    with_client(meta, 7, move |cl| async move {
+        wait_map(&cl, "the slow member back", |m| {
+            m.pg(POOL, pg).unwrap().acting.contains(&slow)
+        })
+        .await;
+        assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
+    });
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// A partition between a primary and one replica only (D91): neither
+/// node is down for anyone else, so liveness and peer reports never act;
+/// the primary reports the member it can't reach, and the PG goes on
+/// without it until the partition heals.
+#[test]
+fn a_partition_between_two_nodes_is_worked_around() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let (pg, primary, cut) = with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, pattern(97, 4 * CHUNK as usize))
+            .await
+            .unwrap();
+        wait_backfilled(&cl).await;
+        let m = cl.map();
+        let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+        let info = m.pg(POOL, pg).unwrap();
+        (pg, info.acting[0], info.acting[1])
+    });
+    c.partitions.cut(primary / 1000, cut / 1000);
+    let d = pattern(98, CHUNK as usize);
+    let d2 = d.clone();
+    with_client(meta, 6, move |cl| async move {
+        cl.write(POOL, 1, 0, d2).await.unwrap();
+        let m = cl.map();
+        assert!(!m.pg(POOL, pg).unwrap().acting.contains(&cut));
+        assert!(m.nodes.values().all(|n| n.up));
+    });
+    c.partitions.heal_all();
+    with_client(meta, 7, move |cl| async move {
+        wait_map(&cl, "the cut member back", |m| {
+            m.pg(POOL, pg).unwrap().acting.contains(&cut)
+        })
+        .await;
+        assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
+    });
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// The primary's own copy fails its checksums (replication.md §8.2): the
+/// read is served from a member's copy, which replaces the primary's.
+#[test]
+fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
+    use std::time::Duration;
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    let v1 = pattern(101, 4 * CHUNK as usize);
+    let v1c = v1.clone();
+    let primary = with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, v1c).await.unwrap();
+        // Later commits everywhere, so chunk 0's isn't any device's last
+        // group (which recovery would drop as torn, I4).
+        cl.write(POOL, 2, 0, pattern(102, 32 * CHUNK as usize))
+            .await
+            .unwrap();
+        wait_backfilled(&cl).await;
+        let m = cl.map();
+        m.pg(POOL, pg_of(1, 0, m.pools[&POOL].pg_count))
+            .unwrap()
+            .acting[0]
+    });
+    let node = (primary / 1000) as usize;
+    c.kill(node);
+    let dev = c.stopped.get_mut(&node).unwrap();
+    let mut img = vec![0u8; dev[0].len() as usize];
+    for (i, part) in img.chunks_mut(1 << 20).enumerate() {
+        dev[0].read((i as u64) << 20, part).unwrap();
+    }
+    let at = img
+        .chunks(4096)
+        .position(|b| b == &v1[..4096])
+        .expect("chunk 0's first block on the device")
+        * 4096;
+    img[at + 100] ^= 0xff;
+    dev[0] = Arc::new(MemDev::from_image(img));
+    c.restart(node);
+    let v1r = v1.clone();
+    with_client(meta, 6, move |cl| async move {
+        // Back as the PG's primary (its index looks right to digests).
+        wait_map(&cl, "the damaged node primary again", |m| {
+            let pg = m.pg(POOL, pg_of(1, 0, m.pools[&POOL].pg_count)).unwrap();
+            pg.primary() == Some(primary) && pg.acting == pg.up
+        })
+        .await;
+        assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+    });
+    // Every copy reads back through the CRC check, the primary's included.
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// Scrub when the primary's copy is the one outvoted (replication.md
+/// §8.5): it pulls the copy the other two agree on. When all three
+/// differ, nothing decides: the PG is reported inconsistent to the map
+/// service, for cluster health, until a scrub finds it consistent.
+#[test]
+fn scrub_repairs_an_outvoted_primary_and_reports_what_it_cant() {
+    use hyperstor_proto::{Msg, Target, WireKey, block_crcs};
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let v1 = pattern(103, 4 * CHUNK as usize);
+    let v1c = v1.clone();
+    // Overwrites chunk `ch`'s copy on `devices` with distinct data.
+    async fn overwrite(cl: &std::rc::Rc<Client>, ch: u64, devices: &[u32]) {
+        let m = cl.map();
+        let pg = pg_of(1, ch, m.pools[&POOL].pg_count);
+        let info = m.pg(POOL, pg).unwrap();
+        for (i, d) in devices.iter().enumerate() {
+            let conn = hyperstor_rpc::Conn::connect(m.device_addr(*d).unwrap())
+                .await
+                .unwrap();
+            let bad = pattern(200 + ch * 10 + i as u64, CHUNK as usize);
+            let (reply, _) = conn
+                .call(
+                    &Msg::Push {
+                        to: Target {
+                            pool: POOL,
+                            pg,
+                            map_epoch: m.epoch,
+                            pg_epoch: info.epoch,
+                        },
+                        key: WireKey {
+                            ns: hyperstor_client::NS_VOL,
+                            name: chunk_name(1, ch),
+                            version: 0,
+                        },
+                        crcs: block_crcs(&bad),
+                    },
+                    &bad,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply, Msg::PushOk);
+        }
+    }
+    let (primary, pg2) = with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, v1c).await.unwrap();
+        wait_backfilled(&cl).await;
+        let m = cl.map();
+        let pgc = m.pools[&POOL].pg_count;
+        let pg0 = m.pg(POOL, pg_of(1, 0, pgc)).unwrap().clone();
+        // The primary's copy of chunk 0 outvoted by the two others.
+        overwrite(&cl, 0, &[pg0.acting[0]]).await;
+        // Every copy of chunk 2 different (if it is in another PG).
+        let pg2 = pg_of(1, 2, pgc);
+        let info2 = m.pg(POOL, pg2).unwrap().clone();
+        overwrite(&cl, 2, &info2.acting).await;
+        (pg0.acting[0], pg2)
+    });
+    let repaired = || {
+        c.nodes[(primary / 1000) as usize].as_ref().unwrap().metrics[0]
+            .1
+            .scrub_repaired
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    while repaired() == 0 || !c.inconsistent().contains_key(&(POOL, pg2)) {
+        assert!(
+            t.elapsed().as_secs() < 15,
+            "repaired {}, inconsistent {:?}",
+            repaired(),
+            c.inconsistent()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let v1r = v1.clone();
+    with_client(meta, 6, move |cl| async move {
+        let chunk0 = cl.read(POOL, 1, 0, CHUNK as u64).await.unwrap();
+        assert!(chunk0 == v1r[..CHUNK as usize], "the majority's copy");
+        // Rewritten by a client: consistent again, and reported so.
+        cl.write(POOL, 1, 2 * CHUNK as u64, pattern(104, CHUNK as usize))
+            .await
+            .unwrap();
+    });
+    let t = std::time::Instant::now();
+    while c.inconsistent().contains_key(&(POOL, pg2)) {
+        assert!(t.elapsed().as_secs() < 15, "still reported inconsistent");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (map, devs) = c.stop();
+    copies_agree(&map, devs, &[(1, 0), (1, 1), (1, 2), (1, 3)]);
+}
+
+/// The fault-injection rig (D92): a randomized run of writes while nodes
+/// stop and restart, pairs of nodes are cut from each other, and devices
+/// hang, against a model. A write that fails may or may not have landed,
+/// so each chunk keeps every value it may hold; after everything heals,
+/// every chunk must read back one of them, and every copy must agree.
+/// `HS_SEED` picks one seed; by default three run.
+#[test]
+fn random_faults_lose_no_acknowledged_write() {
+    let seeds: Vec<u64> = match std::env::var("HS_SEED") {
+        Ok(s) => vec![s.parse().unwrap()],
+        Err(_) => vec![1, 2, 3],
+    };
+    for seed in seeds {
+        random_faults(seed);
+    }
+}
+
+fn random_faults(seed: u64) {
+    use std::time::Duration;
+    const CHUNKS: u64 = 8;
+    const NODES: u32 = 5;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut c = Cluster::start(NODES, 2);
+    let meta = c.meta_addr;
+    let first: Vec<Vec<u8>> = (0..CHUNKS)
+        .map(|ch| pattern(seed * 1000 + 500 + ch, CHUNK as usize))
+        .collect();
+    let all = first.concat();
+    with_client(meta, 5, move |cl| async move {
+        cl.write(POOL, 1, 0, all).await.unwrap();
+        wait_backfilled(&cl).await;
+    });
+    // Every value each chunk may hold.
+    let mut model: Vec<Vec<Vec<u8>>> = first.into_iter().map(|v| vec![v]).collect();
+    let (mut down, mut cut, mut slow) = (None::<usize>, None::<(u32, u32)>, None::<u32>);
+    let mut log = Vec::new();
+    for step in 0..12u64 {
+        match rng.random_range(0..7u32) {
+            0 if down.is_none() => {
+                let n = rng.random_range(0..NODES as usize);
+                c.kill(n);
+                down = Some(n);
+                log.push(format!("kill {n}"));
+            }
+            1 if down.is_some() => {
+                let n = down.take().unwrap();
+                c.restart(n);
+                log.push(format!("restart {n}"));
+            }
+            2 => match cut.take() {
+                None => {
+                    let a = rng.random_range(0..NODES);
+                    let b = (a + rng.random_range(1..NODES)) % NODES;
+                    c.partitions.cut(a, b);
+                    cut = Some((a, b));
+                    log.push(format!("cut {a}-{b}"));
+                }
+                Some((a, b)) => {
+                    c.partitions.heal(a, b);
+                    log.push(format!("heal {a}-{b}"));
+                }
+            },
+            3 => match slow.take() {
+                None => {
+                    let d = rng.random_range(0..NODES) * 1000 + rng.random_range(0..2u32);
+                    c.faulty[&d].set_delay(Duration::from_millis(2500));
+                    slow = Some(d);
+                    log.push(format!("slow {d}"));
+                }
+                Some(d) => {
+                    c.faulty[&d].set_delay(Duration::ZERO);
+                    log.push(format!("fast {d}"));
+                }
+            },
+            _ => {
+                let ch = rng.random_range(0..CHUNKS);
+                let data = pattern(seed * 1000 + step, CHUNK as usize);
+                let d = data.clone();
+                let ok = with_client(meta, 10 + step, move |cl| async move {
+                    cl.write(POOL, 1, ch * CHUNK as u64, d).await.is_ok()
+                });
+                if ok {
+                    model[ch as usize] = vec![data];
+                } else {
+                    model[ch as usize].push(data);
+                }
+                log.push(format!("write {ch}: {}", if ok { "ok" } else { "failed" }));
+            }
+        }
+    }
+    c.partitions.heal_all();
+    if let Some(d) = slow {
+        c.faulty[&d].set_delay(Duration::ZERO);
+    }
+    if let Some(n) = down {
+        c.restart(n);
+    }
+    let read = with_client(meta, 99, move |cl| async move {
+        hyperstor_reactor::time::sleep(Duration::from_millis(800)).await;
+        wait_backfilled(&cl).await;
+        cl.read(POOL, 1, 0, CHUNKS * CHUNK as u64).await
+    });
+    let read = read.unwrap_or_else(|e| panic!("seed {seed}: final read failed after {log:?}: {e}"));
+    for (ch, may) in model.iter().enumerate() {
+        let got = &read[ch * CHUNK as usize..(ch + 1) * CHUNK as usize];
+        assert!(
+            may.iter().any(|v| v[..] == got[..]),
+            "seed {seed}: chunk {ch} holds none of its {} possible values after {log:?}",
+            may.len()
+        );
+    }
+    eprintln!("random faults, seed {seed}: {log:?}");
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
 }

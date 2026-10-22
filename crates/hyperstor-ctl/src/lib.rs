@@ -402,7 +402,7 @@ mod tests {
             m.nodes.get_mut(&2).unwrap().up = false;
             m.recompute();
         }
-        hyperstor_meta::api::status(&m, None, "127.0.0.1:8849")
+        hyperstor_meta::api::status(&m, None, &Default::default(), "127.0.0.1:8849")
     }
 
     #[test]

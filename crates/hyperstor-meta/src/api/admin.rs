@@ -531,7 +531,7 @@ impl NodeService for Api {
         // A dry run only reads.
         let who = self.authorize(&ctx, "DrainNode", &target, !dry_run)?;
         let devices: Vec<u32> = {
-            let (map, _) = self.published().await?;
+            let (map, ..) = self.published().await?;
             map.devices
                 .values()
                 .filter(|d| d.node == node)
@@ -626,7 +626,7 @@ async fn follow_drain(
         if tx.send(Admin::Published(reply)).is_err() {
             return;
         }
-        let Some((map, _)) = rx.recv().await else {
+        let Some((map, ..)) = rx.recv().await else {
             return;
         };
         let any_in = map.devices.values().any(|d| d.node == node && d.up_in);
@@ -723,7 +723,7 @@ impl OperationService for Api {
         // A cancelled drain brings the node's devices back in.
         let mut message = "cancelled".to_string();
         if let Some(node) = node {
-            let (map, _) = self.published().await?;
+            let (map, ..) = self.published().await?;
             let devices: Vec<u32> = map
                 .devices
                 .values()

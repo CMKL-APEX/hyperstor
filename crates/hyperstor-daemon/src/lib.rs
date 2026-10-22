@@ -20,6 +20,7 @@
 //! recovery, read leases. A write whose replica is unreachable fails with
 //! `Unavailable`, and the client retries.
 
+pub mod faults;
 pub mod metrics;
 
 use hyperstor_client::rpc::{Conn, read_frame, writer};
@@ -132,6 +133,9 @@ pub struct NodeConfig {
     /// write (decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
     /// hard disks.
     pub defer_max: Option<usize>,
+    /// Test hook: node pairs that can't reach each other (decisions.md
+    /// D92); this node's reactors send nothing to a node it is cut from.
+    pub partitions: Option<Arc<faults::Partitions>>,
 }
 
 /// A running node. Dropping it without [`NodeHandle::stop`] leaves the
@@ -184,6 +188,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
+        let partitions = cfg.partitions.clone();
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -206,8 +211,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
+                        *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
+                        spawn(st.deadlines.clone().ticker());
                         spawn(st.clone().follow_map());
                         spawn(st.clone().heartbeat(node));
                         if !peer_timeout.is_zero() {
@@ -279,6 +286,18 @@ struct ShardState {
     /// epoch that was decided at. The holder is in the header too; the
     /// expiry is kept only here, so a renewal writes nothing.
     leases: RefCell<HashMap<ObjKey, (u64, std::time::Instant, u64)>>,
+    /// Deadlines on the I/O path (`REPL_TIMEOUT`).
+    deadlines: Rc<Deadlines>,
+    /// Replicas reported too slow: (pool, pg, PG epoch, device).
+    slow_reported: RefCell<HashSet<(u32, u32, u64, u32)>>,
+    /// The engine can no longer write this device (an I/O error poisoned
+    /// it): nothing is served, and the map service is told (`heartbeat`).
+    failed: Cell<bool>,
+    failure_reported: Cell<bool>,
+    /// The test hook of `NodeConfig::partitions`, with this node's id.
+    partitions: RefCell<Option<(u32, Arc<faults::Partitions>)>>,
+    /// Objects the last scrub of each PG left unresolved, as reported.
+    inconsistent: RefCell<HashMap<(u32, u32), u32>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
@@ -291,6 +310,79 @@ struct ShardState {
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
 }
+
+/// Coarse deadlines for the I/O path: one ticker per reactor wakes them
+/// every `TICK`. A reactor timer is an io_uring timeout, one submission
+/// per request that stays in the kernel until it fires; at thousands of
+/// writes a second that cost about 3% of write throughput.
+#[derive(Default)]
+struct Deadlines {
+    next: Cell<u64>,
+    waiting: RefCell<std::collections::BTreeMap<(std::time::Instant, u64), Waker>>,
+}
+
+impl Deadlines {
+    const TICK: Duration = Duration::from_millis(50);
+
+    /// Resolves at `at`, or up to a tick later.
+    fn at(&self, at: std::time::Instant) -> Expiry<'_> {
+        let id = self.next.get();
+        self.next.set(id + 1);
+        Expiry {
+            d: self,
+            key: (at, id),
+            registered: false,
+        }
+    }
+
+    async fn ticker(self: Rc<Self>) {
+        loop {
+            sleep(Self::TICK).await;
+            let now = std::time::Instant::now();
+            let due: Vec<Waker> = {
+                let mut w = self.waiting.borrow_mut();
+                let later = w.split_off(&(now, u64::MAX));
+                std::mem::replace(&mut *w, later).into_values().collect()
+            };
+            for w in due {
+                w.wake();
+            }
+        }
+    }
+}
+
+struct Expiry<'a> {
+    d: &'a Deadlines,
+    key: (std::time::Instant, u64),
+    registered: bool,
+}
+
+impl Future for Expiry<'_> {
+    type Output = ();
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        if std::time::Instant::now() >= self.key.0 {
+            return Poll::Ready(());
+        }
+        self.d
+            .waiting
+            .borrow_mut()
+            .insert(self.key, cx.waker().clone());
+        self.registered = true;
+        Poll::Pending
+    }
+}
+
+impl Drop for Expiry<'_> {
+    fn drop(&mut self) {
+        if self.registered {
+            self.d.waiting.borrow_mut().remove(&self.key);
+        }
+    }
+}
+
+/// How long a primary waits for a replica to answer a replicated change
+/// before reporting it too slow for the PG (decisions.md D91).
+pub const REPL_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn blocklisted(map: &ClusterMap) -> Msg {
     err(
@@ -315,7 +407,13 @@ enum Verdict {
     Agree,
     /// Push this copy to these members (indexes into the digests).
     Repair(Vec<usize>),
-    /// No majority agrees with this copy: report, don't guess.
+    /// This copy is outvoted (or damaged): fetch member `from`'s, which a
+    /// majority holds, then push it to the members in `fix`.
+    Pull {
+        from: usize,
+        fix: Vec<usize>,
+    },
+    /// No majority agrees on a copy: report, don't guess.
     Unresolved,
 }
 
@@ -326,10 +424,15 @@ fn verdict(digests: &[Option<u64>]) -> Verdict {
     }
     let with_me = digests.iter().filter(|d| **d == mine).count();
     if with_me * 2 > digests.len() {
-        Verdict::Repair((1..digests.len()).filter(|i| digests[*i] != mine).collect())
-    } else {
-        Verdict::Unresolved
+        return Verdict::Repair((1..digests.len()).filter(|i| digests[*i] != mine).collect());
     }
+    for (from, d) in digests.iter().enumerate().skip(1) {
+        if digests.iter().filter(|x| *x == d).count() * 2 > digests.len() {
+            let fix = (1..digests.len()).filter(|i| digests[*i] != *d).collect();
+            return Verdict::Pull { from, fix };
+        }
+    }
+    Verdict::Unresolved
 }
 
 /// Each member's digest of `key`. A damaged copy gets a value of its own,
@@ -451,6 +554,12 @@ impl ShardState {
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
             leases: RefCell::new(HashMap::new()),
+            slow_reported: RefCell::new(HashSet::new()),
+            deadlines: Rc::default(),
+            failed: Cell::new(false),
+            failure_reported: Cell::new(false),
+            inconsistent: RefCell::new(HashMap::new()),
+            partitions: RefCell::new(None),
             peered: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
@@ -488,6 +597,10 @@ impl ShardState {
                 }
             }
             Err(e) => {
+                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) && !self.failed.get() {
+                    eprintln!("hyperstord: device {} failed: {e}", self.me);
+                    self.failed.set(true);
+                }
                 for tx in txs {
                     let _ = tx.send(Err(e.to_string()));
                 }
@@ -544,6 +657,11 @@ impl ShardState {
             let _ = self.client.refresh_map().await;
         }
         let map = self.map();
+        // Retried by clients: the map service is told, and places the PG
+        // elsewhere.
+        if self.failed.get() {
+            return Err(err(Code::Unavailable, &map, "device failed"));
+        }
         // No valid map lease: this node may have been replaced without
         // knowing it, so it serves nothing (replication.md §8.4).
         if self
@@ -685,6 +803,14 @@ impl ShardState {
     }
 
     async fn peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        if let Some((node, p)) = &*self.partitions.borrow()
+            && let Some(d) = self.map().devices.values().find(|d| d.addr == addr)
+            && p.blocked(*node, d.node)
+        {
+            return Err(ClientError::Rpc(hyperstor_client::rpc::RpcError::Io(
+                "partitioned (test hook)".into(),
+            )));
+        }
         if let Some(c) = self.peers.borrow().get(&addr)
             && !c.is_dead()
         {
@@ -853,6 +979,13 @@ impl ShardState {
                     }
                     reply(&Msg::MapPushOk, &[]);
                 }
+                Msg::Fetch { to, key } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.fetch(to, key).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
+                }
                 Msg::Digests { .. } if self.no_digests.get() => {
                     reply(&err(Code::Invalid, &self.map(), "unsupported request"), &[])
                 }
@@ -918,6 +1051,11 @@ impl ShardState {
         if self.map().blocked(instance) {
             return send(blocklisted(&self.map()));
         }
+        // Being repaired from a member (`repair_own`): queued now, the
+        // write could be overwritten by the copy fetched. Rare; retried.
+        if !self.exec_locks.borrow().is_empty() && self.exec_locks.borrow().contains(&okey) {
+            return send(err(Code::Unavailable, &self.map(), "object being repaired"));
+        }
         // Counted until answered, so a fence waits for it.
         *self
             .pg_inflight
@@ -937,7 +1075,11 @@ impl ShardState {
             off,
             crcs,
         };
-        let remote: Vec<_> = conns.iter().map(|c| c.start(&repl, &data)).collect();
+        let remote: Vec<_> = conns
+            .iter()
+            .map(|(d, c)| (*d, c.start(&repl, &data)))
+            .collect();
+        let deadline = std::time::Instant::now() + REPL_TIMEOUT;
         let filling: Vec<_> = fills
             .iter()
             .map(|(d, c)| {
@@ -969,20 +1111,19 @@ impl ShardState {
         spawn(async move {
             let r = local.await;
             let m = me2.metrics.clone();
+            let failed = me2.await_replicas(to, remote, deadline).await;
+            let m2 = me2.clone();
             let _inflight = InflightGuard(me2, (to.pool, to.pg));
-            let mut failed = None;
-            for f in remote {
-                match f.await {
-                    Ok((Msg::ReplOk { .. }, _)) => {}
-                    Ok((Msg::Error { detail, .. }, _)) => failed = Some(detail),
-                    Ok((m, _)) => failed = Some(format!("unexpected {m:?}")),
-                    Err(e) => failed = Some(e.to_string()),
-                }
-            }
             let ok = r.is_ok() && failed.is_none();
+            let failed_dev = m2.failed.get();
             send(match (r, failed) {
                 (Ok(c), None) => Msg::WriteOk {
                     revision: c.revision,
+                },
+                (Err(e), _) if failed_dev => Msg::Error {
+                    code: Code::Unavailable,
+                    map_epoch: 0,
+                    detail: format!("device failed: {e}"),
                 },
                 (Err(e), _) => Msg::Error {
                     code: Code::Io,
@@ -1001,22 +1142,102 @@ impl ShardState {
         });
     }
 
+    /// Waits for each replica's answer to a replicated change until
+    /// `deadline` (the operation timeout from when it was sent), with one
+    /// timer for them all. A member that doesn't answer in time, or whose
+    /// connection breaks, is reported to the map service, which takes it
+    /// out of the PG (D91). The first failure, if any.
+    async fn await_replicas<F>(
+        self: &Rc<Self>,
+        to: Target,
+        remote: Vec<(u32, F)>,
+        deadline: std::time::Instant,
+    ) -> Option<String>
+    where
+        F: Future<Output = Result<hyperstor_client::rpc::Reply, hyperstor_client::rpc::RpcError>>,
+    {
+        let failed: RefCell<Option<String>> = RefCell::new(None);
+        // The member being waited for, when the time runs out.
+        let waiting = Cell::new(None);
+        let all = async {
+            for (d, f) in remote {
+                waiting.set(Some(d));
+                let why = match f.await {
+                    Ok((Msg::ReplOk { .. }, _)) => continue,
+                    Ok((Msg::Error { detail, .. }, _)) => detail,
+                    Ok((m, _)) => format!("unexpected {m:?}"),
+                    Err(e) => {
+                        self.report_slow(to, d);
+                        e.to_string()
+                    }
+                };
+                failed.borrow_mut().get_or_insert(why);
+            }
+        };
+        let in_time = {
+            let mut all = std::pin::pin!(all);
+            let mut expired = std::pin::pin!(self.deadlines.at(deadline));
+            std::future::poll_fn(|cx| {
+                if all.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(true);
+                }
+                if expired.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(false);
+                }
+                Poll::Pending
+            })
+            .await
+        };
+        if !in_time && let Some(d) = waiting.get() {
+            self.report_slow(to, d);
+            failed
+                .borrow_mut()
+                .get_or_insert(format!("device {d} didn't answer within {REPL_TIMEOUT:?}"));
+        }
+        failed.into_inner()
+    }
+
+    /// Tells the map service, once per PG epoch, that `device` is too slow
+    /// for the PG (D91).
+    fn report_slow(self: &Rc<Self>, to: Target, device: u32) {
+        let k = (to.pool, to.pg, to.pg_epoch, device);
+        if !self.slow_reported.borrow_mut().insert(k) {
+            return;
+        }
+        let me = self.clone();
+        spawn(async move {
+            let _ = me
+                .client
+                .call_meta(&Msg::MemberSlow {
+                    reporter: me.me,
+                    pool: to.pool,
+                    pg: to.pg,
+                    pg_epoch: to.pg_epoch,
+                    device,
+                })
+                .await;
+        });
+    }
+
     /// Connections to a PG's replicas for a write: acting members, which
     /// must all answer, and backfill targets, which get it too (so they
     /// miss nothing after their copy), best effort. Refused when too few
     /// copies are acting.
     async fn replicas(
-        &self,
+        self: &Rc<Self>,
         to: &Target,
         pg: &PgInfo,
-    ) -> Result<(Vec<Conn>, Vec<(u32, Conn)>), Msg> {
+    ) -> Result<(Vec<(u32, Conn)>, Vec<(u32, Conn)>), Msg> {
         let map = self.map();
         if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
             return Err(err(Code::Unavailable, &map, "too few copies"));
         }
         let mut conns = Vec::new();
-        let required: Vec<u32> = pg
-            .backfilling()
+        // Members being filled now: live ones (a down member waits).
+        let filling = map.filling(pg);
+        let required: Vec<u32> = filling
+            .iter()
+            .copied()
             .filter(|d| self.required.borrow().contains(&(to.pool, to.pg, *d)))
             .collect();
         for d in pg
@@ -1030,12 +1251,20 @@ impl ShardState {
                 return Err(err(Code::Unavailable, &map, "replica has no address"));
             };
             match self.peer(addr).await {
-                Ok(c) => conns.push(c),
-                Err(e) => return Err(err(Code::Unavailable, &map, format!("replica: {e}"))),
+                Ok(c) => conns.push((*d, c)),
+                Err(e) => {
+                    // An acting member this primary can't reach is taken
+                    // out of the PG as a slow one is (D91): its node may be
+                    // up for everyone else (a partition between two nodes).
+                    if pg.acting.contains(d) {
+                        self.report_slow(*to, *d);
+                    }
+                    return Err(err(Code::Unavailable, &map, format!("replica: {e}")));
+                }
             }
         }
         let mut fills = Vec::new();
-        for d in pg.backfilling().filter(|d| !required.contains(d)) {
+        for d in filling.into_iter().filter(|d| !required.contains(d)) {
             match map.device_addr(d) {
                 Some(addr) => match self.peer(addr).await {
                     Ok(c) => fills.push((d, c)),
@@ -1153,7 +1382,11 @@ impl ShardState {
         };
         let repl = Msg::ReplExec { to, seq, key };
         let body = encode_ops(&effects);
-        let remote: Vec<_> = conns.iter().map(|c| c.start(&repl, &body)).collect();
+        let remote: Vec<_> = conns
+            .iter()
+            .map(|(d, c)| (*d, c.start(&repl, &body)))
+            .collect();
+        let deadline = std::time::Instant::now() + REPL_TIMEOUT;
         let filling: Vec<_> = fills
             .iter()
             .map(|(d, c)| {
@@ -1186,18 +1419,16 @@ impl ShardState {
         let me2 = self.clone();
         Box::pin(async move {
             let r = local.await;
+            let failed = me2.await_replicas(to, remote, deadline).await;
+            let failed_dev = me2.failed.get();
             let _inflight = InflightGuard(me2, (pool, pgn));
-            let mut failed = None;
-            for f in remote {
-                match f.await {
-                    Ok((Msg::ReplOk { .. }, _)) => {}
-                    Ok((Msg::Error { detail, .. }, _)) => failed = Some(detail),
-                    Ok((m, _)) => failed = Some(format!("unexpected {m:?}")),
-                    Err(e) => failed = Some(e.to_string()),
-                }
-            }
             match (r, failed) {
                 (Ok(_), None) => Ok(()),
+                (Err(e), _) if failed_dev => Err(Msg::Error {
+                    code: Code::Unavailable,
+                    map_epoch: 0,
+                    detail: format!("device failed: {e}"),
+                }),
                 (Err(e), _) => Err(Msg::Error {
                     code: Code::Io,
                     map_epoch: 0,
@@ -1541,10 +1772,34 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return send(err(Code::Invalid, &self.map(), "bad namespace"));
         };
-        // In lists the engine accepts: the first replaces the data and
-        // attributes, the rest carry the key–value table in batches. Reads
-        // come from the primary, so a member between two lists serves no
-        // one the half-copied object.
+        let lists = self.object_lists(&okey, obj);
+        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        let me = self.clone();
+        spawn(async move {
+            let mut ok = true;
+            for d in done {
+                ok &= d.await.is_ok();
+            }
+            if ok {
+                me.damaged.borrow_mut().remove(&okey);
+            }
+            send(if ok {
+                Msg::PushOk
+            } else {
+                Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: "push failed".into(),
+                }
+            });
+        });
+    }
+
+    /// The lists that replace an object with `obj`, in lists the engine
+    /// accepts: the first replaces the data and attributes, the rest carry
+    /// the key–value table in batches. Reads come from the primary, so a
+    /// member between two lists serves no one the half-copied object.
+    fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
         let limit = self.shard.borrow().max_list_bytes() / 2;
         let mut first = vec![Op::Delete];
         if !obj.data.is_empty() {
@@ -1578,26 +1833,7 @@ impl ShardState {
                 ops: batch,
             });
         }
-        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
-        let me = self.clone();
-        spawn(async move {
-            let mut ok = true;
-            for d in done {
-                ok &= d.await.is_ok();
-            }
-            if ok {
-                me.damaged.borrow_mut().remove(&okey);
-            }
-            send(if ok {
-                Msg::PushOk
-            } else {
-                Msg::Error {
-                    code: Code::Io,
-                    map_epoch: 0,
-                    detail: "push failed".into(),
-                }
-            });
-        });
+        lists
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1840,6 +2076,14 @@ impl ShardState {
 
     async fn heartbeat(self: Rc<Self>, node: u32) {
         loop {
+            if self.failed.get() && !self.failure_reported.get() && !self.cut_off() {
+                let r = self
+                    .client
+                    .call_meta(&Msg::DeviceFailed { device: self.me })
+                    .await;
+                self.failure_reported
+                    .set(matches!(r, Ok((Msg::Noted { .. }, _))));
+            }
             if !self.cut_off() {
                 // The lease runs from when the heartbeat was sent, which is
                 // before the map service granted it.
@@ -1885,7 +2129,7 @@ impl ShardState {
                 if info.primary() != Some(self.me) {
                     continue;
                 }
-                for target in info.backfilling() {
+                for target in map.filling(info) {
                     let k = (*pool, *pg, target);
                     if self.backfills.borrow().contains_key(&k) {
                         continue;
@@ -2202,6 +2446,7 @@ impl ShardState {
         metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
         let suspects = differing(&first, &mut all.into_iter());
         if suspects.is_empty() {
+            self.report_scrub(pool, pg, 0).await;
             return;
         }
         sleep(Duration::from_millis(200)).await;
@@ -2226,10 +2471,22 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
+        let mut unresolved = 0;
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
-            match verdict(&row(&second, &key)) {
-                Verdict::Agree => {}
+            let v = match verdict(&row(&second, &key)) {
+                // Pull the majority's copy first; then it is this copy.
+                Verdict::Pull { from, fix } => {
+                    if self.repair_own(to, &key, others[from - 1]).await {
+                        Verdict::Repair(fix)
+                    } else {
+                        Verdict::Unresolved
+                    }
+                }
+                v => v,
+            };
+            match v {
+                Verdict::Agree | Verdict::Pull { .. } => {}
                 Verdict::Repair(members) => {
                     let mut ok = true;
                     for m in members {
@@ -2253,6 +2510,7 @@ impl ShardState {
                     }
                 }
                 Verdict::Unresolved => {
+                    unresolved += 1;
                     metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
                     eprintln!(
                         "hyperstord: scrub: pool {pool} PG {pg}: copies of an object disagree \
@@ -2262,16 +2520,180 @@ impl ShardState {
                 }
             }
         }
+        self.report_scrub(pool, pg, unresolved).await;
     }
 
-    async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
-        if let Err(m) = self.check(&to, true).await {
+    /// Tells the map service how many objects of a PG its last scrub left
+    /// unresolved, when that changes (for cluster health).
+    async fn report_scrub(&self, pool: u32, pg: u32, unresolved: u32) {
+        let before = self
+            .inconsistent
+            .borrow()
+            .get(&(pool, pg))
+            .copied()
+            .unwrap_or(0);
+        if before == unresolved {
+            return;
+        }
+        let r = self
+            .client
+            .call_meta(&Msg::ScrubReport {
+                pool,
+                pg,
+                unresolved,
+            })
+            .await;
+        if matches!(r, Ok((Msg::Noted { .. }, _))) {
+            let mut inc = self.inconsistent.borrow_mut();
+            if unresolved == 0 {
+                inc.remove(&(pool, pg));
+            } else {
+                inc.insert((pool, pg), unresolved);
+            }
+        }
+    }
+
+    /// Replaces this primary's copy of `key` with member `from`'s (a
+    /// copy that failed its checksums, or that scrub's majority outvoted;
+    /// replication.md §8.2, §8.5). Holds the key, so no write or operation
+    /// list reaches it meanwhile, and first waits until every write
+    /// accepted for the PG has been answered, so `from` has them all.
+    /// Whether it was replaced.
+    async fn repair_own(&self, to: Target, key: &ObjKey, from: u32) -> bool {
+        // An EC member holds another shard, not a copy.
+        if self.map().pools.get(&to.pool).map(|p| p.kind)
+            != Some(hyperstor_meta::PoolKind::Replicated)
+        {
+            return false;
+        }
+        let t = std::time::Instant::now();
+        while self.exec_locks.borrow().contains(key) {
+            if t.elapsed() > REPL_TIMEOUT {
+                return false;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+        self.exec_locks.borrow_mut().insert(key.clone());
+        let r = self.fetch_into(to, key, from).await;
+        self.exec_locks.borrow_mut().remove(key);
+        if r {
+            eprintln!(
+                "hyperstord: repaired this primary's copy of an object of PG {}.{} from device {from}",
+                to.pool, to.pg
+            );
+        }
+        r
+    }
+
+    async fn fetch_into(&self, to: Target, key: &ObjKey, from: u32) -> bool {
+        let t = std::time::Instant::now();
+        while self
+            .pg_inflight
+            .borrow()
+            .get(&(to.pool, to.pg))
+            .is_some_and(|n| *n > 0)
+        {
+            if t.elapsed() > REPL_TIMEOUT {
+                return false;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+        self.drained().await;
+        let Some(addr) = self.map().device_addr(from) else {
+            return false;
+        };
+        let Ok(conn) = self.peer(addr).await else {
+            return false;
+        };
+        let lists = match conn
+            .call(
+                &Msg::Fetch {
+                    to,
+                    key: wire_key(key),
+                },
+                &[],
+            )
+            .await
+        {
+            Ok((Msg::FetchOk { found: true }, payload)) => match decode_object(&payload) {
+                Ok(obj) => self.object_lists(key, obj),
+                Err(_) => return false,
+            },
+            Ok((Msg::FetchOk { found: false }, _)) => vec![OpList {
+                key: key.clone(),
+                ops: vec![Op::Delete],
+            }],
+            _ => return false,
+        };
+        let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        let mut ok = true;
+        for d in done {
+            ok &= d.await.is_ok();
+        }
+        if ok {
+            self.damaged.borrow_mut().remove(key);
+        }
+        ok
+    }
+
+    /// A member's answer to [`Msg::Fetch`]: its copy, once every write
+    /// queued before the request is applied.
+    async fn fetch(&self, to: Target, key: WireKey) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
             return (m, Vec::new());
         }
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let r = self.shard.borrow().read(&okey, off, len);
+        self.drained().await;
+        if self.damaged.borrow().contains(&okey) {
+            return (
+                err(Code::Checksum, &self.map(), "this copy is damaged too"),
+                Vec::new(),
+            );
+        }
+        if self.shard.borrow().stat(&okey).is_none() {
+            return (Msg::FetchOk { found: false }, Vec::new());
+        }
+        match self.push_of(to, &okey, false) {
+            Some((_, payload)) => (Msg::FetchOk { found: true }, payload),
+            None => (
+                err(
+                    Code::Checksum,
+                    &self.map(),
+                    "this copy fails its checksums too",
+                ),
+                Vec::new(),
+            ),
+        }
+    }
+
+    async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
+        let pg = match self.check(&to, true).await {
+            Ok(p) => p,
+            Err(m) => return (m, Vec::new()),
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
+        };
+        let mut r = self.shard.borrow().read(&okey, off, len);
+        // A block that fails its checksum (replication.md §8.2): this copy
+        // is replaced by a member's, and the read served from it.
+        if matches!(r, Err(EngineError::Checksum { .. })) {
+            self.damaged.borrow_mut().insert(okey.clone());
+            let members: Vec<u32> = pg
+                .acting
+                .iter()
+                .copied()
+                .filter(|d| *d != self.me && *d != NO_DEVICE)
+                .collect();
+            for m in members {
+                if self.repair_own(to, &okey, m).await {
+                    r = self.shard.borrow().read(&okey, off, len);
+                    break;
+                }
+            }
+        }
         let data = match r {
             Ok(b) => b.to_vec(),
             // A cache pool's miss is a miss: the caller recomputes (D45).
@@ -2292,7 +2714,12 @@ impl ShardState {
                     Vec::new(),
                 );
             }
-            Err(e) => return (err(Code::Io, &self.map(), e.to_string()), Vec::new()),
+            Err(e) => {
+                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) {
+                    self.failed.set(true);
+                }
+                return (err(Code::Io, &self.map(), e.to_string()), Vec::new());
+            }
         };
         (
             Msg::ReadOk {
@@ -2331,8 +2758,29 @@ mod tests {
         // An object only the primary lacks is deleted only if a majority
         // lacks it too.
         assert_eq!(verdict(&[None, None, Some(3)]), Verdict::Repair(vec![2]));
-        // The primary outvoted, or no majority: report, don't guess.
-        assert_eq!(verdict(&[Some(1), Some(2), Some(2)]), Verdict::Unresolved);
+        // The primary outvoted: it pulls the majority's copy.
+        assert_eq!(
+            verdict(&[Some(1), Some(2), Some(2)]),
+            Verdict::Pull {
+                from: 1,
+                fix: vec![]
+            }
+        );
+        assert_eq!(
+            verdict(&[Some(1), None, Some(2), Some(2), Some(2)]),
+            Verdict::Pull {
+                from: 2,
+                fix: vec![1]
+            }
+        );
+        assert_eq!(
+            verdict(&[Some(5), None, None]),
+            Verdict::Pull {
+                from: 1,
+                fix: vec![]
+            }
+        );
+        // No majority: report, don't guess.
         assert_eq!(verdict(&[Some(1), Some(2)]), Verdict::Unresolved);
         assert_eq!(verdict(&[Some(1), Some(2), Some(3)]), Verdict::Unresolved);
     }

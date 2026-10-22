@@ -11,7 +11,7 @@
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +105,13 @@ pub struct ClusterMap {
     /// Client instances storage nodes refuse (metadata.md §4.1, §9): the
     /// map epoch each was added at, and when it expires (Unix seconds).
     pub blocklist: BTreeMap<u64, Blocked>,
+    /// Devices marked out because their node stayed down past the
+    /// down-out interval (placement.md §5.3); marked in again when it
+    /// returns. Devices an operator marked out are not here.
+    pub auto_out: BTreeSet<u32>,
+    /// Devices that failed (replication.md §15): out until an operator
+    /// marks them in.
+    pub failed: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,17 +231,25 @@ impl ClusterMap {
         added
     }
 
-    /// Places every PG for the current devices and bumps the epoch. PGs
-    /// whose acting set changes get the new epoch.
-    fn live(&self, device: u32) -> bool {
+    /// Whether `device` is in placement and its node up: it can serve.
+    pub fn live(&self, device: u32) -> bool {
         self.devices
             .get(&device)
             .is_some_and(|d| d.up_in && self.nodes.get(&d.node).is_some_and(|n| n.up))
     }
 
+    /// Members of a PG's `up` being backfilled now: not acting, and live.
+    /// A member whose node is down waits, without moving data, until it
+    /// returns or the down-out interval marks it out.
+    pub fn filling(&self, pg: &PgInfo) -> Vec<u32> {
+        pg.backfilling().filter(|d| self.live(*d)).collect()
+    }
+
     /// Places every PG for the current devices and bumps the epoch
     /// (placement.md §5.3):
-    /// - `up` is where placement wants the PG;
+    /// - `up` is where placement wants the PG: every device in placement,
+    ///   down or not, so a short reboot moves no data (down and out);
+    ///   for cache pools, only live devices, since nothing is copied;
     /// - `acting` keeps its live members, in order, so a failed primary is
     ///   replaced by the next member, which has every acknowledged write;
     /// - a new PG, or one that lost every copy, starts with `acting = up`.
@@ -242,21 +257,23 @@ impl ClusterMap {
     /// PGs whose sets change get the new epoch.
     pub fn recompute(&mut self) {
         self.epoch += 1;
-        let devs: Vec<Device> = self
-            .devices
-            .values()
-            .map(|d| {
-                let node = &self.nodes[&d.node];
-                Device {
-                    id: d.id,
-                    host: d.node,
-                    rack: node.rack,
-                    weight: d.weight,
-                    class: d.class.clone(),
-                    up_in: d.up_in && node.up,
-                }
-            })
-            .collect();
+        let place = |live_only: bool| -> Vec<Device> {
+            self.devices
+                .values()
+                .map(|d| {
+                    let node = &self.nodes[&d.node];
+                    Device {
+                        id: d.id,
+                        host: d.node,
+                        rack: node.rack,
+                        weight: d.weight,
+                        class: d.class.clone(),
+                        up_in: d.up_in && (node.up || !live_only),
+                    }
+                })
+                .collect()
+        };
+        let (devs_in, devs_live) = (place(false), place(true));
         let pools: Vec<PoolInfo> = self.pools.values().cloned().collect();
         for p in pools {
             let rule = Rule {
@@ -265,7 +282,12 @@ impl ClusterMap {
                 domain: p.domain,
                 class: p.class.clone(),
             };
-            let topo = Topology::new(&rule, &devs);
+            let devs = if p.kind == PoolKind::Cache {
+                &devs_live
+            } else {
+                &devs_in
+            };
+            let topo = Topology::new(&rule, devs);
             for pg in 0..p.pg_count {
                 let members = topo.place(pg);
                 let old = self.pgs.get(&(p.id, pg)).cloned();
@@ -402,6 +424,90 @@ impl ClusterMap {
         pruned
     }
 
+    /// Marks the in-placement devices of `node` out, as the down-out
+    /// interval does; whether any were.
+    pub fn auto_out_node(&mut self, node: u32) -> bool {
+        let mut changed = false;
+        for d in self.devices.values_mut().filter(|d| d.node == node) {
+            if d.up_in && !self.failed.contains(&d.id) {
+                d.up_in = false;
+                self.auto_out.insert(d.id);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Marks in again the devices of `node` that were marked out because
+    /// it was down; whether any were.
+    pub fn auto_in_node(&mut self, node: u32) -> bool {
+        let mut changed = false;
+        for d in self.devices.values_mut().filter(|d| d.node == node) {
+            if self.auto_out.remove(&d.id) {
+                d.up_in = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Marks a device failed and out; whether that changed anything.
+    pub fn fail_device(&mut self, device: u32) -> bool {
+        let Some(d) = self.devices.get_mut(&device) else {
+            return false;
+        };
+        let changed = d.up_in || !self.failed.contains(&device);
+        d.up_in = false;
+        self.auto_out.remove(&device);
+        self.failed.insert(device);
+        changed
+    }
+
+    /// An operator marks a device in or out: that overrides the down-out
+    /// interval and a failure. Whether it changed anything.
+    pub fn set_in(&mut self, device: u32, up_in: bool) -> Option<bool> {
+        let d = self.devices.get_mut(&device)?;
+        let changed =
+            d.up_in != up_in || self.auto_out.contains(&device) || self.failed.contains(&device);
+        d.up_in = up_in;
+        self.auto_out.remove(&device);
+        self.failed.remove(&device);
+        Some(changed)
+    }
+
+    /// Takes `device` out of a PG's acting set (replication.md §15, D91: a
+    /// replica too slow to answer), if the PG is still at `pg_epoch` and
+    /// keeps `min_size` copies; it stays in `up`, so it is backfilled back.
+    /// Bumps the epoch; whether it was taken out.
+    pub fn drop_member(&mut self, pool: u32, pg: u32, pg_epoch: u64, device: u32) -> bool {
+        let Some(p) = self.pools.get(&pool) else {
+            return false;
+        };
+        let (min, ec) = (p.min_size as usize, matches!(p.kind, PoolKind::Ec { .. }));
+        let Some(info) = self.pgs.get(&(pool, pg)) else {
+            return false;
+        };
+        if info.epoch != pg_epoch
+            || info.primary() == Some(device)
+            || !info.acting.contains(&device)
+            || info.acting_count() <= min
+        {
+            return false;
+        }
+        let mut info = info.clone();
+        if ec {
+            for d in info.acting.iter_mut().filter(|d| **d == device) {
+                *d = NO_DEVICE;
+            }
+        } else {
+            info.acting.retain(|d| *d != device);
+        }
+        self.epoch += 1;
+        info.epoch = self.epoch;
+        self.pgs.insert((pool, pg), info);
+        true
+    }
+
     pub fn blocked(&self, instance: u64) -> bool {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
@@ -417,9 +523,16 @@ impl ClusterMap {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        // Format 2 adds the blocklist; a map without one stays format 1,
-        // which nodes from before it read.
-        let format = if self.blocklist.is_empty() { 1 } else { 2 };
+        // Format 2 adds the blocklist, 3 the devices out by the down-out
+        // interval and the failed ones; a map without them keeps the
+        // older format, which nodes from before them read.
+        let format = if !self.auto_out.is_empty() || !self.failed.is_empty() {
+            3
+        } else if !self.blocklist.is_empty() {
+            2
+        } else {
+            1
+        };
         e.u32(format).u64(self.epoch).u128(self.cluster_id);
         e.u32(self.nodes.len() as u32);
         for n in self.nodes.values() {
@@ -464,10 +577,18 @@ impl ClusterMap {
                 e.u32(*d);
             });
         }
-        if format == 2 {
+        if format >= 2 {
             e.u32(self.blocklist.len() as u32);
             for (i, b) in &self.blocklist {
                 e.u64(*i).u64(b.epoch).u64(b.expires);
+            }
+        }
+        if format >= 3 {
+            for set in [&self.auto_out, &self.failed] {
+                e.u32(set.len() as u32);
+                for d in set {
+                    e.u32(*d);
+                }
             }
         }
         e.into_vec()
@@ -476,7 +597,7 @@ impl ClusterMap {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if v != 1 && v != 2 {
+        if !(1..=3).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -559,7 +680,7 @@ impl ClusterMap {
             let up = d.seq(4, |d| d.u32())?;
             m.pgs.insert((pool, pg), PgInfo { epoch, acting, up });
         }
-        if v == 2 {
+        if v >= 2 {
             for _ in 0..d.u32()? {
                 let i = d.u64()?;
                 m.blocklist.insert(
@@ -570,6 +691,10 @@ impl ClusterMap {
                     },
                 );
             }
+        }
+        if v >= 3 {
+            m.auto_out = d.seq(4, |d| d.u32())?.into_iter().collect();
+            m.failed = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -786,12 +911,51 @@ mod tests {
         assert!(m.blocklist_prune(2000));
         assert!(!m.blocked(77));
         assert_eq!(m.epoch, e + 2);
+        // Format 3 with devices out by the interval, or failed.
+        assert!(m.auto_out_node(1));
+        assert!(!m.auto_out_node(1));
+        assert!(m.fail_device(2000));
+        assert_eq!(m.encode()[..4], 3u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert!(m.devices.values().filter(|d| d.node == 1).all(|d| !d.up_in));
+        // A returning node comes back in; a failed device doesn't.
+        assert!(m.auto_in_node(1));
+        assert!(m.devices.values().filter(|d| d.node == 1).all(|d| d.up_in));
+        assert!(!m.auto_in_node(2) && !m.devices[&2000].up_in);
+        assert_eq!(m.set_in(2000, true), Some(true));
+        assert!(m.failed.is_empty() && m.auto_out.is_empty());
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes());
         assert_eq!(m.device_addr(2001).unwrap().port(), 7021);
         let pg = m.pg(1, 5).unwrap();
         assert_eq!(pg.acting.len(), 3);
         let hosts: std::collections::HashSet<u32> =
             pg.acting.iter().map(|d| m.devices[d].node).collect();
         assert_eq!(hosts.len(), 3, "copies on distinct nodes");
+    }
+
+    #[test]
+    fn a_slow_member_leaves_one_pg_and_is_backfilled_back() {
+        let mut m = map();
+        let before = m.pg(1, 5).unwrap().clone();
+        let (primary, slow) = (before.acting[0], before.acting[2]);
+        assert!(
+            !m.drop_member(1, 5, before.epoch, primary),
+            "not the primary"
+        );
+        assert!(!m.drop_member(1, 5, before.epoch + 1, slow), "stale epoch");
+        assert!(m.drop_member(1, 5, before.epoch, slow));
+        let pg = m.pg(1, 5).unwrap().clone();
+        assert_eq!(pg.epoch, m.epoch);
+        assert!(!pg.acting.contains(&slow) && pg.up.contains(&slow));
+        assert_eq!(pg.backfilling().collect::<Vec<_>>(), vec![slow]);
+        // Never below min_size (2 of 3).
+        assert!(!m.drop_member(1, 5, pg.epoch, pg.acting[1]));
+        // Recomputing keeps it out of acting until its backfill is done.
+        m.recompute();
+        assert!(!m.pg(1, 5).unwrap().acting.contains(&slow));
+        let e = m.pg(1, 5).unwrap().epoch;
+        assert!(m.backfill_done(1, 5, e, slow));
+        assert_eq!(m.pg(1, 5).unwrap().acting, before.acting);
     }
 
     #[test]
@@ -855,8 +1019,21 @@ mod tests {
             if survivors.len() < 3 {
                 degraded += 1;
                 assert_eq!(pg.primary(), Some(survivors[0]));
-                let new: Vec<u32> = pg.backfilling().collect();
+                // Down, not out: placement still wants it; nothing moves.
+                assert_eq!(pg.up, old.up, "{k:?}: a down node keeps its place");
+                assert!(m.filling(&pg).is_empty());
+            }
+        }
+        assert!(degraded > 10);
+        // Out after the interval: its PGs get new members to fill.
+        assert!(m.auto_out_node(1));
+        m.recompute();
+        for k in &keys {
+            let pg = m.pgs[k].clone();
+            if pg.acting.len() < 3 {
+                let new = m.filling(&pg);
                 assert_eq!(new.len(), 1, "{k:?}: one new member to fill");
+                assert!(m.devices[&new[0]].node != 1);
                 // A stale epoch is refused; the right one admits it.
                 assert!(!m.backfill_done(k.0, k.1, pg.epoch - 1, new[0]));
                 let e = m.pgs[k].epoch;
@@ -866,7 +1043,6 @@ mod tests {
                 assert!(after.epoch > e);
             }
         }
-        assert!(degraded > 10);
     }
 
     #[test]

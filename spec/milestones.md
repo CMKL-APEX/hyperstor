@@ -8,7 +8,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 |---|---|---|
 | HS0 | Reactor prototype (io_uring passthrough, TCP, buffers) and gate G5 on a test host. Engine prototype with the general object format (D34: data, attributes, key–value tables, operation lists) and crash tests (log replay, atomicity, D22), on both device back ends. | — |
 | HS1 | `glidex-raftstore` extracted (a glidex change); `hyperstor-meta` with the map, pools, PGs and placement; `hyperstord` with the engine; replicated pools over TCP; the `.meta` pool with headers, directories and leases; the client library; ublk devices for testing. fio through ublk. | HS0 |
-| HS2 | Failures (built so far: liveness, degraded acting sets, backfill, map leases with fencing and pushes, D42; peering, delta recovery and scrub; the blocklist and forced takeovers): peering, read leases, recovery, backfill, scrub, down and out, the blocklist and forced takeovers (replication.md §8.4–metadata.md §9). A fault-injection test rig (kill, partition, slow disk). | HS1 |
+| HS2 | Failures (built: liveness, degraded acting sets, backfill, map leases with fencing and pushes, D42; peering, delta recovery and scrub by digests, D90; the blocklist and forced takeovers; down and out, failed devices and slow replicas, D91; the in-process fault rig, D92; map leases as read leases, D89): peering, read leases, recovery, backfill, scrub, down and out, the blocklist and forced takeovers (replication.md §8.4–metadata.md §9). A fault-injection test rig (kill, partition, slow disk). | HS1 |
 | HS3 | `hyperstor-vhost` with adaptive polling and guest-memory registration (frontends.md §11.1), client readahead, and the glidex driver (glidex.md §17): create, delete, expand, stage, images as golden snapshots and clones, metering. | HS2, storage S6 |
 | HS4 | Snapshots, groups, clones, rollback, flatten, snapshot deletion; the host read cache (frontends.md §11.3). glidex disk snapshots spec. | HS2 |
 | HS5 | NVMe-oF: the ublk and `nvmet` stopgap, then our NVMe/TCP target with ANA, reservations and CHAP. | HS2 |
@@ -129,3 +129,9 @@ sections that depend on them are final:
   last-writer-wins relies on; and, for an agent-memory workload split
   over two sites through a 10-minute partition, the number of keys
   that conflict at replay and whether any front-end invariant breaks.
+- **G21. Digest scans at scale** (D90, replication.md §8.3). On a data
+  device with a large PG (100,000 objects of 4 MiB, 400 GiB), time a
+  `Digests` list and a peering
+  round, and their cost to I/O on the same device. A PG log is needed
+  if peering takes more than about a second, or the scan costs I/O more
+  than scrub does.

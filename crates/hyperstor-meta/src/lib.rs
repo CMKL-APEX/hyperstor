@@ -28,7 +28,9 @@ pub use hyperstor_map::*;
 pub enum Admin {
     /// The published map, what clients and storage nodes see, and how
     /// long ago each node was last heard from (absent: not since start).
-    Published(hyperstor_reactor::chan::OneSender<(ClusterMap, BTreeMap<u32, Duration>)>),
+    Published(
+        hyperstor_reactor::chan::OneSender<(ClusterMap, BTreeMap<u32, Duration>, Inconsistent)>,
+    ),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -147,7 +149,20 @@ pub struct Meta {
     started: Cell<Instant>,
     /// The newest map epoch each device acknowledged a push of.
     acked: RefCell<HashMap<u32, u64>>,
+    /// How long a node stays down before its devices are marked out
+    /// (placement.md §5.3), and since when each down node has been.
+    down_out: Cell<Duration>,
+    down_since: RefCell<HashMap<u32, Instant>>,
+    /// PGs whose last scrub left objects it couldn't repair, with how many
+    /// (their primaries' `ScrubReport`s, kept by the leader).
+    pub inconsistent: RefCell<Inconsistent>,
 }
+
+/// PGs whose last scrub left objects unresolved, with how many.
+pub type Inconsistent = BTreeMap<(u32, u32), u32>;
+
+/// Default down-out interval (placement.md §5.3).
+pub const DOWN_OUT: Duration = Duration::from_secs(600);
 
 /// What a map service member does (decisions.md D72, D73).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +232,15 @@ impl Meta {
             lease,
             started: Cell::new(Instant::now()),
             acked: RefCell::new(HashMap::new()),
+            down_out: Cell::new(DOWN_OUT),
+            down_since: RefCell::new(HashMap::new()),
+            inconsistent: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    /// Sets how long a node stays down before its devices are marked out.
+    pub fn set_down_out(&self, d: Duration) {
+        self.down_out.set(d);
     }
 
     pub fn role(&self) -> Role {
@@ -281,6 +304,8 @@ impl Meta {
                     self.reports.borrow_mut().clear();
                     self.suspect.borrow_mut().clear();
                     self.fencing.borrow_mut().clear();
+                    self.down_since.borrow_mut().clear();
+                    self.inconsistent.borrow_mut().clear();
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
                     if !self.persisted.get() {
@@ -340,12 +365,10 @@ impl Meta {
             return Err(self.not_leader());
         }
         let mut map = self.map.borrow_mut();
-        let d = map
-            .devices
-            .get_mut(&device)
-            .ok_or_else(|| format!("no device {device}"))?;
-        if d.up_in != up_in {
-            d.up_in = up_in;
+        if map
+            .set_in(device, up_in)
+            .ok_or_else(|| format!("no device {device}"))?
+        {
             map.recompute();
         }
         Ok(map.epoch)
@@ -471,7 +494,11 @@ impl Meta {
                         .iter()
                         .map(|(n, t)| (*n, now.duration_since(*t)))
                         .collect();
-                    let _ = reply.send((self.published.borrow().clone(), heard));
+                    let _ = reply.send((
+                        self.published.borrow().clone(),
+                        heard,
+                        self.inconsistent.borrow().clone(),
+                    ));
                 }
                 Admin::SetDeviceIn {
                     device,
@@ -598,6 +625,24 @@ impl Meta {
                 if n.up != alive {
                     n.up = alive;
                     changed = true;
+                }
+            }
+            // Down and out (placement.md §5.3): a node down for the
+            // interval has its devices marked out, so its PGs are placed
+            // elsewhere; they come back in when it returns.
+            let mut since = self.down_since.borrow_mut();
+            let nodes: Vec<(u32, bool)> = map.nodes.values().map(|n| (n.id, n.up)).collect();
+            for (id, up) in nodes {
+                if up {
+                    since.remove(&id);
+                    if !map.auto_out.is_empty() && map.auto_in_node(id) {
+                        changed = true;
+                    }
+                } else {
+                    let t = *since.entry(id).or_insert(now);
+                    if now.duration_since(t) >= self.down_out.get() && map.auto_out_node(id) {
+                        changed = true;
+                    }
                 }
             }
         }
@@ -835,7 +880,12 @@ impl Meta {
         if !self.leads()
             && matches!(
                 msg,
-                Ok(Msg::Heartbeat { .. } | Msg::PeerDown { .. } | Msg::BackfillDone { .. })
+                Ok(Msg::Heartbeat { .. }
+                    | Msg::PeerDown { .. }
+                    | Msg::BackfillDone { .. }
+                    | Msg::DeviceFailed { .. }
+                    | Msg::MemberSlow { .. }
+                    | Msg::ScrubReport { .. })
             )
         {
             return Msg::Error {
@@ -908,6 +958,59 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            // A device the engine can no longer write: out at once, without
+            // waiting for the down-out interval (replication.md §15).
+            Ok(Msg::DeviceFailed { device }) => {
+                let mut map = self.map.borrow_mut();
+                if map.fail_device(device) {
+                    eprintln!("hyperstor-meta: device {device} failed; placing its PGs elsewhere");
+                    map.recompute();
+                }
+                Msg::Noted {
+                    map_epoch: map.epoch,
+                }
+            }
+            // D91: only the PG's primary, at the PG's current epoch.
+            Ok(Msg::MemberSlow {
+                reporter,
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            }) => {
+                let mut map = self.map.borrow_mut();
+                let from_primary = map.pg(pool, pg).and_then(|i| i.primary()) == Some(reporter);
+                // A primary its peers report silent may be the one cut
+                // off: its reports wait until that is decided (D40).
+                let node = map.devices.get(&reporter).map(|d| d.node);
+                let doubted = node.is_some_and(|n| {
+                    self.suspect.borrow().contains(&n)
+                        || self.reports.borrow().get(&n).is_some_and(|r| !r.is_empty())
+                });
+                if from_primary && !doubted && map.drop_member(pool, pg, pg_epoch, device) {
+                    eprintln!(
+                        "hyperstor-meta: device {device} too slow for PG {pool}.{pg}; backfilling it"
+                    );
+                }
+                Msg::Noted {
+                    map_epoch: map.epoch,
+                }
+            }
+            Ok(Msg::ScrubReport {
+                pool,
+                pg,
+                unresolved,
+            }) => {
+                let mut inc = self.inconsistent.borrow_mut();
+                if unresolved == 0 {
+                    inc.remove(&(pool, pg));
+                } else {
+                    inc.insert((pool, pg), unresolved);
+                }
+                Msg::Noted {
+                    map_epoch: self.map.borrow().epoch,
+                }
+            }
             Ok(Msg::Blocklist { .. }) => Msg::Error {
                 code: Code::Invalid,
                 map_epoch: self.map.borrow().epoch,
@@ -1139,6 +1242,43 @@ mod tests {
         assert!(m.liveness_tick(timeout, later));
         assert!(m.map.borrow().nodes[&3].up);
         assert_eq!(beat(3), 400);
+    }
+
+    /// D91: a slow member leaves a PG on its primary's report only; a
+    /// primary that peers report silent may be the one cut off, so its
+    /// reports are ignored. A failed device leaves placement at once.
+    #[test]
+    fn slow_members_leave_on_their_primarys_word_and_failed_devices_at_once() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let pg = m.map.borrow().pg(1, 5).unwrap().clone();
+        let (primary, second, third) = (pg.acting[0], pg.acting[1], pg.acting[2]);
+        let slow = |reporter, device| {
+            m.handle(Ok(Msg::MemberSlow {
+                reporter,
+                pool: 1,
+                pg: 5,
+                pg_epoch: pg.epoch,
+                device,
+            }));
+            !m.map.borrow().pg(1, 5).unwrap().acting.contains(&device)
+        };
+        assert!(!slow(second, third), "only the primary reports");
+        // Reported silent by a peer: its own reports wait.
+        let pnode = m.map.borrow().devices[&primary].node;
+        m.reports
+            .borrow_mut()
+            .entry(pnode)
+            .or_default()
+            .insert(99, Instant::now());
+        assert!(!slow(primary, third));
+        m.reports.borrow_mut().clear();
+        assert!(slow(primary, third));
+        let e = m.map.borrow().epoch;
+        m.handle(Ok(Msg::DeviceFailed { device: second }));
+        let map = m.map.borrow();
+        assert!(map.failed.contains(&second) && map.epoch > e);
+        assert!(map.pgs.values().all(|p| !p.up.contains(&second)));
     }
 
     /// A replicated member (D72, D73): a follower serves the map and

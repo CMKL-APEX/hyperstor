@@ -804,3 +804,31 @@ cargo test --release -p hyperstor-daemon --test cluster -- a_forced --nocapture
 2. **The blocklist costs the I/O path nothing measurable**: one map
    lookup per request, skipped while the list is empty. The two builds
    differ by no more than run to run (about 2%).
+
+## 2026-10-22: the rest of HS2 on the I/O path (dev-2)
+
+Question: do the slow-replica timeout (D91), the repair hold and the
+failed-device check cost the write path anything? `HS_BENCH_SECS=3
+hyperstor-bench cluster mem 1`, `main` (`08407b4`) against this branch,
+alternately twice, at three stages of the branch:
+
+| Branch build | 4 KiB writes QD1, ops/s (main; branch) | 4 KiB writes QD32, ops/s (main; branch) |
+|---|---|---|
+| a reactor timer per replica per write | 7468, 7520; 7238, 7227 | 25687, 26443; 25328, 24916 |
+| one reactor timer per write | 7416, 7471; 7229, 7220 | 26306, 26475; 25622, 25735 |
+| coarse deadlines, one ticker per reactor | 7423, 7403; 7401, 7412 | 26774, 26336; 25965, 26251 |
+
+Reads (4 KiB QD1 and QD32, 1 MiB QD4) differed by no more than run to
+run in every build.
+
+### Findings
+
+1. **A reactor timer is not free on the I/O path.** Each is an io_uring
+   timeout: a submission, and an entry that stays in the kernel until
+   it fires, so a 2 s timeout at 7,000 writes a second keeps about
+   14,000 of them pending. One per write cost about 3% of write
+   throughput. Coarse deadlines (a sorted map per reactor, woken by one
+   50 ms ticker) cost nothing measurable; use them for any per-request
+   timeout.
+2. **The rest of HS2 costs the I/O path nothing measurable** with them:
+   QD1 writes are within 0.3% of `main`, QD32 within 2% (run to run).

@@ -82,7 +82,7 @@ pub fn report(map: &ClusterMap) -> Report {
             let have = pg.acting_count();
             if pg.primary().is_none() || have < p.min_size as usize {
                 s.inactive += 1;
-            } else if pg.backfilling().next().is_some() {
+            } else if !map.filling(pg).is_empty() {
                 s.backfilling += 1;
             } else if have < p.size as usize {
                 s.degraded += 1;

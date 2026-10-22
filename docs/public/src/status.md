@@ -11,7 +11,7 @@ covered by tests that run on every change.
 |---|---|
 | HS0: Local storage engine and reactor | In progress |
 | HS1: Replicated pools over TCP | In progress |
-| HS2: Failure handling | In progress |
+| HS2: Failure handling | Done |
 | HS3: Virtual machine disks (vhost-user-blk) and the glidex driver | Planned |
 | HS4: Snapshots, clones and the host read cache | Planned |
 | HS5: NVMe over TCP | Planned |
@@ -70,12 +70,13 @@ covered by tests that run on every change.
 | Backfill: returning or replacement nodes are refilled | Done |
 | Map leases with fencing and pushes: a cut-off primary stops serving | Done |
 | Failure reports from peers | Done |
-| Peering, placement-group log and delta recovery | In progress |
-| Read leases | Planned |
-| Scrub | In progress |
+| Peering and delta recovery, by content digests instead of a PG log | Done |
+| Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums | Done |
+| Scrub | Done |
 | Blocklist and forced takeovers | Done |
-| Down and out | Planned |
-| Fault-injection test rig: kill, partition, slow disk | Planned |
+| Down and out, and failed devices | Done |
+| Slow and unreachable replicas leave a PG | Done |
+| Fault-injection test rig: kill, partition, slow disk | Done |
 
 ## AD0: Administration API, identities and CLI
 

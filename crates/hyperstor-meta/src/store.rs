@@ -142,6 +142,8 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         pools: map.pools.clone(),
         pgs: BTreeMap::new(),
         blocklist: map.blocklist.clone(),
+        auto_out: map.auto_out.clone(),
+        failed: map.failed.clone(),
     }
     .encode()
 }

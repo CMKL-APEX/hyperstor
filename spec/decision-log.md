@@ -486,3 +486,15 @@ The owner took each recommendation (D85–D88).
 | 45 | Member changes at run time | Add and remove one at a time, a learner first, not below three unless forced | D87 |
 | 46 | The root key's backup | Warn until backed up; Shamir splitting later | D88 |
 
+## The rest of HS2 (2026-10-22)
+
+Read leases, the PG log, slow replicas and the fault-injection rig.
+Asked with options and a recommendation each; the owner took each
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 47 | Read leases: build replica-granted read leases, or let map leases cover | Map leases cover; close the item | D89 |
+| 48 | PG log: build it, or keep digests (I57, I61) | Keep digests; the log only if scans prove slow | D90, G21 |
+| 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D91 |
+| 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D92 |

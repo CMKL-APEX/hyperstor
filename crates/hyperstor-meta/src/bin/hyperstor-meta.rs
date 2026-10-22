@@ -1,10 +1,13 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
 //! 600), marks nodes down after N ms without a heartbeat (default 800,
 //! at least 1.25 × L; decisions.md D48), and moves their PGs, fencing the
-//! nodes that lose a role before publishing (decisions.md D42). With
+//! nodes that lose a role before publishing (decisions.md D42). A node
+//! down for S seconds (default 600) has its devices marked out, so its
+//! PGs are placed elsewhere; they are marked in when it returns
+//! (placement.md §5.3). With
 //! `--api ADDR`, also serves the cluster API (`hyperstor.v1`;
 //! spec/administration.md §23.5) there: over mutual TLS with
 //! `--api-tls DIR` (`api.crt`, `api.key`, `root.crt`; §23.8), else plain
@@ -39,7 +42,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]"
         );
         std::process::exit(2)
     };
@@ -52,6 +55,9 @@ fn main() {
     let down: u64 = get("--down-after-ms")
         .and_then(|s| s.parse().ok())
         .unwrap_or(800);
+    let down_out: u64 = get("--down-out-secs")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(hyperstor_meta::DOWN_OUT.as_secs());
     if down * 4 < lease * 5 {
         eprintln!("--down-after-ms must be at least 1.25 x --lease-ms");
         std::process::exit(2);
@@ -247,6 +253,7 @@ fn main() {
                 (meta, Some(r))
             }
         };
+        meta.set_down_out(Duration::from_secs(down_out));
         hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_millis(down)));
         hyperstor_reactor::spawn(meta.clone().publisher());
         if let Some(api) = api {

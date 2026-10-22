@@ -98,6 +98,7 @@ fn main() {
             .join(",")
     );
     let h = start(NodeConfig {
+        partitions: None,
         node_id: node,
         meta,
         shards,
