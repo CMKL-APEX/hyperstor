@@ -86,7 +86,8 @@
     <label>Password <input id="login-password" type="password" autocomplete="current-password" required></label>
     <label id="claim-row" hidden>Claim code (the first security administrator; printed by hyperstor-mgmt at start)
       <input id="login-claim" autocomplete="off"></label>
-    <button type="submit">Log in</button>
+    <button type="submit" id="pam-submit">Log in</button>
+    <button type="button" id="sso" hidden>Log in with your identity provider</button>
     <span class="error-box" id="login-error"></span>
   </form>
 </section>

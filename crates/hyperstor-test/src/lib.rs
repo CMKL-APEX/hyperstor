@@ -349,6 +349,144 @@ pub fn start_authd(socket: &Path) {
     std::thread::spawn(move || authd.serve(listener));
 }
 
+/// A made-up identity provider on loopback, for OIDC logins: discovery,
+/// its key (ES256), and a token endpoint that answers with the ID token
+/// the test sets ([`FakeIdp::next_id_token`]), whatever the code. It keeps
+/// the token requests' bodies.
+pub struct FakeIdp {
+    pub issuer: String,
+    key: jsonwebtoken::EncodingKey,
+    next: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    pub token_requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeIdp {
+    pub fn start() -> FakeIdp {
+        use base64::Engine as _;
+        let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let raw = kp.public_key_raw();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let jwks = serde_json::json!({ "keys": [{
+            "kty": "EC", "crv": "P-256", "kid": "k1", "alg": "ES256", "use": "sig",
+            "x": b64(&raw[1..33]), "y": b64(&raw[33..65]),
+        }]})
+        .to_string();
+        let key = jsonwebtoken::EncodingKey::from_ec_pem(kp.serialize_pem().as_bytes()).unwrap();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", l.local_addr().unwrap());
+        let discovery = serde_json::json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "jwks_uri": format!("{issuer}/jwks"),
+        })
+        .to_string();
+        let next = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (n, t) = (next.clone(), token_requests.clone());
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Read, Write};
+            for s in l.incoming().flatten() {
+                let mut r = std::io::BufReader::new(&s);
+                let mut line = String::new();
+                if r.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut len = 0;
+                let mut auth = String::new();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    let lower = h.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("authorization:") {
+                        auth = h.trim().to_string();
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = r.read_exact(&mut body);
+                let (code, answer) = match path.as_str() {
+                    "/.well-known/openid-configuration" => (200, discovery.clone()),
+                    "/jwks" => (200, jwks.clone()),
+                    "/token" => {
+                        t.lock()
+                            .unwrap()
+                            .push(format!("{auth} {}", String::from_utf8_lossy(&body)));
+                        match n.lock().unwrap().take() {
+                            Some(id) => (
+                                200,
+                                serde_json::json!({
+                                    "id_token": id, "access_token": "x", "token_type": "Bearer",
+                                })
+                                .to_string(),
+                            ),
+                            None => (400, r#"{"error":"invalid_grant"}"#.to_string()),
+                        }
+                    }
+                    _ => (404, "{}".to_string()),
+                };
+                let _ = write!(
+                    &s,
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+            }
+        });
+        FakeIdp {
+            issuer,
+            key,
+            next,
+            token_requests,
+        }
+    }
+
+    /// The ID token the next token request gets: signed, for `client_id`,
+    /// valid an hour, with these claims added (`sub`, `email`, `nonce`…).
+    pub fn next_id_token(&self, client_id: &str, claims: serde_json::Value) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut c = serde_json::json!({
+            "iss": self.issuer, "aud": client_id, "iat": now, "exp": now + 3600,
+        });
+        for (k, v) in claims.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        let mut h = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        h.kid = Some("k1".into());
+        *self.next.lock().unwrap() = Some(jsonwebtoken::encode(&h, &c, &self.key).unwrap());
+    }
+}
+
+/// A query parameter of `url`, decoded.
+pub fn query_param(url: &str, name: &str) -> Option<String> {
+    let q = url.split_once('?')?.1;
+    q.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == name).then(|| {
+            let mut out = Vec::new();
+            let b = v.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] == b'%' && i + 2 < b.len() {
+                    out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap_or(b'?'));
+                    i += 3;
+                } else {
+                    out.push(if b[i] == b'+' { b' ' } else { b[i] });
+                    i += 1;
+                }
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+    })
+}
+
 /// A running cluster installed into a scratch root.
 pub struct Cluster {
     pub scratch: Scratch,
@@ -367,6 +505,8 @@ pub struct Cluster {
     pub meta_log: PathBuf,
     meta: Option<Child>,
     mgmt: Option<Child>,
+    /// Options hyperstor-mgmt gets after its installed ones.
+    mgmt_extra: Vec<String>,
     node_procs: BTreeMap<u32, Child>,
 }
 
@@ -423,6 +563,7 @@ impl Cluster {
             admin_port: admin,
             mgmt_port: mgmt,
             mgmt: None,
+            mgmt_extra: Vec::new(),
             meta: None,
             node_procs: BTreeMap::new(),
         };
@@ -449,6 +590,7 @@ impl Cluster {
             .collect();
         let p = Command::new(self.bin.join("hyperstor-mgmt"))
             .args(args)
+            .args(&self.mgmt_extra)
             .stderr(std::fs::File::create(&log_path).unwrap())
             .spawn()
             .unwrap();
@@ -577,10 +719,17 @@ impl Cluster {
 
     /// Stops hyperstor-mgmt and starts it again from its installed options.
     pub fn restart_mgmt(&mut self) {
+        self.restart_mgmt_with(&[]);
+    }
+
+    /// As [`restart_mgmt`](Self::restart_mgmt), with `extra` options after
+    /// the installed ones.
+    pub fn restart_mgmt_with(&mut self, extra: &[&str]) {
         if let Some(mut p) = self.mgmt.take() {
             let _ = p.kill();
             let _ = p.wait();
         }
+        self.mgmt_extra = extra.iter().map(|s| s.to_string()).collect();
         self.start_mgmt();
     }
 

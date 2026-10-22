@@ -118,7 +118,7 @@ covered by tests that run on every change.
 | Grafana dashboard and Prometheus scrape configuration for the storage nodes' metrics | Done |
 | The PAM helper, and the management service's rows in the map service's store | Done |
 | People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf) | Done |
-| Logins with an identity provider (OIDC), and hyperstorctl through the management service | Planned |
+| Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit | Done |
 | The web UI (React, @glidex/ui-kit), installed as files and served by hyperstor-mgmt --ui | Planned |
 
 ## AD3: Administration from the UI and CLI, with roles, trash and audit

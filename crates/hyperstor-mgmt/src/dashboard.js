@@ -209,6 +209,13 @@ async function showLogin() {
   try {
     const m = await getJson("/auth/methods");
     $("claim-row").hidden = !m.claim_open;
+    $("sso").hidden = !m.oidc;
+    // Only the provider: no password fields.
+    for (const id of ["login-user", "login-password"]) {
+      $(id).parentElement.hidden = !m.pam;
+      $(id).required = m.pam;
+    }
+    $("pam-submit").hidden = !m.pam;
   } catch (_) { /* the form works without it */ }
 }
 
@@ -240,6 +247,21 @@ $("login-form").addEventListener("submit", async (ev) => {
   $("login-claim").value = "";
   await whoami();
   start();
+});
+
+// The identity provider: mgmt answers where to send the browser; the
+// claim code, if any, goes in the POST, never in a URL.
+$("sso").addEventListener("click", async () => {
+  $("login-error").textContent = "";
+  const body = { return_to: location.pathname };
+  const claim = $("login-claim").value.trim();
+  if (claim) body.claim = claim;
+  const r = await fetch("/auth/oidc/start", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("login-error").textContent = j.message || `login failed (${r.status})`; return; }
+  location.assign(j.redirect);
 });
 
 $("logout").addEventListener("click", async () => {

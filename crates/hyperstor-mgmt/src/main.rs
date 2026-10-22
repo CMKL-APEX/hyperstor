@@ -1,4 +1,4 @@
-//! `hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]`
+//! `hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]`
 //!
 //! The management service (spec/administration.md §23.7): the web
 //! dashboard, and with `--authd`, people's logins and the cluster API on
@@ -18,6 +18,8 @@
 //!   map service's store (D98). While no one is a security administrator,
 //!   a claim code is printed at start: whoever logs in with it becomes the
 //!   first one.
+//! - **With `--oidc FILE`** people log in with an identity provider too
+//!   (or only, without `--authd`); see [`oidc`].
 //! - `--web-tls DIR` serves HTTPS with `DIR/web.crt` and `web.key`;
 //!   listening beyond loopback needs it and `--authd`. `--hosts` adds the
 //!   names people reach it by to the `Host` allowlist.
@@ -46,8 +48,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]";
+const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]";
 
+mod oidc;
 mod people;
 mod policy;
 mod proxy;
@@ -76,7 +79,10 @@ fn fail(msg: &str) -> ! {
 /// People's side: present with `--authd`.
 struct Login {
     people: people::People,
-    authd: PathBuf,
+    /// Passwords, through `hyperstor-authd`.
+    authd: Option<PathBuf>,
+    /// An identity provider.
+    oidc: Option<oidc::Oidc>,
     engine: glidex_auth::cedar::Engine<policy::Hyperstor>,
 }
 
@@ -108,6 +114,7 @@ fn main() {
                 | "--tls"
                 | "--metrics"
                 | "--authd"
+                | "--oidc"
                 | "--web-tls"
                 | "--hosts"
                 | "--ui"
@@ -120,13 +127,17 @@ fn main() {
     };
     let listen: SocketAddr = listen.parse().unwrap_or_else(|_| usage());
     let authd = get("--authd").map(PathBuf::from);
+    let oidc = get("--oidc").map(PathBuf::from);
     let web_tls = get("--web-tls").map(PathBuf::from);
-    if !listen.ip().is_loopback() && (authd.is_none() || web_tls.is_none()) {
+    if !listen.ip().is_loopback() && (authd.is_none() && oidc.is_none() || web_tls.is_none()) {
         // Without logins and HTTPS a non-loopback address would show the
         // cluster to anyone who can reach it.
-        eprintln!("hyperstor-mgmt: --listen beyond loopback needs --authd and --web-tls");
+        eprintln!(
+            "hyperstor-mgmt: --listen beyond loopback needs --web-tls, and --authd or --oidc"
+        );
         std::process::exit(2);
     }
+    let oidc = oidc.map(|f| oidc::load(&f).unwrap_or_else(|e| fail(&format!("--oidc {e}"))));
     let api_addrs: Vec<String> = api
         .split(',')
         .filter(|s| !s.is_empty())
@@ -179,9 +190,10 @@ fn main() {
             .unwrap_or_else(|e| fail(&format!("bind {listen}: {e}")));
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(listen.port());
         let uri: http::Uri = format!("https://{}", api_addrs[0]).parse().expect("uri");
-        let login = authd.map(|authd| Login {
+        let login = (authd.is_some() || oidc.is_some()).then(|| Login {
             people: people::People::new(people::Rows::api(&api_addrs, tls.clone())),
             authd,
+            oidc,
             engine: policy::engine(),
         });
         let state = Arc::new(State {
@@ -280,11 +292,26 @@ fn json_resp(status: u16, v: serde_json::Value) -> Resp {
     respond(status, "application/json", v.to_string())
 }
 
-fn error(status: u16, code: &str, message: &str) -> Resp {
-    json_resp(
-        status,
-        serde_json::json!({ "code": code, "message": message }),
-    )
+/// A refusal as the Connect protocol writes one (`code`, `message`, and
+/// the reason as an `ErrorInfo` detail, as the cluster API's own), so
+/// `hyperstorctl` and the UI read mgmt's refusals and the API's alike;
+/// `reason` is also a field of its own, for browsers.
+fn error(status: u16, reason: &str, message: &str) -> Resp {
+    use connectrpc::ConnectError as E;
+    let e = match status {
+        400 => E::invalid_argument(message),
+        401 => E::unauthenticated(message),
+        403 => E::permission_denied(message),
+        404 => E::not_found(message),
+        409 => E::already_exists(message),
+        413 | 429 => E::resource_exhausted(message),
+        503 => E::unavailable(message),
+        _ => E::internal(message),
+    };
+    let e = hyperstor_api::with_reason(e, reason);
+    let mut v: serde_json::Value = serde_json::from_slice(&e.to_json()).expect("json");
+    v["reason"] = reason.into();
+    json_resp(status, v)
 }
 
 /// One audit record (§23.9.4) for what a person did, on standard error.
@@ -524,7 +551,10 @@ struct LoginReq {
 }
 
 async fn check_password(l: &Login, user: &str, password: &str) -> Result<(), Resp> {
-    let client = glidex_authd::client::AuthdClient::new(l.authd.clone());
+    let Some(authd) = &l.authd else {
+        return Err(error(404, "not_found", "password logins are off here"));
+    };
+    let client = glidex_authd::client::AuthdClient::new(authd.clone());
     let (u, pw) = (
         user.to_string(),
         zeroize::Zeroizing::new(password.to_string()),
@@ -544,6 +574,253 @@ async fn check_password(l: &Login, user: &str, password: &str) -> Result<(), Res
         )),
         Err(e) => Err(error(503, "unavailable", &e.to_string())),
     }
+}
+
+/// A session for a person just authenticated by `method` (`user` as the
+/// login found them): the user's name, roles, CSRF value and cookie, or
+/// the refusal. Audited as `who`.
+async fn start_session(
+    state: &State,
+    l: &Login,
+    user: Result<people::User, people::Error>,
+    method: &str,
+    claim: bool,
+    who: &str,
+) -> Result<(String, Vec<String>, String, String), Resp> {
+    let op = if claim { "Claim" } else { "Login" };
+    let user = match user {
+        Ok(u) if !u.disabled => u,
+        Ok(_) => {
+            audit(who, op, "mgmt", "refused: disabled");
+            return Err(error(403, "disabled", "this account is disabled"));
+        }
+        Err(e) => {
+            audit(who, op, "mgmt", &format!("refused: {e}"));
+            return Err(people_error(e));
+        }
+    };
+    let s = l
+        .people
+        .new_session(&user.name, method)
+        .await
+        .map_err(people_error)?;
+    audit(who, op, "mgmt", &format!("ok, {method}"));
+    Ok((
+        user.name,
+        user.roles,
+        s.csrf,
+        set_cookie(state, &s.id, None),
+    ))
+}
+
+/// Where the provider sends this browser back: as configured, else on the
+/// name and scheme it reached us by.
+fn redirect_uri(state: &State, o: &oidc::Oidc, host: &str) -> String {
+    let scheme = if state.https { "https" } else { "http" };
+    o.redirect_uri(Some(&format!("{scheme}://{host}")))
+}
+
+fn host_of<B>(req: &http::Request<B>) -> String {
+    req.headers()
+        .get(http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[derive(serde::Deserialize, Default)]
+struct OidcStartReq {
+    #[serde(default)]
+    return_to: Option<String>,
+    #[serde(default)]
+    claim: Option<String>,
+    /// Ask the provider for a fresh login (step-up).
+    #[serde(default)]
+    reauth: bool,
+}
+
+/// `POST /auth/oidc/start {return_to?, claim?, reauth?}`: where to send
+/// the browser (`{"redirect": URL}`), and the cookie binding the login to
+/// it.
+async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::Incoming>) -> Resp {
+    let Some(o) = &l.oidc else {
+        return error(404, "not_found", "identity provider logins are off here");
+    };
+    let host = host_of(&req);
+    let (_, body) = match body_of(req).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let r: OidcStartReq = if body.is_empty() {
+        OidcStartReq::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(_) => {
+                return error(
+                    400,
+                    "invalid_argument",
+                    "expected {return_to, claim, reauth}",
+                );
+            }
+        }
+    };
+    let after = oidc::After { claim: r.claim };
+    match o
+        .start(
+            r.return_to.as_deref(),
+            &redirect_uri(state, o, &host),
+            r.reauth,
+            after,
+        )
+        .await
+    {
+        Ok(s) => {
+            let mut resp = json_resp(200, serde_json::json!({ "redirect": s.redirect }));
+            let mut c = format!(
+                "{}={}; HttpOnly; SameSite=Lax; Path={}; Max-Age={}",
+                oidc::BROWSER_COOKIE,
+                s.browser,
+                oidc::CALLBACK,
+                glidex_auth::oidc::STATE_SECS
+            );
+            if state.https {
+                c.push_str("; Secure");
+            }
+            resp.headers_mut()
+                .insert(http::header::SET_COOKIE, c.parse().expect("cookie"));
+            resp
+        }
+        Err(e) => error(503, "unavailable", &e.to_string()),
+    }
+}
+
+/// `GET /auth/oidc/callback?code&state`: the provider sends the browser
+/// back; a session, then on to where the login began.
+async fn oidc_callback(
+    state: &State,
+    l: &Login,
+    req: http::Request<hyper::body::Incoming>,
+    peer: SocketAddr,
+) -> Resp {
+    let Some(o) = &l.oidc else {
+        return error(404, "not_found", "identity provider logins are off here");
+    };
+    let q: std::collections::HashMap<String, String> = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_string(), percent_decode(v)))
+        .collect();
+    let failed = |m: &str| {
+        audit(
+            &format!("oidc from {}", peer.ip()),
+            "Login",
+            "mgmt",
+            &format!("refused: {m}"),
+        );
+        respond(
+            403,
+            "text/plain; charset=utf-8",
+            format!("The login failed: {m}\nBack to the start: /\n"),
+        )
+    };
+    if let Some(e) = q.get("error") {
+        return failed(&format!("the identity provider said {e}"));
+    }
+    let (Some(code), Some(st)) = (q.get("code"), q.get("state")) else {
+        return failed("no code or state");
+    };
+    let browser = req
+        .headers()
+        .get_all(http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|c| {
+            c.trim()
+                .strip_prefix(&format!("{}=", oidc::BROWSER_COOKIE))
+                .map(String::from)
+        });
+    let host = host_of(&req);
+    let (id, return_to, after) = match o
+        .callback(code, st, browser.as_deref(), &redirect_uri(state, o, &host))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return failed(&e.error.to_string()),
+    };
+    let user = l
+        .people
+        .oidc_user(
+            &id.issuer,
+            &id.subject,
+            id.email.as_deref(),
+            id.email_verified,
+        )
+        .await;
+    let user = match (user, &after.claim) {
+        (Ok(u), Some(code)) => l.people.claim(code, &u.name).await,
+        (u, _) => u,
+    };
+    let user = match user {
+        Ok(u) => Ok(u),
+        Err(e) => return failed(&e.to_string()),
+    };
+    let who = format!(
+        "user:{} from {}",
+        user.as_ref().map_or("?", |u| u.name.as_str()),
+        peer.ip()
+    );
+    match start_session(state, l, user, "oidc", after.claim.is_some(), &who).await {
+        Ok((_, _, _, cookie)) => {
+            let mut resp = http::Response::builder()
+                .status(303)
+                .header(http::header::LOCATION, return_to)
+                .header("Cache-Control", "no-store")
+                .header(http::header::SET_COOKIE, cookie)
+                .header(
+                    http::header::SET_COOKIE,
+                    format!(
+                        "{}=; Path={}; Max-Age=0",
+                        oidc::BROWSER_COOKIE,
+                        oidc::CALLBACK
+                    ),
+                )
+                .body(Full::new(Bytes::new()))
+                .expect("response");
+            resp.headers_mut()
+                .insert("Referrer-Policy", "no-referrer".parse().expect("header"));
+            resp
+        }
+        Err(r) => r,
+    }
+}
+
+/// `%XX` and `+` of a query value.
+fn percent_decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
+                    Ok(x) => {
+                        out.push(x);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn with_login(
@@ -567,7 +844,12 @@ async fn with_login(
         (_, "/health") => return respond(200, "text/plain", "ok\n"),
         (&http::Method::GET, "/auth/methods") => {
             let open = l.people.claimed().await.map(|c| !c).unwrap_or(false);
-            return json_resp(200, serde_json::json!({ "pam": true, "claim_open": open }));
+            return json_resp(
+                200,
+                serde_json::json!({
+                    "pam": l.authd.is_some(), "oidc": l.oidc.is_some(), "claim_open": open,
+                }),
+            );
         }
         (&http::Method::POST, "/auth/login") => {
             let (_, body) = match body_of(req).await {
@@ -586,33 +868,24 @@ async fn with_login(
                 Some(code) => l.people.claim(code, &r.user).await,
                 None => l.people.logged_in_user(&r.user).await,
             };
-            let user = match user {
-                Ok(u) if !u.disabled => u,
-                Ok(_) => return error(403, "disabled", "this account is disabled"),
-                Err(e) => {
-                    audit(&who, "Login", "mgmt", &format!("refused: {e}"));
-                    return people_error(e);
+            return match start_session(state, l, user, "pam", r.claim.is_some(), &who).await {
+                Ok((user, roles, csrf, cookie)) => {
+                    let mut resp = json_resp(
+                        200,
+                        serde_json::json!({ "user": user, "roles": roles, "csrf": csrf }),
+                    );
+                    resp.headers_mut()
+                        .insert(http::header::SET_COOKIE, cookie.parse().expect("cookie"));
+                    resp
                 }
+                Err(r) => r,
             };
-            let s = match l.people.new_session(&user.name, "pam").await {
-                Ok(s) => s,
-                Err(e) => return people_error(e),
-            };
-            audit(
-                &who,
-                if r.claim.is_some() { "Claim" } else { "Login" },
-                "mgmt",
-                "ok",
-            );
-            let mut resp = json_resp(
-                200,
-                serde_json::json!({ "user": user.name, "roles": user.roles, "csrf": s.csrf }),
-            );
-            resp.headers_mut().insert(
-                http::header::SET_COOKIE,
-                set_cookie(state, &s.id, None).parse().expect("cookie"),
-            );
-            return resp;
+        }
+        (&http::Method::POST, "/auth/oidc/start") => {
+            return oidc_start(state, l, req).await;
+        }
+        (&http::Method::GET, oidc::CALLBACK) => {
+            return oidc_callback(state, l, req, peer).await;
         }
         _ => {}
     }
@@ -778,6 +1051,7 @@ async fn with_login(
                 &state.api_addrs,
                 &rpc_path(rpc),
                 &parts.headers,
+                &who,
                 body,
             )
             .await;
@@ -905,6 +1179,39 @@ mod tests {
         ] {
             assert!(!host_allowed(bad, 8852, &[]), "{bad}");
         }
+    }
+
+    /// mgmt's refusals read as the API's: a Connect error whose reason
+    /// `hyperstorctl` finds.
+    #[test]
+    fn refusals_are_connect_errors_with_reasons() {
+        use http_body_util::BodyExt;
+        let r = error(401, "reauth_required", "log in again");
+        assert_eq!(r.status(), 401);
+        let body = block_on(r.into_body().collect()).unwrap().to_bytes();
+        let e: connectrpc::ConnectError = serde_json::from_slice(&body).unwrap();
+        assert_eq!(e.code, connectrpc::ErrorCode::Unauthenticated);
+        assert_eq!(
+            hyperstor_api::reason_of(&e).as_deref(),
+            Some("reauth_required"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    #[test]
+    fn query_values_are_decoded() {
+        assert_eq!(percent_decode("a%2Fb+c"), "a/b c");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%41"), "A");
     }
 
     #[test]
