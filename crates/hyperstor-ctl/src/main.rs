@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
-//!               [--force] [--role R] [--ttl SECS] [--dry-run]`
+//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -28,7 +28,13 @@
 //!   would move and changes nothing;
 //! - `op list`, `op get --id ID`, `op watch --id ID [--wait SECS]`, `op
 //!   cancel --id ID`: long operations (a cancelled drain brings the
-//!   devices back in).
+//!   devices back in);
+//! - `map backup --out FILE`: a backup of the map service's store
+//!   (D86), for `hyperstor-meta --restore`; written mode 0600, never over
+//!   an existing file;
+//! - `cert list`, `cert revoke --serial S`: certificates the API issued
+//!   and the revocation list (D56); `cert show --file F` prints a
+//!   certificate file's identity, serial and expiry, without the API.
 //!
 //! `--json` (or `-o json`) prints the API's answer as JSON, the form `curl`
 //! gets; `-o yaml` as YAML. A refused call prints the API's message and
@@ -52,13 +58,14 @@
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    ClusterServiceClient, NodeServiceClient, OperationServiceClient, TokenServiceClient,
+    CaServiceClient, ClusterServiceClient, MapServiceClient, NodeServiceClient,
+    OperationServiceClient, TokenServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -104,6 +111,9 @@ struct Args {
     role: Option<String>,
     ttl: u32,
     dry_run: bool,
+    serial: Option<String>,
+    file: Option<String>,
+    out: Option<String>,
     pool: Option<u32>,
     mib: u64,
     wait: Option<u32>,
@@ -138,6 +148,9 @@ fn main() {
         role: None,
         ttl: 0,
         dry_run: false,
+        serial: None,
+        file: None,
+        out: None,
         pool: None,
         mib: 16,
         wait: None,
@@ -166,6 +179,9 @@ fn main() {
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
             "--dry-run" => a.dry_run = true,
+            "--serial" => a.serial = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--file" => a.file = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--out" => a.out = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
@@ -188,10 +204,12 @@ fn main() {
                 cmd = Some(arg.clone())
             }
             // Two words: the group, then what to do.
-            "token" | "op" if cmd.is_none() => {
+            "token" | "op" | "cert" | "map" if cmd.is_none() => {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
+                    "cert" => matches!(sub, Some("list" | "revoke" | "show")),
+                    "map" => matches!(sub, Some("backup")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -213,6 +231,30 @@ fn main() {
         cmd.as_str(),
         "token revoke" | "op get" | "op watch" | "op cancel"
     );
+    if (cmd == "cert revoke") != a.serial.is_some()
+        || (cmd == "cert show") != a.file.is_some()
+        || (cmd == "map backup") != a.out.is_some()
+    {
+        usage();
+    }
+    if cmd == "cert show" {
+        // Local: no API needed, for finding a serial to revoke.
+        let path = a.file.clone().expect("checked");
+        let pem = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("hyperstorctl: {path}: {e}");
+            std::process::exit(2)
+        });
+        match cert_text(&pem) {
+            Some(t) => {
+                print!("{t}");
+                std::process::exit(0)
+            }
+            None => {
+                eprintln!("hyperstorctl: {path}: no certificate");
+                std::process::exit(1)
+            }
+        }
+    }
     if (cmd == "token create") != a.role.is_some()
         || (a.dry_run && cmd != "drain")
         || (a.ttl != 0 && cmd != "token create")
@@ -356,6 +398,8 @@ where
 {
     match cmd.split_once(' ').map_or(cmd, |(g, _)| g) {
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
+        "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
+        "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),
@@ -655,6 +699,84 @@ where
             Next::Exit(0)
         }
     })
+}
+
+/// `map backup --out FILE`.
+async fn map_backup<T>(
+    client: MapServiceClient<T>,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let out = a.out.clone().expect("checked with the arguments");
+    // A large map is tens of megabytes: above the default limit.
+    let r = client
+        .get_map_backup_with_options(
+            pb::GetMapBackupRequest::default(),
+            CallOptions::default()
+                .with_max_message_size(512 << 20)
+                .with_timeout(Duration::from_secs(60)),
+        )
+        .await?
+        .into_owned();
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&out)
+        .and_then(|mut f| f.write_all(&r.backup).and_then(|()| f.sync_all()));
+    if let Err(e) = written {
+        eprintln!("hyperstorctl: {out}: {e}");
+        return Ok(Next::Exit(1));
+    }
+    println!(
+        "wrote {out}: cluster {}, map epoch {}, {} bytes",
+        r.cluster_id,
+        r.epoch,
+        r.backup.len()
+    );
+    Ok(Next::Exit(0))
+}
+
+/// `cert list|revoke`.
+async fn certs<T>(
+    client: CaServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    if cmd == "cert list" {
+        let r = client
+            .list_certificates(pb::ListCertificatesRequest::default())
+            .await?
+            .into_owned();
+        show(a, &r, || certs_text(&r));
+        return Ok(Next::Exit(0));
+    }
+    let serial = a.serial.clone().expect("checked with the arguments");
+    let r = client
+        .revoke_certificate(pb::RevokeCertificateRequest {
+            serial,
+            ..Default::default()
+        })
+        .await?
+        .into_owned();
+    show(a, &r, || {
+        let x = r.revoked.as_option().cloned().unwrap_or_default();
+        format!(
+            "certificate {} revoked: refused by every map service member until {} (UTC)\n",
+            x.serial,
+            utc(x.until_unix)
+        )
+    });
+    Ok(Next::Exit(0))
 }
 
 /// `drain` and `op list|get|watch|cancel`.

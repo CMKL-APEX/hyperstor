@@ -48,6 +48,37 @@ jobs:
     - name: Clippy, every target, warnings denied
       run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # The protos (spec/administration.md §23.5): buf's lint, and on pull
+  # requests no breaking change against the branch merged into. buf is a
+  # pinned release, checked against its published SHA-256.
+  buf:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    env:
+      BUF_VERSION: "1.47.2"
+      BUF_SHA256: "3a0c4da8d46eea8136affa63db202c76a44f8112384160b73c3fffb1cf14b5d8"
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - name: Install buf
+      run: |
+        curl -fsSL -o "$RUNNER_TEMP/buf" \
+          "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+        echo "${BUF_SHA256}  $RUNNER_TEMP/buf" | sha256sum -c
+        chmod +x "$RUNNER_TEMP/buf"
+    - name: buf lint
+      working-directory: crates/hyperstor-api/proto
+      run: '"$RUNNER_TEMP/buf" lint'
+    - name: buf breaking
+      if: github.event_name == 'pull_request'
+      run: >-
+        "$RUNNER_TEMP/buf" breaking crates/hyperstor-api/proto
+        --against ".git#ref=origin/${{ github.base_ref }},subdir=crates/hyperstor-api/proto"
+
   # The spec hangs together and code cites it correctly; no build needed.
   spec:
 

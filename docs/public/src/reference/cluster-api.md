@@ -25,7 +25,10 @@ a client certificate issued by the cluster's CA, whose identity
 | `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
 
-A certificate of another cluster is refused. `hyperstor-install` makes
+A certificate of another cluster is refused, and so is a revoked one:
+`RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
+list every map service member checks, on the API and between members,
+until the certificate would have expired. `hyperstor-install` makes
 the certificates in `/etc/hyperstor/pki`.
 
 **Joining.** `Join` is the only call without a client certificate: a
@@ -48,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -78,7 +81,7 @@ values are left out of answers.
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
-`TokenService`, `CaService`, `NodeService` and `OperationService`:
+`TokenService`, `CaService`, `MapService`, `NodeService` and `OperationService`:
 
 | Method | Request | Answer |
 |---|---|---|
@@ -87,6 +90,9 @@ values are left out of answers.
 | `RevokeToken` | `{"id": "…"}` | `{}` |
 | `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips` | `cluster_id`, `certificate` (chain), `root`; a storage host: `node`, `map_addresses`; a member: `intermediate`, `intermediate_key`, `cluster_file` |
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
+| `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
+| `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
+| `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
 | `ListOperations` | `{}` | `operations`, newest first (the last 100, kept in memory) |
@@ -119,7 +125,7 @@ word for scripts (the message is for people, and may change):
 | `already_exists` | `already_exists` | `CreateVolume` with the id of a volume that exists |
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
-| `permission_denied` | `permission_denied`, `wrong_cluster`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call; the token was used, has expired or was revoked |
+| `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
 | `failed_precondition` | `attached`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`); this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
 | `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
 | `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |

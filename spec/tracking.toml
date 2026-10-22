@@ -172,8 +172,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Recovering the map service: map backups, member changes at run time, and a group that lost its majority"
-spec = ["D85", "D86", "D87"]
+what = "Map backups by the leader and on request, and restoring a lost store from one"
+spec = ["D86"]
+status = "done"
+tests = [
+    "backup::a_lost_store_comes_back_from_a_backup",
+    "hyperstor_meta::backup::tests::backups_round_trip_and_restore",
+    "hyperstor_meta::backup::tests::files_are_private_and_the_newest_kept",
+]
+
+[[milestone.item]]
+what = "Changing the map service's members at run time, and recovering a group that lost its majority"
+spec = ["D85", "D87"]
 status = "planned"
 
 [[milestone.item]]
@@ -439,6 +449,17 @@ tests = [
     "hyperstor_pki::tests::roles_that_may_administer",
     "hyperstor_pki::tests::requests_are_signed_with_the_signers_identity",
     "hyperstor_pki::tests::a_pinned_client_trusts_only_its_root",
+    "hyperstor_pki::tests::leaves_get_random_serials",
+]
+
+[[milestone.item]]
+what = "Revoking certificates by serial, refused by the API and between map service members"
+spec = ["administration.md §23.8", "D56", "D93"]
+status = "done"
+tests = [
+    "security::revoked_certificates_are_refused",
+    "hyperstor_meta::certs::tests::revocations_last_as_long_as_the_certificate",
+    "hyperstor_meta::replica::tests::members_refuse_revoked_peers",
 ]
 
 [[milestone]]

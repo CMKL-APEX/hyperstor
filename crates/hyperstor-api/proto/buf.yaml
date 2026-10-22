@@ -1,0 +1,19 @@
+# buf lint and buf breaking for the cluster API (spec/administration.md
+# §23.5; glidex grpc.md G-D3, G-D9). CI runs both; `breaking` compares
+# with main.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  # GetOperation and CancelOperation return the Operation itself, as
+  # Google's AIP-151 does for long-running operations.
+  ignore_only:
+    RPC_RESPONSE_STANDARD_NAME:
+      - hyperstor/v1/admin.proto
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - hyperstor/v1/admin.proto
+breaking:
+  use:
+    - FILE

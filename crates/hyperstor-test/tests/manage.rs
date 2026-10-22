@@ -79,11 +79,12 @@ fn a_killed_node_is_reported_and_comes_back() {
     let mut c = Cluster::all_in_one("kill", 3);
     c.ctl(&["io-test", "--mib", "4"]).ok();
     c.kill_node(2);
-    let s = wait_for("node 2 reported down", 20, || {
+    // Down, and settled at warn: while the map moves the dead node's PGs
+    // a slow host can show error for a moment (CI).
+    wait_for("node 2 down, writes going on", 20, || {
         let r = c.ctl(&["status"]);
-        (r.code == 1 && r.has("node(s) down: 2")).then_some(r)
+        (r.code == 1 && r.has("node(s) down: 2") && r.has("health  warn")).then_some(r)
     });
-    assert!(s.has("health  warn"), "{}", s.out);
     c.ctl(&["io-test", "--mib", "4"]).ok();
     c.start_node(2);
     c.ctl(&["status", "--wait", "60"]).ok();

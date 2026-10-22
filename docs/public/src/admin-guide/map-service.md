@@ -81,3 +81,38 @@ only. A single member is a single point of failure:
   and which were being refilled, so **restart it only while all storage
   nodes are up and no recovery is running** (see
   [Failures and recovery](failures.md)).
+
+## Backups and restoring
+
+Installed map services keep backups of their store in
+`/var/lib/hyperstor/meta-backups`: the leader writes one when the map,
+the join tokens or the certificate lists have changed, at most every 5
+minutes, and keeps the last 24. Take one at any time, to keep off the
+cluster:
+
+```sh
+hyperstorctl map backup --out map.hsbackup
+```
+
+A backup holds what the map service holds, not data: volumes and their
+contents live on the storage nodes. If every member's store is lost,
+start one member from a backup, into an empty data directory, and the
+storage nodes reconnect to it:
+
+```sh
+sudo systemctl stop hyperstor-meta
+sudo mv /var/lib/hyperstor/meta /var/lib/hyperstor/meta.lost
+# The backup must be readable by the service's user.
+echo "HS_ONCE=--restore /var/lib/hyperstor/meta-backups/map-…hsbackup" \
+    | sudo tee /etc/hyperstor/meta-once.env
+sudo systemctl start hyperstor-meta
+hyperstorctl status --wait 60
+sudo rm /etc/hyperstor/meta-once.env
+```
+
+`/etc/hyperstor/meta-once.env` holds options for one start; the restored
+store stays in the data directory, and the next start needs none.
+It is a map service of one; with several
+members, the others join it again. Changes made after the backup was
+taken are lost: hosts joined since then join again.
+

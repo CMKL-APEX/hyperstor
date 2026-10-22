@@ -180,7 +180,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TokenService.Join", "hyperstor-install install --join"),
     // Called by hyperstor-install's daily run.
     ("CaService.RenewCertificate", "hyperstor-install install"),
+    ("CaService.ListCertificates", "cert list"),
+    ("CaService.RevokeCertificate", "cert revoke"),
     ("NodeService.DrainNode", "drain"),
+    ("MapService.GetMapBackup", "map backup"),
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),
@@ -220,6 +223,58 @@ pub fn utc(unix: u64) -> String {
         secs / 3600,
         secs % 3600 / 60
     )
+}
+
+/// `hyperstorctl cert list`.
+pub fn certs_text(r: &pb::ListCertificatesResponse) -> String {
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "{:<34} {:<36} {:<16}  {:<7} ISSUED TO",
+        "SERIAL", "IDENTITY", "EXPIRES (UTC)", "STATE"
+    );
+    for c in &r.certificates {
+        let _ = writeln!(
+            o,
+            "{:<34} {:<36} {:<16}  {:<7} {}",
+            c.serial,
+            c.identity,
+            utc(c.not_after_unix),
+            if c.revoked { "revoked" } else { "valid" },
+            c.issued_by
+        );
+    }
+    // Revoked serials the API didn't issue (the map service host's own).
+    for x in r
+        .revoked
+        .iter()
+        .filter(|x| !r.certificates.iter().any(|c| c.serial == x.serial))
+    {
+        let _ = writeln!(
+            o,
+            "{:<34} {:<36} {:<16}  revoked {}",
+            x.serial,
+            "-",
+            utc(x.until_unix),
+            x.revoked_by
+        );
+    }
+    o
+}
+
+/// `hyperstorctl cert show`: a certificate file's identity, serial and
+/// expiry.
+pub fn cert_text(pem: &str) -> Option<String> {
+    let serial = hyperstor_pki::serial_in(pem)?;
+    let who = hyperstor_pki::identity_in(pem).map_or("-".to_string(), |i| i.uri());
+    let end = hyperstor_pki::not_after(pem).ok()?;
+    let end = end
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    Some(format!(
+        "identity {who}\nserial   {serial}\nexpires  {} (UTC)\n",
+        utc(end)
+    ))
 }
 
 /// `hyperstorctl token list`.
