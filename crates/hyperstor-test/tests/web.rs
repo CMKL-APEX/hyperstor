@@ -137,7 +137,7 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
     let (ips, _) = hyperstor_pki::names_of(&web_pem()).unwrap();
     if let Some(ip) = ips.iter().find(|ip| !ip.is_loopback() && ip.is_ipv4()) {
         let (_, head) = probe(*ip, port, None, &format!("{ip}:{port}"));
-        assert!(head.starts_with("HTTP/1.1 200"), "{ip}: {head}");
+        assert!(head.starts_with("HTTP/1.1 200"), "another address: {head}");
     }
     // A name that isn't this host's: refused (DNS rebinding).
     let (_, head) = probe(lo, port, None, &format!("evil.example:{port}"));

@@ -406,8 +406,9 @@ fn mgmt_listens_on_every_address_with_a_cluster_certificate() {
     );
     let web = std::fs::read_to_string(root.join("etc/hyperstor/pki/web.crt")).unwrap();
     let (ips, names) = hyperstor_pki::names_of(&web).unwrap();
-    assert!(names.contains(&"localhost".to_string()), "{names:?}");
-    assert!(ips.contains(&"127.0.0.1".parse().unwrap()), "{ips:?}");
+    // No certificate data in the failure message.
+    assert!(names.contains(&"localhost".to_string()), "no localhost");
+    assert!(ips.contains(&"127.0.0.1".parse().unwrap()), "no 127.0.0.1");
     assert!(install(&root, &[]).has("Nothing to change"));
 
     // The operator's own certificate, kept current by their ACME client.

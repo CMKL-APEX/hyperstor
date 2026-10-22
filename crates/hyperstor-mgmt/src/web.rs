@@ -40,11 +40,9 @@ pub struct Web {
 pub fn start(dir: &Path, tailscale: Option<PathBuf>) -> Result<Web, String> {
     let file = FileCert::load(&dir.join("web.crt"), &dir.join("web.key"))?;
     let resolver = Resolver::new(file.slot.clone());
-    file.watch(poll_every(), |f| {
-        eprintln!(
-            "hyperstor-mgmt: {} changed: now serving it",
-            f.cert.display()
-        )
+    // Not the file's name or contents: no certificate data in logs.
+    file.watch(poll_every(), |_| {
+        eprintln!("hyperstor-mgmt: the web certificate changed: now serving it")
     });
     let held = tailscale.map(|sock| {
         let ts = Tailscale::new(sock, resolver.clone());

@@ -2360,8 +2360,9 @@ mod tests {
         pki(root.path(), false, "9", "0", &[], Some(&a), &mut changed);
         let first = web(root.path());
         let (ips, dns) = hyperstor_pki::names_of(&first).unwrap();
-        assert!(dns.contains(&"box.example".to_string()), "{dns:?}");
-        assert!(ips.contains(&"10.0.0.5".parse().unwrap()), "{ips:?}");
+        // No certificate data in the failure message.
+        assert!(dns.contains(&"box.example".to_string()), "no box.example");
+        assert!(ips.contains(&"10.0.0.5".parse().unwrap()), "no 10.0.0.5");
         let root_pem = fs::read_to_string(root.path().join("etc/hyperstor/pki/root.crt")).unwrap();
         assert!(
             !first.contains(root_pem.trim()),
