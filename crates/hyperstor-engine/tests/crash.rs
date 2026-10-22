@@ -236,6 +236,9 @@ thread_local! {
     /// The block-map policy each open applies (the dense-map test forces
     /// dense maps for every object with more than one run).
     static POLICY: std::cell::Cell<Option<DensePolicy>> = const { std::cell::Cell::new(None) };
+    /// The checkpoint page size of this run (D105): small in most runs, so
+    /// checkpoints write some pages and keep others, cut and drop them.
+    static PAGE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
@@ -244,6 +247,9 @@ fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
         // Tiny slices: fuzzy checkpoints span many commit rounds, so power
         // is lost in the middle of them.
         sh.set_checkpoint_slice(1024);
+        if let Some(b) = PAGE.with(|p| p.get()) {
+            sh.set_checkpoint_page(b);
+        }
         if let Some(p) = POLICY.with(|p| p.get()) {
             sh.set_dense_policy(p);
         }
@@ -256,6 +262,7 @@ fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
 /// crashes checked.
 fn run(seed: u64) -> usize {
     let mut rng = SmallRng::seed_from_u64(seed);
+    PAGE.with(|p| p.set([None, Some(256), Some(2048)][seed as usize % 3]));
     let keys = keys();
     let len = 1024 * BLOCK as u64;
     let fd = Arc::new(FaultDev::new(len));

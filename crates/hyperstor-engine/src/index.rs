@@ -9,7 +9,7 @@
 pub use crate::blockmap::{BlockMap, DensePolicy, Loc, Run};
 use crate::types::ObjKey;
 use hyperstor_codec::{Dec, DecodeError, Enc};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Object {
@@ -42,6 +42,17 @@ impl Object {
     }
 }
 
+/// An in-place write ([`ROp::Deferred`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredWrite {
+    pub lb: u64,
+    pub data: Vec<u8>,
+    pub crcs: Vec<u32>,
+    /// The physical blocks at the time; empty in records written before
+    /// they were logged.
+    pub pbs: Vec<u64>,
+}
+
 /// A resolved operation, as logged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ROp {
@@ -56,12 +67,8 @@ pub enum ROp {
         crcs: Vec<u32>,
     },
     /// Overwrites mapped blocks in place; the data is in the log until
-    /// applied (spec/engine.md §7.3).
-    Deferred {
-        lb: u64,
-        data: Vec<u8>,
-        crcs: Vec<u32>,
-    },
+    /// applied (spec/engine.md §7.3). Boxed: rare, and the largest.
+    Deferred(Box<DeferredWrite>),
     Unmap {
         lb: u64,
         n: u64,
@@ -96,6 +103,10 @@ pub struct Effects {
     /// In-place writes still to do: physical block -> 4 KiB of data.
     /// Freeing a block cancels its pending write.
     pub pending: BTreeMap<u64, Box<[u8]>>,
+    /// Pending writes replay found no mapping for, at the block the record
+    /// names: kept only if some object maps the block with the data's
+    /// checksum once replay ends ([`Index::settle_tentative`]).
+    pub tentative: BTreeSet<u64>,
 }
 
 impl Effects {
@@ -104,6 +115,7 @@ impl Effects {
             let cancel: Vec<u64> = self.pending.range(pb..pb + n).map(|(&k, _)| k).collect();
             for k in cancel {
                 self.pending.remove(&k);
+                self.tentative.remove(&k);
             }
             self.freed.push((pb, n));
         }
@@ -116,6 +128,14 @@ pub struct Index {
     pub objects: BTreeMap<ObjKey, Object>,
     /// When block maps switch representation (not part of the content).
     pub policy: DensePolicy,
+    /// Where checkpoint pages start (D105): a page holds the objects from
+    /// its bound up to the next; the first page starts before every key
+    /// and has no bound.
+    pub bounds: BTreeSet<ObjKey>,
+    /// Pages changed since the checkpoint that wrote them began, by their
+    /// bound; `first_dirty` for the first page.
+    pub dirty: BTreeSet<ObjKey>,
+    pub first_dirty: bool,
 }
 
 impl PartialEq for Index {
@@ -134,9 +154,45 @@ impl Index {
         }
     }
 
+    /// The start of the page that holds `key`.
+    pub fn page_of(&self, key: &ObjKey) -> Option<&ObjKey> {
+        self.bounds.range(..=key).next_back()
+    }
+
+    fn touch(&mut self, key: &ObjKey) {
+        match self.page_of(key) {
+            None => self.first_dirty = true,
+            Some(p) if !self.dirty.contains(p) => {
+                let p = p.clone();
+                self.dirty.insert(p);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Marks a page (by its bound) to be written by the next checkpoint.
+    pub fn mark(&mut self, page: Option<ObjKey>) {
+        match page {
+            None => self.first_dirty = true,
+            Some(p) => {
+                self.dirty.insert(p);
+            }
+        }
+    }
+
+    /// The changed pages, in key order; none are marked after.
+    pub fn take_dirty(&mut self) -> Vec<Option<ObjKey>> {
+        let first = std::mem::take(&mut self.first_dirty).then_some(None);
+        first
+            .into_iter()
+            .chain(std::mem::take(&mut self.dirty).into_iter().map(Some))
+            .collect()
+    }
+
     /// Applies one resolved operation to the object `key`.
     pub fn apply_op(&mut self, key: &ObjKey, op: &ROp, fx: &mut Effects) {
         let policy = self.policy;
+        self.touch(key);
         {
             if let ROp::Delete = op {
                 if let Some(o) = self.objects.remove(key) {
@@ -152,24 +208,65 @@ impl Index {
                 ROp::Delete => unreachable!(),
                 ROp::SetSize(s) => o.size = *s,
                 ROp::Map { lb, pblock, crcs } => {
-                    let freed = o.unmap(*lb, crcs.len() as u64);
+                    // Replayed over a fuzzy checkpoint that already has
+                    // this mapping, the blocks it maps aren't freed (that
+                    // would cancel their pending writes).
+                    let (lo, hi) = (*pblock, pblock + crcs.len() as u64);
+                    let mut freed = o.unmap(*lb, crcs.len() as u64);
+                    if freed.iter().any(|&(s, n)| s < hi && lo < s + n) {
+                        freed = freed
+                            .into_iter()
+                            .flat_map(|(s, n)| {
+                                let e = s + n;
+                                [(s, e.min(lo)), (s.max(hi), e)]
+                            })
+                            .filter(|(s, e)| s < e)
+                            .map(|(s, e)| (s, e - s))
+                            .collect();
+                    }
                     fx.free(freed);
                     o.blocks.map(*lb, *pblock, crcs);
                     o.blocks.rebalance(&policy, crcs.len() as u64);
                 }
-                ROp::Deferred { lb, data, crcs } => {
+                ROp::Deferred(w) => {
+                    let DeferredWrite {
+                        lb,
+                        data,
+                        crcs,
+                        pbs,
+                    } = &**w;
                     // At run time every target block is mapped. Replaying
-                    // over a fuzzy checkpoint (taken after a later trim) may
-                    // find holes; those blocks are skipped, and a later
-                    // operation in the log settles them.
+                    // over a fuzzy checkpoint may find holes: the block was
+                    // trimmed later, or moved to another object by an
+                    // absorb. The write is kept at the block the record
+                    // names, tentatively: whether it still belongs there is
+                    // known once replay ends.
+                    // A record names the blocks it wrote; one written
+                    // before it named them goes to whatever block the
+                    // object maps.
                     for (i, crc) in crcs.iter().enumerate() {
                         let b = lb + i as u64;
-                        if !o.blocks.all_mapped(b, 1) {
-                            continue;
-                        }
-                        let pb = o.blocks.set_crcs(b, &[*crc])[0];
                         let blk = &data[i * crate::BLOCK..(i + 1) * crate::BLOCK];
-                        fx.pending.insert(pb, blk.into());
+                        let now = match o.lookup(b) {
+                            Loc::Mapped { pblock, .. } => Some(pblock),
+                            Loc::Hole => None,
+                        };
+                        match (now, pbs.get(i)) {
+                            (Some(pb), None) => {
+                                o.blocks.set_crcs(b, &[*crc]);
+                                fx.pending.insert(pb, blk.into());
+                            }
+                            (Some(pb), Some(&was)) if pb == was => {
+                                o.blocks.set_crcs(b, &[*crc]);
+                                fx.pending.insert(pb, blk.into());
+                                fx.tentative.remove(&pb);
+                            }
+                            (_, Some(&was)) => {
+                                fx.pending.insert(was, blk.into());
+                                fx.tentative.insert(was);
+                            }
+                            (None, None) => {}
+                        }
                     }
                 }
                 ROp::Unmap { lb, n } => {
@@ -210,6 +307,36 @@ impl Index {
         }
     }
 
+    /// Drops the tentative pending writes whose block no object maps with
+    /// the data's checksum: the block was freed, or reused for other data.
+    /// One that matches belongs to the object the block moved to.
+    pub fn settle_tentative(&self, fx: &mut Effects) {
+        if fx.tentative.is_empty() {
+            return;
+        }
+        let mut found: BTreeMap<u64, u32> = BTreeMap::new();
+        for o in self.objects.values() {
+            for (_, pb, crcs) in o.blocks.runs() {
+                for (pb, crc) in fx
+                    .tentative
+                    .range(pb..pb + crcs.len() as u64)
+                    .map(|&t| (t, crcs[(t - pb) as usize]))
+                {
+                    found.insert(pb, crc);
+                }
+            }
+        }
+        for pb in std::mem::take(&mut fx.tentative) {
+            let keep = fx
+                .pending
+                .get(&pb)
+                .is_some_and(|d| found.get(&pb) == Some(&hyperstor_codec::crc32c(d)));
+            if !keep {
+                fx.pending.remove(&pb);
+            }
+        }
+    }
+
     /// Every physical extent in use.
     pub fn used_extents(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.objects.values().flat_map(|o| o.blocks.extents())
@@ -231,7 +358,7 @@ impl Index {
         }
         Ok(Self {
             objects,
-            policy: DensePolicy::default(),
+            ..Default::default()
         })
     }
 }
@@ -318,9 +445,18 @@ impl ROp {
                     e.u32(*c);
                 });
             }
-            ROp::Deferred { lb, data, crcs } => {
-                e.u8(4).u64(*lb).bytes(data).seq(crcs, |e, c| {
+            ROp::Deferred(w) => {
+                let DeferredWrite {
+                    lb,
+                    data,
+                    crcs,
+                    pbs,
+                } = &**w;
+                e.u8(13).u64(*lb).bytes(data).seq(crcs, |e, c| {
                     e.u32(*c);
+                });
+                e.seq(pbs, |e, p| {
+                    e.u64(*p);
                 });
             }
             ROp::Unmap { lb, n } => {
@@ -359,17 +495,27 @@ impl ROp {
                 pblock: d.u64()?,
                 crcs: d.seq(4, |d| d.u32())?,
             },
-            4 => {
+            t @ (4 | 13) => {
                 let lb = d.u64()?;
                 let data = d.bytes()?.to_vec();
                 let crcs = d.seq(4, |d| d.u32())?;
-                if data.len() != crcs.len() * crate::BLOCK {
+                let pbs = if t == 13 {
+                    d.seq(8, |d| d.u64())?
+                } else {
+                    Vec::new()
+                };
+                if data.len() != crcs.len() * crate::BLOCK || (t == 13 && pbs.len() != crcs.len()) {
                     return Err(DecodeError::Invalid {
                         field: "deferred length",
                         value: data.len() as u64,
                     });
                 }
-                ROp::Deferred { lb, data, crcs }
+                ROp::Deferred(Box::new(DeferredWrite {
+                    lb,
+                    data,
+                    crcs,
+                    pbs,
+                }))
             }
             5 => ROp::Unmap {
                 lb: d.u64()?,
@@ -506,11 +652,12 @@ mod tests {
         idx.apply(
             &RList {
                 key: key(),
-                ops: vec![ROp::Deferred {
+                ops: vec![ROp::Deferred(Box::new(DeferredWrite {
                     lb: 1,
                     data: vec![7; crate::BLOCK],
                     crcs: vec![42],
-                }],
+                    pbs: vec![11],
+                }))],
             },
             &mut fx,
         );
@@ -523,6 +670,123 @@ mod tests {
             &mut fx,
         );
         assert!(fx.pending.is_empty(), "freeing cancels the in-place write");
+    }
+
+    fn map(lb: u64, pblock: u64, crcs: Vec<u32>) -> ROp {
+        ROp::Map { lb, pblock, crcs }
+    }
+
+    fn deferred(lb: u64, byte: u8, pb: u64) -> ROp {
+        let data = vec![byte; crate::BLOCK];
+        ROp::Deferred(Box::new(DeferredWrite {
+            lb,
+            crcs: vec![hyperstor_codec::crc32c(&data)],
+            data,
+            pbs: vec![pb],
+        }))
+    }
+
+    fn other() -> ObjKey {
+        ObjKey::new(1, 1, Namespace::Vol, b"other".to_vec(), 0)
+    }
+
+    fn crc_of(idx: &Index, k: &ObjKey, lb: u64) -> Loc {
+        idx.objects.get(k).map_or(Loc::Hole, |o| o.lookup(lb))
+    }
+
+    /// Replaying over a fuzzy checkpoint written after an absorb moved a
+    /// block (implementation-notes.md I149): the source no longer maps it,
+    /// so the deferred write waits; the block's new owner maps it with the
+    /// write's checksum, so it is kept.
+    #[test]
+    fn a_deferred_write_follows_its_block_to_another_object() {
+        let mut idx = Index::default();
+        let mut fx = Effects::default();
+        let d = deferred(9, 7, 72);
+        let ROp::Deferred(w) = &d else { unreachable!() };
+        let crc = w.crcs[0];
+        // The checkpoint: `other` already holds block 72 with the new crc.
+        idx.apply_op(&other(), &map(9, 72, vec![crc]), &mut fx);
+        // Replay: the deferred write on key(), then the absorb.
+        idx.apply_op(&key(), &d, &mut fx);
+        assert!(fx.tentative.contains(&72));
+        idx.apply_op(&key(), &ROp::Forget { lb: 9, n: 1 }, &mut fx);
+        idx.apply_op(&other(), &map(9, 72, vec![crc]), &mut fx);
+        assert!(
+            fx.pending.contains_key(&72),
+            "mapping a block again doesn't free it"
+        );
+        idx.settle_tentative(&mut fx);
+        assert_eq!(fx.pending[&72][0], 7, "the write is kept");
+        assert!(fx.tentative.is_empty());
+    }
+
+    /// A deferred write whose block was remapped later: the checkpoint
+    /// maps the logical block elsewhere, so neither its crc nor the new
+    /// block's data change; the old block was freed, so the write goes.
+    #[test]
+    fn a_deferred_write_to_a_block_since_remapped_is_dropped() {
+        let mut idx = Index::default();
+        let mut fx = Effects::default();
+        idx.apply_op(&key(), &map(10, 184, vec![5]), &mut fx);
+        idx.apply_op(&key(), &deferred(10, 7, 126), &mut fx);
+        assert_eq!(
+            crc_of(&idx, &key(), 10),
+            Loc::Mapped {
+                pblock: 184,
+                crc: 5
+            }
+        );
+        assert!(!fx.pending.contains_key(&184));
+        idx.apply_op(&key(), &map(10, 184, vec![5]), &mut fx);
+        idx.settle_tentative(&mut fx);
+        assert!(fx.pending.is_empty(), "block 126 belongs to no one");
+        // Reused for other data by another object: dropped too.
+        idx.apply_op(&key(), &deferred(10, 7, 126), &mut fx);
+        idx.apply_op(&other(), &map(0, 126, vec![99]), &mut fx);
+        idx.settle_tentative(&mut fx);
+        assert!(fx.pending.is_empty(), "block 126 holds other data now");
+    }
+
+    /// A record from before deferred writes named their blocks replays as
+    /// it did: onto whatever block the object maps, skipping holes.
+    #[test]
+    fn an_old_deferred_record_goes_where_the_object_maps() {
+        let mut idx = Index::default();
+        let mut fx = Effects::default();
+        idx.apply_op(&key(), &map(0, 40, vec![1]), &mut fx);
+        let old = ROp::Deferred(Box::new(DeferredWrite {
+            lb: 0,
+            data: vec![3; 2 * crate::BLOCK],
+            crcs: vec![8, 9],
+            pbs: Vec::new(),
+        }));
+        idx.apply_op(&key(), &old, &mut fx);
+        assert_eq!(crc_of(&idx, &key(), 0), Loc::Mapped { pblock: 40, crc: 8 });
+        assert_eq!(fx.pending.keys().copied().collect::<Vec<_>>(), vec![40]);
+        assert!(fx.tentative.is_empty());
+        let mut e = Enc::new();
+        old.encode(&mut e);
+        assert_eq!(e.as_slice()[0], 13, "written with its blocks");
+        let mut b = e.into_vec();
+        // Tag 4: a record written before the blocks, without them.
+        b[0] = 4;
+        b.truncate(b.len() - 4);
+        assert_eq!(ROp::decode(&mut Dec::new(&b)).unwrap(), old);
+    }
+
+    /// Changing an object marks its page for the next checkpoint (D105).
+    #[test]
+    fn changes_mark_their_page() {
+        let mut idx = Index::default();
+        let mut fx = Effects::default();
+        let k = |n: &[u8]| ObjKey::new(1, 1, Namespace::Vol, n.to_vec(), 0);
+        idx.bounds.insert(k(b"m"));
+        idx.apply_op(&k(b"a"), &ROp::SetSize(1), &mut fx);
+        idx.apply_op(&k(b"m"), &ROp::SetSize(1), &mut fx);
+        idx.apply_op(&k(b"z"), &ROp::SetSize(1), &mut fx);
+        assert_eq!(idx.take_dirty(), vec![None, Some(k(b"m"))]);
+        assert_eq!(idx.take_dirty(), Vec::<Option<ObjKey>>::new());
     }
 
     #[test]

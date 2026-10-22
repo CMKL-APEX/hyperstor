@@ -871,3 +871,56 @@ fio --name=t --filename=/dev/ublkb0 --rw=randread --bs=4k --iodepth=1 \
    devices does 7,400 4 KiB writes a second at QD1), and three nodes
    and the client share the host's cores with other work. What ublk and
    its one queue cost needs the comparison of G22.
+
+## 2026-10-22: paged checkpoints (dev-2)
+
+### Checkpoint traffic against the share of chunks written
+
+`hyperstor-bench paged`. 2 GiB of 4 MiB chunks on a memory device (a
+4 MiB index of dense maps; chunk keys spread over 128 PGs, as a volume's
+are), aged by one full pass of random 4 KiB overwrites, a 256 MiB log.
+Then batches of 32 random overwrites to the first share of the chunks,
+until three checkpoints finish after two to settle. "Whole" is one page:
+the checkpoint before D105. The second-last column scales the traffic to a
+1 TiB shard with the same share written.
+
+| Chunks written | checkpoint | pages | pages written per checkpoint | checkpoint B per write | checkpoint MB/s at 50k writes/s per TiB | open ms |
+|---|---|---|---|---|---|---|
+| 100% | whole | 1 | 1.0 | 8.07 | 207 | 392 |
+| 100% | paged | 32 | 32.0 | 8.26 | 211 | 372 |
+| 10% | whole | 1 | 1.0 | 8.07 | 207 | 307 |
+| 10% | paged | 32 | 13.0 | 3.36 | 86 | 331 |
+| 1% | whole | 1 | 1.0 | 8.07 | 207 | 301 |
+| 1% | paged | 32 | 2.0 | 0.52 | 13 | 296 |
+
+### Recovery against the log replayed, before and after
+
+`hyperstor-bench replay` (the method of "Recovery time against log
+length" above), main and this branch built from the same sources, run back
+to back. Before boxing the deferred write in the logged operation, the
+added physical blocks made every operation 80 bytes instead of 56, and
+reading and replaying the log took 12–17% longer; boxed, it is back to
+56 bytes.
+
+| Log replayed | main: open ms (runs) | paged, boxed: open ms (runs) | log scan ms (main / paged) | replay ms (main / paged) |
+|---|---|---|---|---|
+| 64 MiB | 410–415 (5) | 423 (1) | — | — |
+| 256 MiB | 1,424–1,455 (5) | 1,449–1,478 (3) | 761 / 747–750 | 383 / 364 |
+| 700 MiB | 3,704–4,562 (5) | 3,752–4,396 (3) | 1,997 / 1,927–2,185 | 1,046 / 977–1,012 |
+
+The 700 MiB row varies by 20% between runs of the same binary (a shared
+host, with other sessions' builds), so it shows no difference either way.
+
+### Findings
+
+1. **Checkpoint traffic follows the share of the index that changes**:
+   2.4× less when a tenth of the chunks are written, 16× less for a
+   hundredth. Pages are cut by key range, and a volume's chunks spread
+   over every PG, so a hot tenth of the chunks still touches 40% of the
+   pages.
+2. **Uniform random writes gain nothing** (every page changes each
+   quarter of the log) and pay about 2% for the directory and page
+   headers. The log-size table above still holds for them.
+3. **Recovery time is unchanged**: reading every page in one batch costs
+   no more than the one blob did, and the logged operation stays the same
+   size.

@@ -367,6 +367,19 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Paged checkpoints: only the pages changed since the last (D105)"
+spec = ["engine.md §7.3", "D47", "D105", "I148", "I149"]
+status = "done"
+tests = [
+    "engine::checkpoints_write_only_the_pages_that_changed",
+    "hyperstor_engine::shard::tests::a_checkpoint_from_before_pages_is_read_and_replaced",
+    "hyperstor_engine::index::tests::changes_mark_their_page",
+    "hyperstor_engine::index::tests::a_deferred_write_follows_its_block_to_another_object",
+    "hyperstor_engine::index::tests::a_deferred_write_to_a_block_since_remapped_is_dropped",
+    "hyperstor_engine::index::tests::an_old_deferred_record_goes_where_the_object_maps",
+]
+
+[[milestone.item]]
 what = "The host read cache, in the client library"
 spec = ["frontends.md §11.3", "D32", "D102", "I134"]
 status = "partial"
