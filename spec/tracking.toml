@@ -192,8 +192,14 @@ tests = [
 
 [[milestone.item]]
 what = "Test block devices through ublk"
-spec = []
-status = "planned"
+spec = ["frontends.md §11.2", "D93", "D94", "I107", "I108"]
+status = "done"
+tests = [
+    "ublk::a_volume_is_a_block_device_and_keeps_its_data",
+    "hyperstor_ublk::sys::tests::layouts_and_command_numbers_match_the_header",
+    "hyperstor_ublk::sys::tests::commands_encode_in_field_order",
+    "hyperstor_ublk::tests::parameters_follow_the_volume",
+]
 
 [[milestone]]
 id = "HS2"

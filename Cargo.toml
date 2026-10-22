@@ -17,6 +17,7 @@ members = [
     "crates/hyperstor-reactor",
     "crates/hyperstor-rpc",
     "crates/hyperstor-test",
+    "crates/hyperstor-ublk",
 ]
 resolver = "2"
 

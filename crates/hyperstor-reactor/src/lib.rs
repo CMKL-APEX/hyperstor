@@ -18,6 +18,7 @@
 
 pub mod chan;
 pub mod net;
+pub mod passthrough;
 pub mod time;
 
 use io_uring::{IoUring, opcode, squeue, types};

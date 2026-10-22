@@ -832,3 +832,30 @@ run in every build.
    timeout.
 2. **The rest of HS2 costs the I/O path nothing measurable** with them:
    QD1 writes are within 0.3% of `main`, QD32 within 2% (run to run).
+
+## 2026-10-22: a volume through ublk, first look (dev-2)
+
+Question: does a `hyperstor-ublk` device carry ordinary block I/O, and
+roughly how fast, before fio runs on a test host (G22)? An all-in-one
+cluster of three nodes from `hyperstor-test` (each a 1 GiB file on the
+shared root filesystem, flushed at every commit), a 2 GiB volume served
+with `--depth 64`, and `dd` with direct I/O (one request at a time):
+
+| I/O | Throughput | Per request |
+|---|---|---|
+| 1 MiB writes | 127 MB/s | 8.2 ms |
+| 1 MiB reads | 451 MB/s | 2.3 ms |
+| 4 KiB writes | 3.1 MB/s | 1.3 ms |
+| 4 KiB reads | 17.2 MB/s | 0.24 ms |
+
+### Findings
+
+1. **It works end to end**: raw I/O across chunk boundaries, ext4, and a
+   detach and attach with the data intact (`ublk::` test, run with
+   `HS_UBLK=1`).
+2. **Writes here are bound by the scratch files' flushes** on a shared
+   disk, not by ublk: the same path to memory devices does 7,400 4 KiB
+   writes a second (`hyperstor-bench cluster mem`), this one 760. Reads,
+   from the engine's cache, take 0.24 ms each through the kernel, ublk,
+   the client and a primary. What ublk itself costs needs fio at depth
+   on a test host (G22); fio isn't installed here.

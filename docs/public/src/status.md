@@ -60,7 +60,7 @@ covered by tests that run on every change.
 | Replicated map service (Raft) | In progress |
 | Recovering the map service: map backups, member changes at run time, and a group that lost its majority | Planned |
 | Volume metadata: headers, directories and volume leases | Done |
-| Test block devices through ublk | Planned |
+| Test block devices through ublk | Done |
 
 ## HS2: Failure handling
 

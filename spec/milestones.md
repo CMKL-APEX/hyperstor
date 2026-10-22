@@ -135,3 +135,9 @@ sections that depend on them are final:
   round, and their cost to I/O on the same device. A PG log is needed
   if peering takes more than about a second, or the scan costs I/O more
   than scrub does.
+- **G22. ublk under load** (D93, D94). On a storage test host with
+  NVMe-backed nodes, run fio through a `hyperstor-ublk` device (4 KiB
+  random reads and writes at QD1 and QD32, 1 MiB sequential) against
+  `hyperstor-bench cluster` on the same cluster, to see what ublk and
+  its one queue cost; and check the kernels glidex hosts run (ublk needs
+  Linux 6.0; tested on 6.8).

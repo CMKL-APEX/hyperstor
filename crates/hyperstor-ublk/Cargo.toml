@@ -1,0 +1,17 @@
+[package]
+name = "hyperstor-ublk"
+description = "hyperstor-ublk: serve a hyperstor volume as a ublk block device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hyperstor-ublk"
+path = "src/main.rs"
+
+[dependencies]
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+io-uring.workspace = true
+libc.workspace = true

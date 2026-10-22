@@ -297,6 +297,8 @@ pub struct Cluster {
     /// The installed binaries, `<root>/usr/local/bin`.
     pub bin: PathBuf,
     pub api: String,
+    /// The map service's address, for clients (`hyperstor-ublk`).
+    pub map: String,
     pub cluster_id: String,
     pub nodes: u32,
     /// Node n's metrics port is `admin_port + n`.
@@ -356,6 +358,7 @@ impl Cluster {
             root,
             scratch,
             api: format!("127.0.0.1:{api}"),
+            map: format!("127.0.0.1:{map}"),
             cluster_id,
             nodes,
             admin_port: admin,
