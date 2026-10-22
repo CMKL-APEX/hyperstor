@@ -46,6 +46,12 @@ fn model_apply(m: &mut Model, l: &OpList, revision: Option<u64>) -> bool {
     if !mutates {
         return true;
     }
+    if l.ops
+        .iter()
+        .any(|o| matches!(o, Op::Absorb(s) if *s == l.key))
+    {
+        return false;
+    }
     let mut alive = exists;
     for op in &l.ops {
         match op {
@@ -53,6 +59,18 @@ fn model_apply(m: &mut Model, l: &OpList, revision: Option<u64>) -> bool {
             Op::Delete => {
                 m.remove(&l.key);
                 alive = false;
+                continue;
+            }
+            Op::Absorb(src) => {
+                alive = true;
+                let s = m.remove(src);
+                let o = m.entry(l.key.clone()).or_default();
+                if let Some(s) = s {
+                    for (b, v) in s.data {
+                        o.data.entry(b).or_insert(v);
+                    }
+                    o.size = o.size.max(s.size);
+                }
                 continue;
             }
             _ => alive = true,
@@ -153,7 +171,11 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
             69..=74 => Op::SetAttr(vec![rng.random_range(b'x'..=b'z')], vec![rng.random()]),
             75..=77 => Op::RmAttr(vec![rng.random_range(b'x'..=b'z')]),
             78..=83 => Op::Delete,
-            84..=89 => Op::Touch,
+            84..=86 => Op::Touch,
+            87..=89 => {
+                let i = keys.iter().position(|k| *k == key).unwrap();
+                Op::Absorb(keys[(i + rng.random_range(1..keys.len())) % keys.len()].clone())
+            }
             90..=94 => Op::AssertExists,
             _ => Op::AssertAbsent,
         };

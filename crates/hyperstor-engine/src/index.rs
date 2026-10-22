@@ -73,6 +73,12 @@ pub enum ROp {
     KvDelRange(Vec<u8>, Vec<u8>),
     /// Sets the revision; ends every list that leaves the object existing.
     SetRevision(u64),
+    /// Removes the mappings of blocks another object has taken over
+    /// ([`crate::Op::Absorb`]), without freeing them.
+    Forget {
+        lb: u64,
+        n: u64,
+    },
 }
 
 /// One list's resolved operations.
@@ -195,6 +201,11 @@ impl Index {
                     }
                 }
                 ROp::SetRevision(r) => o.revision = *r,
+                ROp::Forget { lb, n } => {
+                    // Now another object's: not freed.
+                    let _ = o.unmap(*lb, *n);
+                    o.blocks.rebalance(&policy, *n);
+                }
             }
         }
     }
@@ -333,6 +344,9 @@ impl ROp {
             ROp::SetRevision(r) => {
                 e.u8(11).u64(*r);
             }
+            ROp::Forget { lb, n } => {
+                e.u8(12).u64(*lb).u64(*n);
+            }
         }
     }
 
@@ -367,6 +381,10 @@ impl ROp {
             9 => ROp::KvDel(d.bytes()?.to_vec()),
             10 => ROp::KvDelRange(d.bytes()?.to_vec(), d.bytes()?.to_vec()),
             11 => ROp::SetRevision(d.u64()?),
+            12 => ROp::Forget {
+                lb: d.u64()?,
+                n: d.u64()?,
+            },
             v => {
                 return Err(DecodeError::Invalid {
                     field: "resolved op",
