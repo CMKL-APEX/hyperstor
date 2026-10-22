@@ -1,6 +1,7 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
-//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]`
+//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
+//!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -17,6 +18,13 @@
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
 //!   and `delete-volume --id ID [--force]` (decisions.md D77, D80);
+//! - `snapshot list --id ID`, `snapshot create --id ID [--name N]`,
+//!   `snapshot delete --id ID --epoch E`: a volume's snapshots
+//!   (volumes.md §10.3); `snapshot group --ids ID,ID... [--name N]` takes
+//!   them at one moment (a consistency group), `snapshot group-delete
+//!   --group G` deletes a group's; `clone-volume --id ID --epoch E [--name
+//!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
+//!   `flatten-volume --id ID` (§10.4);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
@@ -69,7 +77,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -129,6 +137,10 @@ struct Args {
     name: String,
     id: Option<String>,
     force: bool,
+    epoch: Option<u64>,
+    ids: Vec<String>,
+    group: Option<String>,
+    new_id: Option<String>,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -168,6 +180,10 @@ fn main() {
         name: String::new(),
         id: None,
         force: false,
+        epoch: None,
+        ids: Vec::new(),
+        group: None,
+        new_id: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -207,20 +223,43 @@ fn main() {
             "--name" => a.name = it.next().cloned().unwrap_or_else(|| usage()),
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--force" => a.force = true,
+            "--epoch" => {
+                a.epoch = Some(
+                    it.next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--ids" => {
+                a.ids = it
+                    .next()
+                    .unwrap_or_else(|| usage())
+                    .split(',')
+                    .filter(|x| !x.is_empty())
+                    .map(String::from)
+                    .collect()
+            }
+            "--group" => a.group = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--new-id" => a.new_id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in" | "drain"
+            | "delete-volume" | "io-test" | "out" | "in" | "drain" | "clone-volume"
+            | "rollback-volume" | "flatten-volume"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
             }
             // Two words: the group, then what to do.
-            "token" | "op" | "cert" | "map" | "member" if cmd.is_none() => {
+            "token" | "op" | "cert" | "map" | "member" | "snapshot" if cmd.is_none() => {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
                     "cert" => matches!(sub, Some("list" | "revoke" | "show")),
                     "map" => matches!(sub, Some("backup")),
                     "member" => matches!(sub, Some("list" | "add" | "remove")),
+                    "snapshot" => matches!(
+                        sub,
+                        Some("list" | "create" | "delete" | "group" | "group-delete")
+                    ),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -240,8 +279,31 @@ fn main() {
     }
     let needs_id = matches!(
         cmd.as_str(),
-        "token revoke" | "op get" | "op watch" | "op cancel" | "member add" | "member remove"
+        "token revoke"
+            | "op get"
+            | "op watch"
+            | "op cancel"
+            | "member add"
+            | "member remove"
+            | "snapshot list"
+            | "snapshot create"
+            | "snapshot delete"
+            | "clone-volume"
+            | "rollback-volume"
+            | "flatten-volume"
     );
+    // The snapshot commands' own flags, and only theirs.
+    let needs_epoch = matches!(
+        cmd.as_str(),
+        "snapshot delete" | "clone-volume" | "rollback-volume"
+    );
+    if needs_epoch != a.epoch.is_some()
+        || (cmd == "snapshot group") == a.ids.is_empty()
+        || (cmd == "snapshot group-delete") != a.group.is_some()
+        || (a.new_id.is_some() && cmd != "clone-volume")
+    {
+        usage();
+    }
     if (cmd == "cert revoke") != a.serial.is_some()
         || (cmd == "cert show") != a.file.is_some()
         || (cmd == "map backup") != a.out.is_some()
@@ -415,6 +477,9 @@ where
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
+        "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
+            return snapshots(ClusterServiceClient::new(transport, config), cmd, a).await;
+        }
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),
@@ -711,6 +776,146 @@ where
                 })
                 .await?;
             println!("token {id} revoked");
+            Next::Exit(0)
+        }
+    })
+}
+
+/// `snapshot list|create|delete|group|group-delete`, `clone-volume`,
+/// `rollback-volume`, `flatten-volume` (volumes.md §10.3, §10.4).
+async fn snapshots<T>(
+    client: ClusterServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let id = || a.id.clone().unwrap_or_default();
+    let epoch = a.epoch.unwrap_or_default();
+    let volume = |v: Option<pb::Volume>, what: &str| {
+        let v = v.unwrap_or_default();
+        println!("volume {} {what}", v.id);
+    };
+    Ok(match cmd {
+        "snapshot list" => {
+            let r = client
+                .list_snapshots(pb::ListSnapshotsRequest {
+                    id: id(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || snapshots_text(&r));
+            Next::Exit(0)
+        }
+        "snapshot create" => {
+            let r = client
+                .create_snapshot(pb::CreateSnapshotRequest {
+                    id: id(),
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || {
+                let s = r.snapshot.as_option().cloned().unwrap_or_default();
+                format!("snapshot {} of volume {} taken\n", s.epoch, id())
+            });
+            Next::Exit(0)
+        }
+        "snapshot delete" => {
+            client
+                .delete_snapshot(pb::DeleteSnapshotRequest {
+                    id: id(),
+                    epoch,
+                    ..Default::default()
+                })
+                .await?;
+            println!("snapshot {epoch} of volume {} deleted", id());
+            Next::Exit(0)
+        }
+        "snapshot group" => {
+            let r = client
+                .create_group_snapshot(pb::CreateGroupSnapshotRequest {
+                    ids: a.ids.clone(),
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || {
+                let mut t = format!("group {}\n", r.group);
+                for m in &r.members {
+                    let s = m.snapshot.as_option().cloned().unwrap_or_default();
+                    t.push_str(&format!("  volume {} snapshot {}\n", m.id, s.epoch));
+                }
+                t
+            });
+            Next::Exit(0)
+        }
+        "snapshot group-delete" => {
+            let g = a.group.clone().unwrap_or_default();
+            client
+                .delete_group_snapshot(pb::DeleteGroupSnapshotRequest {
+                    group: g.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("group {g} deleted");
+            Next::Exit(0)
+        }
+        "clone-volume" => {
+            let r = client
+                .clone_volume(pb::CloneVolumeRequest {
+                    id: id(),
+                    epoch,
+                    name: a.name.clone(),
+                    new_id: a.new_id.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            if a.json {
+                show(a, &r, String::new);
+            } else {
+                volume(r.volume.as_option().cloned(), "created");
+            }
+            Next::Exit(0)
+        }
+        "rollback-volume" => {
+            let r = client
+                .rollback_volume(pb::RollbackVolumeRequest {
+                    id: id(),
+                    epoch,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            if a.json {
+                show(a, &r, String::new);
+            } else {
+                volume(
+                    r.volume.as_option().cloned(),
+                    &format!("rolled back to snapshot {epoch}"),
+                );
+            }
+            Next::Exit(0)
+        }
+        _ => {
+            let r = client
+                .flatten_volume(pb::FlattenVolumeRequest {
+                    id: id(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            if a.json {
+                show(a, &r, String::new);
+            } else {
+                volume(r.volume.as_option().cloned(), "flattened");
+            }
             Next::Exit(0)
         }
     })

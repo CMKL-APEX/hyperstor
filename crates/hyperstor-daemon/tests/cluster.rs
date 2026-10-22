@@ -2474,8 +2474,10 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
             Err(ClientError::VolumeAttached(_))
         ));
         va.detach().await.unwrap();
+        // To the newest snapshot: in place (D106), no new branch.
         let r = cl.rollback(v.id, s2.epoch).await.unwrap();
-        assert_ne!(r.branch, vol.branch);
+        assert_eq!((r.branch, r.chain.len()), (vol.branch, 0));
+        assert!(r.skip.is_empty(), "the skipped epochs were trimmed");
         let va = cl.attach(v.id).await.unwrap();
         assert!(va.read(0, size).await.unwrap() == at_s2, "rolled back");
         let f = pattern(5, 4096);
@@ -2488,13 +2490,6 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
             read_snap(vol.clone(), s2.epoch).await == at_s2,
             "s2 after the rollback"
         );
-        // s2 is what the rolled-back head is cut from.
-        assert!(matches!(
-            cl.delete_snapshot(v.id, s2.epoch).await,
-            Err(ClientError::SnapshotInUse(_))
-        ));
-        let vf = cl.flatten(v.id).await.unwrap();
-        assert!(vf.chain.is_empty());
         cl.delete_snapshot(v.id, s2.epoch).await.unwrap();
         assert!(
             va.read(0, size).await.unwrap() == after,
@@ -2789,6 +2784,205 @@ fn deleting_a_snapshot_keeps_what_a_later_one_reads() {
         let mut head = pattern(1, 8192);
         head[4096..].copy_from_slice(&pattern(2, 4096));
         assert!(va.read(0, 8192).await.unwrap() == head);
+    });
+    c.stop();
+}
+
+/// Resetting a volume to its newest snapshot again and again (an agent VM
+/// after every task, D106) stays on one branch: the chain never grows,
+/// every reset reads the snapshot, and the epochs it drops leave no
+/// versions behind.
+#[test]
+fn resets_to_the_newest_snapshot_stay_in_place() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let lineage = with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "agent")
+            .await
+            .unwrap();
+        let a = cl.attach(v.id).await.unwrap();
+        a.write(0, pattern(1, 8192)).await.unwrap();
+        a.detach().await.unwrap();
+        let golden = cl.snapshot(v.id, "golden").await.unwrap();
+        for task in 0..20u64 {
+            let a = cl.attach(v.id).await.unwrap();
+            assert!(
+                a.read(0, 8192).await.unwrap() == pattern(1, 8192),
+                "task {task}"
+            );
+            a.write(4096 * (task % 2), pattern(10 + task, 4096))
+                .await
+                .unwrap();
+            a.detach().await.unwrap();
+            let r = cl.rollback(v.id, golden.epoch).await.unwrap();
+            assert_eq!((r.branch, r.chain.len()), (0, 0), "task {task}");
+        }
+        assert!(cl.branches(v.lineage).await.unwrap().is_empty());
+        v.lineage
+    });
+    let (map, devs) = c.stop();
+    let pool = &map.pools[&POOL];
+    let pg = pg_of(lineage, 0, pool.pg_count);
+    for (id, d) in devs {
+        let sh = hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap();
+        let k = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(lineage, 0), 0);
+        let vs = sh.versions(&k);
+        assert!(
+            vs.len() <= 1,
+            "device {id}: versions {vs:?} left by the resets"
+        );
+    }
+}
+
+/// A consistency group (volumes.md §10.3): two disks of one VM written in
+/// order (A then B, with the same counter) are snapshot at one moment, so
+/// every group's B is A's or the one before; a group whose member doesn't
+/// quiesce is abandoned and leaves no snapshot or group behind.
+#[test]
+fn a_group_snapshot_is_one_moment_across_its_volumes() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let a = cl
+            .create_volume(POOL, CHUNK as u64, None, "a")
+            .await
+            .unwrap();
+        let b = cl
+            .create_volume(POOL, CHUNK as u64, None, "b")
+            .await
+            .unwrap();
+        let (va, vb) = (
+            cl.attach(a.id).await.unwrap(),
+            cl.attach(b.id).await.unwrap(),
+        );
+        let stop = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (st, wa, wb) = (stop.clone(), va.clone(), vb.clone());
+        let writer = hyperstor_reactor::spawn(async move {
+            let mut n = 0u8;
+            while !st.get() {
+                n = n.wrapping_add(1).max(1);
+                wa.write(0, vec![n; 4096]).await.unwrap();
+                wb.write(0, vec![n; 4096]).await.unwrap();
+            }
+        });
+        let other = Client::connect(meta, 6).await.unwrap();
+        let mut groups = Vec::new();
+        // B first: the member written second, so separate snapshots would
+        // let the writer run on between them.
+        for _ in 0..20 {
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(10)).await;
+            let (gid, snaps) = other.snapshot_group(&[b.id, a.id], "g").await.unwrap();
+            assert_eq!(other.group_complete(gid).await.unwrap(), Some(true));
+            groups.push((gid, snaps));
+        }
+        stop.set(true);
+        writer.await;
+        for (gid, snaps) in &groups {
+            let mut vals = Vec::new();
+            for (id, s) in snaps {
+                assert_eq!(s.group, *gid);
+                let v = other.volume(*id).await.unwrap().unwrap();
+                let d = other
+                    .read_at(POOL, v.lineage, &v.snapshot_layers(s), 0, 4096)
+                    .await
+                    .unwrap();
+                vals.push(d[0]);
+            }
+            let (y, x) = (vals[0], vals[1]);
+            assert!(
+                x == y || x == y.wrapping_add(1).max(1),
+                "group {gid:x}: A holds {x}, B holds {y}: not one moment"
+            );
+        }
+        // Deleting a group deletes its members' snapshots.
+        other.delete_group(groups[0].0).await.unwrap();
+        assert_eq!(other.group_complete(groups[0].0).await.unwrap(), None);
+        let left = other.volume(a.id).await.unwrap().unwrap().snapshots.len();
+        assert_eq!(left, 19);
+        // A member whose holder doesn't answer: abandoned, nothing left.
+        vb.detach().await.unwrap();
+        drop(cl.attach(b.id).await.unwrap());
+        let r = other.snapshot_group(&[a.id, b.id], "bad").await;
+        assert!(r.is_err(), "{r:?}");
+        for id in [a.id, b.id] {
+            let v = other.volume(id).await.unwrap().unwrap();
+            assert!(v.snapshots.iter().all(|s| s.name != "bad"));
+        }
+        let _ = va;
+    });
+    c.stop();
+}
+
+/// The hold a consistency group takes (volumes.md §10.3): after `Quiesce`
+/// the volume's holder writes nothing until `Release` (or the hold's
+/// 5 s), so holding every member before cutting any gives one moment.
+#[test]
+fn a_quiesce_holds_the_holders_writes_until_released() {
+    use hyperstor_client::volume::header_key;
+    use hyperstor_proto::{Msg, Target, WireKey};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, vec![1; 4096]).await.unwrap();
+        let send = |token: u64, quiesce: bool| {
+            let cl = cl.clone();
+            async move {
+                let m = cl.map();
+                let meta_pool = hyperstor_meta::META_POOL;
+                let name = header_key(v.id);
+                let pg = hyperstor_client::object_pg(&name, m.pools[&meta_pool].pg_count);
+                let info = m.pg(meta_pool, pg).unwrap();
+                let conn =
+                    hyperstor_rpc::Conn::connect(m.device_addr(info.primary().unwrap()).unwrap())
+                        .await
+                        .unwrap();
+                let to = Target {
+                    pool: meta_pool,
+                    pg,
+                    map_epoch: m.epoch,
+                    pg_epoch: info.epoch,
+                };
+                let key = WireKey {
+                    ns: hyperstor_client::NS_META,
+                    name,
+                    version: 0,
+                };
+                let msg = if quiesce {
+                    Msg::Quiesce { to, key, token }
+                } else {
+                    Msg::Release { to, key, token }
+                };
+                conn.call(&msg, &[]).await.unwrap().0
+            }
+        };
+        assert_eq!(send(7, true).await, Msg::ExecOk);
+        let w = va.clone();
+        let t = std::time::Instant::now();
+        let write = hyperstor_reactor::spawn(async move {
+            w.write(0, vec![2; 4096]).await.unwrap();
+            std::time::Instant::now()
+        });
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(send(7, false).await, Msg::ExecOk);
+        let released = std::time::Instant::now();
+        let done = write.await;
+        assert!(done >= released, "the write went through during the hold");
+        // A hold nobody releases ends by itself.
+        assert_eq!(send(8, true).await, Msg::ExecOk);
+        let held = std::time::Instant::now();
+        va.write(0, vec![3; 4096]).await.unwrap();
+        assert!(
+            held.elapsed() >= std::time::Duration::from_secs(4),
+            "{:?}",
+            held.elapsed()
+        );
+        let _ = t;
     });
     c.stop();
 }

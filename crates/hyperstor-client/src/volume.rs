@@ -103,6 +103,9 @@ pub struct Volume {
     /// a clone or rollback was cut from (engine.md §7.2).
     pub chain: Vec<(u32, u64)>,
     pub snapshots: Vec<Snapshot>,
+    /// Epochs of its own branch a reset in place dropped (D106), both ends
+    /// included: reads skip them until their versions are deleted.
+    pub skip: Vec<(u64, u64)>,
 }
 
 /// A snapshot of a volume (volumes.md §10.3): the volume as it was at
@@ -122,18 +125,37 @@ pub struct Snapshot {
 }
 
 impl Volume {
-    /// The layers a read at the head goes through: its own branch up to
-    /// the head epoch, then its chain.
-    pub fn layers(&self) -> Vec<(u32, u64)> {
-        std::iter::once((self.branch, self.head_epoch))
-            .chain(self.chain.iter().copied())
-            .collect()
+    /// The layers a read at the head goes through, as (branch, oldest,
+    /// newest epoch): its own branch up to the head epoch, less what a
+    /// reset skips, then its chain.
+    pub fn layers(&self) -> Vec<(u32, u64, u64)> {
+        let mut out = Vec::new();
+        let mut skips: Vec<(u64, u64)> = self
+            .skip
+            .iter()
+            .copied()
+            .filter(|(lo, hi)| lo <= hi)
+            .collect();
+        skips.sort_unstable_by(|a, b| b.cmp(a));
+        let mut hi = Some(self.head_epoch);
+        for (lo, top) in skips {
+            let Some(h) = hi else { break };
+            if top < h {
+                out.push((self.branch, top + 1, h));
+            }
+            hi = lo.checked_sub(1);
+        }
+        if let Some(h) = hi {
+            out.push((self.branch, 0, h));
+        }
+        out.extend(self.chain.iter().map(|(b, e)| (*b, 0, *e)));
+        out
     }
 
     /// The layers a read of snapshot `s` goes through.
-    pub fn snapshot_layers(&self, s: &Snapshot) -> Vec<(u32, u64)> {
-        std::iter::once((s.branch, s.epoch))
-            .chain(s.chain.iter().copied())
+    pub fn snapshot_layers(&self, s: &Snapshot) -> Vec<(u32, u64, u64)> {
+        std::iter::once((s.branch, 0, s.epoch))
+            .chain(s.chain.iter().map(|(b, e)| (*b, 0, *e)))
             .collect()
     }
 
@@ -173,6 +195,9 @@ fn encode(v: &Volume) -> Vec<u8> {
             e.u32(*b).u64(*ep);
         });
     });
+    e.seq(&v.skip, |e, (lo, hi)| {
+        e.u64(*lo).u64(*hi);
+    });
     e.into_vec()
 }
 
@@ -211,6 +236,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             branch: 0,
             chain: Vec::new(),
             snapshots: Vec::new(),
+            skip: Vec::new(),
         };
         if fmt == 2 {
             v.head_epoch = d.u64()?;
@@ -226,6 +252,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
                     chain: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
                 })
             })?;
+            v.skip = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
         }
         Ok::<_, hyperstor_codec::DecodeError>(v)
     })()
@@ -290,6 +317,7 @@ impl Client {
             branch: 0,
             chain: Vec::new(),
             snapshots: Vec::new(),
+            skip: Vec::new(),
         };
         self.put_new(&v).await?;
         Ok(v)
@@ -521,7 +549,7 @@ impl Client {
                     .map(|c| {
                         let (me, b) = (self.clone(), *b);
                         hyperstor_reactor::spawn(async move {
-                            me.drop_versions(v.pool, v.lineage, c, b, 0).await
+                            me.drop_versions(v.pool, v.lineage, c, b, 0, u64::MAX).await
                         })
                     })
                     .collect();
@@ -958,6 +986,34 @@ impl Client {
 mod tests {
     use super::*;
 
+    /// Reads at the head skip what resets dropped (D106) until it is
+    /// trimmed, then go through the chain.
+    #[test]
+    fn layers_skip_what_a_reset_dropped() {
+        let mut v = Volume {
+            id: 1,
+            pool: 1,
+            size: 4096,
+            lineage: 1,
+            state: VolumeState::Active,
+            name: String::new(),
+            version: 1,
+            holder: None,
+            head_epoch: 9,
+            branch: 2,
+            chain: vec![(0, 3)],
+            snapshots: Vec::new(),
+            skip: Vec::new(),
+        };
+        assert_eq!(v.layers(), vec![(2, 0, 9), (0, 0, 3)]);
+        // Reset to 3 at head 5, then to 6 at head 8.
+        v.skip = vec![(4, 5), (7, 8)];
+        assert_eq!(v.layers(), vec![(2, 9, 9), (2, 6, 6), (2, 0, 3), (0, 0, 3)]);
+        // A reset right after a snapshot: nothing between.
+        v.skip = vec![(9, 8)];
+        assert_eq!(v.layers()[0], (2, 0, 9));
+    }
+
     #[test]
     fn headers_round_trip() {
         let v = Volume {
@@ -980,6 +1036,7 @@ mod tests {
                 deleting: false,
                 chain: vec![(0, 3)],
             }],
+            skip: vec![(2, 3)],
         };
         let l = Looked {
             size: 0,

@@ -21,7 +21,7 @@ use crate::volume::{Snapshot, Volume, VolumeState, attr, cas, conflict, header_k
 use crate::{Client, ClientError, NS_META, Route, random_u64};
 use hyperstor_codec::{Dec, Enc};
 use hyperstor_map::META_POOL;
-use hyperstor_proto::{Msg, WireOp, encode_ops};
+use hyperstor_proto::{Msg, Target, WireKey, WireOp, encode_ops};
 use std::rc::Rc;
 
 /// At most this many snapshots per volume (volumes.md §10.3).
@@ -30,6 +30,12 @@ pub const MAX_SNAPSHOTS: usize = 255;
 pub const MAX_CHAIN: usize = 16;
 
 const NEXT: &[u8] = b"next";
+const STATE: &[u8] = b"state";
+const MEMBERS: &[u8] = b"members";
+
+fn group_key(gid: u128) -> Vec<u8> {
+    format!("g/{gid:032x}").into_bytes()
+}
 
 fn lineage_key(lineage: u128) -> Vec<u8> {
     format!("l/{lineage:032x}").into_bytes()
@@ -249,7 +255,21 @@ impl Client {
     /// recorded and moves on. If the volume is attached, its holder is
     /// quiesced first by the header's primary (D103); if it doesn't within
     /// 2 s the snapshot is abandoned (`Busy`).
-    pub async fn snapshot(&self, id: u128, name: &str) -> Result<Snapshot, ClientError> {
+    pub async fn snapshot(self: &Rc<Self>, id: u128, name: &str) -> Result<Snapshot, ClientError> {
+        self.finish_trims(id).await?;
+        self.take_snapshot(id, name, 0, 0).await
+    }
+
+    /// A snapshot's compare-and-set through the header's primary: on its
+    /// own (`token` 0: the primary quiesces the holder), or under a
+    /// group's hold, tagged with `group`.
+    async fn take_snapshot(
+        &self,
+        id: u128,
+        name: &str,
+        group: u128,
+        token: u64,
+    ) -> Result<Snapshot, ClientError> {
         let key = header_key(id);
         for _ in 0..10 {
             let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
@@ -265,7 +285,7 @@ impl Client {
                 branch: v.branch,
                 epoch: v.head_epoch,
                 name: name.to_string(),
-                group: 0,
+                group,
                 deleting: false,
                 chain: v.chain.clone(),
             };
@@ -282,6 +302,7 @@ impl Client {
                 .to_primary(META_POOL, route, &payload, &|to, key| Msg::Snapshot {
                     to,
                     key,
+                    token,
                 })
                 .await
             {
@@ -294,6 +315,141 @@ impl Client {
         Err(ClientError::BadVolume(format!(
             "volume {id:032x} kept changing"
         )))
+    }
+
+    /// Takes a snapshot of every volume in `ids` at one moment (a
+    /// consistency group, volumes.md §10.3): the group is recorded as
+    /// preparing; every member's holder is quiesced and held, so no member
+    /// writes after any is cut; each member's snapshot is taken, tagged
+    /// with the group; the group is marked complete. If any step fails, the
+    /// snapshots taken are deleted, the holds released and the group
+    /// removed. Returns the group's id and the snapshots.
+    pub async fn snapshot_group(
+        self: &Rc<Self>,
+        ids: &[u128],
+        name: &str,
+    ) -> Result<(u128, Vec<(u128, Snapshot)>), ClientError> {
+        let gid = (u128::from(random_u64()) << 64) | u128::from(random_u64());
+        let token = random_u64().max(1);
+        for id in ids {
+            self.finish_trims(*id).await?;
+        }
+        let members: Vec<u8> = ids.iter().flat_map(|i| i.to_be_bytes()).collect();
+        self.exec(
+            META_POOL,
+            NS_META,
+            &group_key(gid),
+            &[
+                WireOp::AssertAbsent,
+                WireOp::SetAttr(STATE.to_vec(), b"preparing".to_vec()),
+                WireOp::SetAttr(MEMBERS.to_vec(), members),
+                WireOp::SetAttr(b"name".to_vec(), name.as_bytes().to_vec()),
+            ],
+        )
+        .await?;
+        let header = |id: u128| header_key(id);
+        let call = |id: u128, make: &'static dyn Fn(Target, WireKey, u64) -> Msg| {
+            let me = self.clone();
+            async move {
+                let key = header(id);
+                let route = Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                };
+                match me
+                    .to_primary(META_POOL, route, &[], &|to, key| make(to, key, token))
+                    .await?
+                {
+                    (Msg::ExecOk, _) => Ok(()),
+                    (m, _) => Err(unexpected(m)),
+                }
+            }
+        };
+        let quiesce: &'static dyn Fn(Target, WireKey, u64) -> Msg =
+            &|to, key, token| Msg::Quiesce { to, key, token };
+        let release: &'static dyn Fn(Target, WireKey, u64) -> Msg =
+            &|to, key, token| Msg::Release { to, key, token };
+        // Every holder held before any member is cut.
+        let held: Vec<_> = ids
+            .iter()
+            .map(|id| hyperstor_reactor::spawn(call(*id, quiesce)))
+            .collect();
+        let mut failed = None;
+        for h in held {
+            if let Err(e) = h.await {
+                failed.get_or_insert(e);
+            }
+        }
+        let mut taken = Vec::new();
+        if failed.is_none() {
+            for id in ids {
+                match self.take_snapshot(*id, name, gid, token).await {
+                    Ok(s) => taken.push((*id, s)),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(e) = failed {
+            for id in ids {
+                let _ = call(*id, release).await;
+            }
+            for (id, s) in &taken {
+                let _ = self.delete_snapshot(*id, s.epoch).await;
+            }
+            let _ = self
+                .exec(META_POOL, NS_META, &group_key(gid), &[WireOp::Delete])
+                .await;
+            return Err(e);
+        }
+        self.exec(
+            META_POOL,
+            NS_META,
+            &group_key(gid),
+            &[WireOp::SetAttr(STATE.to_vec(), b"complete".to_vec())],
+        )
+        .await?;
+        Ok((gid, taken))
+    }
+
+    /// Whether group `gid` is complete; `None` if there is no such group.
+    /// A snapshot tagged with a group that isn't complete is not one to
+    /// use: its group failed, or is still being taken.
+    pub async fn group_complete(&self, gid: u128) -> Result<Option<bool>, ClientError> {
+        Ok(self
+            .lookup(META_POOL, NS_META, &group_key(gid), b"", None, 0)
+            .await?
+            .map(|l| attr(&l, STATE) == Some(b"complete".as_slice())))
+    }
+
+    /// Deletes group `gid`: every member's snapshot tagged with it, then the
+    /// group. Also how a group that stopped half-way is cleaned up.
+    pub async fn delete_group(self: &Rc<Self>, gid: u128) -> Result<(), ClientError> {
+        let Some(l) = self
+            .lookup(META_POOL, NS_META, &group_key(gid), b"", None, 0)
+            .await?
+        else {
+            return Err(ClientError::Refused(format!("no group {gid:032x}")));
+        };
+        let members: Vec<u128> = attr(&l, MEMBERS)
+            .unwrap_or_default()
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|c| u128::from_be_bytes(*c))
+            .collect();
+        for id in members {
+            let Some(v) = self.volume(id).await? else {
+                continue;
+            };
+            for s in v.snapshots.iter().filter(|s| s.group == gid) {
+                self.delete_snapshot(id, s.epoch).await?;
+            }
+        }
+        self.exec(META_POOL, NS_META, &group_key(gid), &[WireOp::Delete])
+            .await
     }
 
     /// Runs `f` for every chunk a volume of `v`'s size can have, 32 at a
@@ -336,7 +492,8 @@ impl Client {
         }
     }
 
-    /// Deletes a chunk's versions in `branch` from epoch `from` on.
+    /// Deletes a chunk's versions in `branch` with epochs from `from` to
+    /// `upto`, both included.
     pub(crate) async fn drop_versions(
         &self,
         pool: u32,
@@ -344,10 +501,16 @@ impl Client {
         chunk: u64,
         branch: u32,
         from: u64,
+        upto: u64,
     ) -> Result<(), ClientError> {
         match self
             .to_chunk(pool, lineage, chunk, branch, 0, &|to, key| {
-                Msg::DropVersions { to, key, from }
+                Msg::DropVersions {
+                    to,
+                    key,
+                    from,
+                    upto,
+                }
             })
             .await?
         {
@@ -363,7 +526,7 @@ impl Client {
     /// head) still reads them through; versions nothing reads are deleted.
     /// A delete that stops half-way is resumed by deleting it again.
     pub async fn delete_snapshot(self: &Rc<Self>, id: u128, epoch: u64) -> Result<(), ClientError> {
-        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let v = self.finish_trims(id).await?;
         let s = v
             .snapshot(epoch)
             .cloned()
@@ -449,7 +612,7 @@ impl Client {
                     // Nothing newer, and nothing reads them: gone.
                     (None, None) => {
                         let from = below.map_or(0, |b| b + 1);
-                        me.drop_versions(v.pool, v.lineage, chunk, s.branch, from)
+                        me.drop_versions(v.pool, v.lineage, chunk, s.branch, from, epoch)
                             .await
                     }
                     // A later cut point still reads them.
@@ -528,6 +691,7 @@ impl Client {
             branch: b,
             chain,
             snapshots: Vec::new(),
+            skip: Vec::new(),
         };
         if let Err(e) = self.put_new(&c).await {
             self.forget_branch(v.lineage, b).await?;
@@ -541,7 +705,7 @@ impl Client {
     /// once; then the old head's versions newer than anything still reading
     /// them are deleted. The volume must be detached.
     pub async fn rollback(self: &Rc<Self>, id: u128, epoch: u64) -> Result<Volume, ClientError> {
-        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let v = self.finish_trims(id).await?;
         if v.holder.is_some() {
             return Err(ClientError::VolumeAttached(id));
         }
@@ -550,6 +714,44 @@ impl Client {
             .filter(|s| !s.deleting)
             .cloned()
             .ok_or(ClientError::NoSnapshot(epoch))?;
+        // To the newest snapshot of the head's branch, which reads through
+        // the same chain as the head: in place (D106). (A flatten since the
+        // snapshot cleared the head's chain, not the snapshot's: then a new
+        // branch, cut from the snapshot with its chain.)
+        let newest = |v: &Volume| {
+            v.snapshots
+                .iter()
+                .filter(|x| x.branch == v.branch)
+                .map(|x| x.epoch)
+                .max()
+        };
+        if s.branch == v.branch && newest(&v) == Some(epoch) && s.chain == v.chain {
+            let lease_free = [WireOp::AssertAttr {
+                name: crate::volume::LEASE_ATTR.to_vec(),
+                value: None,
+            }];
+            self.change(
+                id,
+                |cur| {
+                    if cur.holder.is_some() {
+                        return Err(ClientError::VolumeAttached(id));
+                    }
+                    if cur.branch != s.branch || newest(cur) != Some(epoch) || cur.chain != s.chain
+                    {
+                        return Err(ClientError::Refused(
+                            "the volume changed; roll back again".into(),
+                        ));
+                    }
+                    let mut n = cur.clone();
+                    n.skip.push((epoch + 1, cur.head_epoch));
+                    n.head_epoch = cur.head_epoch + 1;
+                    Ok(n)
+                },
+                &lease_free,
+            )
+            .await?;
+            return self.finish_trims(id).await;
+        }
         let chain: Vec<(u32, u64)> = std::iter::once((s.branch, epoch))
             .chain(s.chain.iter().copied())
             .collect();
@@ -613,7 +815,8 @@ impl Client {
         let from = keep.map_or(0, |k| k + 1);
         let (pool, lineage) = (v.pool, v.lineage);
         self.each_chunk(v, move |me, chunk| async move {
-            me.drop_versions(pool, lineage, chunk, old, from).await
+            me.drop_versions(pool, lineage, chunk, old, from, u64::MAX)
+                .await
         })
         .await
     }
@@ -624,7 +827,7 @@ impl Client {
     /// Refused while it has snapshots taken before a rollback, which read
     /// through the chain.
     pub async fn flatten(self: &Rc<Self>, id: u128) -> Result<Volume, ClientError> {
-        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let v = self.finish_trims(id).await?;
         if v.chain.is_empty() {
             return Ok(v);
         }
@@ -632,7 +835,8 @@ impl Client {
         self.each_chunk(&v, move |me, chunk| {
             let v = v2.clone();
             async move {
-                let layers = v.chain.clone();
+                let layers: Vec<(u32, u64, u64)> =
+                    v.chain.iter().map(|(b, e)| (*b, 0, *e)).collect();
                 match me
                     .to_chunk(
                         v.pool,
@@ -691,13 +895,39 @@ impl Client {
             let Some(b) = gone else { break };
             let (pool, lineage) = (v.pool, v.lineage);
             self.each_chunk(&v, move |me, chunk| async move {
-                me.drop_versions(pool, lineage, chunk, b, 0).await
+                me.drop_versions(pool, lineage, chunk, b, 0, u64::MAX).await
             })
             .await?;
             self.forget_branch(v.lineage, b).await?;
             branches.retain(|r| r.branch != b);
         }
         Ok(new)
+    }
+
+    /// Deletes the versions a reset in place left (D106), then clears its
+    /// record of them. Run before anything that takes a snapshot, reads a
+    /// branch's versions as a whole, or resets again; a reset that stopped
+    /// half-way is finished here. Returns the volume as it then is.
+    pub(crate) async fn finish_trims(self: &Rc<Self>, id: u128) -> Result<Volume, ClientError> {
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        for (lo, hi) in v.skip.clone() {
+            let (pool, lineage, b) = (v.pool, v.lineage, v.branch);
+            self.each_chunk(&v, move |me, chunk| async move {
+                me.drop_versions(pool, lineage, chunk, b, lo, hi).await
+            })
+            .await?;
+            self.change(
+                id,
+                |cur| {
+                    let mut n = cur.clone();
+                    n.skip.retain(|r| *r != (lo, hi));
+                    Ok(n)
+                },
+                &[],
+            )
+            .await?;
+        }
+        self.volume(id).await?.ok_or(ClientError::NoVolume(id))
     }
 
     /// The branches volume `v` owns: its head's, branch 0 if it began the

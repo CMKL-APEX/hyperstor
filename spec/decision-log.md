@@ -548,6 +548,7 @@ background), discussed before deciding:
 | 54 | The host read cache: in the client library, or wait for `hyperstor-vhost` | The client library | D102 |
 | 55 | Quiescing an attached volume: a long-poll watch, or news on renewals | Long-poll watch | D103 |
 | 56 | Snapshot deletion: the engine moves blocks, or copy the data | The engine moves them | D104 |
+| 58 | I123: a rollback is a new branch, so resetting an agent VM after every task reaches the chain limit in 16 resets | Reset to the newest snapshot in place | D106 |
 
 ## The open AD decisions (2026-10-22)
 

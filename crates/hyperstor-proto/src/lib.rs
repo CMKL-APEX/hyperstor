@@ -423,13 +423,14 @@ pub enum Msg {
     },
     /// Client to primary: read a volume chunk at an epoch (engine.md
     /// §7.2). `key.name` is the chunk without a branch; each layer is a
-    /// branch and the newest epoch read from it, the volume's own first,
-    /// then its clone parents'. Each block comes from the newest version
-    /// that holds it in the first layer that has one.
+    /// branch and the range of epochs read from it (both ends included),
+    /// the volume's own first, then its clone parents'. Each block comes
+    /// from the newest version that holds it in the first layer that has
+    /// one.
     ReadAt {
         to: Target,
         key: WireKey,
-        layers: Vec<(u32, u64)>,
+        layers: Vec<(u32, u64, u64)>,
         off: u64,
         len: u64,
     },
@@ -441,12 +442,14 @@ pub enum Msg {
     VersionsOk {
         versions: Vec<u64>,
     },
-    /// Client to primary: delete the versions of `key`'s name from epoch
-    /// `from` on (a volume's branch, or what a rollback left behind).
+    /// Client to primary: delete the versions of `key`'s name with epochs
+    /// from `from` to `upto`, both included (a volume's branch, what a
+    /// rollback left behind).
     DropVersions {
         to: Target,
         key: WireKey,
         from: u64,
+        upto: u64,
     },
     /// Client to primary: copy into `key` (a clone's chunk at its head
     /// epoch) every block no version of its own branch holds, read
@@ -455,7 +458,7 @@ pub enum Msg {
     Flatten {
         to: Target,
         key: WireKey,
-        layers: Vec<(u32, u64)>,
+        layers: Vec<(u32, u64, u64)>,
     },
     /// Lease holder to a header's primary: answer when there is news for
     /// this volume past header version `version` (decisions.md D103).
@@ -480,10 +483,27 @@ pub enum Msg {
     },
     /// Client to a header's primary: take a snapshot, an operation list in
     /// the payload ([`encode_ops`]) applied with the volume's holder, if
-    /// any, quiesced (volumes.md §10.3); abandoned after 2 s without.
+    /// any, quiesced (volumes.md §10.3); abandoned after 2 s without. With
+    /// a `token`, under the hold of [`Msg::Quiesce`] with that token (a
+    /// consistency group), which it ends.
     Snapshot {
         to: Target,
         key: WireKey,
+        token: u64,
+    },
+    /// Client to a header's primary: quiesce the volume's holder, if any,
+    /// and hold it (a consistency group's first step, volumes.md §10.3);
+    /// answered once it has drained. The hold ends with a [`Msg::Snapshot`]
+    /// or [`Msg::Release`] with the same token, or after 5 s.
+    Quiesce {
+        to: Target,
+        key: WireKey,
+        token: u64,
+    },
+    Release {
+        to: Target,
+        key: WireKey,
+        token: u64,
     },
     Error {
         code: Code,
@@ -548,6 +568,8 @@ mod kind {
     pub const WATCH_OK: u16 = 60;
     pub const QUIESCED: u16 = 61;
     pub const SNAPSHOT: u16 = 62;
+    pub const QUIESCE: u16 = 63;
+    pub const RELEASE: u16 = 64;
     pub const ERROR: u16 = 99;
 }
 
@@ -610,6 +632,8 @@ impl Msg {
             Msg::WatchOk { .. } => WATCH_OK,
             Msg::Quiesced { .. } => QUIESCED,
             Msg::Snapshot { .. } => SNAPSHOT,
+            Msg::Quiesce { .. } => QUIESCE,
+            Msg::Release { .. } => RELEASE,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -865,19 +889,31 @@ impl Msg {
                 layers_enc(e, layers);
                 e.u64(*off).u64(*len);
             }
-            Msg::Versions { to, key } | Msg::Snapshot { to, key } => {
+            Msg::Versions { to, key } => {
                 to.enc(e);
                 key.enc(e);
+            }
+            Msg::Snapshot { to, key, token }
+            | Msg::Quiesce { to, key, token }
+            | Msg::Release { to, key, token } => {
+                to.enc(e);
+                key.enc(e);
+                e.u64(*token);
             }
             Msg::VersionsOk { versions } => {
                 e.seq(versions, |e, v| {
                     e.u64(*v);
                 });
             }
-            Msg::DropVersions { to, key, from } => {
+            Msg::DropVersions {
+                to,
+                key,
+                from,
+                upto,
+            } => {
                 to.enc(e);
                 key.enc(e);
-                e.u64(*from);
+                e.u64(*from).u64(*upto);
             }
             Msg::Flatten { to, key, layers } => {
                 to.enc(e);
@@ -1088,6 +1124,7 @@ impl Msg {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
                 from: d.u64()?,
+                upto: d.u64()?,
             },
             FLATTEN => Msg::Flatten {
                 to: Target::dec(&mut d)?,
@@ -1111,6 +1148,17 @@ impl Msg {
             SNAPSHOT => Msg::Snapshot {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
+                token: d.u64()?,
+            },
+            QUIESCE => Msg::Quiesce {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                token: d.u64()?,
+            },
+            RELEASE => Msg::Release {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                token: d.u64()?,
             },
             ERROR => Msg::Error {
                 code: Code::from_u16(d.u16()?),
@@ -1124,14 +1172,14 @@ impl Msg {
     }
 }
 
-fn layers_enc(e: &mut Enc, layers: &[(u32, u64)]) {
-    e.seq(layers, |e, (b, ep)| {
-        e.u32(*b).u64(*ep);
+fn layers_enc(e: &mut Enc, layers: &[(u32, u64, u64)]) {
+    e.seq(layers, |e, (b, lo, hi)| {
+        e.u32(*b).u64(*lo).u64(*hi);
     });
 }
 
-fn layers_dec(d: &mut Dec<'_>) -> Result<Vec<(u32, u64)>, DecodeError> {
-    d.seq(12, |d| Ok((d.u32()?, d.u64()?)))
+fn layers_dec(d: &mut Dec<'_>) -> Result<Vec<(u32, u64, u64)>, DecodeError> {
+    d.seq(20, |d| Ok((d.u32()?, d.u64()?, d.u64()?)))
 }
 
 /// [`Msg::WatchOk`] events.
@@ -1642,7 +1690,7 @@ mod tests {
                     name: b"c".to_vec(),
                     version: 0,
                 },
-                layers: vec![(2, 5), (0, 3)],
+                layers: vec![(2, 0, 5), (0, 1, 3)],
                 off: 4096,
                 len: 8192,
             },
@@ -1665,6 +1713,7 @@ mod tests {
                     version: 0,
                 },
                 from: 4,
+                upto: 9,
             },
             Msg::Flatten {
                 to,
@@ -1673,7 +1722,7 @@ mod tests {
                     name: b"c".to_vec(),
                     version: 7,
                 },
-                layers: vec![(0, 3)],
+                layers: vec![(0, 0, 3)],
             },
             Msg::Watch {
                 to,
@@ -1704,6 +1753,25 @@ mod tests {
                     name: b"h".to_vec(),
                     version: 0,
                 },
+                token: 5,
+            },
+            Msg::Quiesce {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                token: 5,
+            },
+            Msg::Release {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                token: 5,
             },
             Msg::Error {
                 code: Code::NotPrimary,
