@@ -53,7 +53,7 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-gw` | the NVMe-oF gateway |
 | `hyperstor-gpu` | `libhyperstor-gpu` and the two interposers (`cdylib`) |
 | `hyperstor-ctl` | `hyperstorctl` |
-| `hyperstor-ublk` | `hyperstor-ublk`: a volume as a ublk block device (D94) |
+| `hyperstor-ublk` | `hyperstor-ublk`: a volume as a ublk block device (D95) |
 | `hyperstor-kv` | the transactional key–value store (engine.md §7.5) |
 | `hyperstor-s3` | the S3 gateway (s3.md §14) |
 | `glidex-raftstore` (in the glidex repository) | the Raft store shared with glidex's control plane (D20), a pinned git dependency |

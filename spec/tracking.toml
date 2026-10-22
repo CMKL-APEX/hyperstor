@@ -192,7 +192,7 @@ tests = [
 
 [[milestone.item]]
 what = "Test block devices through ublk"
-spec = ["frontends.md §11.2", "D93", "D94", "I107", "I108"]
+spec = ["frontends.md §11.2", "D94", "D95", "I112", "I113"]
 status = "done"
 tests = [
     "ublk::a_volume_is_a_block_device_and_keeps_its_data",

@@ -1,6 +1,6 @@
 //! ublk control commands (add, set parameters, start, stop, delete), on
 //! `/dev/ublk-control` through a ring of 128-byte entries of its own: their
-//! command takes 32 bytes, more than a standard entry carries (D93). Each
+//! command takes 32 bytes, more than a standard entry carries (D94). Each
 //! call blocks until the driver answers; `start` blocks until every queue
 //! has fetched its requests.
 

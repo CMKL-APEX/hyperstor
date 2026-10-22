@@ -1,5 +1,5 @@
 //! Serves a hyperstor volume as a ublk block device, `/dev/ublkbN`
-//! (decisions.md D93, D94; frontends.md §11.2's stopgap; milestones.md
+//! (decisions.md D94, D95; frontends.md §11.2's stopgap; milestones.md
 //! HS1's test devices).
 //!
 //! [`serve`] attaches the volume (its `rw` lease) on a reactor thread,

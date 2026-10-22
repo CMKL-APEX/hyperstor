@@ -1,4 +1,4 @@
-//! One ublk queue on the hyperstor reactor (D93): its descriptors mapped
+//! One ublk queue on the hyperstor reactor (D94): its descriptors mapped
 //! from `/dev/ublkcN`, a buffer per tag, and a task per tag that fetches a
 //! request, serves it through the attached volume, and commits the result
 //! with the next fetch, all as `uring_cmd`s from this reactor's thread

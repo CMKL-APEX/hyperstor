@@ -59,7 +59,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   connecting host may see.
 - **Stopgap (D19):** until the target is ready, each exported volume is
   a ublk device served by `hyperstor-ublk`'s crate (hyperstor's own
-  ublk on its reactor, D93, D94, not the `libublk` crate), and
+  ublk on its reactor, D94, D95, not the `libublk` crate), and
   is exported by the kernel's `nvmet` through configfs. The gateway
   manages that configuration and gives the same NQNs, so hosts don't
   change when the stopgap is replaced.

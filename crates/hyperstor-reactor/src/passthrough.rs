@@ -1,5 +1,5 @@
 //! io_uring passthrough commands (`IORING_OP_URING_CMD`): drivers that take
-//! their commands through io_uring, as ublk does (`hyperstor-ublk`, D93)
+//! their commands through io_uring, as ublk does (`hyperstor-ublk`, D94)
 //! and NVMe passthrough will (D3). Only the 16-byte command of a standard
 //! entry; a driver that needs 80 bytes keeps a ring of its own.
 
