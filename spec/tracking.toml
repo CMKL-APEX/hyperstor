@@ -172,8 +172,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Recovering the map service: map backups, member changes at run time, and a group that lost its majority"
-spec = ["D85", "D86", "D87"]
+what = "Map backups by the leader and on request, and restoring a lost store from one"
+spec = ["D86"]
+status = "done"
+tests = [
+    "backup::a_lost_store_comes_back_from_a_backup",
+    "hyperstor_meta::backup::tests::backups_round_trip_and_restore",
+    "hyperstor_meta::backup::tests::files_are_private_and_the_newest_kept",
+]
+
+[[milestone.item]]
+what = "Changing the map service's members at run time, and recovering a group that lost its majority"
+spec = ["D85", "D87"]
 status = "planned"
 
 [[milestone.item]]

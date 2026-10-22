@@ -183,6 +183,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("CaService.ListCertificates", "cert list"),
     ("CaService.RevokeCertificate", "cert revoke"),
     ("NodeService.DrainNode", "drain"),
+    ("MapService.GetMapBackup", "map backup"),
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),

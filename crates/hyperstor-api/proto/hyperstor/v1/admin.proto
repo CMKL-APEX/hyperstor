@@ -36,6 +36,14 @@ service CaService {
   rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
 }
 
+// Backups of the map service's store (decisions.md D86).
+service MapService {
+  // A backup of the store now: the map, join tokens, issued certificates
+  // and revocations, as `hyperstor-meta --restore` reads it. Write: admin
+  // or mgmt, as it holds the token and certificate records.
+  rpc GetMapBackup(GetMapBackupRequest) returns (GetMapBackupResponse);
+}
+
 // Changes to nodes that run as operations.
 service NodeService {
   // Takes every device of a node out, so its PGs move elsewhere, and
@@ -171,6 +179,14 @@ message RevokeCertificateRequest {
 
 message RevokeCertificateResponse {
   RevokedSerial revoked = 1;
+}
+
+message GetMapBackupRequest {}
+
+message GetMapBackupResponse {
+  bytes backup = 1;
+  string cluster_id = 2 [json_name = "cluster_id"];
+  uint64 epoch = 3;
 }
 
 message DrainNodeRequest {

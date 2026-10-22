@@ -865,10 +865,7 @@ mod tests {
         let b = issue(&ca, &admin(), &[], &[], LEAF_DAYS).unwrap();
         let (sa, sb) = (serial_in(&a.cert).unwrap(), serial_in(&b.cert).unwrap());
         assert_ne!(sa, sb);
-        assert!(
-            sa.len() >= 24 && sa.bytes().all(|c| c.is_ascii_hexdigit()),
-            "{sa}"
-        );
+        assert!(sa.len() >= 24 && sa.bytes().all(|c| c.is_ascii_hexdigit()));
         // The same key signed twice still gets two serials.
         let (_, csr) = new_request().unwrap();
         let c1 = sign_request(&ca, &csr, &admin(), &[], &[], 1).unwrap();

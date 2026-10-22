@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]
 ```
 
 | Command | Does |
@@ -26,6 +26,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `op list` | Running and recent operations, newest first |
 | `op get` | Operation `--id` |
 | `op watch` | Prints operation `--id` as it progresses, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
+| `map backup` | Writes a backup of the map service's store (the map, join tokens, certificates issued and revoked) to `--out`, for `hyperstor-meta --restore`. Administrators only |
 | `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
 | `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired |
 | `cert show` | Prints the identity, serial and expiry of the certificate in `--file`, without the API: how to find the serial of a certificate the installer made |
@@ -49,6 +50,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
 | `--serial S` | | `cert revoke`: the certificate's serial, hex, as `cert list` and `cert show` print it |
+| `--out FILE` | | `map backup`: the file to write (mode 0600; never over an existing file) |
 | `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
 

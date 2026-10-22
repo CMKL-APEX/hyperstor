@@ -8,6 +8,7 @@
 //! the map. Each device records the address its reactor listens on.
 
 pub mod api;
+pub mod backup;
 pub mod certs;
 pub mod health;
 pub mod replica;

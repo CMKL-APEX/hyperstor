@@ -364,7 +364,7 @@ fn storage_hosts_join_with_tokens() {
     // refuses it from then on.
     let certs = ctl(&bin, &api, &pki, &["cert", "list"]).ok();
     for n in 0..4 {
-        assert!(certs.has(&format!("/node/{n} ")), "{}", certs.out);
+        assert!(certs.has(&format!("/node/{n} ")), "node {n} not listed");
     }
     let h1 = s.path("host-1").join("etc/hyperstor/pki");
     let serial =

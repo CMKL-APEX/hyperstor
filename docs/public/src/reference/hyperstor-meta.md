@@ -3,7 +3,7 @@
 The map service. See [The map service](../admin-guide/map-service.md).
 
 ```text
-usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]
+usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]
 ```
 
 | Option | Default | Meaning |
@@ -17,6 +17,10 @@ usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--memb
 | `--api-tls DIR` | off | Serve the API over TLS with `DIR/api.crt` (certificate chain, ending with the root so joining hosts can pin it), `DIR/api.key` and `DIR/root.crt`. Every call needs a client certificate of this cluster, except the join, which a token authorizes. Without it the API is plain HTTP with no authentication: keep it on loopback |
 | `--api-socket PATH` | off | Also serve the API on a local Unix socket (mode 0666): callers are identified by the kernel, and root, the service's own user and members of `hyperstor-admin` may do everything. Needs `--api` |
 | `--ca DIR` | off | Sign certificates for hosts that join with a token, and renew certificates, with the intermediate CA in `DIR/intermediate.crt` and `intermediate.key`. The key is read from `$CREDENTIALS_DIRECTORY` first, where systemd's `LoadCredential=` puts it. Needs `--api-tls` |
+| `--backup-dir DIR` | off | The leader writes a backup of the store to DIR (`map-<time>-e<epoch>.hsbackup`, mode 0600) when it has changed, at most every `--backup-every` seconds. Needs `--data` |
+| `--backup-every SECS` | 300 | At most one backup per SECS |
+| `--backup-keep N` | 24 | Backups kept; older ones are removed |
+| `--restore FILE` | off | Start from a backup (written by `--backup-dir` or `hyperstorctl map backup`), as a group of one, into an empty `--data` directory. The cluster file must be the same cluster's |
 | `--lease-ms L` | 600 | Length of the map leases granted to storage nodes, in milliseconds |
 | `--down-after-ms N` | 800 | Mark a node down after N ms without a heartbeat; at least 1.25 × `--lease-ms` |
 | `--down-out-secs S` | 600 | Mark the devices of a node that has been down for S seconds out, so its data is copied elsewhere; they are marked in again when it returns. A short reboot moves no data |

@@ -48,6 +48,11 @@ pub struct Config {
     pub dir: PathBuf,
     pub tls: Option<PeerTls>,
     pub settings: RaftSettings,
+    /// Write backups of the store (D86).
+    pub backup: Option<crate::backup::Schedule>,
+    /// Restore this backup with the group's first commit (a group of one
+    /// with an empty store, D86).
+    pub restore: Option<crate::backup::Backup>,
 }
 
 /// What the Raft side tells the map service's reactor.
@@ -275,12 +280,32 @@ async fn run(
         })
     };
     // Commits from the leader's reactor.
+    // Backups, by the leader (D86).
+    let backups = cfg.backup.clone().map(|s| {
+        let node = node.clone();
+        tokio::spawn(crate::backup::writer(db.clone(), s, move || {
+            node.raft.metrics().borrow().current_leader == Some(node.id)
+        }))
+    });
     let committer = {
         let db = db.clone();
+        let mut restore = cfg.restore.clone();
         tokio::spawn(async move {
             while let Some(c) = commits.recv().await {
                 let db = db.clone();
+                let restoring = restore.take();
                 let r = tokio::task::spawn_blocking(move || {
+                    // The first commit of a restored group writes the
+                    // whole backup first, in one entry.
+                    if let Some(b) = restoring
+                        && !store::has_map(&db)?
+                    {
+                        b.restore(&db)?;
+                        eprintln!(
+                            "hyperstor-meta: restored the backup of map epoch {}",
+                            b.epoch
+                        );
+                    }
                     store::save(&db, &c.map).map_err(|e| e.to_string())
                 })
                 .await
@@ -290,6 +315,9 @@ async fn run(
         })
     };
     let _ = stop.await;
+    if let Some(b) = backups {
+        b.abort();
+    }
     committer.abort();
     watcher.abort();
     applier.abort();
@@ -609,6 +637,6 @@ mod tests {
             )
             .unwrap();
         let e = check_peer(Some(std::slice::from_ref(&d)), "5", &db).unwrap_err();
-        assert!(e.contains("revoked"), "{e}");
+        assert!(e.contains("revoked"));
     }
 }

@@ -27,8 +27,8 @@ use crate::tokens::{Record, TokenError};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    CaService, CaServiceExt, NodeService, NodeServiceExt, OperationService, OperationServiceExt,
-    TokenService, TokenServiceExt,
+    CaService, CaServiceExt, MapService, MapServiceExt, NodeService, NodeServiceExt,
+    OperationService, OperationServiceExt, TokenService, TokenServiceExt,
 };
 use hyperstor_pki::{Identity, Pem, Role};
 use hyperstor_reactor::chan::oneshot;
@@ -50,6 +50,8 @@ pub struct Signing {
     pub tokens: Arc<crate::tokens::Tokens>,
     /// Certificates issued and the revocation list (D93).
     pub certs: Arc<crate::certs::Certs>,
+    /// The replicated store, for backups (D86); none without `--data`.
+    pub store: Option<Arc<crate::store::Db>>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -87,6 +89,7 @@ pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc:
     let router = TokenServiceExt::register(api.clone(), router);
     let router = CaServiceExt::register(api.clone(), router);
     let router = NodeServiceExt::register(api.clone(), router);
+    let router = MapServiceExt::register(api.clone(), router);
     OperationServiceExt::register(api, router)
 }
 
@@ -651,6 +654,41 @@ fn revoked_pb(r: &crate::certs::Revoked) -> pb::RevokedSerial {
         revoked_unix: r.revoked_unix,
         revoked_by: r.by.clone(),
         ..Default::default()
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl MapService for Api {
+    async fn get_map_backup(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetMapBackupRequest>,
+    ) -> ServiceResult<pb::GetMapBackupResponse> {
+        let who = self.authorize(&ctx, "GetMapBackup", "map", true)?;
+        let (signing, _) = self.signing()?;
+        let Some(db) = signing.store.clone() else {
+            return Err(with_reason(
+                ConnectError::failed_precondition("this map service keeps no store (no --data)"),
+                "no_store",
+            ));
+        };
+        let b = tokio::task::spawn_blocking(move || crate::backup::Backup::take(&db))
+            .await
+            .map_err(|e| ConnectError::internal(e.to_string()))?
+            .map_err(|e| with_reason(ConnectError::unavailable(e), "not_formed"))?;
+        audit(
+            &who,
+            "GetMapBackup",
+            "map",
+            &format!("ok, map epoch {}", b.epoch),
+        );
+        Ok(pb::GetMapBackupResponse {
+            backup: b.encode(),
+            cluster_id: b.cluster_id.to_string(),
+            epoch: b.epoch,
+            ..Default::default()
+        }
+        .into())
     }
 }
 

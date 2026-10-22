@@ -423,8 +423,14 @@ impl Cluster {
     }
 
     pub fn start_meta(&mut self) {
+        self.start_meta_with(&[]);
+    }
+
+    /// Starts the map service with `extra` options after its installed ones.
+    pub fn start_meta_with(&mut self, extra: &[&str]) {
         let p = Command::new(self.bin.join("hyperstor-meta"))
             .args(env_args(&self.root, self.scratch.run(), "meta.env"))
+            .args(extra)
             .stderr(std::fs::File::create(&self.meta_log).unwrap())
             .spawn()
             .unwrap();
@@ -444,6 +450,25 @@ impl Cluster {
             .spawn()
             .unwrap();
         self.node_procs.insert(n, p);
+    }
+
+    /// Kills the map service (as a crash would) and waits for it to go.
+    pub fn stop_meta(&mut self) {
+        if let Some(mut p) = self.meta.take() {
+            let _ = p.kill();
+            let _ = p.wait();
+        }
+    }
+
+    /// The data directory: device files, the map service's store
+    /// (`meta/`) and its backups (`meta-backups/`).
+    pub fn data_dir(&self) -> PathBuf {
+        self.scratch.path("data")
+    }
+
+    /// The map service's log so far.
+    pub fn meta_log(&self) -> String {
+        std::fs::read_to_string(&self.meta_log).unwrap_or_default()
     }
 
     /// Kills storage node `n` (as a crash would).
