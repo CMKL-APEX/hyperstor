@@ -1221,7 +1221,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/mgmt.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --metrics {}\n",
+                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --authd /run/hyperstor-authd/auth.sock --metrics {}\n",
                     s.mgmt_port,
                     p.api,
                     p.metrics.join(",")

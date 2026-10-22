@@ -380,6 +380,20 @@ pub fn api_server_config(
     Ok(c)
 }
 
+/// A server for browsers: presents `chain`, asks no client certificate
+/// (people log in instead), HTTP/1.1 only: the management service's web
+/// side (spec/administration.md §23.7).
+pub fn web_server_config(chain: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
+    let mut c = rustls::ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(err)?
+        .with_no_client_auth()
+        .with_single_cert(certs(chain)?, key(key_pem)?)
+        .map_err(err)?;
+    c.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(c)
+}
+
 /// A client without a certificate that trusts a server only if its chain
 /// includes a root whose fingerprint is `pin` ([`fingerprint`]) and
 /// verifies under it: how a joining host reaches the cluster before it

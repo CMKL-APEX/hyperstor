@@ -1,10 +1,23 @@
-// The read-only dashboard: polls /api/status and /api/metrics every two
-// seconds and draws them. Data reaches the page only through
-// textContent, never as markup.
+// The dashboard: polls /api/status and /api/metrics every two seconds and
+// draws them. With logins (hyperstor-mgmt --authd) it asks for one first
+// (/auth/login) and shows who is logged in. Data reaches the page only
+// through textContent, never as markup.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 let prev = null; // the last metrics answer, with its time, for rates
+let csrf = null; // the session's CSRF value, for writes
+let timer = null;
+
+class NeedLogin extends Error {}
+
+async function getJson(path) {
+  const r = await fetch(path);
+  if (r.status === 401) throw new NeedLogin();
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.message || `${path}: ${r.status}`);
+  return j;
+}
 
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -69,8 +82,7 @@ async function showPgs(pool) {
   const pre = $("pgs");
   pre.hidden = false;
   pre.textContent = "loading…";
-  const r = await fetch(`/api/pgs?pool=${pool}`);
-  const j = await r.json();
+  const j = await getJson(`/api/pgs?pool=${pool}`);
   const set = (v) => "[" + (v || []).map((d) => (d === 4294967295 ? "-" : d)).join(",") + "]";
   pre.textContent = `PG        epoch  acting        up\n` + (j.pgs || [])
     .map((g) => `${pool}.${g.pg || 0}`.padEnd(10) + String(g.epoch || 0).padStart(5) + "  " +
@@ -169,18 +181,71 @@ function drawMetrics(m, status) {
 
 async function tick() {
   try {
-    const [s, m] = await Promise.all([fetch("/api/status"), fetch("/api/metrics")]);
-    const status = await s.json();
-    if (!s.ok) throw new Error(status.message || "cluster API unreachable");
+    const [status, m] = await Promise.all([getJson("/api/status"), getJson("/api/metrics")]);
     drawStatus(status);
-    drawMetrics(await m.json(), status);
+    drawMetrics(m, status);
     $("updated").textContent = "updated " + new Date().toLocaleTimeString();
     $("updated").classList.remove("error-box");
   } catch (e) {
+    if (e instanceof NeedLogin) return showLogin();
     $("updated").textContent = "not updating: " + e.message;
     $("updated").classList.add("error-box");
   }
 }
 
-tick();
-setInterval(tick, 2000);
+function start() {
+  $("login").hidden = true;
+  $("main").hidden = false;
+  tick();
+  if (!timer) timer = setInterval(tick, 2000);
+}
+
+async function showLogin() {
+  clearInterval(timer);
+  timer = null;
+  $("main").hidden = true;
+  $("who").hidden = true;
+  $("login").hidden = false;
+  try {
+    const m = await getJson("/auth/methods");
+    $("claim-row").hidden = !m.claim_open;
+  } catch (_) { /* the form works without it */ }
+}
+
+async function whoami() {
+  try {
+    const w = await getJson("/auth/whoami");
+    csrf = w.csrf;
+    $("user").textContent = `${w.user} (${(w.roles || []).join(", ") || "no roles yet"})`;
+    $("who").hidden = false;
+  } catch (e) {
+    if (e instanceof NeedLogin) return false;
+    // No logins here (the loopback dashboard): nothing to show.
+  }
+  return true;
+}
+
+$("login-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("login-error").textContent = "";
+  const body = { user: $("login-user").value, password: $("login-password").value };
+  const claim = $("login-claim").value.trim();
+  if (claim) body.claim = claim;
+  const r = await fetch("/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  $("login-password").value = "";
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("login-error").textContent = j.message || `login failed (${r.status})`; return; }
+  $("login-claim").value = "";
+  await whoami();
+  start();
+});
+
+$("logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST", headers: { "X-Hyperstor-CSRF": csrf || "" } });
+  csrf = null;
+  showLogin();
+});
+
+whoami().then((ok) => (ok ? start() : showLogin()));

@@ -583,7 +583,6 @@ status = "partial"
 tests = [
     "hyperstor_mgmt::tests::only_loopback_names_on_our_port",
     "hyperstor_mgmt::tests::metrics_parse_into_name_labels_value",
-    "dashboard::dashboard_serves_the_cluster_read_only",
     "dashboard::dashboard_refuses_to_listen_beyond_loopback",
 ]
 
@@ -605,8 +604,28 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "People log in to the management service (sessions, tokens, roles)"
-spec = ["administration.md §23.9", "D50", "D52"]
+what = "People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf)"
+spec = ["administration.md §23.9", "D50", "D52", "D96", "D98", "D99"]
+status = "done"
+tests = [
+    "dashboard::people_log_in_and_do_what_their_roles_allow",
+    "hyperstor_mgmt::policy::tests::roles_allow_their_groups",
+    "hyperstor_mgmt::policy::tests::step_up_needs_a_fresh_login",
+    "hyperstor_mgmt::policy::tests::every_rpc_has_an_action",
+    "hyperstor_mgmt::people::tests::sessions_tokens_and_roles",
+    "hyperstor_mgmt::people::tests::the_first_claim_makes_a_security_admin_once",
+    "hyperstor_mgmt::tests::named_hosts_join_the_allowlist",
+    "hyperstor_mgmt::tests::ui_files_stay_in_their_directory",
+]
+
+[[milestone.item]]
+what = "Logins with an identity provider (OIDC), and hyperstorctl through the management service"
+spec = ["administration.md §23.9", "D96"]
+status = "planned"
+
+[[milestone.item]]
+what = "The web UI (React, @glidex/ui-kit), installed as files and served by hyperstor-mgmt --ui"
+spec = ["administration.md §23.7", "D97", "D100"]
 status = "planned"
 
 [[milestone]]

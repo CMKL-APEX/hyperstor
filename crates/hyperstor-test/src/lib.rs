@@ -291,6 +291,64 @@ pub enum Via<'a> {
     Plain,
 }
 
+/// A person logged in to hyperstor-mgmt.
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// `hs_session=…`, for a `Cookie` header.
+    pub cookie: String,
+    /// The whole `Set-Cookie` value, attributes included.
+    pub set_cookie: String,
+    pub csrf: String,
+    pub roles: Vec<String>,
+}
+
+/// Everyone's password in the made-up account database ([`start_authd`]).
+/// A test value: these people exist only in the test.
+pub const PASSWORD: &str = "test-only password";
+
+/// A PAM helper (glidex-authd's server, in this process) on `socket`, with
+/// made-up people: `ann`, `bob` and `cy` in `hyperstor-users`, and `eve`,
+/// who exists but isn't. Their password is [`PASSWORD`]. It answers the
+/// user running the test, as the installed one answers `hyperstor`.
+pub fn start_authd(socket: &Path) {
+    use glidex_authd::authenticator::{Account, Accounts, AuthFailure, Authenticator};
+    use std::os::unix::fs::MetadataExt;
+    struct Pam;
+    impl Authenticator for Pam {
+        fn authenticate(&self, service: &str, user: &str, pw: &str) -> Result<(), AuthFailure> {
+            match (service, user, pw) {
+                ("hyperstor", "ann" | "bob" | "cy" | "eve", PASSWORD) => Ok(()),
+                _ => Err(AuthFailure::Denied("bad password".into())),
+            }
+        }
+    }
+    struct People;
+    impl Accounts for People {
+        fn lookup(&self, user: &str) -> Option<Account> {
+            let groups = match user {
+                "ann" | "bob" | "cy" => vec![user.to_string(), "hyperstor-users".to_string()],
+                "eve" => vec![user.to_string()],
+                _ => return None,
+            };
+            Some(Account { uid: 5000, groups })
+        }
+    }
+    let config = glidex_authd::config::Config {
+        allowed_groups: vec!["hyperstor-users".to_string()],
+        failure_delay: Duration::from_millis(2),
+        ..Default::default()
+    };
+    let me = std::fs::metadata(socket.parent().unwrap()).unwrap().uid();
+    let listener = glidex_authd::server::bind(socket, 0o600, None).unwrap();
+    let authd = std::sync::Arc::new(glidex_authd::server::Authd::new(
+        config,
+        Some(me),
+        std::sync::Arc::new(Pam),
+        std::sync::Arc::new(People),
+    ));
+    std::thread::spawn(move || authd.serve(listener));
+}
+
 /// A running cluster installed into a scratch root.
 pub struct Cluster {
     pub scratch: Scratch,
@@ -381,8 +439,16 @@ impl Cluster {
     /// to listen; if it exits first, fails with its status and output.
     pub fn start_mgmt(&mut self) {
         let log_path = self.scratch.path("mgmt.log");
+        let sock = self.scratch.run().join("auth.sock");
+        if !sock.exists() {
+            start_authd(&sock);
+        }
+        let args: Vec<String> = env_args(&self.root, self.scratch.run(), "mgmt.env")
+            .into_iter()
+            .map(|a| a.replace("/run/hyperstor-authd", self.scratch.run().to_str().unwrap()))
+            .collect();
         let p = Command::new(self.bin.join("hyperstor-mgmt"))
-            .args(env_args(&self.root, self.scratch.run(), "mgmt.env"))
+            .args(args)
             .stderr(std::fs::File::create(&log_path).unwrap())
             .spawn()
             .unwrap();
@@ -403,13 +469,27 @@ impl Cluster {
     /// `METHOD path` to the dashboard with this `Host` header: the status
     /// code, the head and the body.
     pub fn dashboard(&self, method: &str, path: &str, host: &str) -> (u16, String, String) {
+        self.web(method, path, host, &[], "")
+    }
+
+    /// `METHOD path` to hyperstor-mgmt with this `Host`, extra headers and
+    /// body: the status code, the head and the body.
+    pub fn web(
+        &self,
+        method: &str,
+        path: &str,
+        host: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (u16, String, String) {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap();
-        write!(
-            s,
-            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
-        )
-        .unwrap();
+        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+        for (k, v) in headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+        s.write_all(req.as_bytes()).unwrap();
         let mut t = String::new();
         s.read_to_string(&mut t).unwrap();
         let (head, body) = t.split_once("\r\n\r\n").unwrap_or((&t, ""));
@@ -419,6 +499,89 @@ impl Cluster {
             .and_then(|c| c.parse().ok())
             .unwrap_or(0);
         (code, head.to_string(), body.to_string())
+    }
+
+    /// Logs `user` in to hyperstor-mgmt with [`PASSWORD`] (and a claim
+    /// code): their session, or the refusal's status and body.
+    pub fn login(&self, user: &str, claim: Option<&str>) -> Result<Session, (u16, String)> {
+        let body = match claim {
+            Some(c) => serde_json::json!({ "user": user, "password": PASSWORD, "claim": c }),
+            None => serde_json::json!({ "user": user, "password": PASSWORD }),
+        };
+        let (code, head, body) = self.web(
+            "POST",
+            "/auth/login",
+            &self.dashboard_host(),
+            &[("Content-Type", "application/json")],
+            &body.to_string(),
+        );
+        if code != 200 {
+            return Err((code, body));
+        }
+        let cookie = head
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(": ")?;
+                k.eq_ignore_ascii_case("set-cookie").then(|| v.to_string())
+            })
+            .expect("a session cookie");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        Ok(Session {
+            cookie: cookie.split(';').next().unwrap().to_string(),
+            set_cookie: cookie,
+            csrf: v["csrf"].as_str().unwrap().to_string(),
+            roles: v["roles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r.as_str().unwrap().to_string())
+                .collect(),
+        })
+    }
+
+    /// `METHOD path` as `s` (its cookie and CSRF value), with a JSON body.
+    pub fn as_session(
+        &self,
+        s: &Session,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> (u16, String, String) {
+        self.web(
+            method,
+            path,
+            &self.dashboard_host(),
+            &[
+                ("Cookie", &s.cookie),
+                ("X-Hyperstor-CSRF", &s.csrf),
+                ("Content-Type", "application/json"),
+            ],
+            body,
+        )
+    }
+
+    /// The claim code hyperstor-mgmt printed at start, once it has.
+    pub fn claim_code(&self) -> String {
+        let log = self.scratch.path("mgmt.log");
+        wait_for("the claim code", 30, || {
+            let text = std::fs::read_to_string(&log).ok()?;
+            let rest = text.split("claim code ").nth(1)?;
+            Some(rest.split_whitespace().next()?.to_string())
+        })
+    }
+
+    /// hyperstor-mgmt's standard error so far (its audit records).
+    pub fn mgmt_log(&self) -> String {
+        std::fs::read_to_string(self.scratch.path("mgmt.log")).unwrap_or_default()
+    }
+
+    /// Stops hyperstor-mgmt and starts it again from its installed options.
+    pub fn restart_mgmt(&mut self) {
+        if let Some(mut p) = self.mgmt.take() {
+            let _ = p.kill();
+            let _ = p.wait();
+        }
+        self.start_mgmt();
     }
 
     /// The dashboard's `Host` for this cluster.
