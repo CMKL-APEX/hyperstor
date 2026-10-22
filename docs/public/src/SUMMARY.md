@@ -43,6 +43,7 @@
   - [hyperstord](reference/hyperstord.md)
   - [hyperstor-bench](reference/hyperstor-bench.md)
   - [hyperstorctl](reference/hyperstorctl.md)
+  - [hyperstor-ublk](reference/hyperstor-ublk.md)
   - [hyperstor-install](reference/hyperstor-install.md)
   - [hyperstor-mgmt](reference/hyperstor-mgmt.md)
   - [Cluster API](reference/cluster-api.md)

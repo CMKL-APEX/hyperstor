@@ -832,3 +832,42 @@ run in every build.
    timeout.
 2. **The rest of HS2 costs the I/O path nothing measurable** with them:
    QD1 writes are within 0.3% of `main`, QD32 within 2% (run to run).
+
+## 2026-10-22: a volume through ublk, first look (dev-2)
+
+Question: does a `hyperstor-ublk` device carry ordinary block I/O, and
+roughly how fast, before a test host with NVMe-backed nodes (G22)? An
+all-in-one cluster of three nodes from `hyperstor-test` (each a 1 GiB
+file on the shared root filesystem, flushed at every commit), a 512 MiB
+volume filled first, served with `--depth 64`; fio 3.36, `libaio`,
+direct, 10 s per job:
+
+```sh
+fio --name=t --filename=/dev/ublkb0 --rw=randread --bs=4k --iodepth=1 \
+    --ioengine=libaio --direct=1 --time_based --runtime=10 --size=512M
+```
+
+| Job | IOPS | MiB/s | p50 µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random read, QD1 | 3,391 | 13.2 | 276 | 371 |
+| 4 KiB random read, QD32 | 11,442 | 44.7 | 2,245 | 6,980 |
+| 4 KiB random write, QD1 | 748 | 2.9 | 1,286 | 1,679 |
+| 4 KiB random write, QD32 | 3,544 | 13.8 | 7,242 | 33,817 |
+| 1 MiB write, QD4 | 285 | 284.7 | 13,304 | 25,821 |
+| 1 MiB read, QD4 | 789 | 789.0 | 4,620 | 7,897 |
+
+### Findings
+
+1. **It works end to end**: raw I/O across chunk boundaries, ext4, a
+   detach and attach with the data intact, and fio at depth (`ublk::`
+   test, run with `HS_UBLK=1`).
+2. **A full cluster was an I/O error.** A first run used a 2 GiB volume
+   on a cluster that holds under 1 GiB; writes past that failed with
+   `EIO`, because a shard out of space was answered `Io`. It is now
+   answered `NoSpace` and the device fails the write with `ENOSPC`; the
+   test fills a 4 GiB volume and checks for it.
+3. **These numbers are this cluster's, not ublk's**: writes are bound by
+   the scratch files' flushes on a shared disk (the same path to memory
+   devices does 7,400 4 KiB writes a second at QD1), and three nodes
+   and the client share the host's cores with other work. What ublk and
+   its one queue cost needs the comparison of G22.
