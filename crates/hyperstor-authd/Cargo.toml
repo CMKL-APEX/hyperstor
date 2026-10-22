@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 # glidex's PAM helper as a library (spec/decisions.md D52, D99), pinned to a
 # revision of glidex main.
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "de54751448521efa760381f8801bafce8002ed9f" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "73f746f8132ba6ef4a16deb389ee786f801eac0c" }
 nix = { version = "0.29", features = ["user"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = "0.1"

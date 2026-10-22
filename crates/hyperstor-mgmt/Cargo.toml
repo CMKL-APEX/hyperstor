@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-mgmt"
-description = "hyperstor-mgmt: the management service; for now a read-only dashboard on loopback"
+description = "hyperstor-mgmt: the management service: the web dashboard, people's logins and the cluster API on their behalf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,10 +13,20 @@ connectrpc = { version = "=0.9.1", default-features = false, features = ["json",
 buffa = { version = "=0.9.2", features = ["json"] }
 http = "1"
 http-body-util = "0.1"
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
+# People's logins (spec/administration.md §23.9, decisions.md D96, D99):
+# glidex's session and token rules, Cedar engine and PAM client, pinned to
+# a revision of glidex.
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "73f746f8132ba6ef4a16deb389ee786f801eac0c" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "73f746f8132ba6ef4a16deb389ee786f801eac0c" }
+cedar-policy = "4.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+zeroize = "1"
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true
