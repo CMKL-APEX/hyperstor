@@ -344,7 +344,7 @@ tests = [
 
 [[milestone.item]]
 what = "Snapshots, clones, rollback, flatten and snapshot deletion"
-spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D101", "D103", "I115", "I120", "I121"]
+spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D101", "D103", "I115", "I122", "I123"]
 status = "done"
 tests = [
     "cluster::snapshots_clones_and_rollback_read_what_they_should",
