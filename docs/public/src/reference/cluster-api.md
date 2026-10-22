@@ -32,9 +32,12 @@ the certificates in `/etc/hyperstor/pki`.
 single-use token from `CreateToken` authorizes it. The joining host
 pins the cluster's root by the fingerprint the token carries before it
 sends anything, and sends a certificate request for a key it keeps;
-the token decides the identity it gets. Tokens are held by the member
-that made them, in memory, so a restart of that member makes them all
-unusable; only their SHA-256 is kept.
+the token decides the identity it gets. Tokens are kept in the map
+service's replicated store, only their SHA-256, so they survive restarts
+and work through any member; the leader makes, uses and revokes them
+(another member refuses with `not_leader` and changes nothing). Before
+the map service has its first map, only its first member makes tokens,
+and only `meta` ones, for the other members to join.
 
 **Local socket.** With `--api-socket`, the API is also served on a Unix
 socket (`/run/hyperstor-meta/api.sock` when installed). There the
@@ -79,7 +82,7 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `CreateToken` | `{"role": "node"}` (or `"meta"`), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. `node` tokens only on the leader |
+| `CreateToken` | `{"role": "node"}` (or `"meta"`), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
 | `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by` |
 | `RevokeToken` | `{"id": "…"}` | `{}` |
 | `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips` | `cluster_id`, `certificate` (chain), `root`; a storage host: `node`, `map_addresses`; a member: `intermediate`, `intermediate_key`, `cluster_file` |
@@ -119,7 +122,7 @@ word for scripts (the message is for people, and may change):
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call; the token was used, has expired or was revoked |
 | `failed_precondition` | `no_ca`, `node_conflict`, `finished` | This member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
 | `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
-| `unavailable` | `not_leader`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service is stopping |
+| `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 
 ## What the answers mean
 

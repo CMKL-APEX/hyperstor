@@ -226,3 +226,91 @@ fn cluster_file_install_across_hosts() {
         let _ = p.wait();
     }
 }
+
+/// The root CA's key (D84): an install says it has no backup; a backup
+/// is encrypted, opens only with its passphrase, may take the key off the
+/// host (later runs still converge), and restores only onto its own
+/// cluster.
+#[test]
+fn root_key_backup_and_restore() {
+    let s = Scratch::new("rootbackup");
+    let root = s.path("root");
+    let r = install(&root, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
+    assert!(r.has("Back up the root CA's key"), "{}", r.out);
+    let check = install_cmd(&root, "check", &[]);
+    assert!(
+        check
+            .out
+            .lines()
+            .any(|l| l.starts_with("warn") && l.contains("rootkey")),
+        "{}",
+        check.out
+    );
+    let pki = root.join("etc/hyperstor/pki");
+    let key = std::fs::read_to_string(pki.join("root.key")).unwrap();
+    let pass = s.path("pass");
+    std::fs::write(&pass, "short\n").unwrap();
+    let bak = s.path("root.bak");
+    let args = |extra: &[&str]| -> Vec<String> {
+        let mut a = vec!["--out".into(), bak.to_str().unwrap().into()];
+        a.extend(["--passphrase-file".into(), pass.to_str().unwrap().into()]);
+        a.extend(extra.iter().map(|x| x.to_string()));
+        a
+    };
+    let run = |cmd: &str, a: &[String]| {
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        install_cmd(&root, cmd, &a)
+    };
+    let r = run("root-backup", &args(&[])).expect(1);
+    assert!(r.has("at least 12 characters"), "{}", r.out);
+    std::fs::write(&pass, "a long enough passphrase\n").unwrap();
+    run("root-backup", &args(&["--remove-key"])).ok();
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&bak).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let text = std::fs::read_to_string(&bak).unwrap();
+    assert!(!text.contains("PRIVATE KEY") && text.starts_with("hyperstor root backup v1"));
+    assert!(!pki.join("root.key").exists(), "taken off the host");
+    // Without the key, installs still converge, and stop asking.
+    let again = install(&root, &[]);
+    assert!(
+        again.has("Nothing to change") && !again.has("Back up"),
+        "{}",
+        again.out
+    );
+    let check = install_cmd(&root, "check", &[]);
+    assert!(
+        check
+            .out
+            .lines()
+            .any(|l| l.starts_with("ok") && l.contains("rootkey")),
+        "{}",
+        check.out
+    );
+    // No overwrite; a wrong passphrase opens nothing.
+    assert!(run("root-backup", &args(&[])).code == 1);
+    let restore = |pass_text: &str, onto: &std::path::Path| {
+        std::fs::write(&pass, pass_text).unwrap();
+        install_cmd(
+            onto,
+            "root-restore",
+            &[
+                "--in",
+                bak.to_str().unwrap(),
+                "--passphrase-file",
+                pass.to_str().unwrap(),
+            ],
+        )
+    };
+    let r = restore("not the passphrase!!", &root).expect(1);
+    assert!(r.has("wrong passphrase"), "{}", r.out);
+    // Not onto another cluster's host.
+    let other = s.path("other");
+    install(&other, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
+    let r = restore("a long enough passphrase", &other).expect(1);
+    assert!(r.has("another cluster's"), "{}", r.out);
+    restore("a long enough passphrase", &root).ok();
+    assert_eq!(std::fs::read_to_string(pki.join("root.key")).unwrap(), key);
+    // --out belongs to the backup commands only.
+    install_cmd(&root, "install", &["--out", "x"]).expect(2);
+}

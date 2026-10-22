@@ -59,12 +59,18 @@ fn ctl(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
 fn token(bin: &Path, api: &str, pki: &Path, s: &Scratch, role: &str, extra: &[&str]) -> PathBuf {
     let mut args = vec!["token", "create", "--role", role];
     args.extend(extra);
-    let o = Command::new(bin.join("hyperstorctl"))
-        .args(["--api", api, "--tls", pki.to_str().unwrap()])
-        .args(&args)
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // A map service that has just started has no map yet, and refuses
+    // with `not_formed` until it has: retried, as an operator would.
+    let o = wait_for("the map service to make a token", 20, || {
+        let o = Command::new(bin.join("hyperstorctl"))
+            .args(["--api", api, "--tls", pki.to_str().unwrap()])
+            .args(&args)
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success() || err.contains("(not_formed)"), "{err}");
+        o.status.success().then_some(o)
+    });
     let t = String::from_utf8(o.stdout).unwrap();
     assert!(
         t.starts_with("hsj1-") && t.lines().count() == 1,
@@ -243,16 +249,41 @@ fn storage_hosts_join_with_tokens() {
     assert!(r.has("nodes   3 up of 3; devices 4 in of 4"), "{}", r.out);
     ctl(&bin, &api, &pki, &["io-test", "--mib", "8"]).ok();
 
+    // Tokens are in the replicated store: one made before the map
+    // service restarts still joins a host after it (D81).
+    let kept = token(&bin, &api, &pki, &s, "node", &[]);
+    let mut meta = procs.0.remove(0);
+    let _ = meta.kill();
+    let _ = meta.wait();
+    procs.0.push(start(
+        &bin.join("hyperstor-meta"),
+        env_args(&meta_root, s.run(), "meta.env"),
+        s.path("meta-2.log"),
+    ));
+    wait_api(&bin, &api, &pki);
+    let r = wait_for("the restarted map service to lead", 20, || {
+        let r = join_storage(
+            &s.path("host-3"),
+            &s.path("data-3"),
+            &api,
+            &kept,
+            base + 16,
+            1,
+            base + 18,
+        );
+        // Not leading yet: refused, and the token not burnt.
+        (r.code == 0 || !r.has("(not_leader)")).then_some(r)
+    });
+    assert!(r.has("This host is storage node 3."), "{}", r.out);
+
     // Revoked and expired tokens, and another cluster's: refused.
     let revoked = token(&bin, &api, &pki, &s, "node", &[]);
-    let list = ctl(&bin, &api, &pki, &["token", "list", "--json"]).ok();
-    let id = list
-        .out
-        .split("\"id\":\"")
-        .last()
-        .and_then(|r| r.split('"').next())
-        .unwrap()
+    // Its id: the first 12 hex digits of its secret's SHA-256.
+    let secret = std::fs::read_to_string(&revoked).unwrap();
+    let id = hyperstor_pki::sha256_hex(secret.trim().rsplit('-').next().unwrap().as_bytes())[..12]
         .to_string();
+    let list = ctl(&bin, &api, &pki, &["token", "list", "--json"]).ok();
+    assert!(list.has(&format!("\"id\":\"{id}\"")), "{}", list.out);
     ctl(&bin, &api, &pki, &["token", "revoke", "--id", &id]).ok();
     let r = join_storage(
         &s.path("host-r"),
@@ -353,7 +384,9 @@ fn storage_hosts_join_with_tokens() {
         "a new key"
     );
     // Every join, refused or not, is audited, without the secret.
-    let log = std::fs::read_to_string(&meta_log).unwrap();
+    // Both lives of the map service: before and after its restart.
+    let log = std::fs::read_to_string(&meta_log).unwrap()
+        + &std::fs::read_to_string(s.path("meta-2.log")).unwrap();
     let audit: Vec<&str> = log
         .lines()
         .filter(|l| l.contains("\"op\":\"Join\""))
@@ -363,7 +396,7 @@ fn storage_hosts_join_with_tokens() {
             .iter()
             .filter(|l| l.contains("\"result\":\"ok, token"))
             .count(),
-        3,
+        4,
         "{log}"
     );
     assert!(
@@ -527,7 +560,19 @@ fn map_service_members_join_the_first() {
         assert!(r.code == 3 && r.has("(not_leader)"), "{}", r.out);
         r.has("the leader is").then_some(())
     });
+    // Through a follower the token is refused, and not burnt (only the
+    // leader writes tokens, D82); through the leader it joins.
     let t_host = s.path("store");
+    let r = join_storage(
+        &s.path("store-via-follower"),
+        &s.path("store-data-f"),
+        &apis[follower],
+        &t,
+        base + 10,
+        1,
+        base + 11,
+    );
+    assert!(r.code == 1 && r.has("(not_leader)"), "{}", r.out);
     join_storage(
         &t_host,
         &s.path("store-data"),
@@ -552,4 +597,55 @@ fn map_service_members_join_the_first() {
     let r = ctl(&bin, &apis[0], &first_pki, &["status", "--wait", "30"]);
     assert_eq!(r.code, 0, "{}", r.out);
     ctl(&bin, &apis[0], &first_pki, &["io-test", "--mib", "4"]).ok();
+    // Every member lists the tokens: they are replicated.
+    for i in 0..3 {
+        let r = ctl(&bin, &apis[i], &pkis[i], &["token", "list"]).ok();
+        assert!(r.has("used"), "member {}: {}", i + 1, r.out);
+    }
+
+    // The first member is lost: the other two elect a leader, which makes
+    // tokens and adds hosts without it.
+    let mut first = procs.0.remove(0);
+    let _ = first.kill();
+    let _ = first.wait();
+    let (leader, t) = wait_for("a leader without the first member", 40, || {
+        (1..3).find_map(|i| {
+            let r = ctl(
+                &bin,
+                &apis[i],
+                &pkis[i],
+                &["token", "create", "--role", "node"],
+            );
+            if r.code != 0 {
+                return None;
+            }
+            let f = s.path("store-2-token");
+            std::fs::write(&f, r.out.lines().next().unwrap()).unwrap();
+            Some((i, f))
+        })
+    });
+    let host = s.path("store-2");
+    let r = join_storage(
+        &host,
+        &s.path("store-2-data"),
+        &apis[leader],
+        &t,
+        base + 12,
+        1,
+        base + 13,
+    )
+    .ok();
+    assert!(r.has("This host is storage node 1."), "{}", r.out);
+    procs.0.push(start(
+        &host.join("usr/local/bin/hyperstord"),
+        env_args(&host, s.run(), "node-1.env"),
+        s.path("store-2.log"),
+    ));
+    let r = ctl(
+        &bin,
+        &apis[leader],
+        &pkis[leader],
+        &["status", "--wait", "30"],
+    );
+    assert!(r.has("nodes   2 up of 2"), "{}", r.out);
 }

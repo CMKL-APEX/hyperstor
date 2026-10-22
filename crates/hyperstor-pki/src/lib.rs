@@ -516,6 +516,114 @@ pub fn due_for_renewal(pem: &str, lifetime_days: u32) -> bool {
     left < Duration::from_secs(u64::from(lifetime_days) * 86400 / 3)
 }
 
+/// PBKDF2-HMAC-SHA256 iterations for a root backup's passphrase (OWASP's
+/// 2023 recommendation): slow enough to make guessing costly, a fraction
+/// of a second for the one person restoring.
+pub const BACKUP_ITERATIONS: u32 = 600_000;
+
+const BACKUP_MAGIC: &str = "hyperstor root backup v1";
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+fn backup_key(passphrase: &str, salt: &[u8]) -> Result<ring::aead::LessSafeKey, String> {
+    let mut key = [0u8; 32];
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        std::num::NonZeroU32::new(BACKUP_ITERATIONS).expect("non-zero"),
+        salt,
+        passphrase.as_bytes(),
+        &mut key,
+    );
+    let k = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key).map_err(err)?;
+    Ok(ring::aead::LessSafeKey::new(k))
+}
+
+/// The root CA, certificate and key, encrypted with `passphrase`, as the
+/// text of a backup file (spec/administration.md §23.8, D84): AES-256-GCM
+/// with a key derived by PBKDF2-HMAC-SHA256 from the passphrase and a
+/// random salt. The cluster and the root's fingerprint are in the clear,
+/// to tell backups apart, and authenticated with the rest.
+pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String, String> {
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let (mut salt, mut nonce) = ([0u8; 16], [0u8; 12]);
+    rng.fill(&mut salt).map_err(err)?;
+    rng.fill(&mut nonce).map_err(err)?;
+    let head = format!(
+        "{BACKUP_MAGIC}\ncluster {cluster}\nfingerprint {}\nkdf pbkdf2-sha256 {BACKUP_ITERATIONS} {}\nnonce {}\n",
+        fingerprint(&root.cert)?,
+        hex(&salt),
+        hex(&nonce)
+    );
+    let mut data = format!("{}{}", root.cert, root.key).into_bytes();
+    backup_key(passphrase, &salt)?
+        .seal_in_place_append_tag(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+            ring::aead::Aad::from(head.as_bytes()),
+            &mut data,
+        )
+        .map_err(err)?;
+    Ok(format!("{head}data {}\n", hex(&data)))
+}
+
+/// Opens a [`root_backup`]: the cluster and the root CA. A wrong
+/// passphrase, or a file changed in any way, fails.
+pub fn root_restore(text: &str, passphrase: &str) -> Result<(String, Pem), String> {
+    let bad = || "not a hyperstor root backup".to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let [magic, cluster, fp, kdf, nonce, data, ..] = lines[..] else {
+        return Err(bad());
+    };
+    if magic != BACKUP_MAGIC {
+        return Err(bad());
+    }
+    let cluster = cluster.strip_prefix("cluster ").ok_or_else(bad)?;
+    let fp = fp.strip_prefix("fingerprint ").ok_or_else(bad)?;
+    let kdf: Vec<&str> = kdf.split(' ').collect();
+    let ["kdf", "pbkdf2-sha256", iters, salt] = kdf[..] else {
+        return Err(bad());
+    };
+    if iters.parse::<u32>() != Ok(BACKUP_ITERATIONS) {
+        return Err(format!("{iters} iterations: not this version's"));
+    }
+    let salt = unhex(salt).ok_or_else(bad)?;
+    let nonce: [u8; 12] = unhex(nonce.strip_prefix("nonce ").ok_or_else(bad)?)
+        .and_then(|n| n.try_into().ok())
+        .ok_or_else(bad)?;
+    let mut ct = unhex(data.strip_prefix("data ").ok_or_else(bad)?).ok_or_else(bad)?;
+    // The authenticated header: everything before the data line.
+    let head_len = text.find("\ndata ").ok_or_else(bad)? + 1;
+    let plain = backup_key(passphrase, &salt)?
+        .open_in_place(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+            ring::aead::Aad::from(&text.as_bytes()[..head_len]),
+            &mut ct,
+        )
+        .map_err(|_| "wrong passphrase, or the backup was changed".to_string())?;
+    let plain = std::str::from_utf8(plain).map_err(|_| bad())?;
+    let at = plain.find("-----BEGIN PRIVATE KEY-----").ok_or_else(bad)?;
+    let root = Pem {
+        cert: plain[..at].to_string(),
+        key: plain[at..].to_string(),
+    };
+    if fingerprint(&root.cert)? != fp {
+        return Err(bad());
+    }
+    // The key must be the certificate's.
+    KeyPair::from_pem(&root.key).map_err(err)?;
+    Issuer::from_ca_cert_pem(&root.cert, KeyPair::from_pem(&root.key).map_err(err)?)
+        .map_err(err)?;
+    Ok((cluster.to_string(), root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,6 +789,34 @@ mod tests {
             "127.0.0.1",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn root_backups_open_only_with_their_passphrase() {
+        let root = new_root("42").unwrap();
+        let b = root_backup(&root, "42", "correct horse battery").unwrap();
+        assert!(b.starts_with("hyperstor root backup v1\ncluster 42\n"));
+        assert!(!b.contains("PRIVATE KEY"), "the key is encrypted");
+        let (cluster, back) = root_restore(&b, "correct horse battery").unwrap();
+        assert_eq!(
+            (cluster.as_str(), back.cert.as_str(), back.key.as_str()),
+            ("42", root.cert.as_str(), root.key.as_str())
+        );
+        assert!(root_restore(&b, "correct horse batter").is_err());
+        // The clear header is authenticated: a changed cluster fails.
+        assert!(
+            root_restore(
+                &b.replace("cluster 42", "cluster 43"),
+                "correct horse battery"
+            )
+            .is_err()
+        );
+        assert!(root_restore("nonsense", "x").is_err());
+        // Each backup is salted afresh.
+        assert_ne!(
+            b,
+            root_backup(&root, "42", "correct horse battery").unwrap()
+        );
     }
 
     #[test]

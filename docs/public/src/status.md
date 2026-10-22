@@ -58,6 +58,7 @@ covered by tests that run on every change.
 | Storage daemon: replicated writes and reads, group commit | Done |
 | Client library: request splitting, map refresh and retries | Done |
 | Replicated map service (Raft) | In progress |
+| Recovering the map service: map backups, member changes at run time, and a group that lost its majority | Planned |
 | Volume metadata: headers, directories and volume leases | In progress |
 | Test block devices through ublk | Planned |
 
@@ -93,6 +94,7 @@ covered by tests that run on every change.
 | One-command trial cluster on one host, with system services, updated in place on later runs | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | Joining storage hosts and map service members with single-use join tokens, and renewing their certificates | Done |
+| Backing up the root CA's key, encrypted, and restoring it | Done |
 | Installing storage hosts on whole devices | Planned |
 
 ## AD2: Management service and read-only web UI

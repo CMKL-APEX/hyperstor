@@ -11,6 +11,7 @@ pub mod api;
 pub mod health;
 pub mod replica;
 pub mod store;
+pub mod tokens;
 
 use hyperstor_reactor::time::sleep;
 use std::cell::{Cell, RefCell};

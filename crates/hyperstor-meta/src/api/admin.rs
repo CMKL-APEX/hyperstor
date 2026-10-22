@@ -2,12 +2,13 @@
 //! (spec/administration.md §23.4.2, §23.5, §23.6, §23.8): `TokenService`,
 //! `CaService`, `NodeService` and `OperationService`.
 //!
-//! - **Join tokens** (D57) are `hsj1-<root fingerprint>-<secret>`. The
-//!   member keeps only the secret's SHA-256, the role, the expiry and
-//!   whether it was used: a token is single-use and burnt by its first
-//!   join, successful or not, unless the member asked doesn't lead and
-//!   so did nothing. Tokens are held in memory by the member that
-//!   made them, so a restart revokes them all (implementation-notes I80).
+//! - **Join tokens** (D57) are `hsj1-<root fingerprint>-<secret>`. Only
+//!   the secret's SHA-256, the role, the expiry and whether it was used
+//!   are kept, in the replicated store (D81, `crate::tokens`): the leader
+//!   makes, burns and revokes them (D82), any member lists them. A token
+//!   is single-use and burnt by its first join, successful or not;
+//!   burning is a Raft write, so a join through a follower is refused
+//!   without burning it.
 //! - **A join** needs no client certificate. The host pinned the root by
 //!   the token's fingerprint before it sent anything, and sends a
 //!   certificate request; only the request's key is used, and the token
@@ -22,6 +23,7 @@
 
 use super::{Api, Need, audit, meta_error, with_reason};
 use crate::Admin;
+use crate::tokens::{Record, TokenError};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
@@ -44,6 +46,8 @@ pub struct Signing {
     /// Where storage nodes reach the map service: every member's map
     /// address, separated by commas.
     pub map_addresses: String,
+    /// Where join tokens are kept.
+    pub tokens: Arc<crate::tokens::Tokens>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -51,16 +55,10 @@ const TOKEN_TTL: u32 = 3600;
 const TOKEN_TTL_MAX: u32 = 7 * 86400;
 const OPS_KEPT: usize = 100;
 
-struct TokenEntry {
-    hash: String,
-    info: pb::Token,
-}
-
 pub(super) struct State {
     signing: Option<Signing>,
     root: Option<String>,
     api_address: String,
-    tokens: Mutex<Vec<TokenEntry>>,
     ops: Mutex<VecDeque<Arc<Mutex<pb::Operation>>>>,
 }
 
@@ -70,7 +68,6 @@ impl State {
             signing,
             root,
             api_address,
-            tokens: Mutex::new(Vec::new()),
             ops: Mutex::new(VecDeque::new()),
         }
     }
@@ -140,8 +137,52 @@ impl Api {
             .ok_or_else(|| ConnectError::unavailable("map service stopped"))
     }
 
-    /// Checks and burns a join token for `role`; returns its id.
-    fn redeem(&self, token: &str, root: &str) -> Result<pb::Token, ConnectError> {
+    /// Runs `f` on the token store off the API's thread: a write waits
+    /// for Raft to commit it.
+    async fn tokens<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&crate::tokens::Tokens) -> Result<T, TokenError> + Send + 'static,
+    ) -> Result<T, ConnectError> {
+        let (signing, _) = self.signing()?;
+        let t = signing.tokens.clone();
+        match tokio::task::spawn_blocking(move || f(&t)).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(self.token_error(e).await),
+            Err(e) => Err(ConnectError::internal(e.to_string())),
+        }
+    }
+
+    async fn token_error(&self, e: TokenError) -> ConnectError {
+        match e {
+            TokenError::NotLeader => {
+                let why = match self.ask(Admin::Leads).await {
+                    Ok(Err(e)) => e,
+                    _ => "this map service member isn't the leader".into(),
+                };
+                meta_error(
+                    format!("{why}: tokens are made, used and revoked on the leader"),
+                    ConnectError::unavailable,
+                    "not_leader",
+                )
+            }
+            TokenError::NotFormed => with_reason(
+                ConnectError::unavailable(
+                    "the map service has no leader yet: until it has, only the first member makes tokens, and only meta ones",
+                ),
+                "not_formed",
+            ),
+            TokenError::Refused { reason, why } => {
+                with_reason(ConnectError::permission_denied(why), reason)
+            }
+            TokenError::NotFound => {
+                with_reason(ConnectError::not_found("no such token"), "not_found")
+            }
+            TokenError::Store(e) => ConnectError::internal(e),
+        }
+    }
+
+    /// Checks and burns a join token; returns its record.
+    async fn redeem(&self, token: &str, root: &str) -> Result<Record, ConnectError> {
         let (pin, secret) =
             parse_token(token).ok_or_else(|| invalid("not a join token", "token_invalid"))?;
         let ours = hyperstor_pki::fingerprint(root).map_err(ConnectError::internal)?;
@@ -152,41 +193,15 @@ impl Api {
             ));
         }
         let hash = hyperstor_pki::sha256_hex(secret.as_bytes());
-        let mut tokens = lock(&self.admin.tokens);
-        let t = tokens.iter_mut().find(|t| t.hash == hash).ok_or_else(|| {
-            with_reason(
-                ConnectError::permission_denied(
-                    "unknown token (tokens don't survive a restart of the member that made them)",
-                ),
-                "token_invalid",
-            )
-        })?;
-        let refuse = |why: &str, reason: &str| {
-            with_reason(
-                ConnectError::permission_denied(format!("token {}: {why}", t.info.id)),
-                reason,
-            )
-        };
-        if t.info.revoked {
-            return Err(refuse("revoked", "token_revoked"));
-        }
-        if t.info.used {
-            return Err(refuse("already used", "token_used"));
-        }
-        if t.info.expires_unix <= now_unix() {
-            return Err(refuse("expired", "token_expired"));
-        }
-        t.info.used = true;
-        Ok(t.info.clone())
-    }
-
-    /// Makes a token usable again after a join that did nothing.
-    fn unredeem(&self, id: &str) {
-        if let Some(t) = lock(&self.admin.tokens)
-            .iter_mut()
-            .find(|t| t.info.id == id)
-        {
-            t.info.used = false;
+        let now = now_unix();
+        match self.tokens(move |t| t.redeem(&hash, now)).await {
+            Err(e) if hyperstor_api::reason_of(&e).as_deref() == Some("not_found") => {
+                Err(with_reason(
+                    ConnectError::permission_denied("unknown token"),
+                    "token_invalid",
+                ))
+            }
+            r => r,
         }
     }
 
@@ -230,17 +245,6 @@ impl TokenService for Api {
                 ));
             }
         };
-        if req.role == "node" {
-            // Only the leader adds hosts to the map, and tokens are this
-            // member's: a node token made elsewhere couldn't be used.
-            self.ask(Admin::Leads).await?.map_err(|e| {
-                meta_error(
-                    format!("{e}: make storage tokens on the leader's host"),
-                    ConnectError::failed_precondition,
-                    "not_leader",
-                )
-            })?;
-        }
         let secret = random_hex(32);
         let pin = hyperstor_pki::fingerprint(root).map_err(ConnectError::internal)?;
         let hash = hyperstor_pki::sha256_hex(secret.as_bytes());
@@ -251,15 +255,24 @@ impl TokenService for Api {
             created_by: who.clone(),
             ..Default::default()
         };
-        {
-            let mut tokens = lock(&self.admin.tokens);
-            // Forget tokens a day past their expiry.
-            let horizon = now_unix().saturating_sub(86400);
-            tokens.retain(|t| t.info.expires_unix > horizon);
-            tokens.push(TokenEntry {
-                hash,
-                info: info.clone(),
-            });
+        let rec = Record {
+            hash,
+            id: info.id.clone(),
+            role: info.role.clone(),
+            expires_unix: info.expires_unix,
+            used: false,
+            revoked: false,
+            created_by: who.clone(),
+        };
+        let now = now_unix();
+        if let Err(e) = self.tokens(move |t| t.create(rec, now)).await {
+            audit(
+                &who,
+                "CreateToken",
+                &target,
+                &format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            );
+            return Err(e);
         }
         audit(
             &who,
@@ -282,10 +295,19 @@ impl TokenService for Api {
         _req: ServiceRequest<'_, pb::ListTokensRequest>,
     ) -> ServiceResult<pb::ListTokensResponse> {
         self.authorize(&ctx, "ListTokens", "tokens", false)?;
+        let tokens = self.tokens(|t| t.list()).await?;
         Ok(pb::ListTokensResponse {
-            tokens: lock(&self.admin.tokens)
-                .iter()
-                .map(|t| t.info.clone())
+            tokens: tokens
+                .into_iter()
+                .map(|r| pb::Token {
+                    id: r.id,
+                    role: r.role,
+                    expires_unix: r.expires_unix,
+                    used: r.used,
+                    revoked: r.revoked,
+                    created_by: r.created_by,
+                    ..Default::default()
+                })
                 .collect(),
             ..Default::default()
         }
@@ -299,23 +321,18 @@ impl TokenService for Api {
     ) -> ServiceResult<pb::RevokeTokenResponse> {
         let target = format!("token {}", req.id);
         let who = self.authorize(&ctx, "RevokeToken", &target, true)?;
-        let found = lock(&self.admin.tokens)
-            .iter_mut()
-            .find(|t| t.info.id == req.id)
-            .map(|t| t.info.revoked = true)
-            .is_some();
+        let (id, now) = (req.id.to_string(), now_unix());
+        let r = self.tokens(move |t| t.revoke(&id, now)).await;
         audit(
             &who,
             "RevokeToken",
             &target,
-            if found { "ok" } else { "failed: no such token" },
+            &match &r {
+                Ok(()) => "ok".to_string(),
+                Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            },
         );
-        if !found {
-            return Err(with_reason(
-                ConnectError::not_found(format!("no token {}", req.id)),
-                "not_found",
-            ));
-        }
+        r?;
         Ok(pb::RevokeTokenResponse::default().into())
     }
 
@@ -329,7 +346,9 @@ impl TokenService for Api {
         let (signing, root) = self.signing()?;
         let cluster = self.cluster.clone().unwrap_or_default();
         let r = async {
-            let token = self.redeem(req.token, root)?;
+            // Burnt through the leader (a follower refuses and burns
+            // nothing), which then adds the storage host itself.
+            let token = self.redeem(req.token, root).await?;
             let who_token = format!("token {} from {peer}", token.id);
             match token.role.as_str() {
                 "node" => {
@@ -357,13 +376,7 @@ impl TokenService for Api {
                         })
                         .await?
                         .map_err(|e| {
-                            let e =
-                                meta_error(e, ConnectError::failed_precondition, "node_conflict");
-                            if hyperstor_api::reason_of(&e).as_deref() == Some("not_leader") {
-                                // Nothing was done: the token may be used again.
-                                self.unredeem(&token.id);
-                            }
-                            e
+                            meta_error(e, ConnectError::failed_precondition, "node_conflict")
                         })?;
                     let mut ips: Vec<IpAddr> = addrs.iter().map(|a| a.ip()).collect();
                     ips.sort();

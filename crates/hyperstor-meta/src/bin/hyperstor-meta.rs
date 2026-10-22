@@ -121,6 +121,8 @@ fn main() {
             },
             cluster_file: text.clone(),
             map_addresses: String::new(),
+            // Replaced by the replicated store once it is open.
+            tokens: std::sync::Arc::new(hyperstor_meta::tokens::Tokens::in_memory()),
         }
     });
     if signing.is_some() && tls.is_none() {
@@ -217,6 +219,10 @@ fn main() {
             Some((cfg, listener)) => {
                 let (to_reactor, from_raft) = hyperstor_reactor::chan::channel();
                 let n = cfg.members.len();
+                // The member that forms the group keeps the tokens made
+                // before it has a map (D81).
+                let first = cfg.members.iter().map(|m| m.id).min() == Some(cfg.id);
+                let bootstrap = first.then(|| cfg.dir.join("bootstrap-tokens"));
                 let r =
                     hyperstor_meta::replica::spawn(cfg, listener, to_reactor).unwrap_or_else(|e| {
                         eprintln!("hyperstor-meta: {e}");
@@ -228,6 +234,12 @@ fn main() {
                     r.commits.clone(),
                 );
                 hyperstor_reactor::spawn(meta.clone().follow(from_raft));
+                if let Some(s) = &mut signing {
+                    s.tokens = std::sync::Arc::new(hyperstor_meta::tokens::Tokens::replicated(
+                        r.db.clone(),
+                        bootstrap,
+                    ));
+                }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))
             }

@@ -110,7 +110,8 @@ at port 8853.
 - A token is used once, expires after an hour (`--ttl SECS`, at most a
   week), and can be revoked with `hyperstorctl token revoke --id ID`;
   `hyperstorctl token list` shows them, never the secrets. Tokens are
-  held in the map service's memory: restarting it makes them unusable.
+  kept in the map service's replicated store, so they survive restarts;
+  they are made and used through the leader.
 - The token is never saved. Later runs of the installer, such as the
   daily timer's, need none; they renew the host's certificate through
   the API with the certificate itself.
@@ -132,8 +133,16 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
     --role meta --members $M --member-id 2
 ```
 
-Storage tokens must come from the leader, which adds nodes to the map;
-the other members refuse with the leader's address.
+Tokens are made and used through the leader; the other members refuse
+with the leader's address. Before the members have formed a group, the
+first member makes the `meta` tokens itself.
+
+**Back up the root CA's key** on the first host, which alone has it
+(see [hyperstor-install](../reference/hyperstor-install.md)):
+
+```sh
+sudo hyperstor-install root-backup --out /media/usb/root.bak --passphrase-file pass
+```
 
 ## Installing a cluster across hosts from one file
 

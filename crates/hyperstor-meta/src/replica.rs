@@ -77,6 +77,8 @@ pub struct Commit {
 /// The running member.
 pub struct Replica {
     pub commits: tokio::sync::mpsc::UnboundedSender<Commit>,
+    /// The replicated store, for the API's join tokens (`tokens.rs`).
+    pub db: Arc<Db>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -114,6 +116,7 @@ pub fn spawn(
 ) -> Result<Replica, String> {
     std::fs::create_dir_all(&cfg.dir).map_err(|e| format!("{}: {e}", cfg.dir.display()))?;
     let db = Arc::new(Db::create(cfg.dir.join("map.redb")).map_err(|e| e.to_string())?);
+    let api_db = db.clone();
     let (commits, commit_rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop, stop_rx) = tokio::sync::oneshot::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -139,6 +142,7 @@ pub fn spawn(
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(Replica {
             commits,
+            db: api_db,
             stop: Some(stop),
             thread: Some(thread),
         }),

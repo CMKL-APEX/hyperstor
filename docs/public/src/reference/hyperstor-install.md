@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]
 ```
 
 | Command | Does |
@@ -12,6 +12,8 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE]
 | `check` | Runs the host checks and changes nothing |
 | `install` | Installs, or brings an installation up to date: only what differs is changed |
 | `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data |
+| `root-backup` | Writes the root CA's certificate and key to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the key from this host |
+| `root-restore` | Puts the root CA from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -38,6 +40,10 @@ usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE]
 | `--mgmt-port P` | 8852 | The dashboard (`hyperstor-mgmt`), on `127.0.0.1`, on the map service's host |
 | `--root DIR` | `/` | Write every file under DIR instead (for packaging and tests); no users or services are touched |
 | `--no-start` | off | Install the files but don't enable or start the services |
+| `--out FILE` | | `root-backup`: the backup to write (created mode 0600; an existing file is never overwritten) |
+| `--in FILE` | | `root-restore`: the backup to read |
+| `--passphrase-file F` | | `root-backup`, `root-restore`: the passphrase, at least 12 characters, from a file; or `$HYPERSTOR_BACKUP_PASSPHRASE`. Never on the command line |
+| `--remove-key` | off | `root-backup`: once the backup opens, remove the root's key from this host, keeping the root offline |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
 runs, so `sudo hyperstor-install install` alone updates an existing
@@ -82,9 +88,24 @@ renews what is due, repairs anything that drifted, and otherwise changes
 nothing.
 Changed binaries, units, options or certificates restart only the services they affect; with `--root` or `--no-start`, the output says what a real run would restart.
 
+**The root CA's key.** Only the first map service host has it, and it
+signs a new intermediate CA every 9 months (the intermediate lasts a
+year): losing it without a backup means a new root, and new certificates
+everywhere, within a year. Until `root-backup` has run, every install and
+`check` says so. The backup is AES-256-GCM, with a key derived from the
+passphrase (PBKDF2-HMAC-SHA256, 600,000 iterations); keep it and the
+passphrase apart. With `--remove-key` the host no longer holds the root,
+and later installs still work; restore it when the intermediate is due.
+
+```sh
+sudo hyperstor-install root-backup --out /media/usb/root.bak \
+    --passphrase-file pass --remove-key
+sudo hyperstor-install root-restore --in /media/usb/root.bak --passphrase-file pass
+```
+
 **Checks** (`check`, and first thing in `install`): kernel version,
 io_uring, locked-memory limit, CPUs, NVMe generic devices, clock
-synchronization, free space, ports, and systemd. Each line is `ok`,
+synchronization, free space, ports, the root CA key's backup, and systemd. Each line is `ok`,
 `info`, `warn` or `FAIL`; a `FAIL` stops an install.
 
 | Exit status | Meaning |

@@ -172,6 +172,11 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovering the map service: map backups, member changes at run time, and a group that lost its majority"
+spec = ["I65", "decision-log.md points 43-45"]
+status = "planned"
+
+[[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
 spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D77", "I68", "I70", "I71", "I72", "I73"]
 status = "partial"
@@ -443,6 +448,18 @@ tests = [
     "hyperstor_meta::tests::joined_hosts_are_added_to_an_empty_map",
     "hyperstor_meta::api::admin::tests::tokens_parse_only_in_their_form",
     "hyperstor_map::join_tests::pools_made_before_any_host_place_their_pgs_when_hosts_join",
+    "hyperstor_meta::tokens::tests::replicated_tokens_are_used_once_and_revocable",
+    "hyperstor_meta::tokens::tests::bootstrap_tokens_live_on_the_first_member_until_used",
+    "hyperstor_meta::tokens::tests::records_round_trip",
+]
+
+[[milestone.item]]
+what = "Backing up the root CA's key, encrypted, and restoring it"
+spec = ["administration.md §23.8", "D70", "D84"]
+status = "done"
+tests = [
+    "install::root_key_backup_and_restore",
+    "hyperstor_pki::tests::root_backups_open_only_with_their_passphrase",
 ]
 
 [[milestone.item]]

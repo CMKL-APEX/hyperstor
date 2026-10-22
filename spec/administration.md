@@ -133,6 +133,9 @@ A check that rests on a host claim cites its host check (G…).
    certificate for the role the token allows (node, meta member, mgmt).
 4. `hyperstorctl token create --role …` makes more tokens;
    `token list` and `token revoke` manage them.
+5. Tokens are rows of the map service's replicated store (D81), made,
+   used and revoked by the leader (D82). Before the group has a map, the
+   first member keeps the `meta` tokens for the other members itself.
 
 Why tokens rather than copying certificates (D57): the operator moves a
 short, expiring, single-use string, never a key; this matches glidex's
@@ -247,6 +250,10 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Root | on a trusted host, readable by root only (`/etc/hyperstor/pki` on the map service's host, D70); a site may move it offline instead | 10 years | intermediates only |
 | Intermediate | every meta member, as the encrypted systemd credential `hyperstor-ca` (TPM-sealed where the host has one, G18) | 1 year, rotated at 9 months | node, meta, mgmt, admin and host certificates |
 
+- **The root's key is backed up** encrypted with a passphrase, and may
+  then leave the host (D84): `hyperstor-install root-backup`, and
+  `root-restore` to bring it back when the intermediate is due. Installs
+  warn until it is.
 - **Everyone trusts the root.** Rotating the intermediate needs no
   change on any node: the new one is signed by the root, pushed with
   the map, and leaves renew under it. That is the simpler rotation the

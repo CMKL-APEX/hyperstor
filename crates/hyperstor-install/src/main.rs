@@ -34,6 +34,13 @@
 //!   which renews certificates (D56) and repairs drift.
 //! - `uninstall` stops and removes the units and binaries; configuration
 //!   and data stay.
+//! - `root-backup --out FILE --passphrase-file F [--remove-key]` writes the
+//!   root CA (certificate and key) to FILE, encrypted with the passphrase
+//!   (D84), checks that it opens, and records the backup; with
+//!   `--remove-key` it then removes the key from this host, which keeps the
+//!   root offline (D70). `root-restore --in FILE --passphrase-file F` puts
+//!   it back, on this host or a new one. The passphrase may also come from
+//!   `$HYPERSTOR_BACKUP_PASSPHRASE`; never from the command line.
 //!
 //! Binaries are taken from the installer's own directory (`target/release`
 //! when run from a checkout). `--root DIR` writes every file under DIR
@@ -47,7 +54,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]";
 
 const BINARIES: [&str; 4] = [
     "hyperstor-meta",
@@ -186,12 +193,17 @@ fn main() {
     let Some(cmd) = args.first().cloned() else {
         usage()
     };
-    if !matches!(cmd.as_str(), "check" | "install" | "uninstall") {
+    if !matches!(
+        cmd.as_str(),
+        "check" | "install" | "uninstall" | "root-backup" | "root-restore"
+    ) {
         usage();
     }
     let mut root = PathBuf::from("/");
     let mut no_start = false;
     let mut cluster_file: Option<String> = None;
+    let (mut out_file, mut in_file, mut remove_key) = (None, None, false);
+    let mut passphrase: Option<String> = std::env::var("HYPERSTOR_BACKUP_PASSPHRASE").ok();
     // Never saved: a token is single-use and secret (§23.10).
     let mut token: Option<String> = std::env::var("HYPERSTOR_JOIN_TOKEN").ok();
     let mut given: BTreeMap<&str, String> = BTreeMap::new();
@@ -224,6 +236,24 @@ fn main() {
             }
             "--token" => {
                 token = Some(val());
+                continue;
+            }
+            "--out" => {
+                out_file = Some(val());
+                continue;
+            }
+            "--in" => {
+                in_file = Some(val());
+                continue;
+            }
+            "--remove-key" => {
+                remove_key = true;
+                continue;
+            }
+            "--passphrase-file" => {
+                let f = val();
+                let p = fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
+                passphrase = Some(p.trim_end_matches(['\n', '\r']).to_string());
                 continue;
             }
             "--join" => "join",
@@ -282,8 +312,27 @@ fn main() {
             .collect::<String>(),
     );
 
+    // --out, --in and --remove-key belong to the backup commands only.
+    let backup = cmd.starts_with("root-");
+    if (!backup && (out_file.is_some() || in_file.is_some() || remove_key))
+        || (cmd == "root-backup" && in_file.is_some())
+        || (cmd == "root-restore" && (out_file.is_some() || remove_key))
+    {
+        usage();
+    }
     match cmd.as_str() {
-        "check" => std::process::exit(i32::from(check(&s))),
+        "check" => std::process::exit(i32::from(check(&root, &s))),
+        "root-backup" => root_backup(
+            &root,
+            &out_file.unwrap_or_else(|| usage()),
+            &passphrase.unwrap_or_else(|| fail("a passphrase is needed: --passphrase-file F")),
+            remove_key,
+        ),
+        "root-restore" => root_restore(
+            &root,
+            &in_file.unwrap_or_else(|| usage()),
+            &passphrase.unwrap_or_else(|| fail("a passphrase is needed: --passphrase-file F")),
+        ),
         "uninstall" => uninstall(&root, real, &s),
         _ => {
             let mut cluster_file = cluster_file;
@@ -312,7 +361,7 @@ enum Level {
 }
 
 /// Runs every check, printing one line each; returns whether one failed.
-fn check(s: &Settings) -> bool {
+fn check(root: &Path, s: &Settings) -> bool {
     let mut worst = Level::Ok;
     let mut note = |l: Level, what: &str, detail: String| {
         if l > worst {
@@ -473,6 +522,21 @@ fn check(s: &Settings) -> bool {
                 busy.join(", ")
             ),
         );
+    }
+
+    // The root CA's key (D84): backed up, kept elsewhere, or at risk.
+    let pki = under(root, "/etc/hyperstor/pki");
+    match (
+        pki.join("root.key").exists(),
+        fs::read_to_string(pki.join("root.backup")).ok(),
+    ) {
+        (_, Some(b)) => note(Level::Ok, "rootkey", b.trim().to_string()),
+        (true, None) => note(
+            Level::Warn,
+            "rootkey",
+            "the root CA's key has no backup: hyperstor-install root-backup --out FILE --passphrase-file F".into(),
+        ),
+        (false, None) => note(Level::Info, "rootkey", "no root CA key on this host".into()),
     }
 
     if Path::new("/run/systemd/system").exists() {
@@ -1231,7 +1295,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
     }
     if real {
         println!("Checking the host:");
-        if check(s) {
+        if check(root, s) {
             fail("a host check failed; see above");
         }
         println!();
@@ -1420,6 +1484,14 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
             println!("  {c}");
         }
     }
+    let pki_dir = under(root, "/etc/hyperstor/pki");
+    if pki_dir.join("root.key").exists() && !pki_dir.join("root.backup").exists() {
+        println!(
+            "\nBack up the root CA's key, which only this host has (it signs a new intermediate CA\n\
+             every 9 months; without it the cluster needs a new root within a year):\n  \
+             sudo hyperstor-install root-backup --out FILE --passphrase-file F [--remove-key]"
+        );
+    }
     if real && !no_start && p.meta.is_some() {
         println!(
             "\nNext: hyperstorctl status, then hyperstorctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
@@ -1569,6 +1641,111 @@ fn pki(
         }
     }
     restart
+}
+
+/// Passphrases shorter than this are refused: the backup is only as good
+/// as its passphrase.
+const MIN_PASSPHRASE: usize = 12;
+
+/// `root-backup`: see the top of this file.
+fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
+    if passphrase.chars().count() < MIN_PASSPHRASE {
+        fail(&format!(
+            "the passphrase needs at least {MIN_PASSPHRASE} characters"
+        ));
+    }
+    let pki = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| {
+        fs::read_to_string(pki.join(f)).unwrap_or_else(|e| {
+            fail(&format!(
+                "{}: {e} (no root CA key on this host: it's kept offline, or on the first map service host)",
+                pki.join(f).display()
+            ))
+        })
+    };
+    let ca = hyperstor_pki::Pem {
+        cert: read("root.crt"),
+        key: read("root.key"),
+    };
+    let cluster = cluster_id(root).to_string();
+    let text = hyperstor_pki::root_backup(&ca, &cluster, passphrase)
+        .unwrap_or_else(|e| fail(&format!("backup: {e}")));
+    let out_path = Path::new(out);
+    if out_path.exists() {
+        fail(&format!("{out} exists: give another file"));
+    }
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(out_path)
+            .unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        f.write_all(text.as_bytes())
+            .and_then(|()| f.sync_all())
+            .unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+    }
+    // Read back and opened before anything is recorded or removed.
+    let back = fs::read_to_string(out_path).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+    match hyperstor_pki::root_restore(&back, passphrase) {
+        Ok((_, r)) if r.key == ca.key && r.cert == ca.cert => {}
+        _ => fail(&format!(
+            "{out} doesn't open as written: not recorded, key kept"
+        )),
+    }
+    let fp = hyperstor_pki::fingerprint(&ca.cert).unwrap_or_default();
+    let when = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    converge(
+        &pki.join("root.backup"),
+        format!(
+            "backed up at {when} (unix time) to {out}, root {}\n",
+            &fp[..16]
+        )
+        .as_bytes(),
+        0o644,
+    );
+    println!(
+        "Wrote {out}: the root CA, encrypted. Keep it, and the passphrase, apart and offline."
+    );
+    if remove_key {
+        fs::remove_file(pki.join("root.key"))
+            .unwrap_or_else(|e| fail(&format!("remove root.key: {e}")));
+        println!(
+            "Removed {}: restore it with hyperstor-install root-restore when the intermediate CA is due.",
+            pki.join("root.key").display()
+        );
+    }
+}
+
+/// `root-restore`: see the top of this file.
+fn root_restore(root: &Path, input: &str, passphrase: &str) {
+    let text = fs::read_to_string(input).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    let (cluster, ca) = hyperstor_pki::root_restore(&text, passphrase)
+        .unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    let pki = under(root, "/etc/hyperstor/pki");
+    // Only onto its own cluster.
+    if let Ok(have) = fs::read_to_string(pki.join("root.crt"))
+        && have != ca.cert
+    {
+        fail("this host trusts another root: the backup is another cluster's");
+    }
+    if fs::read_to_string(under(root, "/etc/hyperstor/cluster.txt")).is_ok()
+        && cluster_id(root).to_string() != cluster
+    {
+        fail(&format!(
+            "the backup is cluster {cluster}'s, not this host's"
+        ));
+    }
+    converge(&pki.join("root.crt"), ca.cert.as_bytes(), 0o644);
+    converge(&pki.join("root.key"), ca.key.as_bytes(), 0o600);
+    println!(
+        "Restored the root CA of cluster {cluster} to {}.",
+        pki.display()
+    );
 }
 
 fn uninstall(root: &Path, real: bool, s: &Settings) {
