@@ -140,11 +140,22 @@ pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
 
 /// A pool's volumes: id, name, size and state.
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
-    let mut out = format!("{:<32}  {:<20} {:>14}  STATE\n", "ID", "NAME", "SIZE");
+    let mut out = format!(
+        "{:<32}  {:<20} {:>14}  {:<8}  ATTACHED BY\n",
+        "ID", "NAME", "SIZE", "STATE"
+    );
     for v in &r.volumes {
         out.push_str(&format!(
-            "{:<32}  {:<20} {:>14}  {}\n",
-            v.id, v.name, v.size, v.state
+            "{:<32}  {:<20} {:>14}  {:<8}  {}\n",
+            v.id,
+            v.name,
+            v.size,
+            v.state,
+            if v.attached_by.is_empty() {
+                "-"
+            } else {
+                &v.attached_by
+            }
         ));
     }
     out

@@ -13,7 +13,9 @@ design is split by topic, with section numbers kept across files.
   eviction, peering, delta recovery and light and deep scrub by content
   digests, and the replicated map service (3 or 5 members on
   `glidex-raftstore`), atomic operation lists on objects, and volume
-  headers in the `.meta` pool (create, list, expand, delete); the first part of AD0 and AD1: the cluster API on the map
+  headers in the `.meta` pool (create, list, expand, delete), volume
+  leases (attach, detach, renewals), the blocklist and forced takeovers;
+  the first part of AD0 and AD1: the cluster API on the map
   service over mutual TLS with roles and stable error reasons,
   `hyperstorctl` (checked against every RPC of the protos), join tokens
   (replicated through Raft) for storage hosts and map service members
@@ -23,15 +25,13 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D77 and D81–D84 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D80 and D81–D84 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I73, I80–I98, decision-log.md points 43–46 (recovering the map service, the root key's backup), and every host check (G1–G20,
+  rule, F1–F12 in detail, I1–I78, I80–I98, decision-log.md points 43–46 (recovering the map service, the root key's backup), and every host check (G1–G20,
   FG1–FG2).
-- **Next:** volume headers, leases and the blocklist (D75–D77,
-  decision-log.md points 34–37), on the object operations of I68: the
-  `.meta` pool and headers, then leases, then the blocklist and forced
-  takeovers; changing the map service's members at run time (I65); the
+- **Next:** the rest of HS2 (read leases, down and out, the fault
+  injection rig); changing the map service's members at run time (I65); the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
   also gives D47's paged checkpoints); `hyperstor-vhost` and the glidex
   driver (HS3); cache-pool expiry and eviction and priority classes

@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--role R] [--ttl SECS] [--dry-run]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run]
 ```
 
 | Command | Does |
@@ -13,9 +13,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `nodes` | Each node and its devices: address, weight, in or out |
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive |
 | `pgs` | One pool's PGs with their acting and up sets |
-| `volumes` | One pool's volumes: id, name, size and state |
+| `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
 | `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
-| `delete-volume` | Deletes volume `--id` and its data |
+| `delete-volume` | Deletes volume `--id` and its data; refused while it is attached, unless `--force` |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
@@ -42,6 +42,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
 | `--name N` | empty | The new volume's name: shown, not unique |
 | `--id ID` | | `delete-volume`: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
+| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |

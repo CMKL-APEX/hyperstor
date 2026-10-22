@@ -599,12 +599,20 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::DeleteVolumeRequest>,
     ) -> ServiceResult<pb::DeleteVolumeResponse> {
-        let target = format!("volume {}", req.id);
+        let target = if req.force {
+            format!("volume {} (forced)", req.id)
+        } else {
+            format!("volume {}", req.id)
+        };
         let who = self.authorize(&ctx, "DeleteVolume", &target, true)?;
         let id = parse_volume_id(req.id)?;
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::DeleteVolume { id, reply })
+            .send(Admin::DeleteVolume {
+                id,
+                force: req.force,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let r = rx.recv().await;
         audit(
@@ -644,6 +652,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         }
         .into(),
         version: v.version,
+        attached_by: v.holder.map(|h| format!("{h:016x}")).unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -660,6 +669,10 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
         Some(Err((F::Invalid, e))) => Err(with_reason(
             ConnectError::invalid_argument(e),
             "invalid_argument",
+        )),
+        Some(Err((F::Attached, e))) => Err(with_reason(
+            ConnectError::failed_precondition(e),
+            "attached",
         )),
         Some(Err((F::Unavailable, e))) => {
             Err(with_reason(ConnectError::unavailable(e), "unavailable"))

@@ -435,6 +435,9 @@ and a recommendation each; the owner's answers:
 | 35 | Volume lease timing: 2 s / 10 s as specified, 1 s / 4 s, or 0.5 s / 2 s | Renew every second, expire after 4 s, batched per holder and primary | D75 |
 | 36 | Enforcing a volume's single writer: blocklist only, or a lease token on every write | Blocklist only | D76 |
 | 37 | Who creates and attaches volumes: the client library and the cluster API, or the library only | The library, and the cluster API and `hyperstorctl` for operators | D77 |
+| 38 | I76: anyone who can reach the map service can blocklist an instance | Wait for the security work of AD | D78 |
+| 39 | I77: should glidex `preempt` when it re-places a VM from a fenced node | Yes | D79 |
+| 40 | I78: a forced delete of an attached volume in the API and `hyperstorctl` | Yes | D80 |
 
 ## Join tokens, the root key and recovering the map service (2026-10-22)
 

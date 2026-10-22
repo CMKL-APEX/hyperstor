@@ -255,12 +255,22 @@ fn storage_hosts_join_with_tokens() {
     let mut meta = procs.0.remove(0);
     let _ = meta.kill();
     let _ = meta.wait();
-    procs.0.push(start(
+    let mut again = start(
         &bin.join("hyperstor-meta"),
         env_args(&meta_root, s.run(), "meta.env"),
         s.path("meta-2.log"),
-    ));
-    wait_api(&bin, &api, &pki);
+    );
+    // If it exits instead (a port taken in the gap), say so with its log.
+    wait_for("the restarted map service's API", 20, || {
+        if let Ok(Some(st)) = again.try_wait() {
+            panic!(
+                "the restarted map service exited ({st}):\n{}",
+                std::fs::read_to_string(s.path("meta-2.log")).unwrap_or_default()
+            );
+        }
+        (ctl(&bin, &api, &pki, &["token", "list"]).code == 0).then_some(())
+    });
+    procs.0.push(again);
     let r = wait_for("the restarted map service to lead", 20, || {
         let r = join_storage(
             &s.path("host-3"),

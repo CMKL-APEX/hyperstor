@@ -98,8 +98,15 @@ fn ephemeral_low() -> u16 {
 /// `n` consecutive free ports on 127.0.0.1, from 10000 up to the
 /// ephemeral range: a block of 500 per process (by pid) and 12 more on
 /// each call, so parallel tests and test processes don't collide.
+///
+/// Each port is also reserved for the rest of this process by a lock
+/// file (`flock`) in the system's temporary directory, which other test
+/// processes skip: a port free when checked could otherwise be taken by
+/// another process's test before ours binds it, or while a service
+/// restarts on it (seen when several checkouts run the suite at once).
 pub fn free_ports(n: u16) -> u16 {
     static CALLS: AtomicU16 = AtomicU16::new(0);
+    static HELD: std::sync::Mutex<Vec<std::fs::File>> = std::sync::Mutex::new(Vec::new());
     let call = CALLS.fetch_add(1, Ordering::Relaxed);
     let (lo, hi) = (
         10000u16,
@@ -107,8 +114,24 @@ pub fn free_ports(n: u16) -> u16 {
     );
     let span = hi - lo;
     let mut p = lo + ((std::process::id() % 40) as u16 * 500 + (call % 40) * 12) % span;
+    let dir = std::env::temp_dir().join("hyperstor-e2e-ports");
+    let _ = std::fs::create_dir_all(&dir);
+    let reserve = |port: u16| -> Option<std::fs::File> {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(port.to_string()))
+            .ok()?;
+        f.try_lock().ok()?;
+        Some(f)
+    };
     loop {
-        if (0..n).all(|i| std::net::TcpListener::bind(("127.0.0.1", p + i)).is_ok()) {
+        let locks: Option<Vec<std::fs::File>> = (0..n).map(|i| reserve(p + i)).collect();
+        if let Some(locks) = locks
+            && (0..n).all(|i| std::net::TcpListener::bind(("127.0.0.1", p + i)).is_ok())
+        {
+            HELD.lock().unwrap_or_else(|e| e.into_inner()).extend(locks);
             return p;
         }
         p += n + 1;
@@ -547,5 +570,19 @@ mod tests {
                 "{p} (ephemeral from {low})"
             );
         }
+    }
+
+    /// A port handed out is reserved: no later call, here or in another
+    /// process, gets it again while this process lives.
+    #[test]
+    fn ports_handed_out_stay_reserved() {
+        let a = super::free_ports(4);
+        let b = super::free_ports(4);
+        assert!(b + 4 <= a || a + 4 <= b, "{a} and {b} overlap");
+        let lock = std::env::temp_dir()
+            .join("hyperstor-e2e-ports")
+            .join(a.to_string());
+        let f = std::fs::OpenOptions::new().write(true).open(lock).unwrap();
+        assert!(f.try_lock().is_err(), "held by this process");
     }
 }

@@ -74,9 +74,9 @@ values are left out of answers.
 | `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
-| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version` |
+| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
-| `DeleteVolume` | `{"id": "…"}` | `{}`, once the volume and its data are gone |
+| `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
 `TokenService`, `CaService`, `NodeService` and `OperationService`:
 
@@ -120,7 +120,7 @@ word for scripts (the message is for people, and may change):
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call; the token was used, has expired or was revoked |
-| `failed_precondition` | `no_ca`, `node_conflict`, `finished` | This member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
+| `failed_precondition` | `attached`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`); this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
 | `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
 | `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 

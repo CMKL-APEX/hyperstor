@@ -178,11 +178,13 @@ status = "planned"
 
 [[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
-spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D77", "I68", "I70", "I71", "I72", "I73"]
-status = "partial"
+spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
+status = "done"
 tests = [
     "cluster::objects_change_atomically_and_every_copy_follows",
     "cluster::volumes_are_created_listed_grown_and_deleted",
+    "cluster::a_volume_has_one_writer_and_is_handed_off",
+    "cluster::a_lease_outlives_its_headers_primary",
     "manage::volumes_through_hyperstorctl",
     "hyperstor_client::volume::tests::headers_round_trip",
     "hyperstor_proto::tests::operation_lists_objects_and_lookups_round_trip",
@@ -262,8 +264,16 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Down and out, blocklist and forced takeovers"
-spec = ["metadata.md §9"]
+what = "Blocklist and forced takeovers"
+spec = ["metadata.md §4.1", "metadata.md §9", "D24", "D76", "I75", "I76", "I77"]
+status = "done"
+tests = [
+    "cluster::a_forced_takeover_blocklists_the_old_holder",
+]
+
+[[milestone.item]]
+what = "Down and out"
+spec = ["placement.md §5.3"]
 status = "planned"
 
 [[milestone.item]]
@@ -436,6 +446,7 @@ tests = [
     "hyperstor_install::tests::cluster_file_roles_install_their_part",
     "install::cluster_file_install_across_hosts",
     "hyperstor_test::tests::test_ports_stay_below_the_ephemeral_range",
+    "hyperstor_test::tests::ports_handed_out_stay_reserved",
 ]
 
 [[milestone.item]]

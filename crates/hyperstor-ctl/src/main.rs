@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
-//!               [--role R] [--ttl SECS] [--dry-run]`
+//!               [--force] [--role R] [--ttl SECS] [--dry-run]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -16,7 +16,7 @@
 //!   backfilling or inactive;
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
-//!   and `delete-volume --id ID` (decisions.md D77);
+//!   and `delete-volume --id ID [--force]` (decisions.md D77, D80);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
@@ -58,7 +58,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--role R] [--ttl SECS] [--dry-run]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -112,6 +112,7 @@ struct Args {
     size: Option<u64>,
     name: String,
     id: Option<String>,
+    force: bool,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -145,6 +146,7 @@ fn main() {
         size: None,
         name: String::new(),
         id: None,
+        force: false,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -178,6 +180,7 @@ fn main() {
             }
             "--name" => a.name = it.next().cloned().unwrap_or_else(|| usage()),
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--force" => a.force = true,
             "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "drain"
                 if cmd.is_none() =>
@@ -221,6 +224,7 @@ fn main() {
     if (cmd == "create-volume") != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
         || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
+        || (a.force && cmd != "delete-volume")
     {
         usage();
     }
@@ -477,6 +481,7 @@ where
             match client
                 .delete_volume(pb::DeleteVolumeRequest {
                     id: id.clone(),
+                    force: a.force,
                     ..Default::default()
                 })
                 .await
