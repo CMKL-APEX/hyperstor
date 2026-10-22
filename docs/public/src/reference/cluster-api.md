@@ -81,7 +81,7 @@ values are left out of answers.
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
-`TokenService`, `CaService`, `MapService`, `NodeService` and `OperationService`:
+`TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService` and `OperationService`:
 
 | Method | Request | Answer |
 |---|---|---|
@@ -92,6 +92,9 @@ values are left out of answers.
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
+| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`), `me` |
+| `AddMember` | `id`, `raft_address`, `map_address` | `members`. On the leader; answers once the member votes |
+| `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |

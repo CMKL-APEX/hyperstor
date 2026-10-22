@@ -79,9 +79,54 @@ pub struct Commit {
     pub reply: hyperstor_reactor::chan::OneSender<Result<(), String>>,
 }
 
+/// A member as Raft records it: `RAFT_ADDR/MAP_ADDR`, so redirects and
+/// member changes know where each member serves the map (D87). Groups
+/// formed before recorded the Raft address alone.
+pub fn node_addr(m: &Member) -> String {
+    format!("{}/{}", m.raft, m.map)
+}
+
+/// The Raft address and, when recorded, the map address of a member's
+/// Raft record.
+pub fn split_node(addr: &str) -> (&str, Option<SocketAddr>) {
+    match addr.split_once('/') {
+        Some((raft, map)) => (raft, map.parse().ok()),
+        None => (addr, None),
+    }
+}
+
+/// The group as this member sees it.
+#[derive(Debug, Clone, Default)]
+pub struct Members {
+    pub voters: Vec<Member>,
+    pub learners: Vec<Member>,
+    pub leader: Option<RaftId>,
+    pub me: RaftId,
+}
+
+/// A change to, or a look at, the group's members (D87), done by the
+/// Raft side; changes only on the leader.
+pub enum MemberOp {
+    List(hyperstor_reactor::chan::OneSender<Members>),
+    /// Adds `member` as a learner, waits until it has caught up, then
+    /// makes it a voter.
+    Add {
+        member: Member,
+        reply: hyperstor_reactor::chan::OneSender<Result<Members, String>>,
+    },
+    /// Removes a member; refused below three voters unless `force`.
+    Remove {
+        id: RaftId,
+        force: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Members, String>>,
+    },
+}
+
 /// The running member.
 pub struct Replica {
     pub commits: tokio::sync::mpsc::UnboundedSender<Commit>,
+    /// Member changes (D87).
+    pub members: tokio::sync::mpsc::UnboundedSender<MemberOp>,
     /// The replicated store, for the API's join tokens (`tokens.rs`).
     pub db: Arc<Db>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -123,6 +168,7 @@ pub fn spawn(
     let db = Arc::new(Db::create(cfg.dir.join("map.redb")).map_err(|e| e.to_string())?);
     let api_db = db.clone();
     let (commits, commit_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (members, member_rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop, stop_rx) = tokio::sync::oneshot::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
@@ -140,13 +186,14 @@ pub fn spawn(
                 }
             };
             rt.block_on(run(
-                cfg, db, listener, to_reactor, commit_rx, stop_rx, ready_tx,
+                cfg, db, listener, to_reactor, commit_rx, member_rx, stop_rx, ready_tx,
             ));
         })
         .map_err(|e| e.to_string())?;
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(Replica {
             commits,
+            members,
             db: api_db,
             stop: Some(stop),
             thread: Some(thread),
@@ -166,6 +213,7 @@ async fn run(
     listener: std::net::TcpListener,
     to_reactor: hyperstor_reactor::chan::Sender<ToReactor>,
     mut commits: tokio::sync::mpsc::UnboundedReceiver<Commit>,
+    mut member_ops: tokio::sync::mpsc::UnboundedReceiver<MemberOp>,
     stop: tokio::sync::oneshot::Receiver<()>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
@@ -193,10 +241,25 @@ async fn run(
         Err(e) => return fail(format!("starting Raft: {e}")),
     };
     let maps: HashMap<RaftId, SocketAddr> = cfg.members.iter().map(|m| (m.id, m.map)).collect();
-    // Before membership is applied, a member knows who leads but not where.
+    // Where a member serves the map: its Raft record (members added at run
+    // time, D87), else the member list it was started with.
+    let map_of = {
+        let (node, maps) = (Arc::downgrade(&node), maps.clone());
+        move |id: RaftId| -> Option<SocketAddr> {
+            let recorded = node.upgrade().and_then(|n| {
+                let m = n.raft.metrics();
+                let b = m.borrow();
+                b.membership_config
+                    .membership()
+                    .get_node(&id)
+                    .and_then(|bn| split_node(&bn.addr).1)
+            });
+            recorded.or_else(|| maps.get(&id).copied())
+        }
+    };
     {
-        let maps = maps.clone();
-        node.set_leader_lookup(Box::new(move |id| maps.get(&id).map(|a| a.to_string())));
+        let map_of = map_of.clone();
+        node.set_leader_lookup(Box::new(move |id| map_of(id).map(|a| a.to_string())));
     }
     if let Err(e) = listener.set_nonblocking(true) {
         return fail(e.to_string());
@@ -216,7 +279,7 @@ async fn run(
         let all: BTreeMap<RaftId, openraft::BasicNode> = cfg
             .members
             .iter()
-            .map(|m| (m.id, openraft::BasicNode::new(m.raft.to_string())))
+            .map(|m| (m.id, openraft::BasicNode::new(node_addr(m))))
             .collect();
         if let Err(e) = node.raft.initialize(all).await {
             return fail(format!("forming the group: {e}"));
@@ -255,9 +318,7 @@ async fn run(
             loop {
                 let leading = match metrics.borrow().current_leader {
                     Some(l) if l == node.id => Leading::Me,
-                    Some(l) => maps
-                        .get(&l)
-                        .map_or(Leading::Unknown, |a| Leading::Other(*a)),
+                    Some(l) => map_of(l).map_or(Leading::Unknown, Leading::Other),
                     None => Leading::Unknown,
                 };
                 if last != Some(leading) {
@@ -314,7 +375,28 @@ async fn run(
             }
         })
     };
+    // Member changes (D87).
+    let membership = {
+        let node = node.clone();
+        let me = cfg.id;
+        tokio::spawn(async move {
+            while let Some(op) = member_ops.recv().await {
+                match op {
+                    MemberOp::List(reply) => {
+                        let _ = reply.send(members_now(&node, me));
+                    }
+                    MemberOp::Add { member, reply } => {
+                        let _ = reply.send(add_member(&node, me, member).await);
+                    }
+                    MemberOp::Remove { id, force, reply } => {
+                        let _ = reply.send(remove_member(&node, me, id, force).await);
+                    }
+                }
+            }
+        })
+    };
     let _ = stop.await;
+    membership.abort();
     if let Some(b) = backups {
         b.abort();
     }
@@ -330,6 +412,102 @@ async fn run(
 const APPEND: u8 = 1;
 const VOTE: u8 = 2;
 const SNAPSHOT: u8 = 3;
+/// The group from this member's metrics.
+fn members_now(node: &ClusterNode<MapSchema>, me: RaftId) -> Members {
+    let m = node.raft.metrics();
+    let b = m.borrow();
+    let membership = b.membership_config.membership();
+    let member = |id: RaftId| -> Option<Member> {
+        let n = membership.get_node(&id)?;
+        let (raft, map) = split_node(&n.addr);
+        Some(Member {
+            id,
+            raft: raft.parse().ok()?,
+            map: map.unwrap_or_else(|| ([0, 0, 0, 0], 0).into()),
+        })
+    };
+    Members {
+        voters: membership.voter_ids().filter_map(member).collect(),
+        learners: membership.learner_ids().filter_map(member).collect(),
+        leader: b.current_leader,
+        me,
+    }
+}
+
+fn not_leading(node: &ClusterNode<MapSchema>) -> String {
+    match node.leader() {
+        Some(l) => format!("this map service member isn't the leader; member {l} leads"),
+        None => "this map service member isn't the leader, and no leader is known".into(),
+    }
+}
+
+/// How long a new member may take to catch up before it votes.
+const CATCH_UP: std::time::Duration = std::time::Duration::from_secs(120);
+
+async fn add_member(
+    node: &ClusterNode<MapSchema>,
+    me: RaftId,
+    member: Member,
+) -> Result<Members, String> {
+    if !node.is_leader() {
+        return Err(not_leading(node));
+    }
+    let now = members_now(node, me);
+    if now
+        .voters
+        .iter()
+        .chain(&now.learners)
+        .any(|m| m.id == member.id)
+    {
+        return Err(format!("member {} is already in the group", member.id));
+    }
+    // A learner first: it receives the log, and votes once it has it.
+    tokio::time::timeout(CATCH_UP, node.add_learner(member.id, &node_addr(&member)))
+        .await
+        .map_err(|_| {
+            format!(
+                "member {} didn't catch up in {} s: is it running, and reachable at {}?",
+                member.id,
+                CATCH_UP.as_secs(),
+                member.raft
+            )
+        })?
+        .map_err(|e| e.to_string())?;
+    let mut voters = node.voters();
+    voters.insert(member.id);
+    node.set_voters(voters).await.map_err(|e| e.to_string())?;
+    Ok(members_now(node, me))
+}
+
+async fn remove_member(
+    node: &ClusterNode<MapSchema>,
+    me: RaftId,
+    id: RaftId,
+    force: bool,
+) -> Result<Members, String> {
+    if !node.is_leader() {
+        return Err(not_leading(node));
+    }
+    let voters = node.voters();
+    let learners = node.learners();
+    if !voters.contains(&id) && !learners.contains(&id) {
+        return Err(format!("no member {id}"));
+    }
+    if voters.contains(&id) && voters.len() <= 3 && !force {
+        return Err(format!(
+            "removing member {id} leaves {} voters: fewer than three survive no failure (use force)",
+            voters.len() - 1
+        ));
+    }
+    if voters.len() == 1 && voters.contains(&id) {
+        return Err("the last voter can't be removed".into());
+    }
+    node.remove_members([id].into_iter().collect())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(members_now(node, me))
+}
+
 /// A snapshot is the whole map, so a frame is bounded well above it.
 const MAX_FRAME: u32 = 256 << 20;
 
@@ -359,9 +537,8 @@ fn check_peer(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    if let Some(serial) = hyperstor_pki::serial_of(der)
-        && crate::certs::Certs::replicated(db.clone()).is_revoked(&serial, now)
-    {
+    if crate::certs::Certs::replicated(db.clone()).is_revoked_cert(der, now) {
+        let serial = hyperstor_pki::serial_of(der).unwrap_or_default();
         return Err(format!("the peer's certificate {serial} is revoked"));
     }
     match hyperstor_pki::identity_of(der) {
@@ -461,7 +638,7 @@ impl Transport for Tcp {
             Rpc::Append => APPEND,
             Rpc::Vote => VOTE,
         };
-        self.request(addr, kind, &body).await
+        self.request(split_node(addr).0, kind, &body).await
     }
 
     async fn snapshot(
@@ -478,7 +655,7 @@ impl Transport for Tcp {
         body.extend_from_slice(&(header.len() as u32).to_le_bytes());
         body.extend_from_slice(&header);
         body.extend_from_slice(&data);
-        self.request(addr, SNAPSHOT, &body).await
+        self.request(split_node(addr).0, SNAPSHOT, &body).await
     }
 }
 
@@ -504,7 +681,8 @@ async fn serve(
                     else {
                         return;
                     };
-                    if check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db).is_err() {
+                    if let Err(e) = check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db) {
+                        eprintln!("hyperstor-meta: refused a member's connection: {e}");
                         return;
                     }
                     Box::new(s)

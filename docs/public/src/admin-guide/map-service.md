@@ -116,3 +116,47 @@ It is a map service of one; with several
 members, the others join it again. Changes made after the backup was
 taken are lost: hosts joined since then join again.
 
+## Adding and removing members
+
+Members can be added and removed while the map service runs. Install the
+new member first, with a `meta` token from the leader and a member list
+that includes it, and start it; then add it on the leader:
+
+```sh
+# on the new host (member 4)
+sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token \
+    --role meta --members "$M,4=192.0.2.13:8851/192.0.2.13:8849" --member-id 4
+# on the leader
+hyperstorctl member add --id 4 --raft 192.0.2.13:8851 --map 192.0.2.13:8849
+hyperstorctl member list
+```
+
+The new member is a learner until it has the log, then a voter. `member
+remove --id N` takes one out; fewer than three voters survive no failure,
+so going below three needs `--force`. Replacing a member on another host
+is add, then remove. Storage nodes keep the member list they were
+installed with and are redirected to the leader by any member they
+reach; installing them again gives them the new list.
+
+## Recovering a lost majority
+
+If most members are lost for good, the rest can serve the map but not
+change it: nothing is marked down and no host joins. Force one survivor
+alone, on its host, with every other member stopped:
+
+```sh
+sudo systemctl stop hyperstor-meta
+echo "HS_ONCE=--force-alone CLUSTER_ID" | sudo tee /etc/hyperstor/meta-once.env
+sudo systemctl start hyperstor-meta
+hyperstorctl member list            # one member, leading
+sudo rm /etc/hyperstor/meta-once.env
+```
+
+It refuses while another member answers, since two groups would then
+split the cluster, and unless given the cluster's id. It revokes the
+other members' certificates issued until then, so an old member that
+comes back with its log is refused; reinstall those with fresh data
+directories, join them with `meta` tokens, and add them. Map changes the
+survivor hadn't received before the loss are lost: hosts joined in that
+window join again.
+
