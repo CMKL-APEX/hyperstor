@@ -71,6 +71,10 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   instant, and needs the volume detached.
 - **Limits:** 255 snapshots per volume. Clone chains of more than 16
   levels are refused; flatten first.
+- **As built** (HS4, implementation-notes.md I115, I120, I121): snapshots,
+  rollback, clones and flatten in the client library, quiesce through
+  the holder's watch of its header (D98), deletion by merging versions
+  in the engine (D99). Consistency groups come next.
 
 ### 10.4 Clones and flatten
 

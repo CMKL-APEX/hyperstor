@@ -27,7 +27,7 @@ use hyperstor_client::rpc::{Conn, read_frame, writer};
 use hyperstor_client::volume::{
     LEASE_ATTR, decode_holder, encode_holder, header_deleting, header_version,
 };
-use hyperstor_client::{Client, ClientError};
+use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
     BlockDev, Committed, DeviceConfig, EngineError, FileDev, MemDev, Namespace, ObjKey, Op,
     OpError, OpList, Shard, UringDev,
@@ -35,9 +35,9 @@ use hyperstor_engine::{
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
     Code, DAMAGED, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW, Looked, Msg,
-    Target, VERSION, WireKey, WireObject, WireOp, block_crcs, decode_digests, decode_object,
-    decode_ops, encode_digests, encode_frame, encode_looked, encode_object, encode_ops,
-    verify_crcs,
+    Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp, block_crcs,
+    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
+    encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream};
@@ -294,6 +294,11 @@ struct ShardState {
     /// it): nothing is served, and the map service is told (`heartbeat`).
     failed: Cell<bool>,
     failure_reported: Cell<bool>,
+    /// Lease holders waiting for news of a header (`Watch`, D98).
+    watches: RefCell<HashMap<ObjKey, Vec<Watcher>>>,
+    /// Snapshots waiting for a header's holder to quiesce: the token, the
+    /// snapshot's wait for the drain, and the holder's wait to resume.
+    quiesce: RefCell<HashMap<ObjKey, Quiesce>>,
     /// The test hook of `NodeConfig::partitions`, with this node's id.
     partitions: RefCell<Option<(u32, Arc<faults::Partitions>)>>,
     /// Objects the last scrub of each PG left unresolved, as reported.
@@ -378,6 +383,23 @@ impl Drop for Expiry<'_> {
             self.d.waiting.borrow_mut().remove(&self.key);
         }
     }
+}
+
+/// A chunk's name without a branch: lineage (16 bytes) and index (8).
+const CHUNK_NAME_LEN: usize = 24;
+
+/// How long a snapshot waits for an attached volume's holder to quiesce
+/// before it is abandoned (volumes.md §10.3).
+pub const QUIESCE_WITHIN: Duration = Duration::from_secs(2);
+
+/// A holder's pending watch: answered with an event and a token.
+type Watcher = OneSender<(u8, u64)>;
+
+/// A snapshot waiting on a holder (`ShardState::quiesce`).
+struct Quiesce {
+    token: u64,
+    drained: Option<OneSender<()>>,
+    resume: Vec<OneSender<()>>,
 }
 
 /// How long a primary waits for a replica to answer a replicated change
@@ -474,7 +496,7 @@ const DEEP_SCRUB_RATE: u64 = 64 << 20;
 
 /// The engine operation of an operation list's effect (assertions have
 /// none: the primary decides them).
-fn engine_op(op: WireOp) -> Option<Op> {
+fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
     Some(match op {
         WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. } => return None,
         WireOp::Touch => Op::Touch,
@@ -487,6 +509,10 @@ fn engine_op(op: WireOp) -> Option<Op> {
         WireOp::KvDel(k) => Op::KvDel(k),
         WireOp::KvDelRange(a, b) => Op::KvDelRange(a, b),
         WireOp::Delete => Op::Delete,
+        WireOp::Absorb(v) => Op::Absorb(ObjKey {
+            version: v,
+            ..key.clone()
+        }),
     })
 }
 
@@ -571,6 +597,8 @@ impl ShardState {
             failure_reported: Cell::new(false),
             inconsistent: RefCell::new(HashMap::new()),
             partitions: RefCell::new(None),
+            watches: RefCell::new(HashMap::new()),
+            quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
             cache_epochs: RefCell::new(HashMap::new()),
@@ -989,6 +1017,67 @@ impl ShardState {
                         self.client.install_map(m);
                     }
                     reply(&Msg::MapPushOk, &[]);
+                }
+                Msg::ReadAt {
+                    to,
+                    key,
+                    layers,
+                    off,
+                    len,
+                } => {
+                    let arrived = std::time::Instant::now();
+                    let (m, p) = self.read_at(to, key, layers, off, len).await;
+                    self.metrics.read_latency.observe(arrived.elapsed());
+                    metrics::ShardMetrics::add(&self.metrics.reads, 1);
+                    metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
+                    reply(&m, &p);
+                }
+                Msg::Versions { to, key } => {
+                    let m = match self.check(&to, true).await {
+                        Err(m) => m,
+                        Ok(_) => match engine_key(&to, &key) {
+                            Ok(k) => Msg::VersionsOk {
+                                versions: self.shard.borrow().versions(&k),
+                            },
+                            Err(()) => err(Code::Invalid, &self.map(), "bad namespace"),
+                        },
+                    };
+                    reply(&m, &[]);
+                }
+                Msg::DropVersions { to, key, from } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.drop_versions(instance, to, key, from).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
+                Msg::Flatten { to, key, layers } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.flatten(instance, to, key, layers).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
+                Msg::Watch { to, key, version } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.watch(to, key, version).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
+                Msg::Quiesced { to, key, token } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.quiesced(to, key, token).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
+                Msg::Snapshot { to, key } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = me.snapshot(instance, to, key, payload).await;
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
                 }
                 Msg::Fetch { to, key } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
@@ -1411,7 +1500,10 @@ impl ShardState {
             .collect();
         let local = self.enqueue(OpList {
             key: okey.clone(),
-            ops: effects.into_iter().filter_map(engine_op).collect(),
+            ops: effects
+                .into_iter()
+                .filter_map(|o| engine_op(&okey, o))
+                .collect(),
         });
         // Queued: the next list on this key waits for it to commit.
         unlock(self);
@@ -1428,10 +1520,14 @@ impl ShardState {
             }
         });
         let me2 = self.clone();
+        let changed = okey.clone();
         Box::pin(async move {
             let r = local.await;
             let failed = me2.await_replicas(to, remote, deadline).await;
             let failed_dev = me2.failed.get();
+            if r.is_ok() && failed.is_none() {
+                me2.notify(&changed, WATCH_CHANGED, 0);
+            }
             let _inflight = InflightGuard(me2, (pool, pgn));
             match (r, failed) {
                 (Ok(_), None) => Ok(()),
@@ -1452,6 +1548,343 @@ impl ShardState {
                 }),
             }
         })
+    }
+
+    /// The keys of a chunk's versions to read through, first first: for
+    /// each layer (branch, newest epoch), that branch's versions up to the
+    /// epoch, newest first (engine.md §7.2).
+    fn layer_keys(
+        &self,
+        to: &Target,
+        base: &WireKey,
+        layers: &[(u32, u64)],
+    ) -> Result<Vec<ObjKey>, ()> {
+        let ns = Namespace::from_u8(base.ns).map_err(|_| ())?;
+        let sh = self.shard.borrow();
+        let mut keys = Vec::new();
+        for (branch, newest) in layers {
+            let k = ObjKey::new(to.pool, to.pg, ns, branch_name(&base.name, *branch), 0);
+            for v in sh.versions(&k).into_iter().rev().filter(|v| v <= newest) {
+                keys.push(ObjKey {
+                    version: v,
+                    ..k.clone()
+                });
+            }
+        }
+        Ok(keys)
+    }
+
+    /// A read of a volume chunk at an epoch, through its versions and its
+    /// clone parents (D96).
+    async fn read_at(
+        &self,
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64)>,
+        off: u64,
+        len: u64,
+    ) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, true).await {
+            return (m, Vec::new());
+        }
+        let Ok(keys) = self.layer_keys(&to, &key, &layers) else {
+            return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
+        };
+        let r = self.shard.borrow().read_layered(&keys, off, len);
+        let data = match r {
+            Ok(b) => b.to_vec(),
+            Err(EngineError::NotFound) => vec![0; len as usize],
+            Err(EngineError::Checksum { lblock }) => {
+                return (
+                    err(Code::Checksum, &self.map(), format!("block {lblock}")),
+                    Vec::new(),
+                );
+            }
+            Err(e) => {
+                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) {
+                    self.failed.set(true);
+                }
+                return (err(Code::Io, &self.map(), e.to_string()), Vec::new());
+            }
+        };
+        (
+            Msg::ReadOk {
+                crcs: block_crcs(&data),
+            },
+            data,
+        )
+    }
+
+    /// Deletes the versions of `key`'s name from epoch `from` on, one by
+    /// one, each replicated as a delete.
+    async fn drop_versions(
+        self: &Rc<Self>,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        from: u64,
+    ) -> Msg {
+        if let Err(m) = self.check(&to, true).await {
+            return m;
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return err(Code::Invalid, &self.map(), "bad namespace");
+        };
+        let versions: Vec<u64> = self
+            .shard
+            .borrow()
+            .versions(&okey)
+            .into_iter()
+            .filter(|v| *v >= from)
+            .collect();
+        for v in versions {
+            let k = WireKey {
+                version: v,
+                ..key.clone()
+            };
+            let done = self
+                .decide_and_apply(instance, to, k, |_, _| Ok(vec![WireOp::Delete]))
+                .await;
+            if let Err(m) = done.await {
+                return m;
+            }
+        }
+        Msg::ExecOk
+    }
+
+    /// Copies into a clone's chunk (`key`, at its head epoch) every block
+    /// no version of its own branch holds, read through `layers`, its
+    /// parents (volumes.md §10.4). Decided and replicated as writes.
+    async fn flatten(
+        self: &Rc<Self>,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64)>,
+    ) -> Msg {
+        let decide = move |me: &Self, okey: &ObjKey| {
+            let mut parents = Vec::new();
+            {
+                let sh = me.shard.borrow();
+                let ns = okey.ns;
+                for (branch, newest) in &layers {
+                    // The parents' names: the chunk's name (lineage and
+                    // index, 24 bytes) without the clone's branch.
+                    let chunk = &okey.name[..okey.name.len().min(CHUNK_NAME_LEN)];
+                    let k = ObjKey::new(okey.pool, okey.pg, ns, branch_name(chunk, *branch), 0);
+                    for v in sh.versions(&k).into_iter().rev().filter(|v| v <= newest) {
+                        parents.push(ObjKey {
+                            version: v,
+                            ..k.clone()
+                        });
+                    }
+                }
+            }
+            let sh = me.shard.borrow();
+            let own: Vec<ObjKey> = sh
+                .versions(okey)
+                .into_iter()
+                .map(|v| ObjKey {
+                    version: v,
+                    ..okey.clone()
+                })
+                .collect();
+            let blocks = parents
+                .iter()
+                .filter_map(|k| sh.stat(k))
+                .map(|s| s.size.div_ceil(hyperstor_engine::BLOCK as u64))
+                .max()
+                .unwrap_or(0);
+            let mut effects: Vec<WireOp> = Vec::new();
+            let mut run: Option<(u64, Vec<u8>)> = None;
+            for lb in 0..blocks {
+                let missing =
+                    !own.iter().any(|k| sh.holds(k, lb)) && parents.iter().any(|k| sh.holds(k, lb));
+                if missing {
+                    let b = sh
+                        .read_layered(&parents, lb * 4096, 4096)
+                        .map_err(|e| err(Code::Checksum, &me.map(), e.to_string()))?;
+                    match &mut run {
+                        Some((start, data)) if *start + (data.len() / 4096) as u64 == lb => {
+                            data.extend_from_slice(&b)
+                        }
+                        _ => {
+                            if let Some((start, data)) = run.take() {
+                                effects.push(WireOp::Write {
+                                    off: start * 4096,
+                                    data,
+                                });
+                            }
+                            run = Some((lb, b.to_vec()));
+                        }
+                    }
+                }
+            }
+            if let Some((start, data)) = run.take() {
+                effects.push(WireOp::Write {
+                    off: start * 4096,
+                    data,
+                });
+            }
+            Ok(effects)
+        };
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        match done.await {
+            Ok(()) => Msg::ExecOk,
+            Err(m) => m,
+        }
+    }
+
+    /// Wakes every watch of `key` with `event`.
+    fn notify(&self, key: &ObjKey, event: u8, token: u64) {
+        if self.watches.borrow().is_empty() {
+            return;
+        }
+        if let Some(ws) = self.watches.borrow_mut().remove(key) {
+            for w in ws {
+                let _ = w.send((event, token));
+            }
+        }
+    }
+
+    /// A lease holder's watch of its header (D98): answered at once if the
+    /// header is past `version` or a quiesce is pending, else when either
+    /// happens, or after 20 s (the holder watches again).
+    async fn watch(&self, to: Target, key: WireKey, version: u64) -> Msg {
+        if let Err(m) = self.check(&to, true).await {
+            return m;
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return err(Code::Invalid, &self.map(), "bad namespace");
+        };
+        if let Some(q) = self.quiesce.borrow().get(&okey) {
+            return Msg::WatchOk {
+                event: WATCH_QUIESCE,
+                token: q.token,
+            };
+        }
+        let now = self.shard.borrow().attrs(&okey).map_or(0, header_version);
+        if now > version {
+            return Msg::WatchOk {
+                event: WATCH_CHANGED,
+                token: 0,
+            };
+        }
+        let (tx, rx) = oneshot();
+        self.watches.borrow_mut().entry(okey).or_default().push(tx);
+        let (event, token) =
+            match hyperstor_reactor::time::timeout(Duration::from_secs(20), rx.recv()).await {
+                Ok(Some(e)) => e,
+                _ => (WATCH_CHANGED, 0),
+            };
+        Msg::WatchOk { event, token }
+    }
+
+    /// The holder has stopped writing and drained, for quiesce `token`:
+    /// tell the waiting snapshot, then answer once it is taken or
+    /// abandoned.
+    async fn quiesced(&self, to: Target, key: WireKey, token: u64) -> Msg {
+        let Ok(okey) = engine_key(&to, &key) else {
+            return err(Code::Invalid, &self.map(), "bad namespace");
+        };
+        let (tx, rx) = oneshot();
+        {
+            let mut q = self.quiesce.borrow_mut();
+            match q.get_mut(&okey) {
+                Some(q) if q.token == token => {
+                    if let Some(d) = q.drained.take() {
+                        let _ = d.send(());
+                    }
+                    q.resume.push(tx);
+                }
+                // Abandoned already, or another snapshot's.
+                _ => return Msg::ExecOk,
+            }
+        }
+        let _ = hyperstor_reactor::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        Msg::ExecOk
+    }
+
+    /// A snapshot (volumes.md §10.3): with the volume's holder, if any,
+    /// quiesced first (abandoned if it doesn't within 2 s), the header's
+    /// change is applied as an operation list; then the holder resumes.
+    async fn snapshot(
+        self: &Rc<Self>,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        payload: Vec<u8>,
+    ) -> Msg {
+        if let Err(m) = self.check(&to, true).await {
+            return m;
+        }
+        let Ok(ops) = decode_ops(&payload) else {
+            return err(Code::Invalid, &self.map(), "malformed operation list");
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return err(Code::Invalid, &self.map(), "bad namespace");
+        };
+        let held = self
+            .shard
+            .borrow()
+            .attrs(&okey)
+            .is_some_and(|a| a.contains_key(LEASE_ATTR));
+        if held {
+            if self.quiesce.borrow().contains_key(&okey) {
+                return err(Code::Busy, &self.map(), "another snapshot is quiescing");
+            }
+            let token = hyperstor_client::random_u64().max(1);
+            let (tx, rx) = oneshot();
+            self.quiesce.borrow_mut().insert(
+                okey.clone(),
+                Quiesce {
+                    token,
+                    drained: Some(tx),
+                    resume: Vec::new(),
+                },
+            );
+            self.notify(&okey, WATCH_QUIESCE, token);
+            let drained = matches!(
+                hyperstor_reactor::time::timeout(QUIESCE_WITHIN, rx.recv()).await,
+                Ok(Some(()))
+            );
+            if !drained {
+                self.resume(&okey);
+                return err(
+                    Code::Busy,
+                    &self.map(),
+                    format!(
+                        "the volume's holder didn't quiesce within {QUIESCE_WITHIN:?}; snapshot abandoned"
+                    ),
+                );
+            }
+        }
+        let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
+            Err(why) => Err(err(Code::Conflict, &me.map(), why)),
+            Ok(()) => Ok(ops
+                .iter()
+                .filter(|o| !o.is_assertion())
+                .cloned()
+                .collect::<Vec<_>>()),
+        };
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        let r = done.await;
+        if held {
+            self.resume(&okey);
+        }
+        match r {
+            Ok(()) => Msg::ExecOk,
+            Err(m) => m,
+        }
+    }
+
+    /// Ends a quiesce: the holder resumes.
+    fn resume(&self, okey: &ObjKey) {
+        if let Some(q) = self.quiesce.borrow_mut().remove(okey) {
+            for r in q.resume {
+                let _ = r.send(());
+            }
+        }
     }
 
     /// Takes a volume's lease for `instance` as its header's primary
@@ -1708,10 +2141,11 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return send(err(Code::Invalid, &self.map(), "bad namespace"));
         };
-        let local = self.enqueue(OpList {
-            key: okey,
-            ops: ops.into_iter().filter_map(engine_op).collect(),
-        });
+        let ops = ops
+            .into_iter()
+            .filter_map(|o| engine_op(&okey, o))
+            .collect();
+        let local = self.enqueue(OpList { key: okey, ops });
         spawn(async move {
             send(match local.await {
                 Ok(c) => Msg::ReplOk {

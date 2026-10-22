@@ -339,8 +339,15 @@ tests = [
 
 [[milestone.item]]
 what = "Snapshots, clones, rollback, flatten and snapshot deletion"
-spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D96", "D98"]
-status = "planned"
+spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D96", "D98", "I115", "I120", "I121"]
+status = "done"
+tests = [
+    "cluster::snapshots_clones_and_rollback_read_what_they_should",
+    "cluster::random_snapshot_operations_match_a_model",
+    "cluster::deleting_a_snapshot_keeps_what_a_later_one_reads",
+    "cluster::a_snapshot_never_changes_while_its_volume_is_written",
+    "cluster::a_snapshot_whose_holder_doesnt_quiesce_is_abandoned",
+]
 
 [[milestone.item]]
 what = "Consistency groups"

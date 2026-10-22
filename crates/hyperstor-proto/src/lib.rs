@@ -112,6 +112,9 @@ pub enum Code {
     /// The map service member isn't the leader; `detail` is the leader's
     /// map-service address when known, else empty (decisions.md D72).
     NotLeader = 11,
+    /// Not now: retrying at once won't help (a snapshot whose volume's
+    /// holder didn't quiesce in time).
+    Busy = 12,
 }
 
 impl Code {
@@ -127,6 +130,7 @@ impl Code {
             9 => Code::Conflict,
             10 => Code::Blocklisted,
             11 => Code::NotLeader,
+            12 => Code::Busy,
             _ => Code::Invalid,
         }
     }
@@ -417,6 +421,70 @@ pub enum Msg {
     FetchOk {
         found: bool,
     },
+    /// Client to primary: read a volume chunk at an epoch (engine.md
+    /// §7.2). `key.name` is the chunk without a branch; each layer is a
+    /// branch and the newest epoch read from it, the volume's own first,
+    /// then its clone parents'. Each block comes from the newest version
+    /// that holds it in the first layer that has one.
+    ReadAt {
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64)>,
+        off: u64,
+        len: u64,
+    },
+    /// Client to primary: the versions of the object `key` names.
+    Versions {
+        to: Target,
+        key: WireKey,
+    },
+    VersionsOk {
+        versions: Vec<u64>,
+    },
+    /// Client to primary: delete the versions of `key`'s name from epoch
+    /// `from` on (a volume's branch, or what a rollback left behind).
+    DropVersions {
+        to: Target,
+        key: WireKey,
+        from: u64,
+    },
+    /// Client to primary: copy into `key` (a clone's chunk at its head
+    /// epoch) every block no version of its own branch holds, read
+    /// through `layers` (its parents), so the clone stops depending on
+    /// them (volumes.md §10.4).
+    Flatten {
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64)>,
+    },
+    /// Lease holder to a header's primary: answer when there is news for
+    /// this volume past header version `version` (decisions.md D98).
+    Watch {
+        to: Target,
+        key: WireKey,
+        version: u64,
+    },
+    /// News: [`WATCH_CHANGED`] (read the header again) or [`WATCH_QUIESCE`]
+    /// (stop writing, drain, and answer [`Msg::Quiesced`] with `token`).
+    WatchOk {
+        event: u8,
+        token: u64,
+    },
+    /// Holder to primary: drained for quiesce `token`. Answered with
+    /// [`Msg::ExecOk`] once the snapshot is taken or abandoned: then
+    /// read the header again and resume.
+    Quiesced {
+        to: Target,
+        key: WireKey,
+        token: u64,
+    },
+    /// Client to a header's primary: take a snapshot, an operation list in
+    /// the payload ([`encode_ops`]) applied with the volume's holder, if
+    /// any, quiesced (volumes.md §10.3); abandoned after 2 s without.
+    Snapshot {
+        to: Target,
+        key: WireKey,
+    },
     Error {
         code: Code,
         map_epoch: u64,
@@ -471,6 +539,15 @@ mod kind {
     pub const NOTED: u16 = 51;
     pub const FETCH: u16 = 52;
     pub const FETCH_OK: u16 = 53;
+    pub const READ_AT: u16 = 54;
+    pub const VERSIONS: u16 = 55;
+    pub const VERSIONS_OK: u16 = 56;
+    pub const DROP_VERSIONS: u16 = 57;
+    pub const FLATTEN: u16 = 58;
+    pub const WATCH: u16 = 59;
+    pub const WATCH_OK: u16 = 60;
+    pub const QUIESCED: u16 = 61;
+    pub const SNAPSHOT: u16 = 62;
     pub const ERROR: u16 = 99;
 }
 
@@ -524,6 +601,15 @@ impl Msg {
             Msg::Noted { .. } => NOTED,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
+            Msg::ReadAt { .. } => READ_AT,
+            Msg::Versions { .. } => VERSIONS,
+            Msg::VersionsOk { .. } => VERSIONS_OK,
+            Msg::DropVersions { .. } => DROP_VERSIONS,
+            Msg::Flatten { .. } => FLATTEN,
+            Msg::Watch { .. } => WATCH,
+            Msg::WatchOk { .. } => WATCH_OK,
+            Msg::Quiesced { .. } => QUIESCED,
+            Msg::Snapshot { .. } => SNAPSHOT,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -552,6 +638,8 @@ impl Msg {
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
                 | Msg::FetchOk { .. }
+                | Msg::VersionsOk { .. }
+                | Msg::WatchOk { .. }
                 | Msg::Error { .. }
         )
     }
@@ -765,6 +853,50 @@ impl Msg {
             Msg::FetchOk { found } => {
                 e.bool(*found);
             }
+            Msg::ReadAt {
+                to,
+                key,
+                layers,
+                off,
+                len,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                layers_enc(e, layers);
+                e.u64(*off).u64(*len);
+            }
+            Msg::Versions { to, key } | Msg::Snapshot { to, key } => {
+                to.enc(e);
+                key.enc(e);
+            }
+            Msg::VersionsOk { versions } => {
+                e.seq(versions, |e, v| {
+                    e.u64(*v);
+                });
+            }
+            Msg::DropVersions { to, key, from } => {
+                to.enc(e);
+                key.enc(e);
+                e.u64(*from);
+            }
+            Msg::Flatten { to, key, layers } => {
+                to.enc(e);
+                key.enc(e);
+                layers_enc(e, layers);
+            }
+            Msg::Watch { to, key, version } => {
+                to.enc(e);
+                key.enc(e);
+                e.u64(*version);
+            }
+            Msg::WatchOk { event, token } => {
+                e.u8(*event).u64(*token);
+            }
+            Msg::Quiesced { to, key, token } => {
+                to.enc(e);
+                key.enc(e);
+                e.u64(*token);
+            }
             Msg::Error {
                 code,
                 map_epoch,
@@ -938,6 +1070,48 @@ impl Msg {
                 key: WireKey::dec(&mut d)?,
             },
             FETCH_OK => Msg::FetchOk { found: d.bool()? },
+            READ_AT => Msg::ReadAt {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                layers: layers_dec(&mut d)?,
+                off: d.u64()?,
+                len: d.u64()?,
+            },
+            VERSIONS => Msg::Versions {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
+            VERSIONS_OK => Msg::VersionsOk {
+                versions: d.seq(8, |d| d.u64())?,
+            },
+            DROP_VERSIONS => Msg::DropVersions {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                from: d.u64()?,
+            },
+            FLATTEN => Msg::Flatten {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                layers: layers_dec(&mut d)?,
+            },
+            WATCH => Msg::Watch {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                version: d.u64()?,
+            },
+            WATCH_OK => Msg::WatchOk {
+                event: d.u8()?,
+                token: d.u64()?,
+            },
+            QUIESCED => Msg::Quiesced {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                token: d.u64()?,
+            },
+            SNAPSHOT => Msg::Snapshot {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
             ERROR => Msg::Error {
                 code: Code::from_u16(d.u16()?),
                 map_epoch: d.u64()?,
@@ -949,6 +1123,20 @@ impl Msg {
         Ok(m)
     }
 }
+
+fn layers_enc(e: &mut Enc, layers: &[(u32, u64)]) {
+    e.seq(layers, |e, (b, ep)| {
+        e.u32(*b).u64(*ep);
+    });
+}
+
+fn layers_dec(d: &mut Dec<'_>) -> Result<Vec<(u32, u64)>, DecodeError> {
+    d.seq(12, |d| Ok((d.u32()?, d.u64()?)))
+}
+
+/// [`Msg::WatchOk`] events.
+pub const WATCH_CHANGED: u8 = 0;
+pub const WATCH_QUIESCE: u8 = 1;
 
 /// Lease modes (metadata.md §9): `rw` is exclusive; `ro` is shared, and
 /// only for snapshots (D18).
@@ -1019,6 +1207,9 @@ pub enum WireOp {
     /// Deletes keys in `[start, end)`.
     KvDelRange(Vec<u8>, Vec<u8>),
     Delete,
+    /// Takes the blocks that version `.0` of this object's name holds and
+    /// this one lacks, then deletes that version (decisions.md D99).
+    Absorb(u64),
 }
 
 impl WireOp {
@@ -1078,6 +1269,9 @@ pub fn encode_ops(ops: &[WireOp]) -> Vec<u8> {
             WireOp::Delete => {
                 e.u8(13);
             }
+            WireOp::Absorb(v) => {
+                e.u8(14).u64(*v);
+            }
         }
     }
     e.into_vec()
@@ -1119,6 +1313,7 @@ pub fn decode_ops(b: &[u8]) -> Result<Vec<WireOp>, DecodeError> {
             11 => WireOp::KvDel(bytes(&mut d)?),
             12 => WireOp::KvDelRange(bytes(&mut d)?, bytes(&mut d)?),
             13 => WireOp::Delete,
+            14 => WireOp::Absorb(d.u64()?),
             k => {
                 return Err(DecodeError::Invalid {
                     field: "operation",
@@ -1440,6 +1635,76 @@ mod tests {
                 },
             },
             Msg::FetchOk { found: true },
+            Msg::ReadAt {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+                layers: vec![(2, 5), (0, 3)],
+                off: 4096,
+                len: 8192,
+            },
+            Msg::Versions {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::VersionsOk {
+                versions: vec![1, 3, 9],
+            },
+            Msg::DropVersions {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+                from: 4,
+            },
+            Msg::Flatten {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 7,
+                },
+                layers: vec![(0, 3)],
+            },
+            Msg::Watch {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                version: 4,
+            },
+            Msg::WatchOk {
+                event: WATCH_QUIESCE,
+                token: 11,
+            },
+            Msg::Quiesced {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                token: 11,
+            },
+            Msg::Snapshot {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
             Msg::Error {
                 code: Code::NotPrimary,
                 map_epoch: 5,
@@ -1488,6 +1753,7 @@ mod tests {
             WireOp::KvDel(b"k".to_vec()),
             WireOp::KvDelRange(b"a".to_vec(), b"z".to_vec()),
             WireOp::Delete,
+            WireOp::Absorb(7),
         ];
         assert_eq!(decode_ops(&encode_ops(&ops)).unwrap(), ops);
         assert!(decode_ops(&[1, 0, 0, 0, 99]).is_err());
