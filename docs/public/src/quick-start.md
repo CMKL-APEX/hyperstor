@@ -70,8 +70,8 @@ sleep 5
 HS_BENCH_SECS=2 target/release/hyperstor-bench remote 127.0.0.1:19000
 ```
 
-About three seconds after the node stops answering, the map service
-marks it down and gives its placement groups to the other nodes; writes
+Within a second of the node stopping, the map service marks it down and
+the other nodes take over as primaries of its placement groups; writes
 then go on with two copies. Start the node again with the same command
 and it is refilled with the writes it missed (see
 [Failures and recovery](admin-guide/failures.md)).

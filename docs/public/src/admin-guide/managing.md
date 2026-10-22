@@ -41,7 +41,7 @@ POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INA
 | Health | Means | Exit status |
 |---|---|---|
 | `ok` | Every PG has all its copies | 0 |
-| `warn` | Something is down, out, degraded or backfilling; data is still writable | 1 |
+| `warn` | Something is down, out, degraded or backfilling, or scrub found PGs whose copies it couldn't repair (`inconsistent`); data is still writable | 1 |
 | `error` | Some PG has fewer copies than the pool's minimum, or no primary: writes to it stop | 1 |
 
 The exit status makes `hyperstorctl status` usable in scripts and
@@ -65,10 +65,11 @@ as copies, there is nowhere to move them, so the PGs run with one copy
 fewer (`degraded`) until the device is back **in**. Writes go on while
 each PG keeps at least the pool's `min` copies.
 
-> **Out doesn't survive a map service restart.** The map service reads
-> the cluster file when it starts and doesn't keep changes made since,
-> so after a restart every device is in again. Bring devices back in
-> before restarting it, or expect their PGs to move back.
+> **Without `--data`, out doesn't survive a map service restart.** A
+> map service without a store reads the cluster file when it starts and
+> doesn't keep changes made since, so after a restart every device is in
+> again. With `--data` (every install does this) the map, out devices
+> included, is kept.
 
 ## Draining a node
 
