@@ -499,6 +499,39 @@ recommendation:
 | 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D91 |
 | 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D92 |
 
+## People's logins and the web UI (AD2, 2026-10-22)
+
+`glidex-auth` (D52) was to be extracted before AD2. glidex's login,
+token, OIDC and Cedar code is about 8,000 lines tied to its directories,
+invitations, tenancy and schema; the owner chose how much moves, and
+whether the UI comes with it.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 51 | What `glidex-auth` moves: the core only (sessions, tokens, Cedar), the core plus OIDC, everything behind a store trait, or nothing yet | The core plus OIDC | D96 |
+| 52 | The React UI with the logins, or the logins behind the interim dashboard first | Both together | D97 |
+
+Drafted for review with the plan: D98 (mgmt's state in the map
+service's store, through the API, cached 10 s), D99 (`hyperstor-authd`
+embeds `glidex-authd`), D100 (the UI embedded in the binary).
+
+### Order of work
+
+1. **glidex PR**: `crates/glidex-auth` (sessions, tokens, step-up age,
+   the generic Cedar engine, OIDC without directories), glidex using it
+   with its behaviour unchanged and its tests passing; and the shared UI
+   components as a package beside `glidex-ui`, glidex's UI using it.
+   Merged by the owner.
+2. **hyperstor PR**: the pinned `glidex-auth`; `hyperstor-authd` (D99);
+   the `MgmtStore` service and table (D98); login with PAM and OIDC,
+   sessions, `hst_` tokens, `hyperstorctl auth login`, the first-boot
+   claim URL, Cedar roles (`viewer`, `operator`, `storage-admin`,
+   `security-admin`) with step-up; HTTPS beyond loopback.
+3. **hyperstor PR**: the React UI (§23.7's pages for what exists:
+   overview, nodes and devices, pools, PGs, volumes, operations,
+   security, audit), embedded (D100), with end-to-end tests in the
+   browser as glidex's.
+
 ## Snapshots and the engine (2026-10-22)
 
 HS4 (snapshots, clones and the host read cache) came before HS3 at the
