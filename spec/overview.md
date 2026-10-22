@@ -2,7 +2,7 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19, D38–D55, D61–D68, D69–D92 and D94–D100 were settled
+[decisions.md](decisions.md): D1–D19, D38–D55, D61–D68, D69–D92 and D94–D105 were settled
 with the owner; D20–D37, D56–D60 and D66's merge rule were made while
 drafting and are open to review. Host checks G1–G23 (milestones.md §22)
 are still open. What is built, and the

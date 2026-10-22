@@ -121,7 +121,7 @@ pub enum Op {
     /// without copying data, then deletes `src` (whose other blocks, which
     /// this object overrides, are freed). The size becomes the larger of
     /// the two. Merges a deleted snapshot's chunk version into the next
-    /// newer one (decisions.md D99). `src` must be another object.
+    /// newer one (decisions.md D104). `src` must be another object.
     Absorb(ObjKey),
 }
 

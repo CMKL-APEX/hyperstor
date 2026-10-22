@@ -336,7 +336,7 @@ title = "Snapshots, clones and the host read cache"
 
 [[milestone.item]]
 what = "Engine: chunk versions read through layers, and merged without copying"
-spec = ["engine.md §7.2", "D96", "D99", "I114"]
+spec = ["engine.md §7.2", "D101", "D104", "I114"]
 status = "done"
 tests = [
     "engine::versions_read_through_layers_and_merge_without_copying",
@@ -344,7 +344,7 @@ tests = [
 
 [[milestone.item]]
 what = "Snapshots, clones, rollback, flatten and snapshot deletion"
-spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D96", "D98"]
+spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D101", "D103"]
 status = "planned"
 
 [[milestone.item]]
@@ -354,7 +354,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "The host read cache, in the client library"
-spec = ["frontends.md §11.3", "D32", "D97"]
+spec = ["frontends.md §11.3", "D32", "D102"]
 status = "planned"
 
 [[milestone]]
