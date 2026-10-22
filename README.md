@@ -9,15 +9,20 @@ layer.
 
 **Status: early implementation.** HS0 (the local engine) and HS1 (placement,
 wire protocol, reactor, map service, storage daemon, client) are built,
-with the map service replicated over three or five members by Raft and
-volumes with leases, a blocklist and forced takeovers. HS2 (failure
+with the map service replicated over three or five members by Raft (with
+members changed at run time and a lost majority recovered), volumes with
+leases, a blocklist and forced takeovers, and `hyperstor-ublk` to serve a
+volume as a Linux block device for testing. HS4 has started: snapshots,
+consistency groups, clones, rollback, flatten and snapshot deletion that
+moves no data. HS2 (failure
 handling) is done: failure detection and peer reports, down and out,
 failed devices and slow replicas, backfill, peering, delta recovery and
 light and deep scrub by content digests, repair of a damaged primary,
 and an in-process fault-injection rig. Administration has started too: a
 cluster API over mutual TLS, `hyperstorctl` with drains as operations,
 `hyperstor-install`, which joins hosts with single-use tokens, certificate
-revocation, and map backups with restore. The design is in [`spec/`](spec/README.md); what was built, how it deviates, and what
+revocation, map backups with restore, and people's logins with roles in
+`hyperstor-mgmt`. The design is in [`spec/`](spec/README.md); what was built, how it deviates, and what
 to review is in [`spec/implementation-notes.md`](spec/implementation-notes.md),
 with measurements in [`spec/benchmarks.md`](spec/benchmarks.md).
 
@@ -42,8 +47,9 @@ HS_BENCH_SECS=2 target/release/hyperstor-bench remote 127.0.0.1:19000
 
 Kill one `hyperstord`: after the map service marks it down (0.8 s), writes go
 on with two copies; start it again and it receives only what it missed.
-There is no block-device front end yet (vhost-user-blk is HS3, NVMe-oF
-HS5); clients use `hyperstor-client`.
+Programs use `hyperstor-client`; for testing, `hyperstor-ublk` serves a
+volume as `/dev/ublkbN`. Front ends for VMs and remote hosts come next
+(vhost-user-blk is HS3, NVMe-oF HS5).
 
 Tests: `cargo test --workspace --release` (the engine's crash test takes
 `HS_CRASH_SEEDS`). CI also checks the spec and tracks each milestone's
@@ -80,7 +86,7 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 | `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
 | `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
 | `.github/workflows/` | CI and documentation publishing |
-| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt; and test (end-to-end suite) |
+| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt, authd (`hyperstor-authd`); and test (end-to-end suite) |
 | `LICENSES/` | License texts and copyright notice |
 
 ## License

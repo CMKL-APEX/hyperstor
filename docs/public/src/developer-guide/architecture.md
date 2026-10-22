@@ -23,7 +23,9 @@
 | `hyperstord` | yes | A storage node: one reactor thread per device shard, serving reads, writes, replication, recovery and scrub |
 | `hyperstorctl` | yes | The administrator's CLI, over the cluster API |
 | `hyperstor-install` | yes | Host checks and a convergent installer; joins hosts with single-use tokens |
-| `hyperstor-mgmt` | partly | The management service; today a read-only dashboard |
+| `hyperstor-mgmt` | partly | The management service: people log in with their host password, get roles (viewer, operator, storage admin, security admin) checked by Cedar policies, and call the cluster API through it; the web UI is planned |
+| `hyperstor-authd` | yes | A small root helper that checks people's passwords with PAM for the management service, so it never runs as root |
+| `hyperstor-ublk` | yes | Serves a volume as a Linux block device (`/dev/ublkbN`) through the kernel's ublk driver, for testing |
 | `hyperstor-vhost` | planned | vhost-user-blk back end for VMs, one per host |
 | NVMe-oF target, S3 gateway, GPU-direct library | planned | Further front ends on the same object layer |
 
@@ -57,7 +59,8 @@ the data, so no request is handed between threads.
 | `hyperstor-daemon` | `hyperstord`: replication, recovery, scrub, metrics, the fault-injection rig | engine, client, meta, rpc |
 | `hyperstor-api` | Types, clients and server generated from the `hyperstor.v1` protobuf API | — |
 | `hyperstor-pki` | Root and intermediate CAs, leaf certificates, TLS configurations | — |
-| `hyperstor-ctl`, `-install`, `-mgmt` | The administration binaries | api, pki, … |
+| `hyperstor-ublk` | `hyperstor-ublk`: the ublk interface, queues as `uring_cmd`s on the reactor | client, reactor |
+| `hyperstor-ctl`, `-install`, `-mgmt`, `-authd` | The administration binaries | api, pki, … |
 | `hyperstor-bench` | Benchmarks for every layer | most crates |
 | `hyperstor-test` | End-to-end suite: installs clusters from the built binaries | pki |
 
@@ -104,7 +107,10 @@ own, and answers with the good data. Blocks never written read as zeros.
 
 **Why reads go to the primary only:** it is the one copy guaranteed to
 have every acknowledged write. Reads from any copy are planned for
-read-only snapshots, which never change.
+snapshots, which never change. A read of a volume with snapshots or
+clones carries its **layers** (see
+[snapshots](volumes.md#snapshots-and-clones)), and the primary reads each
+block from the newest version that holds it.
 
 ## The map and its epochs
 

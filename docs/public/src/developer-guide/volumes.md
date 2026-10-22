@@ -68,8 +68,72 @@ exclusive locks.
 A forced takeover takes one volume lease, about 4.0 s; a preemption
 about 3.8 s.
 
+## Snapshots and clones
+
+### Versions by epoch
+
+A volume has a **head epoch**. Each chunk write creates or updates the
+chunk's **version** at the head epoch: a separate engine object, named
+by the chunk and the epoch. A **snapshot** is one compare-and-set on the
+header that records the current epoch as a snapshot and moves the head
+epoch on. Nothing is copied, and storage nodes take no part in the cut:
+the next write to each chunk simply starts a new version, which holds
+only the blocks written since (redirect-on-write).
+
+A read at the head goes through **layers**: the chunk's versions from
+newest to oldest, and the primary takes each block from the first version
+that has it. A snapshot reads the versions up to its own epoch.
+
+### Pausing the writer
+
+If a client has the volume attached, its writes in flight must be on
+the right side of the cut. The holder keeps one long-poll `Watch`
+request open on its header's primary. To take a snapshot, the primary
+tells it to quiesce: it pauses new writes, drains those in flight,
+answers, and after the compare-and-set resumes at the new epoch. If it
+doesn't drain within 2 s, the snapshot is abandoned (`Busy`) rather than
+stall the volume. **Why a watch:** news carried by the 1 s lease
+renewals could take most of a second to arrive; the watch costs
+milliseconds plus the drain.
+
+A **consistency group** holds every member's writer with one token,
+snapshots each under its hold, then releases them all and marks the
+group complete; on any failure it deletes the snapshots taken and
+releases the holds.
+
+### Clones, branches and rollback
+
+A **clone** is a new volume on a new **branch** of the same lineage: its
+chunk versions carry its branch number, and it reads through its own
+branch first, then the snapshot's chain. Sharing the lineage keeps a
+clone's chunks in the same PGs as its parent's, so a read that falls
+through stays on the same devices. A lineage object records every branch
+and what it reads, so a snapshot that something still reads can't be
+deleted. **Flatten** copies into a clone what it still reads from its
+parents, so it no longer depends on them.
+
+A **rollback** to the newest snapshot of the head's branch is done in
+place: the header moves the head epoch on and records the epochs since
+the snapshot as skipped, so reads skip them at once, and their versions
+are deleted afterwards. A rollback to an older snapshot makes a new
+branch. **Why in place:** agent VMs are reset to a clean snapshot after
+every task. A new branch per reset would add a level to the read chain
+each time, and the chain is limited to 16 levels; in place, the chain
+never grows.
+
+### Deleting a snapshot
+
+When nothing between them reads it, a snapshot's versions are merged
+into the next newer ones with the engine's `Absorb`: the newer version
+takes the blocks it lacks, by reference, and the older is deleted, in one
+log record. No data is copied. Versions nothing reads are deleted
+outright. **Why:** deleting snapshots is the hot background job when VMs
+are reset after every task; this way it costs index work, not device
+I/O.
+
 ## Planned
 
-- Read-only attachments, which come with snapshots.
-- Snapshots and clones by redirect-on-write: a snapshot only bumps an
-  epoch, and chunks are copied on their next write.
+- Read-only attachments of snapshots, by several clients at once, with
+  reads from any copy.
+- A host-wide read cache in the client library, for versions that can't
+  change.

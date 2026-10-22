@@ -150,13 +150,32 @@ ranges) are planned to use two flavours of one node format: a B+tree for
 block maps and a Bε-tree, which buffers writes in inner nodes, for
 metadata.
 
+### Snapshots before the copy-on-write B+tree
+
+| | |
+|---|---|
+| **Decision** | Snapshots, clones, rollback and consistency groups are built on today's in-memory index, as chunk versions keyed by epoch ([volumes](volumes.md#snapshots-and-clones)) |
+| **Why** | Snapshots don't need the B+tree. With the epoch in the chunk's key, every copy and every PG stays consistent without coordinating them, and versions as objects reuse the replication, recovery and scrub already built |
+| **Alternative** | Sealing each shard's index at the cut: that snapshots shards, not volumes, at slightly different moments, and needs cluster-wide coordination for every snapshot |
+| **Next** | Checkpoints that seal the index and write only what changed, so their cost follows the rate of change. Later, zone or FDP placement for write-once data (model weights, checkpoints, cache pools); not for VM disks, whose small overwrites under snapshots would need garbage collection that copies live blocks |
+| **Status** | Built |
+
 ### Log size
 
 The log is a sixteenth of the shard, up to 1 GiB: checkpoints then write
 52 MB/s per TiB instead of 207, and replay takes up to about 3 s.
 **Alternative:** a 4 GiB log, which means about 11 s of recovery.
 
-## Front ends (planned)
+## Front ends
+
+### Its own ublk server, on the reactor (built)
+
+`hyperstor-ublk` serves volumes through the kernel's ublk driver for
+testing. Each queue command is a `uring_cmd` on the same reactor that
+runs the client, so requests never cross runtimes. **Alternative:** the
+`libublk` crate, which runs each queue on its own io_uring and runtime.
+
+### Planned
 
 | Decision | Why | Alternative |
 |---|---|---|
@@ -174,16 +193,18 @@ The log is a sixteenth of the shard, up to 1 GiB: checkpoints then write
 | People log in only to a stateless management service; the map service accepts machine identities only | Keeps human authentication out of the members that hold the map |
 | An offline root CA and an online intermediate; an encrypted backup of the root key | A compromised host can't mint a new root; losing the root's host doesn't lose the cluster |
 | Hosts join with single-use tokens, stored in Raft as hashes | A token works once across the whole group, and survives restarts |
-| The leader backs up the map service's store on its own, and a group can be restored from one backup | A lost store, or a group that lost its majority, comes back without rebuilding the map by hand |
+| The leader backs up the map service's store on its own, and a group can be restored from one backup | A lost store comes back without rebuilding the map by hand |
+| Members are added and removed at run time, one at a time; a new member is a learner until it catches up | The group never loses its majority to a member that is still copying the map |
+| A group that lost its majority for good is restarted from one survivor, by an explicit, audited forced start that refuses while another member answers | The survivors' map is newer than any backup; the refusal keeps two groups from forming |
+| A root helper checks passwords with PAM for the management service | PAM needs root; the service that faces browsers doesn't get it |
+| Roles are Cedar policies over every cluster API call; destructive calls need a login of the last 10 minutes | One place decides who may do what, and deleting data takes a person who has just proved who they are; API tokens never count as a recent login |
 | Long work (drains) runs as operations that can be followed or cancelled | Scripts and the UI can follow progress without polling the map |
 
 ## Decisions still open
 
-- Erasure-coded pools, snapshots, the front ends and the key–value layer
-  are designed but not built; their details may change as they are.
-- Restarting a map service group that lost its majority for good from
-  one survivor, and changing members at run time, are decided but not
-  built. Map backups and restoring a group from one are built.
+- Erasure-coded pools, the front ends for VMs and remote hosts, the host
+  read cache and the key–value layer are designed but not built; their
+  details may change as they are.
 - Several choices wait for measurements on real hardware: io_uring
   against SPDK on NVMe, the one-second failover under load, digest scans
   on large PGs, and whether the Bε-tree is worth a second index flavour.

@@ -71,10 +71,10 @@ map, and the others send nodes to it.
   which must name each member's address. `hyperstor-install` sets this up
   when members join the first one with a token (see
   [Installation](installation.md#joining-hosts-with-tokens)).
-- **Not yet:** adding or removing members while the group runs, and
-  restarting a group that lost a majority of its members for good from a
-  surviving member; until then, restore it from a backup (see
-  [Backups and restoring](#backups-and-restoring)). Keep a majority up.
+- **Changing members** while the group runs, and **recovering a group
+  that lost its majority**, are below: see
+  [Adding and removing members](#adding-and-removing-members) and
+  [Recovering a lost majority](#recovering-a-lost-majority).
 
 ## One member
 

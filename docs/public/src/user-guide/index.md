@@ -1,13 +1,14 @@
 # Using Hyperstor
 
 Today a program stores data in Hyperstor through the Rust client
-library, `hyperstor-client`. Block devices for virtual machines and hosts
-(vhost-user-blk, NVMe over TCP), an S3 API and a filesystem are planned
-(see [Status](../status.md)); until then, the client library is the only
-way in.
+library, `hyperstor-client`. For testing, a volume can also be served as
+a Linux block device with [`hyperstor-ublk`](../reference/hyperstor-ublk.md),
+and used through any filesystem or tool. Block devices for virtual
+machines and remote hosts (vhost-user-blk, NVMe over TCP), an S3 API and
+a filesystem are planned (see [Status](../status.md)).
 
-- [The client library](client-library.md): connecting, writing and
-  reading.
+- [The client library](client-library.md): connecting, volumes,
+  attaching, snapshots and clones.
 - [Data guarantees and errors](guarantees.md): what a successful write
   means, and what each error means for your program.
 

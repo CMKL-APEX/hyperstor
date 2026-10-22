@@ -49,6 +49,15 @@ size and a name. The cluster keeps a header for each volume, and its
 chunks are created as they are written: blocks never written read as
 zeros. Offsets and lengths are multiples of 4 KiB.
 
+## Snapshots and clones
+
+A **snapshot** keeps a volume as it was at one instant. Taking one only
+moves the volume's **epoch** on: later writes go to new versions of the
+chunks, tagged with the new epoch, and the snapshot reads the versions
+up to its own. So a snapshot copies nothing, and a **clone** is a new
+volume that reads through its snapshot's versions until it writes its
+own. A **consistency group** snapshots several volumes at one instant.
+
 ## Volume leases and the blocklist
 
 One client at a time **attaches** a volume, by holding its lease, which
