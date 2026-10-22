@@ -26,6 +26,34 @@ service ClusterService {
 
   // Deletes a volume and its data. Write.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+
+  // A volume's snapshots (volumes.md §10.3). Read.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+
+  // Takes a snapshot; an attached volume's holder is quiesced first.
+  // Write.
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+
+  // Deletes a snapshot nothing depends on. Write.
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+
+  // Creates a volume from a snapshot, sharing its data (volumes.md
+  // §10.4). Write.
+  rpc CloneVolume(CloneVolumeRequest) returns (CloneVolumeResponse);
+
+  // Rolls a detached volume back to one of its snapshots. Write.
+  rpc RollbackVolume(RollbackVolumeRequest) returns (RollbackVolumeResponse);
+
+  // Copies into a clone what it reads from its parents, so it depends on
+  // them no more. Write.
+  rpc FlattenVolume(FlattenVolumeRequest) returns (FlattenVolumeResponse);
+
+  // Snapshots several volumes at one moment (a consistency group).
+  // Write.
+  rpc CreateGroupSnapshot(CreateGroupSnapshotRequest) returns (CreateGroupSnapshotResponse);
+
+  // Deletes a group's snapshots, and the group. Write.
+  rpc DeleteGroupSnapshot(DeleteGroupSnapshotRequest) returns (DeleteGroupSnapshotResponse);
 }
 
 enum Health {
@@ -181,3 +209,91 @@ message DeleteVolumeRequest {
 }
 
 message DeleteVolumeResponse {}
+
+message Snapshot {
+  // The epoch it was taken at: its identity within its volume.
+  uint64 epoch = 1;
+  string name = 2;
+  // The consistency group it was taken in (32 hexadecimal digits); empty
+  // if none.
+  string group = 3;
+  // "active" or "deleting".
+  string state = 4;
+}
+
+message ListSnapshotsRequest {
+  // The volume, 32 hexadecimal digits.
+  string id = 1;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+}
+
+message CreateSnapshotRequest {
+  string id = 1;
+  string name = 2;
+}
+
+message CreateSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+message DeleteSnapshotRequest {
+  string id = 1;
+  uint64 epoch = 2;
+}
+
+message DeleteSnapshotResponse {}
+
+message CloneVolumeRequest {
+  // The volume whose snapshot is cloned.
+  string id = 1;
+  uint64 epoch = 2;
+  string name = 3;
+  // The clone's id, 32 hexadecimal digits; empty: drawn at random.
+  string new_id = 4 [json_name = "new_id"];
+}
+
+message CloneVolumeResponse {
+  Volume volume = 1;
+}
+
+message RollbackVolumeRequest {
+  string id = 1;
+  uint64 epoch = 2;
+}
+
+message RollbackVolumeResponse {
+  Volume volume = 1;
+}
+
+message FlattenVolumeRequest {
+  string id = 1;
+}
+
+message FlattenVolumeResponse {
+  Volume volume = 1;
+}
+
+message CreateGroupSnapshotRequest {
+  repeated string ids = 1;
+  string name = 2;
+}
+
+message GroupMember {
+  string id = 1;
+  Snapshot snapshot = 2;
+}
+
+message CreateGroupSnapshotResponse {
+  // 32 hexadecimal digits.
+  string group = 1;
+  repeated GroupMember members = 2;
+}
+
+message DeleteGroupSnapshotRequest {
+  string group = 1;
+}
+
+message DeleteGroupSnapshotResponse {}

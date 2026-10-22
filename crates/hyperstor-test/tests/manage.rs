@@ -141,3 +141,64 @@ fn volumes_through_hyperstorctl() {
     c.ctl(&["create-volume", "--size", "1000", "--name", "odd"])
         .expect(1);
 }
+
+/// Snapshots through `hyperstorctl` (volumes.md §10.3, §10.4): taken,
+/// listed, cloned, refused deletion while the clone depends on them,
+/// flattened, rolled back and deleted; a consistency group taken and
+/// deleted.
+#[test]
+fn snapshots_through_hyperstorctl() {
+    let c = Cluster::all_in_one("snapshots", 3);
+    let id_of = |r: &hyperstor_test::Run| r.out.split_whitespace().nth(1).unwrap().to_string();
+    let v = id_of(
+        &c.ctl(&["create-volume", "--size", "64M", "--name", "v"])
+            .ok(),
+    );
+    let w = id_of(
+        &c.ctl(&["create-volume", "--size", "64M", "--name", "w"])
+            .ok(),
+    );
+    let s = c
+        .ctl(&["snapshot", "create", "--id", &v, "--name", "first"])
+        .ok();
+    assert!(s.has("snapshot 1 of volume"), "{}", s.out);
+    let l = c.ctl(&["snapshot", "list", "--id", &v]).ok();
+    assert!(l.has("first") && l.has("active"), "{}", l.out);
+    let k = c
+        .ctl(&["clone-volume", "--id", &v, "--epoch", "1", "--name", "k"])
+        .ok();
+    assert!(k.has("created"), "{}", k.out);
+    let kid = id_of(&k);
+    assert!(c.ctl(&["volumes"]).ok().has(&kid));
+    let r = c
+        .ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
+        .expect(1);
+    assert!(r.has("in_use"), "{}", r.out);
+    c.ctl(&["flatten-volume", "--id", &kid]).ok();
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "second"])
+        .ok();
+    let r = c.ctl(&["rollback-volume", "--id", &v, "--epoch", "1"]).ok();
+    assert!(r.has("rolled back to snapshot 1"), "{}", r.out);
+    // Not to the newest: a new branch, which depends on snapshot 1 until
+    // flattened.
+    c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
+        .expect(1);
+    c.ctl(&["flatten-volume", "--id", &v]).ok();
+    c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
+        .ok();
+    let l = c.ctl(&["snapshot", "list", "--id", &v, "--json"]).ok();
+    assert!(!l.has("\"first\"") && l.has("\"second\""), "{}", l.out);
+    // A group of both volumes, then gone.
+    let ids = format!("{v},{w}");
+    let g = c
+        .ctl(&["snapshot", "group", "--ids", &ids, "--name", "vm"])
+        .ok();
+    assert!(g.has("group ") && g.has(&w), "{}", g.out);
+    let gid = g.out.split_whitespace().nth(1).unwrap().to_string();
+    assert!(c.ctl(&["snapshot", "list", "--id", &w]).ok().has(&gid));
+    c.ctl(&["snapshot", "group-delete", "--group", &gid]).ok();
+    assert!(!c.ctl(&["snapshot", "list", "--id", &w]).ok().has(&gid));
+    // Flags only where they belong.
+    c.ctl(&["snapshot", "delete", "--id", &v]).expect(2);
+    c.ctl(&["volumes", "--epoch", "1"]).expect(2);
+}

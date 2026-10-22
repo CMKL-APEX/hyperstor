@@ -161,6 +161,21 @@ pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     out
 }
 
+/// A volume's snapshots: epoch, name, group and state.
+pub fn snapshots_text(r: &pb::ListSnapshotsResponse) -> String {
+    let mut out = format!("{:>8}  {:<20} {:<32}  STATE\n", "EPOCH", "NAME", "GROUP");
+    for s in &r.snapshots {
+        out.push_str(&format!(
+            "{:>8}  {:<20} {:<32}  {}\n",
+            s.epoch,
+            s.name,
+            if s.group.is_empty() { "-" } else { &s.group },
+            s.state
+        ));
+    }
+    out
+}
+
 pub use hyperstor_api::reason_of;
 
 /// Every RPC of `hyperstor.v1` and the `hyperstorctl` command that calls
@@ -173,6 +188,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
+    ("ClusterService.ListSnapshots", "snapshot list"),
+    ("ClusterService.CreateSnapshot", "snapshot create"),
+    ("ClusterService.DeleteSnapshot", "snapshot delete"),
+    ("ClusterService.CloneVolume", "clone-volume"),
+    ("ClusterService.RollbackVolume", "rollback-volume"),
+    ("ClusterService.FlattenVolume", "flatten-volume"),
+    ("ClusterService.CreateGroupSnapshot", "snapshot group"),
+    (
+        "ClusterService.DeleteGroupSnapshot",
+        "snapshot group-delete",
+    ),
     ("TokenService.CreateToken", "token create"),
     ("TokenService.ListTokens", "token list"),
     ("TokenService.RevokeToken", "token revoke"),

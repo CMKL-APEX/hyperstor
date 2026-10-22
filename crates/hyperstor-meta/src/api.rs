@@ -668,6 +668,255 @@ impl ClusterService for Api {
         volume_result(r)?;
         Ok(pb::DeleteVolumeResponse::default().into())
     }
+
+    async fn list_snapshots(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListSnapshotsRequest>,
+    ) -> ServiceResult<pb::ListSnapshotsResponse> {
+        let id = parse_volume_id(req.id)?;
+        let op = crate::SnapOp::List { id };
+        match self
+            .snap(
+                &ctx,
+                "ListSnapshots",
+                format!("volume {id:032x}"),
+                false,
+                op,
+            )
+            .await?
+        {
+            crate::SnapDone::Snapshots(v) => Ok(pb::ListSnapshotsResponse {
+                snapshots: v.iter().map(snapshot_pb).collect(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn create_snapshot(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CreateSnapshotRequest>,
+    ) -> ServiceResult<pb::CreateSnapshotResponse> {
+        let id = parse_volume_id(req.id)?;
+        let op = crate::SnapOp::Create {
+            id,
+            name: req.name.to_string(),
+        };
+        match self
+            .snap(
+                &ctx,
+                "CreateSnapshot",
+                format!("volume {id:032x}"),
+                true,
+                op,
+            )
+            .await?
+        {
+            crate::SnapDone::Snapshot(s) => Ok(pb::CreateSnapshotResponse {
+                snapshot: Some(snapshot_pb(&s)).into(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn delete_snapshot(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeleteSnapshotRequest>,
+    ) -> ServiceResult<pb::DeleteSnapshotResponse> {
+        let id = parse_volume_id(req.id)?;
+        let epoch = req.epoch;
+        let target = format!("volume {id:032x} snapshot {epoch}");
+        let op = crate::SnapOp::Delete { id, epoch };
+        self.snap(&ctx, "DeleteSnapshot", target, true, op).await?;
+        Ok(pb::DeleteSnapshotResponse::default().into())
+    }
+
+    async fn clone_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CloneVolumeRequest>,
+    ) -> ServiceResult<pb::CloneVolumeResponse> {
+        let id = parse_volume_id(req.id)?;
+        let new_id = if req.new_id.is_empty() {
+            None
+        } else {
+            Some(parse_volume_id(req.new_id)?)
+        };
+        let target = format!("volume {id:032x} snapshot {}", req.epoch);
+        let op = crate::SnapOp::Clone {
+            id,
+            epoch: req.epoch,
+            name: req.name.to_string(),
+            new_id,
+        };
+        match self.snap(&ctx, "CloneVolume", target, true, op).await? {
+            crate::SnapDone::Volume(v) => Ok(pb::CloneVolumeResponse {
+                volume: Some(volume_pb(&v)).into(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn rollback_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RollbackVolumeRequest>,
+    ) -> ServiceResult<pb::RollbackVolumeResponse> {
+        let id = parse_volume_id(req.id)?;
+        let target = format!("volume {id:032x} to snapshot {}", req.epoch);
+        let op = crate::SnapOp::Rollback {
+            id,
+            epoch: req.epoch,
+        };
+        match self.snap(&ctx, "RollbackVolume", target, true, op).await? {
+            crate::SnapDone::Volume(v) => Ok(pb::RollbackVolumeResponse {
+                volume: Some(volume_pb(&v)).into(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn flatten_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::FlattenVolumeRequest>,
+    ) -> ServiceResult<pb::FlattenVolumeResponse> {
+        let id = parse_volume_id(req.id)?;
+        let op = crate::SnapOp::Flatten { id };
+        match self
+            .snap(&ctx, "FlattenVolume", format!("volume {id:032x}"), true, op)
+            .await?
+        {
+            crate::SnapDone::Volume(v) => Ok(pb::FlattenVolumeResponse {
+                volume: Some(volume_pb(&v)).into(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn create_group_snapshot(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CreateGroupSnapshotRequest>,
+    ) -> ServiceResult<pb::CreateGroupSnapshotResponse> {
+        let ids = req
+            .ids
+            .iter()
+            .map(|i| parse_volume_id(i))
+            .collect::<Result<Vec<u128>, _>>()?;
+        if ids.is_empty() {
+            return Err(with_reason(
+                ConnectError::invalid_argument("a group needs at least one volume"),
+                "invalid_argument",
+            ));
+        }
+        let target = format!("{} volume(s)", ids.len());
+        let op = crate::SnapOp::Group {
+            ids,
+            name: req.name.to_string(),
+        };
+        match self
+            .snap(&ctx, "CreateGroupSnapshot", target, true, op)
+            .await?
+        {
+            crate::SnapDone::Group(g, members) => Ok(pb::CreateGroupSnapshotResponse {
+                group: format!("{g:032x}"),
+                members: members
+                    .iter()
+                    .map(|(id, s)| pb::GroupMember {
+                        id: format!("{id:032x}"),
+                        snapshot: Some(snapshot_pb(s)).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+            .into()),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    async fn delete_group_snapshot(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeleteGroupSnapshotRequest>,
+    ) -> ServiceResult<pb::DeleteGroupSnapshotResponse> {
+        let group = parse_volume_id(req.group)?;
+        let op = crate::SnapOp::DeleteGroup { group };
+        self.snap(
+            &ctx,
+            "DeleteGroupSnapshot",
+            format!("group {group:032x}"),
+            true,
+            op,
+        )
+        .await?;
+        Ok(pb::DeleteGroupSnapshotResponse::default().into())
+    }
+}
+
+fn snapshot_pb(s: &crate::Snapshot) -> pb::Snapshot {
+    pb::Snapshot {
+        epoch: s.epoch,
+        name: s.name.clone(),
+        group: if s.group == 0 {
+            String::new()
+        } else {
+            format!("{:032x}", s.group)
+        },
+        state: if s.deleting { "deleting" } else { "active" }.into(),
+        ..Default::default()
+    }
+}
+
+impl Api {
+    /// A snapshot operation (volumes.md §10.3, §10.4): authorized, run on
+    /// the map service's reactor as a client of `.meta`, and audited if
+    /// it changes anything.
+    async fn snap(
+        &self,
+        ctx: &RequestContext,
+        rpc: &str,
+        target: String,
+        write: bool,
+        op: crate::SnapOp,
+    ) -> Result<crate::SnapDone, ConnectError> {
+        let who = self.authorize(ctx, rpc, &target, write)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Snapshots { op, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        if write {
+            audit(
+                &who,
+                rpc,
+                &target,
+                &match &r {
+                    Some(Ok(_)) => "ok".into(),
+                    Some(Err((_, e))) => format!("failed: {e}"),
+                    None => "failed: map service stopped".into(),
+                },
+            );
+        }
+        volume_result(r)
+    }
+}
+
+fn unexpected_done(d: crate::SnapDone) -> ConnectError {
+    ConnectError::internal(format!("unexpected result {d:?}"))
 }
 
 fn parse_volume_id(s: &str) -> Result<u128, ConnectError> {
@@ -714,6 +963,9 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
             ConnectError::failed_precondition(e),
             "attached",
         )),
+        Some(Err((F::InUse, e))) => {
+            Err(with_reason(ConnectError::failed_precondition(e), "in_use"))
+        }
         Some(Err((F::Unavailable, e))) => {
             Err(with_reason(ConnectError::unavailable(e), "unavailable"))
         }

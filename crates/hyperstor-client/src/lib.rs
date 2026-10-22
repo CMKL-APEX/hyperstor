@@ -530,18 +530,18 @@ impl Client {
     }
 
     /// Reads `len` bytes at `off` of a volume in lineage `lineage` through
-    /// `layers`: (branch, newest epoch) pairs, the volume's own first, then
-    /// its clone parents' (engine.md §7.2).
+    /// `layers`: (branch, oldest epoch, newest epoch), the volume's own
+    /// first, then its clone parents' (engine.md §7.2).
     pub async fn read_at(
         self: &Rc<Self>,
         pool: u32,
         lineage: u128,
-        layers: &[(u32, u64)],
+        layers: &[(u32, u64, u64)],
         off: u64,
         len: u64,
     ) -> Result<Vec<u8>, ClientError> {
         let pieces = self.pieces(pool, off, len)?;
-        let layers: Rc<Vec<(u32, u64)>> = Rc::new(layers.to_vec());
+        let layers: Rc<Vec<(u32, u64, u64)>> = Rc::new(layers.to_vec());
         let handles: Vec<_> = pieces
             .into_iter()
             .map(|(chunk, coff, roff, n)| {

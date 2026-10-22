@@ -385,6 +385,10 @@ impl Drop for Expiry<'_> {
     }
 }
 
+/// How long a holder stays held for a consistency group's snapshot
+/// before it resumes by itself.
+pub const HOLD_AT_MOST: Duration = Duration::from_secs(5);
+
 /// A chunk's name without a branch: lineage (16 bytes) and index (8).
 const CHUNK_NAME_LEN: usize = 24;
 
@@ -1044,10 +1048,15 @@ impl ShardState {
                     };
                     reply(&m, &[]);
                 }
-                Msg::DropVersions { to, key, from } => {
+                Msg::DropVersions {
+                    to,
+                    key,
+                    from,
+                    upto,
+                } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
-                        let m = me.drop_versions(instance, to, key, from).await;
+                        let m = me.drop_versions(instance, to, key, from, upto).await;
                         let _ = tx.send(encode_frame(req, &m, &[]));
                     });
                 }
@@ -1072,12 +1081,34 @@ impl ShardState {
                         let _ = tx.send(encode_frame(req, &m, &[]));
                     });
                 }
-                Msg::Snapshot { to, key } => {
+                Msg::Snapshot { to, key, token } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
-                        let m = me.snapshot(instance, to, key, payload).await;
+                        let m = me.snapshot(instance, to, key, token, payload).await;
                         let _ = tx.send(encode_frame(req, &m, &[]));
                     });
+                }
+                Msg::Quiesce { to, key, token } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let m = match me.hold(to, key, token).await {
+                            Ok(_) => Msg::ExecOk,
+                            Err(m) => m,
+                        };
+                        let _ = tx.send(encode_frame(req, &m, &[]));
+                    });
+                }
+                Msg::Release { to, key, token } => {
+                    if let Ok(okey) = engine_key(&to, &key)
+                        && self
+                            .quiesce
+                            .borrow()
+                            .get(&okey)
+                            .is_some_and(|q| q.token == token)
+                    {
+                        self.resume(&okey);
+                    }
+                    reply(&Msg::ExecOk, &[]);
                 }
                 Msg::Fetch { to, key } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
@@ -1551,20 +1582,25 @@ impl ShardState {
     }
 
     /// The keys of a chunk's versions to read through, first first: for
-    /// each layer (branch, newest epoch), that branch's versions up to the
-    /// epoch, newest first (engine.md §7.2).
+    /// each layer (branch, oldest and newest epoch), that branch's versions
+    /// in the range, newest first (engine.md §7.2).
     fn layer_keys(
         &self,
         to: &Target,
         base: &WireKey,
-        layers: &[(u32, u64)],
+        layers: &[(u32, u64, u64)],
     ) -> Result<Vec<ObjKey>, ()> {
         let ns = Namespace::from_u8(base.ns).map_err(|_| ())?;
         let sh = self.shard.borrow();
         let mut keys = Vec::new();
-        for (branch, newest) in layers {
+        for (branch, oldest, newest) in layers {
             let k = ObjKey::new(to.pool, to.pg, ns, branch_name(&base.name, *branch), 0);
-            for v in sh.versions(&k).into_iter().rev().filter(|v| v <= newest) {
+            for v in sh
+                .versions(&k)
+                .into_iter()
+                .rev()
+                .filter(|v| v <= newest && v >= oldest)
+            {
                 keys.push(ObjKey {
                     version: v,
                     ..k.clone()
@@ -1580,7 +1616,7 @@ impl ShardState {
         &self,
         to: Target,
         key: WireKey,
-        layers: Vec<(u32, u64)>,
+        layers: Vec<(u32, u64, u64)>,
         off: u64,
         len: u64,
     ) -> (Msg, Vec<u8>) {
@@ -1615,14 +1651,15 @@ impl ShardState {
         )
     }
 
-    /// Deletes the versions of `key`'s name from epoch `from` on, one by
-    /// one, each replicated as a delete.
+    /// Deletes the versions of `key`'s name with epochs from `from` to
+    /// `upto`, one by one, each replicated as a delete.
     async fn drop_versions(
         self: &Rc<Self>,
         instance: u64,
         to: Target,
         key: WireKey,
         from: u64,
+        upto: u64,
     ) -> Msg {
         if let Err(m) = self.check(&to, true).await {
             return m;
@@ -1635,7 +1672,7 @@ impl ShardState {
             .borrow()
             .versions(&okey)
             .into_iter()
-            .filter(|v| *v >= from)
+            .filter(|v| *v >= from && *v <= upto)
             .collect();
         for v in versions {
             let k = WireKey {
@@ -1660,19 +1697,24 @@ impl ShardState {
         instance: u64,
         to: Target,
         key: WireKey,
-        layers: Vec<(u32, u64)>,
+        layers: Vec<(u32, u64, u64)>,
     ) -> Msg {
         let decide = move |me: &Self, okey: &ObjKey| {
             let mut parents = Vec::new();
             {
                 let sh = me.shard.borrow();
                 let ns = okey.ns;
-                for (branch, newest) in &layers {
+                for (branch, oldest, newest) in &layers {
                     // The parents' names: the chunk's name (lineage and
                     // index, 24 bytes) without the clone's branch.
                     let chunk = &okey.name[..okey.name.len().min(CHUNK_NAME_LEN)];
                     let k = ObjKey::new(okey.pool, okey.pg, ns, branch_name(chunk, *branch), 0);
-                    for v in sh.versions(&k).into_iter().rev().filter(|v| v <= newest) {
+                    for v in sh
+                        .versions(&k)
+                        .into_iter()
+                        .rev()
+                        .filter(|v| v <= newest && v >= oldest)
+                    {
                         parents.push(ObjKey {
                             version: v,
                             ..k.clone()
@@ -1813,52 +1855,51 @@ impl ShardState {
         instance: u64,
         to: Target,
         key: WireKey,
+        token: u64,
         payload: Vec<u8>,
     ) -> Msg {
-        if let Err(m) = self.check(&to, true).await {
-            return m;
-        }
         let Ok(ops) = decode_ops(&payload) else {
             return err(Code::Invalid, &self.map(), "malformed operation list");
+        };
+        let held = if token == 0 {
+            match self
+                .hold(to, key.clone(), hyperstor_client::random_u64().max(1))
+                .await
+            {
+                Ok(h) => h,
+                Err(m) => return m,
+            }
+        } else {
+            // A group's: under the hold its Quiesce took, if the volume was
+            // held then; a hold that expired meanwhile abandons it.
+            if let Err(m) = self.check(&to, true).await {
+                return m;
+            }
+            let Ok(okey) = engine_key(&to, &key) else {
+                return err(Code::Invalid, &self.map(), "bad namespace");
+            };
+            let mine = self
+                .quiesce
+                .borrow()
+                .get(&okey)
+                .is_some_and(|q| q.token == token);
+            let leased = self
+                .shard
+                .borrow()
+                .attrs(&okey)
+                .is_some_and(|a| a.contains_key(LEASE_ATTR));
+            if leased && !mine {
+                return err(
+                    Code::Busy,
+                    &self.map(),
+                    "the group's hold on this volume ended",
+                );
+            }
+            mine
         };
         let Ok(okey) = engine_key(&to, &key) else {
             return err(Code::Invalid, &self.map(), "bad namespace");
         };
-        let held = self
-            .shard
-            .borrow()
-            .attrs(&okey)
-            .is_some_and(|a| a.contains_key(LEASE_ATTR));
-        if held {
-            if self.quiesce.borrow().contains_key(&okey) {
-                return err(Code::Busy, &self.map(), "another snapshot is quiescing");
-            }
-            let token = hyperstor_client::random_u64().max(1);
-            let (tx, rx) = oneshot();
-            self.quiesce.borrow_mut().insert(
-                okey.clone(),
-                Quiesce {
-                    token,
-                    drained: Some(tx),
-                    resume: Vec::new(),
-                },
-            );
-            self.notify(&okey, WATCH_QUIESCE, token);
-            let drained = matches!(
-                hyperstor_reactor::time::timeout(QUIESCE_WITHIN, rx.recv()).await,
-                Ok(Some(()))
-            );
-            if !drained {
-                self.resume(&okey);
-                return err(
-                    Code::Busy,
-                    &self.map(),
-                    format!(
-                        "the volume's holder didn't quiesce within {QUIESCE_WITHIN:?}; snapshot abandoned"
-                    ),
-                );
-            }
-        }
         let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
             Err(why) => Err(err(Code::Conflict, &me.map(), why)),
             Ok(()) => Ok(ops
@@ -1876,6 +1917,69 @@ impl ShardState {
             Ok(()) => Msg::ExecOk,
             Err(m) => m,
         }
+    }
+
+    /// Quiesces the volume's holder, if it has one, and holds it with
+    /// `token` (D103): its writes wait until [`Self::resume`], or until the
+    /// hold expires. Whether a holder is held; abandoned (`Busy`) if it
+    /// doesn't drain within 2 s.
+    async fn hold(self: &Rc<Self>, to: Target, key: WireKey, token: u64) -> Result<bool, Msg> {
+        self.check(&to, true).await?;
+        let Ok(okey) = engine_key(&to, &key) else {
+            return Err(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        let held = self
+            .shard
+            .borrow()
+            .attrs(&okey)
+            .is_some_and(|a| a.contains_key(LEASE_ATTR));
+        if held {
+            if self.quiesce.borrow().contains_key(&okey) {
+                return Err(err(
+                    Code::Busy,
+                    &self.map(),
+                    "another snapshot is quiescing",
+                ));
+            }
+            let (tx, rx) = oneshot();
+            self.quiesce.borrow_mut().insert(
+                okey.clone(),
+                Quiesce {
+                    token,
+                    drained: Some(tx),
+                    resume: Vec::new(),
+                },
+            );
+            self.notify(&okey, WATCH_QUIESCE, token);
+            let drained = matches!(
+                hyperstor_reactor::time::timeout(QUIESCE_WITHIN, rx.recv()).await,
+                Ok(Some(()))
+            );
+            if !drained {
+                self.resume(&okey);
+                return Err(err(
+                    Code::Busy,
+                    &self.map(),
+                    format!(
+                        "the volume's holder didn't quiesce within {QUIESCE_WITHIN:?}; snapshot abandoned"
+                    ),
+                ));
+            }
+            // A hold nobody ends (its client died) ends by itself.
+            let me = self.clone();
+            spawn(async move {
+                sleep(HOLD_AT_MOST).await;
+                if me
+                    .quiesce
+                    .borrow()
+                    .get(&okey)
+                    .is_some_and(|q| q.token == token)
+                {
+                    me.resume(&okey);
+                }
+            });
+        }
+        Ok(held)
     }
 
     /// Ends a quiesce: the holder resumes.

@@ -58,6 +58,12 @@ pub enum Admin {
         force: bool,
         reply: VolumeReply<()>,
     },
+    /// Snapshots, clones, rollback, flatten and groups (volumes.md §10.3,
+    /// §10.4), as a client of `.meta`.
+    Snapshots {
+        op: SnapOp,
+        reply: VolumeReply<SnapDone>,
+    },
     /// Adds a storage host that joined with a token (administration.md
     /// §23.4.2): one device per address. Replies with its node number.
     AddNode {
@@ -87,7 +93,89 @@ pub struct PgMove {
     pub after: Vec<u32>,
 }
 
-pub use hyperstor_client::volume::{Volume, VolumeState};
+pub use hyperstor_client::volume::{Snapshot, Volume, VolumeState};
+
+/// A snapshot operation of the cluster API ([`Admin::Snapshots`]).
+#[derive(Debug, Clone)]
+pub enum SnapOp {
+    List {
+        id: u128,
+    },
+    Create {
+        id: u128,
+        name: String,
+    },
+    Delete {
+        id: u128,
+        epoch: u64,
+    },
+    Clone {
+        id: u128,
+        epoch: u64,
+        name: String,
+        new_id: Option<u128>,
+    },
+    Rollback {
+        id: u128,
+        epoch: u64,
+    },
+    Flatten {
+        id: u128,
+    },
+    Group {
+        ids: Vec<u128>,
+        name: String,
+    },
+    DeleteGroup {
+        group: u128,
+    },
+}
+
+/// What a [`SnapOp`] gives back.
+#[derive(Debug, Clone)]
+pub enum SnapDone {
+    Snapshots(Vec<Snapshot>),
+    Snapshot(Snapshot),
+    Volume(Volume),
+    Group(u128, Vec<(u128, Snapshot)>),
+    Done,
+}
+
+async fn run_snap_op(
+    c: std::rc::Rc<hyperstor_client::Client>,
+    op: SnapOp,
+) -> Result<SnapDone, hyperstor_client::ClientError> {
+    use hyperstor_client::ClientError;
+    Ok(match op {
+        SnapOp::List { id } => SnapDone::Snapshots(
+            c.volume(id)
+                .await?
+                .ok_or(ClientError::NoVolume(id))?
+                .snapshots,
+        ),
+        SnapOp::Create { id, name } => SnapDone::Snapshot(c.snapshot(id, &name).await?),
+        SnapOp::Delete { id, epoch } => {
+            c.delete_snapshot(id, epoch).await?;
+            SnapDone::Done
+        }
+        SnapOp::Clone {
+            id,
+            epoch,
+            name,
+            new_id,
+        } => SnapDone::Volume(c.clone_snapshot(id, epoch, &name, new_id).await?),
+        SnapOp::Rollback { id, epoch } => SnapDone::Volume(c.rollback(id, epoch).await?),
+        SnapOp::Flatten { id } => SnapDone::Volume(c.flatten(id).await?),
+        SnapOp::Group { ids, name } => {
+            let (g, s) = c.snapshot_group(&ids, &name).await?;
+            SnapDone::Group(g, s)
+        }
+        SnapOp::DeleteGroup { group } => {
+            c.delete_group(group).await?;
+            SnapDone::Done
+        }
+    })
+}
 
 /// Why a volume operation failed, for the API's error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +185,9 @@ pub enum VolumeFault {
     Invalid,
     /// Attached by a client: detach it first.
     Attached,
+    /// A clone or rollback depends on the snapshot; or the operation is
+    /// refused as things stand.
+    InUse,
     Unavailable,
 }
 
@@ -108,6 +199,8 @@ fn volume_fault(e: hyperstor_client::ClientError) -> (VolumeFault, String) {
         E::NoVolume(_) | E::NoPool(_) => VolumeFault::NotFound,
         E::VolumeExists(_) => VolumeFault::Exists,
         E::VolumeAttached(_) => VolumeFault::Attached,
+        E::NoSnapshot(_) => VolumeFault::NotFound,
+        E::SnapshotInUse(_) | E::Refused(_) => VolumeFault::InUse,
         E::Shrink { .. } | E::BadVolume(_) | E::Unaligned => VolumeFault::Invalid,
         _ => VolumeFault::Unavailable,
     };
@@ -558,6 +651,17 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.drain(node, dry_run));
+                }
+                Admin::Snapshots { op, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            run_snap_op(c, op).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
                 }
                 Admin::DeleteVolume { id, force, reply } => {
                     let c = connect(client.clone());

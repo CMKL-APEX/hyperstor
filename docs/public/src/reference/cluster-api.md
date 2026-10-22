@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -80,6 +80,14 @@ values are left out of answers.
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
+| `ListSnapshots` | `{"id": "…"}` | `snapshots`: `epoch`, `name`, `group` (32 hex digits, or empty), `state` (`active` or `deleting`) |
+| `CreateSnapshot` | `{"id": "…", "name": "before-upgrade"}` | `snapshot`; `unavailable` if the volume's client didn't pause within 2 s |
+| `DeleteSnapshot` | `{"id": "…", "epoch": "4"}` | `{}`; `failed_precondition` (`in_use`) while a clone or rollback depends on it |
+| `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone |
+| `RollbackVolume` | `{"id": "…", "epoch": "4"}` | `volume`; `failed_precondition` (`attached`) while attached |
+| `FlattenVolume` | `{"id": "…"}` | `volume` |
+| `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
+| `DeleteGroupSnapshot` | `{"group": "…"}` | `{}` |
 
 `TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService` and `OperationService`:
 
@@ -129,7 +137,7 @@ word for scripts (the message is for people, and may change):
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
-| `failed_precondition` | `attached`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`); this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
+| `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
 | `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
 | `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 
