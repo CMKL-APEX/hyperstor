@@ -498,3 +498,19 @@ recommendation:
 | 48 | PG log: build it, or keep digests (I57, I61) | Keep digests; the log only if scans prove slow | D90, G21 |
 | 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D91 |
 | 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D92 |
+
+## Snapshots and the engine (2026-10-22)
+
+HS4 (snapshots, clones and the host read cache) came before HS3 at the
+owner's request. Asked with options and a recommendation each; the owner
+also proposed an engine design (a zoned log for data with large
+immutable extents, an in-memory radix tree or hash for the mapping,
+snapshots cut by sealing the index root and flushing its delta in the
+background), discussed before deciding:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 51 | Snapshots on today's index, or the copy-on-write B+tree first; the owner's zoned-log proposal | Split: snapshots now with the epoch in the key; seal-and-flush for checkpoints next; zones for write-once pools later | D96, D100, G23 |
+| 52 | The host read cache: in the client library, or wait for `hyperstor-vhost` | The client library | D97 |
+| 53 | Quiescing an attached volume: a long-poll watch, or news on renewals | Long-poll watch | D98 |
+| 54 | Snapshot deletion: the engine moves blocks, or copy the data | The engine moves them | D99 |

@@ -13,7 +13,7 @@ covered by tests that run on every change.
 | HS1: Replicated pools over TCP | In progress |
 | HS2: Failure handling | Done |
 | HS3: Virtual machine disks (vhost-user-blk) and the glidex driver | Planned |
-| HS4: Snapshots, clones and the host read cache | Planned |
+| HS4: Snapshots, clones and the host read cache | In progress |
 | HS5: NVMe over TCP | Planned |
 | HS5b: Lower CPU cost per operation | Planned |
 | HS6: RDMA over RoCEv2 and InfiniBand | Planned |
@@ -78,6 +78,15 @@ covered by tests that run on every change.
 | Down and out, and failed devices | Done |
 | Slow and unreachable replicas leave a PG | Done |
 | Fault-injection test rig: kill, partition, slow disk | Done |
+
+## HS4: Snapshots, clones and the host read cache
+
+| Feature | Status |
+|---|---|
+| Engine: chunk versions read through layers, and merged without copying | Done |
+| Snapshots, clones, rollback, flatten and snapshot deletion | Planned |
+| Consistency groups | Planned |
+| The host read cache, in the client library | Planned |
 
 ## AD0: Administration API, identities and CLI
 

@@ -579,3 +579,79 @@ fn digests_follow_content_not_history() {
     let after: Vec<_> = ["a", "b", "c0", "c3"].map(|k| digest(&sh, k)).into();
     assert_eq!(before, after, "digests survive a reopen");
 }
+
+/// Snapshot versions (engine.md §7.2, D99): a read through layers takes
+/// each block from the first version that holds it; absorbing an older
+/// version moves the blocks the newer one lacks without copying, frees
+/// the ones it overrides, and survives a reopen.
+#[test]
+fn versions_read_through_layers_and_merge_without_copying() {
+    let (d, mut sh) = fresh(4096, None);
+    let v = |e: u64| ObjKey::new(1, 3, Namespace::Vol, b"chunk".to_vec(), e);
+    // Epoch 1 holds blocks 0..4; epoch 3 overrides 1..3 and adds 6.
+    one(
+        &mut sh,
+        v(1),
+        vec![Op::Write {
+            off: 0,
+            data: block(1, 4),
+        }],
+    )
+    .unwrap();
+    one(
+        &mut sh,
+        v(3),
+        vec![
+            Op::Write {
+                off: BLOCK as u64,
+                data: block(3, 2),
+            },
+            Op::Write {
+                off: 6 * BLOCK as u64,
+                data: block(3, 1),
+            },
+        ],
+    )
+    .unwrap();
+    // Another name, same prefix: not a version of this chunk.
+    one(
+        &mut sh,
+        ObjKey::new(1, 3, Namespace::Vol, b"chunkX".to_vec(), 2),
+        vec![Op::Touch],
+    )
+    .unwrap();
+    assert_eq!(sh.versions(&v(0)), vec![1, 3]);
+    let fills = |r: &[u8]| -> Vec<u8> { r.chunks(BLOCK).map(|b| b[0]).collect() };
+    let r = sh.read_layered(&[v(3), v(1)], 0, 8 * BLOCK as u64).unwrap();
+    assert_eq!(fills(&r), [1, 3, 3, 1, 0, 0, 3, 0]);
+    // At epoch 2 only version 1 is visible.
+    let r = sh.read_layered(&[v(1)], 0, 8 * BLOCK as u64).unwrap();
+    assert_eq!(fills(&r), [1, 1, 1, 1, 0, 0, 0, 0]);
+    assert!(matches!(
+        sh.read_layered(&[v(9)], 0, 4096),
+        Err(EngineError::NotFound)
+    ));
+    // Deleting the snapshot at epoch 1: version 3 absorbs version 1.
+    let free = sh.stats().free_blocks;
+    assert_eq!(
+        one(&mut sh, v(3), vec![Op::Absorb(v(3))]),
+        Err(OpError::SelfAbsorb)
+    );
+    one(&mut sh, v(3), vec![Op::Absorb(v(1))]).unwrap();
+    assert!(sh.stat(&v(1)).is_none());
+    assert_eq!(sh.versions(&v(0)), vec![3]);
+    let r = sh.read(&v(3), 0, 8 * BLOCK as u64).unwrap();
+    assert_eq!(
+        fills(&r),
+        [1, 3, 3, 1, 0, 0, 3, 0],
+        "nothing seen at the head changed"
+    );
+    // The two overridden blocks were freed; the moved two were not copied.
+    assert_eq!(sh.stats().free_blocks, free + 2);
+    let r = sh.read(&v(3), 0, 8 * BLOCK as u64).unwrap();
+    drop(sh);
+    let sh = reopen(&d);
+    assert_eq!(sh.read(&v(3), 0, 8 * BLOCK as u64).unwrap()[..], r[..]);
+    assert_eq!(sh.stats().free_blocks, free + 2);
+    assert!(sh.stat(&v(1)).is_none());
+}
