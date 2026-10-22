@@ -210,7 +210,10 @@ fn main() {
         };
     }
     hyperstor_reactor::block_on(async move {
-        let l = hyperstor_reactor::net::TcpListener::bind(addr).expect("bind");
+        let l = hyperstor_reactor::net::TcpListener::bind(addr).unwrap_or_else(|e| {
+            eprintln!("--listen {addr}: {e}");
+            std::process::exit(1)
+        });
         let (meta, _replica) = match raft {
             None => (
                 hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease)),

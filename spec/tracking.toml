@@ -447,6 +447,7 @@ tests = [
     "install::cluster_file_install_across_hosts",
     "hyperstor_test::tests::test_ports_stay_below_the_ephemeral_range",
     "hyperstor_test::tests::ports_handed_out_stay_reserved",
+    "hyperstor_reactor::net::bind_tests::a_bind_waits_for_an_address_let_go",
 ]
 
 [[milestone.item]]

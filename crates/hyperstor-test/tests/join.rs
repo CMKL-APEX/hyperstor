@@ -651,11 +651,10 @@ fn map_service_members_join_the_first() {
         env_args(&host, s.run(), "node-1.env"),
         s.path("store-2.log"),
     ));
-    let r = ctl(
-        &bin,
-        &apis[leader],
-        &pkis[leader],
-        &["status", "--wait", "30"],
-    );
-    assert!(r.has("nodes   2 up of 2"), "{}", r.out);
+    // A new leader publishes changes once the old leases ran out (D73),
+    // and the host is down until its first heartbeat: wait for both.
+    wait_for("the new host up in the published map", 30, || {
+        let r = ctl(&bin, &apis[leader], &pkis[leader], &["status"]);
+        r.has("nodes   2 up of 2").then_some(())
+    });
 }

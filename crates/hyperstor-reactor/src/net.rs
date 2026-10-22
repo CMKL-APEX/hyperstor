@@ -6,14 +6,36 @@ use std::io;
 use std::net::{SocketAddr, TcpListener as StdListener, TcpStream as StdStream};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 
+/// How long [`bind_retrying`] waits for an address in use to be let go.
+pub const BIND_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Binds `addr`, waiting up to [`BIND_RETRY`] while it is in use. A
+/// reactor's listener stays open a moment after its process has exited:
+/// the kernel tears an io_uring instance down in the background, and a
+/// pending accept holds the socket until then. A service restarted at
+/// once (a test, `systemctl restart`) would otherwise find its own old
+/// address taken.
+pub fn bind_retrying(addr: SocketAddr) -> io::Result<StdListener> {
+    let until = std::time::Instant::now() + BIND_RETRY;
+    loop {
+        match StdListener::bind(addr) {
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// A listening socket.
 pub struct TcpListener {
     inner: StdListener,
 }
 
 impl TcpListener {
+    /// Binds `addr` ([`bind_retrying`]: waits a moment if it is in use).
     pub fn bind(addr: SocketAddr) -> io::Result<Self> {
-        let inner = StdListener::bind(addr)?;
+        let inner = bind_retrying(addr)?;
         Ok(Self { inner })
     }
 
@@ -276,5 +298,23 @@ mod tests {
             let (r, buf) = s.read(vec![0; 64]).await;
             assert_eq!(&buf[..r.unwrap()], b"after");
         });
+    }
+}
+
+#[cfg(test)]
+mod bind_tests {
+    /// An address let go a moment later is bound once it is free.
+    #[test]
+    fn a_bind_waits_for_an_address_let_go() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        let start = std::time::Instant::now();
+        super::bind_retrying(addr).unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(150));
+        t.join().unwrap();
     }
 }
