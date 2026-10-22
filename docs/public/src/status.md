@@ -87,6 +87,7 @@ covered by tests that run on every change.
 | Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test | In progress |
 | Metrics on each storage node's admin port | In progress |
 | Certificates, identities and roles for the API | In progress |
+| Revoking certificates by serial, refused by the API and between map service members | Done |
 
 ## AD1: Installer and cluster join
 

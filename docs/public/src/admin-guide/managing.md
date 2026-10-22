@@ -90,6 +90,21 @@ it goes. Operations are kept in the map service's memory, the last 100;
 `op watch` exits with status 1 if the operation failed or was
 cancelled, for scripts.
 
+## Revoking a certificate
+
+A certificate that leaked, or a host that is gone, is revoked by serial:
+
+```sh
+hyperstorctl cert list                       # certificates issued through the API
+hyperstorctl cert show --file /path/node.crt # a certificate file's serial
+hyperstorctl cert revoke --serial SERIAL
+```
+
+Every map service member then refuses it, on the cluster API and
+between members, until it would have expired anyway (30 days at most).
+The local socket on a map service host needs no certificate, so
+revoking the administrator's own never locks root out.
+
 ## Testing I/O
 
 ```sh

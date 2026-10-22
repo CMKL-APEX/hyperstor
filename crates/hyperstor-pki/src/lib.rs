@@ -186,6 +186,13 @@ fn leaf_params(
         ExtendedKeyUsagePurpose::ServerAuth,
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
+    // A random serial: rcgen's default is a hash of the key, which a
+    // certificate renewed for the same key would share, and revocation
+    // (D56) names certificates by serial.
+    let rng = ring::rand::SystemRandom::new();
+    let mut serial: [u8; 16] = ring::rand::generate(&rng).map_err(err)?.expose();
+    serial[0] &= 0x7f;
+    p.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
     validity(&mut p, days);
     Ok(p)
 }
@@ -486,6 +493,31 @@ pub fn identity_of(der: &[u8]) -> Option<Identity> {
         x509_parser::extensions::GeneralName::URI(u) => Identity::parse(u),
         _ => None,
     })
+}
+
+/// A certificate's serial number, hex, without leading zeros: how the
+/// revocation list names it (D56).
+pub fn serial_of(der: &[u8]) -> Option<String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let b = cert.raw_serial();
+    let h = hex(b);
+    let t = h.trim_start_matches('0');
+    Some(if t.is_empty() {
+        "0".into()
+    } else {
+        t.to_string()
+    })
+}
+
+/// The serial of the first certificate in `pem`.
+pub fn serial_in(pem: &str) -> Option<String> {
+    serial_of(&first_cert(pem).ok()?)
+}
+
+/// When a certificate (DER) expires, in seconds since 1970.
+pub fn not_after_unix(der: &[u8]) -> Option<u64> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    u64::try_from(cert.validity().not_after.timestamp()).ok()
 }
 
 /// The identity in the first certificate in `pem`, if it has one.
@@ -823,6 +855,31 @@ mod tests {
             b,
             root_backup(&root, "42", "correct horse battery").unwrap()
         );
+    }
+
+    #[test]
+    fn leaves_get_random_serials() {
+        let root = new_root("42").unwrap();
+        let ca = new_intermediate(&root, "42").unwrap();
+        let a = issue(&ca, &admin(), &[], &[], LEAF_DAYS).unwrap();
+        let b = issue(&ca, &admin(), &[], &[], LEAF_DAYS).unwrap();
+        let (sa, sb) = (serial_in(&a.cert).unwrap(), serial_in(&b.cert).unwrap());
+        assert_ne!(sa, sb);
+        assert!(
+            sa.len() >= 24 && sa.bytes().all(|c| c.is_ascii_hexdigit()),
+            "{sa}"
+        );
+        // The same key signed twice still gets two serials.
+        let (_, csr) = new_request().unwrap();
+        let c1 = sign_request(&ca, &csr, &admin(), &[], &[], 1).unwrap();
+        let c2 = sign_request(&ca, &csr, &admin(), &[], &[], 1).unwrap();
+        assert_ne!(serial_in(&c1), serial_in(&c2));
+        let end = not_after_unix(&first_cert(&a.cert).unwrap()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(end > now + 29 * 86400 && end <= now + 30 * 86400 + 60);
     }
 
     #[test]

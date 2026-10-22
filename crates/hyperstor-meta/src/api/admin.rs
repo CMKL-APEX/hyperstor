@@ -48,6 +48,8 @@ pub struct Signing {
     pub map_addresses: String,
     /// Where join tokens are kept.
     pub tokens: Arc<crate::tokens::Tokens>,
+    /// Certificates issued and the revocation list (D93).
+    pub certs: Arc<crate::certs::Certs>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -63,6 +65,14 @@ pub(super) struct State {
 }
 
 impl State {
+    /// Whether the certificate with `serial` is revoked; false when this
+    /// member keeps no list (no `--ca`).
+    pub(super) fn is_revoked(&self, serial: &str) -> bool {
+        self.signing
+            .as_ref()
+            .is_some_and(|s| s.certs.is_revoked(serial, now_unix()))
+    }
+
     pub(super) fn new(signing: Option<Signing>, root: Option<String>, api_address: String) -> Self {
         State {
             signing,
@@ -101,6 +111,15 @@ pub fn parse_token(t: &str) -> Option<(&str, &str)> {
     let (pin, secret) = rest.split_once('-')?;
     let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit());
     (hex(pin, 64) && hex(secret, 64)).then_some((pin, secret))
+}
+
+/// The first certificate of a PEM chain, in DER.
+fn rustls_pemfile_first(pem: &str) -> Option<Vec<u8>> {
+    use rustls::pki_types::pem::PemObject;
+    rustls::pki_types::CertificateDer::pem_slice_iter(pem.as_bytes())
+        .next()?
+        .ok()
+        .map(|c| c.to_vec())
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -160,7 +179,7 @@ impl Api {
                     _ => "this map service member isn't the leader".into(),
                 };
                 meta_error(
-                    format!("{why}: tokens are made, used and revoked on the leader"),
+                    format!("{why}: tokens and revocations are written by the leader"),
                     ConnectError::unavailable,
                     "not_leader",
                 )
@@ -171,6 +190,10 @@ impl Api {
                 ),
                 "not_formed",
             ),
+            TokenError::Refused {
+                reason: "invalid_argument",
+                why,
+            } => invalid(why, "invalid_argument"),
             TokenError::Refused { reason, why } => {
                 with_reason(ConnectError::permission_denied(why), reason)
             }
@@ -179,6 +202,33 @@ impl Api {
             }
             TokenError::Store(e) => ConnectError::internal(e),
         }
+    }
+
+    /// Records a certificate the API issued (D93), off the API's thread.
+    /// Best effort: only the leader records, and a renewal through another
+    /// member is signed all the same.
+    async fn record_issued(&self, chain: &str, by: &str) {
+        let Ok((signing, _)) = self.signing() else {
+            return;
+        };
+        let der = rustls_pemfile_first(chain);
+        let (Some(serial), Some(identity), Some(not_after)) = (
+            der.as_deref().and_then(hyperstor_pki::serial_of),
+            der.as_deref().and_then(hyperstor_pki::identity_of),
+            der.as_deref().and_then(hyperstor_pki::not_after_unix),
+        ) else {
+            return;
+        };
+        let rec = crate::certs::Issued {
+            serial,
+            identity: identity.uri(),
+            not_after_unix: not_after,
+            issued_unix: now_unix(),
+            by: by.to_string(),
+        };
+        let certs = signing.certs.clone();
+        let now = now_unix();
+        let _ = tokio::task::spawn_blocking(move || certs.record(rec, now)).await;
     }
 
     /// Checks and burns a join token; returns its record.
@@ -460,6 +510,7 @@ impl TokenService for Api {
         match r {
             Ok((what, resp)) => {
                 audit(&caller, "Join", "cluster", &format!("ok, {what}"));
+                self.record_issued(&resp.certificate, &caller).await;
                 Ok(resp.into())
             }
             Err(e) => {
@@ -510,12 +561,96 @@ impl CaService for Api {
                 Err(e) => format!("failed: {e}"),
             },
         );
+        let certificate = r.map_err(|e| invalid(e, "bad_request"))?;
+        self.record_issued(&certificate, &caller).await;
         Ok(pb::RenewCertificateResponse {
-            certificate: r.map_err(|e| invalid(e, "bad_request"))?,
+            certificate,
             root: root.to_string(),
             ..Default::default()
         }
         .into())
+    }
+
+    async fn list_certificates(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::ListCertificatesRequest>,
+    ) -> ServiceResult<pb::ListCertificatesResponse> {
+        self.authorize(&ctx, "ListCertificates", "certificates", false)?;
+        let (signing, _) = self.signing()?;
+        let certs = signing.certs.clone();
+        let (issued, revoked) = tokio::task::spawn_blocking(move || certs.list())
+            .await
+            .map_err(|e| ConnectError::internal(e.to_string()))?
+            .map_err(|e| ConnectError::internal(format!("{e:?}")))?;
+        let now = now_unix();
+        let live: Vec<&crate::certs::Revoked> =
+            revoked.iter().filter(|r| r.until_unix > now).collect();
+        Ok(pb::ListCertificatesResponse {
+            certificates: issued
+                .iter()
+                .filter(|i| i.not_after_unix > now)
+                .map(|i| pb::Certificate {
+                    serial: i.serial.clone(),
+                    identity: i.identity.clone(),
+                    not_after_unix: i.not_after_unix,
+                    issued_unix: i.issued_unix,
+                    issued_by: i.by.clone(),
+                    revoked: live.iter().any(|r| r.serial == i.serial),
+                    ..Default::default()
+                })
+                .collect(),
+            revoked: live.iter().map(|r| revoked_pb(r)).collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn revoke_certificate(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RevokeCertificateRequest>,
+    ) -> ServiceResult<pb::RevokeCertificateResponse> {
+        let target = format!("certificate {}", req.serial);
+        let who = self.authorize(&ctx, "RevokeCertificate", &target, true)?;
+        let (signing, _) = self.signing()?;
+        let (certs, serial, by, now) = (
+            signing.certs.clone(),
+            req.serial.to_string(),
+            who.clone(),
+            now_unix(),
+        );
+        let r = tokio::task::spawn_blocking(move || certs.revoke(&serial, &by, now))
+            .await
+            .map_err(|e| ConnectError::internal(e.to_string()))?;
+        let r = match r {
+            Ok(r) => Ok(r),
+            Err(e) => Err(self.token_error(e).await),
+        };
+        audit(
+            &who,
+            "RevokeCertificate",
+            &target,
+            &match &r {
+                Ok(x) => format!("ok, refused until {}", x.until_unix),
+                Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            },
+        );
+        Ok(pb::RevokeCertificateResponse {
+            revoked: buffa::MessageField::some(revoked_pb(&r?)),
+            ..Default::default()
+        }
+        .into())
+    }
+}
+
+fn revoked_pb(r: &crate::certs::Revoked) -> pb::RevokedSerial {
+    pb::RevokedSerial {
+        serial: r.serial.clone(),
+        until_unix: r.until_unix,
+        revoked_unix: r.revoked_unix,
+        revoked_by: r.by.clone(),
+        ..Default::default()
     }
 }
 

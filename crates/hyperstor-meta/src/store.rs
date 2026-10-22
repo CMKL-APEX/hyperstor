@@ -29,6 +29,10 @@ pub enum Table {
     Local = 2,
     /// Join tokens, by their secret's SHA-256 (`tokens.rs`, D81).
     Tokens = 3,
+    /// Certificates the API issued, by serial (`certs.rs`, D93).
+    Issued = 4,
+    /// Revoked serials (`certs.rs`, D56, D93).
+    Revoked = 5,
 }
 
 impl Serialize for Table {
@@ -54,16 +58,28 @@ pub enum Origin {
 
 impl MapSchema {
     fn table_from_id_(id: u16) -> Option<Table> {
-        [Table::Map, Table::Local, Table::Tokens]
-            .into_iter()
-            .find(|t| *t as u16 == id)
+        [
+            Table::Map,
+            Table::Local,
+            Table::Tokens,
+            Table::Issued,
+            Table::Revoked,
+        ]
+        .into_iter()
+        .find(|t| *t as u16 == id)
     }
 }
 
 impl rs::Schema for MapSchema {
     type Table = Table;
     type Origin = Origin;
-    const TABLES: &'static [Table] = &[Table::Map, Table::Local, Table::Tokens];
+    const TABLES: &'static [Table] = &[
+        Table::Map,
+        Table::Local,
+        Table::Tokens,
+        Table::Issued,
+        Table::Revoked,
+    ];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
     const SNAPSHOT_MAGIC: &'static [u8; 8] = b"HSMAP01\n";
@@ -77,6 +93,8 @@ impl rs::Schema for MapSchema {
             Table::Map => "map",
             Table::Local => "local",
             Table::Tokens => "tokens",
+            Table::Issued => "issued",
+            Table::Revoked => "revoked",
         }
     }
     fn table_id(t: Table) -> u16 {

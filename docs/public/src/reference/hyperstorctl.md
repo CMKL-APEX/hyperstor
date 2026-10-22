@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F]
 ```
 
 | Command | Does |
@@ -26,6 +26,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `op list` | Running and recent operations, newest first |
 | `op get` | Operation `--id` |
 | `op watch` | Prints operation `--id` as it progresses, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
+| `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
+| `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired |
+| `cert show` | Prints the identity, serial and expiry of the certificate in `--file`, without the API: how to find the serial of a certificate the installer made |
 | `op cancel` | Stops operation `--id`; a cancelled drain brings the node's devices back in |
 
 | Option | Default | Meaning |
@@ -45,6 +48,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
+| `--serial S` | | `cert revoke`: the certificate's serial, hex, as `cert list` and `cert show` print it |
+| `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line

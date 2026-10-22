@@ -173,6 +173,7 @@ async fn run(
     let transport = Arc::new(Tcp {
         tls: cfg.tls.clone(),
         conns: tokio::sync::Mutex::new(HashMap::new()),
+        db: db.clone(),
     });
     let node = match ClusterNode::<MapSchema>::start(
         db.clone(),
@@ -199,7 +200,12 @@ async fn run(
         Ok(l) => l,
         Err(e) => return fail(e.to_string()),
     };
-    tokio::spawn(serve(listener, node.service.clone(), cfg.tls.clone()));
+    tokio::spawn(serve(
+        listener,
+        node.service.clone(),
+        cfg.tls.clone(),
+        db.clone(),
+    ));
     let first = cfg.members.iter().map(|m| m.id).min() == Some(cfg.id);
     if first && node.log.is_fresh().unwrap_or(false) {
         let all: BTreeMap<RaftId, openraft::BasicNode> = cfg
@@ -308,16 +314,28 @@ type Slot = Arc<tokio::sync::Mutex<Option<Box<dyn Stream>>>>;
 struct Tcp {
     tls: Option<PeerTls>,
     conns: tokio::sync::Mutex<HashMap<String, Slot>>,
+    /// For the revocation list (`certs.rs`).
+    db: Arc<Db>,
 }
 
-/// The peer certificate's identity must be a `meta` of this cluster.
+/// The peer certificate's identity must be a `meta` of this cluster, and
+/// its serial not revoked (D56).
 fn check_peer(
     certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     cluster: &str,
+    db: &Arc<Db>,
 ) -> Result<(), String> {
     let der = certs
         .and_then(|c| c.first())
         .ok_or("the peer sent no certificate")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Some(serial) = hyperstor_pki::serial_of(der)
+        && crate::certs::Certs::replicated(db.clone()).is_revoked(&serial, now)
+    {
+        return Err(format!("the peer's certificate {serial} is revoked"));
+    }
     match hyperstor_pki::identity_of(der) {
         Some(id) if id.role == hyperstor_pki::Role::Meta && id.cluster == cluster => Ok(()),
         Some(id) => Err(format!(
@@ -345,7 +363,7 @@ impl Tcp {
             .connect(name, tcp)
             .await
             .map_err(|e| format!("{addr}: TLS: {e}"))?;
-        check_peer(s.get_ref().1.peer_certificates(), &tls.cluster)?;
+        check_peer(s.get_ref().1.peer_certificates(), &tls.cluster, &self.db)?;
         Ok(Box::new(s))
     }
 
@@ -440,13 +458,14 @@ async fn serve(
     listener: tokio::net::TcpListener,
     service: Arc<RaftService<MapSchema>>,
     tls: Option<PeerTls>,
+    db: Arc<Db>,
 ) {
     loop {
         let Ok((tcp, _)) = listener.accept().await else {
             continue;
         };
         let _ = tcp.set_nodelay(true);
-        let (service, tls) = (service.clone(), tls.clone());
+        let (service, tls, db) = (service.clone(), tls.clone(), db.clone());
         tokio::spawn(async move {
             let s: Box<dyn Stream> = match &tls {
                 None => Box::new(tcp),
@@ -457,7 +476,7 @@ async fn serve(
                     else {
                         return;
                     };
-                    if check_peer(s.get_ref().1.peer_certificates(), &t.cluster).is_err() {
+                    if check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db).is_err() {
                         return;
                     }
                     Box::new(s)
@@ -544,4 +563,52 @@ pub fn peer_tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<PeerTls
         client: Arc::new(hyperstor_pki::client_config(&cert, &key, &root)?),
         cluster: cluster.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Members refuse each other's certificates once revoked (D56), and
+    /// any that isn't a `meta` of this cluster.
+    #[test]
+    fn members_refuse_revoked_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("map.redb")).unwrap());
+        let root = hyperstor_pki::new_root("5").unwrap();
+        let ca = hyperstor_pki::new_intermediate(&root, "5").unwrap();
+        let who = |role, id: &str| hyperstor_pki::Identity {
+            cluster: "5".into(),
+            role,
+            id: id.into(),
+        };
+        let der = |p: &hyperstor_pki::Pem| {
+            use rustls::pki_types::pem::PemObject;
+            rustls::pki_types::CertificateDer::pem_slice_iter(p.cert.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+        };
+        let m2 =
+            hyperstor_pki::issue(&ca, &who(hyperstor_pki::Role::Meta, "2"), &[], &[], 30).unwrap();
+        let d = der(&m2);
+        check_peer(Some(std::slice::from_ref(&d)), "5", &db).unwrap();
+        assert!(check_peer(Some(std::slice::from_ref(&d)), "6", &db).is_err());
+        let node =
+            hyperstor_pki::issue(&ca, &who(hyperstor_pki::Role::Node, "1"), &[], &[], 30).unwrap();
+        assert!(check_peer(Some(&[der(&node)]), "5", &db).is_err());
+        let serial = hyperstor_pki::serial_in(&m2.cert).unwrap();
+        crate::certs::Certs::replicated(db.clone())
+            .revoke(
+                &serial,
+                "test",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .unwrap();
+        let e = check_peer(Some(std::slice::from_ref(&d)), "5", &db).unwrap_err();
+        assert!(e.contains("revoked"), "{e}");
+    }
 }

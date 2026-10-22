@@ -262,6 +262,25 @@ impl Api {
                         ),
                     ));
                 }
+                // A revoked certificate (D56) gets nothing, not even renewal.
+                let serial = ctx
+                    .peer_certs()
+                    .and_then(|c| c.first())
+                    .and_then(|leaf| hyperstor_pki::serial_of(leaf));
+                if let Some(serial) = serial
+                    && self.admin.is_revoked(&serial)
+                {
+                    return Err(refuse(
+                        &who.uri(),
+                        with_reason(
+                            ConnectError::permission_denied(format!(
+                                "certificate {serial} of {} is revoked",
+                                who.uri()
+                            )),
+                            "revoked",
+                        ),
+                    ));
+                }
                 let allowed = match need {
                     Need::Write => who.role.may_administer(),
                     Need::Read => who.role != hyperstor_pki::Role::Host,

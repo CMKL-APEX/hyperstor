@@ -27,6 +27,13 @@ service CaService {
   // the key in the request: renewal over the existing mutual TLS session.
   // Any identity of the cluster.
   rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+
+  // Certificates issued through the API, and the revocation list. Read.
+  rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesResponse);
+
+  // Refuses a certificate, by serial, on every map service member from
+  // now until it would have expired (decisions.md D56, D93). Write.
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
 }
 
 // Changes to nodes that run as operations.
@@ -129,6 +136,41 @@ message RenewCertificateResponse {
   // Chain, leaf then intermediate, PEM.
   string certificate = 1;
   string root = 2;
+}
+
+message ListCertificatesRequest {}
+
+message Certificate {
+  // Hex, without leading zeros.
+  string serial = 1;
+  // hyperstor://<cluster>/<role>/<id>
+  string identity = 2;
+  uint64 not_after_unix = 3 [json_name = "not_after_unix"];
+  uint64 issued_unix = 4 [json_name = "issued_unix"];
+  // Who it was issued to or for, as the audit names callers.
+  string issued_by = 5 [json_name = "issued_by"];
+  bool revoked = 6;
+}
+
+message RevokedSerial {
+  string serial = 1;
+  // Kept on the list until then, when the certificate expires anyway.
+  uint64 until_unix = 2 [json_name = "until_unix"];
+  uint64 revoked_unix = 3 [json_name = "revoked_unix"];
+  string revoked_by = 4 [json_name = "revoked_by"];
+}
+
+message ListCertificatesResponse {
+  repeated Certificate certificates = 1;
+  repeated RevokedSerial revoked = 2;
+}
+
+message RevokeCertificateRequest {
+  string serial = 1;
+}
+
+message RevokeCertificateResponse {
+  RevokedSerial revoked = 1;
 }
 
 message DrainNodeRequest {

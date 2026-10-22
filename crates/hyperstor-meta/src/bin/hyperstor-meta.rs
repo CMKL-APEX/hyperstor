@@ -129,6 +129,7 @@ fn main() {
             map_addresses: String::new(),
             // Replaced by the replicated store once it is open.
             tokens: std::sync::Arc::new(hyperstor_meta::tokens::Tokens::in_memory()),
+            certs: std::sync::Arc::new(hyperstor_meta::certs::Certs::in_memory()),
         }
     });
     if signing.is_some() && tls.is_none() {
@@ -248,6 +249,8 @@ fn main() {
                         r.db.clone(),
                         bootstrap,
                     ));
+                    s.certs =
+                        std::sync::Arc::new(hyperstor_meta::certs::Certs::replicated(r.db.clone()));
                 }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))
