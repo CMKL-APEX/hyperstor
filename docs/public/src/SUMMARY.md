@@ -23,6 +23,18 @@
   - [Measuring performance](admin-guide/benchmarking.md)
   - [Troubleshooting](admin-guide/troubleshooting.md)
 
+# Developer guide
+
+- [Developer guide](developer-guide/index.md)
+  - [Architecture](developer-guide/architecture.md)
+  - [The data path: reactor and engine](developer-guide/data-path.md)
+  - [Placement and replication](developer-guide/replication.md)
+  - [Volumes, leases and the blocklist](developer-guide/volumes.md)
+  - [Design decisions and trade-offs](developer-guide/decisions.md)
+  - [Performance](developer-guide/performance.md)
+  - [Comparison with other systems](developer-guide/comparison.md)
+  - [References](developer-guide/references.md)
+
 # Reference
 
 - [Reference](reference/index.md)
@@ -31,6 +43,7 @@
   - [hyperstord](reference/hyperstord.md)
   - [hyperstor-bench](reference/hyperstor-bench.md)
   - [hyperstorctl](reference/hyperstorctl.md)
+  - [hyperstor-ublk](reference/hyperstor-ublk.md)
   - [hyperstor-install](reference/hyperstor-install.md)
   - [hyperstor-mgmt](reference/hyperstor-mgmt.md)
   - [Cluster API](reference/cluster-api.md)

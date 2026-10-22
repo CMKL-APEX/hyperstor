@@ -25,10 +25,13 @@ require client certificates; without it, keep the API on loopback.
 |---|---|---|
 | `--lease-ms` | 600 | How long a storage node may serve after its last heartbeat was answered |
 | `--down-after-ms` | 800 | How long without a heartbeat before a node is marked down; at least 1.25 × the lease |
+| `--down-out-secs` | 600 | How long a node stays down before its devices are marked out and its data is copied elsewhere |
 
-A node marked down loses its roles: its placement groups go to other
-nodes, and a node cut off from the map service has already stopped
-serving, because its lease ran out first. Shorter times detect failures
+A node marked down loses its roles: its placement groups get new
+primaries and run with the other copies, and a node cut off from the map
+service has already stopped serving, because its lease ran out first.
+Nothing is copied until `--down-out-secs` pass, so a reboot moves no data
+(see [Failures and recovery](failures.md)). Shorter times detect failures
 sooner, at the cost of false alarms on a slow or busy network.
 
 ## Several members
@@ -65,7 +68,13 @@ map, and the others send nodes to it.
   members, one at a time.
   Removing them goes through `hyperstorctl out` and `in`.
 - **Members talk over mutual TLS** with their `--api-tls` certificates,
-  which must name each member's address.
+  which must name each member's address. `hyperstor-install` sets this up
+  when members join the first one with a token (see
+  [Installation](installation.md#joining-hosts-with-tokens)).
+- **Not yet:** adding or removing members while the group runs, and
+  restarting a group that lost a majority of its members for good from a
+  surviving member; until then, restore it from a backup (see
+  [Backups and restoring](#backups-and-restoring)). Keep a majority up.
 
 ## One member
 

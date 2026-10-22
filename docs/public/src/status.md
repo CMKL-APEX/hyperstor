@@ -61,7 +61,7 @@ covered by tests that run on every change.
 | Map backups by the leader and on request, and restoring a lost store from one | Done |
 | Changing the map service's members at run time, and recovering a group that lost its majority | Done |
 | Volume metadata: headers, directories and volume leases | Done |
-| Test block devices through ublk | Planned |
+| Test block devices through ublk | Done |
 
 ## HS2: Failure handling
 

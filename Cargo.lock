@@ -1146,6 +1146,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-ublk"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-client",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "io-uring",
+ "libc",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"

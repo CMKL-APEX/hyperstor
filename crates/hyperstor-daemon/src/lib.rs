@@ -384,6 +384,17 @@ impl Drop for Expiry<'_> {
 /// before reporting it too slow for the PG (decisions.md D91).
 pub const REPL_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The code a failed commit is answered with: a shard out of space is
+/// `NoSpace` (clients report it as such, `hyperstor-ublk` as `ENOSPC`);
+/// anything else is `Io`. Commit errors travel as text (`CommitResult`).
+fn commit_code(e: &str) -> Code {
+    if e == OpError::NoSpace.to_string() {
+        Code::NoSpace
+    } else {
+        Code::Io
+    }
+}
+
 fn blocklisted(map: &ClusterMap) -> Msg {
     err(
         Code::Blocklisted,
@@ -1126,7 +1137,7 @@ impl ShardState {
                     detail: format!("device failed: {e}"),
                 },
                 (Err(e), _) => Msg::Error {
-                    code: Code::Io,
+                    code: commit_code(&e),
                     map_epoch: 0,
                     detail: e,
                 },
@@ -1430,7 +1441,7 @@ impl ShardState {
                     detail: format!("device failed: {e}"),
                 }),
                 (Err(e), _) => Err(Msg::Error {
-                    code: Code::Io,
+                    code: commit_code(&e),
                     map_epoch: 0,
                     detail: e,
                 }),
@@ -2744,6 +2755,13 @@ impl Drop for InflightGuard {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    #[test]
+    fn a_full_shard_is_answered_no_space() {
+        use super::{Code, OpError, commit_code};
+        assert_eq!(commit_code(&OpError::NoSpace.to_string()), Code::NoSpace);
+        assert_eq!(commit_code("I/O error: boom"), Code::Io);
+    }
 
     #[test]
     fn scrub_repairs_only_from_a_majority() {

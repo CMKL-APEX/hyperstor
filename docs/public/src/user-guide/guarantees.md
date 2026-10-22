@@ -24,7 +24,18 @@ others. Write the same data again: writes to a range are idempotent.
 
 Every 4 KiB block carries a CRC32C checksum from the client to the
 device and back. A block that doesn't match its checksum is never
-returned as data: the read fails with `Checksum`.
+returned as data. When the primary's copy is damaged, the primary reads
+another copy, repairs its own and returns the good data. If no copy is
+good, the read fails (`Server` with code `Checksum`); `Checksum` on its
+own means the data was damaged on the way to the client.
+
+## Volumes and leases
+
+A volume attached through `attach`, `take_over` or `preempt` has one
+writer at a time. After a take-over or preemption, the old holder is
+refused by every storage node, so no write of its lands after the new
+holder's first write. A write that failed with `LeaseLost` may have
+landed or not.
 
 ## Errors
 
@@ -43,7 +54,12 @@ The errors your program sees:
 | `Unaligned` | Offset or length is not a multiple of 4096 | Fix the request |
 | `NoPool(p)` | Pool `p` is not in the map | Check the pool number with the administrator |
 | `NoPrimary(pool, pg)` | The map has no such PG | Check the pool's configuration with the administrator |
-| `Checksum` | Data was corrupted on the way or on a device | Retry the read; report it if it persists |
-| `Server { code, .. }` | The storage node refused the request, for example `NoSpace` or `Io` | Depends on the code; report `Io` to the administrator |
+| `Checksum` | Data was corrupted on the way to the client | Retry the read; report it if it persists |
+| `NoVolume(id)`, `VolumeExists(id)` | No volume has that id; one already does | Check the id |
+| `Shrink { .. }`, `BadVolume(..)` | A smaller size, or a size or name that isn't allowed | Fix the request |
+| `LeaseHeld { holder, remaining_ms }` | Another client instance has the volume attached | Wait, or `take_over` if that client is gone |
+| `LeaseLost(id)` | This handle's lease was taken over, or this client was blocklisted | Stop using the handle; attach again if that's right |
+| `VolumeAttached(id)` | A delete of an attached volume | Detach it first, or force the delete |
+| `Server { code, .. }` | The storage node refused the request, for example `NoSpace`, `Io`, or `Checksum` when no copy is good | Depends on the code; report `Io` and `Checksum` to the administrator |
 | `Exhausted(n, why)` | The client retried `n` times without success, for example while a failed node is being detected | Retry after a few seconds; `why` is the last error |
 | `Rpc(..)` | A connection or protocol error the client did not retry, for example while fetching the map | Check that the map service is up and reachable, and that client and cluster run the same version |
