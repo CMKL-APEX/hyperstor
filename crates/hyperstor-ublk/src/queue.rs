@@ -151,7 +151,7 @@ impl Queue {
                     unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buf.ptr, len) };
                     len as i32
                 }
-                Err(_) => -libc::EIO,
+                Err(e) => errno(&e),
             },
             IO_OP_WRITE => {
                 // SAFETY: as above; the driver copied the data in before
@@ -159,13 +159,26 @@ impl Queue {
                 let data = unsafe { std::slice::from_raw_parts(buf.ptr, len) }.to_vec();
                 match vol.write(off, data).await {
                     Ok(()) => len as i32,
-                    Err(_) => -libc::EIO,
+                    Err(e) => errno(&e),
                 }
             }
             // Writes are durable once answered: nothing to flush.
             IO_OP_FLUSH => 0,
             _ => -libc::EOPNOTSUPP,
         }
+    }
+}
+
+/// The errno a failed request is answered with: a full cluster is
+/// `ENOSPC`, so filesystems report it as such; anything else is `EIO`.
+fn errno(e: &hyperstor_client::ClientError) -> i32 {
+    use hyperstor_client::ClientError;
+    match e {
+        ClientError::Server {
+            code: hyperstor_proto::Code::NoSpace,
+            ..
+        } => -libc::ENOSPC,
+        _ => -libc::EIO,
     }
 }
 

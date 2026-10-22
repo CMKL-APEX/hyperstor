@@ -197,4 +197,23 @@ fn a_volume_is_a_block_device_and_keeps_its_data() {
         "file differs after re-attach"
     );
     s.stop();
+    // Volumes are thin: one larger than the cluster holds fills it, and
+    // the device then says so (ENOSPC), not an I/O error.
+    let big = c
+        .ctl(&["create-volume", "--size", "4G", "--name", "big"])
+        .ok();
+    let big = big.out.split_whitespace().nth(1).unwrap().to_string();
+    let s = Served::start(&c, &big, &[]);
+    let of = format!("of={}", s.dev);
+    let (ok, out) = sudo(&[
+        "dd",
+        "if=/dev/zero",
+        &of,
+        "bs=1M",
+        "count=4096",
+        "oflag=direct",
+        "status=none",
+    ]);
+    assert!(!ok && out.contains("No space left on device"), "{out}");
+    s.stop();
 }

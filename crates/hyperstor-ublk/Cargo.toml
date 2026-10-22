@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 io-uring.workspace = true
 libc.workspace = true
