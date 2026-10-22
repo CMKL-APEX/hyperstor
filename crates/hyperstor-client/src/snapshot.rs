@@ -692,6 +692,7 @@ impl Client {
             chain,
             snapshots: Vec::new(),
             skip: Vec::new(),
+            incarnation: v.incarnation,
         };
         if let Err(e) = self.put_new(&c).await {
             self.forget_branch(v.lineage, b).await?;

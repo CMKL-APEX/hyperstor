@@ -7,6 +7,7 @@
 
 pub use hyperstor_rpc as rpc;
 
+pub mod cache;
 pub mod snapshot;
 pub mod volume;
 
@@ -27,7 +28,7 @@ use thiserror::Error;
 pub const NS_VOL: u8 = 1;
 /// `.meta` objects: headers, lineages, directories, groups (metadata.md §4.2).
 pub const NS_META: u8 = 3;
-const BLOCK: u64 = 4096;
+pub(crate) const BLOCK: u64 = 4096;
 const RETRIES: usize = 20;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -124,6 +125,9 @@ pub struct Client {
     /// (`volume`), and whether the renewing task runs.
     attached: RefCell<HashMap<u128, std::rc::Weak<volume::Attached>>>,
     renewing: std::cell::Cell<bool>,
+    /// Blocks of versions that can't change, for every volume this client
+    /// serves (D102).
+    pub(crate) cache: RefCell<cache::ReadCache>,
     pub id: u64,
     pub instance: u64,
 }
@@ -156,6 +160,7 @@ impl Client {
             conns: RefCell::new(HashMap::new()),
             attached: RefCell::new(HashMap::new()),
             renewing: std::cell::Cell::new(false),
+            cache: RefCell::new(cache::ReadCache::new(cache::DEFAULT_BYTES)),
             id,
             // Never 0: storage nodes take 0 for peers, which are never
             // blocklisted.
@@ -540,6 +545,48 @@ impl Client {
         off: u64,
         len: u64,
     ) -> Result<Vec<u8>, ClientError> {
+        Ok(self.read_sourced(pool, lineage, layers, off, len).await?.0)
+    }
+
+    /// [`Self::read_at`], with the (branch, epoch) each block came from;
+    /// `u32::MAX` for a hole.
+    pub async fn read_sourced(
+        self: &Rc<Self>,
+        pool: u32,
+        lineage: u128,
+        layers: &[(u32, u64, u64)],
+        off: u64,
+        len: u64,
+    ) -> Result<(Vec<u8>, Vec<(u32, u64)>), ClientError> {
+        self.read_layers(pool, lineage, layers, off, len, true)
+            .await
+    }
+
+    /// Where each block [`Self::read_at`] would read comes from, without
+    /// the data.
+    pub async fn sources(
+        self: &Rc<Self>,
+        pool: u32,
+        lineage: u128,
+        layers: &[(u32, u64, u64)],
+        off: u64,
+        len: u64,
+    ) -> Result<Vec<(u32, u64)>, ClientError> {
+        Ok(self
+            .read_layers(pool, lineage, layers, off, len, false)
+            .await?
+            .1)
+    }
+
+    async fn read_layers(
+        self: &Rc<Self>,
+        pool: u32,
+        lineage: u128,
+        layers: &[(u32, u64, u64)],
+        off: u64,
+        len: u64,
+        data: bool,
+    ) -> Result<(Vec<u8>, Vec<(u32, u64)>), ClientError> {
         let pieces = self.pieces(pool, off, len)?;
         let layers: Rc<Vec<(u32, u64, u64)>> = Rc::new(layers.to_vec());
         let handles: Vec<_> = pieces
@@ -554,18 +601,31 @@ impl Client {
                         epoch: 0,
                     };
                     let (msg, payload) = me
-                        .to_primary(pool, route, &[], &|to, key| Msg::ReadAt {
-                            to,
-                            key,
-                            layers: layers.to_vec(),
-                            off: coff,
-                            len: n,
+                        .to_primary(pool, route, &[], &|to, key| {
+                            let layers = layers.to_vec();
+                            if data {
+                                Msg::ReadAt {
+                                    to,
+                                    key,
+                                    layers,
+                                    off: coff,
+                                    len: n,
+                                }
+                            } else {
+                                Msg::Sources {
+                                    to,
+                                    key,
+                                    layers,
+                                    off: coff,
+                                    len: n,
+                                }
+                            }
                         })
                         .await?;
                     match msg {
-                        Msg::ReadOk { crcs } => {
+                        Msg::ReadAtOk { crcs, sources } if sources.len() as u64 == n / BLOCK => {
                             verify_crcs(&payload, &crcs).map_err(|_| ClientError::Checksum)?;
-                            Ok((roff, payload))
+                            Ok((roff, payload, sources))
                         }
                         m => Err(ClientError::Rpc(RpcError::Protocol(format!(
                             "unexpected {m:?}"
@@ -574,12 +634,25 @@ impl Client {
                 })
             })
             .collect();
-        let mut out = vec![0u8; len as usize];
+        let mut out = vec![0u8; if data { len as usize } else { 0 }];
+        let mut all = Vec::with_capacity((len / BLOCK) as usize);
         for h in handles {
-            let (roff, p) = h.await?;
-            out[roff as usize..roff as usize + p.len()].copy_from_slice(&p);
+            let (roff, p, sources) = h.await?;
+            if data {
+                out[roff as usize..roff as usize + p.len()].copy_from_slice(&p);
+            }
+            all.extend(sources);
         }
-        Ok(out)
+        Ok((out, all))
+    }
+
+    /// Sets the size of the read cache (D102); 0 turns it off.
+    pub fn set_read_cache_bytes(&self, bytes: usize) {
+        self.cache.borrow_mut().set_bytes(bytes);
+    }
+
+    pub fn read_cache_stats(&self) -> cache::Stats {
+        self.cache.borrow().stats()
     }
 
     /// Sends `make`'s message about chunk `chunk` of `lineage` (its name in
