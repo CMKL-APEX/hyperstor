@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=3ed1891d61988ca24edf274ea401cf1960fe3e3f#3ed1891d61988ca24edf274ea401cf1960fe3e3f"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1302,7 +1302,7 @@ dependencies = [
 [[package]]
 name = "glidex-authd"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=3ed1891d61988ca24edf274ea401cf1960fe3e3f#3ed1891d61988ca24edf274ea401cf1960fe3e3f"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
 dependencies = [
  "libc",
  "libloading",
@@ -1337,7 +1337,7 @@ dependencies = [
 [[package]]
 name = "glidex-tls"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=6688803eb9a5deb5484d7a0d52a79244665fe946#6688803eb9a5deb5484d7a0d52a79244665fe946"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=6500c1f08164ad6de38916b1fe53541711713823#6500c1f08164ad6de38916b1fe53541711713823"
 dependencies = [
  "arc-swap",
  "http",
