@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR]
 ```
 
 | Command | Does |
@@ -43,6 +43,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `--out FILE` | | `root-backup`: the backup to write (created mode 0600; an existing file is never overwritten) |
 | `--in FILE` | | `root-restore`: the backup to read |
 | `--passphrase-file F` | | `root-backup`, `root-restore`: the passphrase, at least 12 characters, from a file; or `$HYPERSTOR_BACKUP_PASSPHRASE`. Never on the command line |
+| `--ui DIR` | `hyperstor-ui` beside the installer | Where the map service runs: install the [web UI](hyperstor-mgmt.md)'s built files from `DIR` (`crates/hyperstor-mgmt/ui/dist` after `bun run build`) to `/usr/local/share/hyperstor/ui`, replacing what was there, and have `hyperstor-mgmt` serve them. Without it and without `hyperstor-ui`, an installed UI stays; with none, the built-in dashboard is served. Not saved |
 | `--remove-key` | off | `root-backup`: once the backup opens, remove the root's key from this host, keeping the root offline |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
@@ -64,6 +65,7 @@ in, so run it from `target/release` after `cargo build --release`.
 | `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
 | `/etc/systemd/system/` | `hyperstor-meta.service`, `hyperstor-mgmt.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
 | `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group), `mgmt` for the dashboard (key readable by the `hyperstor` group) |
+| `/usr/local/share/hyperstor/ui/` | The web UI's files, when installed with `--ui` (removed by `uninstall`) |
 | `/etc/hyperstor/install.conf` | The saved options |
 
 The map service's unit hands it the intermediate CA's key as a systemd

@@ -49,12 +49,15 @@ pub fn bin_dir() -> PathBuf {
     let dir = std::env::var_os("HS_BIN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            // target/<profile>/deps/<test> -> target/<profile>
+            // target/<profile>/deps/<test> -> target/<profile>; a binary
+            // of this crate (ui-e2e-cluster) is in target/<profile>.
             let exe = std::env::current_exe().expect("test executable");
-            exe.parent()
-                .and_then(Path::parent)
-                .expect("build directory")
-                .to_path_buf()
+            let dir = exe.parent().expect("build directory");
+            if dir.file_name().is_some_and(|n| n == "deps") {
+                dir.parent().expect("build directory").to_path_buf()
+            } else {
+                dir.to_path_buf()
+            }
         });
     for b in BINARIES {
         let p = dir.join(b);
@@ -262,6 +265,10 @@ pub fn env_args(root: &Path, run: &Path, env: &str) -> Vec<String> {
                 root.join("etc/hyperstor").to_str().unwrap(),
             )
             .replace("/run/hyperstor-meta", run.to_str().unwrap())
+            .replace(
+                "/usr/local/share/hyperstor",
+                root.join("usr/local/share/hyperstor").to_str().unwrap(),
+            )
         })
         .collect()
 }
@@ -358,6 +365,34 @@ pub struct FakeIdp {
     key: jsonwebtoken::EncodingKey,
     next: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     pub token_requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Who `/authorize` logs in at once, for a browser ([`FakeIdp::auto_login`]).
+    auto: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// An ID token from `issuer` for `client_id`, valid an hour, with `claims`.
+fn sign_id_token(
+    key: &jsonwebtoken::EncodingKey,
+    issuer: &str,
+    client_id: &str,
+    claims: &serde_json::Value,
+) -> String {
+    let now = now_unix();
+    let mut c = serde_json::json!({
+        "iss": issuer, "aud": client_id, "iat": now, "exp": now + 3600,
+    });
+    for (k, v) in claims.as_object().unwrap() {
+        c[k] = v.clone();
+    }
+    let mut h = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    h.kid = Some("k1".into());
+    jsonwebtoken::encode(&h, &c, key).unwrap()
 }
 
 impl FakeIdp {
@@ -383,7 +418,9 @@ impl FakeIdp {
         .to_string();
         let next = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (n, t) = (next.clone(), token_requests.clone());
+        let auto = std::sync::Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let (n, t, au) = (next.clone(), token_requests.clone(), auto.clone());
+        let (k, iss) = (key.clone(), issuer.clone());
         std::thread::spawn(move || {
             use std::io::{BufRead, Read, Write};
             for s in l.incoming().flatten() {
@@ -410,6 +447,26 @@ impl FakeIdp {
                 }
                 let mut body = vec![0; len];
                 let _ = r.read_exact(&mut body);
+                // A browser's login: whoever auto_login names, at once.
+                if path.starts_with("/authorize?") {
+                    let who = au.lock().unwrap().clone();
+                    let q = |name: &str| query_param(&path, name).unwrap_or_default();
+                    let answer = match who {
+                        Some(mut claims) => {
+                            claims["nonce"] = q("nonce").into();
+                            *n.lock().unwrap() =
+                                Some(sign_id_token(&k, &iss, &q("client_id"), &claims));
+                            format!(
+                                "HTTP/1.1 302 Found\r\nLocation: {}?code=auto&state={}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                q("redirect_uri"),
+                                q("state")
+                            )
+                        }
+                        None => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+                    };
+                    let _ = (&s).write_all(answer.as_bytes());
+                    continue;
+                }
                 let (code, answer) = match path.as_str() {
                     "/.well-known/openid-configuration" => (200, discovery.clone()),
                     "/jwks" => (200, jwks.clone()),
@@ -442,25 +499,21 @@ impl FakeIdp {
             key,
             next,
             token_requests,
+            auto,
         }
+    }
+
+    /// From now on `/authorize` logs a browser in at once as `claims`
+    /// (`sub`, `email`, `email_verified`...) and sends it back.
+    pub fn auto_login(&self, claims: serde_json::Value) {
+        *self.auto.lock().unwrap() = Some(claims);
     }
 
     /// The ID token the next token request gets: signed, for `client_id`,
     /// valid an hour, with these claims added (`sub`, `email`, `nonce`…).
     pub fn next_id_token(&self, client_id: &str, claims: serde_json::Value) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let mut c = serde_json::json!({
-            "iss": self.issuer, "aud": client_id, "iat": now, "exp": now + 3600,
-        });
-        for (k, v) in claims.as_object().unwrap() {
-            c[k] = v.clone();
-        }
-        let mut h = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
-        h.kid = Some("k1".into());
-        *self.next.lock().unwrap() = Some(jsonwebtoken::encode(&h, &c, &self.key).unwrap());
+        *self.next.lock().unwrap() =
+            Some(sign_id_token(&self.key, &self.issuer, client_id, &claims));
     }
 }
 

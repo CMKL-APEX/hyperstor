@@ -1,0 +1,14 @@
+{
+  "name": "@glidex/ui-kit",
+  "license": "MIT OR Apache-2.0",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "@types/react": "^19.1.2",
+    "react": "^19.1.0"
+  }
+}

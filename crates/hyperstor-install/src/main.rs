@@ -43,7 +43,12 @@
 //!   `$HYPERSTOR_BACKUP_PASSPHRASE`; never from the command line.
 //!
 //! Binaries are taken from the installer's own directory (`target/release`
-//! when run from a checkout). `--root DIR` writes every file under DIR
+//! when run from a checkout). Where the map service runs, the web UI's
+//! built files (D100) are installed to `/usr/local/share/hyperstor/ui`
+//! from `--ui DIR` (`crates/hyperstor-mgmt/ui/dist` after `bun run
+//! build`), else from `hyperstor-ui` beside the installer, and
+//! `hyperstor-mgmt` serves them; without either, an installed UI stays as
+//! it is, and with none the built-in dashboard is served. `--root DIR` writes every file under DIR
 //! instead of `/` (for packaging and tests) and never touches users or
 //! systemd; the files still name their final paths.
 //!
@@ -54,7 +59,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR]";
 
 const BINARIES: [&str; 5] = [
     "hyperstor-meta",
@@ -203,6 +208,8 @@ fn main() {
     let mut root = PathBuf::from("/");
     let mut no_start = false;
     let mut cluster_file: Option<String> = None;
+    // Never saved: where this install's UI comes from.
+    let mut ui_from: Option<String> = None;
     let (mut out_file, mut in_file, mut remove_key) = (None, None, false);
     let mut passphrase: Option<String> = std::env::var("HYPERSTOR_BACKUP_PASSPHRASE").ok();
     // Never saved: a token is single-use and secret (§23.10).
@@ -237,6 +244,10 @@ fn main() {
             }
             "--token" => {
                 token = Some(val());
+                continue;
+            }
+            "--ui" => {
+                ui_from = Some(val());
                 continue;
             }
             "--out" => {
@@ -346,7 +357,7 @@ fn main() {
                     cluster_file = Some(f);
                 }
             }
-            install(&root, real, no_start, &s, cluster_file)
+            install(&root, real, no_start, &s, cluster_file, ui_from)
         }
     }
 }
@@ -764,6 +775,8 @@ struct Plan {
     /// loopback for the trial, the member's own address otherwise, so
     /// joining hosts reach it (D59).
     api: String,
+    /// The web UI is installed (`UI_DIR`): mgmt serves it (D100).
+    ui: bool,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -826,6 +839,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
             .collect();
         return Plan {
+            ui: false,
             api: format!("127.0.0.1:{}", s.api_port),
             metrics,
             cluster,
@@ -930,6 +944,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         .map(|a| std::net::SocketAddr::new(a.ip(), s.api_port).to_string())
         .unwrap_or_else(|_| format!("127.0.0.1:{}", s.api_port));
     Plan {
+        ui: false,
         api,
         metrics,
         cluster,
@@ -962,6 +977,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
         .parse()
         .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
     Plan {
+        ui: false,
         api: String::new(),
         cluster: String::new(),
         cluster_id: String::new(),
@@ -1221,10 +1237,11 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/mgmt.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --authd /run/hyperstor-authd/auth.sock --metrics {}\n",
+                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --authd /run/hyperstor-authd/auth.sock --metrics {}{}\n",
                     s.mgmt_port,
                     p.api,
-                    p.metrics.join(",")
+                    p.metrics.join(","),
+                    if p.ui { format!(" --ui {UI_DIR}") } else { String::new() }
                 ),
                 0o644,
             ),
@@ -1375,8 +1392,57 @@ fn units(p: &Plan) -> Vec<String> {
         .collect()
 }
 
-fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: Option<String>) {
-    let p = plan(root, s, cluster_file);
+/// Where the web UI's files go (D100).
+const UI_DIR: &str = "/usr/local/share/hyperstor/ui";
+
+/// Makes `UI_DIR` under `root` hold exactly `src`'s files (mode 0644):
+/// changed ones written, gone ones removed. Whether anything changed.
+fn sync_ui(root: &Path, src: &Path) -> bool {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+        for e in fs::read_dir(dir).unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display()))) {
+            let e = e.unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display())));
+            let path = e.path();
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else {
+                out.push(path.strip_prefix(base).expect("under base").to_path_buf());
+            }
+        }
+    }
+    if !src.join("index.html").is_file() {
+        fail(&format!(
+            "{}: no index.html (bun run build in crates/hyperstor-mgmt/ui)",
+            src.display()
+        ));
+    }
+    let dst = under(root, UI_DIR);
+    let mut want = Vec::new();
+    walk(src, src, &mut want);
+    let mut changed = false;
+    for rel in &want {
+        let bytes =
+            fs::read(src.join(rel)).unwrap_or_else(|e| fail(&format!("{}: {e}", rel.display())));
+        changed |= converge(&dst.join(rel), &bytes, 0o644);
+    }
+    let mut have = Vec::new();
+    if dst.is_dir() {
+        walk(&dst, &dst, &mut have);
+    }
+    for rel in have.iter().filter(|r| !want.contains(r)) {
+        changed |= fs::remove_file(dst.join(rel)).is_ok();
+    }
+    changed
+}
+
+fn install(
+    root: &Path,
+    real: bool,
+    no_start: bool,
+    s: &Settings,
+    cluster_file: Option<String>,
+    ui_from: Option<String>,
+) {
+    let mut p = plan(root, s, cluster_file);
     // SAFETY: geteuid has no preconditions.
     if real && unsafe { libc::geteuid() } != 0 {
         fail("installing to / needs root: run it with sudo (or use --root DIR)");
@@ -1409,6 +1475,21 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
             binaries_changed.push(b);
             changed.push(dst);
         }
+    }
+
+    // The web UI (D100), where mgmt runs: from --ui, else from beside
+    // this executable (a release's `hyperstor-ui`). Kept as it is when
+    // there is neither, as for the renewal timer's runs.
+    if p.meta.is_some() {
+        let src = ui_from
+            .map(PathBuf::from)
+            .or_else(|| Some(here.join("hyperstor-ui")).filter(|d| d.is_dir()));
+        if let Some(src) = src
+            && sync_ui(root, &src)
+        {
+            changed.push(UI_DIR.into());
+        }
+        p.ui = under(root, &format!("{UI_DIR}/index.html")).is_file();
     }
 
     // The installer itself, for the renewal timer. Its own changes
@@ -1917,6 +1998,9 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         if fs::remove_file(under(root, &p)).is_ok() {
             removed.push(p);
         }
+    }
+    if fs::remove_dir_all(under(root, UI_DIR)).is_ok() {
+        removed.push(UI_DIR.to_string());
     }
     if real && !removed.is_empty() {
         let _ = run("systemctl", &["daemon-reload"]);

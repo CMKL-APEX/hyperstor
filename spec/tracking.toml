@@ -637,9 +637,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The web UI (React, @glidex/ui-kit), installed as files and served by hyperstor-mgmt --ui"
+what = "The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui"
 spec = ["administration.md §23.7", "D97", "D100"]
-status = "planned"
+status = "done"
+tests = [
+    "browser::the_first_security_administrator_claims_the_cluster",
+    "browser::the_pages_show_the_cluster",
+    "browser::volumes_and_snapshots",
+    "browser::an_api_token_is_shown_once",
+    "browser::someone_without_roles_sees_nothing_to_do",
+    "browser::single_sign_on_with_the_identity_provider",
+    "install::the_web_ui_is_installed_as_files",
+]
 
 [[milestone]]
 id = "AD3"

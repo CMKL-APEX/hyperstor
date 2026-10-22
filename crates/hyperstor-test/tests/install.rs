@@ -314,3 +314,76 @@ fn root_key_backup_and_restore() {
     // --out belongs to the backup commands only.
     install_cmd(&root, "install", &["--out", "x"]).expect(2);
 }
+
+/// The web UI's files (D100): installed from `--ui` with mgmt told to
+/// serve them, kept by later runs without it, made exactly the new
+/// build's by a run with a new one, and removed by uninstall.
+#[test]
+fn the_web_ui_is_installed_as_files() {
+    let s = Scratch::new("ui-files");
+    let root = s.path("root");
+    let build = |files: &[(&str, &str)]| {
+        let d = s.path(&format!("ui-{}", files.len()));
+        for (f, body) in files {
+            let p = d.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        d
+    };
+    let ui = root.join("usr/local/share/hyperstor/ui");
+    let first = build(&[("index.html", "<html>1"), ("assets/a-1.js", "1")]);
+    let r = install(
+        &root,
+        &[
+            "--all-in-one",
+            "--nodes",
+            "1",
+            "--size-gib",
+            "1",
+            "--ui",
+            first.to_str().unwrap(),
+        ],
+    );
+    assert!(r.has("/usr/local/share/hyperstor/ui"), "{}", r.out);
+    assert!(ui.join("assets/a-1.js").is_file());
+    let env = std::fs::read_to_string(root.join("etc/hyperstor/mgmt.env")).unwrap();
+    assert!(env.contains("--ui /usr/local/share/hyperstor/ui"), "{env}");
+    assert!(install(&root, &[]).has("Nothing to change"));
+    let second = build(&[
+        ("index.html", "<html>2"),
+        ("assets/a-2.js", "2"),
+        ("favicon.svg", "<svg/>"),
+    ]);
+    let r = install(&root, &["--ui", second.to_str().unwrap()]);
+    assert!(r.has("/usr/local/share/hyperstor/ui"), "{}", r.out);
+    assert!(
+        !ui.join("assets/a-1.js").exists(),
+        "the old build's files go"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ui.join("index.html")).unwrap(),
+        "<html>2"
+    );
+    // A build without index.html isn't one.
+    let broken = build(&[("x.js", "")]);
+    let out = Command::new(bin_dir().join("hyperstor-install"))
+        .args([
+            "install",
+            "--root",
+            root.to_str().unwrap(),
+            "--ui",
+            broken.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r = install_cmd(&root, "uninstall", &[]);
+    assert!(r.has("removed /usr/local/share/hyperstor/ui"), "{}", r.out);
+    assert!(!ui.exists());
+}
