@@ -13,7 +13,7 @@
 //! A volume is identified by a 128-bit id, chosen by the caller (glidex:
 //! its disk's UUID) or drawn at random; its name is shown, not unique.
 
-use crate::{Client, ClientError, NS_META, Route, object_pg, random_u64};
+use crate::{BLOCK, Client, ClientError, NS_META, Route, cache, object_pg, random_u64};
 use hyperstor_codec::{Dec, Enc};
 use hyperstor_map::META_POOL;
 use hyperstor_proto::{
@@ -106,6 +106,10 @@ pub struct Volume {
     /// Epochs of its own branch a reset in place dropped (D106), both ends
     /// included: reads skip them until their versions are deleted.
     pub skip: Vec<(u64, u64)>,
+    /// A random value of its lineage, shared by its clones, for the read
+    /// cache (D102): a volume recreated with the same id has a new one.
+    /// 0, in a header written before it, turns the cache off.
+    pub nonce: u64,
 }
 
 /// A snapshot of a volume (volumes.md §10.3): the volume as it was at
@@ -198,6 +202,7 @@ fn encode(v: &Volume) -> Vec<u8> {
     e.seq(&v.skip, |e, (lo, hi)| {
         e.u64(*lo).u64(*hi);
     });
+    e.u64(v.nonce);
     e.into_vec()
 }
 
@@ -237,6 +242,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             chain: Vec::new(),
             snapshots: Vec::new(),
             skip: Vec::new(),
+            nonce: 0,
         };
         if fmt == 2 {
             v.head_epoch = d.u64()?;
@@ -253,6 +259,9 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
                 })
             })?;
             v.skip = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+            if d.remaining() > 0 {
+                v.nonce = d.u64()?;
+            }
         }
         Ok::<_, hyperstor_codec::DecodeError>(v)
     })()
@@ -318,6 +327,7 @@ impl Client {
             chain: Vec::new(),
             snapshots: Vec::new(),
             skip: Vec::new(),
+            nonce: random_u64() | 1,
         };
         self.put_new(&v).await?;
         Ok(v)
@@ -599,6 +609,12 @@ pub struct Attached {
     paused: Cell<bool>,
     /// Writes in flight, which a quiesce waits for.
     inflight: Cell<u32>,
+    /// For the read cache (D102): the version each block was last read
+    /// from, when that version can't change (not the head).
+    known: RefCell<HashMap<(u64, u64), (u32, u64)>>,
+    /// Bumped as each write starts and ends: a read that saw a write
+    /// doesn't record where its blocks came from.
+    writes: Cell<u64>,
 }
 
 impl Attached {
@@ -646,29 +662,135 @@ impl Attached {
         }
         let v = self.usable(off, data.len() as u64)?;
         self.inflight.set(self.inflight.get() + 1);
+        self.writes.set(self.writes.get() + 1);
+        if let Some(blocks) = self.blocks(&v, off, data.len() as u64) {
+            let mut known = self.known.borrow_mut();
+            for b in blocks {
+                known.remove(&b);
+            }
+        }
         let r = self
             .client
             .write_at(v.pool, v.lineage, v.branch, v.head_epoch, off, data)
             .await;
+        self.writes.set(self.writes.get() + 1);
         self.inflight.set(self.inflight.get() - 1);
         self.check(r)
     }
 
-    /// Reads at the head, through the volume's versions and its chain.
-    pub async fn read(&self, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
-        let v = self.usable(off, len)?;
-        let r = self
-            .client
-            .read_at(v.pool, v.lineage, &v.layers(), off, len)
-            .await;
-        self.check(r)
+    /// The (chunk, block in chunk) of each block of `[off, off + len)`;
+    /// none if unaligned.
+    fn blocks(&self, v: &Volume, off: u64, len: u64) -> Option<Vec<(u64, u64)>> {
+        let cs = self.client.map().pools.get(&v.pool)?.chunk_size as u64;
+        if !off.is_multiple_of(BLOCK) || !len.is_multiple_of(BLOCK) || !cs.is_multiple_of(BLOCK) {
+            return None;
+        }
+        Some(
+            (off / BLOCK..(off + len) / BLOCK)
+                .map(|b| (b * BLOCK / cs, b * BLOCK % cs / BLOCK))
+                .collect(),
+        )
     }
 
-    /// Reads the header again (after news from the watch).
+    /// Reads at the head, through the volume's versions and its chain.
+    /// Blocks whose version can't change come from the client's read
+    /// cache when it has them (D102).
+    pub async fn read(&self, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
+        let v = self.usable(off, len)?;
+        let blocks = self.blocks(&v, off, len).filter(|_| v.nonce != 0);
+        let Some(blocks) = blocks else {
+            let r = self
+                .client
+                .read_at(v.pool, v.lineage, &v.layers(), off, len)
+                .await;
+            return self.check(r);
+        };
+        let key = |(chunk, block): (u64, u64), (branch, epoch): (u32, u64)| cache::Key {
+            lineage: v.lineage,
+            nonce: v.nonce,
+            branch,
+            epoch,
+            chunk,
+            block,
+        };
+        if let Some(out) = self.cached(&blocks, &key) {
+            return Ok(out);
+        }
+        let (writes, quiet) = (self.writes.get(), self.inflight.get() == 0);
+        let unchanged = |me: &Self| quiet && me.writes.get() == writes && *me.volume.borrow() == v;
+        let cacheable = |src: &(u32, u64)| src.0 != u32::MAX && *src != (v.branch, v.head_epoch);
+        // Blocks this handle hasn't read may be cached by another volume
+        // of the lineage, such as a clone of the same image: ask where they
+        // come from first.
+        if self.client.cache.borrow().has_lineage(v.lineage, v.nonce) {
+            let r = self
+                .client
+                .sources(v.pool, v.lineage, &v.layers(), off, len)
+                .await;
+            let sources = self.check(r)?;
+            if unchanged(self) && sources.iter().all(cacheable) {
+                let mut known = self.known.borrow_mut();
+                for (b, src) in blocks.iter().zip(&sources) {
+                    known.insert(*b, *src);
+                }
+                drop(known);
+                if let Some(out) = self.cached(&blocks, &key) {
+                    return Ok(out);
+                }
+            }
+        }
+        let r = self
+            .client
+            .read_sourced(v.pool, v.lineage, &v.layers(), off, len)
+            .await;
+        let (data, sources) = self.check(r)?;
+        // Only what no write overlapped, from the header we read through.
+        if unchanged(self) {
+            let mut known = self.known.borrow_mut();
+            let mut cache = self.client.cache.borrow_mut();
+            for ((b, src), block) in blocks.iter().zip(&sources).zip(data.chunks(BLOCK as usize)) {
+                if !cacheable(src) {
+                    known.remove(b);
+                    continue;
+                }
+                known.insert(*b, *src);
+                cache.insert(key(*b, *src), block.into());
+            }
+        }
+        Ok(data)
+    }
+
+    /// The blocks, if every one is known and in the cache.
+    fn cached(
+        &self,
+        blocks: &[(u64, u64)],
+        key: &dyn Fn((u64, u64), (u32, u64)) -> cache::Key,
+    ) -> Option<Vec<u8>> {
+        let known = self.known.borrow();
+        let srcs: Vec<_> = blocks
+            .iter()
+            .map(|b| known.get(b).map(|s| key(*b, *s)))
+            .collect::<Option<_>>()?;
+        let mut cache = self.client.cache.borrow_mut();
+        let mut out = Vec::with_capacity(blocks.len() * BLOCK as usize);
+        for k in &srcs {
+            out.extend_from_slice(&cache.get(k)?);
+        }
+        Some(out)
+    }
+
+    /// Reads the header again (after news from the watch). A changed
+    /// header may read through other versions: forget where blocks were.
     async fn refresh(&self) {
         let id = self.volume.borrow().id;
         if let Ok(Some(v)) = self.client.volume(id).await {
-            *self.volume.borrow_mut() = v;
+            let old = self.volume.replace(v);
+            let v = self.volume.borrow();
+            if (old.branch, old.head_epoch, &old.chain, &old.skip, old.nonce)
+                != (v.branch, v.head_epoch, &v.chain, &v.skip, v.nonce)
+            {
+                self.known.borrow_mut().clear();
+            }
         }
     }
 
@@ -820,6 +942,8 @@ impl Client {
             lost: Cell::new(false),
             paused: Cell::new(false),
             inflight: Cell::new(0),
+            known: RefCell::new(HashMap::new()),
+            writes: Cell::new(0),
         });
         self.attached.borrow_mut().insert(id, Rc::downgrade(&a));
         hyperstor_reactor::spawn(self.clone().watch(Rc::downgrade(&a)));
@@ -1004,6 +1128,7 @@ mod tests {
             chain: vec![(0, 3)],
             snapshots: Vec::new(),
             skip: Vec::new(),
+            nonce: 0,
         };
         assert_eq!(v.layers(), vec![(2, 0, 9), (0, 0, 3)]);
         // Reset to 3 at head 5, then to 6 at head 8.
@@ -1037,6 +1162,7 @@ mod tests {
                 chain: vec![(0, 3)],
             }],
             skip: vec![(2, 3)],
+            nonce: 11,
         };
         let l = Looked {
             size: 0,
@@ -1048,6 +1174,17 @@ mod tests {
             kv: vec![],
         };
         assert_eq!(decode(7, &l).unwrap(), v);
+        // A header from before the nonce reads with none.
+        let mut old = l.clone();
+        let h = encode(&v);
+        old.attrs[1].1 = h[..h.len() - 8].to_vec();
+        assert_eq!(
+            decode(7, &old).unwrap(),
+            Volume {
+                nonce: 0,
+                ..v.clone()
+            }
+        );
         let attrs: std::collections::BTreeMap<_, _> = l.attrs.iter().cloned().collect();
         assert_eq!(header_version(&attrs), 3);
         assert!(header_deleting(&attrs));

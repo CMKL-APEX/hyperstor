@@ -1514,6 +1514,20 @@ impl Shard {
             })
         })
     }
+
+    /// For each block of `[off, off + len)`, the index in `layers` of the
+    /// object [`Self::read_layered`] reads it from; none for a hole. From
+    /// the index alone.
+    pub fn layer_sources(&self, layers: &[ObjKey], off: u64, len: u64) -> Vec<Option<usize>> {
+        let objs: Vec<Option<&Object>> = layers.iter().map(|k| self.index.objects.get(k)).collect();
+        let lb0 = off / BLOCK as u64;
+        (lb0..lb0 + len / BLOCK as u64)
+            .map(|lb| {
+                objs.iter()
+                    .position(|o| o.is_some_and(|o| o.all_mapped(lb, 1)))
+            })
+            .collect()
+    }
 }
 
 pub fn estimate(list: &OpList) -> usize {

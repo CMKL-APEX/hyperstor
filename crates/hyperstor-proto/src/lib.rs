@@ -434,6 +434,26 @@ pub enum Msg {
         off: u64,
         len: u64,
     },
+    /// Client to primary: where each block a [`Msg::ReadAt`] would read
+    /// comes from, without the data. Answered with a [`Msg::ReadAtOk`]
+    /// with no CRCs or payload. A client asks it when its read cache may
+    /// hold the blocks (decisions.md D102).
+    Sources {
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64, u64)>,
+        off: u64,
+        len: u64,
+    },
+    /// The answer to [`Msg::ReadAt`]: the data in the payload, with each
+    /// block's CRC and the version it came from, as (branch, epoch);
+    /// `(u32::MAX, 0)` for a block no version holds. A client caches the
+    /// blocks that came from versions that can't change (decisions.md
+    /// D102).
+    ReadAtOk {
+        crcs: Vec<u32>,
+        sources: Vec<(u32, u64)>,
+    },
     /// Client to primary: the versions of the object `key` names.
     Versions {
         to: Target,
@@ -570,6 +590,8 @@ mod kind {
     pub const SNAPSHOT: u16 = 62;
     pub const QUIESCE: u16 = 63;
     pub const RELEASE: u16 = 64;
+    pub const READ_AT_OK: u16 = 65;
+    pub const SOURCES: u16 = 66;
     pub const ERROR: u16 = 99;
 }
 
@@ -634,6 +656,8 @@ impl Msg {
             Msg::Snapshot { .. } => SNAPSHOT,
             Msg::Quiesce { .. } => QUIESCE,
             Msg::Release { .. } => RELEASE,
+            Msg::ReadAtOk { .. } => READ_AT_OK,
+            Msg::Sources { .. } => SOURCES,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -663,6 +687,7 @@ impl Msg {
                 | Msg::Noted { .. }
                 | Msg::FetchOk { .. }
                 | Msg::VersionsOk { .. }
+                | Msg::ReadAtOk { .. }
                 | Msg::WatchOk { .. }
                 | Msg::Error { .. }
         )
@@ -883,6 +908,13 @@ impl Msg {
                 layers,
                 off,
                 len,
+            }
+            | Msg::Sources {
+                to,
+                key,
+                layers,
+                off,
+                len,
             } => {
                 to.enc(e);
                 key.enc(e);
@@ -899,6 +931,12 @@ impl Msg {
                 to.enc(e);
                 key.enc(e);
                 e.u64(*token);
+            }
+            Msg::ReadAtOk { crcs: c, sources } => {
+                crcs(e, c);
+                e.seq(sources, |e, (b, ep)| {
+                    e.u32(*b).u64(*ep);
+                });
             }
             Msg::VersionsOk { versions } => {
                 e.seq(versions, |e, v| {
@@ -1116,6 +1154,17 @@ impl Msg {
             VERSIONS => Msg::Versions {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
+            },
+            SOURCES => Msg::Sources {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                layers: layers_dec(&mut d)?,
+                off: d.u64()?,
+                len: d.u64()?,
+            },
+            READ_AT_OK => Msg::ReadAtOk {
+                crcs: crcs(&mut d)?,
+                sources: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
             },
             VERSIONS_OK => Msg::VersionsOk {
                 versions: d.seq(8, |d| d.u64())?,
@@ -1704,6 +1753,21 @@ mod tests {
             },
             Msg::VersionsOk {
                 versions: vec![1, 3, 9],
+            },
+            Msg::Sources {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+                layers: vec![(2, 0, 5)],
+                off: 0,
+                len: 4096,
+            },
+            Msg::ReadAtOk {
+                crcs: vec![1, 2],
+                sources: vec![(0, 3), (u32::MAX, 0)],
             },
             Msg::DropVersions {
                 to,

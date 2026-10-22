@@ -2986,3 +2986,82 @@ fn a_quiesce_holds_the_holders_writes_until_released() {
     });
     c.stop();
 }
+
+/// The host read cache (D102): clones of one golden snapshot, attached
+/// through one client, read its blocks from the network once; a block a
+/// clone writes is read from its own version again.
+#[test]
+fn clones_of_a_golden_image_share_the_read_cache() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let size = 2 * CHUNK as u64;
+        let golden = cl.create_volume(POOL, size, None, "golden").await.unwrap();
+        let g = cl.attach(golden.id).await.unwrap();
+        let image = pattern(7, size as usize);
+        g.write(0, image.clone()).await.unwrap();
+        g.detach().await.unwrap();
+        let s = cl.snapshot(golden.id, "base").await.unwrap();
+        let k1 = cl
+            .clone_snapshot(golden.id, s.epoch, "k1", None)
+            .await
+            .unwrap();
+        let k2 = cl
+            .clone_snapshot(golden.id, s.epoch, "k2", None)
+            .await
+            .unwrap();
+        let (a1, a2) = (
+            cl.attach(k1.id).await.unwrap(),
+            cl.attach(k2.id).await.unwrap(),
+        );
+        let blocks = size / 4096;
+        let before = cl.read_cache_stats();
+        assert!(a1.read(0, size).await.unwrap() == image);
+        assert_eq!(cl.read_cache_stats().blocks - before.blocks, blocks);
+        let warm = cl.read_cache_stats();
+        assert!(a1.read(0, size).await.unwrap() == image);
+        assert!(a2.read(0, size).await.unwrap() == image);
+        assert_eq!(
+            cl.read_cache_stats().hits - warm.hits,
+            2 * blocks,
+            "both clones read the golden image from the cache"
+        );
+        // A write puts the block in the clone's head: read from there.
+        let mine = pattern(8, 8192);
+        a1.write(4096, mine.clone()).await.unwrap();
+        let mut want = image.clone();
+        want[4096..12288].copy_from_slice(&mine);
+        for _ in 0..2 {
+            assert!(a1.read(0, size).await.unwrap() == want, "a stale block");
+            assert!(a2.read(0, size).await.unwrap() == image);
+        }
+        // A snapshot of the clone: its head becomes a version that can't
+        // change, which is cached; a write after it is read back.
+        cl.snapshot(k1.id, "k1s").await.unwrap();
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(a1.read(0, size).await.unwrap() == want);
+        assert!(a1.read(0, size).await.unwrap() == want);
+        let more = pattern(9, 4096);
+        a1.write(4096, more.clone()).await.unwrap();
+        want[4096..8192].copy_from_slice(&more);
+        assert!(a1.read(0, size).await.unwrap() == want, "a stale block");
+        // Another client writes the clone while this one has it detached:
+        // attached again, it reads the new head, not what it cached.
+        a2.write(0, pattern(11, size as usize)).await.unwrap();
+        a2.read(0, size).await.unwrap();
+        a2.detach().await.unwrap();
+        let other = Client::connect(meta, 6).await.unwrap();
+        let b2 = other.attach(k2.id).await.unwrap();
+        let theirs = pattern(10, size as usize);
+        b2.write(0, theirs.clone()).await.unwrap();
+        b2.detach().await.unwrap();
+        let a2 = cl.attach(k2.id).await.unwrap();
+        assert!(a2.read(0, size).await.unwrap() == theirs, "a stale head");
+        // Turned off, it keeps nothing and reads the same.
+        cl.set_read_cache_bytes(0);
+        assert_eq!(cl.read_cache_stats().blocks, 0);
+        assert!(a1.read(0, size).await.unwrap() == want);
+        assert_eq!(cl.read_cache_stats().blocks, 0);
+    });
+    c.stop();
+}

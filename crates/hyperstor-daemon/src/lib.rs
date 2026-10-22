@@ -1030,10 +1030,20 @@ impl ShardState {
                     len,
                 } => {
                     let arrived = std::time::Instant::now();
-                    let (m, p) = self.read_at(to, key, layers, off, len).await;
+                    let (m, p) = self.read_at(to, key, layers, off, len, true).await;
                     self.metrics.read_latency.observe(arrived.elapsed());
                     metrics::ShardMetrics::add(&self.metrics.reads, 1);
                     metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
+                    reply(&m, &p);
+                }
+                Msg::Sources {
+                    to,
+                    key,
+                    layers,
+                    off,
+                    len,
+                } => {
+                    let (m, p) = self.read_at(to, key, layers, off, len, false).await;
                     reply(&m, &p);
                 }
                 Msg::Versions { to, key } => {
@@ -1589,7 +1599,7 @@ impl ShardState {
         to: &Target,
         base: &WireKey,
         layers: &[(u32, u64, u64)],
-    ) -> Result<Vec<ObjKey>, ()> {
+    ) -> Result<Vec<(ObjKey, u32)>, ()> {
         let ns = Namespace::from_u8(base.ns).map_err(|_| ())?;
         let sh = self.shard.borrow();
         let mut keys = Vec::new();
@@ -1601,10 +1611,13 @@ impl ShardState {
                 .rev()
                 .filter(|v| v <= newest && v >= oldest)
             {
-                keys.push(ObjKey {
-                    version: v,
-                    ..k.clone()
-                });
+                keys.push((
+                    ObjKey {
+                        version: v,
+                        ..k.clone()
+                    },
+                    *branch,
+                ));
             }
         }
         Ok(keys)
@@ -1619,13 +1632,32 @@ impl ShardState {
         layers: Vec<(u32, u64, u64)>,
         off: u64,
         len: u64,
+        data: bool,
     ) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, true).await {
             return (m, Vec::new());
         }
-        let Ok(keys) = self.layer_keys(&to, &key, &layers) else {
+        let Ok(keyed) = self.layer_keys(&to, &key, &layers) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
+        let keys: Vec<ObjKey> = keyed.iter().map(|(k, _)| k.clone()).collect();
+        // Where each block comes from, for the client's cache (D102).
+        let sources = self
+            .shard
+            .borrow()
+            .layer_sources(&keys, off, len)
+            .into_iter()
+            .map(|i| i.map_or((u32::MAX, 0), |i| (keyed[i].1, keyed[i].0.version)))
+            .collect();
+        if !data {
+            return (
+                Msg::ReadAtOk {
+                    crcs: Vec::new(),
+                    sources,
+                },
+                Vec::new(),
+            );
+        }
         let r = self.shard.borrow().read_layered(&keys, off, len);
         let data = match r {
             Ok(b) => b.to_vec(),
@@ -1644,8 +1676,9 @@ impl ShardState {
             }
         };
         (
-            Msg::ReadOk {
+            Msg::ReadAtOk {
                 crcs: block_crcs(&data),
+                sources,
             },
             data,
         )
