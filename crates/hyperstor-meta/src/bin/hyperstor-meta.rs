@@ -1,4 +1,4 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
@@ -24,6 +24,12 @@
 //! Members talk Raft on RAFT_ADDR, over mutual TLS with the `--api-tls`
 //! certificates.
 //!
+//! With `--backup-dir DIR`, the leader writes a backup of the store there
+//! when it has changed, at most every `--backup-every` seconds (default
+//! 300), keeping the last `--backup-keep` (default 24) (decisions.md D86).
+//! `--restore FILE` starts a group of one from a backup, into an empty
+//! `--data` directory; the cluster file must be the same cluster's.
+//!
 //! With `--ca DIR` (`intermediate.crt`, `intermediate.key`; the key is
 //! read from `$CREDENTIALS_DIRECTORY` first, where systemd's
 //! `LoadCredential=` puts it), this member signs certificates for hosts
@@ -42,7 +48,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]"
         );
         std::process::exit(2)
     };
@@ -129,6 +135,8 @@ fn main() {
             map_addresses: String::new(),
             // Replaced by the replicated store once it is open.
             tokens: std::sync::Arc::new(hyperstor_meta::tokens::Tokens::in_memory()),
+            certs: std::sync::Arc::new(hyperstor_meta::certs::Certs::in_memory()),
+            store: None,
         }
     });
     if signing.is_some() && tls.is_none() {
@@ -162,6 +170,59 @@ fn main() {
         .collect();
     if !members.is_empty() && data.is_none() {
         eprintln!("--member needs --data");
+        std::process::exit(2);
+    }
+    // A restore (D86): a group of one, into an empty store, of this
+    // cluster; its map is the seed.
+    let restore = get("--restore").map(|f| {
+        let fail = |e: String| -> ! {
+            eprintln!("--restore {f}: {e}");
+            std::process::exit(1)
+        };
+        let Some(d) = &data else {
+            eprintln!("--restore needs --data");
+            std::process::exit(2)
+        };
+        if members.len() > 1 {
+            eprintln!(
+                "--restore starts a group of one: restore one member, then add the others (hyperstorctl member add)"
+            );
+            std::process::exit(2);
+        }
+        if std::path::Path::new(d).join("map.redb").exists() {
+            fail(format!(
+                "{d} already holds a store: restore into an empty directory"
+            ));
+        }
+        let bytes = std::fs::read(&f).unwrap_or_else(|e| fail(e.to_string()));
+        let b = hyperstor_meta::backup::Backup::decode(&bytes).unwrap_or_else(|e| fail(e));
+        if b.cluster_id != map.cluster_id {
+            fail(format!(
+                "the backup is cluster {}'s, the cluster file {}'s",
+                b.cluster_id, map.cluster_id
+            ));
+        }
+        b
+    });
+    let map = match &restore {
+        Some(b) => b.map().unwrap_or_else(|e| {
+            eprintln!("--restore: {e}");
+            std::process::exit(1)
+        }),
+        None => map,
+    };
+    let num = |flag: &str, default: u64| -> u64 {
+        get(flag)
+            .map(|v| v.parse().unwrap_or_else(|_| usage()))
+            .unwrap_or(default)
+    };
+    let backup = get("--backup-dir").map(|d| hyperstor_meta::backup::Schedule {
+        dir: std::path::PathBuf::from(d),
+        every: Duration::from_secs(num("--backup-every", 300).max(1)),
+        keep: num("--backup-keep", 24).max(1) as usize,
+    });
+    if backup.is_some() && data.is_none() {
+        eprintln!("--backup-dir needs --data");
         std::process::exit(2);
     }
     let raft = data.map(|dir| {
@@ -199,6 +260,8 @@ fn main() {
             dir: std::path::PathBuf::from(dir),
             tls: peer_tls,
             settings: hyperstor_meta::replica::settings(),
+            backup: backup.clone(),
+            restore: restore.clone(),
         };
         (cfg, listener)
     });
@@ -248,6 +311,9 @@ fn main() {
                         r.db.clone(),
                         bootstrap,
                     ));
+                    s.certs =
+                        std::sync::Arc::new(hyperstor_meta::certs::Certs::replicated(r.db.clone()));
+                    s.store = Some(r.db.clone());
                 }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))

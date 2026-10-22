@@ -360,6 +360,24 @@ fn storage_hosts_join_with_tokens() {
     );
     assert!(r.code == 4 && r.has("(permission_denied)"), "{}", r.out);
 
+    // The joins' certificates are listed, by serial; revoking node 1's
+    // refuses it from then on.
+    let certs = ctl(&bin, &api, &pki, &["cert", "list"]).ok();
+    for n in 0..4 {
+        assert!(certs.has(&format!("/node/{n} ")), "node {n} not listed");
+    }
+    let h1 = s.path("host-1").join("etc/hyperstor/pki");
+    let serial =
+        hyperstor_pki::serial_in(&std::fs::read_to_string(h1.join("node.crt")).unwrap()).unwrap();
+    ctl(&bin, &api, &pki, &["cert", "revoke", "--serial", &serial]).ok();
+    let node1 = s.path("node1-tls");
+    std::fs::create_dir_all(&node1).unwrap();
+    std::fs::copy(h1.join("node.crt"), node1.join("admin.crt")).unwrap();
+    std::fs::copy(h1.join("node.key"), node1.join("admin.key")).unwrap();
+    std::fs::copy(h1.join("root.crt"), node1.join("root.crt")).unwrap();
+    let r = ctl(&bin, &api, &node1, &["status"]);
+    assert!(r.code == 4 && r.has("(revoked)"), "{}", r.out);
+
     // Run again: nothing changes, no token needed.
     let host0 = s.path("host-0");
     assert!(install(&host0, &[]).has("Nothing to change"));

@@ -29,6 +29,10 @@ pub enum Table {
     Local = 2,
     /// Join tokens, by their secret's SHA-256 (`tokens.rs`, D81).
     Tokens = 3,
+    /// Certificates the API issued, by serial (`certs.rs`, D93).
+    Issued = 4,
+    /// Revoked serials (`certs.rs`, D56, D93).
+    Revoked = 5,
 }
 
 impl Serialize for Table {
@@ -54,16 +58,28 @@ pub enum Origin {
 
 impl MapSchema {
     fn table_from_id_(id: u16) -> Option<Table> {
-        [Table::Map, Table::Local, Table::Tokens]
-            .into_iter()
-            .find(|t| *t as u16 == id)
+        [
+            Table::Map,
+            Table::Local,
+            Table::Tokens,
+            Table::Issued,
+            Table::Revoked,
+        ]
+        .into_iter()
+        .find(|t| *t as u16 == id)
     }
 }
 
 impl rs::Schema for MapSchema {
     type Table = Table;
     type Origin = Origin;
-    const TABLES: &'static [Table] = &[Table::Map, Table::Local, Table::Tokens];
+    const TABLES: &'static [Table] = &[
+        Table::Map,
+        Table::Local,
+        Table::Tokens,
+        Table::Issued,
+        Table::Revoked,
+    ];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
     const SNAPSHOT_MAGIC: &'static [u8; 8] = b"HSMAP01\n";
@@ -77,6 +93,8 @@ impl rs::Schema for MapSchema {
             Table::Map => "map",
             Table::Local => "local",
             Table::Tokens => "tokens",
+            Table::Issued => "issued",
+            Table::Revoked => "revoked",
         }
     }
     fn table_id(t: Table) -> u16 {
@@ -163,15 +181,23 @@ pub fn load(db: &Db) -> Result<Option<ClusterMap>, String> {
     let t = txn
         .open_table(definition::<MapSchema>(Table::Map))
         .map_err(|e| e.to_string())?;
-    let Some(h) = t.get(HEAD).map_err(|e| e.to_string())? else {
+    let mut rows = Vec::new();
+    for row in t.iter().map_err(|e| e.to_string())? {
+        let (k, v) = row.map_err(|e| e.to_string())?;
+        rows.push((k.value().to_string(), v.value().to_vec()));
+    }
+    map_from_rows(&rows)
+}
+
+/// The map in the `map` table's rows (a backup's, or the store's).
+pub fn map_from_rows(rows: &[(String, Vec<u8>)]) -> Result<Option<ClusterMap>, String> {
+    let Some((_, h)) = rows.iter().find(|(k, _)| k == HEAD) else {
         return Ok(None);
     };
-    let mut map = ClusterMap::decode(h.value()).map_err(|e| format!("stored map: {e}"))?;
-    for row in t.range(PG_FIRST..PG_END).map_err(|e| e.to_string())? {
-        let (k, v) = row.map_err(|e| e.to_string())?;
-        let key =
-            parse_pg_key(k.value()).ok_or_else(|| format!("stored map: row {}", k.value()))?;
-        let info = decode_pg(v.value()).map_err(|e| format!("stored map, {}: {e}", k.value()))?;
+    let mut map = ClusterMap::decode(h).map_err(|e| format!("stored map: {e}"))?;
+    for (k, v) in rows.iter().filter(|(k, _)| k.starts_with(PG_FIRST)) {
+        let key = parse_pg_key(k).ok_or_else(|| format!("stored map: row {k}"))?;
+        let info = decode_pg(v).map_err(|e| format!("stored map, {k}: {e}"))?;
         map.pgs.insert(key, info);
     }
     Ok(Some(map))

@@ -58,7 +58,8 @@ covered by tests that run on every change.
 | Storage daemon: replicated writes and reads, group commit | Done |
 | Client library: request splitting, map refresh and retries | Done |
 | Replicated map service (Raft) | In progress |
-| Recovering the map service: map backups, member changes at run time, and a group that lost its majority | Planned |
+| Map backups by the leader and on request, and restoring a lost store from one | Done |
+| Changing the map service's members at run time, and recovering a group that lost its majority | Planned |
 | Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Done |
 
@@ -87,6 +88,7 @@ covered by tests that run on every change.
 | Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test | In progress |
 | Metrics on each storage node's admin port | In progress |
 | Certificates, identities and roles for the API | In progress |
+| Revoking certificates by serial, refused by the API and between map service members | Done |
 
 ## AD1: Installer and cluster join
 

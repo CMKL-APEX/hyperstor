@@ -577,7 +577,9 @@ Wants=network-online.target
 [Service]
 User=hyperstor
 EnvironmentFile=/etc/hyperstor/meta.env
-ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS
+# Options for the next start only, such as --restore FILE; absent normally.
+EnvironmentFile=-/etc/hyperstor/meta-once.env
+ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS $HS_ONCE
 # The intermediate CA's key, readable by root only on disk, handed to the
 # service alone (spec/administration.md §23.8).
 LoadCredential=intermediate.key:/etc/hyperstor/pki/intermediate.key
@@ -1129,7 +1131,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/meta.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen {listen} --api {} --api-tls /etc/hyperstor/pki --ca /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt --data {data}/meta{}\n",
+                    "HS_ARGS=--listen {listen} --api {} --api-tls /etc/hyperstor/pki --ca /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt --data {data}/meta --backup-dir {data}/meta-backups{}\n",
                     p.api,
                     group_args(p)
                 ),
@@ -1924,7 +1926,7 @@ mod tests {
             .unwrap()
             .1;
         assert!(env.contains("--listen 10.0.0.12:8849"), "{env}");
-        assert!(env.contains("--data /var/lib/hyperstor/meta --id 2 --member 1=10.0.0.11:8851/10.0.0.11:8849 --member 2=10.0.0.12:8851/10.0.0.12:8849 --member 3=10.0.0.13:8851/10.0.0.13:8849"), "{env}");
+        assert!(env.contains("--data /var/lib/hyperstor/meta --backup-dir /var/lib/hyperstor/meta-backups --id 2 --member 1=10.0.0.11:8851/10.0.0.11:8849 --member 2=10.0.0.12:8851/10.0.0.12:8849 --member 3=10.0.0.13:8851/10.0.0.13:8849"), "{env}");
         // A storage host knows every member.
         let mut st = Settings::defaults();
         st.role = "storage".into();
@@ -2043,6 +2045,11 @@ mod tests {
             .find(|x| x.0 == "/etc/hyperstor/meta.env")
             .unwrap()
             .1;
-        assert!(env.contains("--data /var/lib/hyperstor/meta\n"), "{env}");
+        assert!(
+            env.contains(
+                "--data /var/lib/hyperstor/meta --backup-dir /var/lib/hyperstor/meta-backups\n"
+            ),
+            "{env}"
+        );
     }
 }

@@ -89,3 +89,51 @@ fn unreachable_api_is_status_3() {
         .unwrap();
     assert_eq!(r.status.code(), Some(3));
 }
+
+/// Revocation (D56, D93): a certificate revoked by serial is refused by
+/// the API from then on, with the reason, while others go on; the list
+/// shows it; the local socket still works for root and the service's
+/// user, whatever the list says.
+#[test]
+fn revoked_certificates_are_refused() {
+    let c = Cluster::all_in_one("revoke", 3);
+    let ops = c.identity(Role::Admin, "ops2", false);
+    c.ctl_via(Via::Tls(&ops), &["status"]).ok();
+    let shown = c
+        .ctl(&[
+            "cert",
+            "show",
+            "--file",
+            ops.join("admin.crt").to_str().unwrap(),
+        ])
+        .ok();
+    assert!(shown.has("identity hyperstor://"), "{}", shown.out);
+    let serial = shown
+        .out
+        .lines()
+        .find_map(|l| l.strip_prefix("serial   "))
+        .unwrap()
+        .to_string();
+    let r = c.ctl(&["cert", "revoke", "--serial", &serial]).ok();
+    assert!(r.has(&format!("certificate {serial} revoked")), "{}", r.out);
+    let r = c.ctl_via(Via::Tls(&ops), &["status"]).expect(4);
+    assert!(r.has("is revoked (revoked)"), "{}", r.out);
+    // Others are untouched; the list shows it.
+    let l = c.ctl(&["cert", "list"]).ok();
+    assert!(l.has(&serial) && l.has("revoked"), "{}", l.out);
+    let json = c.ctl(&["cert", "list", "--json"]).ok();
+    assert!(
+        json.has(&format!("\"serial\":\"{serial}\"")),
+        "{}",
+        json.out
+    );
+    c.ctl_via(Via::Socket, &["status"]).ok();
+    // A malformed serial is refused as such; the change is audited.
+    let r = c.ctl(&["cert", "revoke", "--serial", "xyz"]).expect(1);
+    assert!(r.has("(invalid_argument)"), "{}", r.out);
+    assert!(
+        c.audit()
+            .iter()
+            .any(|l| l.contains("\"op\":\"RevokeCertificate\"") && l.contains(&serial))
+    );
+}

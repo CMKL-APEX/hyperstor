@@ -58,6 +58,8 @@ impl MetaMember {
                     dir,
                     tls: None,
                     settings: replica::settings(),
+                    backup: None,
+                    restore: None,
                 },
                 raft_l,
                 to_reactor,
