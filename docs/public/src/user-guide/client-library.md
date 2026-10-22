@@ -50,7 +50,9 @@ fn main() {
 ```
 
 - `Client::connect(meta, id)` fetches the map from the map service at
-  `meta`.
+  `meta`. With several map service members, use
+  `Client::connect_members(vec![a, b, c], id)`: any member serves the
+  map, and requests only the leader answers follow its redirects.
 - `write(pool, volume, offset, data)` returns once every reachable copy
   of every chunk touched has the data (see
   [guarantees](guarantees.md)).
@@ -61,9 +63,50 @@ fn main() {
 
 The full API is in the [client API reference](../reference/client-api.md).
 
-## Choosing volume numbers
+## Volumes
 
-Volume numbers (lineages) are 128-bit and are not allocated by the
-cluster yet: two programs that write to the same number in the same pool
-write to the same volume. Pick them so they don't collide, for example at
-random.
+`write` and `read` above address a *lineage* directly: nothing records
+that it exists, and nothing stops two programs from writing to it at
+once. Programs that share a cluster use **volumes**, which the cluster
+keeps a record of, and which one client at a time attaches:
+
+```rust
+// Create a 1 GiB volume in pool 1, with a random id (or Some(id)).
+let v = client.create_volume(1, 1 << 30, None, "scratch").await?;
+
+// Attach it: take its lease. I/O goes through the handle.
+let disk = client.attach(v.id).await?;
+disk.write(0, vec![0xab; 4096]).await?;
+let back = disk.read(0, 4096).await?;
+disk.detach().await?;
+```
+
+- `create_volume(pool, size, id, name)` makes the volume's header; the
+  size is a multiple of 4096. A retried create is recognised, not
+  doubled. `volume(id)`, `list_volumes(pool)`, `expand_volume(id, size)`
+  (volumes don't shrink) and `delete_volume(id)` manage them;
+  `hyperstorctl` does the same for administrators.
+- Ids are 128-bit, chosen by you (for example a disk's UUID) or drawn at
+  random. Names are shown, not unique.
+
+## Attaching a volume
+
+`attach(id)` takes the volume's **lease**. The client renews it every
+second in the background, and a lease not renewed for 4 s runs out.
+While one client holds it, another's `attach` fails with `LeaseHeld`.
+
+- `detach()` gives the lease up. A handle dropped without it stops
+  renewing, and its lease runs out.
+- `take_over(id)` attaches a volume whose holder has died or is cut off:
+  it waits for the holder's lease to run out, **blocklists** the holder,
+  then takes the lease. From then on every storage node refuses the old
+  holder, so none of its writes can land after the new holder's. A holder
+  that is still renewing is left alone (`LeaseHeld`).
+- `preempt(id)` takes a volume from a live holder, for example one an
+  operator moves: it blocklists the holder first. A blocklisted client
+  instance has lost every lease; make a new `Client` to go on.
+- Once a handle's lease is lost, its I/O fails with `LeaseLost`, and
+  `lost()` returns true.
+- An attached volume can't be deleted (`VolumeAttached`); detach it
+  first, or use `force_delete_volume(id)`, which preempts the holder.
+- Read-only attachments come with snapshots.

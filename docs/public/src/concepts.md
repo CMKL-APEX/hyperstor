@@ -4,7 +4,7 @@
 
 | Process | Runs on | Does |
 |---|---|---|
-| `hyperstor-meta` | one machine (several, with Raft, later) | Keeps the **cluster map**, notices failed nodes, hands out map leases |
+| `hyperstor-meta` | three or five machines (one for a trial), replicated with Raft | Keeps the **cluster map**, notices failed nodes, hands out map leases |
 | `hyperstord` | every storage node | Stores data on local devices and serves reads and writes |
 | your program, with `hyperstor-client` | anywhere on the network | Reads and writes volumes |
 
@@ -44,10 +44,18 @@ only the PGs it held move.
 
 ## Volumes
 
-A **volume** is a sparse range of bytes in a pool, named by a 128-bit
-number (its *lineage*). Volumes need no creation step yet: writing to a
-lineage creates its chunks, and blocks never written read as zeros.
-Offsets and lengths are multiples of 4 KiB.
+A **volume** is a sparse range of bytes in a pool, with a 128-bit id, a
+size and a name. The cluster keeps a header for each volume, and its
+chunks are created as they are written: blocks never written read as
+zeros. Offsets and lengths are multiples of 4 KiB.
+
+## Volume leases and the blocklist
+
+One client at a time **attaches** a volume, by holding its lease, which
+it renews every second. To take a volume from a client that died or is
+cut off, another client waits for the lease to run out and
+**blocklists** the old one: every storage node refuses it from then on.
+So a volume never has two writers.
 
 ## Map leases
 
@@ -55,3 +63,11 @@ A storage node may act as a primary only while it holds a current
 **map lease** from the map service, renewed by its heartbeats. A node cut
 off from the map service stops serving before the map service gives its
 PGs to other nodes, so two nodes never both accept writes for one PG.
+
+## Down and out
+
+A node that stops answering is **down**: its PGs go on with the other
+copies, and nothing is copied, so a reboot moves no data. A device that
+is **out**, because its node has been down for ten minutes, it failed,
+or an administrator took it out, gets no placement, and its PGs are
+copied to other devices.

@@ -9,12 +9,15 @@ layer.
 
 **Status: early implementation.** HS0 (the local engine) and HS1 (placement,
 wire protocol, reactor, map service, storage daemon, client) are built,
-with the map service replicated over three or five members by Raft, and
-HS2 is under way (failure detection and peer reports, degraded writes,
-backfill, peering, delta recovery and light and deep scrub by content
-digests). Administration has started too: a cluster API over mutual TLS,
-`hyperstorctl`, and `hyperstor-install`. The design
-is in [`spec/`](spec/README.md); what was built, how it deviates, and what
+with the map service replicated over three or five members by Raft and
+volumes with leases, a blocklist and forced takeovers. HS2 (failure
+handling) is done: failure detection and peer reports, down and out,
+failed devices and slow replicas, backfill, peering, delta recovery and
+light and deep scrub by content digests, repair of a damaged primary,
+and an in-process fault-injection rig. Administration has started too: a
+cluster API over mutual TLS, `hyperstorctl` with drains as operations,
+`hyperstor-install`, which joins hosts with single-use tokens, certificate
+revocation, and map backups with restore. The design is in [`spec/`](spec/README.md); what was built, how it deviates, and what
 to review is in [`spec/implementation-notes.md`](spec/implementation-notes.md),
 with measurements in [`spec/benchmarks.md`](spec/benchmarks.md).
 

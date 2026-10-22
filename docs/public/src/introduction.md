@@ -9,7 +9,9 @@ on its own.
 > **Early implementation.** Hyperstor is not ready for production data.
 > Today it provides replicated storage over TCP, used through a Rust
 > client library, with failure detection and recovery. There is no block
-> device front end, no authentication and no encryption yet. See
+> device front end yet, and the data path between clients and storage
+> nodes has no authentication or encryption (the cluster API and the map
+> service's members use mutual TLS). See
 > [Status](status.md) for what is built and what comes next.
 
 ## What it does today
@@ -22,9 +24,17 @@ on its own.
   recovery.
 - **Failure handling.** The map service notices when a node stops
   answering, moves its work to other nodes, and refills a node when it
-  comes back with only what it missed. A background scrub compares the
-  copies and repairs one that is damaged or differs.
-- **A client library** for Rust programs to read and write volumes.
+  comes back with only what it missed. A short reboot moves no data. A
+  failed device, or a replica too slow to answer, is replaced at once. A
+  background scrub compares the copies and repairs one that is damaged
+  or differs.
+- **A replicated map service.** Three or five members keep the cluster
+  map with Raft, so losing one doesn't stop the cluster.
+- **Volumes** with one writer at a time: a client attaches a volume by
+  holding its lease, and one that dies is fenced off when another takes
+  the volume over.
+- **A client library** for Rust programs to read and write volumes, and
+  `hyperstorctl` and `hyperstor-install` for administrators.
 
 ## What is planned
 
