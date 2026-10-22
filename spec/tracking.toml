@@ -237,9 +237,9 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Peering, placement-group log and delta recovery"
-spec = ["replication.md §8.3", "replication.md §8.4", "I57", "I61"]
-status = "partial"
+what = "Peering and delta recovery, by content digests instead of a PG log"
+spec = ["replication.md §8.3", "replication.md §8.4", "D86", "I57", "I61"]
+status = "done"
 tests = [
     "cluster::a_returning_node_gets_only_what_changed",
     "cluster::a_returning_node_without_digests_is_refilled_whole",
@@ -249,16 +249,20 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Read leases"
-spec = ["replication.md §8.4"]
-status = "planned"
+what = "Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums"
+spec = ["replication.md §8.2", "replication.md §8.4", "D85", "I104"]
+status = "done"
+tests = [
+    "cluster::a_read_of_a_damaged_primary_copy_is_served_and_repaired",
+]
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["replication.md §8.5", "I58", "I60"]
-status = "partial"
+spec = ["replication.md §8.5", "I58", "I60", "I104", "I105"]
+status = "done"
 tests = [
     "cluster::scrub_repairs_a_copy_the_others_outvote",
+    "cluster::scrub_repairs_an_outvoted_primary_and_reports_what_it_cant",
     "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
     "hyperstor_daemon::tests::scrub_repairs_only_from_a_majority",
 ]
@@ -272,14 +276,34 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Down and out"
-spec = ["placement.md §5.3"]
-status = "planned"
+what = "Down and out, and failed devices"
+spec = ["placement.md §5.3", "replication.md §15", "I101", "I102"]
+status = "done"
+tests = [
+    "cluster::a_node_down_past_the_interval_is_marked_out_and_back_in",
+    "cluster::a_failed_device_is_placed_elsewhere_at_once",
+    "hyperstor_map::tests::a_slow_member_leaves_one_pg_and_is_backfilled_back",
+]
+
+[[milestone.item]]
+what = "Slow and unreachable replicas leave a PG"
+spec = ["replication.md §15", "D87", "I103"]
+status = "done"
+tests = [
+    "cluster::a_hung_replica_is_dropped_from_its_pg_and_comes_back",
+    "cluster::a_partition_between_two_nodes_is_worked_around",
+    "hyperstor_meta::tests::slow_members_leave_on_their_primarys_word_and_failed_devices_at_once",
+]
 
 [[milestone.item]]
 what = "Fault-injection test rig: kill, partition, slow disk"
-spec = []
-status = "planned"
+spec = ["D88", "I106"]
+status = "done"
+tests = [
+    "cluster::random_faults_lose_no_acknowledged_write",
+    "hyperstor_daemon::faults::tests::partitions_are_symmetric_and_heal",
+    "hyperstor_daemon::faults::tests::a_faulty_device_fails_and_recovers",
+]
 
 [[milestone]]
 id = "HS3"

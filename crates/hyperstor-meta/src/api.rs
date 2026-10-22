@@ -316,6 +316,7 @@ impl Api {
         (
             ClusterMap,
             std::collections::BTreeMap<u32, std::time::Duration>,
+            crate::Inconsistent,
         ),
         ConnectError,
     > {
@@ -361,9 +362,28 @@ fn domain(d: Domain) -> String {
 pub fn status(
     map: &ClusterMap,
     heard: Option<&std::collections::BTreeMap<u32, std::time::Duration>>,
+    inconsistent: &crate::Inconsistent,
     map_address: &str,
 ) -> pb::GetStatusResponse {
     let mut r = health::report(map);
+    // Scrub found copies that differ with no majority to decide
+    // (replication.md §8.5): someone must look.
+    if !inconsistent.is_empty() {
+        let objects: u32 = inconsistent.values().sum();
+        let pgs: Vec<String> = inconsistent
+            .keys()
+            .map(|(p, g)| format!("{p}.{g}"))
+            .collect();
+        r.reasons.push((
+            Health::Warn,
+            format!(
+                "{} PG(s) inconsistent, {objects} object(s) scrub couldn't repair: {}",
+                pgs.len(),
+                pgs.join(", ")
+            ),
+        ));
+        r.health = r.health.max(Health::Warn);
+    }
     if let Some(h) = heard {
         let silent: Vec<String> = map
             .nodes
@@ -460,8 +480,8 @@ impl ClusterService for Api {
         _req: ServiceRequest<'_, pb::GetStatusRequest>,
     ) -> ServiceResult<pb::GetStatusResponse> {
         self.authorize(&ctx, "GetStatus", "cluster", false)?;
-        let (map, heard) = self.published().await?;
-        Ok(status(&map, Some(&heard), &self.map_address).into())
+        let (map, heard, inconsistent) = self.published().await?;
+        Ok(status(&map, Some(&heard), &inconsistent, &self.map_address).into())
     }
 
     async fn list_pgs(
@@ -471,7 +491,7 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::ListPgsResponse> {
         self.authorize(&ctx, "ListPgs", &format!("pool {}", req.pool), false)?;
         let pool = req.pool;
-        let (map, _) = self.published().await?;
+        let (map, ..) = self.published().await?;
         if !map.pools.contains_key(&pool) {
             return Err(ConnectError::not_found(format!("no pool {pool}")));
         }
@@ -804,7 +824,7 @@ mod tests {
              pool 1 vol replicated size 2 min 1 pgs 4 domain host\n",
         )
         .unwrap();
-        let s = super::status(&m, None, "127.0.0.1:8849");
+        let s = super::status(&m, None, &Default::default(), "127.0.0.1:8849");
         assert_eq!(s.cluster_id, "5");
         assert_eq!(s.health, super::pb::Health::HEALTH_OK);
         assert_eq!(s.nodes.len(), 2);
@@ -814,7 +834,7 @@ mod tests {
         assert_eq!(s.map_address, "127.0.0.1:8849");
         // Node 1 not heard from since start: warn, though the map says up.
         let heard = [(0, std::time::Duration::from_millis(40))].into();
-        let s = super::status(&m, Some(&heard), "127.0.0.1:8849");
+        let s = super::status(&m, Some(&heard), &Default::default(), "127.0.0.1:8849");
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         assert!(
             s.reasons[0]
@@ -823,6 +843,16 @@ mod tests {
         );
         assert_eq!(s.nodes[0].last_heard_ms, Some(40));
         assert_eq!(s.nodes[1].last_heard_ms, None);
+        // Scrub left objects unresolved: warn, naming the PGs.
+        let inc = [((1, 2), 3)].into();
+        let s = super::status(&m, None, &inc, "127.0.0.1:8849");
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert!(
+            s.reasons[0]
+                .text
+                .contains("1 PG(s) inconsistent, 3 object(s)")
+        );
+        assert!(s.reasons[0].text.contains("1.2"));
     }
 
     #[test]

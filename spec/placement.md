@@ -43,5 +43,8 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
   `down`: its PGs get new primaries from the rest of `acting`, but data
   doesn't move. After `down_out_interval` (10 min by default) it is
   marked `out` and its PGs are re-placed. A short reboot moves no data.
+  As built (implementation-notes.md I101): `hyperstor-meta
+  --down-out-secs`; the node's devices are marked in again when it
+  returns, unless an operator marked them out.
 - Backfill and recovery are rate-limited per device and per node, and
   PGs below `min_size` go first.

@@ -477,3 +477,15 @@ service member, or every member, is lost.
 | 45 | **Changing the map service's members at run time** (I65) | (a) `hyperstorctl member add/remove` through openraft's joint consensus, a new member a learner until it has caught up; (b) keep members fixed at install | (a), one change at a time, refusing to go below three members unless forced; a replacement on new addresses becomes add, wait, remove. |
 | 46 | **The root key's backup (D84)** | (a) warn on every install and `check` until backed up (built); (b) refuse to finish the first install without one; (c) split the root among several administrators (Shamir, k of n) | (a) now: an install that refuses breaks unattended and trial installs, and the warning repeats daily from the timer. (c) for sites with several administrators, later. |
 
+## The rest of HS2 (2026-10-22)
+
+Read leases, the PG log, slow replicas and the fault-injection rig.
+Asked with options and a recommendation each; the owner took each
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 47 | Read leases: build replica-granted read leases, or let map leases cover | Map leases cover; close the item | D85 |
+| 48 | PG log: build it, or keep digests (I57, I61) | Keep digests; the log only if scans prove slow | D86, G21 |
+| 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D87 |
+| 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D88 |

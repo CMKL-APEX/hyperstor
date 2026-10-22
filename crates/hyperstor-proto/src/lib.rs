@@ -380,6 +380,43 @@ pub enum Msg {
     BlocklistOk {
         map_epoch: u64,
     },
+    /// Storage node to map service: `device` failed (its engine can no
+    /// longer write it); take it out of placement (replication.md §15).
+    DeviceFailed {
+        device: u32,
+    },
+    /// Primary `reporter` to map service: `device` hasn't answered a
+    /// replicated write of the PG within the operation timeout (D87).
+    MemberSlow {
+        reporter: u32,
+        pool: u32,
+        pg: u32,
+        pg_epoch: u64,
+        device: u32,
+    },
+    /// Primary to map service: after a scrub of the PG, `unresolved`
+    /// objects whose copies differ and couldn't be repaired.
+    ScrubReport {
+        pool: u32,
+        pg: u32,
+        unresolved: u32,
+    },
+    /// Answer to `DeviceFailed`, `MemberSlow` and `ScrubReport`: the
+    /// map epoch that has the change (or the current one).
+    Noted {
+        map_epoch: u64,
+    },
+    /// Primary to a member: send me your copy of the object (to repair
+    /// the primary's own, replication.md §8.2, §8.5), once every write
+    /// queued before this request is applied.
+    Fetch {
+        to: Target,
+        key: WireKey,
+    },
+    /// The copy, in the payload ([`encode_object`]), if `found`.
+    FetchOk {
+        found: bool,
+    },
     Error {
         code: Code,
         map_epoch: u64,
@@ -428,6 +465,12 @@ mod kind {
     pub const LEASE_RENEW_OK: u16 = 45;
     pub const BLOCKLIST: u16 = 46;
     pub const BLOCKLIST_OK: u16 = 47;
+    pub const DEVICE_FAILED: u16 = 48;
+    pub const MEMBER_SLOW: u16 = 49;
+    pub const SCRUB_REPORT: u16 = 50;
+    pub const NOTED: u16 = 51;
+    pub const FETCH: u16 = 52;
+    pub const FETCH_OK: u16 = 53;
     pub const ERROR: u16 = 99;
 }
 
@@ -475,6 +518,12 @@ impl Msg {
             Msg::LeaseRenewOk { .. } => LEASE_RENEW_OK,
             Msg::Blocklist { .. } => BLOCKLIST,
             Msg::BlocklistOk { .. } => BLOCKLIST_OK,
+            Msg::DeviceFailed { .. } => DEVICE_FAILED,
+            Msg::MemberSlow { .. } => MEMBER_SLOW,
+            Msg::ScrubReport { .. } => SCRUB_REPORT,
+            Msg::Noted { .. } => NOTED,
+            Msg::Fetch { .. } => FETCH,
+            Msg::FetchOk { .. } => FETCH_OK,
             Msg::Error { .. } => ERROR,
         }
     }
@@ -501,6 +550,8 @@ impl Msg {
                 | Msg::LeaseHeld { .. }
                 | Msg::LeaseRenewOk { .. }
                 | Msg::BlocklistOk { .. }
+                | Msg::Noted { .. }
+                | Msg::FetchOk { .. }
                 | Msg::Error { .. }
         )
     }
@@ -681,8 +732,38 @@ impl Msg {
             Msg::Blocklist { instance } => {
                 e.u64(*instance);
             }
-            Msg::BlocklistOk { map_epoch } => {
+            Msg::BlocklistOk { map_epoch } | Msg::Noted { map_epoch } => {
                 e.u64(*map_epoch);
+            }
+            Msg::DeviceFailed { device } => {
+                e.u32(*device);
+            }
+            Msg::MemberSlow {
+                reporter,
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            } => {
+                e.u32(*reporter)
+                    .u32(*pool)
+                    .u32(*pg)
+                    .u64(*pg_epoch)
+                    .u32(*device);
+            }
+            Msg::ScrubReport {
+                pool,
+                pg,
+                unresolved,
+            } => {
+                e.u32(*pool).u32(*pg).u32(*unresolved);
+            }
+            Msg::Fetch { to, key } => {
+                to.enc(e);
+                key.enc(e);
+            }
+            Msg::FetchOk { found } => {
+                e.bool(*found);
             }
             Msg::Error {
                 code,
@@ -836,6 +917,27 @@ impl Msg {
             BLOCKLIST_OK => Msg::BlocklistOk {
                 map_epoch: d.u64()?,
             },
+            DEVICE_FAILED => Msg::DeviceFailed { device: d.u32()? },
+            MEMBER_SLOW => Msg::MemberSlow {
+                reporter: d.u32()?,
+                pool: d.u32()?,
+                pg: d.u32()?,
+                pg_epoch: d.u64()?,
+                device: d.u32()?,
+            },
+            SCRUB_REPORT => Msg::ScrubReport {
+                pool: d.u32()?,
+                pg: d.u32()?,
+                unresolved: d.u32()?,
+            },
+            NOTED => Msg::Noted {
+                map_epoch: d.u64()?,
+            },
+            FETCH => Msg::Fetch {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
+            FETCH_OK => Msg::FetchOk { found: d.bool()? },
             ERROR => Msg::Error {
                 code: Code::from_u16(d.u16()?),
                 map_epoch: d.u64()?,
@@ -1315,6 +1417,29 @@ mod tests {
             },
             Msg::Blocklist { instance: 77 },
             Msg::BlocklistOk { map_epoch: 8 },
+            Msg::DeviceFailed { device: 2001 },
+            Msg::MemberSlow {
+                reporter: 1000,
+                pool: 1,
+                pg: 2,
+                pg_epoch: 3,
+                device: 2000,
+            },
+            Msg::ScrubReport {
+                pool: 1,
+                pg: 2,
+                unresolved: 4,
+            },
+            Msg::Noted { map_epoch: 9 },
+            Msg::Fetch {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::FetchOk { found: true },
             Msg::Error {
                 code: Code::NotPrimary,
                 map_epoch: 5,

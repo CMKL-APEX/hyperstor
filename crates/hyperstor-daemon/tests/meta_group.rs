@@ -157,6 +157,7 @@ impl Group {
 
     fn node(&self, n: usize, device: DeviceSpec) -> NodeHandle {
         start(NodeConfig {
+            partitions: None,
             node_id: n as u32,
             meta: self.maps(),
             shards: vec![ShardSpec {
