@@ -27,12 +27,13 @@ use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-pub const BINARIES: [&str; 5] = [
+pub const BINARIES: [&str; 6] = [
     "hyperstor-install",
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
     "hyperstor-mgmt",
+    "hyperstor-authd",
 ];
 
 /// The workspace root.

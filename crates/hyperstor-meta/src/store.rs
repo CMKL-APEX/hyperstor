@@ -33,6 +33,8 @@ pub enum Table {
     Issued = 4,
     /// Revoked serials (`certs.rs`, D56, D93).
     Revoked = 5,
+    /// `hyperstor-mgmt`'s rows (`mgmt_store.rs`, D98).
+    Mgmt = 6,
 }
 
 impl Serialize for Table {
@@ -64,6 +66,7 @@ impl MapSchema {
             Table::Tokens,
             Table::Issued,
             Table::Revoked,
+            Table::Mgmt,
         ]
         .into_iter()
         .find(|t| *t as u16 == id)
@@ -79,6 +82,7 @@ impl rs::Schema for MapSchema {
         Table::Tokens,
         Table::Issued,
         Table::Revoked,
+        Table::Mgmt,
     ];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
@@ -95,6 +99,7 @@ impl rs::Schema for MapSchema {
             Table::Tokens => "tokens",
             Table::Issued => "issued",
             Table::Revoked => "revoked",
+            Table::Mgmt => "mgmt",
         }
     }
     fn table_id(t: Table) -> u16 {
