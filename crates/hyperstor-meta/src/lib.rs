@@ -11,6 +11,7 @@ pub mod api;
 pub mod backup;
 pub mod certs;
 pub mod health;
+pub mod mgmt_store;
 pub mod replica;
 pub mod store;
 pub mod tokens;

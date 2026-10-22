@@ -1,0 +1,21 @@
+[package]
+name = "hyperstor-authd"
+description = "hyperstor-authd: the root PAM helper that checks people's passwords for hyperstor-mgmt (glidex-authd's server)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# glidex's PAM helper as a library (spec/decisions.md D52, D99), pinned to a
+# revision of glidex main.
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "de54751448521efa760381f8801bafce8002ed9f" }
+nix = { version = "0.29", features = ["user"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

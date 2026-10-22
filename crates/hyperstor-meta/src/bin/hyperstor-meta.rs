@@ -145,6 +145,7 @@ fn main() {
             certs: std::sync::Arc::new(hyperstor_meta::certs::Certs::in_memory()),
             store: None,
             members: None,
+            mgmt: None,
         }
     });
     if signing.is_some() && tls.is_none() {
@@ -406,6 +407,9 @@ fn main() {
                         std::sync::Arc::new(hyperstor_meta::certs::Certs::replicated(r.db.clone()));
                     s.store = Some(r.db.clone());
                     s.members = Some(r.members.clone());
+                    s.mgmt = Some(std::sync::Arc::new(
+                        hyperstor_meta::mgmt_store::MgmtStore::new(r.db.clone()),
+                    ));
                 }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))

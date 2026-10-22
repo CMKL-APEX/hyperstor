@@ -137,3 +137,44 @@ fn revoked_certificates_are_refused() {
             .any(|l| l.contains("\"op\":\"RevokeCertificate\"") && l.contains(&serial))
     );
 }
+
+/// mgmt's rows (D98): the `mgmt` identity reads and writes them through
+/// the cluster API; any other identity, the administrator's included, is
+/// refused.
+#[test]
+fn only_mgmt_reaches_its_rows() {
+    let c = Cluster::all_in_one("mgmtrows", 1);
+    let pki = c.pki();
+    let call = |who: &str, method: &str, body: &str| {
+        let o = std::process::Command::new("curl")
+            .args(["-sS", "--cacert"])
+            .arg(pki.join("root.crt"))
+            .arg("--cert")
+            .arg(pki.join(format!("{who}.crt")))
+            .arg("--key")
+            .arg(pki.join(format!("{who}.key")))
+            .args(["-H", "Content-Type: application/json", "-d", body])
+            .arg(format!(
+                "https://{}/hyperstor.v1.MgmtStoreService/{method}",
+                c.api
+            ))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    // "hello", base64 as the JSON form of bytes.
+    let put = r#"{"key":"user/1","value":"aGVsbG8=","if_absent":true}"#;
+    assert_eq!(call("mgmt", "PutRow", put), "{}");
+    assert!(call("mgmt", "PutRow", put).contains("already_exists"));
+    let got = call("mgmt", "GetRow", r#"{"key":"user/1"}"#);
+    assert!(
+        got.contains(r#""found":true"#) && got.contains("aGVsbG8"),
+        "{got}"
+    );
+    let listed = call("mgmt", "ListRows", r#"{"prefix":"user/"}"#);
+    assert!(listed.contains(r#""key":"user/1""#), "{listed}");
+    let refused = call("admin", "GetRow", r#"{"key":"user/1"}"#);
+    assert!(refused.contains("permission_denied"), "{refused}");
+    assert!(call("mgmt", "DeleteRow", r#"{"key":"user/1"}"#).contains(r#""found":true"#));
+    assert!(!call("mgmt", "GetRow", r#"{"key":"user/1"}"#).contains("found"));
+}

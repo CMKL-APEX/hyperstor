@@ -58,6 +58,18 @@ service MemberService {
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
 }
 
+// hyperstor-mgmt's rows in the map service's store: people's accounts,
+// sessions, tokens and roles (decisions.md D98). Only the mgmt identity
+// may call these; keys and values are mgmt's own.
+service MgmtStoreService {
+  rpc GetRow(GetRowRequest) returns (GetRowResponse);
+  // On the leader.
+  rpc PutRow(PutRowRequest) returns (PutRowResponse);
+  // On the leader.
+  rpc DeleteRow(DeleteRowRequest) returns (DeleteRowResponse);
+  rpc ListRows(ListRowsRequest) returns (ListRowsResponse);
+}
+
 // Changes to nodes that run as operations.
 service NodeService {
   // Takes every device of a node out, so its PGs move elsewhere, and
@@ -238,6 +250,49 @@ message RemoveMemberRequest {
 
 message RemoveMemberResponse {
   repeated Member members = 1;
+}
+
+message GetRowRequest {
+  string key = 1;
+}
+
+message GetRowResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+
+message PutRowRequest {
+  string key = 1;
+  bytes value = 2;
+  // Only if the key has no row yet (already_exists otherwise).
+  bool if_absent = 3 [json_name = "if_absent"];
+}
+
+message PutRowResponse {}
+
+message DeleteRowRequest {
+  string key = 1;
+}
+
+message DeleteRowResponse {
+  bool found = 1;
+}
+
+message ListRowsRequest {
+  string prefix = 1;
+  // Rows after this key (exclusive): the last key of the previous page.
+  string after = 2;
+  // At most this many (and 1000).
+  uint32 limit = 3;
+}
+
+message Row {
+  string key = 1;
+  bytes value = 2;
+}
+
+message ListRowsResponse {
+  repeated Row rows = 1;
 }
 
 message DrainNodeRequest {
