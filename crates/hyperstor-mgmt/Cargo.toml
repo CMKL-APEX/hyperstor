@@ -20,8 +20,8 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 # People's logins (spec/administration.md §23.9, decisions.md D96, D99):
 # glidex's session and token rules, Cedar engine and PAM client, pinned to
 # a revision of glidex.
-glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "73f746f8132ba6ef4a16deb389ee786f801eac0c" }
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "73f746f8132ba6ef4a16deb389ee786f801eac0c" }
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "3ed1891d61988ca24edf274ea401cf1960fe3e3f" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "3ed1891d61988ca24edf274ea401cf1960fe3e3f" }
 cedar-policy = "4.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
