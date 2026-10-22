@@ -2711,12 +2711,14 @@ fn a_snapshot_never_changes_while_its_volume_is_written() {
             .unwrap();
         let va = cl.attach(v.id).await.unwrap();
         let stop = std::rc::Rc::new(std::cell::Cell::new(false));
-        let (st, w) = (stop.clone(), va.clone());
+        let count = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let (st, w, cnt) = (stop.clone(), va.clone(), count.clone());
         let writer = hyperstor_reactor::spawn(async move {
             let mut n = 0u8;
             while !st.get() {
                 n = n.wrapping_add(1).max(1);
                 w.write(0, vec![n; 4096]).await.unwrap();
+                cnt.set(cnt.get() + 1);
             }
             n
         });
@@ -2733,10 +2735,18 @@ fn a_snapshot_never_changes_while_its_volume_is_written() {
             assert!(first[0] != 0 && first.iter().all(|b| *b == first[0]));
             taken.push((s, first));
         }
-        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Under load writes are slow: wait for a few after the snapshots.
+        let (after, t) = (count.get(), std::time::Instant::now());
+        while count.get() < after + 3 && t.elapsed() < std::time::Duration::from_secs(10) {
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         stop.set(true);
-        let last = writer.await;
-        assert!(last > 5, "the writer kept writing ({last} writes)");
+        writer.await;
+        assert!(
+            count.get() >= after + 3,
+            "the writer kept writing ({} writes)",
+            count.get()
+        );
         let vol = other.volume(v.id).await.unwrap().unwrap();
         for (s, first) in taken {
             let again = other

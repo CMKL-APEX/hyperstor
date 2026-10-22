@@ -368,8 +368,12 @@ tests = [
 
 [[milestone.item]]
 what = "The host read cache, in the client library"
-spec = ["frontends.md §11.3", "D32", "D102"]
-status = "planned"
+spec = ["frontends.md §11.3", "D32", "D102", "I127"]
+status = "partial"
+tests = [
+    "cluster::clones_of_a_golden_image_share_the_read_cache",
+    "hyperstor_client::cache::tests::least_recently_used_goes_first",
+]
 
 [[milestone]]
 id = "HS5"

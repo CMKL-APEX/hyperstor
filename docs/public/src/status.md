@@ -86,7 +86,7 @@ covered by tests that run on every change.
 | Engine: chunk versions read through layers, and merged without copying | Done |
 | Snapshots, clones, rollback, flatten and snapshot deletion | Done |
 | Consistency groups | Done |
-| The host read cache, in the client library | Planned |
+| The host read cache, in the client library | In progress |
 
 ## AD0: Administration API, identities and CLI
 
