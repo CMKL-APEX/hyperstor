@@ -184,7 +184,12 @@ tests = [
 [[milestone.item]]
 what = "Changing the map service's members at run time, and recovering a group that lost its majority"
 spec = ["D85", "D87"]
-status = "planned"
+status = "done"
+tests = [
+    "members::members_change_at_run_time",
+    "members::a_lost_majority_is_recovered_alone",
+    "hyperstor_meta::certs::tests::identity_revocations_cover_older_certificates_only",
+]
 
 [[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"

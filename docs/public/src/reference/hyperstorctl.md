@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
 ```
 
 | Command | Does |
@@ -26,6 +26,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `op list` | Running and recent operations, newest first |
 | `op get` | Operation `--id` |
 | `op watch` | Prints operation `--id` as it progresses, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
+| `member list` | The map service's members: voters and learners, their Raft and map addresses, and who leads |
+| `member add` | Adds member `--id` at `--raft` and `--map`, already running and joined with a `meta` token: a learner until it has caught up (up to two minutes), then a voter. On the leader |
+| `member remove` | Removes member `--id`; refused if fewer than three voters would be left, unless `--force`. On the leader |
 | `map backup` | Writes a backup of the map service's store (the map, join tokens, certificates issued and revoked) to `--out`, for `hyperstor-meta --restore`. Administrators only |
 | `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
 | `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired |
@@ -46,10 +49,12 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
 | `--name N` | empty | The new volume's name: shown, not unique |
 | `--id ID` | | `delete-volume`: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
-| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused |
+| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
 | `--serial S` | | `cert revoke`: the certificate's serial, hex, as `cert list` and `cert show` print it |
+| `--raft ADDR` | | `member add`: where the new member talks Raft, `IP:PORT` |
+| `--map ADDR` | | `member add`: where the new member serves the map, `IP:PORT` |
 | `--out FILE` | | `map backup`: the file to write (mode 0600; never over an existing file) |
 | `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
