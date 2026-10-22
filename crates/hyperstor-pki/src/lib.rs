@@ -552,11 +552,9 @@ fn backup_key(passphrase: &str, salt: &[u8]) -> Result<ring::aead::LessSafeKey, 
 /// random salt. The cluster and the root's fingerprint are in the clear,
 /// to tell backups apart, and authenticated with the rest.
 pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String, String> {
-    use ring::rand::SecureRandom;
     let rng = ring::rand::SystemRandom::new();
-    let (mut salt, mut nonce) = ([0u8; 16], [0u8; 12]);
-    rng.fill(&mut salt).map_err(err)?;
-    rng.fill(&mut nonce).map_err(err)?;
+    let salt: [u8; 16] = ring::rand::generate(&rng).map_err(err)?.expose();
+    let nonce: [u8; 12] = ring::rand::generate(&rng).map_err(err)?.expose();
     let head = format!(
         "{BACKUP_MAGIC}\ncluster {cluster}\nfingerprint {}\nkdf pbkdf2-sha256 {BACKUP_ITERATIONS} {}\nnonce {}\n",
         fingerprint(&root.cert)?,
@@ -572,6 +570,14 @@ pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String
         )
         .map_err(err)?;
     Ok(format!("{head}data {}\n", hex(&data)))
+}
+
+/// The cluster a [`root_backup`] is for, from its clear header.
+pub fn backup_cluster(text: &str) -> Option<String> {
+    let mut l = text.lines();
+    (l.next()? == BACKUP_MAGIC)
+        .then(|| l.next()?.strip_prefix("cluster ").map(String::from))
+        .flatten()
 }
 
 /// Opens a [`root_backup`]: the cluster and the root CA. A wrong

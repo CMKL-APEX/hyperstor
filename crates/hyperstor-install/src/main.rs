@@ -1669,7 +1669,8 @@ fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
     };
     let cluster = cluster_id(root).to_string();
     let text = hyperstor_pki::root_backup(&ca, &cluster, passphrase)
-        .unwrap_or_else(|e| fail(&format!("backup: {e}")));
+        // A fixed message: nothing derived from the passphrase is printed.
+        .unwrap_or_else(|_| fail("encrypting the backup failed"));
     let out_path = Path::new(out);
     if out_path.exists() {
         fail(&format!("{out} exists: give another file"));
@@ -1724,8 +1725,15 @@ fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
 /// `root-restore`: see the top of this file.
 fn root_restore(root: &Path, input: &str, passphrase: &str) {
     let text = fs::read_to_string(input).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
-    let (cluster, ca) = hyperstor_pki::root_restore(&text, passphrase)
-        .unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    // Named from the clear header: nothing printed comes from what the
+    // passphrase opened.
+    let cluster = hyperstor_pki::backup_cluster(&text)
+        .unwrap_or_else(|| fail(&format!("{input}: not a hyperstor root backup")));
+    let Ok((_, ca)) = hyperstor_pki::root_restore(&text, passphrase) else {
+        fail(&format!(
+            "{input}: wrong passphrase, or the backup was changed"
+        ))
+    };
     let pki = under(root, "/etc/hyperstor/pki");
     // Only onto its own cluster.
     if let Ok(have) = fs::read_to_string(pki.join("root.crt"))
