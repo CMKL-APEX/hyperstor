@@ -56,11 +56,12 @@ use std::process::Command;
 
 const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]";
 
-const BINARIES: [&str; 4] = [
+const BINARIES: [&str; 5] = [
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
     "hyperstor-mgmt",
+    "hyperstor-authd",
 ];
 
 fn usage() -> ! {
@@ -622,6 +623,73 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ";
 
+// The PAM helper for people's logins (D99): glidex-authd's server, root,
+// socket-activated, answering only the hyperstor user.
+const AUTHD_SOCKET: &str = "\
+# Written by hyperstor-install.
+[Unit]
+Description=Hyperstor PAM helper socket
+Documentation=https://github.com/CMKL-APEX/hyperstor
+
+[Socket]
+ListenStream=/run/hyperstor-authd/auth.sock
+SocketUser=root
+SocketGroup=hyperstor
+SocketMode=0660
+# Traversable by the hyperstor user; the socket's mode is the access
+# control, and the helper also checks the peer's uid.
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+";
+
+const AUTHD_SERVICE: &str = "\
+# Written by hyperstor-install.
+[Unit]
+Description=Hyperstor PAM helper (checks people's passwords for hyperstor-mgmt)
+Documentation=https://github.com/CMKL-APEX/hyperstor
+Requires=hyperstor-authd.socket
+After=hyperstor-authd.socket
+
+[Service]
+# Socket-activated: the listener arrives as fd 3. No RuntimeDirectory=: it
+# would delete the socket's directory on stop.
+Type=simple
+ExecStart=/usr/local/bin/hyperstor-authd --config /etc/hyperstor/authd.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-/run/faillock
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+Also=hyperstor-authd.socket
+";
+
+// The PAM service hyperstor-mgmt names (Debian and Ubuntu's includes).
+const PAM_SERVICE: &str = "\
+# /etc/pam.d/hyperstor: people's logins to hyperstor-mgmt (D99).
+# Written by hyperstor-install.
+@include common-auth
+@include common-account
+";
+
+const AUTHD_CONFIG: &str =
+    "{\"service_user\": \"hyperstor\", \"allowed_groups\": [\"hyperstor-users\"]}\n";
+
 // Reruns the installer daily: it changes nothing unless something drifted
 // or a certificate is past two thirds of its life (D56), which it renews.
 const RENEW_SERVICE: &str = "\
@@ -1165,6 +1233,22 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                 MGMT_UNIT.to_string(),
                 0o644,
             ),
+            (
+                "/etc/systemd/system/hyperstor-authd.socket".to_string(),
+                AUTHD_SOCKET.to_string(),
+                0o644,
+            ),
+            (
+                "/etc/systemd/system/hyperstor-authd.service".to_string(),
+                AUTHD_SERVICE.to_string(),
+                0o644,
+            ),
+            ("/etc/pam.d/hyperstor".to_string(), PAM_SERVICE.to_string(), 0o644),
+            (
+                "/etc/hyperstor/authd.json".to_string(),
+                AUTHD_CONFIG.to_string(),
+                0o644,
+            ),
             // For Prometheus's file_sd_configs (deploy/prometheus/hyperstor.yml).
             (
                 "/etc/hyperstor/prometheus-targets.json".to_string(),
@@ -1279,6 +1363,8 @@ fn units(p: &Plan) -> Vec<String> {
             [
                 "hyperstor-meta.service".to_string(),
                 "hyperstor-mgmt.service".to_string(),
+                // Socket-activated: the service starts on the first login.
+                "hyperstor-authd.socket".to_string(),
             ]
         })
         .chain(
@@ -1364,6 +1450,18 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
             changed.push("user hyperstor".into());
         }
     }
+    // People who may log in to hyperstor-mgmt with their password (D99).
+    if real
+        && !Command::new("getent")
+            .args(["group", "hyperstor-users"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
+        if !run("groupadd", &["--system", "hyperstor-users"]) {
+            fail("groupadd hyperstor-users failed");
+        }
+        changed.push("group hyperstor-users".into());
+    }
     // Members of hyperstor-admin can read hyperstorctl's certificate.
     if real
         && !Command::new("getent")
@@ -1416,6 +1514,9 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
         if path.ends_with("hyperstor-mgmt.service") {
             service_units_changed.push("hyperstor-mgmt");
         }
+        if path.ends_with("hyperstor-authd.service") || path.ends_with("authd.json") {
+            service_units_changed.push("hyperstor-authd");
+        }
         if path.ends_with("hyperstord@.service") {
             service_units_changed.push("hyperstord");
         }
@@ -1440,6 +1541,11 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
             "hyperstor-mgmt" => u == "hyperstor-mgmt.service",
             _ => false,
         }));
+        // The helper's service, not its socket, which stays: systemd hands
+        // it the socket again.
+        if *what == "hyperstor-authd" && p.meta.is_some() {
+            restart.push("hyperstor-authd.service".into());
+        }
     }
     restart.sort();
     restart.dedup();
@@ -1772,6 +1878,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         }
         if under(root, "/etc/hyperstor/mgmt.env").exists() {
             all.push("hyperstor-mgmt.service".into());
+            all.push("hyperstor-authd.socket".into());
+            all.push("hyperstor-authd.service".into());
         }
         for e in fs::read_dir(under(root, "/etc/hyperstor"))
             .into_iter()
@@ -1797,6 +1905,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-meta.service".to_string(),
         "/etc/systemd/system/hyperstord@.service".to_string(),
         "/etc/systemd/system/hyperstor-mgmt.service".to_string(),
+        "/etc/systemd/system/hyperstor-authd.socket".to_string(),
+        "/etc/systemd/system/hyperstor-authd.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
@@ -1884,7 +1994,11 @@ mod tests {
         assert!(!f.iter().any(|x| x.0.contains("/node-")));
         assert_eq!(
             units(&p),
-            ["hyperstor-meta.service", "hyperstor-mgmt.service"]
+            [
+                "hyperstor-meta.service",
+                "hyperstor-mgmt.service",
+                "hyperstor-authd.socket"
+            ]
         );
         let mgmt = &f
             .iter()

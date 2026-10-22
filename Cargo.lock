@@ -766,6 +766,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-authd"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=de54751448521efa760381f8801bafce8002ed9f#de54751448521efa760381f8801bafce8002ed9f"
+dependencies = [
+ "libc",
+ "libloading",
+ "nix",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "glidex-raftstore"
 version = "0.1.0"
 source = "git+https://github.com/CMKL-APEX/glidex?rev=a57ed85bafb6f2380b45c39642949480d894a9a5#a57ed85bafb6f2380b45c39642949480d894a9a5"
@@ -939,6 +955,17 @@ dependencies = [
  "protox",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "hyperstor-authd"
+version = "0.1.0"
+dependencies = [
+ "glidex-authd",
+ "nix",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1293,6 +1320,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1367,6 +1404,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1403,6 +1449,19 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]

@@ -187,6 +187,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("MemberService.ListMembers", "member list"),
     ("MemberService.AddMember", "member add"),
     ("MemberService.RemoveMember", "member remove"),
+    // hyperstor-mgmt's own rows: no command (people's state, D98).
+    ("MgmtStoreService.GetRow", "hyperstor-mgmt"),
+    ("MgmtStoreService.PutRow", "hyperstor-mgmt"),
+    ("MgmtStoreService.DeleteRow", "hyperstor-mgmt"),
+    ("MgmtStoreService.ListRows", "hyperstor-mgmt"),
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),

@@ -56,7 +56,8 @@ in, so run it from `target/release` after `cargo build --release`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, and `hyperstor-install` itself |
+| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, `hyperstor-authd`, and `hyperstor-install` itself |
+| `/etc/systemd/system/hyperstor-authd.socket`, `.service`; `/etc/pam.d/hyperstor`; `/etc/hyperstor/authd.json` | The PAM helper for people's logins ([hyperstor-authd](hyperstor-authd.md)), socket-activated, on the map service's host |
 | `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes; pool 1 (`vol`, replicated) and pool 2 (`cache`, a cache pool with one copy) |
 | `/etc/hyperstor/meta.env`, `mgmt.env`, `node-N.env` | Each service's options |
 | `/etc/hyperstor/prometheus-targets.json` | Every storage node's metrics address, for Prometheus (`deploy/prometheus/hyperstor.yml`) |
@@ -80,7 +81,9 @@ map service host. A storage host's certificate is renewed by later runs
 through the cluster API, with the certificate itself.
 
 It also creates the `hyperstor` system user, which the services run as,
-and the `hyperstor-admin` group, whose members may use `hyperstorctl`.
+the `hyperstor-admin` group, whose members may use `hyperstorctl`, and
+the `hyperstor-users` group, whose members may log in to the management
+service with their password.
 Certificates are made once and renewed by later runs when two thirds of
 their life has passed (30 days for the API's and the administrator's,
 a year for the intermediate CA). The daily timer is such a run: it

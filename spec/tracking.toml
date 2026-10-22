@@ -557,6 +557,17 @@ status = "done"
 tests = ["metrics::grafana_dashboard_and_prometheus_targets_match_the_daemon"]
 
 [[milestone.item]]
+what = "The PAM helper, and the management service's rows in the map service's store"
+spec = ["administration.md §23.7", "D98", "D99"]
+status = "done"
+tests = [
+    "security::only_mgmt_reaches_its_rows",
+    "hyperstor_meta::mgmt_store::tests::rows_put_get_list_and_delete",
+    "hyperstor_authd::tests::hyperstors_defaults_without_a_file",
+    "hyperstor_authd::tests::a_file_sets_what_it_names",
+]
+
+[[milestone.item]]
 what = "People log in to the management service (sessions, tokens, roles)"
 spec = ["administration.md §23.9", "D50", "D52"]
 status = "planned"

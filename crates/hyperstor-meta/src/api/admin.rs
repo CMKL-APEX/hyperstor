@@ -28,8 +28,8 @@ use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
     CaService, CaServiceExt, MapService, MapServiceExt, MemberService, MemberServiceExt,
-    NodeService, NodeServiceExt, OperationService, OperationServiceExt, TokenService,
-    TokenServiceExt,
+    MgmtStoreService, MgmtStoreServiceExt, NodeService, NodeServiceExt, OperationService,
+    OperationServiceExt, TokenService, TokenServiceExt,
 };
 use hyperstor_pki::{Identity, Pem, Role};
 use hyperstor_reactor::chan::oneshot;
@@ -53,6 +53,8 @@ pub struct Signing {
     pub certs: Arc<crate::certs::Certs>,
     /// The replicated store, for backups (D86); none without `--data`.
     pub store: Option<Arc<crate::store::Db>>,
+    /// mgmt's rows (D98); none without `--data`.
+    pub mgmt: Option<Arc<crate::mgmt_store::MgmtStore>>,
     /// Member changes (D87); none without `--data`.
     pub members: Option<tokio::sync::mpsc::UnboundedSender<crate::replica::MemberOp>>,
 }
@@ -94,6 +96,7 @@ pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc:
     let router = NodeServiceExt::register(api.clone(), router);
     let router = MapServiceExt::register(api.clone(), router);
     let router = MemberServiceExt::register(api.clone(), router);
+    let router = MgmtStoreServiceExt::register(api.clone(), router);
     OperationServiceExt::register(api, router)
 }
 
@@ -713,6 +716,104 @@ impl Api {
                     with_reason(ConnectError::failed_precondition(e), "member_change")
                 }
             })
+    }
+}
+
+impl Api {
+    /// mgmt's rows, off the API's thread (a write waits for Raft).
+    async fn rows<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&crate::mgmt_store::MgmtStore) -> Result<T, TokenError> + Send + 'static,
+    ) -> Result<T, ConnectError> {
+        let (signing, _) = self.signing()?;
+        let Some(s) = signing.mgmt.clone() else {
+            return Err(with_reason(
+                ConnectError::failed_precondition("this map service keeps no store (no --data)"),
+                "no_store",
+            ));
+        };
+        match tokio::task::spawn_blocking(move || f(&s)).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(TokenError::Refused {
+                reason: "already_exists",
+                why,
+            })) => Err(with_reason(
+                ConnectError::already_exists(why),
+                "already_exists",
+            )),
+            Ok(Err(e)) => Err(self.token_error(e).await),
+            Err(e) => Err(ConnectError::internal(e.to_string())),
+        }
+    }
+}
+
+// Not audited row by row: mgmt audits the people's actions it serves.
+#[allow(refining_impl_trait)]
+impl MgmtStoreService for Api {
+    async fn get_row(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetRowRequest>,
+    ) -> ServiceResult<pb::GetRowResponse> {
+        self.authorize_as(&ctx, "GetRow", "mgmt", Need::Mgmt)?;
+        let key = req.key.to_string();
+        let v = self.rows(move |s| s.get(&key)).await?;
+        Ok(pb::GetRowResponse {
+            found: v.is_some(),
+            value: v.unwrap_or_default(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn put_row(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::PutRowRequest>,
+    ) -> ServiceResult<pb::PutRowResponse> {
+        self.authorize_as(&ctx, "PutRow", "mgmt", Need::Mgmt)?;
+        let (key, value, if_absent) = (req.key.to_string(), req.value.to_vec(), req.if_absent);
+        self.rows(move |s| s.put(&key, &value, if_absent)).await?;
+        Ok(pb::PutRowResponse::default().into())
+    }
+
+    async fn delete_row(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeleteRowRequest>,
+    ) -> ServiceResult<pb::DeleteRowResponse> {
+        self.authorize_as(&ctx, "DeleteRow", "mgmt", Need::Mgmt)?;
+        let key = req.key.to_string();
+        let found = self.rows(move |s| s.delete(&key)).await?;
+        Ok(pb::DeleteRowResponse {
+            found,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_rows(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListRowsRequest>,
+    ) -> ServiceResult<pb::ListRowsResponse> {
+        self.authorize_as(&ctx, "ListRows", "mgmt", Need::Mgmt)?;
+        let (prefix, after, limit) = (req.prefix.to_string(), req.after.to_string(), req.limit);
+        let rows = self
+            .rows(move |s| s.list(&prefix, &after, limit as usize))
+            .await?;
+        Ok(pb::ListRowsResponse {
+            rows: rows
+                .into_iter()
+                .map(|(key, value)| pb::Row {
+                    key,
+                    value,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
     }
 }
 

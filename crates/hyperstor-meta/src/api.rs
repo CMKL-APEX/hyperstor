@@ -59,6 +59,8 @@ enum Need {
     Identity,
     /// No certificate: the join, which a token authorizes.
     Anyone,
+    /// The management service's own identity (`mgmt`) only: its rows.
+    Mgmt,
 }
 
 pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
@@ -282,6 +284,7 @@ impl Api {
                 let allowed = match need {
                     Need::Write => who.role.may_administer(),
                     Need::Read => who.role != hyperstor_pki::Role::Host,
+                    Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
                     Need::Identity | Need::Anyone => true,
                 };
                 if !allowed {

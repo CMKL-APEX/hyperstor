@@ -46,5 +46,6 @@
   - [hyperstor-ublk](reference/hyperstor-ublk.md)
   - [hyperstor-install](reference/hyperstor-install.md)
   - [hyperstor-mgmt](reference/hyperstor-mgmt.md)
+  - [hyperstor-authd](reference/hyperstor-authd.md)
   - [Cluster API](reference/cluster-api.md)
   - [Client API](reference/client-api.md)

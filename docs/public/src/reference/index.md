@@ -10,6 +10,7 @@
 | [hyperstor-ublk](hyperstor-ublk.md) | A volume as a Linux block device |
 | [hyperstor-install](hyperstor-install.md) | Host checks and the installer |
 | [hyperstor-mgmt](hyperstor-mgmt.md) | The dashboard |
+| [hyperstor-authd](hyperstor-authd.md) | Checks people's passwords for the management service |
 | [Cluster API](cluster-api.md) | The `hyperstor.v1` API, with `curl` examples |
 | [Client API](client-api.md) | The Rust client library |
 
