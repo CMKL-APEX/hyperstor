@@ -438,3 +438,42 @@ and a recommendation each; the owner's answers:
 | 38 | I76: anyone who can reach the map service can blocklist an instance | Wait for the security work of AD | D78 |
 | 39 | I77: should glidex `preempt` when it re-places a VM from a fenced node | Yes | D79 |
 | 40 | I78: a forced delete of an attached volume in the API and `hyperstorctl` | Yes | D80 |
+
+## Join tokens, the root key and recovering the map service (2026-10-22)
+
+After AD1's joins (implementation-notes.md I80–I93), the owner settled
+the open notes and asked how the cluster recovers when the first map
+service member, or every member, is lost.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 41 | Join tokens: in the issuing member's memory (I80), or replicated through Raft | Replicated; `meta` tokens checked by the first member until the group has a majority | D81 |
+| 42 | Tokens only on the leader (I81), and TLS without a client certificate for the join (I82) | Both kept | D82, D83 |
+
+### What each loss means today
+
+- **The first member, after the group formed:** the others keep the map,
+  the tokens (D81) and the intermediate CA, elect a leader and go on
+  (tested: `join::map_service_members_join_the_first`). The root's key
+  goes with the host unless it was backed up (D84); without it the
+  intermediate can't be renewed, and the cluster needs a new root within
+  a year. A replacement on the same addresses joins with a `meta` token
+  from a surviving member and catches up from the leader; on other
+  addresses it needs member changes (point 45).
+- **Every member down, disks intact:** a majority restarting finds the
+  map, the Raft log and the tokens on disk, elects a leader and goes on.
+- **A majority lost for good:** the survivors can serve the map but not
+  change it: nothing is marked down, no host joins. No way out yet
+  (point 43).
+- **Every member's disk lost:** the map is gone, though the data is on
+  the storage nodes. No way back yet (point 44).
+
+### Open points
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 43 | **Recovering a group that lost its majority for good** | (a) `hyperstor-meta --force-alone` on a survivor, offline: it rewrites the membership to itself, starts as a group of one, and the others join again as new members; (b) only restore from a backup (point 44) into new members; (c) none: wait for the disks | (a), as etcd's `--force-new-cluster`, with rules: it refuses while another member answers; it needs an explicit flag naming the cluster id; the group gets a new generation number so the old members can't rejoin with their logs; it is audited. The survivor may lack the last commits before the loss: those map changes are lost, which leases make safe (a new leader waits them out, D73) but a host joined in that window must join again. |
+| 44 | **Map backups** | (a) the leader writes a snapshot to a directory every few minutes and on every change, kept N deep; (b) `hyperstorctl map backup` fetches one through the API; (c) rebuild the map from what the storage nodes report | (a) and (b) now: the map has no secret (tokens are hashes), and a restore is `hyperstor-meta --restore FILE` into a group of one, then members join. (c) later, as a check of a restored map against the nodes. |
+| 45 | **Changing the map service's members at run time** (I65) | (a) `hyperstorctl member add/remove` through openraft's joint consensus, a new member a learner until it has caught up; (b) keep members fixed at install | (a), one change at a time, refusing to go below three members unless forced; a replacement on new addresses becomes add, wait, remove. |
+| 46 | **The root key's backup (D84)** | (a) warn on every install and `check` until backed up (built); (b) refuse to finish the first install without one; (c) split the root among several administrators (Shamir, k of n) | (a) now: an install that refuses breaks unattended and trial installs, and the warning repeats daily from the timer. (c) for sites with several administrators, later. |
+

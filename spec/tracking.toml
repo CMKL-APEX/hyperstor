@@ -172,6 +172,11 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovering the map service: map backups, member changes at run time, and a group that lost its majority"
+spec = ["I65", "decision-log.md points 43-45"]
+status = "planned"
+
+[[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
 spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
 status = "done"
@@ -372,6 +377,7 @@ tests = [
     "manage::status_and_tables",
     "security::roles_strangers_and_plain_http",
     "security::local_socket_break_glass",
+    "hyperstor_api::tests::reasons_survive_their_encoding",
 ]
 
 [[milestone.item]]
@@ -386,6 +392,8 @@ tests = [
     "manage::out_and_in_settle",
     "manage::a_killed_node_is_reported_and_comes_back",
     "security::unreachable_api_is_status_3",
+    "hyperstor_ctl::tests::every_rpc_has_a_command",
+    "hyperstor_ctl::tests::yaml_and_times",
 ]
 
 [[milestone.item]]
@@ -405,6 +413,8 @@ tests = [
     "hyperstor_pki::tests::identity_uri_round_trip_and_rejects",
     "hyperstor_pki::tests::chain_issues_leaves_with_identities",
     "hyperstor_pki::tests::roles_that_may_administer",
+    "hyperstor_pki::tests::requests_are_signed_with_the_signers_identity",
+    "hyperstor_pki::tests::a_pinned_client_trusts_only_its_root",
 ]
 
 [[milestone]]
@@ -436,11 +446,37 @@ tests = [
     "hyperstor_install::tests::cluster_file_roles_install_their_part",
     "install::cluster_file_install_across_hosts",
     "hyperstor_test::tests::test_ports_stay_below_the_ephemeral_range",
+    "hyperstor_test::tests::ports_handed_out_stay_reserved",
+    "hyperstor_reactor::net::bind_tests::a_bind_waits_for_an_address_let_go",
 ]
 
 [[milestone.item]]
-what = "Joining hosts to a cluster with join tokens, and installing on whole devices"
-spec = ["administration.md §23.4", "D57"]
+what = "Joining storage hosts and map service members with single-use join tokens, and renewing their certificates"
+spec = ["administration.md §23.4.2", "D57"]
+status = "done"
+tests = [
+    "join::storage_hosts_join_with_tokens",
+    "join::map_service_members_join_the_first",
+    "hyperstor_meta::tests::joined_hosts_are_added_to_an_empty_map",
+    "hyperstor_meta::api::admin::tests::tokens_parse_only_in_their_form",
+    "hyperstor_map::join_tests::pools_made_before_any_host_place_their_pgs_when_hosts_join",
+    "hyperstor_meta::tokens::tests::replicated_tokens_are_used_once_and_revocable",
+    "hyperstor_meta::tokens::tests::bootstrap_tokens_live_on_the_first_member_until_used",
+    "hyperstor_meta::tokens::tests::records_round_trip",
+]
+
+[[milestone.item]]
+what = "Backing up the root CA's key, encrypted, and restoring it"
+spec = ["administration.md §23.8", "D70", "D84"]
+status = "done"
+tests = [
+    "install::root_key_backup_and_restore",
+    "hyperstor_pki::tests::root_backups_open_only_with_their_passphrase",
+]
+
+[[milestone.item]]
+what = "Installing storage hosts on whole devices"
+spec = ["administration.md §23.4", "D29"]
 status = "planned"
 
 [[milestone]]
@@ -478,6 +514,15 @@ what = "Audit of every change and every refused call to the cluster API"
 spec = ["administration.md §23.9.4"]
 status = "partial"
 tests = ["hyperstor_meta::api::tests::audit_lines_are_json_with_escapes"]
+
+[[milestone.item]]
+what = "Long operations: draining a node, with a dry run, followed to the end or cancelled"
+spec = ["administration.md §23.6"]
+status = "partial"
+tests = [
+    "operations::drains_run_as_operations",
+    "hyperstor_meta::tests::drains_move_every_pg_off_the_node",
+]
 
 [[milestone]]
 id = "AD4"

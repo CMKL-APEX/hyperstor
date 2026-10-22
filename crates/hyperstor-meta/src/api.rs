@@ -34,6 +34,9 @@ use hyperstor_reactor::chan::{Sender, oneshot};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+mod admin;
+pub use admin::{Signing, parse_token};
+
 struct Api {
     tx: Sender<Admin>,
     map_address: String,
@@ -41,6 +44,33 @@ struct Api {
     cluster: Option<String>,
     /// Per caller: tokens left and when they were last topped up.
     buckets: Buckets,
+    /// Joins, renewals, tokens and operations (`admin`).
+    admin: admin::State,
+}
+
+/// What a call needs of its caller.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    /// Any identity of this cluster but a bare-metal host.
+    Read,
+    /// `admin` or `mgmt`.
+    Write,
+    /// Any identity of this cluster.
+    Identity,
+    /// No certificate: the join, which a token authorizes.
+    Anyone,
+}
+
+pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
+
+/// A map service error as the API reports it: a member that doesn't lead
+/// is `unavailable` (ask the leader), anything else `kind`.
+fn meta_error(e: String, kind: fn(String) -> ConnectError, reason: &str) -> ConnectError {
+    if e.starts_with("this map service member isn't the leader") {
+        with_reason(ConnectError::unavailable(e), "not_leader")
+    } else {
+        with_reason(kind(e), reason)
+    }
 }
 
 /// Calls per second per caller, and the burst allowed (§23.3).
@@ -145,6 +175,21 @@ impl Api {
         target: &str,
         write: bool,
     ) -> Result<String, ConnectError> {
+        self.authorize_as(
+            ctx,
+            op,
+            target,
+            if write { Need::Write } else { Need::Read },
+        )
+    }
+
+    fn authorize_as(
+        &self,
+        ctx: &RequestContext,
+        op: &str,
+        target: &str,
+        need: Need,
+    ) -> Result<String, ConnectError> {
         let refuse = |who: &str, e: ConnectError| {
             audit(
                 who,
@@ -163,10 +208,13 @@ impl Api {
                 if !local_allowed(p.uid, own, &groups_of(p.pid), admin_gid()) {
                     return Err(refuse(
                         &who,
-                        ConnectError::permission_denied(format!(
-                            "uid {} is not root, the service's user, or in hyperstor-admin",
-                            p.uid
-                        )),
+                        with_reason(
+                            ConnectError::permission_denied(format!(
+                                "uid {} is not root, the service's user, or in hyperstor-admin",
+                                p.uid
+                            )),
+                            "permission_denied",
+                        ),
                     ));
                 }
                 who
@@ -177,54 +225,87 @@ impl Api {
             ),
             (Some(cluster), None) => {
                 let peer = ctx.peer_addr().map_or("?".into(), |a| a.to_string());
-                let Some(who) = ctx
+                let leaf = ctx
                     .peer_certs()
                     .and_then(|c| c.first())
-                    .and_then(|leaf| hyperstor_pki::identity_of(leaf))
-                else {
-                    return Err(refuse(
-                        &format!("unknown@{peer}"),
-                        ConnectError::unauthenticated("a hyperstor client certificate is required"),
-                    ));
+                    .and_then(|leaf| hyperstor_pki::identity_of(leaf));
+                let who = match leaf {
+                    // A join is authorized by its token, not a certificate,
+                    // and rated by address alone: a new connection is a
+                    // new port.
+                    _ if need == Need::Anyone => {
+                        let ip = ctx.peer_addr().map_or("?".into(), |a| a.ip().to_string());
+                        return self.take_rate(op, target, format!("join@{ip}"));
+                    }
+                    Some(who) => who,
+                    None => {
+                        return Err(refuse(
+                            &format!("unknown@{peer}"),
+                            with_reason(
+                                ConnectError::unauthenticated(
+                                    "a hyperstor client certificate is required",
+                                ),
+                                "unauthenticated",
+                            ),
+                        ));
+                    }
                 };
                 if &who.cluster != cluster {
                     return Err(refuse(
                         &who.uri(),
-                        ConnectError::permission_denied(format!(
-                            "{} is not of cluster {cluster}",
-                            who.uri()
-                        )),
+                        with_reason(
+                            ConnectError::permission_denied(format!(
+                                "{} is not of cluster {cluster}",
+                                who.uri()
+                            )),
+                            "wrong_cluster",
+                        ),
                     ));
                 }
-                let allowed = if write {
-                    who.role.may_administer()
-                } else {
-                    who.role != hyperstor_pki::Role::Host
+                let allowed = match need {
+                    Need::Write => who.role.may_administer(),
+                    Need::Read => who.role != hyperstor_pki::Role::Host,
+                    Need::Identity | Need::Anyone => true,
                 };
                 if !allowed {
                     return Err(refuse(
                         &who.uri(),
-                        ConnectError::permission_denied(format!(
-                            "{} may not {}",
-                            who.uri(),
-                            if write {
-                                "change the cluster"
-                            } else {
-                                "read the cluster's status"
-                            }
-                        )),
+                        with_reason(
+                            ConnectError::permission_denied(format!(
+                                "{} may not {}",
+                                who.uri(),
+                                if need == Need::Write {
+                                    "change the cluster"
+                                } else {
+                                    "read the cluster's status"
+                                }
+                            )),
+                            "permission_denied",
+                        ),
                     ));
                 }
                 who.uri()
             }
         };
+        self.take_rate(op, target, principal)
+    }
+
+    /// Takes a call from `principal`'s rate (§23.3); a refusal is audited.
+    fn take_rate(&self, op: &str, target: &str, principal: String) -> Result<String, ConnectError> {
         if !take(&self.buckets, &principal, std::time::Instant::now()) {
-            return Err(refuse(
-                &principal,
+            let e = with_reason(
                 ConnectError::resource_exhausted(format!(
                     "more than {RATE} calls per second from {principal}"
                 )),
-            ));
+                "rate_limited",
+            );
+            audit(
+                &principal,
+                op,
+                target,
+                &format!("refused: {}", e.message.as_deref().unwrap_or("")),
+            );
+            return Err(e);
         }
         Ok(principal)
     }
@@ -446,7 +527,7 @@ impl ClusterService for Api {
                 ..Default::default()
             }
             .into()),
-            Some(Err(e)) => Err(ConnectError::not_found(e)),
+            Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }
@@ -580,11 +661,22 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
     use crate::VolumeFault as F;
     match r {
         Some(Ok(v)) => Ok(v),
-        Some(Err((F::NotFound, e))) => Err(ConnectError::not_found(e)),
-        Some(Err((F::Exists, e))) => Err(ConnectError::already_exists(e)),
-        Some(Err((F::Invalid, e))) => Err(ConnectError::invalid_argument(e)),
-        Some(Err((F::Attached, e))) => Err(ConnectError::failed_precondition(e)),
-        Some(Err((F::Unavailable, e))) => Err(ConnectError::unavailable(e)),
+        Some(Err((F::NotFound, e))) => Err(with_reason(ConnectError::not_found(e), "not_found")),
+        Some(Err((F::Exists, e))) => Err(with_reason(
+            ConnectError::already_exists(e),
+            "already_exists",
+        )),
+        Some(Err((F::Invalid, e))) => Err(with_reason(
+            ConnectError::invalid_argument(e),
+            "invalid_argument",
+        )),
+        Some(Err((F::Attached, e))) => Err(with_reason(
+            ConnectError::failed_precondition(e),
+            "attached",
+        )),
+        Some(Err((F::Unavailable, e))) => {
+            Err(with_reason(ConnectError::unavailable(e), "unavailable"))
+        }
         None => Err(ConnectError::unavailable("map service stopped")),
     }
 }
@@ -594,33 +686,37 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
 pub struct Tls {
     pub config: connectrpc::rustls::ServerConfig,
     pub cluster: String,
+    /// The root's certificate, PEM: what joining hosts are given.
+    pub root: String,
 }
 
-/// Reads `DIR/api.crt` (chain), `DIR/api.key` and `DIR/root.crt`.
+/// Reads `DIR/api.crt` (chain), `DIR/api.key` and `DIR/root.crt`. Clients
+/// may connect without a certificate, for the join; every other call
+/// needs one.
 pub fn tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<Tls, String> {
     let read = |f: &str| {
         std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
     };
+    let root = read("root.crt")?;
     Ok(Tls {
-        config: hyperstor_pki::server_config(
-            &read("api.crt")?,
-            &read("api.key")?,
-            &read("root.crt")?,
-        )?,
+        config: hyperstor_pki::api_server_config(&read("api.crt")?, &read("api.key")?, &root)?,
         cluster: cluster.to_string(),
+        root,
     })
 }
 
 /// Serves the cluster API on `listener` from a new thread with its own
 /// single-threaded tokio runtime, over TLS when `tls` is given, and on
 /// the local socket `unix` if given. `map_address` is reported to clients
-/// as where the map service listens.
+/// as where the map service listens. With `signing`, this member signs
+/// joins and renewals (§23.4.2).
 pub fn spawn(
     listener: std::net::TcpListener,
     unix: Option<std::os::unix::net::UnixListener>,
     tx: Sender<Admin>,
     map_address: SocketAddr,
     tls: Option<Tls>,
+    signing: Option<Signing>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("hyperstor-api".into())
@@ -632,18 +728,24 @@ pub fn spawn(
             rt.block_on(async move {
                 listener.set_nonblocking(true).expect("nonblocking");
                 let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
-                let (config, cluster) = match tls {
-                    Some(t) => (Some(Arc::new(t.config)), Some(t.cluster)),
-                    None => (None, None),
+                let api_address = listener
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default();
+                let (config, cluster, root) = match tls {
+                    Some(t) => (Some(Arc::new(t.config)), Some(t.cluster), Some(t.root)),
+                    None => (None, None, None),
                 };
                 let api = Arc::new(Api {
                     tx,
                     map_address: map_address.to_string(),
                     cluster,
                     buckets: Default::default(),
+                    admin: admin::State::new(signing, root, api_address),
                 });
-                let service =
-                    connectrpc::ConnectRpcService::new(api.register(connectrpc::Router::new()));
+                let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
+                let router = admin::register(api, router);
+                let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {
                     u.set_nonblocking(true).expect("nonblocking");
                     let u = tokio::net::UnixListener::from_std(u).expect("unix listener");

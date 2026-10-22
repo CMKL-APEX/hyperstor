@@ -13,6 +13,16 @@
 //!   service listening on ADDR (with the CAs and the API), storage node N
 //!   with one reactor per address the file lists for it, or both. Every
 //!   host gets the same file (interim, until join tokens; I50).
+//! - `install --join API --token-file F --role storage --address IP
+//!   [--reactors N] [--rack R]` joins this host to a running cluster with a
+//!   token from `hyperstorctl token create --role node` (§23.4.2, D57):
+//!   it makes its own key, pins the cluster's root by the token, is added
+//!   to the map as a new storage node, and installs it with N reactors on
+//!   IP, ports from `--node-port`. `--role meta --members LIST --member-id
+//!   N --join API` joins a map service member with a `--role meta` token
+//!   instead: it gets the cluster file and the intermediate CA. The token
+//!   is read from `--token-file`, `--token` or `$HYPERSTOR_JOIN_TOKEN` and
+//!   never saved; later runs renew the host's certificate over the API.
 //! - `install --all-in-one` sets up a trial cluster on this host: the map
 //!   service (map protocol on 8849, cluster API on 8850, both loopback)
 //!   and N storage nodes (default 3), each on a file of G GiB
@@ -24,6 +34,13 @@
 //!   which renews certificates (D56) and repairs drift.
 //! - `uninstall` stops and removes the units and binaries; configuration
 //!   and data stay.
+//! - `root-backup --out FILE --passphrase-file F [--remove-key]` writes the
+//!   root CA (certificate and key) to FILE, encrypted with the passphrase
+//!   (D84), checks that it opens, and records the backup; with
+//!   `--remove-key` it then removes the key from this host, which keeps the
+//!   root offline (D70). `root-restore --in FILE --passphrase-file F` puts
+//!   it back, on this host or a new one. The passphrase may also come from
+//!   `$HYPERSTOR_BACKUP_PASSPHRASE`; never from the command line.
 //!
 //! Binaries are taken from the installer's own directory (`target/release`
 //! when run from a checkout). `--root DIR` writes every file under DIR
@@ -37,7 +54,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall [--all-in-one] [--cluster FILE] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key]";
 
 const BINARIES: [&str; 4] = [
     "hyperstor-meta",
@@ -71,6 +88,15 @@ struct Settings {
     members: String,
     /// This host's member number, for a `meta` role in a group.
     member_id: Option<u32>,
+    /// The cluster API this host joined through (§23.4.2); empty when it
+    /// was installed from a cluster file.
+    join: String,
+    /// A joined storage host's IP: its reactors listen there.
+    address: String,
+    /// A joined storage host's reactors, one device each.
+    reactors: u32,
+    /// A joined storage host's rack.
+    rack: u32,
     nodes: u32,
     size_gib: u64,
     data_dir: String,
@@ -90,6 +116,10 @@ impl Settings {
             map: String::new(),
             members: String::new(),
             member_id: None,
+            join: String::new(),
+            address: String::new(),
+            reactors: 1,
+            rack: 0,
             nodes: 3,
             size_gib: 4,
             data_dir: "/var/lib/hyperstor".into(),
@@ -115,6 +145,10 @@ impl Settings {
                 "map" => self.map = v.to_string(),
                 "members" => self.members = v.to_string(),
                 "member_id" => self.member_id = v.parse().ok(),
+                "join" => self.join = v.to_string(),
+                "address" => self.address = v.to_string(),
+                "reactors" => self.reactors = v.parse().unwrap_or(self.reactors),
+                "rack" => self.rack = v.parse().unwrap_or(self.rack),
                 "nodes" => self.nodes = v.parse().unwrap_or(self.nodes),
                 "size_gib" => self.size_gib = v.parse().unwrap_or(self.size_gib),
                 "data_dir" => self.data_dir = v.to_string(),
@@ -131,13 +165,17 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\njoin = {}\naddress = {}\nreactors = {}\nrack = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\n",
             self.all_in_one,
             self.role,
             self.node.map(|n| n.to_string()).unwrap_or_default(),
             self.map,
             self.members,
             self.member_id.map(|n| n.to_string()).unwrap_or_default(),
+            self.join,
+            self.address,
+            self.reactors,
+            self.rack,
             self.nodes,
             self.size_gib,
             self.data_dir,
@@ -155,12 +193,19 @@ fn main() {
     let Some(cmd) = args.first().cloned() else {
         usage()
     };
-    if !matches!(cmd.as_str(), "check" | "install" | "uninstall") {
+    if !matches!(
+        cmd.as_str(),
+        "check" | "install" | "uninstall" | "root-backup" | "root-restore"
+    ) {
         usage();
     }
     let mut root = PathBuf::from("/");
     let mut no_start = false;
     let mut cluster_file: Option<String> = None;
+    let (mut out_file, mut in_file, mut remove_key) = (None, None, false);
+    let mut passphrase: Option<String> = std::env::var("HYPERSTOR_BACKUP_PASSPHRASE").ok();
+    // Never saved: a token is single-use and secret (§23.10).
+    let mut token: Option<String> = std::env::var("HYPERSTOR_JOIN_TOKEN").ok();
     let mut given: BTreeMap<&str, String> = BTreeMap::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -184,6 +229,37 @@ fn main() {
                     Some(fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}"))));
                 continue;
             }
+            "--token-file" => {
+                let f = val();
+                token = Some(fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}"))));
+                continue;
+            }
+            "--token" => {
+                token = Some(val());
+                continue;
+            }
+            "--out" => {
+                out_file = Some(val());
+                continue;
+            }
+            "--in" => {
+                in_file = Some(val());
+                continue;
+            }
+            "--remove-key" => {
+                remove_key = true;
+                continue;
+            }
+            "--passphrase-file" => {
+                let f = val();
+                let p = fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
+                passphrase = Some(p.trim_end_matches(['\n', '\r']).to_string());
+                continue;
+            }
+            "--join" => "join",
+            "--address" => "address",
+            "--reactors" => "reactors",
+            "--rack" => "rack",
             "--role" => "role",
             "--node" => "node",
             "--map" => "map",
@@ -211,6 +287,12 @@ fn main() {
             "map" => v.parse::<std::net::SocketAddr>().is_ok(),
             "members" => parse_members(&v).is_ok(),
             "member_id" => v.parse::<u32>().is_ok(),
+            "join" => v.parse::<std::net::SocketAddr>().is_ok(),
+            "address" => v
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| !ip.is_unspecified()),
+            "reactors" => v.parse::<u32>().is_ok_and(|n| (1..=64).contains(&n)),
+            "rack" => v.parse::<u32>().is_ok(),
             _ => v.starts_with('/'),
         };
         if !ok {
@@ -221,6 +303,7 @@ fn main() {
     }
     let real = root == Path::new("/");
     let mut s = Settings::defaults();
+    let token = token.filter(|t| !t.trim().is_empty());
     s.apply(&fs::read_to_string(root.join("etc/hyperstor/install.conf")).unwrap_or_default());
     s.apply(
         &given
@@ -229,10 +312,41 @@ fn main() {
             .collect::<String>(),
     );
 
+    // --out, --in and --remove-key belong to the backup commands only.
+    let backup = cmd.starts_with("root-");
+    if (!backup && (out_file.is_some() || in_file.is_some() || remove_key))
+        || (cmd == "root-backup" && in_file.is_some())
+        || (cmd == "root-restore" && (out_file.is_some() || remove_key))
+    {
+        usage();
+    }
     match cmd.as_str() {
-        "check" => std::process::exit(i32::from(check(&s))),
+        "check" => std::process::exit(i32::from(check(&root, &s))),
+        "root-backup" => root_backup(
+            &root,
+            &out_file.unwrap_or_else(|| usage()),
+            &passphrase.unwrap_or_else(|| fail("a passphrase is needed: --passphrase-file F")),
+            remove_key,
+        ),
+        "root-restore" => root_restore(
+            &root,
+            &in_file.unwrap_or_else(|| usage()),
+            &passphrase.unwrap_or_else(|| fail("a passphrase is needed: --passphrase-file F")),
+        ),
         "uninstall" => uninstall(&root, real, &s),
-        _ => install(&root, real, no_start, &s, cluster_file),
+        _ => {
+            let mut cluster_file = cluster_file;
+            if !s.join.is_empty() {
+                // SAFETY: geteuid has no preconditions.
+                if real && unsafe { libc::geteuid() } != 0 {
+                    fail("installing to / needs root: run it with sudo (or use --root DIR)");
+                }
+                if let Some(f) = join(&root, real, &mut s, token.as_deref()) {
+                    cluster_file = Some(f);
+                }
+            }
+            install(&root, real, no_start, &s, cluster_file)
+        }
     }
 }
 
@@ -247,7 +361,7 @@ enum Level {
 }
 
 /// Runs every check, printing one line each; returns whether one failed.
-fn check(s: &Settings) -> bool {
+fn check(root: &Path, s: &Settings) -> bool {
     let mut worst = Level::Ok;
     let mut note = |l: Level, what: &str, detail: String| {
         if l > worst {
@@ -410,6 +524,21 @@ fn check(s: &Settings) -> bool {
         );
     }
 
+    // The root CA's key (D84): backed up, kept elsewhere, or at risk.
+    let pki = under(root, "/etc/hyperstor/pki");
+    match (
+        pki.join("root.key").exists(),
+        fs::read_to_string(pki.join("root.backup")).ok(),
+    ) {
+        (_, Some(b)) => note(Level::Ok, "rootkey", b.trim().to_string()),
+        (true, None) => note(
+            Level::Warn,
+            "rootkey",
+            "the root CA's key has no backup: hyperstor-install root-backup --out FILE --passphrase-file F".into(),
+        ),
+        (false, None) => note(Level::Info, "rootkey", "no root CA key on this host".into()),
+    }
+
     if Path::new("/run/systemd/system").exists() {
         note(Level::Ok, "systemd", "running".into());
     } else {
@@ -449,6 +578,9 @@ Wants=network-online.target
 User=hyperstor
 EnvironmentFile=/etc/hyperstor/meta.env
 ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS
+# The intermediate CA's key, readable by root only on disk, handed to the
+# service alone (spec/administration.md §23.8).
+LoadCredential=intermediate.key:/etc/hyperstor/pki/intermediate.key
 # The local socket, /run/hyperstor-meta/api.sock (break-glass).
 RuntimeDirectory=hyperstor-meta
 RuntimeDirectoryMode=0755
@@ -558,6 +690,10 @@ struct Plan {
     nodes: Vec<NodePlan>,
     /// Every storage node's metrics address, for the dashboard.
     metrics: Vec<String>,
+    /// Where this host's cluster API listens, if it runs the map service:
+    /// loopback for the trial, the member's own address otherwise, so
+    /// joining hosts reach it (D59).
+    api: String,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -620,6 +756,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
             .collect();
         return Plan {
+            api: format!("127.0.0.1:{}", s.api_port),
             metrics,
             cluster,
             cluster_id: id.to_string(),
@@ -638,7 +775,12 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         };
     }
     if s.role.is_empty() {
-        fail("give --all-in-one, or --cluster FILE with --role meta|storage|both");
+        fail(
+            "give --all-in-one, --cluster FILE with --role meta|storage|both, or --join API with --role",
+        );
+    }
+    if !s.join.is_empty() && s.role == "storage" {
+        return joined_storage_plan(s);
     }
     // Interim, until joining with tokens (D57, implementation-notes.md
     // I50): every host gets the same cluster file.
@@ -713,7 +855,12 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             Some(std::net::SocketAddr::new(d.addr.ip(), s.admin_port).to_string())
         })
         .collect();
+    let api = listen
+        .parse::<std::net::SocketAddr>()
+        .map(|a| std::net::SocketAddr::new(a.ip(), s.api_port).to_string())
+        .unwrap_or_else(|_| format!("127.0.0.1:{}", s.api_port));
     Plan {
+        api,
         metrics,
         cluster,
         cluster_id: map.cluster_id.to_string(),
@@ -731,6 +878,215 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .collect(),
         nodes,
     }
+}
+
+/// A storage host that joined with a token: node N of the map (from the
+/// join), `reactors` devices on `address`, the map service's addresses as
+/// the join gave them.
+fn joined_storage_plan(s: &Settings) -> Plan {
+    let n = s
+        .node
+        .unwrap_or_else(|| fail("this host hasn't joined yet: give a token (--token-file F)"));
+    let ip: std::net::IpAddr = s
+        .address
+        .parse()
+        .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
+    Plan {
+        api: String::new(),
+        cluster: String::new(),
+        cluster_id: String::new(),
+        meta: None,
+        map: s.map.clone(),
+        members: Vec::new(),
+        member_id: None,
+        server_ips: Vec::new(),
+        nodes: vec![NodePlan {
+            n,
+            shards: (0..s.reactors)
+                .map(|i| std::net::SocketAddr::new(ip, s.node_port + i as u16))
+                .collect(),
+            admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
+        }],
+        metrics: Vec::new(),
+    }
+}
+
+/// Joins this host to the cluster at `s.join` with `token` (§23.4.2,
+/// D57), unless it has already joined: then a storage host's certificate
+/// is renewed over the API when due. Records the node number and the map
+/// service's addresses in `s`; returns the cluster file for a map service
+/// member.
+fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Option<String> {
+    let dir = under(root, "/etc/hyperstor/pki");
+    let (cert_name, key_group) = match s.role.as_str() {
+        "storage" => ("node", "hyperstor"),
+        "meta" => ("api", "hyperstor"),
+        _ => fail("--join installs one role: --role storage or --role meta"),
+    };
+    if dir.join(format!("{cert_name}.crt")).exists() && (s.role == "meta" || s.node.is_some()) {
+        if s.role == "storage" {
+            renew_node(root, real, s);
+        }
+        return None;
+    }
+    let token = token.unwrap_or_else(|| {
+        fail("joining needs a token: --token-file F (from hyperstorctl token create)")
+    });
+    let (pin, _) = hyperstor_meta::api::parse_token(token)
+        .unwrap_or_else(|| fail("the token isn't a hyperstor join token (hsj1-…)"));
+    let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
+    let mut req = hyperstor_api::JoinRequest {
+        token: token.trim().to_string(),
+        csr,
+        ..Default::default()
+    };
+    if s.role == "storage" {
+        let ip: std::net::IpAddr = s
+            .address
+            .parse()
+            .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
+        req.addresses = (0..s.reactors)
+            .map(|i| std::net::SocketAddr::new(ip, s.node_port + i as u16).to_string())
+            .collect();
+        req.rack = s.rack;
+    } else {
+        let members =
+            parse_members(&s.members).unwrap_or_else(|e| fail(&format!("--members: {e}")));
+        let id = s
+            .member_id
+            .unwrap_or_else(|| fail("--member-id N is needed: which member this host runs"));
+        let me = members
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| fail(&format!("member {id} is not in --members")));
+        req.member_id = id;
+        req.member_ips = vec![me.map.ip().to_string(), me.raft.ip().to_string()];
+    }
+    let tls = hyperstor_pki::pinned_client_config(pin).unwrap_or_else(|e| fail(&e));
+    let r = api_call(&s.join, tls, |c| async move {
+        hyperstor_api::TokenServiceClient::new(c.0, c.1)
+            .join(req)
+            .await
+            .map(|r| r.into_owned())
+    })
+    .unwrap_or_else(|e| fail(&format!("join through {}: {e}", s.join)));
+    let pki = "/etc/hyperstor/pki";
+    let write = |name: &str, content: &str, mode: u32| {
+        converge(
+            &under(root, &format!("{pki}/{name}")),
+            content.as_bytes(),
+            mode,
+        );
+    };
+    write("root.crt", &r.root, 0o644);
+    let chain = if s.role == "meta" {
+        // A member's server certificate carries the root, so the hosts
+        // that join through it can pin it.
+        format!("{}{}", r.certificate, r.root)
+    } else {
+        r.certificate.clone()
+    };
+    write(&format!("{cert_name}.key"), &key, 0o640);
+    write(&format!("{cert_name}.crt"), &chain, 0o644);
+    if real {
+        let k = format!("{pki}/{cert_name}.key");
+        if !run("chgrp", &[key_group, &k]) {
+            fail(&format!("chgrp {key_group} {k} failed"));
+        }
+    }
+    println!("Joined cluster {} through {}.", r.cluster_id, s.join);
+    if s.role == "storage" {
+        s.node = Some(r.node);
+        s.map = r.map_addresses.clone();
+        println!("This host is storage node {}.", r.node);
+        None
+    } else {
+        write("intermediate.crt", &r.intermediate, 0o644);
+        write("intermediate.key", &r.intermediate_key, 0o600);
+        Some(r.cluster_file.clone())
+    }
+}
+
+/// Renews a joined storage host's certificate over the API, with the
+/// certificate itself (D56), once it is past two thirds of its life.
+fn renew_node(root: &Path, real: bool, s: &Settings) {
+    let dir = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let cert = read("node.crt");
+    if !hyperstor_pki::due_for_renewal(&cert, hyperstor_pki::LEAF_DAYS) {
+        return;
+    }
+    let tls = hyperstor_pki::client_config(&cert, &read("node.key"), &read("root.crt"))
+        .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display())));
+    let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
+    let r = api_call(&s.join, tls, |c| async move {
+        hyperstor_api::CaServiceClient::new(c.0, c.1)
+            .renew_certificate(hyperstor_api::RenewCertificateRequest {
+                csr,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+    });
+    match r {
+        Ok(r) => {
+            converge(&dir.join("node.key"), key.as_bytes(), 0o640);
+            converge(&dir.join("node.crt"), r.certificate.as_bytes(), 0o644);
+            if real && !run("chgrp", &["hyperstor", "/etc/hyperstor/pki/node.key"]) {
+                fail("chgrp hyperstor /etc/hyperstor/pki/node.key failed");
+            }
+            println!("Renewed /etc/hyperstor/pki/node.crt.");
+        }
+        // Not fatal: the next daily run tries again, and the certificate
+        // has a third of its life left.
+        Err(e) => eprintln!(
+            "hyperstor-install: renewing node.crt through {}: {e}",
+            s.join
+        ),
+    }
+}
+
+/// One call to the cluster API at `addr` over TLS, on a small runtime.
+fn api_call<T, F>(
+    addr: &str,
+    tls: hyperstor_pki::ClientConfig,
+    call: impl FnOnce(
+        (
+            connectrpc::client::HttpClient,
+            connectrpc::client::ClientConfig,
+        ),
+    ) -> F,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let uri: http::Uri = format!("https://{addr}")
+        .parse()
+        .map_err(|_| format!("{addr}: not an address"))?;
+    let client = connectrpc::client::HttpClient::with_tls(std::sync::Arc::new(tls));
+    let config = connectrpc::client::ClientConfig::new(uri)
+        .with_default_timeout(std::time::Duration::from_secs(10));
+    rt.block_on(call((client, config))).map_err(|e| {
+        let reason = hyperstor_meta::api::reason_of(&e)
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        let mut msg = e.message.clone().unwrap_or_else(|| "request failed".into());
+        // The transport's causes, such as a certificate that doesn't
+        // chain to the token's root.
+        let mut src = std::error::Error::source(&e);
+        while let Some(c) = src {
+            let t = c.to_string();
+            if !msg.contains(&t) {
+                msg = format!("{msg}: {t}");
+            }
+            src = c.source();
+        }
+        format!("{msg}{reason}")
+    })
 }
 
 /// The map service's group options (D72–D74): this member and every
@@ -751,11 +1107,6 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
     let data = s.data_dir.trim_end_matches('/');
     let mut out = vec![
         (
-            "/etc/hyperstor/cluster.txt".to_string(),
-            p.cluster.clone(),
-            0o644,
-        ),
-        (
             "/etc/systemd/system/hyperstor-renew.service".to_string(),
             RENEW_SERVICE.to_string(),
             0o644,
@@ -766,13 +1117,20 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             0o644,
         ),
     ];
+    if !p.cluster.is_empty() {
+        out.push((
+            "/etc/hyperstor/cluster.txt".to_string(),
+            p.cluster.clone(),
+            0o644,
+        ));
+    }
     if let Some(listen) = &p.meta {
         out.extend([
             (
                 "/etc/hyperstor/meta.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen {listen} --api 127.0.0.1:{} --api-tls /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt --data {data}/meta{}\n",
-                    s.api_port,
+                    "HS_ARGS=--listen {listen} --api {} --api-tls /etc/hyperstor/pki --ca /etc/hyperstor/pki --api-socket /run/hyperstor-meta/api.sock --cluster /etc/hyperstor/cluster.txt --data {data}/meta{}\n",
+                    p.api,
                     group_args(p)
                 ),
                 0o644,
@@ -780,8 +1138,8 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/hyperstorctl.conf".to_string(),
                 format!(
-                    "api 127.0.0.1:{}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n",
-                    s.api_port
+                    "api {}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n",
+                    p.api
                 ),
                 0o644,
             ),
@@ -793,9 +1151,9 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/mgmt.env".to_string(),
                 format!(
-                    "HS_ARGS=--listen 127.0.0.1:{} --api 127.0.0.1:{} --tls /etc/hyperstor/pki --metrics {}\n",
+                    "HS_ARGS=--listen 127.0.0.1:{} --api {} --tls /etc/hyperstor/pki --metrics {}\n",
                     s.mgmt_port,
-                    s.api_port,
+                    p.api,
                     p.metrics.join(",")
                 ),
                 0o644,
@@ -937,7 +1295,7 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
     }
     if real {
         println!("Checking the host:");
-        if check(s) {
+        if check(root, s) {
             fail("a host check failed; see above");
         }
         println!();
@@ -1030,7 +1388,15 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
     let mut restart: Vec<String> = Vec::new();
     // The CAs and the API's certificate live where the map service runs.
     if p.meta.is_some() {
-        restart.extend(pki(root, real, &p.cluster_id, &p.server_ips, &mut changed));
+        let member = p.member_id.unwrap_or(0).to_string();
+        restart.extend(pki(
+            root,
+            real,
+            &p.cluster_id,
+            &member,
+            &p.server_ips,
+            &mut changed,
+        ));
     }
     let mut units_changed = false;
     let mut service_units_changed: Vec<&str> = Vec::new();
@@ -1118,10 +1484,24 @@ fn install(root: &Path, real: bool, no_start: bool, s: &Settings, cluster_file: 
             println!("  {c}");
         }
     }
-    if real && !no_start {
+    let pki_dir = under(root, "/etc/hyperstor/pki");
+    if pki_dir.join("root.key").exists() && !pki_dir.join("root.backup").exists() {
+        println!(
+            "\nBack up the root CA's key, which only this host has (it signs a new intermediate CA\n\
+             every 9 months; without it the cluster needs a new root within a year):\n  \
+             sudo hyperstor-install root-backup --out FILE --passphrase-file F [--remove-key]"
+        );
+    }
+    if real && !no_start && p.meta.is_some() {
         println!(
             "\nNext: hyperstorctl status, then hyperstorctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
         );
+        if !s.all_in_one {
+            println!(
+                "Add a storage host: hyperstorctl token create --role node, then on that host\n  sudo hyperstor-install install --join {} --token-file FILE --role storage --address IP",
+                p.api
+            );
+        }
     }
 }
 
@@ -1142,6 +1522,7 @@ fn pki(
     root: &Path,
     real: bool,
     cluster: &str,
+    member: &str,
     server_ips: &[std::net::IpAddr],
     changed: &mut Vec<String>,
 ) -> Vec<String> {
@@ -1168,30 +1549,41 @@ fn pki(
         );
         changed.push(format!("{dir}/{name}.crt"));
     };
+    // A member that joined has the root's certificate but not its key,
+    // which stays on the first host (D70).
     let rootca = match pair("root") {
-        Some(p) => p,
+        Some(p) => Some(p),
+        None if read("root.crt").is_some() => None,
         None => {
             let p = new_root(&cid).unwrap_or_else(|e| fail(&format!("root CA: {e}")));
             write("root", &p, 0o600, changed);
-            p
+            Some(p)
         }
     };
+    let root_cert = read("root.crt").unwrap_or_default();
     let mut renewed_ca = false;
-    let ca = match pair("intermediate") {
-        Some(p) if !due_for_renewal(&p.cert, INTERMEDIATE_DAYS) => p,
-        _ => {
-            let p = new_intermediate(&rootca, &cid)
+    let ca = match (pair("intermediate"), &rootca) {
+        (Some(p), _) if !due_for_renewal(&p.cert, INTERMEDIATE_DAYS) => p,
+        (Some(p), None) => {
+            eprintln!(
+                "hyperstor-install: the intermediate CA is due for renewal; renew it on the host with the root key"
+            );
+            p
+        }
+        (_, Some(r)) => {
+            let p = new_intermediate(r, &cid)
                 .unwrap_or_else(|e| fail(&format!("intermediate CA: {e}")));
             write("intermediate", &p, 0o600, changed);
             renewed_ca = true;
             p
         }
+        (None, None) => fail("no intermediate CA and no root key to make one: join again"),
     };
     // Services read their certificates at start: restart those whose
     // certificate is new.
     let mut restart = Vec::new();
     for (name, role, id, server, group) in [
-        ("api", Role::Meta, "0", true, "hyperstor"),
+        ("api", Role::Meta, member, true, "hyperstor"),
         ("admin", Role::Admin, "local", false, "hyperstor-admin"),
         // The dashboard's identity (D50); it only reads.
         ("mgmt", Role::Mgmt, "dashboard", false, "hyperstor"),
@@ -1229,8 +1621,12 @@ fn pki(
                 0o644,
             );
         }
-        let p = issue(&ca, &who, &ips, &names, LEAF_DAYS)
+        let mut p = issue(&ca, &who, &ips, &names, LEAF_DAYS)
             .unwrap_or_else(|e| fail(&format!("{name} certificate: {e}")));
+        if server {
+            // The root too, so hosts joining through this member can pin it.
+            p.cert.push_str(&root_cert);
+        }
         write(name, &p, 0o640, changed);
         if real {
             let key = format!("{dir}/{name}.key");
@@ -1245,6 +1641,119 @@ fn pki(
         }
     }
     restart
+}
+
+/// Passphrases shorter than this are refused: the backup is only as good
+/// as its passphrase.
+const MIN_PASSPHRASE: usize = 12;
+
+/// `root-backup`: see the top of this file.
+fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
+    if passphrase.chars().count() < MIN_PASSPHRASE {
+        fail(&format!(
+            "the passphrase needs at least {MIN_PASSPHRASE} characters"
+        ));
+    }
+    let pki = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| {
+        fs::read_to_string(pki.join(f)).unwrap_or_else(|e| {
+            fail(&format!(
+                "{}: {e} (no root CA key on this host: it's kept offline, or on the first map service host)",
+                pki.join(f).display()
+            ))
+        })
+    };
+    let ca = hyperstor_pki::Pem {
+        cert: read("root.crt"),
+        key: read("root.key"),
+    };
+    let cluster = cluster_id(root).to_string();
+    let text = hyperstor_pki::root_backup(&ca, &cluster, passphrase)
+        // A fixed message: nothing derived from the passphrase is printed.
+        .unwrap_or_else(|_| fail("encrypting the backup failed"));
+    let out_path = Path::new(out);
+    if out_path.exists() {
+        fail(&format!("{out} exists: give another file"));
+    }
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(out_path)
+            .unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        f.write_all(text.as_bytes())
+            .and_then(|()| f.sync_all())
+            .unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+    }
+    // Read back and opened before anything is recorded or removed.
+    let back = fs::read_to_string(out_path).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+    match hyperstor_pki::root_restore(&back, passphrase) {
+        Ok((_, r)) if r.key == ca.key && r.cert == ca.cert => {}
+        _ => fail(&format!(
+            "{out} doesn't open as written: not recorded, key kept"
+        )),
+    }
+    let fp = hyperstor_pki::fingerprint(&ca.cert).unwrap_or_default();
+    let when = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    converge(
+        &pki.join("root.backup"),
+        format!(
+            "backed up at {when} (unix time) to {out}, root {}\n",
+            &fp[..16]
+        )
+        .as_bytes(),
+        0o644,
+    );
+    println!(
+        "Wrote {out}: the root CA, encrypted. Keep it, and the passphrase, apart and offline."
+    );
+    if remove_key {
+        fs::remove_file(pki.join("root.key"))
+            .unwrap_or_else(|e| fail(&format!("remove root.key: {e}")));
+        println!(
+            "Removed {}: restore it with hyperstor-install root-restore when the intermediate CA is due.",
+            pki.join("root.key").display()
+        );
+    }
+}
+
+/// `root-restore`: see the top of this file.
+fn root_restore(root: &Path, input: &str, passphrase: &str) {
+    let text = fs::read_to_string(input).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    // Named from the clear header: nothing printed comes from what the
+    // passphrase opened.
+    let cluster = hyperstor_pki::backup_cluster(&text)
+        .unwrap_or_else(|| fail(&format!("{input}: not a hyperstor root backup")));
+    let Ok((_, ca)) = hyperstor_pki::root_restore(&text, passphrase) else {
+        fail(&format!(
+            "{input}: wrong passphrase, or the backup was changed"
+        ))
+    };
+    let pki = under(root, "/etc/hyperstor/pki");
+    // Only onto its own cluster.
+    if let Ok(have) = fs::read_to_string(pki.join("root.crt"))
+        && have != ca.cert
+    {
+        fail("this host trusts another root: the backup is another cluster's");
+    }
+    if fs::read_to_string(under(root, "/etc/hyperstor/cluster.txt")).is_ok()
+        && cluster_id(root).to_string() != cluster
+    {
+        fail(&format!(
+            "the backup is cluster {cluster}'s, not this host's"
+        ));
+    }
+    converge(&pki.join("root.crt"), ca.cert.as_bytes(), 0o644);
+    converge(&pki.join("root.key"), ca.key.as_bytes(), 0o600);
+    println!(
+        "Restored the root CA of cluster {cluster} to {}.",
+        pki.display()
+    );
 }
 
 fn uninstall(root: &Path, real: bool, s: &Settings) {
@@ -1451,16 +1960,37 @@ mod tests {
                 .collect::<Vec<std::net::IpAddr>>()
         };
         let mut changed = Vec::new();
-        pki(root.path(), false, "9", &ips(&["10.0.0.12"]), &mut changed);
+        pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &ips(&["10.0.0.12"]),
+            &mut changed,
+        );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
         let first = cert(root.path());
         assert_eq!(
             fs::read_to_string(root.path().join("etc/hyperstor/pki/api.ips")).unwrap(),
             "10.0.0.12\n127.0.0.1\n"
         );
-        pki(root.path(), false, "9", &ips(&["10.0.0.12"]), &mut changed);
+        pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &ips(&["10.0.0.12"]),
+            &mut changed,
+        );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
-        let restart = pki(root.path(), false, "9", &ips(&["10.0.0.13"]), &mut changed);
+        let restart = pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &ips(&["10.0.0.13"]),
+            &mut changed,
+        );
         assert_ne!(cert(root.path()), first, "new addresses: issued again");
         assert!(restart.contains(&"hyperstor-meta.service".to_string()));
     }

@@ -938,6 +938,7 @@ dependencies = [
  "connectrpc-build",
  "protox",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -992,6 +993,7 @@ dependencies = [
  "hyperstor-pki",
  "hyperstor-reactor",
  "libc",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1026,11 +1028,15 @@ dependencies = [
 name = "hyperstor-install"
 version = "0.1.0"
 dependencies = [
+ "connectrpc",
+ "http",
+ "hyperstor-api",
  "hyperstor-meta",
  "hyperstor-pki",
  "io-uring",
  "libc",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1094,6 +1100,7 @@ name = "hyperstor-pki"
 version = "0.1.0"
 dependencies = [
  "rcgen",
+ "ring",
  "rustls",
  "time",
  "x509-parser",

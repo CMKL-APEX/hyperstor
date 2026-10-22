@@ -1,4 +1,4 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--lease-ms L] [--down-after-ms N]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
@@ -20,6 +20,12 @@
 //! fencing; the others serve the map and redirect the rest to it (D72).
 //! Members talk Raft on RAFT_ADDR, over mutual TLS with the `--api-tls`
 //! certificates.
+//!
+//! With `--ca DIR` (`intermediate.crt`, `intermediate.key`; the key is
+//! read from `$CREDENTIALS_DIRECTORY` first, where systemd's
+//! `LoadCredential=` puts it), this member signs certificates for hosts
+//! that join with a token and renews them (spec/administration.md
+//! §23.4.2, §23.8).
 
 use std::time::Duration;
 
@@ -33,7 +39,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--lease-ms L] [--down-after-ms N]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--lease-ms L] [--down-after-ms N]"
         );
         std::process::exit(2)
     };
@@ -96,6 +102,33 @@ fn main() {
         let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666));
         l
     });
+    let signing = get("--ca").map(|d| {
+        let dir = std::path::Path::new(&d);
+        let read = |p: std::path::PathBuf| {
+            std::fs::read_to_string(&p).unwrap_or_else(|e| {
+                eprintln!("--ca: {}: {e}", p.display());
+                std::process::exit(1)
+            })
+        };
+        let key = std::env::var_os("CREDENTIALS_DIRECTORY")
+            .map(|c| std::path::Path::new(&c).join("intermediate.key"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| dir.join("intermediate.key"));
+        hyperstor_meta::api::Signing {
+            ca: hyperstor_pki::Pem {
+                cert: read(dir.join("intermediate.crt")),
+                key: read(key),
+            },
+            cluster_file: text.clone(),
+            map_addresses: String::new(),
+            // Replaced by the replicated store once it is open.
+            tokens: std::sync::Arc::new(hyperstor_meta::tokens::Tokens::in_memory()),
+        }
+    });
+    if signing.is_some() && tls.is_none() {
+        eprintln!("--ca needs --api-tls");
+        std::process::exit(2);
+    }
     if socket.is_some() && api.is_none() {
         eprintln!("--api-socket needs --api");
         std::process::exit(2);
@@ -163,8 +196,24 @@ fn main() {
         };
         (cfg, listener)
     });
+    let mut signing = signing;
+    if let Some(s) = &mut signing {
+        // Where joining storage nodes find the map service: every member.
+        s.map_addresses = match &raft {
+            Some((cfg, _)) if cfg.members.len() > 1 => cfg
+                .members
+                .iter()
+                .map(|m| m.map.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            _ => addr.to_string(),
+        };
+    }
     hyperstor_reactor::block_on(async move {
-        let l = hyperstor_reactor::net::TcpListener::bind(addr).expect("bind");
+        let l = hyperstor_reactor::net::TcpListener::bind(addr).unwrap_or_else(|e| {
+            eprintln!("--listen {addr}: {e}");
+            std::process::exit(1)
+        });
         let (meta, _replica) = match raft {
             None => (
                 hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease)),
@@ -173,6 +222,10 @@ fn main() {
             Some((cfg, listener)) => {
                 let (to_reactor, from_raft) = hyperstor_reactor::chan::channel();
                 let n = cfg.members.len();
+                // The member that forms the group keeps the tokens made
+                // before it has a map (D81).
+                let first = cfg.members.iter().map(|m| m.id).min() == Some(cfg.id);
+                let bootstrap = first.then(|| cfg.dir.join("bootstrap-tokens"));
                 let r =
                     hyperstor_meta::replica::spawn(cfg, listener, to_reactor).unwrap_or_else(|e| {
                         eprintln!("hyperstor-meta: {e}");
@@ -184,6 +237,12 @@ fn main() {
                     r.commits.clone(),
                 );
                 hyperstor_reactor::spawn(meta.clone().follow(from_raft));
+                if let Some(s) = &mut signing {
+                    s.tokens = std::sync::Arc::new(hyperstor_meta::tokens::Tokens::replicated(
+                        r.db.clone(),
+                        bootstrap,
+                    ));
+                }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))
             }
@@ -197,7 +256,7 @@ fn main() {
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")
             );
-            hyperstor_meta::api::spawn(api, socket, tx, addr, tls);
+            hyperstor_meta::api::spawn(api, socket, tx, addr, tls, signing);
         }
         hyperstor_meta::serve(l, meta).await
     });

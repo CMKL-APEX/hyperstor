@@ -74,10 +74,80 @@ and the `hyperstor-admin` group: run it with `sudo`, or join the group
 
 Then see [Managing a cluster](managing.md).
 
-## Installing a cluster across hosts
+## Joining hosts with tokens
 
-Write the [cluster file](../reference/cluster-file.md) once, copy it to
-every host, and install each host's part of it:
+Install the map service on one host first. It makes the cluster's
+certificates and serves the cluster API on its own address, where the
+other hosts reach it:
+
+```sh
+# on the map service's host (192.0.2.10); the cluster file may list no
+# storage node at all: they join
+sudo target/release/hyperstor-install install --cluster cluster.txt \
+    --role meta --map 192.0.2.10:8849
+```
+
+Then, for each storage host, make a token on the map service's host and
+use it on the new host:
+
+```sh
+# on the map service's host; umask 077 keeps the file private
+(umask 077; sudo hyperstorctl token create --role node > token)
+# copy `token` to the new host, readable by root only, then there:
+sudo target/release/hyperstor-install install --join 192.0.2.10:8850 \
+    --token-file token --role storage --address 192.0.2.21 --reactors 2
+```
+
+The new host pins the cluster by the root fingerprint in the token
+before it sends anything, makes its own key (which never leaves it),
+and gets a certificate for a new storage node number. The map service
+adds the node to the map, down until its first heartbeat, and its PGs
+start moving to it once it runs. The node gets one reactor per
+`--reactors`, each on a file of `--size-gib` GiB in the data directory
+and on its own port from `--node-port`, and its metrics on `--address`
+at port 8853.
+
+- A token is used once, expires after an hour (`--ttl SECS`, at most a
+  week), and can be revoked with `hyperstorctl token revoke --id ID`;
+  `hyperstorctl token list` shows them, never the secrets. Tokens are
+  kept in the map service's replicated store, so they survive restarts;
+  they are made and used through the leader.
+- The token is never saved. Later runs of the installer, such as the
+  daily timer's, need none; they renew the host's certificate through
+  the API with the certificate itself.
+- Installing a host again with the same addresses gets its node back.
+
+**Several map service members.** Install the first member with the
+whole member list, then join the others with `meta` tokens; they get
+the cluster file, the root's certificate and the intermediate CA, so
+every member signs with the same CA (the root's key stays on the first
+host):
+
+```sh
+M=1=192.0.2.10:8851/192.0.2.10:8849,2=192.0.2.11:8851/192.0.2.11:8849,3=192.0.2.12:8851/192.0.2.12:8849
+# first member
+sudo hyperstor-install install --cluster cluster.txt --role meta --members $M --member-id 1
+(umask 077; sudo hyperstorctl token create --role meta > token-2)
+# second member (and likewise the third)
+sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
+    --role meta --members $M --member-id 2
+```
+
+Tokens are made and used through the leader; the other members refuse
+with the leader's address. Before the members have formed a group, the
+first member makes the `meta` tokens itself.
+
+**Back up the root CA's key** on the first host, which alone has it
+(see [hyperstor-install](../reference/hyperstor-install.md)):
+
+```sh
+sudo hyperstor-install root-backup --out /media/usb/root.bak --passphrase-file pass
+```
+
+## Installing a cluster across hosts from one file
+
+Without tokens, write the [cluster file](../reference/cluster-file.md)
+once, copy it to every host, and install each host's part of it:
 
 ```sh
 # on the map service's host (192.0.2.10)
@@ -89,15 +159,10 @@ sudo target/release/hyperstor-install install --cluster cluster.txt \
 ```
 
 A storage node gets one reactor for each address the cluster file lists
-for it, each on a file of `--size-gib` GiB in the data directory, and
-its metrics on its first address's IP at port 8853. The map service's
-host also gets the cluster's certificates and the cluster API on
-`127.0.0.1:8850`: run `hyperstorctl` there. `--role both` puts the map
-service and a storage node on one host.
-
-This is a stopgap: joining hosts with tokens, without copying a file
-around, is planned. Until then the storage network has no
-authentication (see [Running a cluster](index.md)).
+for it. Adding a host means editing every copy of the file. Storage
+hosts installed this way get no certificate; joined ones do, though the
+storage network doesn't use them yet: it has no authentication (see
+[Running a cluster](index.md)).
 
 ## Running as services by hand
 

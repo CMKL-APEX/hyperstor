@@ -20,7 +20,7 @@ hyperstor-api = { path = "../hyperstor-api", features = ["server"] }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "server", "server-tls"] }
 hyperstor-pki = { path = "../hyperstor-pki" }
 buffa = { version = "=0.9.2", features = ["json"] }
-tokio = { version = "1", features = ["rt", "net"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
 # The local socket (§23.6): connectrpc's service on a Unix listener.
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }

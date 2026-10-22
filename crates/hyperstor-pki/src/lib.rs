@@ -16,6 +16,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose, SanType,
 };
+pub use rustls::ClientConfig;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::IpAddr;
@@ -160,19 +161,14 @@ pub fn new_intermediate(root: &Pem, cluster: &str) -> Result<Pem, String> {
     })
 }
 
-/// A leaf certificate for `who`, signed by the intermediate `ca`, valid
-/// for `days` and for the given addresses and names (a server's; a
-/// client needs none). The returned certificate is the chain: the leaf,
-/// then the intermediate.
-pub fn issue(
-    ca: &Pem,
+/// The parameters of a leaf for `who`: its identity as a URI SAN, the
+/// given addresses and names, server and client use, `days` long.
+fn leaf_params(
     who: &Identity,
     ips: &[IpAddr],
     names: &[String],
     days: u32,
-) -> Result<Pem, String> {
-    let ca_key = KeyPair::from_pem(&ca.key).map_err(err)?;
-    let issuer = Issuer::from_ca_cert_pem(&ca.cert, ca_key).map_err(err)?;
+) -> Result<CertificateParams, String> {
     let mut p = CertificateParams::default();
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, who.uri());
@@ -191,12 +187,110 @@ pub fn issue(
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
     validity(&mut p, days);
+    Ok(p)
+}
+
+/// A leaf certificate for `who`, signed by the intermediate `ca`, valid
+/// for `days` and for the given addresses and names (a server's; a
+/// client needs none). The returned certificate is the chain: the leaf,
+/// then the intermediate.
+pub fn issue(
+    ca: &Pem,
+    who: &Identity,
+    ips: &[IpAddr],
+    names: &[String],
+    days: u32,
+) -> Result<Pem, String> {
+    let ca_key = KeyPair::from_pem(&ca.key).map_err(err)?;
+    let issuer = Issuer::from_ca_cert_pem(&ca.cert, ca_key).map_err(err)?;
     let key = KeyPair::generate().map_err(err)?;
-    let cert = p.signed_by(&key, &issuer).map_err(err)?;
+    let cert = leaf_params(who, ips, names, days)?
+        .signed_by(&key, &issuer)
+        .map_err(err)?;
     Ok(Pem {
         cert: format!("{}{}", cert.pem(), ca.cert),
         key: key.serialize_pem(),
     })
+}
+
+/// A new key and a certificate request for it (D57): the key stays with
+/// the caller, the request (PEM) goes to the signer. The request names
+/// nothing; the signer decides the identity.
+pub fn new_request() -> Result<(String, String), String> {
+    let key = KeyPair::generate().map_err(err)?;
+    let csr = CertificateParams::default()
+        .serialize_request(&key)
+        .map_err(err)?;
+    Ok((key.serialize_pem(), csr.pem().map_err(err)?))
+}
+
+/// Signs the public key of the request `csr` (PEM, its signature checked)
+/// as `who`, for `ips` and `names`, with the intermediate `ca`. Only the
+/// key comes from the request: identity, addresses and lifetime are the
+/// signer's. Returns the chain, leaf then intermediate.
+pub fn sign_request(
+    ca: &Pem,
+    csr: &str,
+    who: &Identity,
+    ips: &[IpAddr],
+    names: &[String],
+    days: u32,
+) -> Result<String, String> {
+    let req = rcgen::CertificateSigningRequestParams::from_pem(csr)
+        .map_err(|e| format!("certificate request: {e}"))?;
+    let ca_key = KeyPair::from_pem(&ca.key).map_err(err)?;
+    let issuer = Issuer::from_ca_cert_pem(&ca.cert, ca_key).map_err(err)?;
+    let signed = rcgen::CertificateSigningRequestParams {
+        params: leaf_params(who, ips, names, days)?,
+        public_key: req.public_key,
+    }
+    .signed_by(&issuer)
+    .map_err(err)?;
+    Ok(format!("{}{}", signed.pem(), ca.cert))
+}
+
+/// The SHA-256 of the first certificate in `pem` (its DER), in hex: what a
+/// join token pins the root by (D57).
+pub fn fingerprint(pem: &str) -> Result<String, String> {
+    let der = first_cert(pem)?;
+    Ok(hex(
+        ring::digest::digest(&ring::digest::SHA256, &der).as_ref()
+    ))
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The SHA-256 of `bytes`, in hex: how join tokens are kept (D57).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+
+/// The addresses and names the first certificate in `pem` is for, so a
+/// renewal names the same ones.
+pub fn names_of(pem: &str) -> Result<(Vec<IpAddr>, Vec<String>), String> {
+    names_of_der(&first_cert(pem)?)
+}
+
+/// As [`names_of`], for a certificate in DER.
+pub fn names_of_der(der: &[u8]) -> Result<(Vec<IpAddr>, Vec<String>), String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).map_err(err)?;
+    let (mut ips, mut names) = (Vec::new(), Vec::new());
+    if let Ok(Some(san)) = cert.subject_alternative_name() {
+        for n in &san.value.general_names {
+            match n {
+                x509_parser::extensions::GeneralName::IPAddress(b) => match b.len() {
+                    4 => ips.push(IpAddr::from(<[u8; 4]>::try_from(*b).expect("4 bytes"))),
+                    16 => ips.push(IpAddr::from(<[u8; 16]>::try_from(*b).expect("16 bytes"))),
+                    _ => {}
+                },
+                x509_parser::extensions::GeneralName::DNSName(d) => names.push(d.to_string()),
+                _ => {}
+            }
+        }
+    }
+    Ok((ips, names))
 }
 
 fn certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
@@ -207,6 +301,14 @@ fn certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
         return Err("no certificate in PEM".into());
     }
     Ok(v)
+}
+
+/// The first certificate in `pem`, in DER.
+fn first_cert(pem: &str) -> Result<CertificateDer<'static>, String> {
+    certs(pem)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no certificate in PEM".to_string())
 }
 
 fn key(pem: &str) -> Result<PrivateKeyDer<'static>, String> {
@@ -246,6 +348,122 @@ pub fn server_config(
     Ok(c)
 }
 
+/// As [`server_config`], but a client may also connect without a
+/// certificate: the cluster API, where a host joining with a token has
+/// none yet (D57). Every call but the join then refuses it.
+pub fn api_server_config(
+    chain: &str,
+    key_pem: &str,
+    root: &str,
+) -> Result<rustls::ServerConfig, String> {
+    let verifier =
+        rustls::server::WebPkiClientVerifier::builder_with_provider(roots(root)?, provider())
+            .allow_unauthenticated()
+            .build()
+            .map_err(err)?;
+    let mut c = rustls::ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(err)?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs(chain)?, key(key_pem)?)
+        .map_err(err)?;
+    c.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(c)
+}
+
+/// A client without a certificate that trusts a server only if its chain
+/// includes a root whose fingerprint is `pin` ([`fingerprint`]) and
+/// verifies under it: how a joining host reaches the cluster before it
+/// has the root (D57). The servers send the root in their chain.
+pub fn pinned_client_config(pin: &str) -> Result<rustls::ClientConfig, String> {
+    let verifier = Arc::new(Pinned {
+        pin: pin.to_ascii_lowercase(),
+        provider: provider(),
+    });
+    Ok(rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(err)?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth())
+}
+
+#[derive(Debug)]
+struct Pinned {
+    pin: String,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let root = intermediates
+            .iter()
+            .find(|c| hex(ring::digest::digest(&ring::digest::SHA256, c).as_ref()) == self.pin)
+            .ok_or_else(|| {
+                rustls::Error::General(
+                    "the server's chain has no root with the token's fingerprint".into(),
+                )
+            })?;
+        let mut store = rustls::RootCertStore::empty();
+        store
+            .add(root.clone().into_owned())
+            .map_err(|e| rustls::Error::General(format!("pinned root: {e}")))?;
+        let others: Vec<CertificateDer<'_>> = intermediates
+            .iter()
+            .filter(|c| c.as_ref() != root.as_ref())
+            .cloned()
+            .collect();
+        rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(store),
+            self.provider.clone(),
+        )
+        .build()
+        .map_err(|e| rustls::Error::General(e.to_string()))?
+        .verify_server_cert(end_entity, &others, server_name, ocsp, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// A client that presents `chain` and trusts servers that chain to `root`.
 pub fn client_config(
     chain: &str,
@@ -270,6 +488,11 @@ pub fn identity_of(der: &[u8]) -> Option<Identity> {
     })
 }
 
+/// The identity in the first certificate in `pem`, if it has one.
+pub fn identity_in(pem: &str) -> Option<Identity> {
+    identity_of(&first_cert(pem).ok()?)
+}
+
 /// When the first certificate in `pem` expires.
 pub fn not_after(pem: &str) -> Result<SystemTime, String> {
     let der = CertificateDer::pem_slice_iter(pem.as_bytes())
@@ -291,6 +514,120 @@ pub fn due_for_renewal(pem: &str, lifetime_days: u32) -> bool {
         .duration_since(SystemTime::now())
         .unwrap_or(Duration::ZERO);
     left < Duration::from_secs(u64::from(lifetime_days) * 86400 / 3)
+}
+
+/// PBKDF2-HMAC-SHA256 iterations for a root backup's passphrase (OWASP's
+/// 2023 recommendation): slow enough to make guessing costly, a fraction
+/// of a second for the one person restoring.
+pub const BACKUP_ITERATIONS: u32 = 600_000;
+
+const BACKUP_MAGIC: &str = "hyperstor root backup v1";
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+fn backup_key(passphrase: &str, salt: &[u8]) -> Result<ring::aead::LessSafeKey, String> {
+    let mut key = [0u8; 32];
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        std::num::NonZeroU32::new(BACKUP_ITERATIONS).expect("non-zero"),
+        salt,
+        passphrase.as_bytes(),
+        &mut key,
+    );
+    let k = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key).map_err(err)?;
+    Ok(ring::aead::LessSafeKey::new(k))
+}
+
+/// The root CA, certificate and key, encrypted with `passphrase`, as the
+/// text of a backup file (spec/administration.md §23.8, D84): AES-256-GCM
+/// with a key derived by PBKDF2-HMAC-SHA256 from the passphrase and a
+/// random salt. The cluster and the root's fingerprint are in the clear,
+/// to tell backups apart, and authenticated with the rest.
+pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String, String> {
+    let rng = ring::rand::SystemRandom::new();
+    let salt: [u8; 16] = ring::rand::generate(&rng).map_err(err)?.expose();
+    let nonce: [u8; 12] = ring::rand::generate(&rng).map_err(err)?.expose();
+    let head = format!(
+        "{BACKUP_MAGIC}\ncluster {cluster}\nfingerprint {}\nkdf pbkdf2-sha256 {BACKUP_ITERATIONS} {}\nnonce {}\n",
+        fingerprint(&root.cert)?,
+        hex(&salt),
+        hex(&nonce)
+    );
+    let mut data = format!("{}{}", root.cert, root.key).into_bytes();
+    backup_key(passphrase, &salt)?
+        .seal_in_place_append_tag(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+            ring::aead::Aad::from(head.as_bytes()),
+            &mut data,
+        )
+        .map_err(err)?;
+    Ok(format!("{head}data {}\n", hex(&data)))
+}
+
+/// The cluster a [`root_backup`] is for, from its clear header.
+pub fn backup_cluster(text: &str) -> Option<String> {
+    let mut l = text.lines();
+    (l.next()? == BACKUP_MAGIC)
+        .then(|| l.next()?.strip_prefix("cluster ").map(String::from))
+        .flatten()
+}
+
+/// Opens a [`root_backup`]: the cluster and the root CA. A wrong
+/// passphrase, or a file changed in any way, fails.
+pub fn root_restore(text: &str, passphrase: &str) -> Result<(String, Pem), String> {
+    let bad = || "not a hyperstor root backup".to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let [magic, cluster, fp, kdf, nonce, data, ..] = lines[..] else {
+        return Err(bad());
+    };
+    if magic != BACKUP_MAGIC {
+        return Err(bad());
+    }
+    let cluster = cluster.strip_prefix("cluster ").ok_or_else(bad)?;
+    let fp = fp.strip_prefix("fingerprint ").ok_or_else(bad)?;
+    let kdf: Vec<&str> = kdf.split(' ').collect();
+    let ["kdf", "pbkdf2-sha256", iters, salt] = kdf[..] else {
+        return Err(bad());
+    };
+    if iters.parse::<u32>() != Ok(BACKUP_ITERATIONS) {
+        return Err(format!("{iters} iterations: not this version's"));
+    }
+    let salt = unhex(salt).ok_or_else(bad)?;
+    let nonce: [u8; 12] = unhex(nonce.strip_prefix("nonce ").ok_or_else(bad)?)
+        .and_then(|n| n.try_into().ok())
+        .ok_or_else(bad)?;
+    let mut ct = unhex(data.strip_prefix("data ").ok_or_else(bad)?).ok_or_else(bad)?;
+    // The authenticated header: everything before the data line.
+    let head_len = text.find("\ndata ").ok_or_else(bad)? + 1;
+    let plain = backup_key(passphrase, &salt)?
+        .open_in_place(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+            ring::aead::Aad::from(&text.as_bytes()[..head_len]),
+            &mut ct,
+        )
+        .map_err(|_| "wrong passphrase, or the backup was changed".to_string())?;
+    let plain = std::str::from_utf8(plain).map_err(|_| bad())?;
+    let at = plain.find("-----BEGIN PRIVATE KEY-----").ok_or_else(bad)?;
+    let root = Pem {
+        cert: plain[..at].to_string(),
+        key: plain[at..].to_string(),
+    };
+    if fingerprint(&root.cert)? != fp {
+        return Err(bad());
+    }
+    // The key must be the certificate's.
+    KeyPair::from_pem(&root.key).map_err(err)?;
+    Issuer::from_ca_cert_pem(&root.cert, KeyPair::from_pem(&root.key).map_err(err)?)
+        .map_err(err)?;
+    Ok((cluster.to_string(), root))
 }
 
 #[cfg(test)]
@@ -350,6 +687,142 @@ mod tests {
         // A key that doesn't match its certificate is refused.
         let other = issue(&ca, &admin(), &[], &[], LEAF_DAYS).unwrap();
         assert!(server_config(&leaf.cert, &other.key, &root.cert).is_err());
+    }
+
+    /// Runs a TLS handshake between the two in memory.
+    fn handshake(
+        client: rustls::ClientConfig,
+        server: rustls::ServerConfig,
+        ip: &str,
+    ) -> Result<(), rustls::Error> {
+        let name = rustls::pki_types::ServerName::IpAddress(ip.parse::<IpAddr>().unwrap().into());
+        let mut c = rustls::ClientConnection::new(Arc::new(client), name)?;
+        let mut s = rustls::ServerConnection::new(Arc::new(server))?;
+        for _ in 0..10 {
+            let mut buf = Vec::new();
+            while c.wants_write() {
+                c.write_tls(&mut buf).unwrap();
+            }
+            let mut r = &buf[..];
+            while !r.is_empty() {
+                s.read_tls(&mut r).unwrap();
+            }
+            s.process_new_packets()?;
+            let mut buf = Vec::new();
+            while s.wants_write() {
+                s.write_tls(&mut buf).unwrap();
+            }
+            let mut r = &buf[..];
+            while !r.is_empty() {
+                c.read_tls(&mut r).unwrap();
+            }
+            c.process_new_packets()?;
+            if !c.is_handshaking() && !s.is_handshaking() {
+                return Ok(());
+            }
+        }
+        panic!("handshake didn't finish");
+    }
+
+    #[test]
+    fn requests_are_signed_with_the_signers_identity() {
+        let root = new_root("42").unwrap();
+        let ca = new_intermediate(&root, "42").unwrap();
+        let (key, csr) = new_request().unwrap();
+        let who = Identity {
+            cluster: "42".into(),
+            role: Role::Node,
+            id: "3".into(),
+        };
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        let chain = sign_request(&ca, &csr, &who, &[ip], &[], LEAF_DAYS).unwrap();
+        let der = certs(&chain).unwrap();
+        assert_eq!(der.len(), 2, "leaf then intermediate");
+        assert_eq!(identity_of(&der[0]), Some(who));
+        assert_eq!(names_of(&chain).unwrap(), (vec![ip], vec![]));
+        // The key the requester kept fits the certificate.
+        client_config(&chain, &key, &root.cert).unwrap();
+        // A request whose signature doesn't hold is refused.
+        let mut bad = csr.lines().map(String::from).collect::<Vec<_>>();
+        let i = bad.len() / 2;
+        bad[i] = bad[i].chars().rev().collect();
+        assert!(sign_request(&ca, &bad.join("\n"), &admin(), &[], &[], 1).is_err());
+        // The fingerprint is of the DER, hex, stable.
+        let f = fingerprint(&root.cert).unwrap();
+        assert_eq!(f.len(), 64);
+        assert_eq!(f, fingerprint(&root.cert).unwrap());
+        assert_ne!(f, fingerprint(&ca.cert).unwrap());
+    }
+
+    /// A joining host trusts the API only if the root it pins is in the
+    /// server's chain, and the API lets it in without a certificate.
+    #[test]
+    fn a_pinned_client_trusts_only_its_root() {
+        let root = new_root("42").unwrap();
+        let ca = new_intermediate(&root, "42").unwrap();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let meta = Identity {
+            cluster: "42".into(),
+            role: Role::Meta,
+            id: "1".into(),
+        };
+        let api = issue(&ca, &meta, &[ip], &[], LEAF_DAYS).unwrap();
+        let with_root = format!("{}{}", api.cert, root.cert);
+        let server = || api_server_config(&with_root, &api.key, &root.cert).unwrap();
+        let pin = fingerprint(&root.cert).unwrap();
+        handshake(pinned_client_config(&pin).unwrap(), server(), "127.0.0.1").unwrap();
+        // Another cluster's root: refused.
+        let other = new_root("43").unwrap();
+        let wrong = fingerprint(&other.cert).unwrap();
+        assert!(handshake(pinned_client_config(&wrong).unwrap(), server(), "127.0.0.1").is_err());
+        // A server that doesn't send the root can't be pinned.
+        let bare = api_server_config(&api.cert, &api.key, &root.cert).unwrap();
+        assert!(handshake(pinned_client_config(&pin).unwrap(), bare, "127.0.0.1").is_err());
+        // The right root but the wrong address: refused.
+        assert!(handshake(pinned_client_config(&pin).unwrap(), server(), "127.0.0.2").is_err());
+        // An impostor that copies the root into its own chain, signed by
+        // another CA: refused.
+        let fake_ca = new_intermediate(&other, "42").unwrap();
+        let fake = issue(&fake_ca, &meta, &[ip], &[], LEAF_DAYS).unwrap();
+        let fake_chain = format!("{}{}", fake.cert, root.cert);
+        let impostor = api_server_config(&fake_chain, &fake.key, &other.cert).unwrap();
+        assert!(handshake(pinned_client_config(&pin).unwrap(), impostor, "127.0.0.1").is_err());
+        // Clients with certificates still work, as before.
+        let adm = issue(&ca, &admin(), &[], &[], LEAF_DAYS).unwrap();
+        handshake(
+            client_config(&adm.cert, &adm.key, &root.cert).unwrap(),
+            server(),
+            "127.0.0.1",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn root_backups_open_only_with_their_passphrase() {
+        let root = new_root("42").unwrap();
+        let b = root_backup(&root, "42", "correct horse battery").unwrap();
+        assert!(b.starts_with("hyperstor root backup v1\ncluster 42\n"));
+        assert!(!b.contains("PRIVATE KEY"), "the key is encrypted");
+        let (cluster, back) = root_restore(&b, "correct horse battery").unwrap();
+        assert_eq!(
+            (cluster.as_str(), back.cert.as_str(), back.key.as_str()),
+            ("42", root.cert.as_str(), root.key.as_str())
+        );
+        assert!(root_restore(&b, "correct horse batter").is_err());
+        // The clear header is authenticated: a changed cluster fails.
+        assert!(
+            root_restore(
+                &b.replace("cluster 42", "cluster 43"),
+                "correct horse battery"
+            )
+            .is_err()
+        );
+        assert!(root_restore("nonsense", "x").is_err());
+        // Each backup is salted afresh.
+        assert_ne!(
+            b,
+            root_backup(&root, "42", "correct horse battery").unwrap()
+        );
     }
 
     #[test]

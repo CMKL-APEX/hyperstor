@@ -174,6 +174,21 @@ impl ClusterMap {
         true
     }
 
+    /// Raises `.meta`'s copies as hosts join, to min(3, nodes), with `min`
+    /// 2 from three copies (as [`Self::ensure_meta_pool`] sizes it). Never
+    /// lowers it. Whether it changed; the caller recomputes.
+    pub fn grow_meta_pool(&mut self) -> bool {
+        let want = self.nodes.len().clamp(1, 3) as u8;
+        match self.pools.get_mut(&META_POOL) {
+            Some(p) if p.size < want => {
+                p.size = want;
+                p.min_size = if want >= 3 { 2 } else { 1 };
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn add_pool(&mut self, pool: PoolInfo) {
         assert!(pool.pg_count.is_power_of_two());
         self.pools.insert(pool.id, pool);
@@ -277,6 +292,10 @@ impl ClusterMap {
                     // acting set is always where placement wants it, and a
                     // new member starts empty.
                     Some(_) if p.kind == PoolKind::Cache => up.clone(),
+                    // Never had a copy (the pool was made before any host
+                    // joined): nothing to keep, so start where placement
+                    // wants it, as a new PG does.
+                    Some(o) if o.acting.iter().all(|d| *d == NO_DEVICE) => up.clone(),
                     Some(o) => {
                         let kept: Vec<u32> = match p.kind {
                             PoolKind::Replicated | PoolKind::Cache => {
@@ -659,6 +678,34 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
     map.ensure_meta_pool();
     map.recompute();
     Ok(map)
+}
+
+#[cfg(test)]
+mod join_tests {
+    /// A pool made before any host joined starts serving once hosts do:
+    /// its PGs had no copy anywhere, so nothing is waited for.
+    #[test]
+    fn pools_made_before_any_host_place_their_pgs_when_hosts_join() {
+        let mut m =
+            super::parse_cluster("cluster 1\npool 1 v replicated size 2 min 1 pgs 8\n").unwrap();
+        assert!(m.pgs.values().all(|pg| pg.acting.is_empty()));
+        for n in 0..2u32 {
+            let a: std::net::SocketAddr = format!("127.0.0.1:{}", 9000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        m.recompute();
+        for (k, pg) in &m.pgs {
+            assert!(!pg.acting.is_empty(), "{k:?}");
+            assert_eq!(pg.acting, pg.up, "{k:?}: nothing to backfill");
+        }
+        // A PG whose copies are all down still waits for them.
+        let before = m.pgs[&(1, 0)].acting.clone();
+        for n in m.nodes.values_mut() {
+            n.up = false;
+        }
+        m.recompute();
+        assert_eq!(m.pgs[&(1, 0)].acting, before);
+    }
 }
 
 #[cfg(test)]

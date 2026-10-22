@@ -27,6 +27,8 @@ pub enum Table {
     Map = 1,
     /// Each member's own Raft bookkeeping (not replicated).
     Local = 2,
+    /// Join tokens, by their secret's SHA-256 (`tokens.rs`, D81).
+    Tokens = 3,
 }
 
 impl Serialize for Table {
@@ -52,7 +54,7 @@ pub enum Origin {
 
 impl MapSchema {
     fn table_from_id_(id: u16) -> Option<Table> {
-        [Table::Map, Table::Local]
+        [Table::Map, Table::Local, Table::Tokens]
             .into_iter()
             .find(|t| *t as u16 == id)
     }
@@ -61,7 +63,7 @@ impl MapSchema {
 impl rs::Schema for MapSchema {
     type Table = Table;
     type Origin = Origin;
-    const TABLES: &'static [Table] = &[Table::Map, Table::Local];
+    const TABLES: &'static [Table] = &[Table::Map, Table::Local, Table::Tokens];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
     const SNAPSHOT_MAGIC: &'static [u8; 8] = b"HSMAP01\n";
@@ -74,6 +76,7 @@ impl rs::Schema for MapSchema {
         match t {
             Table::Map => "map",
             Table::Local => "local",
+            Table::Tokens => "tokens",
         }
     }
     fn table_id(t: Table) -> u16 {
@@ -141,6 +144,15 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         blocklist: map.blocklist.clone(),
     }
     .encode()
+}
+
+/// Whether the store holds a map: the group has committed its first.
+pub fn has_map(db: &Db) -> Result<bool, String> {
+    let txn = db.begin_read().map_err(|e| e.to_string())?;
+    let Ok(t) = txn.open_table(definition::<MapSchema>(Table::Map)) else {
+        return Ok(false);
+    };
+    Ok(t.get(HEAD).map_err(|e| e.to_string())?.is_some())
 }
 
 /// The published map the store holds, if any.

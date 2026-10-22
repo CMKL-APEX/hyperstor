@@ -6,23 +6,38 @@
 protobuf over HTTP/1.1 or HTTP/2), gRPC and gRPC-Web, so any of these
 work: `curl`, `grpcurl` (with the proto file), generated clients.
 
-The definition is
-[`crates/hyperstor-api/proto/hyperstor/v1/cluster.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/cluster.proto).
+The definitions are
+[`cluster.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/cluster.proto)
+(`ClusterService`) and
+[`admin.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/admin.proto)
+(`TokenService`, `CaService`, `NodeService`, `OperationService`), in
+`crates/hyperstor-api/proto/hyperstor/v1/`.
 
 ## Security
 
-With `--api-tls`, the API speaks only mutual TLS. Every client presents
-a certificate issued by the cluster's CA, whose identity
+With `--api-tls`, the API speaks only TLS. Every call but `Join` needs
+a client certificate issued by the cluster's CA, whose identity
 (`hyperstor://<cluster>/<role>/<id>`) decides what it may do:
 
 | Role | May |
 |---|---|
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
-| `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`) |
-| `host` | Nothing |
+| `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
+| `host` | Renew its own certificate; nothing else |
 
 A certificate of another cluster is refused. `hyperstor-install` makes
 the certificates in `/etc/hyperstor/pki`.
+
+**Joining.** `Join` is the only call without a client certificate: a
+single-use token from `CreateToken` authorizes it. The joining host
+pins the cluster's root by the fingerprint the token carries before it
+sends anything, and sends a certificate request for a key it keeps;
+the token decides the identity it gets. Tokens are kept in the map
+service's replicated store, only their SHA-256, so they survive restarts
+and work through any member; the leader makes, uses and revokes them
+(another member refuses with `not_leader` and changes nothing). Before
+the map service has its first map, only its first member makes tokens,
+and only `meta` ones, for the other members to join.
 
 **Local socket.** With `--api-socket`, the API is also served on a Unix
 socket (`/run/hyperstor-meta/api.sock` when installed). There the
@@ -33,7 +48,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -50,7 +65,7 @@ up to 1000; more are refused with `resource_exhausted`.
 
 ## Calls
 
-Each call is a `POST` to `/hyperstor.v1.ClusterService/<Method>` with a
+Each call is a `POST` to `/hyperstor.v1.<Service>/<Method>` with a
 JSON body. Field names are as in the proto file; fields with zero
 values are left out of answers.
 
@@ -63,6 +78,20 @@ values are left out of answers.
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
 
+`TokenService`, `CaService`, `NodeService` and `OperationService`:
+
+| Method | Request | Answer |
+|---|---|---|
+| `CreateToken` | `{"role": "node"}` (or `"meta"`), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
+| `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by` |
+| `RevokeToken` | `{"id": "…"}` | `{}` |
+| `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips` | `cluster_id`, `certificate` (chain), `root`; a storage host: `node`, `map_addresses`; a member: `intermediate`, `intermediate_key`, `cluster_file` |
+| `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
+| `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
+| `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
+| `ListOperations` | `{}` | `operations`, newest first (the last 100, kept in memory) |
+| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain brings the node's devices back in |
+
 ```sh
 cd /etc/hyperstor/pki
 curl -s --cacert root.crt --cert admin.crt --key admin.key \
@@ -74,22 +103,26 @@ curl -s --cacert root.crt --cert admin.crt --key admin.key \
 {"cluster_id":"3","epoch":"2","health":"HEALTH_OK","nodes":[...],"pools":[...],"map_address":"127.0.0.1:8849"}
 ```
 
-Errors are Connect errors, with an HTTP status and a JSON body:
+## Errors
+
+Errors are Connect errors, with an HTTP status and a JSON body. Each
+carries a `hyperstor.v1.ErrorInfo` detail whose `reason` is a stable
+word for scripts (the message is for people, and may change):
 
 ```json
-{"code":"not_found","message":"no device 77"}
+{"code":"not_found","message":"no device 77","details":[{"type":"hyperstor.v1.ErrorInfo","value":"…"}]}
 ```
 
-| Code | When |
-|---|---|
-| `not_found` | No such device, pool or volume |
-| `already_exists` | `CreateVolume` with the id of a volume that exists |
-| `failed_precondition` | `DeleteVolume` of a volume a client has attached |
-| `invalid_argument` | A size that isn't a positive multiple of 4096, a malformed id |
-| `unauthenticated` | No client certificate with a hyperstor identity |
-| `permission_denied` | The certificate's cluster or role doesn't allow the call |
-| `resource_exhausted` | The caller is over its rate limit |
-| `unavailable` | The map service is stopping |
+| Code | Reason | When |
+|---|---|---|
+| `not_found` | `not_found` | No such device, pool, volume, node, token or operation |
+| `already_exists` | `already_exists` | `CreateVolume` with the id of a volume that exists |
+| `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
+| `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
+| `permission_denied` | `permission_denied`, `wrong_cluster`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call; the token was used, has expired or was revoked |
+| `failed_precondition` | `attached`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`); this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
+| `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
+| `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 
 ## What the answers mean
 

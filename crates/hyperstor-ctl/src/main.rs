@@ -1,5 +1,6 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in
-//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force]`
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
+//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
+//!               [--force] [--role R] [--ttl SECS] [--dry-run]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -18,9 +19,20 @@
 //!   and `delete-volume --id ID [--force]` (decisions.md D77, D80);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
-//!   reads it back and compares.
+//!   reads it back and compares;
+//! - `token create --role node|meta [--ttl SECS]`, `token list`, `token
+//!   revoke --id ID`: join tokens (§23.4.2); `create` prints the token
+//!   alone on standard output, and how to join with it on standard error;
+//! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
+//!   node out and follows its PGs as an operation; `--dry-run` lists what
+//!   would move and changes nothing;
+//! - `op list`, `op get --id ID`, `op watch --id ID [--wait SECS]`, `op
+//!   cancel --id ID`: long operations (a cancelled drain brings the
+//!   devices back in).
 //!
-//! `--json` prints the API's answer as JSON, the form `curl` gets.
+//! `--json` (or `-o json`) prints the API's answer as JSON, the form `curl`
+//! gets; `-o yaml` as YAML. A refused call prints the API's message and
+//! its stable reason, as `(reason)`.
 //!
 //! The API is `--api`, else `$HYPERSTOR_API`, else the `api` line of
 //! `/etc/hyperstor/hyperstorctl.conf` (written by `hyperstor-install`),
@@ -33,17 +45,20 @@
 //! (break-glass, §23.6).
 //!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
-//! error, a refused request or a failed test, 2 usage, 3 the API
-//! unreachable.
+//! error, a failed request or test, 2 usage, 3 the API unreachable (or the
+//! member asked isn't the leader), 4 not allowed: no certificate, or one
+//! whose role may not do this.
 
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
-use hyperstor_api::ClusterServiceClient;
 use hyperstor_api::proto::hyperstor::v1 as pb;
+use hyperstor_api::{
+    ClusterServiceClient, NodeServiceClient, OperationServiceClient, TokenServiceClient,
+};
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -85,6 +100,10 @@ fn random_u64() -> u64 {
 
 struct Args {
     json: bool,
+    yaml: bool,
+    role: Option<String>,
+    ttl: u32,
+    dry_run: bool,
     pool: Option<u32>,
     mib: u64,
     wait: Option<u32>,
@@ -115,6 +134,10 @@ fn main() {
     let mut socket = None;
     let mut a = Args {
         json: false,
+        yaml: false,
+        role: None,
+        ttl: 0,
+        dry_run: false,
         pool: None,
         mib: 16,
         wait: None,
@@ -135,6 +158,14 @@ fn main() {
             "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--socket" => socket = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--json" => a.json = true,
+            "-o" => match it.next().map(String::as_str) {
+                Some("json") => a.json = true,
+                Some("yaml") => (a.json, a.yaml) = (true, true),
+                _ => usage(),
+            },
+            "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--ttl" => a.ttl = num(it.next()),
+            "--dry-run" => a.dry_run = true,
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
@@ -151,23 +182,48 @@ fn main() {
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--force" => a.force = true,
             "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in"
+            | "delete-volume" | "io-test" | "out" | "in" | "drain"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
+            }
+            // Two words: the group, then what to do.
+            "token" | "op" if cmd.is_none() => {
+                let sub = it.next().map(String::as_str);
+                let ok = match arg.as_str() {
+                    "token" => matches!(sub, Some("create" | "list" | "revoke")),
+                    _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
+                };
+                if !ok {
+                    usage();
+                }
+                cmd = Some(format!("{arg} {}", sub.unwrap_or_default()));
             }
             _ => usage(),
         }
     }
     let Some(cmd) = cmd else { usage() };
-    if (cmd == "out" || cmd == "in") == (a.device.is_none() && a.node.is_none()) {
-        // out and in need a target; nothing else takes one.
+    if (cmd == "out" || cmd == "in" || cmd == "drain") == (a.device.is_none() && a.node.is_none())
+        || (cmd == "drain" && a.node.is_none())
+    {
+        // out, in and drain need a target; nothing else takes one.
+        usage();
+    }
+    let needs_id = matches!(
+        cmd.as_str(),
+        "token revoke" | "op get" | "op watch" | "op cancel"
+    );
+    if (cmd == "token create") != a.role.is_some()
+        || (a.dry_run && cmd != "drain")
+        || (a.ttl != 0 && cmd != "token create")
+        || (needs_id && a.id.is_none())
+    {
         usage();
     }
     // create-volume needs a size; delete-volume an id, which only these two take.
     if (cmd == "create-volume") != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
-        || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume")
+        || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
         || (a.force && cmd != "delete-volume")
     {
         usage();
@@ -221,7 +277,7 @@ fn main() {
                     connectrpc::client::Http2Connection::connect_unix(path.clone(), uri.clone())
                         .await?
                         .shared(16);
-                manage(ClusterServiceClient::new(conn, config(uri)), &cmd, &a).await
+                manage(conn, config(uri), &cmd, &a).await
             }
             None => {
                 let scheme = if tls.is_some() { "https" } else { "http" };
@@ -232,7 +288,7 @@ fn main() {
                     Some(c) => HttpClient::with_tls(c),
                     None => HttpClient::plaintext(),
                 };
-                manage(ClusterServiceClient::new(http, config(uri)), &cmd, &a).await
+                manage(http, config(uri), &cmd, &a).await
             }
         }
     });
@@ -243,13 +299,8 @@ fn main() {
             hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib).await })
         }
         Err(e) => {
-            let unreachable = e.code == connectrpc::ErrorCode::Unavailable
-                || e.code == connectrpc::ErrorCode::DeadlineExceeded;
-            eprintln!(
-                "hyperstorctl: {api}: {}",
-                e.message.as_deref().unwrap_or("request failed")
-            );
-            if unreachable { 3 } else { 1 }
+            eprintln!("hyperstorctl: {api}: {}", error_text(&e));
+            exit_code(&e)
         }
     };
     std::process::exit(code);
@@ -263,8 +314,39 @@ enum Next {
     },
 }
 
+/// The API's message and, when it gave one, its reason.
+fn error_text(e: &connectrpc::ConnectError) -> String {
+    let msg = e.message.as_deref().unwrap_or("request failed");
+    match hyperstor_ctl::reason_of(e) {
+        Some(r) => format!("{msg} ({r})"),
+        None => msg.to_string(),
+    }
+}
+
+/// The exit status for a failed call (see the top of this file).
+fn exit_code(e: &connectrpc::ConnectError) -> i32 {
+    use connectrpc::ErrorCode as C;
+    match e.code {
+        C::Unavailable | C::DeadlineExceeded => 3,
+        C::PermissionDenied | C::Unauthenticated => 4,
+        _ => 1,
+    }
+}
+
+/// Prints `v` as JSON or YAML when asked, else `text`.
+fn show<T: serde::Serialize>(a: &Args, v: &T, text: impl FnOnce() -> String) {
+    if a.yaml {
+        print!("{}", to_yaml(&serde_json::to_value(v).expect("json")));
+    } else if a.json {
+        println!("{}", serde_json::to_string(v).expect("json"));
+    } else {
+        print!("{}", text());
+    }
+}
+
 async fn manage<T>(
-    client: ClusterServiceClient<T>,
+    transport: T,
+    config: ClientConfig,
     cmd: &str,
     a: &Args,
 ) -> Result<Next, connectrpc::ConnectError>
@@ -272,6 +354,20 @@ where
     T: connectrpc::client::ClientTransport,
     <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
 {
+    match cmd.split_once(' ').map_or(cmd, |(g, _)| g) {
+        "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
+        "op" | "drain" => {
+            return operations(
+                NodeServiceClient::new(transport.clone(), config.clone()),
+                OperationServiceClient::new(transport, config),
+                cmd,
+                a,
+            )
+            .await;
+        }
+        _ => {}
+    }
+    let client = ClusterServiceClient::new(transport, config);
     let status = || async {
         client
             .get_status_with_options(pb::GetStatusRequest::default(), CallOptions::default())
@@ -299,22 +395,18 @@ where
                     _ => tokio::time::sleep(Duration::from_millis(500)).await,
                 }
             };
-            if a.json {
-                println!("{}", serde_json::to_string(&s).expect("json"));
-            } else {
-                print!("{}", status_text(&s));
-            }
+            show(a, &s, || status_text(&s));
             Next::Exit(i32::from(!is_ok(&s)))
         }
         "nodes" | "pools" => {
             let s = status().await?;
-            if a.json {
-                println!("{}", serde_json::to_string(&s).expect("json"));
-            } else if cmd == "nodes" {
-                print!("{}", nodes_text(&s));
-            } else {
-                print!("{}", pools_text(&s));
-            }
+            show(a, &s, || {
+                if cmd == "nodes" {
+                    nodes_text(&s)
+                } else {
+                    pools_text(&s)
+                }
+            });
             Next::Exit(0)
         }
         "pgs" => {
@@ -330,11 +422,7 @@ where
                 })
                 .await?
                 .into_owned();
-            if a.json {
-                println!("{}", serde_json::to_string(&r).expect("json"));
-            } else {
-                print!("{}", pgs_text(&r));
-            }
+            show(a, &r, || pgs_text(&r));
             Next::Exit(0)
         }
         "volumes" => {
@@ -350,11 +438,7 @@ where
                 })
                 .await?
                 .into_owned();
-            if a.json {
-                println!("{}", serde_json::to_string(&r).expect("json"));
-            } else {
-                print!("{}", volumes_text(&r));
-            }
+            show(a, &r, || volumes_text(&r));
             Next::Exit(0)
         }
         "create-volume" => {
@@ -436,6 +520,9 @@ where
                 }
                 (None, None) => unreachable!("checked with the arguments"),
             };
+            // The working map's epoch after the last change: --wait first
+            // waits for the published map to reach it (it is fenced first).
+            let mut changed_epoch = 0;
             for device in devices {
                 let r = client
                     .set_device_in(pb::SetDeviceInRequest {
@@ -445,10 +532,13 @@ where
                     })
                     .await;
                 match r {
-                    Ok(r) => println!(
-                        "device {device} {cmd} (map epoch {}); hyperstorctl status shows the PGs moving",
-                        r.into_owned().map_epoch
-                    ),
+                    Ok(r) => {
+                        let epoch = r.into_owned().map_epoch;
+                        changed_epoch = changed_epoch.max(epoch);
+                        println!(
+                            "device {device} {cmd} (map epoch {epoch}); hyperstorctl status shows the PGs moving"
+                        )
+                    }
                     Err(e) if e.code == connectrpc::ErrorCode::NotFound => {
                         eprintln!(
                             "hyperstorctl: {}",
@@ -464,9 +554,16 @@ where
             if let Some(secs) = a.wait {
                 let deadline = std::time::Instant::now() + Duration::from_secs(secs.into());
                 loop {
-                    // Let the change be published (it is fenced first).
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     let s = status().await?;
+                    if s.epoch < changed_epoch {
+                        // Not published yet: nothing has started moving.
+                        if std::time::Instant::now() >= deadline {
+                            eprintln!("hyperstorctl: map epoch {changed_epoch} not published yet");
+                            return Ok(Next::Exit(1));
+                        }
+                        continue;
+                    }
                     let busy: u32 = s
                         .pools
                         .iter()
@@ -496,6 +593,181 @@ where
             Next::IoTest { map, pool }
         }
     })
+}
+
+/// `token create|list|revoke`.
+async fn tokens<T>(
+    client: TokenServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    Ok(match cmd {
+        "token create" => {
+            let role = a.role.clone().expect("checked with the arguments");
+            let r = client
+                .create_token(pb::CreateTokenRequest {
+                    role: role.clone(),
+                    ttl_seconds: a.ttl,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || format!("{}\n", r.token));
+            if !a.json {
+                let info = r.info.as_option().cloned().unwrap_or_default();
+                let how = if role == "meta" {
+                    "--role meta --members LIST --member-id N"
+                } else {
+                    "--role storage --address IP"
+                };
+                eprintln!(
+                    "Token {} for role {role}, single-use, expires {} (UTC). Put it in a file\n\
+                     readable by root only on the new host, then run there:\n  \
+                     sudo hyperstor-install install --join {} --token-file FILE {how}",
+                    info.id,
+                    utc(info.expires_unix),
+                    r.api_address
+                );
+            }
+            Next::Exit(0)
+        }
+        "token list" => {
+            let r = client
+                .list_tokens(pb::ListTokensRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || tokens_text(&r));
+            Next::Exit(0)
+        }
+        _ => {
+            let id = a.id.clone().expect("checked with the arguments");
+            client
+                .revoke_token(pb::RevokeTokenRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("token {id} revoked");
+            Next::Exit(0)
+        }
+    })
+}
+
+/// `drain` and `op list|get|watch|cancel`.
+async fn operations<T>(
+    nodes: NodeServiceClient<T>,
+    ops: OperationServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let get = |id: String| {
+        let ops = &ops;
+        async move {
+            ops.get_operation(pb::GetOperationRequest {
+                id,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+        }
+    };
+    let id = match cmd {
+        "drain" => {
+            let node = a.node.expect("checked with the arguments");
+            let r = nodes
+                .drain_node(pb::DrainNodeRequest {
+                    node,
+                    dry_run: a.dry_run,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || {
+                let mut t = moves_text(&r.moves);
+                match r.operation.as_option() {
+                    Some(op) => t.push_str(&format!(
+                        "node {node} draining: operation {} (hyperstorctl op watch --id {})\n",
+                        op.id, op.id
+                    )),
+                    None => t.push_str(&format!(
+                        "dry run: {} PG(s) would move off node {node}; nothing changed\n",
+                        r.moves.len()
+                    )),
+                }
+                t
+            });
+            match (r.operation.as_option(), a.wait) {
+                (Some(op), Some(_)) => op.id.clone(),
+                _ => return Ok(Next::Exit(0)),
+            }
+        }
+        "op list" => {
+            let r = ops
+                .list_operations(pb::ListOperationsRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || ops_text(&r.operations));
+            return Ok(Next::Exit(0));
+        }
+        "op get" => {
+            let op = get(a.id.clone().expect("checked")).await?;
+            show(a, &op, || ops_text(std::slice::from_ref(&op)));
+            return Ok(Next::Exit(op_exit(&op)));
+        }
+        "op cancel" => {
+            let op = ops
+                .cancel_operation(pb::CancelOperationRequest {
+                    id: a.id.clone().expect("checked"),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &op, || ops_text(std::slice::from_ref(&op)));
+            return Ok(Next::Exit(0));
+        }
+        _ => a.id.clone().expect("checked"),
+    };
+    // op watch, or drain --wait: follow until it finishes.
+    let deadline = a
+        .wait
+        .map(|s| Instant::now() + Duration::from_secs(s.into()));
+    let mut last = String::new();
+    loop {
+        let op = get(id.clone()).await?;
+        let line = op_line(&op);
+        if line != last && !a.json {
+            println!("{line}");
+            last = line;
+        }
+        if op.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING) {
+            if a.json {
+                show(a, &op, String::new);
+            }
+            return Ok(Next::Exit(op_exit(&op)));
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            eprintln!("hyperstorctl: operation {id} still running");
+            return Ok(Next::Exit(1));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 0 for an operation that finished well or still runs, else 1.
+fn op_exit(op: &pb::Operation) -> i32 {
+    use pb::OperationState as S;
+    match op.state.as_known() {
+        Some(S::OPERATION_STATE_DONE | S::OPERATION_STATE_RUNNING) => 0,
+        _ => 1,
+    }
 }
 
 /// Writes `mib` MiB to a fresh volume in 1 MiB requests, reads it back

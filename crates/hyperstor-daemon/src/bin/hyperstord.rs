@@ -61,7 +61,10 @@ fn main() {
         let (addr, rest) = w[1].split_once('=').unwrap_or_else(|| usage());
         let (path, gib) = rest.rsplit_once(':').unwrap_or_else(|| usage());
         let gib: u64 = gib.parse().unwrap_or_else(|_| usage());
-        let listener = std::net::TcpListener::bind(addr).unwrap_or_else(|e| {
+        // Served by a reactor: wait a moment if a previous instance's
+        // still holds it (hyperstor_reactor::net::bind_retrying).
+        let addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|_| usage());
+        let listener = hyperstor_reactor::net::bind_retrying(addr).unwrap_or_else(|e| {
             eprintln!("bind {addr}: {e}");
             std::process::exit(1)
         });
