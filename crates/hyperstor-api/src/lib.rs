@@ -15,7 +15,7 @@ pub use proto::hyperstor::v1::*;
 /// The header in which `hyperstor-mgmt` names the person a call is for
 /// (`user:NAME`). The map service believes it only from mgmt's
 /// certificate, and then audits and rate-limits the call as
-/// `<mgmt's identity> for user:NAME` (implementation-notes.md I134).
+/// `<mgmt's identity> for user:NAME` (implementation-notes.md I135).
 pub const ON_BEHALF_HEADER: &str = "x-hyperstor-on-behalf-of";
 
 /// Whether `p` is a person as mgmt names them: `user:` and a user name

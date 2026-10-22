@@ -1782,8 +1782,11 @@ dependencies = [
 name = "hyperstor-test"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "glidex-authd",
  "hyperstor-pki",
+ "jsonwebtoken",
+ "rcgen",
  "serde_json",
 ]
 

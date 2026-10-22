@@ -179,7 +179,7 @@ fn only_mgmt_reaches_its_rows() {
     assert!(!call("mgmt", "GetRow", r#"{"key":"user/1"}"#).contains("found"));
 }
 
-/// Only mgmt names the person a call is for (I134); the map service then
+/// Only mgmt names the person a call is for (I135); the map service then
 /// audits it as mgmt for that person. Anyone else naming one is refused,
 /// and so is mgmt naming something that isn't a person.
 #[test]

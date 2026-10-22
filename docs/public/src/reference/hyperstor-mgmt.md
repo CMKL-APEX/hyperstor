@@ -5,16 +5,17 @@ cluster API on their behalf. See
 [Managing a cluster](../admin-guide/managing.md#dashboard).
 
 ```text
-usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]
+usage: hyperstor-mgmt --listen ADDR --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--hosts NAME,...] [--ui DIR]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--listen ADDR` | required | `IP:PORT` to serve on. Beyond loopback it needs `--authd` and `--web-tls` |
+| `--listen ADDR` | required | `IP:PORT` to serve on. Beyond loopback it needs `--web-tls`, and `--authd` or `--oidc` |
 | `--api ADDR[,ADDR...]` | required | The [cluster API](cluster-api.md), `IP:PORT`: every map service member, separated by commas. A call a member can't serve (it isn't the leader) goes to the next |
 | `--tls DIR` | required | Its identity: `DIR/mgmt.crt`, `DIR/mgmt.key` and `DIR/root.crt` |
 | `--metrics ADDR,ADDR...` | none | The storage nodes' metrics addresses (`hyperstord --admin`) |
 | `--authd SOCKET` | none | People log in with their password, checked by [`hyperstor-authd`](hyperstor-authd.md) on `SOCKET`. Without it, the dashboard is read-only and on loopback only |
+| `--oidc FILE` | none | People log in with an identity provider (OIDC), configured in `FILE`; see [Identity providers](#identity-providers) |
 | `--web-tls DIR` | none | Serve HTTPS with `DIR/web.crt` (the chain) and `DIR/web.key` |
 | `--hosts NAME,...` | none | Names people reach it by, allowed in the `Host` header besides `localhost`, `127.0.0.1` and `[::1]` |
 | `--ui DIR` | the built-in dashboard | Serve the web UI's files from `DIR` |
@@ -51,14 +52,44 @@ Sessions last 12 hours, or 30 minutes idle. They are kept, with
 accounts and tokens, in the map service's store, so they outlive a
 restart of `hyperstor-mgmt`.
 
+## Identity providers
+
+With `--oidc FILE`, people can log in with an OIDC identity provider
+(Authorization Code flow with PKCE). `FILE` is JSON:
+
+```json
+{
+  "issuer": "https://idp.example.com",
+  "client_id": "hyperstor",
+  "client_secret_file": "/etc/hyperstor/oidc-secret"
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `issuer`, `client_id` | required | The provider, and this client as registered with it |
+| `client_secret_file` | required | A file holding the client's secret (mode 0640, group `hyperstor`), read at each use |
+| `scopes` | `["openid", "email", "profile"]` | Asked for; `openid` is required |
+| `allowed_domains` | any | Email domains that may log in |
+| `required_groups`, `groups_claim` | none, `groups` | Groups (in the ID token's `groups_claim`) of which a person must be in one |
+| `redirect_uri` | `<scheme>://<host>/auth/oidc/callback` | Where the provider sends the browser back; register it with the provider |
+
+A person is named by the email the provider vouches for
+(`email_verified`), lowercased, and tied to the provider's subject: a
+changed email keeps the account. A first login makes an account with no
+roles, as with passwords; the claim code works here too. The secret
+never goes in `FILE` itself.
+
 ## Paths
 
 | Path | Answers |
 |---|---|
 | `/` | The dashboard (or `--ui`'s `index.html`) |
-| `GET /auth/methods` | `{"pam": true, "claim_open": bool}`; no login needed |
+| `GET /auth/methods` | `{"pam": bool, "oidc": bool, "claim_open": bool}`; no login needed |
 | `POST /auth/login` | `{"user", "password", "claim"?}` → `{"user", "roles", "csrf"}` and the session cookie `hs_session` |
 | `GET /auth/whoami` | `{"user", "roles", "method", "csrf"}` |
+| `POST /auth/oidc/start` | `{"return_to"?, "claim"?, "reauth"?}` → `{"redirect"}`: where to send the browser to log in with the provider (`reauth`: a fresh login, for step-up) |
+| `GET /auth/oidc/callback` | Where the provider sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
 | `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators) |
@@ -69,9 +100,12 @@ restart of `hyperstor-mgmt`.
 | `/health` | `ok` |
 
 Scripts send `Authorization: Bearer hst_…` with an API token instead of
-the cookie. Errors are `{"code", "message"}`: `unauthenticated` (401),
-`reauth_required` (401: log in again), `permission_denied` (403), `csrf`
-(403), `login_failed` (401), `rate_limited` (429).
+the cookie, or use [`hyperstorctl --mgmt`](hyperstorctl.md). Refusals
+are Connect errors, as the cluster API's: `{"code", "message",
+"details"}` with the reason as an `ErrorInfo` detail, and also as
+`"reason"`: `unauthenticated` (401), `reauth_required` (401: log in
+again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
+`login_failed` (401), `rate_limited` (429).
 
 ## Protections
 
@@ -83,10 +117,12 @@ the cookie. Errors are `{"code", "message"}`: `unauthenticated` (401),
   refused.
 - Pages carry a strict Content-Security-Policy and may not be framed.
 - Every login and every change is audited on standard error as a JSON
-  line with the person (`user:NAME`); the map service audits the same
-  calls as `mgmt`.
+  line with the person (`user:NAME`) and how they logged in. mgmt names
+  the person to the map service (`X-Hyperstor-On-Behalf-Of`, believed
+  only from mgmt's certificate), whose audit then reads `…/mgmt/dashboard
+  for user:NAME`; a browser's own such header is dropped.
 
 | Exit status | Meaning |
 |---|---|
-| 1 | The certificates can't be read, or the address can't be bound |
-| 2 | A missing or malformed option, or `--listen` beyond loopback without `--authd` and `--web-tls` |
+| 1 | The certificates, or `--oidc`'s file or its secret, can't be read (or are wrong), or the address can't be bound |
+| 2 | A missing or malformed option, or `--listen` beyond loopback without `--web-tls` and a login method |

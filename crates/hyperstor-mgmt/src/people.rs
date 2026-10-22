@@ -294,6 +294,14 @@ fn check_name(name: &str) -> Result<(), Error> {
     }
 }
 
+/// Which user an identity provider's person is, under
+/// `oidc/<sha256(issuer, subject)>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Link {
+    user: String,
+    issuer: String,
+}
+
 /// A new session: the cookie's value and the CSRF value to send back.
 pub struct NewSession {
     pub id: String,
@@ -363,6 +371,52 @@ impl People {
         }
     }
 
+    /// The user an identity provider's person is (`issuer`, `subject`),
+    /// made on first login with no roles and named by their email, which
+    /// the provider must vouch for. Tied to the subject, not the email: a
+    /// changed email keeps the account (I136).
+    pub async fn oidc_user(
+        &self,
+        issuer: &str,
+        subject: &str,
+        email: Option<&str>,
+        email_verified: bool,
+    ) -> Result<User, Error> {
+        let key = format!(
+            "oidc/{}",
+            sha256_hex(format!("{issuer}\n{subject}").as_bytes())
+        );
+        if let Some(b) = self.rows.get(&key).await? {
+            let link: Link = decode(&b)?;
+            return self.logged_in_user(&link.user).await;
+        }
+        let name = match email {
+            Some(e) if email_verified => e.to_ascii_lowercase(),
+            Some(_) => {
+                return Err(Error::Invalid(
+                    "the identity provider doesn't vouch for this email".into(),
+                ));
+            }
+            None => {
+                return Err(Error::Invalid(
+                    "the identity provider gave no email (scope `email`)".into(),
+                ));
+            }
+        };
+        check_name(&name)?;
+        let link = Link {
+            user: name.clone(),
+            issuer: issuer.to_string(),
+        };
+        match self.rows.put(&key, encode(&link), true).await {
+            Ok(()) | Err(Error::Exists) => {}
+            Err(e) => return Err(e),
+        }
+        // A concurrent first login may have linked first: that one counts.
+        let link: Link = decode(&self.rows.get(&key).await?.ok_or(Error::NotFound)?)?;
+        self.logged_in_user(&link.user).await
+    }
+
     /// Sets `name`'s roles (security administrators, step-up).
     pub async fn set_roles(&self, name: &str, roles: &[String]) -> Result<User, Error> {
         for r in roles {
@@ -388,11 +442,12 @@ impl People {
         if !self.rows.delete(&format!("user/{name}")).await? {
             return Err(Error::NotFound);
         }
-        for prefix in ["sess/", "tok/"] {
+        for prefix in ["sess/", "tok/", "oidc/"] {
             for (k, v) in self.rows.list(prefix).await? {
                 let owner = match prefix {
                     "sess/" => decode::<Session>(&v).map(|s| s.user),
-                    _ => decode::<Token>(&v).map(|t| t.user),
+                    "tok/" => decode::<Token>(&v).map(|t| t.user),
+                    _ => decode::<Link>(&v).map(|l| l.user),
                 };
                 if owner.as_deref() == Ok(name) {
                     self.rows.delete(&k).await?;
@@ -657,6 +712,49 @@ mod tests {
                 let all = format!("{:?}", lock(m));
                 assert!(!all.contains(&s2.id) && !all.contains(&secret));
             }
+        });
+    }
+
+    /// An identity provider's person is their verified email, tied to the
+    /// subject: a changed email keeps the account; an unverified or missing
+    /// email gets none; deleting the user unties them.
+    #[test]
+    fn oidc_people_are_their_subject() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            let iss = "https://idp.example";
+            let u = p
+                .oidc_user(iss, "s1", Some("Ann@Example.com"), true)
+                .await
+                .unwrap();
+            assert_eq!((u.name.as_str(), u.roles.len()), ("ann@example.com", 0));
+            p.set_roles(&u.name, &["viewer".into()]).await.unwrap();
+            let again = p
+                .oidc_user(iss, "s1", Some("ann.new@example.com"), true)
+                .await
+                .unwrap();
+            assert_eq!(again.name, "ann@example.com");
+            assert_eq!(again.roles, ["viewer"]);
+            // Another issuer's s1 is someone else.
+            let other = p.oidc_user("https://other.example", "s1", Some("x@example.com"), true);
+            assert_eq!(other.await.unwrap().name, "x@example.com");
+            assert!(matches!(
+                p.oidc_user(iss, "s2", Some("eve@example.com"), false).await,
+                Err(Error::Invalid(_))
+            ));
+            assert!(matches!(
+                p.oidc_user(iss, "s3", None, true).await,
+                Err(Error::Invalid(_))
+            ));
+            p.delete_user("ann@example.com").await.unwrap();
+            let back = p
+                .oidc_user(iss, "s1", Some("ann.new@example.com"), true)
+                .await
+                .unwrap();
+            assert_eq!(
+                (back.name.as_str(), back.roles.len()),
+                ("ann.new@example.com", 0)
+            );
         });
     }
 

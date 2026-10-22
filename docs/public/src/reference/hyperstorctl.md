@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]
 ```
 
 | Command | Does |
@@ -48,6 +48,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--api ADDR` | see below | `IP:PORT` of the cluster API |
 | `--tls DIR` | see below | Connect over mutual TLS with `DIR/admin.crt`, `DIR/admin.key` and `DIR/root.crt` |
 | `--socket PATH` | see below | Connect to the map service's local socket instead: no certificate needed (break-glass) |
+| `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
+| `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
+| `--mgmt-ca FILE` | the host's CAs | With an `https://` `--mgmt`: also trust the CA certificates in `FILE` |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--pool P` | the first data pool | The pool for `pgs`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
@@ -70,6 +73,20 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|y
 | `--out FILE` | | `map backup`: the file to write (mode 0600; never over an existing file) |
 | `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
+
+**Through hyperstor-mgmt.** With `--mgmt`, `hyperstorctl` is a person,
+not an administrator's certificate: make an API token on the dashboard
+(or `POST /auth/tokens`), keep it in a file only you can read, and your
+roles decide what you may do. What needs a fresh login (deleting,
+rolling back, tokens, revocations, backups) is refused with
+`(reauth_required)`: do it from the dashboard, or with the certificate.
+The map service's audit names you (`… for user:NAME`).
+
+```sh
+export HYPERSTOR_MGMT=http://127.0.0.1:8852
+export HYPERSTOR_TOKEN="$(cat ~/.hyperstor-token)"
+hyperstorctl status
+```
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line
 of `/etc/hyperstor/hyperstorctl.conf` (written by

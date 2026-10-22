@@ -623,9 +623,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Logins with an identity provider (OIDC), and hyperstorctl through the management service"
-spec = ["administration.md §23.9", "D96"]
-status = "planned"
+what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
+spec = ["administration.md §23.9", "D96", "D107"]
+status = "done"
+tests = [
+    "oidc::people_log_in_with_an_identity_provider",
+    "security::only_mgmt_names_a_person",
+    "hyperstor_mgmt::people::tests::oidc_people_are_their_subject",
+    "hyperstor_mgmt::oidc::tests::configuration_is_checked",
+    "hyperstor_mgmt::tests::refusals_are_connect_errors_with_reasons",
+    "hyperstor_mgmt::tests::query_values_are_decoded",
+    "hyperstor_api::tests::persons_are_user_and_a_name",
+]
 
 [[milestone.item]]
 what = "The web UI (React, @glidex/ui-kit), installed as files and served by hyperstor-mgmt --ui"
