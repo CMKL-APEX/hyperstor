@@ -865,6 +865,87 @@ fn log_size_sweep() {
     println!();
 }
 
+/// Paged checkpoints (D105) against the share of chunks written: each
+/// checkpoint writes only the pages changed since the last one began, so
+/// its traffic follows how much of the index changes. A whole-index page
+/// is the checkpoint before D105.
+fn paged_sweep() {
+    println!("### Paged checkpoints against the share of chunks written (memory device)\n");
+    println!(
+        "2 GiB of 4 MiB chunks (a 4 MiB index of dense maps, 128 chunk groups like PGs), aged by one full pass of random 4 KiB overwrites, a 256 MiB log; then batches of 32 random overwrites to the first share of the chunks until three checkpoints finish. Whole: one page, the checkpoint before D105. The last column scales the traffic to a 1 TiB shard.\n"
+    );
+    println!(
+        "| Chunks written | checkpoint | pages | pages written per checkpoint | checkpoint B per write | checkpoint MB/s at 50k writes/s per TiB | open ms |"
+    );
+    println!("|---|---|---|---|---|---|---|");
+    let gib = 2u64;
+    let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
+    let log_mib = 256u64;
+    for share in [100u64, 10, 1] {
+        for (label, page) in [("whole", usize::MAX), ("paged", 128 << 10)] {
+            let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(((gib + 1) << 30) + (log_mib << 20)));
+            format(
+                &dev,
+                &DeviceConfig {
+                    device_id: 1,
+                    cluster_id: 1,
+                    shards: 1,
+                    log_blocks: Some((log_mib << 20) / BLOCK as u64),
+                },
+            )
+            .unwrap();
+            let mut sh = open(&dev).unwrap().1.pop().unwrap();
+            sh.set_defer_max(0);
+            sh.set_checkpoint_page(page);
+            let mut rng = SmallRng::seed_from_u64(5);
+            fill(&mut sh, objects);
+            overwrite(&mut sh, &mut rng, objects, objects * OBJ_BLOCKS);
+            let hot = (objects * share / 100).max(1);
+            let data = vec![0xa5u8; BLOCK];
+            let batch = |sh: &mut Shard, rng: &mut SmallRng| {
+                let lists = (0..32)
+                    .map(|_| OpList {
+                        key: key(rng.random_range(0..hot)),
+                        ops: vec![Op::Write {
+                            off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
+                            data: data.clone(),
+                        }],
+                    })
+                    .collect();
+                sh.commit(lists).unwrap();
+            };
+            // Two checkpoints first: the second starts with only the
+            // pages the hot chunks changed.
+            let c0 = sh.stats().checkpoints;
+            while sh.stats().checkpoints < c0 + 2 {
+                batch(&mut sh, &mut rng);
+            }
+            let before = sh.stats();
+            let mut writes = 0u64;
+            while sh.stats().checkpoints < before.checkpoints + 3 {
+                batch(&mut sh, &mut rng);
+                writes += 32;
+            }
+            let st = sh.stats();
+            let ck_b = st.checkpoint_bytes_written - before.checkpoint_bytes_written;
+            let pages_w = st.checkpoint_pages_written - before.checkpoint_pages_written;
+            drop(sh);
+            let t = Instant::now();
+            let sh = open(&dev).unwrap().1.pop().unwrap();
+            let open_ms = t.elapsed().as_secs_f64() * 1e3;
+            drop(sh);
+            println!(
+                "| {share}% | {label} | {} | {:.1} | {:.2} | {:.0} | {open_ms:.0} |",
+                st.checkpoint_pages,
+                pages_w as f64 / 3.0,
+                ck_b as f64 / writes as f64,
+                ck_b as f64 / writes as f64 * 50_000.0 / 1e6 * 512.0
+            );
+        }
+    }
+    println!();
+}
+
 fn decisions_suite(dir: &Path, secs: f64) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join("hs-decisions.img");
@@ -1503,9 +1584,9 @@ fn replay_suite() {
         sh.set_defer_max(0);
         let objects = 64u64;
         fill(&mut sh, objects);
-        // A 1-byte slice budget keeps the checkpoint from progressing
-        // until it would be forced at three quarters of the log.
-        sh.set_checkpoint_slice(1);
+        // No slice budget: the checkpoint doesn't progress until it would
+        // be forced at three quarters of the log.
+        sh.set_checkpoint_slice(0);
         let mut rng = SmallRng::seed_from_u64(3);
         let start = sh.stats();
         let mut writes = 0u64;
@@ -1614,6 +1695,9 @@ fn main() {
         }
         Some("logsize") => {
             log_size_sweep();
+        }
+        Some("paged") => {
+            paged_sweep();
         }
         Some("replay") => {
             replay_suite();

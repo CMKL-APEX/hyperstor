@@ -26,7 +26,7 @@
 use crate::align::{AlignedBuf, BLOCK};
 use crate::alloc::Allocator;
 use crate::dev::BlockDev;
-use crate::index::{Effects, Index, Loc, Object, RList, ROp};
+use crate::index::{DeferredWrite, Effects, Index, Loc, Object, RList, ROp};
 use crate::types::{Committed, EngineError, ObjKey, ObjStat, Op, OpError, OpList};
 use hyperstor_codec::{Dec, DecodeError, Enc, crc32c, crc32c_append};
 use std::collections::BTreeMap;
@@ -34,8 +34,17 @@ use std::sync::Arc;
 
 const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
 const LOG_MAGIC: u32 = 0x4853_4c47; // "HSLG"
-const CKPT_MAGIC: u64 = 0x4853_434b_5054_3033; // "HSCKPT03": streamed objects, fuzzy (D43)
+/// A checkpoint of one blob of objects (I33), read from devices written
+/// before paged checkpoints.
+const CKPT_MAGIC: u64 = 0x4853_434b_5054_3033; // "HSCKPT03"
 const DIR_MAGIC: u64 = 0x4853_434b_4449_5231; // "HSCKDIR1"
+/// A paged checkpoint's directory, and one page (D105).
+const DIR2_MAGIC: u64 = 0x4853_434b_4449_5232; // "HSCKDIR2"
+const PAGE_MAGIC: u64 = 0x4853_434b_5047_3031; // "HSCKPG01"
+/// A checkpoint page is cut once it holds this much: small enough that a
+/// change rewrites little, large enough that the directory stays small
+/// (about 100 bytes a page).
+const PAGE_BYTES: usize = 128 * 1024;
 /// Checkpoint bytes written per commit round while a fuzzy checkpoint runs
 /// (64 KiB had the best tail latency, benchmarks.md); eight times that once
 /// half the log is used, so the checkpoint finishes before it is forced.
@@ -151,20 +160,60 @@ impl Super {
     }
 }
 
-/// A fuzzy checkpoint being written (implementation-notes.md I33).
+/// Where a checkpoint page is (D105).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PageLoc {
+    runs: Vec<(u64, u64)>,
+    len: u64,
+    crc: u32,
+}
+
+/// A fuzzy checkpoint being written (implementation-notes.md I33): only
+/// the pages changed since the last one began (D105).
 struct Fuzzy {
     /// Log position replay will start from once this checkpoint is named.
     start_lsn: u64,
-    /// The last object written; the next slice continues after it.
+    next_revision: u64,
+    next_group: u64,
+    /// Changed pages still to write, by bound, in key order.
+    todo: std::collections::VecDeque<Option<ObjKey>>,
+    /// The page being written.
+    cur: Option<Cur>,
+    /// Pages written, by bound.
+    written: BTreeMap<Option<ObjKey>, PageLoc>,
+    /// Pages of the last checkpoint this one replaces or drops.
+    replaced: Vec<Option<ObjKey>>,
+}
+
+/// A changed page being written. It is cut into pieces of about
+/// `page_bytes`, each a page of its own; an empty page other than the
+/// first is dropped, its range joining the page before.
+struct Cur {
+    /// The page's bound, and the bound of the piece being encoded.
+    first: Option<ObjKey>,
+    piece: Option<ObjKey>,
+    /// The next page's bound: where this page ends.
+    end: Option<ObjKey>,
+    /// The last object encoded; the next slice continues after it.
     last: Option<ObjKey>,
-    objects_done: bool,
-    /// Bytes encoded but not yet written (less than a block, mostly).
-    pending: Vec<u8>,
-    /// Checksum and length of the whole blob so far.
-    crc: u32,
-    len: u64,
-    /// Extents written so far, in order.
-    runs: Vec<(u64, u64)>,
+    /// The piece so far, and whether it holds an object.
+    buf: Enc,
+    objects: bool,
+}
+
+/// Objects in a checkpoint are each preceded by 1; 0 ends them.
+fn next_object(d: &mut Dec<'_>) -> Result<bool, EngineError> {
+    match d.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        v => Err(EngineError::Corrupt(format!("checkpoint record {v}"))),
+    }
+}
+
+fn page_head() -> Enc {
+    let mut e = Enc::new();
+    e.u64(PAGE_MAGIC);
+    e
 }
 
 /// A record as read back from the log.
@@ -195,8 +244,11 @@ pub struct ShardStats {
     pub checkpoint_forced: u64,
     /// Log blocks written since the shard was opened.
     pub log_blocks_written: u64,
-    /// Checkpoint bytes written (blobs and directories) since opened.
+    /// Checkpoint bytes written (pages and directories) since opened.
     pub checkpoint_bytes_written: u64,
+    /// Pages of the last checkpoint, and pages written since opened (D105).
+    pub checkpoint_pages: u64,
+    pub checkpoint_pages_written: u64,
 }
 
 /// Totals over the whole index. Computing them walks every block map, so
@@ -236,10 +288,14 @@ pub struct Shard {
     round_fresh: BTreeMap<u64, u64>,
     /// Writes smaller than this onto blocks the object holds are deferred.
     defer_max: usize,
-    /// Extents of the current checkpoint's blob (the superblock names its
-    /// directory, `ckpt`).
-    ckpt_blob: Vec<(u64, u64)>,
-    ckpt_len: u64,
+    /// The current checkpoint's pages, by bound (the superblock names
+    /// their directory, `ckpt`).
+    pages: BTreeMap<Option<ObjKey>, PageLoc>,
+    /// The blob of a checkpoint from before pages, freed once a paged one
+    /// replaces it.
+    legacy_blob: Vec<(u64, u64)>,
+    page_bytes: usize,
+    ckpt_pages_written: u64,
     /// A fuzzy checkpoint in progress.
     fuzzy: Option<Fuzzy>,
     slice_bytes: usize,
@@ -334,8 +390,10 @@ impl Shard {
             poisoned: false,
             round_fresh: BTreeMap::new(),
             defer_max: DEFER_MAX,
-            ckpt_blob: Vec::new(),
-            ckpt_len: 0,
+            pages: BTreeMap::new(),
+            legacy_blob: Vec::new(),
+            page_bytes: PAGE_BYTES,
+            ckpt_pages_written: 0,
             fuzzy: None,
             slice_bytes: SLICE_BYTES,
             opened_lsn: 0,
@@ -355,7 +413,7 @@ impl Shard {
         // Replay, then check the last group's new data; if some didn't reach
         // the media, drop that record and everything after it, and replay
         // again from the checkpoint.
-        let fx = loop {
+        let mut fx = loop {
             sh.index = base_index.clone();
             sh.next_revision = base_rev;
             sh.next_group = base_group;
@@ -378,6 +436,7 @@ impl Shard {
                 Some(i) => records.truncate(i),
             }
         };
+        sh.index.settle_tentative(&mut fx);
         sh.pending = fx.pending;
         sh.rebuild_allocator()?;
         sh.apply_deferred()?;
@@ -385,6 +444,7 @@ impl Shard {
         sh.checkpoint()?;
         sh.opened_lsn = sh.tail_lsn;
         sh.ckpt_written = 0;
+        sh.ckpt_pages_written = 0;
         Ok(sh)
     }
 
@@ -394,7 +454,8 @@ impl Shard {
         if let Some(c) = &self.ckpt {
             used.extend(c.runs.iter().copied());
         }
-        used.extend(self.ckpt_blob.iter().copied());
+        used.extend(self.legacy_blob.iter().copied());
+        used.extend(self.pages.values().flat_map(|p| p.runs.iter().copied()));
         for (s, n) in used {
             if !a.reserve(s, n) {
                 return Err(EngineError::Corrupt(format!(
@@ -424,9 +485,10 @@ impl Shard {
     }
 
     /// Loads the checkpoint named by the superblock: its directory, then
-    /// the blob the directory lists. The blob may be fuzzy (objects
-    /// written at different times after `head_lsn`); replay from
-    /// `head_lsn` brings it to the state the log describes.
+    /// the pages it lists (or, from before pages, the one blob). The
+    /// checkpoint may be fuzzy (objects written at different times after
+    /// `head_lsn`); replay from `head_lsn` brings it to the state the log
+    /// describes.
     fn load_checkpoint(&mut self, c: &Ckpt) -> Result<(), EngineError> {
         let dir = self.read_extents(&c.runs, c.len)?;
         let dir = &dir[..c.len as usize];
@@ -434,9 +496,16 @@ impl Shard {
             return Err(EngineError::Corrupt("checkpoint directory checksum".into()));
         }
         let mut d = Dec::new(dir);
-        if d.u64()? != DIR_MAGIC {
-            return Err(EngineError::Corrupt("checkpoint directory magic".into()));
+        match d.u64()? {
+            DIR_MAGIC => self.load_blob(&mut d),
+            DIR2_MAGIC => self.load_pages(&mut d),
+            _ => Err(EngineError::Corrupt("checkpoint directory magic".into())),
         }
+    }
+
+    /// A checkpoint from before pages: one blob, which the next checkpoint
+    /// replaces with pages.
+    fn load_blob(&mut self, d: &mut Dec<'_>) -> Result<(), EngineError> {
         let blob_len = d.u64()?;
         let blob_crc = d.u32()?;
         let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
@@ -457,22 +526,79 @@ impl Shard {
             return Err(EngineError::Corrupt("checkpoint LSN".into()));
         }
         let mut index = Index::default();
-        loop {
-            match d.u8()? {
-                0 => break,
-                1 => {
-                    let (k, o) = crate::index::decode_object(&mut d)?;
-                    index.objects.insert(k, o);
-                }
-                v => {
-                    return Err(EngineError::Corrupt(format!("checkpoint record {v}")));
-                }
-            }
+        while next_object(&mut d)? {
+            let (k, o) = crate::index::decode_object(&mut d)?;
+            index.objects.insert(k, o);
         }
         d.finish()?;
+        index.first_dirty = true;
         self.index = index;
-        self.ckpt_blob = runs;
-        self.ckpt_len = blob_len;
+        self.legacy_blob = runs;
+        Ok(())
+    }
+
+    /// A paged checkpoint (D105): every page is read in one batch.
+    fn load_pages(&mut self, d: &mut Dec<'_>) -> Result<(), EngineError> {
+        self.next_revision = d.u64()?;
+        self.next_group = d.u64()?;
+        if d.u64()? != self.head_lsn {
+            return Err(EngineError::Corrupt("checkpoint LSN".into()));
+        }
+        let n = d.u64()?;
+        let mut pages = BTreeMap::new();
+        for i in 0..n {
+            let bound = if d.bool()? {
+                Some(ObjKey::decode(d)?)
+            } else {
+                None
+            };
+            if (i == 0) != bound.is_none() {
+                return Err(EngineError::Corrupt("checkpoint page bounds".into()));
+            }
+            let len = d.u64()?;
+            let crc = d.u32()?;
+            let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+            pages.insert(bound, PageLoc { runs, len, crc });
+        }
+        d.finish()?;
+        if pages.len() as u64 != n {
+            return Err(EngineError::Corrupt("checkpoint page bounds".into()));
+        }
+        let runs: Vec<(u64, u64)> = pages.values().flat_map(|p| p.runs.clone()).collect();
+        let nblocks: u64 = runs.iter().map(|r| r.1).sum();
+        let all = self.read_extents(&runs, nblocks * BLOCK as u64)?;
+        let mut index = Index::default();
+        let mut at = 0usize;
+        let bounds: Vec<Option<ObjKey>> = pages.keys().cloned().collect();
+        for (i, (bound, p)) in pages.iter().enumerate() {
+            let blocks: u64 = p.runs.iter().map(|r| r.1).sum();
+            if p.len > blocks * BLOCK as u64 {
+                return Err(EngineError::Corrupt("checkpoint page length".into()));
+            }
+            let data = &all[at..at + p.len as usize];
+            at += (blocks as usize) * BLOCK;
+            if crc32c(data) != p.crc {
+                return Err(EngineError::Corrupt("checkpoint page checksum".into()));
+            }
+            let mut d = Dec::new(data);
+            if d.u64()? != PAGE_MAGIC {
+                return Err(EngineError::Corrupt("checkpoint page magic".into()));
+            }
+            let end = bounds.get(i + 1).and_then(|b| b.as_ref());
+            while next_object(&mut d)? {
+                let (k, o) = crate::index::decode_object(&mut d)?;
+                if bound.as_ref().is_some_and(|b| k < *b) || end.is_some_and(|e| k >= *e) {
+                    return Err(EngineError::Corrupt(
+                        "checkpoint object outside its page".into(),
+                    ));
+                }
+                index.objects.insert(k, o);
+            }
+            d.finish()?;
+        }
+        index.bounds = pages.keys().flatten().cloned().collect();
+        self.index = index;
+        self.pages = pages;
         Ok(())
     }
 
@@ -689,6 +815,7 @@ impl Shard {
         let mut fx = Effects {
             freed: Vec::new(),
             pending: std::mem::take(&mut self.pending),
+            tentative: Default::default(),
         };
         while let Some(list) = lists.front() {
             let est = self.estimate(list);
@@ -853,10 +980,22 @@ impl Shard {
                                 })
                         });
                     if deferred {
+                        let o = self.index.objects.get(&key).expect("checked above");
+                        let pbs = (0..n)
+                            .map(|i| match o.lookup(lb + i) {
+                                Loc::Mapped { pblock, .. } => pblock,
+                                Loc::Hole => unreachable!("checked above"),
+                            })
+                            .collect();
                         step(
                             &mut self.index,
                             fx,
-                            ROp::Deferred { lb, data, crcs },
+                            ROp::Deferred(Box::new(DeferredWrite {
+                                lb,
+                                data,
+                                crcs,
+                                pbs,
+                            })),
                             &mut rops,
                         );
                     } else {
@@ -1041,9 +1180,10 @@ impl Shard {
     }
 
     /// Sets how many checkpoint bytes each commit round writes while a
-    /// fuzzy checkpoint runs (tests make it small to get many slices).
+    /// fuzzy checkpoint runs (tests make it small to get many slices). 0
+    /// holds a checkpoint until the log forces it (benchmarks of replay).
     pub fn set_checkpoint_slice(&mut self, bytes: usize) {
-        self.slice_bytes = bytes.max(1);
+        self.slice_bytes = bytes;
     }
 
     /// Finishes a checkpoint now: starts one if none is running, and
@@ -1058,114 +1198,232 @@ impl Shard {
         Ok(())
     }
 
+    /// Sets the size at which checkpoint pages are cut (tests make it
+    /// small to get many pages).
+    pub fn set_checkpoint_page(&mut self, bytes: usize) {
+        self.page_bytes = bytes.max(1);
+    }
+
     /// Starts a fuzzy checkpoint at the current log position: replay will
     /// start there, so everything before it must be in the checkpoint or
     /// durable in place (deferred writes are applied now, and flushed
-    /// before the superblock names the checkpoint).
+    /// before the superblock names the checkpoint). It writes the pages
+    /// changed since the last one began (D105): a page nothing changed
+    /// since then holds what replay from here needs.
     fn checkpoint_start(&mut self) -> Result<(), EngineError> {
         self.apply_deferred()?;
-        let mut e = Enc::new();
-        e.u64(CKPT_MAGIC)
-            .u64(self.next_revision)
-            .u64(self.next_group)
-            .u64(self.tail_lsn);
-        let head = e.into_vec();
+        if !self.pages.contains_key(&None) {
+            // A new shard: the first page is always written.
+            self.index.mark(None);
+        }
+        let todo = self.index.take_dirty().into();
         self.fuzzy = Some(Fuzzy {
             start_lsn: self.tail_lsn,
-            last: None,
-            objects_done: false,
-            crc: crc32c(&head),
-            len: head.len() as u64,
-            pending: head,
-            runs: Vec::new(),
+            next_revision: self.next_revision,
+            next_group: self.next_group,
+            todo,
+            cur: None,
+            written: BTreeMap::new(),
+            replaced: Vec::new(),
         });
         Ok(())
     }
 
-    /// Serializes objects after the cursor until `budget` bytes are
-    /// pending, writes the whole blocks, and finishes the checkpoint once
-    /// every object is written.
+    /// Encodes changed pages until about `budget` bytes are done, writing
+    /// each piece as it is cut, and finishes the checkpoint once every
+    /// changed page is written.
     fn checkpoint_slice(&mut self, budget: usize) -> Result<(), EngineError> {
         let mut f = self.fuzzy.take().expect("a checkpoint in progress");
-        if !f.objects_done {
-            use std::ops::Bound;
-            let lo = match &f.last {
-                Some(k) => Bound::Excluded(k.clone()),
-                None => Bound::Unbounded,
-            };
-            let mut e = Enc::new();
-            let mut last = None;
-            let mut finished = true;
-            for (k, o) in self.index.objects.range((lo, Bound::Unbounded)) {
-                if f.pending.len() + e.len() >= budget {
-                    finished = false;
-                    break;
-                }
-                e.u8(1);
-                crate::index::encode_object(k, o, &mut e);
-                last = Some(k.clone());
+        let r = self.write_pages(&mut f, budget);
+        match r {
+            Ok(true) => self.checkpoint_finish(f),
+            Ok(false) => {
+                self.fuzzy = Some(f);
+                self.checkpoint_slices += 1;
+                Ok(())
             }
-            if finished {
-                e.u8(0);
-                f.objects_done = true;
+            Err(e) => {
+                self.fuzzy = Some(f);
+                Err(e)
             }
-            if last.is_some() {
-                f.last = last;
-            }
-            let bytes = e.into_vec();
-            f.crc = crc32c_append(f.crc, &bytes);
-            f.len += bytes.len() as u64;
-            f.pending.extend_from_slice(&bytes);
-        }
-        // Write whole blocks (everything, padded, once objects are done).
-        let whole = if f.objects_done {
-            f.pending.len().div_ceil(BLOCK)
-        } else {
-            f.pending.len() / BLOCK
-        };
-        if whole > 0 {
-            let runs = match self.alloc.alloc(whole as u64) {
-                Some(r) => r,
-                None => {
-                    self.fuzzy = Some(f);
-                    return Err(EngineError::NoSpace);
-                }
-            };
-            let take = (whole * BLOCK).min(f.pending.len());
-            let buf = AlignedBuf::from_slice(&f.pending[..take]);
-            let mut io = Vec::new();
-            let mut done = 0usize;
-            for &(s, n) in &runs {
-                io.push((
-                    s * BLOCK as u64,
-                    &buf[done * BLOCK..(done + n as usize) * BLOCK],
-                ));
-                done += n as usize;
-            }
-            self.dev.write_batch(&io)?;
-            self.ckpt_written += (whole * BLOCK) as u64;
-            f.pending.drain(..take);
-            f.runs.extend(runs);
-            self.checkpoint_slices += 1;
-        }
-        if f.objects_done && f.pending.is_empty() {
-            self.checkpoint_finish(f)
-        } else {
-            self.fuzzy = Some(f);
-            Ok(())
         }
     }
 
+    /// Returns whether every changed page is written.
+    fn write_pages(&mut self, f: &mut Fuzzy, budget: usize) -> Result<bool, EngineError> {
+        use std::ops::Bound;
+        if budget == 0 {
+            return Ok(false);
+        }
+        let mut spent = 0usize;
+        loop {
+            let mut c = match f.cur.take() {
+                Some(c) => c,
+                None => {
+                    let Some(first) = f.todo.pop_front() else {
+                        return Ok(true);
+                    };
+                    // A page dropped since it was marked: its range is the
+                    // page before's, which the change marked too.
+                    if first
+                        .as_ref()
+                        .is_some_and(|b| !self.index.bounds.contains(b))
+                    {
+                        continue;
+                    }
+                    let end = match &first {
+                        None => self.index.bounds.iter().next(),
+                        Some(b) => self
+                            .index
+                            .bounds
+                            .range((Bound::Excluded(b), Bound::Unbounded))
+                            .next(),
+                    }
+                    .cloned();
+                    f.replaced.push(first.clone());
+                    Cur {
+                        piece: first.clone(),
+                        first,
+                        end,
+                        last: None,
+                        buf: page_head(),
+                        objects: false,
+                    }
+                }
+            };
+            let lo = match (&c.last, &c.piece) {
+                (Some(k), _) => Bound::Excluded(k.clone()),
+                (None, Some(b)) => Bound::Included(b.clone()),
+                (None, None) => Bound::Unbounded,
+            };
+            let hi = match &c.end {
+                Some(e) => Bound::Excluded(e.clone()),
+                None => Bound::Unbounded,
+            };
+            let mut cut = None;
+            let mut done = true;
+            for (k, o) in self.index.objects.range((lo, hi)) {
+                if c.objects && c.buf.len() >= self.page_bytes {
+                    cut = Some(k.clone());
+                    done = false;
+                    break;
+                }
+                if spent >= budget {
+                    done = false;
+                    break;
+                }
+                let before = c.buf.len();
+                c.buf.u8(1);
+                crate::index::encode_object(k, o, &mut c.buf);
+                spent += c.buf.len() - before;
+                c.objects = true;
+                c.last = Some(k.clone());
+            }
+            if let Some(k) = cut {
+                // Cut here: the rest of the page is a page of its own.
+                self.write_piece(f, &mut c)?;
+                self.index.bounds.insert(k.clone());
+                c.piece = Some(k);
+                // Continue from the cut, not the last object: a key added
+                // before the cut belongs to the piece just written's page.
+                c.last = None;
+                c.buf = page_head();
+                c.objects = false;
+                f.cur = Some(c);
+                continue;
+            }
+            if !done {
+                f.cur = Some(c);
+                return Ok(false);
+            }
+            if !c.objects && c.piece.is_some() && c.piece == c.first {
+                // Empty: drop the page, and its range joins the page
+                // before. Nothing is lost: the range is empty now, so
+                // every change marked on it is reflected, and later ones
+                // mark the page before.
+                let b = c.first.clone().expect("not the first page");
+                self.index.bounds.remove(&b);
+                self.index.dirty.remove(&b);
+            } else {
+                self.write_piece(f, &mut c)?;
+            }
+            if spent >= budget {
+                return Ok(f.todo.is_empty());
+            }
+        }
+    }
+
+    /// Writes the piece `c` holds as a page.
+    fn write_piece(&mut self, f: &mut Fuzzy, c: &mut Cur) -> Result<(), EngineError> {
+        let mut buf = std::mem::replace(&mut c.buf, Enc::new());
+        buf.u8(0);
+        let bytes = buf.into_vec();
+        let crc = crc32c(&bytes);
+        let nblocks = bytes.len().div_ceil(BLOCK) as u64;
+        let runs = self.alloc.alloc(nblocks).ok_or(EngineError::NoSpace)?;
+        let data = AlignedBuf::from_slice(&bytes);
+        let mut io = Vec::new();
+        let mut at = 0usize;
+        for &(s, n) in &runs {
+            io.push((
+                s * BLOCK as u64,
+                &data[at * BLOCK..(at + n as usize) * BLOCK],
+            ));
+            at += n as usize;
+        }
+        self.dev.write_batch(&io)?;
+        self.ckpt_written += nblocks * BLOCK as u64;
+        self.ckpt_pages_written += 1;
+        f.written.insert(
+            c.piece.clone(),
+            PageLoc {
+                runs,
+                len: bytes.len() as u64,
+                crc,
+            },
+        );
+        Ok(())
+    }
+
     /// Writes the directory, makes everything durable, and points the
-    /// superblock at the new checkpoint with the log's head at its start.
+    /// superblock at the new checkpoint with the log's head at its start;
+    /// then frees the pages it replaced.
     fn checkpoint_finish(&mut self, f: Fuzzy) -> Result<(), EngineError> {
+        let mut pages = self.pages.clone();
+        let mut free = Vec::new();
+        for p in &f.replaced {
+            if let Some(old) = pages.remove(p) {
+                free.extend(old.runs);
+            }
+        }
+        pages.extend(f.written);
+        debug_assert!(
+            pages
+                .keys()
+                .cloned()
+                .eq(std::iter::once(None).chain(self.index.bounds.iter().cloned().map(Some))),
+            "checkpoint pages and index bounds differ"
+        );
         let mut e = Enc::new();
-        e.u64(DIR_MAGIC)
-            .u64(f.len)
-            .u32(f.crc)
-            .seq(&f.runs, |e, (s, n)| {
+        e.u64(DIR2_MAGIC)
+            .u64(f.next_revision)
+            .u64(f.next_group)
+            .u64(f.start_lsn)
+            .u64(pages.len() as u64);
+        for (bound, p) in &pages {
+            match bound {
+                None => {
+                    e.bool(false);
+                }
+                Some(k) => {
+                    e.bool(true);
+                    k.encode(&mut e);
+                }
+            }
+            e.u64(p.len).u32(p.crc).seq(&p.runs, |e, (s, n)| {
                 e.u64(*s).u64(*n);
             });
+        }
         let dir = e.into_vec();
         let dir_crc = crc32c(&dir);
         let nblocks = dir.len().div_ceil(BLOCK) as u64;
@@ -1191,7 +1449,7 @@ impl Shard {
         }
         self.dev.write_batch(&io)?;
         self.ckpt_written += nblocks * BLOCK as u64;
-        // Blob, directory, and every deferred write applied since the
+        // Pages, directory, and every deferred write applied since the
         // start become durable before the superblock refers to them.
         self.dev.flush()?;
         let ckpt = Ckpt {
@@ -1213,14 +1471,13 @@ impl Shard {
         self.super_seq = sup.seq;
         self.head_lsn = f.start_lsn;
         if let Some(old) = self.ckpt.replace(ckpt) {
-            for (s, n) in old.runs {
-                self.alloc.free(s, n);
-            }
+            free.extend(old.runs);
         }
-        for (s, n) in std::mem::replace(&mut self.ckpt_blob, f.runs) {
+        free.append(&mut self.legacy_blob);
+        for (s, n) in free {
             self.alloc.free(s, n);
         }
-        self.ckpt_len = f.len;
+        self.pages = pages;
         self.checkpoints += 1;
         Ok(())
     }
@@ -1396,7 +1653,9 @@ impl Shard {
             checkpoints: self.checkpoints,
             commits: self.commits,
             records: self.records,
-            checkpoint_bytes: self.ckpt_len,
+            checkpoint_bytes: self.pages.values().map(|p| p.len).sum(),
+            checkpoint_pages: self.pages.len() as u64,
+            checkpoint_pages_written: self.ckpt_pages_written,
             checkpoint_slices: self.checkpoint_slices,
             checkpoint_forced: self.checkpoint_forced,
             log_blocks_written: self.tail_lsn - self.opened_lsn,
@@ -1577,5 +1836,114 @@ impl Fnv {
     /// Length-prefixed, so `("ab", "c")` and `("a", "bc")` differ.
     fn bytes(&mut self, b: &[u8]) -> &mut Self {
         self.u64(b.len() as u64).write(b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dev::MemDev;
+    use crate::types::Namespace;
+
+    fn key(i: u64) -> ObjKey {
+        ObjKey::new(1, 1, Namespace::Vol, format!("o{i:03}").into_bytes(), 0)
+    }
+
+    /// A device whose checkpoint is one blob (before D105) opens, and its
+    /// first checkpoint replaces the blob with pages and frees it.
+    #[test]
+    fn a_checkpoint_from_before_pages_is_read_and_replaced() {
+        let region = Region {
+            start: 0,
+            blocks: 4096,
+            log_blocks: 256,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(4096 * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        let mut sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        sh.set_checkpoint_page(512);
+        for i in 0..40 {
+            sh.commit(vec![OpList {
+                key: key(i),
+                ops: vec![
+                    Op::Write {
+                        off: 0,
+                        data: vec![i as u8; BLOCK],
+                    },
+                    Op::KvPut(b"k".to_vec(), vec![i as u8; 64]),
+                ],
+            }])
+            .unwrap();
+        }
+        sh.checkpoint().unwrap();
+        let idx = sh.index.clone();
+        // The same state as the old format: one blob and its directory.
+        let mut e = Enc::new();
+        e.u64(CKPT_MAGIC)
+            .u64(sh.next_revision)
+            .u64(sh.next_group)
+            .u64(sh.head_lsn);
+        for (k, o) in &sh.index.objects {
+            e.u8(1);
+            crate::index::encode_object(k, o, &mut e);
+        }
+        e.u8(0);
+        let blob = e.into_vec();
+        let runs = sh.alloc.alloc(blob.len().div_ceil(BLOCK) as u64).unwrap();
+        assert_eq!(runs.len(), 1);
+        dev.write(runs[0].0 * BLOCK as u64, &AlignedBuf::from_slice(&blob))
+            .unwrap();
+        let mut e = Enc::new();
+        e.u64(DIR_MAGIC)
+            .u64(blob.len() as u64)
+            .u32(crc32c(&blob))
+            .seq(&runs, |e, (s, n)| {
+                e.u64(*s).u64(*n);
+            });
+        let dir = e.into_vec();
+        let dir_runs = sh.alloc.alloc(1).unwrap();
+        dev.write(dir_runs[0].0 * BLOCK as u64, &AlignedBuf::from_slice(&dir))
+            .unwrap();
+        let sup = Super {
+            seq: sh.super_seq + 1,
+            device_id: 7,
+            shard: 0,
+            salt: sh.salt,
+            head_lsn: sh.head_lsn,
+            ckpt: Some(Ckpt {
+                runs: dir_runs,
+                len: dir.len() as u64,
+                crc: crc32c(&dir),
+            }),
+        };
+        dev.write((region.start + sup.seq % 2) * BLOCK as u64, &sup.encode())
+            .unwrap();
+        dev.flush().unwrap();
+        drop(sh);
+        let sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        assert_eq!(sh.index, idx, "the blob reads as it was written");
+        assert!(sh.legacy_blob.is_empty(), "the blob is freed");
+        assert!(sh.stats().checkpoint_pages >= 1);
+        drop(sh);
+        let sh = Shard::open(dev, region, 7, 0).unwrap();
+        assert_eq!(sh.index, idx, "and the pages that replace it too");
+        let used: u64 = sh.index.used_extents().map(|e| e.1).sum::<u64>()
+            + sh.pages
+                .values()
+                .flat_map(|p| &p.runs)
+                .map(|r| r.1)
+                .sum::<u64>()
+            + sh.ckpt
+                .as_ref()
+                .map_or(0, |c| c.runs.iter().map(|r| r.1).sum());
+        assert_eq!(
+            sh.stats().free_blocks,
+            region.data_blocks() - used,
+            "no space is lost"
+        );
+        for i in 0..40 {
+            let r = sh.read(&key(i), 0, BLOCK as u64).unwrap();
+            assert!(r.iter().all(|b| *b == i as u8));
+        }
     }
 }
