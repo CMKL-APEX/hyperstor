@@ -3,7 +3,7 @@
 | Set | Audience | Source | Contents |
 |---|---|---|---|
 | **Internal** | Contributors | [`spec/`](../spec/) (book config in [`docs/internal/`](internal/)) | Design specs, invariants, decisions and milestones, and the internal API reference |
-| **Public** | People who use, install and operate Hyperstor | [`docs/public/`](public/), landing page in [`docs/site/`](site/) | Quick start, user guide, administrator guide, reference, status |
+| **Public** | People who use, install and operate Hyperstor, and developers who want to know how it works | [`docs/public/`](public/), landing page in [`docs/site/`](site/) | Quick start, user guide, administrator guide, developer guide, reference, status |
 
 - **Internal** pages describe *why the code is shaped the way it is*.
   They stay in `spec/` because code cites them as `spec/<file>.md`;
@@ -12,7 +12,9 @@
   not depend on internal pages, and must not contain security-sensitive
   details (internal hostnames, credentials, attack-surface analysis).
   When a design ships, write its user-facing part there and link from the
-  spec to it.
+  spec to it. The developer guide explains the design for outside
+  readers: keep it self-contained (no links into `spec/`, no decision
+  numbers), and update its figures when `spec/benchmarks.md` changes.
 - **Generated or checked against the code:**
   - `docs/public/src/status.md` is generated from `spec/tracking.toml`
     (`scripts/tracking.py status > docs/public/src/status.md`); CI fails

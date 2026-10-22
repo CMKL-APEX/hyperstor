@@ -46,8 +46,11 @@ Tests: `cargo test --workspace --release` (the engine's crash test takes
 `HS_CRASH_SEEDS`). CI also checks the spec and tracks each milestone's
 progress against the tests (`spec/tracking.toml`).
 
-User and administrator documentation is in
-[`docs/public/`](docs/public/src/introduction.md); CI publishes it to
+User, administrator and developer documentation is in
+[`docs/public/`](docs/public/src/introduction.md); the
+[developer guide](docs/public/src/developer-guide/index.md) walks through
+the architecture, the algorithms, the design trade-offs, current
+benchmark figures and how Hyperstor compares with other systems; CI publishes it to
 GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 
 ## Planned features
