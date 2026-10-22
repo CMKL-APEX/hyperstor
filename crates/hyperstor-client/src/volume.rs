@@ -109,7 +109,7 @@ pub struct Volume {
     /// A random value of its lineage, shared by its clones, for the read
     /// cache (D102): a volume recreated with the same id has a new one.
     /// 0, in a header written before it, turns the cache off.
-    pub nonce: u64,
+    pub incarnation: u64,
 }
 
 /// A snapshot of a volume (volumes.md §10.3): the volume as it was at
@@ -202,7 +202,7 @@ fn encode(v: &Volume) -> Vec<u8> {
     e.seq(&v.skip, |e, (lo, hi)| {
         e.u64(*lo).u64(*hi);
     });
-    e.u64(v.nonce);
+    e.u64(v.incarnation);
     e.into_vec()
 }
 
@@ -242,7 +242,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             chain: Vec::new(),
             snapshots: Vec::new(),
             skip: Vec::new(),
-            nonce: 0,
+            incarnation: 0,
         };
         if fmt == 2 {
             v.head_epoch = d.u64()?;
@@ -260,7 +260,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             })?;
             v.skip = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
             if d.remaining() > 0 {
-                v.nonce = d.u64()?;
+                v.incarnation = d.u64()?;
             }
         }
         Ok::<_, hyperstor_codec::DecodeError>(v)
@@ -327,7 +327,7 @@ impl Client {
             chain: Vec::new(),
             snapshots: Vec::new(),
             skip: Vec::new(),
-            nonce: random_u64() | 1,
+            incarnation: random_u64() | 1,
         };
         self.put_new(&v).await?;
         Ok(v)
@@ -697,7 +697,7 @@ impl Attached {
     /// cache when it has them (D102).
     pub async fn read(&self, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
         let v = self.usable(off, len)?;
-        let blocks = self.blocks(&v, off, len).filter(|_| v.nonce != 0);
+        let blocks = self.blocks(&v, off, len).filter(|_| v.incarnation != 0);
         let Some(blocks) = blocks else {
             let r = self
                 .client
@@ -707,7 +707,7 @@ impl Attached {
         };
         let key = |(chunk, block): (u64, u64), (branch, epoch): (u32, u64)| cache::Key {
             lineage: v.lineage,
-            nonce: v.nonce,
+            incarnation: v.incarnation,
             branch,
             epoch,
             chunk,
@@ -722,7 +722,12 @@ impl Attached {
         // Blocks this handle hasn't read may be cached by another volume
         // of the lineage, such as a clone of the same image: ask where they
         // come from first.
-        if self.client.cache.borrow().has_lineage(v.lineage, v.nonce) {
+        if self
+            .client
+            .cache
+            .borrow()
+            .has_lineage(v.lineage, v.incarnation)
+        {
             let r = self
                 .client
                 .sources(v.pool, v.lineage, &v.layers(), off, len)
@@ -786,8 +791,13 @@ impl Attached {
         if let Ok(Some(v)) = self.client.volume(id).await {
             let old = self.volume.replace(v);
             let v = self.volume.borrow();
-            if (old.branch, old.head_epoch, &old.chain, &old.skip, old.nonce)
-                != (v.branch, v.head_epoch, &v.chain, &v.skip, v.nonce)
+            if (
+                old.branch,
+                old.head_epoch,
+                &old.chain,
+                &old.skip,
+                old.incarnation,
+            ) != (v.branch, v.head_epoch, &v.chain, &v.skip, v.incarnation)
             {
                 self.known.borrow_mut().clear();
             }
@@ -1128,7 +1138,7 @@ mod tests {
             chain: vec![(0, 3)],
             snapshots: Vec::new(),
             skip: Vec::new(),
-            nonce: 0,
+            incarnation: 0,
         };
         assert_eq!(v.layers(), vec![(2, 0, 9), (0, 0, 3)]);
         // Reset to 3 at head 5, then to 6 at head 8.
@@ -1162,7 +1172,7 @@ mod tests {
                 chain: vec![(0, 3)],
             }],
             skip: vec![(2, 3)],
-            nonce: 11,
+            incarnation: 11,
         };
         let l = Looked {
             size: 0,
@@ -1174,14 +1184,14 @@ mod tests {
             kv: vec![],
         };
         assert_eq!(decode(7, &l).unwrap(), v);
-        // A header from before the nonce reads with none.
+        // A header from before incarnations reads with none.
         let mut old = l.clone();
         let h = encode(&v);
         old.attrs[1].1 = h[..h.len() - 8].to_vec();
         assert_eq!(
             decode(7, &old).unwrap(),
             Volume {
-                nonce: 0,
+                incarnation: 0,
                 ..v.clone()
             }
         );

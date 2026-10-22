@@ -22,7 +22,7 @@ const BLOCK: usize = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     pub lineage: u128,
-    pub nonce: u64,
+    pub incarnation: u64,
     pub branch: u32,
     pub epoch: u64,
     pub chunk: u64,
@@ -41,7 +41,7 @@ pub struct ReadCache {
     blocks: HashMap<Key, (Rc<[u8]>, u64)>,
     /// Use order: tick -> key.
     order: BTreeMap<u64, Key>,
-    /// Blocks held per (lineage, nonce).
+    /// Blocks held per (lineage, incarnation).
     lineages: HashMap<(u128, u64), u64>,
     tick: u64,
     stats: Stats,
@@ -92,7 +92,7 @@ impl ReadCache {
             Some((_, t)) => {
                 self.order.remove(&t);
             }
-            None => *self.lineages.entry((k.lineage, k.nonce)).or_default() += 1,
+            None => *self.lineages.entry((k.lineage, k.incarnation)).or_default() += 1,
         }
         self.order.insert(self.tick, k);
         self.evict();
@@ -104,7 +104,7 @@ impl ReadCache {
                 break;
             };
             self.blocks.remove(&k);
-            let l = (k.lineage, k.nonce);
+            let l = (k.lineage, k.incarnation);
             if let Some(n) = self.lineages.get_mut(&l) {
                 *n -= 1;
                 if *n == 0 {
@@ -116,8 +116,8 @@ impl ReadCache {
 
     /// Whether it holds any block of the lineage: then a read that doesn't
     /// know where its blocks come from asks first, without the data.
-    pub fn has_lineage(&self, lineage: u128, nonce: u64) -> bool {
-        self.lineages.contains_key(&(lineage, nonce))
+    pub fn has_lineage(&self, lineage: u128, incarnation: u64) -> bool {
+        self.lineages.contains_key(&(lineage, incarnation))
     }
 
     pub fn stats(&self) -> Stats {
@@ -135,7 +135,7 @@ mod tests {
     fn key(block: u64) -> Key {
         Key {
             lineage: 1,
-            nonce: 2,
+            incarnation: 2,
             branch: 0,
             epoch: 1,
             chunk: 0,
@@ -162,8 +162,14 @@ mod tests {
                 blocks: 2
             }
         );
-        // Another nonce is another lineage: a recreated volume.
-        assert!(c.get(&Key { nonce: 9, ..key(1) }).is_none());
+        // Another incarnation of the lineage: a recreated volume.
+        assert!(
+            c.get(&Key {
+                incarnation: 9,
+                ..key(1)
+            })
+            .is_none()
+        );
         assert!(c.has_lineage(1, 2) && !c.has_lineage(1, 9));
         c.set_bytes(BLOCK);
         assert_eq!(c.stats().blocks, 1);
