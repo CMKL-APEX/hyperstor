@@ -9,6 +9,9 @@ publish = false
 
 [dependencies]
 hyperstor-pki = { path = "../hyperstor-pki" }
+# A PAM helper with made-up people, for hyperstor-mgmt's logins.
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "3ed1891d61988ca24edf274ea401cf1960fe3e3f" }
+serde_json = "1"
 
 [lints]
 workspace = true

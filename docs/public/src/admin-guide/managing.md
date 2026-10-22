@@ -6,21 +6,41 @@ elsewhere, give `--api IP:PORT` or set `HYPERSTOR_API`.
 
 ## Dashboard
 
-The installer runs a read-only dashboard on the map service's host, at
-<http://127.0.0.1:8852/>: health with its reasons, I/O rates, space,
+The installer runs the dashboard (`hyperstor-mgmt`) on the map service's
+host, at <http://127.0.0.1:8852/>: health with its reasons, I/O rates, space,
 pools with their PG states (and each PG's acting and up sets), and every
 storage node with its state, last heartbeat, I/O, write and read p99
 latency, space, log use and map epoch. It refreshes every two seconds.
 
-People can't log in to it yet, so it listens on loopback only. From
-another machine:
+People log in with their user name and password on that host; they
+must be in the group `hyperstor-users`:
+
+```sh
+sudo usermod -aG hyperstor-users ann
+```
+
+The first to log in with the **claim code** becomes the first security
+administrator, who then gives people roles (`viewer`, `operator`,
+`storage-admin`, `security-admin`; see
+[hyperstor-mgmt](../reference/hyperstor-mgmt.md#logins)). The code is
+in the service's log, valid for an hour:
+
+```sh
+journalctl -u hyperstor-mgmt | grep 'claim code'
+# a new one: sudo systemctl restart hyperstor-mgmt
+```
+
+Someone who logs in without a role sees nothing until given one. It
+listens on loopback; from another machine:
 
 ```sh
 ssh -L 8852:127.0.0.1:8852 the-map-service-host
 # then open http://127.0.0.1:8852/
 ```
 
-Changes still go through `hyperstorctl`.
+The dashboard only shows; changes go through `hyperstorctl`, or the
+cluster API through `hyperstor-mgmt` (`POST /api/hyperstor.v1.…`) as the
+person logged in, with an API token for scripts.
 
 ## Health
 

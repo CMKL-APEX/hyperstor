@@ -26,14 +26,17 @@ design is split by topic, with section numbers kept across files.
   (replicated through Raft) for storage hosts and map service members
   with certificate renewal over the API, an encrypted backup of the root
   CA's key, drains as operations, and `hyperstor-install` with host
-  checks, an all-in-one trial cluster and `--join`. `spec/implementation-notes.md` has
+  checks, an all-in-one trial cluster and `--join`; in AD2, people's
+  password logins to `hyperstor-mgmt` (sessions, API tokens, Cedar roles
+  with step-up, the first administrator's claim, the cluster API on
+  their behalf). `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D106 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I127, and every host check (G1–G23,
+  rule, F1–F12 in detail, I1–I78, I80–I134, and every host check (G1–G23,
   FG1–FG2).
 - **Next:** the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
@@ -42,8 +45,8 @@ design is split by topic, with section numbers kept across files.
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
   `spec/administration.md`, milestones AD0–AD4; next there:
-  people's logins and the web UI (AD2, D96–D100, decision-log.md
-  "People's logins and the web UI": a glidex PR for `glidex-auth` first).
+  the rest of AD2 (D96–D100): OIDC logins, `hyperstorctl` through
+  `hyperstor-mgmt`, and the React web UI on `@glidex/ui-kit`.
   Installing on whole devices waits for a storage test host.
 
 ## Design work

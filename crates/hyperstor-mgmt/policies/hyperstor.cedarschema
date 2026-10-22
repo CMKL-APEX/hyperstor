@@ -1,0 +1,119 @@
+// The management service's schema (spec/administration.md §23.9.2):
+// people, the cluster, and one action per call a person may make,
+// each in the group of the role that allows it. Written by hand; a test
+// checks it against the protos and mgmt's table of actions.
+namespace Hyperstor {
+  entity User = { "roles": Set<String> };
+  entity Cluster;
+  type Auth = { "method": String, "transport": String, "age_secs": Long, "mfa": Bool };
+
+  action "read";
+  action "operate";
+  action "store";
+  action "secure";
+  action "own";
+  action "step-up";
+
+  action "ClusterService.GetStatus" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListPgs" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListVolumes" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "OperationService.GetOperation" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "OperationService.ListOperations" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "MemberService.ListMembers" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "Dashboard.Read" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.SetDeviceIn" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "NodeService.DrainNode" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "OperationService.CancelOperation" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.CreateVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.DeleteVolume" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListSnapshots" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.CreateSnapshot" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.DeleteSnapshot" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.CloneVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.RollbackVolume" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.FlattenVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.CreateGroupSnapshot" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.DeleteGroupSnapshot" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "MemberService.AddMember" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "MemberService.RemoveMember" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TokenService.CreateToken" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TokenService.ListTokens" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TokenService.RevokeToken" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "CaService.ListCertificates" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "CaService.RevokeCertificate" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "MapService.GetMapBackup" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.ListUsers" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.SetRoles" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.DeleteUser" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.CreateToken" in [Action::"own", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.ListTokens" in [Action::"own"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "People.RevokeToken" in [Action::"own"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+}

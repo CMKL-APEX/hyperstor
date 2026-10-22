@@ -464,7 +464,11 @@ pub fn to_yaml(v: &serde_json::Value) -> String {
         let pad = " ".repeat(indent);
         match v {
             serde_json::Value::Object(m) => {
-                for (k, x) in m {
+                // Keys in order, whatever serde_json's map keeps (a
+                // dependency may turn on `preserve_order`).
+                let mut keys: Vec<_> = m.iter().collect();
+                keys.sort_by(|a, b| a.0.cmp(b.0));
+                for (k, x) in keys {
                     match scalar(x) {
                         Some(s) => out.push_str(&format!("{pad}{k}: {s}\n")),
                         None => {

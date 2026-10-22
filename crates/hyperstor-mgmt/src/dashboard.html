@@ -20,6 +20,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
@@ -60,6 +61,14 @@
   button.link { background: none; border: 0; color: var(--backfill); cursor: pointer; padding: 0; font: inherit; }
   .muted { color: var(--muted); }
   .error-box { color: var(--error); }
+  .login { max-width: 360px; margin: 48px auto; display: grid; gap: 10px; }
+  .login label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+  .login input { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+                 background: var(--bg); color: var(--text); }
+  .login button, header button { font: inherit; padding: 7px 12px; border-radius: 6px; cursor: pointer;
+                 border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  .login button[type=submit] { background: var(--backfill); border-color: var(--backfill); color: #fff; }
+  #who { display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: 13px; }
   pre { margin: 8px 0 0; max-height: 280px; overflow: auto; font-size: 12px; }
 </style>
 </head>
@@ -68,8 +77,20 @@
   <h1>Hyperstor</h1>
   <span class="meta" id="cluster">connecting…</span>
   <span class="updated" id="updated"></span>
+  <span id="who" hidden><span id="user"></span><button type="button" id="logout">Log out</button></span>
 </header>
-<main>
+<section class="login" id="login" hidden>
+  <h2>Log in</h2>
+  <form id="login-form" class="login" style="margin:0">
+    <label>User name <input id="login-user" autocomplete="username" required></label>
+    <label>Password <input id="login-password" type="password" autocomplete="current-password" required></label>
+    <label id="claim-row" hidden>Claim code (the first security administrator; printed by hyperstor-mgmt at start)
+      <input id="login-claim" autocomplete="off"></label>
+    <button type="submit">Log in</button>
+    <span class="error-box" id="login-error"></span>
+  </form>
+</section>
+<main id="main">
   <section>
     <h2>Health</h2>
     <div class="health">
@@ -94,7 +115,7 @@
     <h2>Storage nodes</h2>
     <div class="wrap"><table id="nodes"></table></div>
   </section>
-  <p class="muted">Read-only. Changes: <code>hyperstorctl</code> on the map service's host.</p>
+  <p class="muted">Read-only here. Changes: <code>hyperstorctl</code>, or the cluster API through this service.</p>
 </main>
 <script src="/app.js"></script>
 </body>
