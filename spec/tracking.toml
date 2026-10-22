@@ -173,7 +173,7 @@ tests = [
 
 [[milestone.item]]
 what = "Recovering the map service: map backups, member changes at run time, and a group that lost its majority"
-spec = ["I65", "decision-log.md points 43-45"]
+spec = ["D85", "D86", "D87"]
 status = "planned"
 
 [[milestone.item]]

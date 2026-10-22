@@ -29,7 +29,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D92 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I106, decision-log.md points 43–46 (recovering the map service, the root key's backup), and every host check (G1–G21,
+  rule, F1–F12 in detail, I1–I78, I80–I106, and every host check (G1–G21,
   FG1–FG2).
 - **Next:** changing the map service's members at run time (I65); the
   copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
@@ -40,7 +40,7 @@ design is split by topic, with section numbers kept across files.
   `spec/administration.md`, milestones AD0–AD4; next there: the
   certificate denylist pushed with the map (D56, with the blocklist),
   map backups, member changes at run time and recovery of a group that
-  lost its majority (points 43–45),
+  lost its majority (D85–D87),
   `buf` in CI (I93), installing on whole devices, then `glidex-auth`
   and people's logins (AD2).
 
