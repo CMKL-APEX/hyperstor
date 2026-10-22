@@ -970,7 +970,7 @@ impl Meta {
                     map_epoch: map.epoch,
                 }
             }
-            // D87: only the PG's primary, at the PG's current epoch.
+            // D91: only the PG's primary, at the PG's current epoch.
             Ok(Msg::MemberSlow {
                 reporter,
                 pool,
@@ -1244,7 +1244,7 @@ mod tests {
         assert_eq!(beat(3), 400);
     }
 
-    /// D87: a slow member leaves a PG on its primary's report only; a
+    /// D91: a slow member leaves a PG on its primary's report only; a
     /// primary that peers report silent may be the one cut off, so its
     /// reports are ignored. A failed device leaves placement at once.
     #[test]

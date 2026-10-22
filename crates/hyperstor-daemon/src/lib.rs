@@ -134,7 +134,7 @@ pub struct NodeConfig {
     /// hard disks.
     pub defer_max: Option<usize>,
     /// Test hook: node pairs that can't reach each other (decisions.md
-    /// D88); this node's reactors send nothing to a node it is cut from.
+    /// D92); this node's reactors send nothing to a node it is cut from.
     pub partitions: Option<Arc<faults::Partitions>>,
 }
 
@@ -381,7 +381,7 @@ impl Drop for Expiry<'_> {
 }
 
 /// How long a primary waits for a replica to answer a replicated change
-/// before reporting it too slow for the PG (decisions.md D87).
+/// before reporting it too slow for the PG (decisions.md D91).
 pub const REPL_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn blocklisted(map: &ClusterMap) -> Msg {
@@ -1146,7 +1146,7 @@ impl ShardState {
     /// `deadline` (the operation timeout from when it was sent), with one
     /// timer for them all. A member that doesn't answer in time, or whose
     /// connection breaks, is reported to the map service, which takes it
-    /// out of the PG (D87). The first failure, if any.
+    /// out of the PG (D91). The first failure, if any.
     async fn await_replicas<F>(
         self: &Rc<Self>,
         to: Target,
@@ -1198,7 +1198,7 @@ impl ShardState {
     }
 
     /// Tells the map service, once per PG epoch, that `device` is too slow
-    /// for the PG (D87).
+    /// for the PG (D91).
     fn report_slow(self: &Rc<Self>, to: Target, device: u32) {
         let k = (to.pool, to.pg, to.pg_epoch, device);
         if !self.slow_reported.borrow_mut().insert(k) {
@@ -1254,7 +1254,7 @@ impl ShardState {
                 Ok(c) => conns.push((*d, c)),
                 Err(e) => {
                     // An acting member this primary can't reach is taken
-                    // out of the PG as a slow one is (D87): its node may be
+                    // out of the PG as a slow one is (D91): its node may be
                     // up for everyone else (a partition between two nodes).
                     if pg.acting.contains(d) {
                         self.report_slow(*to, *d);

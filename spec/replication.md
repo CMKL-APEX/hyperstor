@@ -37,7 +37,7 @@ members, as long as there are at least `min_size` of them. Below
   of the in-sync set. A snapshot's versions never change, so any copy is
   current. The client picks the closest member, then the least loaded.
 - **As built** (HS2, implementation-notes.md I104): the read lease is the
-  map lease (D85). A primary whose copy fails its checksums fetches a
+  map lease (D89). A primary whose copy fails its checksums fetches a
   member's copy, replaces its own with it, and serves the read from it.
 
 ### 8.3 The PG log
@@ -54,7 +54,7 @@ members, as long as there are at least `min_size` of them. Below
   sends only the objects whose digests differ, and deletes for objects
   it no longer has. It costs a scan of the PG's index entries on both
   sides, not of the data, and needs no new persisted state. The log is
-  built only if G21 shows the scans too slow (D86).
+  built only if G21 shows the scans too slow (D90).
 
 ### 8.4 Primaries, epochs and leases (D8, D42)
 
@@ -69,10 +69,10 @@ members, as long as there are at least `min_size` of them. Below
   replaced.
 - **As built** (HS2): leases and fencing as above, pushes as the fast
   path, polling every 200 ms as the fallback. Replica-granted read leases
-  (below) are not built, by D85; they would let reads continue through an
+  (below) are not built, by D89; they would let reads continue through an
   outage of the whole map service, which map leases don't (the amendment
   to D23).
-- **Replica-granted read leases** (the original design, not built: D85). A primary may serve reads only while a lease from every in-sync
+- **Replica-granted read leases** (the original design, not built: D89). A primary may serve reads only while a lease from every in-sync
   member is valid. Members grant it with each `Repl` reply and each
   heartbeat, for 8 s, measured on their own monotonic clocks. A member
   that peers in a newer epoch first waits out the leases it has granted.
@@ -195,7 +195,7 @@ Expiry and eviction are not built yet.
 | A storage daemon crashes | Its PGs go to new primaries in a new `pg_epoch` after 10 s. When it restarts it replays its engine log, rejoins, and catches up by recovery. |
 | A node is down for good | After `down_out_interval` its PGs are re-placed and backfilled (placement.md §5.3). |
 | A device fails | It is marked `failed`; its PGs are re-placed at once, without waiting for `down_out_interval` (I102). |
-| A replica is slow, or its primary can't reach it | Its primary reports it after the operation timeout (2 s) and it is dropped from that PG's acting set, then backfilled back (D87, I103). |
+| A replica is slow, or its primary can't reach it | Its primary reports it after the operation timeout (2 s) and it is dropped from that PG's acting set, then backfilled back (D91, I103). |
 | The primary is cut off from its replicas | Its peers report it and it is marked down; its map lease runs out, so it stops serving, and a new primary takes over (§8.4, D40). |
 | The metadata service loses quorum | I/O, lease renewals, releases and ordinary volume operations continue on the current map. PG failover, rebalancing, blocklisting and so forced lease takeovers wait (D23). A PG that loses a member meanwhile can't shrink its in-sync set, so its writes stall until quorum is back. |
 | The client's host dies | Its volume leases expire; the next attachment is a forced takeover with a blocklist round (metadata.md §9). |

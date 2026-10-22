@@ -807,7 +807,7 @@ cargo test --release -p hyperstor-daemon --test cluster -- a_forced --nocapture
 
 ## 2026-10-22: the rest of HS2 on the I/O path (dev-2)
 
-Question: do the slow-replica timeout (D87), the repair hold and the
+Question: do the slow-replica timeout (D91), the repair hold and the
 failed-device check cost the write path anything? `HS_BENCH_SECS=3
 hyperstor-bench cluster mem 1`, `main` (`08407b4`) against this branch,
 alternately twice, at three stages of the branch:

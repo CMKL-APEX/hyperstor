@@ -238,7 +238,7 @@ tests = [
 
 [[milestone.item]]
 what = "Peering and delta recovery, by content digests instead of a PG log"
-spec = ["replication.md §8.3", "replication.md §8.4", "D86", "I57", "I61"]
+spec = ["replication.md §8.3", "replication.md §8.4", "D90", "I57", "I61"]
 status = "done"
 tests = [
     "cluster::a_returning_node_gets_only_what_changed",
@@ -250,7 +250,7 @@ tests = [
 
 [[milestone.item]]
 what = "Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums"
-spec = ["replication.md §8.2", "replication.md §8.4", "D85", "I104"]
+spec = ["replication.md §8.2", "replication.md §8.4", "D89", "I104"]
 status = "done"
 tests = [
     "cluster::a_read_of_a_damaged_primary_copy_is_served_and_repaired",
@@ -287,7 +287,7 @@ tests = [
 
 [[milestone.item]]
 what = "Slow and unreachable replicas leave a PG"
-spec = ["replication.md §15", "D87", "I103"]
+spec = ["replication.md §15", "D91", "I103"]
 status = "done"
 tests = [
     "cluster::a_hung_replica_is_dropped_from_its_pg_and_comes_back",
@@ -297,7 +297,7 @@ tests = [
 
 [[milestone.item]]
 what = "Fault-injection test rig: kill, partition, slow disk"
-spec = ["D88", "I106"]
+spec = ["D92", "I106"]
 status = "done"
 tests = [
     "cluster::random_faults_lose_no_acknowledged_write",

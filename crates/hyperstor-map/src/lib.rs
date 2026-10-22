@@ -475,7 +475,7 @@ impl ClusterMap {
         Some(changed)
     }
 
-    /// Takes `device` out of a PG's acting set (replication.md §15, D87: a
+    /// Takes `device` out of a PG's acting set (replication.md §15, D91: a
     /// replica too slow to answer), if the PG is still at `pg_epoch` and
     /// keeps `min_size` copies; it stays in `up`, so it is backfilled back.
     /// Bumps the epoch; whether it was taken out.

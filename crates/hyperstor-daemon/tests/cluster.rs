@@ -48,9 +48,9 @@ struct Cluster {
     meta_tx: Sender<MetaCmd>,
     meta_thread: Option<std::thread::JoinHandle<ClusterMap>>,
     nodes: Vec<Option<NodeHandle>>,
-    /// Node pairs cut from each other (D88), shared by every node.
+    /// Node pairs cut from each other (D92), shared by every node.
     partitions: Arc<hyperstor_daemon::faults::Partitions>,
-    /// Every device, by id, to make it slow or fail (D88).
+    /// Every device, by id, to make it slow or fail (D92).
     faulty: std::collections::HashMap<u32, Arc<hyperstor_daemon::faults::FaultyDev>>,
 }
 
@@ -2021,7 +2021,7 @@ fn a_failed_device_is_placed_elsewhere_at_once() {
     let _ = data;
 }
 
-/// A replica whose disk hangs while its node stays up (D87): the primary
+/// A replica whose disk hangs while its node stays up (D91): the primary
 /// waits the operation timeout, reports it, and the map service takes it
 /// out of the PG, so writes go on; once the disk answers again it is
 /// backfilled back.
@@ -2068,7 +2068,7 @@ fn a_hung_replica_is_dropped_from_its_pg_and_comes_back() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// A partition between a primary and one replica only (D87): neither
+/// A partition between a primary and one replica only (D91): neither
 /// node is down for anyone else, so liveness and peer reports never act;
 /// the primary reports the member it can't reach, and the PG goes on
 /// without it until the partition heals.
@@ -2268,7 +2268,7 @@ fn scrub_repairs_an_outvoted_primary_and_reports_what_it_cant() {
     copies_agree(&map, devs, &[(1, 0), (1, 1), (1, 2), (1, 3)]);
 }
 
-/// The fault-injection rig (D88): a randomized run of writes while nodes
+/// The fault-injection rig (D92): a randomized run of writes while nodes
 /// stop and restart, pairs of nodes are cut from each other, and devices
 /// hang, against a model. A write that fails may or may not have landed,
 /// so each chunk keeps every value it may hold; after everything heals,

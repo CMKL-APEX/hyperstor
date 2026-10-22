@@ -386,7 +386,7 @@ pub enum Msg {
         device: u32,
     },
     /// Primary `reporter` to map service: `device` hasn't answered a
-    /// replicated write of the PG within the operation timeout (D87).
+    /// replicated write of the PG within the operation timeout (D91).
     MemberSlow {
         reporter: u32,
         pool: u32,

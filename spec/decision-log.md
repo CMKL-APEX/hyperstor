@@ -485,7 +485,7 @@ recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 47 | Read leases: build replica-granted read leases, or let map leases cover | Map leases cover; close the item | D85 |
-| 48 | PG log: build it, or keep digests (I57, I61) | Keep digests; the log only if scans prove slow | D86, G21 |
-| 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D87 |
-| 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D88 |
+| 47 | Read leases: build replica-granted read leases, or let map leases cover | Map leases cover; close the item | D89 |
+| 48 | PG log: build it, or keep digests (I57, I61) | Keep digests; the log only if scans prove slow | D90, G21 |
+| 49 | A slow or hung replica: the primary drops it per PG after an operation timeout, or leave it to liveness | The primary drops it per PG | D91 |
+| 50 | Fault-injection rig: in process, or also multi-host with `tc`/netns | In process | D92 |
