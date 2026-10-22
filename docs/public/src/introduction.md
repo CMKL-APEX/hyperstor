@@ -22,7 +22,8 @@ on its own.
   recovery.
 - **Failure handling.** The map service notices when a node stops
   answering, moves its work to other nodes, and refills a node when it
-  comes back.
+  comes back with only what it missed. A background scrub compares the
+  copies and repairs one that is damaged or differs.
 - **A client library** for Rust programs to read and write volumes.
 
 ## What is planned

@@ -66,14 +66,14 @@ A device that returns an I/O error refuses every later change until it is
 opened again, by restarting its node. If the device is broken, replace it
 and start the node again: the new device is formatted, and its PGs are
 backfilled. A block whose checksum doesn't match is never returned to a
-client.
+client, and the weekly deep [scrub](#scrub) finds such blocks before a
+client reads them and replaces them from the other copies.
 
 ## Not handled yet
 
 - Taking a node out for good (marking it *out*) without editing the
   cluster file and restarting the map service.
-- Scrubbing: reading all copies in the background to find silent
-  corruption.
-- Recovery that copies only the writes a node missed.
+- Taking over a PG by force when its last in-sync copies can't be
+  reached, and blocking a node that must not come back.
 
 See [Status](../status.md).
