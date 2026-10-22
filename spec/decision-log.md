@@ -468,12 +468,21 @@ service member, or every member, is lost.
 - **Every member's disk lost:** the map is gone, though the data is on
   the storage nodes. No way back yet (point 44).
 
-### Open points
+### Points settled the same day
 
-| # | Point | Options | Recommendation |
+The owner took each recommendation (D85–D88).
+
+| # | Point | Options | Recommendation (taken) |
 |---|---|---|---|
 | 43 | **Recovering a group that lost its majority for good** | (a) `hyperstor-meta --force-alone` on a survivor, offline: it rewrites the membership to itself, starts as a group of one, and the others join again as new members; (b) only restore from a backup (point 44) into new members; (c) none: wait for the disks | (a), as etcd's `--force-new-cluster`, with rules: it refuses while another member answers; it needs an explicit flag naming the cluster id; the group gets a new generation number so the old members can't rejoin with their logs; it is audited. The survivor may lack the last commits before the loss: those map changes are lost, which leases make safe (a new leader waits them out, D73) but a host joined in that window must join again. |
 | 44 | **Map backups** | (a) the leader writes a snapshot to a directory every few minutes and on every change, kept N deep; (b) `hyperstorctl map backup` fetches one through the API; (c) rebuild the map from what the storage nodes report | (a) and (b) now: the map has no secret (tokens are hashes), and a restore is `hyperstor-meta --restore FILE` into a group of one, then members join. (c) later, as a check of a restored map against the nodes. |
 | 45 | **Changing the map service's members at run time** (I65) | (a) `hyperstorctl member add/remove` through openraft's joint consensus, a new member a learner until it has caught up; (b) keep members fixed at install | (a), one change at a time, refusing to go below three members unless forced; a replacement on new addresses becomes add, wait, remove. |
 | 46 | **The root key's backup (D84)** | (a) warn on every install and `check` until backed up (built); (b) refuse to finish the first install without one; (c) split the root among several administrators (Shamir, k of n) | (a) now: an install that refuses breaks unattended and trial installs, and the warning repeats daily from the timer. (c) for sites with several administrators, later. |
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 43 | Recovering a group that lost its majority | A forced, offline start of one survivor, with the rules above | D85 |
+| 44 | Map backups | Snapshots by the leader, and `hyperstorctl map backup`; rebuilding from the nodes later | D86 |
+| 45 | Member changes at run time | Add and remove one at a time, a learner first, not below three unless forced | D87 |
+| 46 | The root key's backup | Warn until backed up; Shamir splitting later | D88 |
 
