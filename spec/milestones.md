@@ -141,3 +141,8 @@ sections that depend on them are final:
   `hyperstor-bench cluster` on the same cluster, to see what ublk and
   its one queue cost; and check the kernels glidex hosts run (ublk needs
   Linux 6.0; tested on 6.8).
+- **G23. Zoned and FDP drives for write-once pools** (D105). On an NVMe
+  drive with Flexible Data Placement or zones, write model weights,
+  checkpoint bursts and expiring cache data packed per reclaim unit or
+  zone, against today's allocator: device write amplification (from the
+  drive's log pages), throughput, and p99 read latency during the writes.

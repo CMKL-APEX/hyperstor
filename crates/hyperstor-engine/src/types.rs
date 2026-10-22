@@ -117,6 +117,12 @@ pub enum Op {
     KvDelRange(Vec<u8>, Vec<u8>),
     /// Deletes the object; later operations in the list create it anew.
     Delete,
+    /// Takes every block of object `src` that this object doesn't hold,
+    /// without copying data, then deletes `src` (whose other blocks, which
+    /// this object overrides, are freed). The size becomes the larger of
+    /// the two. Merges a deleted snapshot's chunk version into the next
+    /// newer one (decisions.md D104). `src` must be another object.
+    Absorb(ObjKey),
 }
 
 /// An atomic list of operations on one object.
@@ -146,6 +152,8 @@ pub enum OpError {
     NoSpace,
     #[error("operation list too large for one log record")]
     TooLarge,
+    #[error("an object can't absorb itself")]
+    SelfAbsorb,
 }
 
 /// Engine failures. After an I/O error during a commit, the shard refuses

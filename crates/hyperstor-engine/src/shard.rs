@@ -691,7 +691,7 @@ impl Shard {
             pending: std::mem::take(&mut self.pending),
         };
         while let Some(list) = lists.front() {
-            let est = estimate(list);
+            let est = self.estimate(list);
             if est > budget {
                 lists.pop_front();
                 results.push(Err(OpError::TooLarge));
@@ -701,11 +701,16 @@ impl Shard {
                 break;
             }
             let list = lists.pop_front().unwrap();
-            match self.plan(list, &mut fx, &mut writes) {
+            let mut others = Vec::new();
+            match self.plan(list, &mut fx, &mut writes, &mut others) {
                 Ok((rl, c)) => {
-                    if !rl.ops.is_empty() {
-                        rl.encode(&mut payload);
-                        count += 1;
+                    // Other objects a list changed (`Absorb`), in the same
+                    // record, so the change is atomic.
+                    for o in others.iter().chain(std::iter::once(&rl)) {
+                        if !o.ops.is_empty() {
+                            o.encode(&mut payload);
+                            count += 1;
+                        }
                     }
                     results.push(Ok(c));
                 }
@@ -769,6 +774,7 @@ impl Shard {
         list: OpList,
         fx: &mut Effects,
         writes: &mut Vec<(u64, AlignedBuf)>,
+        others: &mut Vec<RList>,
     ) -> Result<(RList, Committed), OpError> {
         let key = list.key;
         let cur = self.index.objects.get(&key).map_or(0, |o| o.revision);
@@ -797,6 +803,7 @@ impl Shard {
                     }
                     mutates = true;
                 }
+                Op::Absorb(src) if *src == key => return Err(OpError::SelfAbsorb),
                 _ => mutates = true,
             }
         }
@@ -909,6 +916,60 @@ impl Shard {
                 Op::KvDel(k) => step(&mut self.index, fx, ROp::KvDel(k), &mut rops),
                 Op::KvDelRange(a, b) => step(&mut self.index, fx, ROp::KvDelRange(a, b), &mut rops),
                 Op::Delete => step(&mut self.index, fx, ROp::Delete, &mut rops),
+                Op::Absorb(src) => {
+                    let Some(s) = self.index.objects.get(&src) else {
+                        continue;
+                    };
+                    let ssize = s.size;
+                    let mine = self.index.objects.get(&key);
+                    // The source's blocks this object lacks, as runs.
+                    let mut moves: Vec<(u64, u64, Vec<u32>)> = Vec::new();
+                    for (lb, pb, crcs) in s.blocks.runs() {
+                        for (i, crc) in crcs.into_iter().enumerate() {
+                            let (l, p) = (lb + i as u64, pb + i as u64);
+                            if mine.is_some_and(|o| o.all_mapped(l, 1)) {
+                                continue;
+                            }
+                            match moves.last_mut() {
+                                Some((ml, mp, mc))
+                                    if *ml + mc.len() as u64 == l && *mp + mc.len() as u64 == p =>
+                                {
+                                    mc.push(crc)
+                                }
+                                _ => moves.push((l, p, vec![crc])),
+                            }
+                        }
+                    }
+                    // The source gives the moved blocks up, then is deleted:
+                    // only the blocks this object overrides are freed.
+                    let mut sops: Vec<ROp> = moves
+                        .iter()
+                        .map(|(l, _, c)| ROp::Forget {
+                            lb: *l,
+                            n: c.len() as u64,
+                        })
+                        .collect();
+                    sops.push(ROp::Delete);
+                    for op in &sops {
+                        self.index.apply_op(&src, op, fx);
+                    }
+                    others.push(RList {
+                        key: src,
+                        ops: sops,
+                    });
+                    for (lb, pblock, crcs) in moves {
+                        step(
+                            &mut self.index,
+                            fx,
+                            ROp::Map { lb, pblock, crcs },
+                            &mut rops,
+                        );
+                    }
+                    let size = self.index.objects.get(&key).map_or(0, |o| o.size);
+                    if ssize > size {
+                        step(&mut self.index, fx, ROp::SetSize(ssize), &mut rops);
+                    }
+                }
             }
         }
         // A list that ends with the object deleted leaves no revision; one
@@ -1176,6 +1237,20 @@ impl Shard {
     }
 
     fn read_object(&self, o: &Object, off: u64, len: u64) -> Result<AlignedBuf, EngineError> {
+        self.read_with(off, len, |lb| match o.lookup(lb) {
+            Loc::Mapped { pblock, crc } => Some((pblock, crc)),
+            Loc::Hole => None,
+        })
+    }
+
+    /// Reads `[off, off + len)` with `locate` saying where each logical
+    /// block is (physical block and CRC; none: a hole), checking CRCs.
+    fn read_with(
+        &self,
+        off: u64,
+        len: u64,
+        locate: impl Fn(u64) -> Option<(u64, u32)>,
+    ) -> Result<AlignedBuf, EngineError> {
         let mut out = AlignedBuf::zeroed(len as usize);
         let lb0 = off / BLOCK as u64;
         let n = len / BLOCK as u64;
@@ -1185,7 +1260,7 @@ impl Shard {
         let mut crcs: Vec<(u64, u32)> = Vec::new();
         for i in 0..n {
             let lb = lb0 + i;
-            if let Loc::Mapped { pblock, crc } = o.lookup(lb) {
+            if let Some((pblock, crc)) = locate(lb) {
                 if let Some(d) = self.pending.get(&pblock) {
                     let at = (i as usize) * BLOCK;
                     out[at..at + BLOCK].copy_from_slice(d);
@@ -1366,6 +1441,73 @@ fn in_ranges(ranges: &BTreeMap<u64, u64>, x: u64) -> bool {
 /// An upper bound on a list's encoded size in a log record. A list whose
 /// bound exceeds [`Shard::max_list_bytes`] is refused with
 /// [`OpError::TooLarge`].
+impl Shard {
+    /// [`estimate`], with the source objects of `Absorb` as they are now.
+    fn estimate(&self, list: &OpList) -> usize {
+        let mut n = estimate(list);
+        for op in &list.ops {
+            if let Op::Absorb(src) = op
+                && let Some(s) = self.index.objects.get(src)
+            {
+                // A Forget and a Map per run, a CRC per block.
+                n += 64
+                    + src.name.len()
+                    + s.blocks.run_count() as usize * 48
+                    + 4 * s.block_count() as usize;
+            }
+        }
+        n
+    }
+
+    /// The versions of the object `key` names (every version of its pool,
+    /// PG, namespace and name), oldest first.
+    pub fn versions(&self, key: &ObjKey) -> Vec<u64> {
+        let lo = ObjKey {
+            version: 0,
+            ..key.clone()
+        };
+        let hi = ObjKey {
+            version: u64::MAX,
+            ..key.clone()
+        };
+        self.index
+            .objects
+            .range(lo..=hi)
+            .map(|(k, _)| k.version)
+            .collect()
+    }
+
+    /// Reads `[off, off + len)` through `layers`, the first first: each
+    /// block comes from the first object that holds it, and reads as zeros
+    /// if none does (a volume chunk read at an epoch through its versions
+    /// and its clone's parents, engine.md §7.2). `NotFound` if no layer
+    /// exists.
+    pub fn read_layered(
+        &self,
+        layers: &[ObjKey],
+        off: u64,
+        len: u64,
+    ) -> Result<AlignedBuf, EngineError> {
+        self.check()?;
+        if !off.is_multiple_of(BLOCK as u64) || !len.is_multiple_of(BLOCK as u64) {
+            return Err(EngineError::Unaligned);
+        }
+        let objs: Vec<&Object> = layers
+            .iter()
+            .filter_map(|k| self.index.objects.get(k))
+            .collect();
+        if objs.is_empty() {
+            return Err(EngineError::NotFound);
+        }
+        self.read_with(off, len, |lb| {
+            objs.iter().find_map(|o| match o.lookup(lb) {
+                Loc::Mapped { pblock, crc } => Some((pblock, crc)),
+                Loc::Hole => None,
+            })
+        })
+    }
+}
+
 pub fn estimate(list: &OpList) -> usize {
     let mut n = 64 + list.key.name.len();
     for op in &list.ops {

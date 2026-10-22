@@ -532,3 +532,18 @@ embeds `glidex-authd`), D100 (the UI embedded in the binary).
    security, audit), embedded (D100), with end-to-end tests in the
    browser as glidex's.
 
+## Snapshots and the engine (2026-10-22)
+
+HS4 (snapshots, clones and the host read cache) came before HS3 at the
+owner's request. Asked with options and a recommendation each; the owner
+also proposed an engine design (a zoned log for data with large
+immutable extents, an in-memory radix tree or hash for the mapping,
+snapshots cut by sealing the index root and flushing its delta in the
+background), discussed before deciding:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 53 | Snapshots on today's index, or the copy-on-write B+tree first; the owner's zoned-log proposal | Split: snapshots now with the epoch in the key; seal-and-flush for checkpoints next; zones for write-once pools later | D101, D105, G23 |
+| 54 | The host read cache: in the client library, or wait for `hyperstor-vhost` | The client library | D102 |
+| 55 | Quiescing an attached volume: a long-poll watch, or news on renewals | Long-poll watch | D103 |
+| 56 | Snapshot deletion: the engine moves blocks, or copy the data | The engine moves them | D104 |
