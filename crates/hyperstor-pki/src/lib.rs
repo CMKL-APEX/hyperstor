@@ -487,6 +487,29 @@ impl rustls::client::danger::ServerCertVerifier for Pinned {
     }
 }
 
+/// A client of `hyperstor-mgmt`'s web side (no certificate of its own):
+/// it trusts the host's CAs, and `extra_ca`'s certificates too when given
+/// (an operator's own CA, or the cluster's), so any of D107's web
+/// certificates verifies.
+pub fn web_client_config(extra_ca: Option<&str>) -> Result<rustls::ClientConfig, String> {
+    let mut store = rustls::RootCertStore::empty();
+    let native = rustls_native_certs::load_native_certs();
+    store.add_parsable_certificates(native.certs);
+    if let Some(pem) = extra_ca {
+        for c in certs(pem)? {
+            store.add(c).map_err(err)?;
+        }
+    }
+    if store.is_empty() {
+        return Err("no trusted CA: none on this host, and no --mgmt-ca".into());
+    }
+    Ok(rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(err)?
+        .with_root_certificates(store)
+        .with_no_client_auth())
+}
+
 /// A client that presents `chain` and trusts servers that chain to `root`.
 pub fn client_config(
     chain: &str,

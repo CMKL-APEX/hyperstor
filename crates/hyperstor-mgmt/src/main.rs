@@ -280,11 +280,26 @@ fn json_resp(status: u16, v: serde_json::Value) -> Resp {
     respond(status, "application/json", v.to_string())
 }
 
-fn error(status: u16, code: &str, message: &str) -> Resp {
-    json_resp(
-        status,
-        serde_json::json!({ "code": code, "message": message }),
-    )
+/// A refusal as the Connect protocol writes one (`code`, `message`, and
+/// the reason as an `ErrorInfo` detail, as the cluster API's own), so
+/// `hyperstorctl` and the UI read mgmt's refusals and the API's alike;
+/// `reason` is also a field of its own, for browsers.
+fn error(status: u16, reason: &str, message: &str) -> Resp {
+    use connectrpc::ConnectError as E;
+    let e = match status {
+        400 => E::invalid_argument(message),
+        401 => E::unauthenticated(message),
+        403 => E::permission_denied(message),
+        404 => E::not_found(message),
+        409 => E::already_exists(message),
+        413 | 429 => E::resource_exhausted(message),
+        503 => E::unavailable(message),
+        _ => E::internal(message),
+    };
+    let e = hyperstor_api::with_reason(e, reason);
+    let mut v: serde_json::Value = serde_json::from_slice(&e.to_json()).expect("json");
+    v["reason"] = reason.into();
+    json_resp(status, v)
 }
 
 /// One audit record (§23.9.4) for what a person did, on standard error.
@@ -778,6 +793,7 @@ async fn with_login(
                 &state.api_addrs,
                 &rpc_path(rpc),
                 &parts.headers,
+                &who,
                 body,
             )
             .await;
@@ -905,6 +921,31 @@ mod tests {
         ] {
             assert!(!host_allowed(bad, 8852, &[]), "{bad}");
         }
+    }
+
+    /// mgmt's refusals read as the API's: a Connect error whose reason
+    /// `hyperstorctl` finds.
+    #[test]
+    fn refusals_are_connect_errors_with_reasons() {
+        use http_body_util::BodyExt;
+        let r = error(401, "reauth_required", "log in again");
+        assert_eq!(r.status(), 401);
+        let body = block_on(r.into_body().collect()).unwrap().to_bytes();
+        let e: connectrpc::ConnectError = serde_json::from_slice(&body).unwrap();
+        assert_eq!(e.code, connectrpc::ErrorCode::Unauthenticated);
+        assert_eq!(
+            hyperstor_api::reason_of(&e).as_deref(),
+            Some("reauth_required"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
     }
 
     #[test]

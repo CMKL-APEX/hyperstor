@@ -32,7 +32,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
     assert!(js.contains("/api/status") && js.contains("/auth/login"));
     let (code, _, b) = c.dashboard("GET", "/api/status", &host);
     assert_eq!(code, 401, "{b}");
-    assert_eq!(json(&b)["code"], "unauthenticated");
+    assert_eq!(json(&b)["reason"], "unauthenticated");
     let (_, _, m) = c.dashboard("GET", "/auth/methods", &host);
     assert_eq!(json(&m)["claim_open"], true, "{m}");
 
@@ -91,7 +91,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
         roles,
     );
     assert_eq!(
-        (code, json(&b)["code"].clone()),
+        (code, json(&b)["reason"].clone()),
         (403, "csrf".into()),
         "{b}"
     );
@@ -107,7 +107,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
         roles,
     );
     assert_eq!(
-        (code, json(&b)["code"].clone()),
+        (code, json(&b)["reason"].clone()),
         (403, "bad_origin".into()),
         "{b}"
     );
@@ -150,7 +150,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
     let vol = r#"{"pool":1,"size":"1048576","name":"by-mgmt"}"#;
     let (code, _, b) = c.as_session(&bob, "POST", create, vol);
     assert_eq!(
-        (code, json(&b)["code"].clone()),
+        (code, json(&b)["reason"].clone()),
         (403, "permission_denied".into()),
         "{b}"
     );
@@ -158,9 +158,31 @@ fn people_log_in_and_do_what_their_roles_allow() {
     let rows = "/api/hyperstor.v1.MgmtStoreService/ListRows";
     assert_eq!(c.as_session(&ann, "POST", rows, "{}").0, 403);
 
-    // Storage administrators manage volumes, through the same API.
-    let (code, _, b) = c.as_session(&ann, "POST", create, vol);
+    // Storage administrators manage volumes, through the same API; the map
+    // service hears whom for, whatever a browser claims (I134).
+    let (code, _, b) = c.web(
+        "POST",
+        create,
+        &host,
+        &[
+            ("Cookie", &ann.cookie),
+            ("X-Hyperstor-CSRF", &ann.csrf),
+            ("Content-Type", "application/json"),
+            ("X-Hyperstor-On-Behalf-Of", "user:bob"),
+        ],
+        vol,
+    );
     assert_eq!(code, 200, "{b}");
+    let for_ann = c
+        .audit()
+        .into_iter()
+        .find(|l| l.contains("\"op\":\"CreateVolume\""));
+    assert!(
+        for_ann
+            .as_deref()
+            .is_some_and(|l| l.contains("/mgmt/dashboard for user:ann\"")),
+        "{for_ann:?}"
+    );
     let id = json(&b)["volume"]["id"].as_str().unwrap().to_string();
     assert!(c.ctl(&["volumes"]).ok().has("by-mgmt"));
 
@@ -197,13 +219,52 @@ fn people_log_in_and_do_what_their_roles_allow() {
     let del = format!(r#"{{"id":"{id}"}}"#);
     let (code, _, b) = by_token("POST", delete, &del);
     assert_eq!(
-        (code, json(&b)["code"].clone()),
+        (code, json(&b)["reason"].clone()),
         (401, "reauth_required".into()),
         "{b}"
     );
     // A fresh login can.
     let (code, _, b) = c.as_session(&ann, "POST", delete, &del);
     assert_eq!(code, 200, "{b}");
+    // hyperstorctl through mgmt, as ann with her token: the same roles,
+    // the same step-up, the API's refusals as hyperstorctl shows them.
+    let ctl = |args: &[&str], token: &str| {
+        let o = std::process::Command::new(c.bin.join("hyperstorctl"))
+            .args(["--mgmt", &format!("http://{host}")])
+            .args(args)
+            .env("HYPERSTOR_TOKEN", token)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.code().unwrap_or(-1), text)
+    };
+    let (code, out) = ctl(&["status"], &token);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = ctl(
+        &["create-volume", "--size", "1M", "--name", "by-ctl"],
+        &token,
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = ctl(&["volumes", "--json"], &token);
+    assert!(code == 0 && out.contains("by-ctl"), "{out}");
+    let (code, out) = ctl(&["delete-volume", "--id", &id], &token);
+    assert!(code == 4 && out.contains("(reauth_required)"), "{out}");
+    let (code, out) = ctl(&["status"], "hst_not-a-token");
+    assert!(code == 4 && out.contains("(unauthenticated)"), "{out}");
+    let out = std::process::Command::new(c.bin.join("hyperstorctl"))
+        .args(["--mgmt", "http://192.0.2.1:8852", "status"])
+        .env("HYPERSTOR_TOKEN", &token)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "no token in clear beyond loopback"
+    );
     // A revoked token is gone.
     let tid = t["info"]["id"].as_str().unwrap();
     let revoke = format!("/auth/tokens/{tid}");

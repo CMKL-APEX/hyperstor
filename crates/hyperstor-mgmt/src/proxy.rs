@@ -60,7 +60,7 @@ async fn once(
         .header(http::header::HOST, addr)
         .body(Full::new(body))
         .map_err(|e| e.to_string())?;
-    for (k, v) in headers.iter().filter(|(k, _)| passes(k)) {
+    for (k, v) in headers.iter() {
         req.headers_mut().append(k.clone(), v.clone());
     }
     let resp = tokio::time::timeout(Duration::from_secs(120), send.send_request(req))
@@ -82,16 +82,29 @@ async fn once(
 
 /// Sends the call `path` (`/hyperstor.v1.<Service>/<Method>`) to each of
 /// `addrs` in turn until one answers other than `503`.
+/// The map service is told the call is for `person` (`user:NAME`,
+/// [`hyperstor_api::ON_BEHALF_HEADER`]); a caller's own such header never
+/// passes ([`passes`]).
 pub async fn forward(
     tls: &Arc<connectrpc::rustls::ClientConfig>,
     addrs: &[String],
     path: &str,
     headers: &http::HeaderMap,
+    person: &str,
     body: Bytes,
 ) -> Result<Answer, String> {
+    let mut headers: http::HeaderMap = headers
+        .iter()
+        .filter(|(k, _)| passes(k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    headers.insert(
+        http::HeaderName::from_static(hyperstor_api::ON_BEHALF_HEADER),
+        http::HeaderValue::from_str(person).map_err(|e| e.to_string())?,
+    );
     let mut last = Err("no map service member configured".to_string());
     for a in addrs {
-        last = once(tls, a, path, headers, body.clone()).await;
+        last = once(tls, a, path, &headers, body.clone()).await;
         match &last {
             Ok(r) if r.status != 503 => return last,
             _ => {}

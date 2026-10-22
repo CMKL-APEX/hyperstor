@@ -178,3 +178,42 @@ fn only_mgmt_reaches_its_rows() {
     assert!(call("mgmt", "DeleteRow", r#"{"key":"user/1"}"#).contains(r#""found":true"#));
     assert!(!call("mgmt", "GetRow", r#"{"key":"user/1"}"#).contains("found"));
 }
+
+/// Only mgmt names the person a call is for (I134); the map service then
+/// audits it as mgmt for that person. Anyone else naming one is refused,
+/// and so is mgmt naming something that isn't a person.
+#[test]
+fn only_mgmt_names_a_person() {
+    let c = Cluster::all_in_one("onbehalf", 1);
+    let pki = c.pki();
+    let call = |who: &str, person: &str| {
+        let o = std::process::Command::new("curl")
+            .args(["-sS", "--cacert"])
+            .arg(pki.join("root.crt"))
+            .arg("--cert")
+            .arg(pki.join(format!("{who}.crt")))
+            .arg("--key")
+            .arg(pki.join(format!("{who}.key")))
+            .args(["-H", "Content-Type: application/json"])
+            .args(["-H", &format!("X-Hyperstor-On-Behalf-Of: {person}")])
+            .args(["-d", r#"{"pool":1,"size":"1048576","name":"for-ann"}"#])
+            .arg(format!(
+                "https://{}/hyperstor.v1.ClusterService/CreateVolume",
+                c.api
+            ))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let refused = call("admin", "user:ann");
+    assert!(refused.contains("permission_denied"), "{refused}");
+    let refused = call("mgmt", "ann; rm -rf /");
+    assert!(refused.contains("permission_denied"), "{refused}");
+    let made = call("mgmt", "user:ann");
+    assert!(made.contains("\"volume\""), "{made}");
+    assert!(c.audit().iter().any(|l| {
+        l.contains("\"op\":\"CreateVolume\"")
+            && l.contains("/mgmt/dashboard for user:ann\"")
+            && !l.contains("refused")
+    }));
+}

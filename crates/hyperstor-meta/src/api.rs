@@ -304,7 +304,30 @@ impl Api {
                         ),
                     ));
                 }
-                who.uri()
+                // mgmt names the person a call is for; no one else may.
+                match ctx.header(hyperstor_api::ON_BEHALF_HEADER) {
+                    None => who.uri(),
+                    Some(v) => match v.to_str() {
+                        Ok(p)
+                            if who.role == hyperstor_pki::Role::Mgmt
+                                && hyperstor_api::valid_person(p) =>
+                        {
+                            format!("{} for {p}", who.uri())
+                        }
+                        _ => {
+                            return Err(refuse(
+                                &who.uri(),
+                                with_reason(
+                                    ConnectError::permission_denied(format!(
+                                        "{} may not act on someone's behalf",
+                                        who.uri()
+                                    )),
+                                    "permission_denied",
+                                ),
+                            ));
+                        }
+                    },
+                }
             }
         };
         self.take_rate(op, target, principal)

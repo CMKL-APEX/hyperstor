@@ -12,6 +12,23 @@ pub mod proto {
 
 pub use proto::hyperstor::v1::*;
 
+/// The header in which `hyperstor-mgmt` names the person a call is for
+/// (`user:NAME`). The map service believes it only from mgmt's
+/// certificate, and then audits and rate-limits the call as
+/// `<mgmt's identity> for user:NAME` (implementation-notes.md I134).
+pub const ON_BEHALF_HEADER: &str = "x-hyperstor-on-behalf-of";
+
+/// Whether `p` is a person as mgmt names them: `user:` and a user name
+/// (letters, digits, `.`, `_`, `-`, `@`; 1 to 64 bytes).
+pub fn valid_person(p: &str) -> bool {
+    p.strip_prefix("user:").is_some_and(|n| {
+        !n.is_empty()
+            && n.len() <= 64
+            && n.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b))
+    })
+}
+
 /// The domain of the API's error reasons.
 pub const REASON_DOMAIN: &str = "hyperstor";
 
@@ -71,5 +88,23 @@ mod tests {
             super::reason_of(&connectrpc::ConnectError::not_found("x")),
             None
         );
+    }
+
+    #[test]
+    fn persons_are_user_and_a_name() {
+        for ok in ["user:ann", "user:ann@example.com", "user:a.b-c_d"] {
+            assert!(super::valid_person(ok), "{ok}");
+        }
+        for bad in [
+            "ann",
+            "user:",
+            "user:a b",
+            "user:a\nb",
+            "mgmt:x",
+            "user:\u{e9}",
+        ] {
+            assert!(!super::valid_person(bad), "{bad}");
+        }
+        assert!(!super::valid_person(&format!("user:{}", "a".repeat(65))));
     }
 }

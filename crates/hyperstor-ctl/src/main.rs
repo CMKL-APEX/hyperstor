@@ -1,4 +1,5 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
+//!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]`
@@ -62,6 +63,13 @@
 //! socket instead: no certificate, the kernel names the caller
 //! (break-glass, §23.6).
 //!
+//! With `--mgmt URL` (or `$HYPERSTOR_MGMT`) it goes through
+//! `hyperstor-mgmt` instead, as a person: with their API token from
+//! `--token-file F` or `$HYPERSTOR_TOKEN` (`hst_…`, made in the UI or at
+//! `/auth/tokens`; never an argument), and their roles decide what it
+//! may do (§23.9.2). `http://` is for loopback only (an SSH tunnel);
+//! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s.
+//!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a failed request or test, 2 usage, 3 the API unreachable (or the
 //! member asked isn't the leader), 4 not allowed: no certificate, or one
@@ -77,7 +85,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -160,6 +168,9 @@ fn main() {
     let mut api = None;
     let mut tls = None;
     let mut socket = None;
+    let mut mgmt = None;
+    let mut token_file = None;
+    let mut mgmt_ca = None;
     let mut a = Args {
         json: false,
         yaml: false,
@@ -194,6 +205,9 @@ fn main() {
             "--api" => api = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--socket" => socket = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--mgmt" => mgmt = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--token-file" => token_file = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--mgmt-ca" => mgmt_ca = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--json" => a.json = true,
             "-o" => match it.next().map(String::as_str) {
                 Some("json") => a.json = true,
@@ -346,17 +360,29 @@ fn main() {
     {
         usage();
     }
+    // Through hyperstor-mgmt, as a person with an API token (§23.9.1):
+    // neither the API's address nor certificates nor the socket apply.
+    let mgmt = mgmt.or_else(|| std::env::var("HYPERSTOR_MGMT").ok());
+    if mgmt.is_some() && (api.is_some() || tls.is_some() || socket.is_some())
+        || mgmt.is_none() && (token_file.is_some() || mgmt_ca.is_some())
+    {
+        usage();
+    }
+    let mgmt = mgmt.map(|url| mgmt_target(&url, token_file.as_deref(), mgmt_ca.as_deref()));
     // The local socket (break-glass, §23.6): given, or named in the
     // configuration and present, unless an address or certificates were
     // given on the command line.
     let socket = socket.or_else(|| {
-        if api.is_some() || tls.is_some() {
+        if api.is_some() || tls.is_some() || mgmt.is_some() {
             return None;
         }
         conf("socket").filter(|p| std::path::Path::new(p).exists())
     });
     let api = api_addr(api);
-    let tls = match tls.or_else(|| conf("tls")).filter(|_| socket.is_none()) {
+    let tls = match tls
+        .or_else(|| conf("tls"))
+        .filter(|_| socket.is_none() && mgmt.is_none())
+    {
         None => None,
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
@@ -388,8 +414,17 @@ fn main() {
     let outcome = rt.block_on(async {
         let config =
             |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
-        match &socket {
-            Some(path) => {
+        match (&mgmt, &socket) {
+            (Some(m), _) => {
+                let config = config(m.base.clone())
+                    .with_default_header(http::header::AUTHORIZATION, m.bearer.clone());
+                let http = match &m.tls {
+                    Some(c) => HttpClient::with_tls(c.clone()),
+                    None => HttpClient::plaintext(),
+                };
+                manage(http, config, &cmd, &a).await
+            }
+            (None, Some(path)) => {
                 let uri: http::Uri = "http://localhost".parse().expect("uri");
                 let conn =
                     connectrpc::client::Http2Connection::connect_unix(path.clone(), uri.clone())
@@ -397,7 +432,7 @@ fn main() {
                         .shared(16);
                 manage(conn, config(uri), &cmd, &a).await
             }
-            None => {
+            (None, None) => {
                 let scheme = if tls.is_some() { "https" } else { "http" };
                 let uri: http::Uri = format!("{scheme}://{api}")
                     .parse()
@@ -410,7 +445,10 @@ fn main() {
             }
         }
     });
-    let api = socket.clone().unwrap_or(api);
+    let api = mgmt
+        .map(|m| m.url)
+        .or_else(|| socket.clone())
+        .unwrap_or(api);
     let code = match outcome {
         Ok(Next::Exit(code)) => code,
         Ok(Next::IoTest { map, pool }) => {
@@ -422,6 +460,63 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// hyperstor-mgmt as the way in: its cluster API under `/api`, and the
+/// person's token.
+struct Mgmt {
+    url: String,
+    base: http::Uri,
+    bearer: http::HeaderValue,
+    tls: Option<std::sync::Arc<connectrpc::rustls::ClientConfig>>,
+}
+
+/// `url` (`http://` on loopback, or `https://`), the token from `file`
+/// or `$HYPERSTOR_TOKEN` (never an argument: others could read it in the
+/// process list), and over HTTPS the host's CAs and `ca`'s.
+fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>) -> Mgmt {
+    let fail = |m: String| -> ! {
+        eprintln!("hyperstorctl: {m}");
+        std::process::exit(2)
+    };
+    let url = url.trim_end_matches('/').to_string();
+    let base: http::Uri = format!("{url}/api")
+        .parse()
+        .unwrap_or_else(|_| fail(format!("{url}: not a URL")));
+    let loopback = matches!(base.host(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let https = match base.scheme_str() {
+        Some("https") => true,
+        // A token in clear text only where it doesn't leave the host.
+        Some("http") if loopback => false,
+        Some("http") => fail(format!("{url}: use https:// beyond loopback")),
+        _ => fail(format!("{url}: not an http:// or https:// URL")),
+    };
+    let token = match file {
+        Some(f) => std::fs::read_to_string(f).unwrap_or_else(|e| fail(format!("{f}: {e}"))),
+        None => std::env::var("HYPERSTOR_TOKEN").unwrap_or_else(|_| {
+            fail("--mgmt needs an API token: $HYPERSTOR_TOKEN or --token-file".into())
+        }),
+    };
+    let token = token.trim();
+    if !token.starts_with("hst_") {
+        fail("the API token isn't one (hst_…)".into());
+    }
+    let mut bearer = http::HeaderValue::from_str(&format!("Bearer {token}"))
+        .unwrap_or_else(|_| fail("the API token isn't one (hst_…)".into()));
+    bearer.set_sensitive(true);
+    let tls = https.then(|| {
+        let ca =
+            ca.map(|f| std::fs::read_to_string(f).unwrap_or_else(|e| fail(format!("{f}: {e}"))));
+        std::sync::Arc::new(
+            hyperstor_pki::web_client_config(ca.as_deref()).unwrap_or_else(|e| fail(e)),
+        )
+    });
+    Mgmt {
+        url,
+        base,
+        bearer,
+        tls,
+    }
 }
 
 enum Next {
@@ -614,13 +709,7 @@ where
                     println!("volume {id} deleted");
                     Next::Exit(0)
                 }
-                Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
-                    Next::Exit(1)
-                }
+                // Its reason and exit status as every other refusal's.
                 Err(e) => return Err(e),
             }
         }
