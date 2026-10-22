@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
-//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]`
+//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -29,6 +29,10 @@
 //! - `op list`, `op get --id ID`, `op watch --id ID [--wait SECS]`, `op
 //!   cancel --id ID`: long operations (a cancelled drain brings the
 //!   devices back in);
+//! - `member list`, `member add --id N --raft ADDR --map ADDR`, `member
+//!   remove --id N [--force]`: the map service's members (D87). A new
+//!   member must be running, joined with a meta token, before it is added;
+//!   removal refuses to leave fewer than three voters unless forced;
 //! - `map backup --out FILE`: a backup of the map service's store
 //!   (D86), for `hyperstor-meta --restore`; written mode 0600, never over
 //!   an existing file;
@@ -58,14 +62,14 @@
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    CaServiceClient, ClusterServiceClient, MapServiceClient, NodeServiceClient,
-    OperationServiceClient, TokenServiceClient,
+    CaServiceClient, ClusterServiceClient, MapServiceClient, MemberServiceClient,
+    NodeServiceClient, OperationServiceClient, TokenServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -114,6 +118,8 @@ struct Args {
     serial: Option<String>,
     file: Option<String>,
     out: Option<String>,
+    raft: Option<String>,
+    map: Option<String>,
     pool: Option<u32>,
     mib: u64,
     wait: Option<u32>,
@@ -151,6 +157,8 @@ fn main() {
         serial: None,
         file: None,
         out: None,
+        raft: None,
+        map: None,
         pool: None,
         mib: 16,
         wait: None,
@@ -182,6 +190,8 @@ fn main() {
             "--serial" => a.serial = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--file" => a.file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--out" => a.out = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--raft" => a.raft = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--map" => a.map = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--pool" => a.pool = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
@@ -204,12 +214,13 @@ fn main() {
                 cmd = Some(arg.clone())
             }
             // Two words: the group, then what to do.
-            "token" | "op" | "cert" | "map" if cmd.is_none() => {
+            "token" | "op" | "cert" | "map" | "member" if cmd.is_none() => {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
                     "cert" => matches!(sub, Some("list" | "revoke" | "show")),
                     "map" => matches!(sub, Some("backup")),
+                    "member" => matches!(sub, Some("list" | "add" | "remove")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -229,11 +240,14 @@ fn main() {
     }
     let needs_id = matches!(
         cmd.as_str(),
-        "token revoke" | "op get" | "op watch" | "op cancel"
+        "token revoke" | "op get" | "op watch" | "op cancel" | "member add" | "member remove"
     );
     if (cmd == "cert revoke") != a.serial.is_some()
         || (cmd == "cert show") != a.file.is_some()
         || (cmd == "map backup") != a.out.is_some()
+        || (cmd == "member add") != (a.raft.is_some() && a.map.is_some())
+        || ((a.raft.is_some() || a.map.is_some()) && cmd != "member add")
+        || (matches!(cmd.as_str(), "member add" | "member remove") && a.id.is_none())
     {
         usage();
     }
@@ -266,7 +280,7 @@ fn main() {
     if (cmd == "create-volume") != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
         || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
-        || (a.force && cmd != "delete-volume")
+        || (a.force && cmd != "delete-volume" && cmd != "member remove")
     {
         usage();
     }
@@ -400,6 +414,7 @@ where
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
+        "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),
@@ -699,6 +714,74 @@ where
             Next::Exit(0)
         }
     })
+}
+
+/// `member list|add|remove`.
+async fn members<T>(
+    client: MemberServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let id = || -> Result<u64, connectrpc::ConnectError> {
+        a.id.as_deref()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|_| connectrpc::ConnectError::invalid_argument("--id: a member number"))
+    };
+    let list = match cmd {
+        "member list" => {
+            let r = client
+                .list_members(pb::ListMembersRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || members_text(&r.members));
+            return Ok(Next::Exit(0));
+        }
+        "member add" => {
+            // A learner catches up first: give it time.
+            client
+                .add_member_with_options(
+                    pb::AddMemberRequest {
+                        id: id()?,
+                        raft_address: a.raft.clone().unwrap_or_default(),
+                        map_address: a.map.clone().unwrap_or_default(),
+                        ..Default::default()
+                    },
+                    CallOptions::default().with_timeout(Duration::from_secs(150)),
+                )
+                .await?
+                .into_owned()
+                .members
+        }
+        _ => {
+            client
+                .remove_member(pb::RemoveMemberRequest {
+                    id: id()?,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned()
+                .members
+        }
+    };
+    if a.json {
+        show(
+            a,
+            &pb::ListMembersResponse {
+                members: list,
+                ..Default::default()
+            },
+            String::new,
+        );
+    } else {
+        print!("{}", members_text(&list));
+    }
+    Ok(Next::Exit(0))
 }
 
 /// `map backup --out FILE`.

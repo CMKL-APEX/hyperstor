@@ -184,6 +184,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("CaService.RevokeCertificate", "cert revoke"),
     ("NodeService.DrainNode", "drain"),
     ("MapService.GetMapBackup", "map backup"),
+    ("MemberService.ListMembers", "member list"),
+    ("MemberService.AddMember", "member add"),
+    ("MemberService.RemoveMember", "member remove"),
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),
@@ -223,6 +226,25 @@ pub fn utc(unix: u64) -> String {
         secs / 3600,
         secs % 3600 / 60
     )
+}
+
+/// `hyperstorctl member list`, and what `member add` and `remove` print.
+pub fn members_text(members: &[pb::Member]) -> String {
+    let mut o = String::new();
+    let _ = writeln!(o, "{:<6} {:<8} {:<22} MAP", "MEMBER", "ROLE", "RAFT");
+    for m in members {
+        let role = match (m.leader, m.voter) {
+            (true, _) => "leader",
+            (false, true) => "voter",
+            (false, false) => "learner",
+        };
+        let _ = writeln!(
+            o,
+            "{:<6} {:<8} {:<22} {}",
+            m.id, role, m.raft_address, m.map_address
+        );
+    }
+    o
 }
 
 /// `hyperstorctl cert list`.

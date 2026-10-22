@@ -1,4 +1,4 @@
-//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]`
+//! `hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--force-alone CLUSTER_ID] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]`
 //!
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
@@ -30,6 +30,13 @@
 //! `--restore FILE` starts a group of one from a backup, into an empty
 //! `--data` directory; the cluster file must be the same cluster's.
 //!
+//! `--force-alone CLUSTER_ID` recovers a group that lost its majority for
+//! good (decisions.md D85), on one survivor, stopped: it refuses while
+//! another member answers; it revokes every other member's recorded
+//! certificate, so none rejoins with its old log; it keeps its store
+//! aside (`DATA.forced-<time>`) and starts from it as a group of one.
+//! Other members then join again (D87).
+//!
 //! With `--ca DIR` (`intermediate.crt`, `intermediate.key`; the key is
 //! read from `$CREDENTIALS_DIRECTORY` first, where systemd's
 //! `LoadCredential=` puts it), this member signs certificates for hosts
@@ -48,7 +55,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]"
+            "usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--member N=RAFT/MAP ...] [--api ADDR] [--api-tls DIR] [--api-socket PATH] [--ca DIR] [--backup-dir DIR] [--backup-every SECS] [--backup-keep N] [--restore FILE] [--force-alone CLUSTER_ID] [--lease-ms L] [--down-after-ms N] [--down-out-secs S]"
         );
         std::process::exit(2)
     };
@@ -137,6 +144,7 @@ fn main() {
             tokens: std::sync::Arc::new(hyperstor_meta::tokens::Tokens::in_memory()),
             certs: std::sync::Arc::new(hyperstor_meta::certs::Certs::in_memory()),
             store: None,
+            members: None,
         }
     });
     if signing.is_some() && tls.is_none() {
@@ -172,6 +180,88 @@ fn main() {
         eprintln!("--member needs --data");
         std::process::exit(2);
     }
+    // A forced start alone (D85): this member's own store, as a backup to
+    // restore into a group of one.
+    let forced = get("--force-alone").map(|cid| {
+        let fail = |e: String| -> ! {
+            eprintln!("--force-alone: {e}");
+            std::process::exit(1)
+        };
+        if cid != map.cluster_id.to_string() {
+            fail(format!(
+                "{cid} isn't this cluster ({}): name the cluster id to confirm",
+                map.cluster_id
+            ));
+        }
+        if get("--restore").is_some() {
+            fail("--force-alone and --restore don't go together".into());
+        }
+        let Some(d) = data.clone() else {
+            eprintln!("--force-alone needs --data");
+            std::process::exit(2)
+        };
+        let me = members
+            .iter()
+            .find(|m| m.id == id)
+            .copied()
+            .unwrap_or_else(|| fail(format!("--id {id} is not one of the --member entries")));
+        if members.len() < 2 {
+            fail("this member is already a group of one".into());
+        }
+        // Never while another member answers: that would split the group.
+        // An answer, not a connection: a stopped member's port accepts for
+        // a moment after it exits (I100).
+        for m in members.iter().filter(|m| m.id != id) {
+            if answers(m.map) {
+                fail(format!(
+                    "member {} answers at {}: forcing this member alone would split the group",
+                    m.id, m.map
+                ));
+            }
+        }
+        let dir = std::path::PathBuf::from(&d);
+        let db = std::sync::Arc::new(
+            hyperstor_meta::store::Db::create(dir.join("map.redb"))
+                .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display()))),
+        );
+        // Every other member's certificates issued until now are revoked,
+        // the new generation: an old member that comes back with its log
+        // is refused, and joins again afresh, with a new certificate.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |t| t.as_secs());
+        let certs = hyperstor_meta::certs::Certs::replicated(db.clone());
+        for m in members.iter().filter(|m| m.id != id) {
+            let who = format!("hyperstor://{}/meta/{}", map.cluster_id, m.id);
+            certs
+                .revoke_identity(&who, "force-alone", now)
+                .unwrap_or_else(|e| fail(format!("revoking {who}: {e:?}")));
+            eprintln!("hyperstor-meta: --force-alone: revoked {who}'s certificates");
+        }
+        let b = hyperstor_meta::backup::Backup::take(&db).unwrap_or_else(|e| fail(e));
+        drop(certs);
+        drop(db);
+        let aside = std::path::PathBuf::from(format!("{d}.forced-{now}"));
+        std::fs::rename(&dir, &aside)
+            .unwrap_or_else(|e| fail(format!("moving {} aside: {e}", dir.display())));
+        eprintln!(
+            "{}",
+            hyperstor_meta::api::audit_line(
+                "local:force-alone",
+                "ForceAlone",
+                &format!("member {id}"),
+                &format!(
+                    "ok, map epoch {}, old store kept in {}",
+                    b.epoch,
+                    aside.display()
+                )
+            )
+        );
+        (me, b)
+    });
+    if let Some((me, _)) = &forced {
+        members = vec![*me];
+    }
     // A restore (D86): a group of one, into an empty store, of this
     // cluster; its map is the seed.
     let restore = get("--restore").map(|f| {
@@ -204,6 +294,7 @@ fn main() {
         }
         b
     });
+    let restore = restore.or(forced.map(|(_, b)| b));
     let map = match &restore {
         Some(b) => b.map().unwrap_or_else(|e| {
             eprintln!("--restore: {e}");
@@ -314,6 +405,7 @@ fn main() {
                     s.certs =
                         std::sync::Arc::new(hyperstor_meta::certs::Certs::replicated(r.db.clone()));
                     s.store = Some(r.db.clone());
+                    s.members = Some(r.members.clone());
                 }
                 eprintln!("hyperstor-meta: member {id} of {n}");
                 (meta, Some(r))
@@ -333,6 +425,20 @@ fn main() {
         }
         hyperstor_meta::serve(l, meta).await
     });
+}
+
+/// Whether a map service answers a ping at `addr` within a second.
+fn answers(addr: std::net::SocketAddr) -> bool {
+    use std::io::{Read, Write};
+    let t = Duration::from_secs(1);
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, t) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(t));
+    let _ = s.set_write_timeout(Some(t));
+    let ping = hyperstor_proto::encode_frame(1, &hyperstor_proto::Msg::Ping, &[]);
+    let mut head = [0u8; hyperstor_proto::HEADER_LEN];
+    s.write_all(&ping).is_ok() && s.read_exact(&mut head).is_ok()
 }
 
 /// `N=RAFT_ADDR/MAP_ADDR`.

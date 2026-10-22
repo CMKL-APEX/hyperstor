@@ -109,10 +109,12 @@ pub const ROOT_DAYS: u32 = 3650;
 pub const INTERMEDIATE_DAYS: u32 = 365;
 pub const LEAF_DAYS: u32 = 30;
 
+/// How far certificates are backdated, for clocks slightly behind.
+pub const BACKDATE_SECS: u64 = 300;
+
 fn validity(p: &mut CertificateParams, days: u32) {
     let now = time::OffsetDateTime::now_utc();
-    // A little backdating, for clocks slightly behind.
-    p.not_before = now - time::Duration::minutes(5);
+    p.not_before = now - time::Duration::seconds(BACKDATE_SECS as i64);
     p.not_after = now + time::Duration::days(days.into());
 }
 
@@ -518,6 +520,15 @@ pub fn serial_in(pem: &str) -> Option<String> {
 pub fn not_after_unix(der: &[u8]) -> Option<u64> {
     let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
     u64::try_from(cert.validity().not_after.timestamp()).ok()
+}
+
+/// When a certificate (DER) was issued, in seconds since 1970: its start,
+/// less the backdating.
+pub fn issued_unix(der: &[u8]) -> Option<u64> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    u64::try_from(cert.validity().not_before.timestamp())
+        .ok()
+        .map(|t| t + BACKDATE_SECS)
 }
 
 /// The identity in the first certificate in `pem`, if it has one.
