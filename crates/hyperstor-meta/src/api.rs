@@ -1176,8 +1176,9 @@ pub fn spawn(
                         Some(db) => crate::operations::Ops::replicated(db),
                         None => crate::operations::Ops::in_memory(),
                     }),
+                    settings,
                 );
-                tokio::spawn(runner.clone().upkeep(settings, trash_scan));
+                tokio::spawn(runner.clone().upkeep(trash_scan));
                 let api = Arc::new(Api {
                     tx,
                     map_address: map_address.to_string(),

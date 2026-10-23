@@ -761,8 +761,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI"
-spec = ["administration.md §23.6", "D120", "D121"]
+what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI"
+spec = ["administration.md §23.6", "D120", "D121", "D125"]
 status = "done"
 tests = [
     "operations::drains_run_as_operations",

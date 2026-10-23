@@ -624,6 +624,15 @@ recommendation:
 |---|---|---|---|
 | 71 | How glidex gets and keeps its certificate (a mgmt token it enrolls with, sealed in its store and renewed; files placed on every node; each node enrolling); how a worker writes disk bytes without root (a range read/write tool, editing partitions as files; ublk devices through stord; leaving extend-root to the guest); how `stage` knows to preempt (a mark the scheduler sets at re-placement; asking hyperstor who holds the disk) | A mgmt token, sealed and renewed; the range tool; the scheduler's mark | D122, D123, D124 |
 
+## Fencing a former leader (2026-10-23)
+
+Asked whether a former leader still running a flatten or purge could
+harm consistency or durability, with fixes and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 72 | Whether a former leader's run of a flatten or purge can harm data: copies stay consistent and flatten only fills blocks the clone lacks, but a late volume purge could delete a new volume created with the same id. Fixes: blocklist the last leader's client before resuming (recommended); refuse reusing the id; stop on losing the lead | Fence by blocklisting | D125 |
+
 ## Block size for VMs (HS3, 2026-10-23)
 
 glidex's driver booted a cloud image from a volume: the firmware found
