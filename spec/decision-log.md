@@ -613,3 +613,14 @@ long operations and where operations live, with a recommendation each:
 |---|---|---|---|
 | 69 | Which calls become long operations: flatten, purge and snapshot delete; flatten only; or none new | Flatten, purge and snapshot delete | D120 |
 | 70 | Where operations live: rows of the replicated store (seen by every member, resumed by a new leader); memory on the leader; or objects in `.meta` | The replicated store | D121 |
+
+## Block size for VMs (HS3, 2026-10-23)
+
+glidex's driver booted a cloud image from a volume: the firmware found
+no bootable device, because `hyperstor-vhost` offered 4 KiB logical
+blocks and the image's GPT is in 512-byte sectors (glidex storage.md
+H9). Asked how disks should look to VMs, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 72 | 512e in `hyperstor-vhost` (read-modify-write for partial blocks, the engine unchanged); a block size per volume; glidex converting images to 4Kn | 512e in `hyperstor-vhost` | D125 |

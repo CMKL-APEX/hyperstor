@@ -282,6 +282,7 @@ impl Service {
             volume: att,
             serial,
             queues: self.opts.queues,
+            locks: Default::default(),
         });
         let conn = Rc::new(RefCell::new(None));
         let stopping = Rc::new(Cell::new(false));

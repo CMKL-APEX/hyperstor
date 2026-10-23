@@ -5,17 +5,20 @@
 
 use virtio_bindings::virtio_blk::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_SEG_MAX,
-    VIRTIO_BLK_F_WRITE_ZEROES, VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK,
-    VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN,
+    VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_WRITE_ZEROES, VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR,
+    VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN,
     VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
 };
 use virtio_bindings::virtio_config::VIRTIO_F_VERSION_1;
 use virtio_bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC};
 
-/// The volume's block size, which the guest uses as its logical block
-/// size: every request is whole blocks, as volumes are.
+/// The volume's block size, which the guest sees as the disk's physical
+/// block size: requests in whole blocks go to the volume as they are.
 pub const BLOCK: u64 = 4096;
-const SECTOR: u64 = 512;
+/// The disk's logical block size (512e, decisions.md D125): what cloud
+/// images' partition tables and firmware assume. A request is in whole
+/// sectors; a partial block at either end is read, merged and written.
+pub const SECTOR: u64 = 512;
 /// Segments per request and bytes per write-zeroes range.
 pub const SEG_MAX: u32 = 128;
 pub const ZEROES_MAX_SECTORS: u32 = (16 << 20) / 512;
@@ -29,6 +32,7 @@ pub fn features() -> u64 {
     [
         VIRTIO_BLK_F_SEG_MAX,
         VIRTIO_BLK_F_BLK_SIZE,
+        VIRTIO_BLK_F_TOPOLOGY,
         VIRTIO_BLK_F_FLUSH,
         VIRTIO_BLK_F_MQ,
         VIRTIO_BLK_F_WRITE_ZEROES,
@@ -48,8 +52,13 @@ pub fn config(size: u64, queues: u16) -> Vec<u8> {
     c.extend(0u32.to_le_bytes()); // size_max
     c.extend(SEG_MAX.to_le_bytes()); // seg_max
     c.extend([0u8; 4]); // geometry
-    c.extend((BLOCK as u32).to_le_bytes()); // blk_size
-    c.extend([0u8; 8]); // topology
+    c.extend((SECTOR as u32).to_le_bytes()); // blk_size: logical
+    // topology: physical blocks of 2^3 sectors, aligned at sector 0, and
+    // the minimum I/O one of them.
+    c.push((BLOCK / SECTOR).trailing_zeros() as u8);
+    c.push(0);
+    c.extend(((BLOCK / SECTOR) as u16).to_le_bytes());
+    c.extend(0u32.to_le_bytes()); // opt_io_size: none
     c.push(0); // writeback: write-through (volumes.md §10.1)
     c.push(0);
     c.extend(queues.to_le_bytes()); // num_queues
@@ -89,7 +98,7 @@ pub enum Bad {
     /// Too short for a header or a status byte: the chain is dropped with
     /// no status.
     Malformed,
-    /// A range outside the volume or not in whole blocks.
+    /// A range outside the volume or not in whole sectors.
     Range,
 }
 
@@ -111,7 +120,7 @@ pub fn decode(
     let data_out = readable_len - 16;
     let range = |off: u64, len: u64| {
         let end = off.checked_add(len).ok_or(Bad::Range)?;
-        if !off.is_multiple_of(BLOCK) || !len.is_multiple_of(BLOCK) || end > size {
+        if !len.is_multiple_of(SECTOR) || end > size {
             return Err(Bad::Range);
         }
         Ok((off, len))
@@ -155,6 +164,11 @@ pub const S_OK: u8 = VIRTIO_BLK_S_OK as u8;
 pub const S_IOERR: u8 = VIRTIO_BLK_S_IOERR as u8;
 pub const S_UNSUPP: u8 = VIRTIO_BLK_S_UNSUPP as u8;
 
+/// The whole volume blocks that bytes `off..off + len` are in.
+pub fn blocks(off: u64, len: u64) -> (u64, u64) {
+    (off / BLOCK * BLOCK, (off + len).div_ceil(BLOCK) * BLOCK)
+}
+
 /// The disk's id, as `GET_ID` returns it: the serial padded with zeros.
 pub fn id(serial: &str) -> [u8; VIRTIO_BLK_ID_BYTES as usize] {
     let mut b = [0u8; VIRTIO_BLK_ID_BYTES as usize];
@@ -176,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_decode_to_whole_blocks_inside_the_volume() {
+    fn requests_decode_to_whole_sectors_inside_the_volume() {
         let size = 1 << 20;
         let h = header(VIRTIO_BLK_T_IN, 8);
         assert_eq!(
@@ -191,8 +205,15 @@ mod tests {
             decode(&h, 16 + 4096, 1, size),
             Ok(Request::Write { off: 0, len: 4096 })
         );
-        // Not whole blocks, or past the end.
-        assert_eq!(decode(&h, 16 + 512, 1, size), Err(Bad::Range));
+        // Sectors, not only blocks (512e); not part of one, or past the end.
+        assert_eq!(
+            decode(&header(VIRTIO_BLK_T_OUT, 3), 16 + 1024, 1, size),
+            Ok(Request::Write {
+                off: 1536,
+                len: 1024
+            })
+        );
+        assert_eq!(decode(&h, 16 + 100, 1, size), Err(Bad::Range));
         let h = header(VIRTIO_BLK_T_IN, (size / 512) - 8);
         assert_eq!(decode(&h, 16, 8193, size), Err(Bad::Range));
         assert_eq!(decode(&h[..8], 8, 1, size), Err(Bad::Malformed));
@@ -221,7 +242,14 @@ mod tests {
             u64::from_le_bytes(c[0..8].try_into().unwrap()),
             (10 << 30) / 512
         );
-        assert_eq!(u32::from_le_bytes(c[20..24].try_into().unwrap()), 4096);
+        assert_eq!(u32::from_le_bytes(c[20..24].try_into().unwrap()), 512);
+        // Physical blocks of 8 sectors, the minimum I/O one of them.
+        assert_eq!((c[24], c[25]), (3, 0));
+        assert_eq!(u16::from_le_bytes(c[26..28].try_into().unwrap()), 8);
+        assert!(features() & (1 << VIRTIO_BLK_F_TOPOLOGY) != 0);
+        assert_eq!(blocks(1536, 1024), (0, 4096));
+        assert_eq!(blocks(3584, 1024), (0, 8192));
+        assert_eq!(blocks(4096, 4096), (4096, 8192));
         assert_eq!(u16::from_le_bytes(c[34..36].try_into().unwrap()), 4);
         assert_eq!(id("abc")[..4], *b"abc\0");
         assert_eq!(id(&"x".repeat(30)).len(), 20);

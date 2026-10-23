@@ -196,6 +196,15 @@ impl Guest {
         }
     }
 
+    /// A little-endian field of the device's configuration space.
+    pub fn config_u32(&self, at: usize) -> u32 {
+        u32::from_le_bytes(self.config[at..at + 4].try_into().unwrap())
+    }
+
+    pub fn config_u8(&self, at: usize) -> u8 {
+        self.config[at]
+    }
+
     pub fn capacity(&self) -> u64 {
         u64::from_le_bytes(self.config[0..8].try_into().unwrap()) * 512
     }
@@ -282,6 +291,69 @@ impl Guest {
         let mut back = vec![0; if out.is_empty() { in_len as usize } else { 0 }];
         self.mem.read_slice(&mut back, GuestAddress(data)).unwrap();
         (st[0], back, written)
+    }
+
+    /// Writes made available all at once, one chain each (up to 16 of
+    /// up to 64 KiB), so the device has them in flight together; waits
+    /// for every one and returns their statuses, in completion order.
+    pub fn write_together(&mut self, writes: &[(u64, &[u8])]) -> Vec<u8> {
+        assert!(writes.len() <= 16);
+        let data = BUFS + 0x1000;
+        let status = data + (8 << 20);
+        for (k, (off, bytes)) in writes.iter().enumerate() {
+            assert!(bytes.len() <= 64 << 10);
+            let k16 = k as u16;
+            let (h, d, st) = (
+                BUFS + 16 * k as u64,
+                data + (k as u64) * 0x10000,
+                status + k as u64,
+            );
+            let mut hdr = T_OUT.to_le_bytes().to_vec();
+            hdr.extend(0u32.to_le_bytes());
+            hdr.extend((off / 512).to_le_bytes());
+            self.mem.write_slice(&hdr, GuestAddress(h)).unwrap();
+            self.mem.write_slice(bytes, GuestAddress(d)).unwrap();
+            self.mem.write_slice(&[0xff], GuestAddress(st)).unwrap();
+            self.desc(3 * k16, h, 16, false, false);
+            self.desc(3 * k16 + 1, d, bytes.len() as u32, false, false);
+            self.desc(3 * k16 + 2, st, 1, true, true);
+            let slot = AVAIL + 4 + 2 * (self.avail % QSIZE) as u64;
+            self.mem
+                .write_slice(&(3 * k16).to_le_bytes(), GuestAddress(slot))
+                .unwrap();
+            self.avail = self.avail.wrapping_add(1);
+        }
+        self.mem
+            .write_slice(&self.avail.to_le_bytes(), GuestAddress(AVAIL + 2))
+            .unwrap();
+        self.kick.write(1).unwrap();
+        let want = self.used.wrapping_add(writes.len() as u16);
+        let t = Instant::now();
+        loop {
+            let mut idx = [0u8; 2];
+            self.mem
+                .read_slice(&mut idx, GuestAddress(USED + 2))
+                .unwrap();
+            if u16::from_le_bytes(idx) == want {
+                break;
+            }
+            assert!(t.elapsed() < Duration::from_secs(10), "no completion");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut out = Vec::new();
+        while self.used != want {
+            let elem = USED + 4 + 8 * (self.used % QSIZE) as u64;
+            self.used = self.used.wrapping_add(1);
+            let mut e = [0u8; 8];
+            self.mem.read_slice(&mut e, GuestAddress(elem)).unwrap();
+            let k = u32::from_le_bytes(e[0..4].try_into().unwrap()) as u64 / 3;
+            let mut st = [0u8];
+            self.mem
+                .read_slice(&mut st, GuestAddress(status + k))
+                .unwrap();
+            out.push(st[0]);
+        }
+        out
     }
 
     pub fn read(&mut self, off: u64, len: u32) -> Vec<u8> {

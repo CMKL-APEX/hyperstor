@@ -29,6 +29,7 @@ mode=$(tr ' ' '\n' < /proc/cmdline | grep '^hs=' | cut -d= -f2)
 echo "HS serial $(cat /sys/block/vda/serial)"
 echo "HS size $(cat /sys/block/vda/size)"
 echo "HS queues $(ls /sys/block/vda/mq | wc -l)"
+echo "HS blocks $(cat /sys/block/vda/queue/logical_block_size) $(cat /sys/block/vda/queue/physical_block_size)"
 if [ "$mode" = write ]; then
   for i in 1 2 3 4; do
     (yes "hyperstor $i" | head -c 4194304 | dd of=/dev/vda bs=64k seek=$((i * 64)) conv=fsync 2>/dev/null) &
@@ -231,6 +232,9 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
     has(&wrote, "HS serial disk-under-test");
     has(&wrote, &format!("HS size {}", (256u64 << 20) / 512));
     has(&wrote, "HS queues 2");
+    // 512e (D125): sectors as logical blocks, the volume's 4 KiB blocks as
+    // physical ones.
+    has(&wrote, "HS blocks 512 4096");
     has(&wrote, "HS wrote");
     for n in 1..=4 {
         has(&wrote, &format!("HS sum {n} {}", expected(n)));

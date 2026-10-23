@@ -63,8 +63,53 @@ fn a_volume_is_served_over_vhost_user_blk() {
     assert_eq!(g.request(99, 0, &[], 0).0, S_UNSUPP);
     let (s, _, _) = g.request(T_IN, (64 << 20) / 512, &[], 4096);
     assert_eq!(s, S_IOERR, "past the end");
-    let (s, _, _) = g.request(T_IN, 1, &[], 4096);
-    assert_eq!(s, S_IOERR, "not whole blocks");
+    let (s, _, _) = g.request(T_IN, 1, &[], 4000);
+    assert_eq!(s, S_IOERR, "not whole sectors");
+    // 512-byte sectors (D125): the disk's logical blocks are sectors, its
+    // physical ones the volume's 4 KiB blocks.
+    assert_eq!(g.config_u32(20), 512, "blk_size");
+    assert_eq!(g.config_u8(24), 3, "physical blocks of 2^3 sectors");
+    // (The first 8 KiB were zeroed above.)
+    assert!(
+        g.read(off + 8704, 1024) == data[8704..9728],
+        "inside a block"
+    );
+    assert!(
+        g.read(off + 11776, 5120) == data[11776..16896],
+        "across blocks, partial at both ends"
+    );
+    // A partial block written: read, merged and written back, the rest of
+    // the block kept; and across three blocks, partial at both ends.
+    let mut want = data.clone();
+    let patch = pattern(9, 512);
+    g.write(off + 16384 + 1024, &patch);
+    want[16384 + 1024..16384 + 1536].copy_from_slice(&patch);
+    let wide = pattern(11, 9216);
+    g.write(off + 20480 + 3072, &wide);
+    want[20480 + 3072..20480 + 3072 + 9216].copy_from_slice(&wide);
+    assert!(g.read(off + 16384, 20480) == want[16384..36864]);
+    // Eight writes into the eight sectors of one block, in flight at once:
+    // each read-modify-write waits for the others', so none is lost.
+    let sectors: Vec<Vec<u8>> = (0..8u8).map(|i| pattern(20 + i, 512)).collect();
+    let blk = off + 65536;
+    let batch: Vec<(u64, &[u8])> = sectors
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (blk + 512 * i as u64, s.as_slice()))
+        .collect();
+    assert_eq!(g.write_together(&batch), vec![S_OK; 8]);
+    assert!(
+        g.read(blk, 4096) == sectors.concat(),
+        "a sector's write was lost"
+    );
+    // Write-zeroes on sectors: only those.
+    let mut z = ((blk + 512) / 512).to_le_bytes().to_vec();
+    z.extend(2u32.to_le_bytes());
+    z.extend(0u32.to_le_bytes());
+    assert_eq!(g.request(T_WRITE_ZEROES, 0, &z, 0).0, S_OK);
+    let mut zeroed = sectors.concat();
+    zeroed[512..1536].fill(0);
+    assert!(g.read(blk, 4096) == zeroed, "two sectors zeroed");
     // The hypervisor reconnects (it restarted, say): the volume stayed
     // attached and serves the same data.
     drop(g);

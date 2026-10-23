@@ -339,10 +339,21 @@ spec = ["frontends.md §11.1", "D26", "D116", "D117", "I158", "I159", "I160", "I
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",
-    "hyperstor_vhost::blk::tests::requests_decode_to_whole_blocks_inside_the_volume",
+    "hyperstor_vhost::blk::tests::requests_decode_to_whole_sectors_inside_the_volume",
     "hyperstor_vhost::blk::tests::the_config_space_names_the_size_and_queues",
     "hyperstor_vhost::control::tests::requests_parse_and_bad_ones_say_why",
     "hyperstor_reactor::fd::tests::an_eventfd_wakes_a_waiting_task",
+]
+
+[[milestone.item]]
+what = "512e disks: 512-byte sectors on 4 KiB blocks, partial blocks read, merged and written under a block lock"
+spec = ["frontends.md §11.1", "D125", "I168"]
+status = "done"
+tests = [
+    "vhost::a_volume_is_served_over_vhost_user_blk",
+    "hyperstor_vhost::blk::tests::requests_decode_to_whole_sectors_inside_the_volume",
+    "hyperstor_vhost::blk::tests::the_config_space_names_the_size_and_queues",
+    "vm::virtual_machines_boot_with_a_volume_as_their_disk",
 ]
 
 [[milestone.item]]
