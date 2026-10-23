@@ -77,17 +77,36 @@ values are left out of answers.
 | `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
-| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
+| `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`; trashed volumes aren't listed), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
-| `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `{}`, once the volume and its data are gone; `failed_precondition` while it is attached, without `force` |
+| `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `purge_unix`: it is in the trash until then (`TrashService` below); `failed_precondition` while it is attached, without `force` |
 | `ListSnapshots` | `{"id": "…"}` | `snapshots`: `epoch`, `name`, `group` (32 hex digits, or empty), `state` (`active` or `deleting`) |
 | `CreateSnapshot` | `{"id": "…", "name": "before-upgrade"}` | `snapshot`; `unavailable` if the volume's client didn't pause within 2 s |
-| `DeleteSnapshot` | `{"id": "…", "epoch": "4"}` | `{}`; `failed_precondition` (`in_use`) while a clone or rollback depends on it |
+| `DeleteSnapshot` | `{"id": "…", "epoch": "4"}` | `purge_unix`: to the trash; `failed_precondition` (`in_use`) while a clone or rollback depends on it |
 | `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone |
 | `RollbackVolume` | `{"id": "…", "epoch": "4"}` | `volume`; `failed_precondition` (`attached`) while attached |
 | `FlattenVolume` | `{"id": "…"}` | `volume` |
 | `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
-| `DeleteGroupSnapshot` | `{"group": "…"}` | `{}` |
+| `DeleteGroupSnapshot` | `{"group": "…"}` | `purge_unix`: its snapshots are in the trash |
+
+`AuditService` (the audit log in `.meta`, newest first):
+
+| Method | Request | Answer |
+|---|---|---|
+| `ListAudit` | optionally `since_unix`, `until_unix`, `principal` (contains), `op`, `limit` (default 100, at most 1000), `after` (a previous `next`) | `records` (`time_ms`, `principal`, `op`, `target`, `result`) and `next`, empty when that was all. Administrators only |
+| `AppendAudit` | `lines` (JSON audit records) | `{}`. hyperstor-mgmt's identity only |
+| `GetAuditSettings` | `{}` | `settings`: `retention_days` (default 365; 0 forever) |
+| `SetAuditSettings` | `{"retention_days": 30}` | `settings`. On the leader |
+
+`TrashService` (deleted volumes and snapshots, kept for their pool's grace period):
+
+| Method | Request | Answer |
+|---|---|---|
+| `ListTrash` | `{"pool": 1}` (0: every pool) | `items`: `kind` (`volume` or `snapshot`), `id`, `epoch`, `name`, `pool`, `size`, `trashed_unix`, `purge_unix`, `group` |
+| `RestoreFromTrash` | `{"id": "…"}`, optionally `"epoch"` (a snapshot) and `"name"` | `volume`; a volume whose name was taken comes back as `NAME-restored` |
+| `PurgeFromTrash` | `{"id": "…"}`, optionally `"epoch"` | `{}`, once its data is gone; `failed_precondition` if it isn't in the trash |
+| `GetTrashSettings` | `{"pool": 1}` | `settings`: `pool`, `grace_seconds` (default 86400), `on_full` (`keep` or `purge`) |
+| `SetTrashSettings` | `{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}` | `settings`. On the leader |
 
 `TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService` and `OperationService`:
 

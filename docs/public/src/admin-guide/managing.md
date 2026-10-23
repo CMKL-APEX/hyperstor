@@ -72,6 +72,44 @@ The dashboard only shows; changes go through `hyperstorctl`, or the
 cluster API through `hyperstor-mgmt` (`POST /api/hyperstor.v1.…`) as the
 person logged in, with an API token for scripts.
 
+## The trash
+
+Deleting a volume or a snapshot moves it to the trash: it disappears from
+the lists and can't be attached, but its data stays, and its space still
+counts against the pool, for the pool's grace period (a day by default).
+Then the map service purges it.
+
+```sh
+hyperstorctl delete-volume --id ID        # → the trash, purged in a day
+hyperstorctl trash list
+hyperstorctl trash restore --id ID        # back, under its name
+hyperstorctl trash purge --id ID          # gone now (a fresh login, through mgmt)
+hyperstorctl trash settings --pool 1 --grace 604800   # keep a week
+```
+
+A restored volume whose name another volume took meanwhile comes back
+as `NAME-restored`. `--on-full purge` lets a full pool purge its oldest
+trash first rather than refuse writes; it acts once pools have fullness
+thresholds. The UI's Trash page does the same.
+
+## The audit log
+
+Every change, every refused call and every break-glass call is recorded:
+when, who (a certificate's identity, `local:uid=N` on the socket, or a
+person `user:NAME` through `hyperstor-mgmt`), what, on what, and how it
+went. Each record goes to the service's journal at once, and to the
+cluster's audit log in `.meta` within a second, kept a year by default:
+
+```sh
+hyperstorctl audit list --since 1d --op DeleteVolume
+hyperstorctl audit list --principal user:ann --json
+hyperstorctl audit settings --retention-days 730
+journalctl -u hyperstor-meta -u hyperstor-mgmt | grep '"audit":1'
+```
+
+Security administrators read it on the UI's Audit page, and can export
+it there as JSON lines.
+
 ## Health
 
 ```sh

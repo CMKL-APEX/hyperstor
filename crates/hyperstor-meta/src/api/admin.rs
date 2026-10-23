@@ -57,6 +57,9 @@ pub struct Signing {
     pub mgmt: Option<Arc<crate::mgmt_store::MgmtStore>>,
     /// Member changes (D87); none without `--data`.
     pub members: Option<tokio::sync::mpsc::UnboundedSender<crate::replica::MemberOp>>,
+    /// The cluster's settings, the trash's among them (D54, D115); none
+    /// without `--data` (then the defaults).
+    pub settings: Option<Arc<crate::settings::Settings>>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -136,11 +139,46 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn invalid(msg: impl Into<String>, reason: &str) -> ConnectError {
+pub(super) fn invalid(msg: impl Into<String>, reason: &str) -> ConnectError {
     with_reason(ConnectError::invalid_argument(msg.into()), reason)
 }
 
 impl Api {
+    /// Pool `pool`'s trash settings: the store's, else the defaults.
+    pub(super) fn trash_settings(&self, pool: u32) -> crate::settings::Trash {
+        self.admin
+            .signing
+            .as_ref()
+            .and_then(|s| s.settings.as_ref())
+            .and_then(|s| s.trash(pool).ok())
+            .unwrap_or_default()
+    }
+
+    /// The settings store, for a read (none without `--data`).
+    pub(super) fn admin_settings(&self) -> Option<Arc<crate::settings::Settings>> {
+        self.admin.signing.as_ref().and_then(|s| s.settings.clone())
+    }
+
+    /// The settings store, for a write.
+    pub(super) fn settings_store(&self) -> Result<Arc<crate::settings::Settings>, ConnectError> {
+        self.admin
+            .signing
+            .as_ref()
+            .and_then(|s| s.settings.clone())
+            .ok_or_else(|| {
+                with_reason(
+                    ConnectError::failed_precondition(
+                        "this map service keeps no store (no --data)",
+                    ),
+                    "no_store",
+                )
+            })
+    }
+
+    pub(super) async fn store_error(&self, e: TokenError) -> ConnectError {
+        self.token_error(e).await
+    }
+
     fn signing(&self) -> Result<(&Signing, &str), ConnectError> {
         match (&self.admin.signing, &self.admin.root) {
             (Some(s), Some(r)) => Ok((s, r)),
@@ -1157,6 +1195,7 @@ impl OperationService for Api {
                 .filter(|d| d.node == node)
                 .map(|d| d.id)
                 .collect();
+            let mut epoch = 0;
             for device in devices {
                 let r = self
                     .ask(|reply| Admin::SetDeviceIn {
@@ -1165,12 +1204,23 @@ impl OperationService for Api {
                         reply,
                     })
                     .await?;
-                if let Err(e) = r {
-                    message = format!("cancelled; device {device} not brought back in: {e}");
-                    break;
+                match r {
+                    Ok(e) => epoch = epoch.max(e),
+                    Err(e) => {
+                        message = format!("cancelled; device {device} not brought back in: {e}");
+                        break;
+                    }
                 }
             }
             if !message.contains(':') {
+                // Answered once the map that has them back is published,
+                // so what's read next shows it (it is fenced first).
+                let t = std::time::Instant::now();
+                while self.published().await?.0.epoch < epoch
+                    && t.elapsed() < Duration::from_secs(5)
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
                 message = format!("cancelled; node {node}'s devices are back in");
             }
         }

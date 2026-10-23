@@ -14,7 +14,397 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/admin.proto.
  */
 export const file_hyperstor_v1_admin: GenFile = /*@__PURE__*/
-  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSJEChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMiaQoTQ3JlYXRlVG9rZW5SZXNwb25zZRINCgV0b2tlbhgBIAEoCRIhCgRpbmZvGAIgASgLMhMuaHlwZXJzdG9yLnYxLlRva2VuEiAKC2FwaV9hZGRyZXNzGAMgASgJUgthcGlfYWRkcmVzcyKEAQoFVG9rZW4SCgoCaWQYASABKAkSDAoEcm9sZRgCIAEoCRIiCgxleHBpcmVzX3VuaXgYAyABKARSDGV4cGlyZXNfdW5peBIMCgR1c2VkGAQgASgIEg8KB3Jldm9rZWQYBSABKAgSHgoKY3JlYXRlZF9ieRgGIAEoCVIKY3JlYXRlZF9ieSITChFMaXN0VG9rZW5zUmVxdWVzdCI5ChJMaXN0VG9rZW5zUmVzcG9uc2USIwoGdG9rZW5zGAEgAygLMhMuaHlwZXJzdG9yLnYxLlRva2VuIiAKElJldm9rZVRva2VuUmVxdWVzdBIKCgJpZBgBIAEoCSIVChNSZXZva2VUb2tlblJlc3BvbnNlIogBCgtKb2luUmVxdWVzdBINCgV0b2tlbhgBIAEoCRILCgNjc3IYAiABKAkSEQoJYWRkcmVzc2VzGAMgAygJEgwKBHJhY2sYBCABKA0SHAoJbWVtYmVyX2lkGAUgASgNUgltZW1iZXJfaWQSHgoKbWVtYmVyX2lwcxgGIAMoCVIKbWVtYmVyX2lwcyLrAQoMSm9pblJlc3BvbnNlEh4KCmNsdXN0ZXJfaWQYASABKAlSCmNsdXN0ZXJfaWQSEwoLY2VydGlmaWNhdGUYAiABKAkSDAoEcm9vdBgDIAEoCRIMCgRub2RlGAQgASgNEiQKDW1hcF9hZGRyZXNzZXMYBSABKAlSDW1hcF9hZGRyZXNzZXMSFAoMaW50ZXJtZWRpYXRlGAYgASgJEioKEGludGVybWVkaWF0ZV9rZXkYByABKAlSEGludGVybWVkaWF0ZV9rZXkSIgoMY2x1c3Rlcl9maWxlGAggASgJUgxjbHVzdGVyX2ZpbGUiJgoXUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QSCwoDY3NyGAEgASgJIj0KGFJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRITCgtjZXJ0aWZpY2F0ZRgBIAEoCRIMCgRyb290GAIgASgJIhkKF0xpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0IqgBCgtDZXJ0aWZpY2F0ZRIOCgZzZXJpYWwYASABKAkSEAoIaWRlbnRpdHkYAiABKAkSJgoObm90X2FmdGVyX3VuaXgYAyABKARSDm5vdF9hZnRlcl91bml4EiAKC2lzc3VlZF91bml4GAQgASgEUgtpc3N1ZWRfdW5peBIcCglpc3N1ZWRfYnkYBSABKAlSCWlzc3VlZF9ieRIPCgdyZXZva2VkGAYgASgIIoMBCg1SZXZva2VkU2VyaWFsEg4KBnNlcmlhbBgBIAEoCRIeCgp1bnRpbF91bml4GAIgASgEUgp1bnRpbF91bml4EiIKDHJldm9rZWRfdW5peBgDIAEoBFIMcmV2b2tlZF91bml4Eh4KCnJldm9rZWRfYnkYBCABKAlSCnJldm9rZWRfYnkieQoYTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEi8KDGNlcnRpZmljYXRlcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5DZXJ0aWZpY2F0ZRIsCgdyZXZva2VkGAIgAygLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiKgoYUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0Eg4KBnNlcmlhbBgBIAEoCSJJChlSZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlEiwKB3Jldm9rZWQYASABKAsyGy5oeXBlcnN0b3IudjEuUmV2b2tlZFNlcmlhbCIVChNHZXRNYXBCYWNrdXBSZXF1ZXN0IlUKFEdldE1hcEJhY2t1cFJlc3BvbnNlEg4KBmJhY2t1cBgBIAEoDBIeCgpjbHVzdGVyX2lkGAIgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAMgASgEInkKBk1lbWJlchIKCgJpZBgBIAEoBBIiCgxyYWZ0X2FkZHJlc3MYAiABKAlSDHJhZnRfYWRkcmVzcxIgCgttYXBfYWRkcmVzcxgDIAEoCVILbWFwX2FkZHJlc3MSDQoFdm90ZXIYBCABKAgSDgoGbGVhZGVyGAUgASgIIhQKEkxpc3RNZW1iZXJzUmVxdWVzdCJIChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyEgoKAm1lGAIgASgEImQKEEFkZE1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzIjoKEUFkZE1lbWJlclJlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyIjAKE1JlbW92ZU1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSDQoFZm9yY2UYAiABKAgiPQoUUmVtb3ZlTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiHAoNR2V0Um93UmVxdWVzdBILCgNrZXkYASABKAkiLgoOR2V0Um93UmVzcG9uc2USDQoFZm91bmQYASABKAgSDQoFdmFsdWUYAiABKAwiSQoNUHV0Um93UmVxdWVzdBILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwSHAoJaWZfYWJzZW50GAMgASgIUglpZl9hYnNlbnQiEAoOUHV0Um93UmVzcG9uc2UiHwoQRGVsZXRlUm93UmVxdWVzdBILCgNrZXkYASABKAkiIgoRRGVsZXRlUm93UmVzcG9uc2USDQoFZm91bmQYASABKAgiPwoPTGlzdFJvd3NSZXF1ZXN0Eg4KBnByZWZpeBgBIAEoCRINCgVhZnRlchgCIAEoCRINCgVsaW1pdBgDIAEoDSIhCgNSb3cSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgMIjMKEExpc3RSb3dzUmVzcG9uc2USHwoEcm93cxgBIAMoCzIRLmh5cGVyc3Rvci52MS5Sb3ciOgoQRHJhaW5Ob2RlUmVxdWVzdBIMCgRub2RlGAEgASgNEhgKB2RyeV9ydW4YAiABKAhSB2RyeV9ydW4iZAoRRHJhaW5Ob2RlUmVzcG9uc2USKgoJb3BlcmF0aW9uGAEgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhIjCgVtb3ZlcxgCIAMoCzIULmh5cGVyc3Rvci52MS5QZ01vdmUiQQoGUGdNb3ZlEgwKBHBvb2wYASABKA0SCgoCcGcYAiABKA0SDgoGYmVmb3JlGAMgAygNEg0KBWFmdGVyGAQgAygNIvoBCglPcGVyYXRpb24SCgoCaWQYASABKAkSDAoEa2luZBgCIAEoCRIOCgZ0YXJnZXQYAyABKAkSKwoFc3RhdGUYBCABKA4yHC5oeXBlcnN0b3IudjEuT3BlcmF0aW9uU3RhdGUSDAoEZG9uZRgFIAEoDRINCgV0b3RhbBgGIAEoDRIPCgdtZXNzYWdlGAcgASgJEiIKDHN0YXJ0ZWRfdW5peBgIIAEoBFIMc3RhcnRlZF91bml4EiQKDWZpbmlzaGVkX3VuaXgYCSABKARSDWZpbmlzaGVkX3VuaXgSHgoKY3JlYXRlZF9ieRgKIAEoCVIKY3JlYXRlZF9ieSIhChNHZXRPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIhcKFUxpc3RPcGVyYXRpb25zUmVxdWVzdCJFChZMaXN0T3BlcmF0aW9uc1Jlc3BvbnNlEisKCm9wZXJhdGlvbnMYASADKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIiQKFkNhbmNlbE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkilQEKCUVycm9ySW5mbxIOCgZyZWFzb24YASABKAkSDgoGZG9tYWluGAIgASgJEjcKCG1ldGFkYXRhGAMgAygLMiUuaHlwZXJzdG9yLnYxLkVycm9ySW5mby5NZXRhZGF0YUVudHJ5Gi8KDU1ldGFkYXRhRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASqjAQoOT3BlcmF0aW9uU3RhdGUSHwobT1BFUkFUSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASGwoXT1BFUkFUSU9OX1NUQVRFX1JVTk5JTkcQARIYChRPUEVSQVRJT05fU1RBVEVfRE9ORRACEhoKFk9QRVJBVElPTl9TVEFURV9GQUlMRUQQAxIdChlPUEVSQVRJT05fU1RBVEVfQ0FOQ0VMTEVEEAQyxgIKDFRva2VuU2VydmljZRJSCgtDcmVhdGVUb2tlbhIgLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQ3JlYXRlVG9rZW5SZXNwb25zZRJPCgpMaXN0VG9rZW5zEh8uaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXF1ZXN0GiAuaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXNwb25zZRJSCgtSZXZva2VUb2tlbhIgLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuUmV2b2tlVG9rZW5SZXNwb25zZRI9CgRKb2luEhkuaHlwZXJzdG9yLnYxLkpvaW5SZXF1ZXN0GhouaHlwZXJzdG9yLnYxLkpvaW5SZXNwb25zZTK3AgoJQ2FTZXJ2aWNlEmEKEFJlbmV3Q2VydGlmaWNhdGUSJS5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QaJi5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlc3BvbnNlEmEKEExpc3RDZXJ0aWZpY2F0ZXMSJS5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEmQKEVJldm9rZUNlcnRpZmljYXRlEiYuaHlwZXJzdG9yLnYxLlJldm9rZUNlcnRpZmljYXRlUmVxdWVzdBonLmh5cGVyc3Rvci52MS5SZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlMmMKCk1hcFNlcnZpY2USVQoMR2V0TWFwQmFja3VwEiEuaHlwZXJzdG9yLnYxLkdldE1hcEJhY2t1cFJlcXVlc3QaIi5oeXBlcnN0b3IudjEuR2V0TWFwQmFja3VwUmVzcG9uc2UyiAIKDU1lbWJlclNlcnZpY2USUgoLTGlzdE1lbWJlcnMSIC5oeXBlcnN0b3IudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RNZW1iZXJzUmVzcG9uc2USTAoJQWRkTWVtYmVyEh4uaHlwZXJzdG9yLnYxLkFkZE1lbWJlclJlcXVlc3QaHy5oeXBlcnN0b3IudjEuQWRkTWVtYmVyUmVzcG9uc2USVQoMUmVtb3ZlTWVtYmVyEiEuaHlwZXJzdG9yLnYxLlJlbW92ZU1lbWJlclJlcXVlc3QaIi5oeXBlcnN0b3IudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UytQIKEE1nbXRTdG9yZVNlcnZpY2USQwoGR2V0Um93EhsuaHlwZXJzdG9yLnYxLkdldFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuR2V0Um93UmVzcG9uc2USQwoGUHV0Um93EhsuaHlwZXJzdG9yLnYxLlB1dFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuUHV0Um93UmVzcG9uc2USTAoJRGVsZXRlUm93Eh4uaHlwZXJzdG9yLnYxLkRlbGV0ZVJvd1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuRGVsZXRlUm93UmVzcG9uc2USSQoITGlzdFJvd3MSHS5oeXBlcnN0b3IudjEuTGlzdFJvd3NSZXF1ZXN0Gh4uaHlwZXJzdG9yLnYxLkxpc3RSb3dzUmVzcG9uc2UyWwoLTm9kZVNlcnZpY2USTAoJRHJhaW5Ob2RlEh4uaHlwZXJzdG9yLnYxLkRyYWluTm9kZVJlcXVlc3QaHy5oeXBlcnN0b3IudjEuRHJhaW5Ob2RlUmVzcG9uc2UyjQIKEE9wZXJhdGlvblNlcnZpY2USSgoMR2V0T3BlcmF0aW9uEiEuaHlwZXJzdG9yLnYxLkdldE9wZXJhdGlvblJlcXVlc3QaFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uElsKDkxpc3RPcGVyYXRpb25zEiMuaHlwZXJzdG9yLnYxLkxpc3RPcGVyYXRpb25zUmVxdWVzdBokLmh5cGVyc3Rvci52MS5MaXN0T3BlcmF0aW9uc1Jlc3BvbnNlElAKD0NhbmNlbE9wZXJhdGlvbhIkLmh5cGVyc3Rvci52MS5DYW5jZWxPcGVyYXRpb25SZXF1ZXN0GhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbmIGcHJvdG8z");
+  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSKPAQoQTGlzdEF1ZGl0UmVxdWVzdBIeCgpzaW5jZV91bml4GAEgASgEUgpzaW5jZV91bml4Eh4KCnVudGlsX3VuaXgYAiABKARSCnVudGlsX3VuaXgSEQoJcHJpbmNpcGFsGAMgASgJEgoKAm9wGAQgASgJEg0KBWxpbWl0GAUgASgNEg0KBWFmdGVyGAYgASgJImYKC0F1ZGl0UmVjb3JkEhgKB3RpbWVfbXMYASABKARSB3RpbWVfbXMSEQoJcHJpbmNpcGFsGAIgASgJEgoKAm9wGAMgASgJEg4KBnRhcmdldBgEIAEoCRIOCgZyZXN1bHQYBSABKAkiTQoRTGlzdEF1ZGl0UmVzcG9uc2USKgoHcmVjb3JkcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5BdWRpdFJlY29yZBIMCgRuZXh0GAIgASgJIiMKEkFwcGVuZEF1ZGl0UmVxdWVzdBINCgVsaW5lcxgBIAMoCSIVChNBcHBlbmRBdWRpdFJlc3BvbnNlIjcKDUF1ZGl0U2V0dGluZ3MSJgoOcmV0ZW50aW9uX2RheXMYASABKA1SDnJldGVudGlvbl9kYXlzIhkKF0dldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0IkkKGEdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRItCghzZXR0aW5ncxgBIAEoCzIbLmh5cGVyc3Rvci52MS5BdWRpdFNldHRpbmdzIkEKF1NldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0EiYKDnJldGVudGlvbl9kYXlzGAEgASgNUg5yZXRlbnRpb25fZGF5cyJJChhTZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuQXVkaXRTZXR0aW5ncyJEChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMiaQoTQ3JlYXRlVG9rZW5SZXNwb25zZRINCgV0b2tlbhgBIAEoCRIhCgRpbmZvGAIgASgLMhMuaHlwZXJzdG9yLnYxLlRva2VuEiAKC2FwaV9hZGRyZXNzGAMgASgJUgthcGlfYWRkcmVzcyKEAQoFVG9rZW4SCgoCaWQYASABKAkSDAoEcm9sZRgCIAEoCRIiCgxleHBpcmVzX3VuaXgYAyABKARSDGV4cGlyZXNfdW5peBIMCgR1c2VkGAQgASgIEg8KB3Jldm9rZWQYBSABKAgSHgoKY3JlYXRlZF9ieRgGIAEoCVIKY3JlYXRlZF9ieSITChFMaXN0VG9rZW5zUmVxdWVzdCI5ChJMaXN0VG9rZW5zUmVzcG9uc2USIwoGdG9rZW5zGAEgAygLMhMuaHlwZXJzdG9yLnYxLlRva2VuIiAKElJldm9rZVRva2VuUmVxdWVzdBIKCgJpZBgBIAEoCSIVChNSZXZva2VUb2tlblJlc3BvbnNlIogBCgtKb2luUmVxdWVzdBINCgV0b2tlbhgBIAEoCRILCgNjc3IYAiABKAkSEQoJYWRkcmVzc2VzGAMgAygJEgwKBHJhY2sYBCABKA0SHAoJbWVtYmVyX2lkGAUgASgNUgltZW1iZXJfaWQSHgoKbWVtYmVyX2lwcxgGIAMoCVIKbWVtYmVyX2lwcyLrAQoMSm9pblJlc3BvbnNlEh4KCmNsdXN0ZXJfaWQYASABKAlSCmNsdXN0ZXJfaWQSEwoLY2VydGlmaWNhdGUYAiABKAkSDAoEcm9vdBgDIAEoCRIMCgRub2RlGAQgASgNEiQKDW1hcF9hZGRyZXNzZXMYBSABKAlSDW1hcF9hZGRyZXNzZXMSFAoMaW50ZXJtZWRpYXRlGAYgASgJEioKEGludGVybWVkaWF0ZV9rZXkYByABKAlSEGludGVybWVkaWF0ZV9rZXkSIgoMY2x1c3Rlcl9maWxlGAggASgJUgxjbHVzdGVyX2ZpbGUiJgoXUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QSCwoDY3NyGAEgASgJIj0KGFJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRITCgtjZXJ0aWZpY2F0ZRgBIAEoCRIMCgRyb290GAIgASgJIhkKF0xpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0IqgBCgtDZXJ0aWZpY2F0ZRIOCgZzZXJpYWwYASABKAkSEAoIaWRlbnRpdHkYAiABKAkSJgoObm90X2FmdGVyX3VuaXgYAyABKARSDm5vdF9hZnRlcl91bml4EiAKC2lzc3VlZF91bml4GAQgASgEUgtpc3N1ZWRfdW5peBIcCglpc3N1ZWRfYnkYBSABKAlSCWlzc3VlZF9ieRIPCgdyZXZva2VkGAYgASgIIoMBCg1SZXZva2VkU2VyaWFsEg4KBnNlcmlhbBgBIAEoCRIeCgp1bnRpbF91bml4GAIgASgEUgp1bnRpbF91bml4EiIKDHJldm9rZWRfdW5peBgDIAEoBFIMcmV2b2tlZF91bml4Eh4KCnJldm9rZWRfYnkYBCABKAlSCnJldm9rZWRfYnkieQoYTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEi8KDGNlcnRpZmljYXRlcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5DZXJ0aWZpY2F0ZRIsCgdyZXZva2VkGAIgAygLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiKgoYUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0Eg4KBnNlcmlhbBgBIAEoCSJJChlSZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlEiwKB3Jldm9rZWQYASABKAsyGy5oeXBlcnN0b3IudjEuUmV2b2tlZFNlcmlhbCIVChNHZXRNYXBCYWNrdXBSZXF1ZXN0IlUKFEdldE1hcEJhY2t1cFJlc3BvbnNlEg4KBmJhY2t1cBgBIAEoDBIeCgpjbHVzdGVyX2lkGAIgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAMgASgEInkKBk1lbWJlchIKCgJpZBgBIAEoBBIiCgxyYWZ0X2FkZHJlc3MYAiABKAlSDHJhZnRfYWRkcmVzcxIgCgttYXBfYWRkcmVzcxgDIAEoCVILbWFwX2FkZHJlc3MSDQoFdm90ZXIYBCABKAgSDgoGbGVhZGVyGAUgASgIIhQKEkxpc3RNZW1iZXJzUmVxdWVzdCJIChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyEgoKAm1lGAIgASgEImQKEEFkZE1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzIjoKEUFkZE1lbWJlclJlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyIjAKE1JlbW92ZU1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSDQoFZm9yY2UYAiABKAgiPQoUUmVtb3ZlTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiHAoNR2V0Um93UmVxdWVzdBILCgNrZXkYASABKAkiLgoOR2V0Um93UmVzcG9uc2USDQoFZm91bmQYASABKAgSDQoFdmFsdWUYAiABKAwiSQoNUHV0Um93UmVxdWVzdBILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwSHAoJaWZfYWJzZW50GAMgASgIUglpZl9hYnNlbnQiEAoOUHV0Um93UmVzcG9uc2UiHwoQRGVsZXRlUm93UmVxdWVzdBILCgNrZXkYASABKAkiIgoRRGVsZXRlUm93UmVzcG9uc2USDQoFZm91bmQYASABKAgiPwoPTGlzdFJvd3NSZXF1ZXN0Eg4KBnByZWZpeBgBIAEoCRINCgVhZnRlchgCIAEoCRINCgVsaW1pdBgDIAEoDSIhCgNSb3cSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgMIjMKEExpc3RSb3dzUmVzcG9uc2USHwoEcm93cxgBIAMoCzIRLmh5cGVyc3Rvci52MS5Sb3ciOgoQRHJhaW5Ob2RlUmVxdWVzdBIMCgRub2RlGAEgASgNEhgKB2RyeV9ydW4YAiABKAhSB2RyeV9ydW4iZAoRRHJhaW5Ob2RlUmVzcG9uc2USKgoJb3BlcmF0aW9uGAEgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhIjCgVtb3ZlcxgCIAMoCzIULmh5cGVyc3Rvci52MS5QZ01vdmUiQQoGUGdNb3ZlEgwKBHBvb2wYASABKA0SCgoCcGcYAiABKA0SDgoGYmVmb3JlGAMgAygNEg0KBWFmdGVyGAQgAygNIvoBCglPcGVyYXRpb24SCgoCaWQYASABKAkSDAoEa2luZBgCIAEoCRIOCgZ0YXJnZXQYAyABKAkSKwoFc3RhdGUYBCABKA4yHC5oeXBlcnN0b3IudjEuT3BlcmF0aW9uU3RhdGUSDAoEZG9uZRgFIAEoDRINCgV0b3RhbBgGIAEoDRIPCgdtZXNzYWdlGAcgASgJEiIKDHN0YXJ0ZWRfdW5peBgIIAEoBFIMc3RhcnRlZF91bml4EiQKDWZpbmlzaGVkX3VuaXgYCSABKARSDWZpbmlzaGVkX3VuaXgSHgoKY3JlYXRlZF9ieRgKIAEoCVIKY3JlYXRlZF9ieSIhChNHZXRPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIhcKFUxpc3RPcGVyYXRpb25zUmVxdWVzdCJFChZMaXN0T3BlcmF0aW9uc1Jlc3BvbnNlEisKCm9wZXJhdGlvbnMYASADKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIiQKFkNhbmNlbE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkilQEKCUVycm9ySW5mbxIOCgZyZWFzb24YASABKAkSDgoGZG9tYWluGAIgASgJEjcKCG1ldGFkYXRhGAMgAygLMiUuaHlwZXJzdG9yLnYxLkVycm9ySW5mby5NZXRhZGF0YUVudHJ5Gi8KDU1ldGFkYXRhRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASqjAQoOT3BlcmF0aW9uU3RhdGUSHwobT1BFUkFUSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASGwoXT1BFUkFUSU9OX1NUQVRFX1JVTk5JTkcQARIYChRPUEVSQVRJT05fU1RBVEVfRE9ORRACEhoKFk9QRVJBVElPTl9TVEFURV9GQUlMRUQQAxIdChlPUEVSQVRJT05fU1RBVEVfQ0FOQ0VMTEVEEAQyxgIKDFRva2VuU2VydmljZRJSCgtDcmVhdGVUb2tlbhIgLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQ3JlYXRlVG9rZW5SZXNwb25zZRJPCgpMaXN0VG9rZW5zEh8uaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXF1ZXN0GiAuaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXNwb25zZRJSCgtSZXZva2VUb2tlbhIgLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuUmV2b2tlVG9rZW5SZXNwb25zZRI9CgRKb2luEhkuaHlwZXJzdG9yLnYxLkpvaW5SZXF1ZXN0GhouaHlwZXJzdG9yLnYxLkpvaW5SZXNwb25zZTK3AgoJQ2FTZXJ2aWNlEmEKEFJlbmV3Q2VydGlmaWNhdGUSJS5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QaJi5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlc3BvbnNlEmEKEExpc3RDZXJ0aWZpY2F0ZXMSJS5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEmQKEVJldm9rZUNlcnRpZmljYXRlEiYuaHlwZXJzdG9yLnYxLlJldm9rZUNlcnRpZmljYXRlUmVxdWVzdBonLmh5cGVyc3Rvci52MS5SZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlMmMKCk1hcFNlcnZpY2USVQoMR2V0TWFwQmFja3VwEiEuaHlwZXJzdG9yLnYxLkdldE1hcEJhY2t1cFJlcXVlc3QaIi5oeXBlcnN0b3IudjEuR2V0TWFwQmFja3VwUmVzcG9uc2UyiAIKDU1lbWJlclNlcnZpY2USUgoLTGlzdE1lbWJlcnMSIC5oeXBlcnN0b3IudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RNZW1iZXJzUmVzcG9uc2USTAoJQWRkTWVtYmVyEh4uaHlwZXJzdG9yLnYxLkFkZE1lbWJlclJlcXVlc3QaHy5oeXBlcnN0b3IudjEuQWRkTWVtYmVyUmVzcG9uc2USVQoMUmVtb3ZlTWVtYmVyEiEuaHlwZXJzdG9yLnYxLlJlbW92ZU1lbWJlclJlcXVlc3QaIi5oeXBlcnN0b3IudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UytQIKEE1nbXRTdG9yZVNlcnZpY2USQwoGR2V0Um93EhsuaHlwZXJzdG9yLnYxLkdldFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuR2V0Um93UmVzcG9uc2USQwoGUHV0Um93EhsuaHlwZXJzdG9yLnYxLlB1dFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuUHV0Um93UmVzcG9uc2USTAoJRGVsZXRlUm93Eh4uaHlwZXJzdG9yLnYxLkRlbGV0ZVJvd1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuRGVsZXRlUm93UmVzcG9uc2USSQoITGlzdFJvd3MSHS5oeXBlcnN0b3IudjEuTGlzdFJvd3NSZXF1ZXN0Gh4uaHlwZXJzdG9yLnYxLkxpc3RSb3dzUmVzcG9uc2UyWwoLTm9kZVNlcnZpY2USTAoJRHJhaW5Ob2RlEh4uaHlwZXJzdG9yLnYxLkRyYWluTm9kZVJlcXVlc3QaHy5oeXBlcnN0b3IudjEuRHJhaW5Ob2RlUmVzcG9uc2Uy9gIKDEF1ZGl0U2VydmljZRJMCglMaXN0QXVkaXQSHi5oeXBlcnN0b3IudjEuTGlzdEF1ZGl0UmVxdWVzdBofLmh5cGVyc3Rvci52MS5MaXN0QXVkaXRSZXNwb25zZRJSCgtBcHBlbmRBdWRpdBIgLmh5cGVyc3Rvci52MS5BcHBlbmRBdWRpdFJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQXBwZW5kQXVkaXRSZXNwb25zZRJhChBHZXRBdWRpdFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLkdldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRJhChBTZXRBdWRpdFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLlNldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlNldEF1ZGl0U2V0dGluZ3NSZXNwb25zZTKNAgoQT3BlcmF0aW9uU2VydmljZRJKCgxHZXRPcGVyYXRpb24SIS5oeXBlcnN0b3IudjEuR2V0T3BlcmF0aW9uUmVxdWVzdBoXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24SWwoOTGlzdE9wZXJhdGlvbnMSIy5oeXBlcnN0b3IudjEuTGlzdE9wZXJhdGlvbnNSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkxpc3RPcGVyYXRpb25zUmVzcG9uc2USUAoPQ2FuY2VsT3BlcmF0aW9uEiQuaHlwZXJzdG9yLnYxLkNhbmNlbE9wZXJhdGlvblJlcXVlc3QaFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uYgZwcm90bzM");
+
+/**
+ * @generated from message hyperstor.v1.ListAuditRequest
+ */
+export type ListAuditRequest = Message<"hyperstor.v1.ListAuditRequest"> & {
+  /**
+   * Unix seconds; 0: no bound.
+   *
+   * @generated from field: uint64 since_unix = 1 [json_name = "since_unix"];
+   */
+  sinceUnix: bigint;
+
+  /**
+   * @generated from field: uint64 until_unix = 2 [json_name = "until_unix"];
+   */
+  untilUnix: bigint;
+
+  /**
+   * Records whose principal contains this.
+   *
+   * @generated from field: string principal = 3;
+   */
+  principal: string;
+
+  /**
+   * Records of this operation (exactly).
+   *
+   * @generated from field: string op = 4;
+   */
+  op: string;
+
+  /**
+   * At most this many (default 100, at most 1000).
+   *
+   * @generated from field: uint32 limit = 5;
+   */
+  limit: number;
+
+  /**
+   * A previous answer's `next`: go on from there.
+   *
+   * @generated from field: string after = 6;
+   */
+  after: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.ListAuditRequest
+ */
+export type ListAuditRequestJson = {
+  /**
+   * Unix seconds; 0: no bound.
+   *
+   * @generated from field: uint64 since_unix = 1 [json_name = "since_unix"];
+   */
+  since_unix?: string;
+
+  /**
+   * @generated from field: uint64 until_unix = 2 [json_name = "until_unix"];
+   */
+  until_unix?: string;
+
+  /**
+   * Records whose principal contains this.
+   *
+   * @generated from field: string principal = 3;
+   */
+  principal?: string;
+
+  /**
+   * Records of this operation (exactly).
+   *
+   * @generated from field: string op = 4;
+   */
+  op?: string;
+
+  /**
+   * At most this many (default 100, at most 1000).
+   *
+   * @generated from field: uint32 limit = 5;
+   */
+  limit?: number;
+
+  /**
+   * A previous answer's `next`: go on from there.
+   *
+   * @generated from field: string after = 6;
+   */
+  after?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.ListAuditRequest.
+ * Use `create(ListAuditRequestSchema)` to create a new message.
+ */
+export const ListAuditRequestSchema: GenMessage<ListAuditRequest, {jsonType: ListAuditRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 0);
+
+/**
+ * @generated from message hyperstor.v1.AuditRecord
+ */
+export type AuditRecord = Message<"hyperstor.v1.AuditRecord"> & {
+  /**
+   * Unix milliseconds.
+   *
+   * @generated from field: uint64 time_ms = 1 [json_name = "time_ms"];
+   */
+  timeMs: bigint;
+
+  /**
+   * @generated from field: string principal = 2;
+   */
+  principal: string;
+
+  /**
+   * @generated from field: string op = 3;
+   */
+  op: string;
+
+  /**
+   * @generated from field: string target = 4;
+   */
+  target: string;
+
+  /**
+   * @generated from field: string result = 5;
+   */
+  result: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.AuditRecord
+ */
+export type AuditRecordJson = {
+  /**
+   * Unix milliseconds.
+   *
+   * @generated from field: uint64 time_ms = 1 [json_name = "time_ms"];
+   */
+  time_ms?: string;
+
+  /**
+   * @generated from field: string principal = 2;
+   */
+  principal?: string;
+
+  /**
+   * @generated from field: string op = 3;
+   */
+  op?: string;
+
+  /**
+   * @generated from field: string target = 4;
+   */
+  target?: string;
+
+  /**
+   * @generated from field: string result = 5;
+   */
+  result?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.AuditRecord.
+ * Use `create(AuditRecordSchema)` to create a new message.
+ */
+export const AuditRecordSchema: GenMessage<AuditRecord, {jsonType: AuditRecordJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 1);
+
+/**
+ * @generated from message hyperstor.v1.ListAuditResponse
+ */
+export type ListAuditResponse = Message<"hyperstor.v1.ListAuditResponse"> & {
+  /**
+   * @generated from field: repeated hyperstor.v1.AuditRecord records = 1;
+   */
+  records: AuditRecord[];
+
+  /**
+   * Where to go on from for more; empty: that was all.
+   *
+   * @generated from field: string next = 2;
+   */
+  next: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.ListAuditResponse
+ */
+export type ListAuditResponseJson = {
+  /**
+   * @generated from field: repeated hyperstor.v1.AuditRecord records = 1;
+   */
+  records?: AuditRecordJson[];
+
+  /**
+   * Where to go on from for more; empty: that was all.
+   *
+   * @generated from field: string next = 2;
+   */
+  next?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.ListAuditResponse.
+ * Use `create(ListAuditResponseSchema)` to create a new message.
+ */
+export const ListAuditResponseSchema: GenMessage<ListAuditResponse, {jsonType: ListAuditResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 2);
+
+/**
+ * @generated from message hyperstor.v1.AppendAuditRequest
+ */
+export type AppendAuditRequest = Message<"hyperstor.v1.AppendAuditRequest"> & {
+  /**
+   * JSON lines, as hyperstor-mgmt writes them to standard error.
+   *
+   * @generated from field: repeated string lines = 1;
+   */
+  lines: string[];
+};
+
+/**
+ * @generated from message hyperstor.v1.AppendAuditRequest
+ */
+export type AppendAuditRequestJson = {
+  /**
+   * JSON lines, as hyperstor-mgmt writes them to standard error.
+   *
+   * @generated from field: repeated string lines = 1;
+   */
+  lines?: string[];
+};
+
+/**
+ * Describes the message hyperstor.v1.AppendAuditRequest.
+ * Use `create(AppendAuditRequestSchema)` to create a new message.
+ */
+export const AppendAuditRequestSchema: GenMessage<AppendAuditRequest, {jsonType: AppendAuditRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 3);
+
+/**
+ * @generated from message hyperstor.v1.AppendAuditResponse
+ */
+export type AppendAuditResponse = Message<"hyperstor.v1.AppendAuditResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.AppendAuditResponse
+ */
+export type AppendAuditResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.AppendAuditResponse.
+ * Use `create(AppendAuditResponseSchema)` to create a new message.
+ */
+export const AppendAuditResponseSchema: GenMessage<AppendAuditResponse, {jsonType: AppendAuditResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 4);
+
+/**
+ * @generated from message hyperstor.v1.AuditSettings
+ */
+export type AuditSettings = Message<"hyperstor.v1.AuditSettings"> & {
+  /**
+   * Days records are kept; 0: forever.
+   *
+   * @generated from field: uint32 retention_days = 1 [json_name = "retention_days"];
+   */
+  retentionDays: number;
+};
+
+/**
+ * @generated from message hyperstor.v1.AuditSettings
+ */
+export type AuditSettingsJson = {
+  /**
+   * Days records are kept; 0: forever.
+   *
+   * @generated from field: uint32 retention_days = 1 [json_name = "retention_days"];
+   */
+  retention_days?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.AuditSettings.
+ * Use `create(AuditSettingsSchema)` to create a new message.
+ */
+export const AuditSettingsSchema: GenMessage<AuditSettings, {jsonType: AuditSettingsJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 5);
+
+/**
+ * @generated from message hyperstor.v1.GetAuditSettingsRequest
+ */
+export type GetAuditSettingsRequest = Message<"hyperstor.v1.GetAuditSettingsRequest"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.GetAuditSettingsRequest
+ */
+export type GetAuditSettingsRequestJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.GetAuditSettingsRequest.
+ * Use `create(GetAuditSettingsRequestSchema)` to create a new message.
+ */
+export const GetAuditSettingsRequestSchema: GenMessage<GetAuditSettingsRequest, {jsonType: GetAuditSettingsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 6);
+
+/**
+ * @generated from message hyperstor.v1.GetAuditSettingsResponse
+ */
+export type GetAuditSettingsResponse = Message<"hyperstor.v1.GetAuditSettingsResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.AuditSettings settings = 1;
+   */
+  settings?: AuditSettings | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.GetAuditSettingsResponse
+ */
+export type GetAuditSettingsResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.AuditSettings settings = 1;
+   */
+  settings?: AuditSettingsJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.GetAuditSettingsResponse.
+ * Use `create(GetAuditSettingsResponseSchema)` to create a new message.
+ */
+export const GetAuditSettingsResponseSchema: GenMessage<GetAuditSettingsResponse, {jsonType: GetAuditSettingsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 7);
+
+/**
+ * @generated from message hyperstor.v1.SetAuditSettingsRequest
+ */
+export type SetAuditSettingsRequest = Message<"hyperstor.v1.SetAuditSettingsRequest"> & {
+  /**
+   * @generated from field: uint32 retention_days = 1 [json_name = "retention_days"];
+   */
+  retentionDays: number;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetAuditSettingsRequest
+ */
+export type SetAuditSettingsRequestJson = {
+  /**
+   * @generated from field: uint32 retention_days = 1 [json_name = "retention_days"];
+   */
+  retention_days?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetAuditSettingsRequest.
+ * Use `create(SetAuditSettingsRequestSchema)` to create a new message.
+ */
+export const SetAuditSettingsRequestSchema: GenMessage<SetAuditSettingsRequest, {jsonType: SetAuditSettingsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 8);
+
+/**
+ * @generated from message hyperstor.v1.SetAuditSettingsResponse
+ */
+export type SetAuditSettingsResponse = Message<"hyperstor.v1.SetAuditSettingsResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.AuditSettings settings = 1;
+   */
+  settings?: AuditSettings | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetAuditSettingsResponse
+ */
+export type SetAuditSettingsResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.AuditSettings settings = 1;
+   */
+  settings?: AuditSettingsJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetAuditSettingsResponse.
+ * Use `create(SetAuditSettingsResponseSchema)` to create a new message.
+ */
+export const SetAuditSettingsResponseSchema: GenMessage<SetAuditSettingsResponse, {jsonType: SetAuditSettingsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 9);
 
 /**
  * @generated from message hyperstor.v1.CreateTokenRequest
@@ -59,7 +449,7 @@ export type CreateTokenRequestJson = {
  * Use `create(CreateTokenRequestSchema)` to create a new message.
  */
 export const CreateTokenRequestSchema: GenMessage<CreateTokenRequest, {jsonType: CreateTokenRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 0);
+  messageDesc(file_hyperstor_v1_admin, 10);
 
 /**
  * @generated from message hyperstor.v1.CreateTokenResponse
@@ -114,7 +504,7 @@ export type CreateTokenResponseJson = {
  * Use `create(CreateTokenResponseSchema)` to create a new message.
  */
 export const CreateTokenResponseSchema: GenMessage<CreateTokenResponse, {jsonType: CreateTokenResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 1);
+  messageDesc(file_hyperstor_v1_admin, 11);
 
 /**
  * @generated from message hyperstor.v1.Token
@@ -209,7 +599,7 @@ export type TokenJson = {
  * Use `create(TokenSchema)` to create a new message.
  */
 export const TokenSchema: GenMessage<Token, {jsonType: TokenJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 2);
+  messageDesc(file_hyperstor_v1_admin, 12);
 
 /**
  * @generated from message hyperstor.v1.ListTokensRequest
@@ -228,7 +618,7 @@ export type ListTokensRequestJson = {
  * Use `create(ListTokensRequestSchema)` to create a new message.
  */
 export const ListTokensRequestSchema: GenMessage<ListTokensRequest, {jsonType: ListTokensRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 3);
+  messageDesc(file_hyperstor_v1_admin, 13);
 
 /**
  * @generated from message hyperstor.v1.ListTokensResponse
@@ -255,7 +645,7 @@ export type ListTokensResponseJson = {
  * Use `create(ListTokensResponseSchema)` to create a new message.
  */
 export const ListTokensResponseSchema: GenMessage<ListTokensResponse, {jsonType: ListTokensResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 4);
+  messageDesc(file_hyperstor_v1_admin, 14);
 
 /**
  * @generated from message hyperstor.v1.RevokeTokenRequest
@@ -282,7 +672,7 @@ export type RevokeTokenRequestJson = {
  * Use `create(RevokeTokenRequestSchema)` to create a new message.
  */
 export const RevokeTokenRequestSchema: GenMessage<RevokeTokenRequest, {jsonType: RevokeTokenRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 5);
+  messageDesc(file_hyperstor_v1_admin, 15);
 
 /**
  * @generated from message hyperstor.v1.RevokeTokenResponse
@@ -301,7 +691,7 @@ export type RevokeTokenResponseJson = {
  * Use `create(RevokeTokenResponseSchema)` to create a new message.
  */
 export const RevokeTokenResponseSchema: GenMessage<RevokeTokenResponse, {jsonType: RevokeTokenResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 6);
+  messageDesc(file_hyperstor_v1_admin, 16);
 
 /**
  * @generated from message hyperstor.v1.JoinRequest
@@ -396,7 +786,7 @@ export type JoinRequestJson = {
  * Use `create(JoinRequestSchema)` to create a new message.
  */
 export const JoinRequestSchema: GenMessage<JoinRequest, {jsonType: JoinRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 7);
+  messageDesc(file_hyperstor_v1_admin, 17);
 
 /**
  * @generated from message hyperstor.v1.JoinResponse
@@ -507,7 +897,7 @@ export type JoinResponseJson = {
  * Use `create(JoinResponseSchema)` to create a new message.
  */
 export const JoinResponseSchema: GenMessage<JoinResponse, {jsonType: JoinResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 8);
+  messageDesc(file_hyperstor_v1_admin, 18);
 
 /**
  * @generated from message hyperstor.v1.RenewCertificateRequest
@@ -538,7 +928,7 @@ export type RenewCertificateRequestJson = {
  * Use `create(RenewCertificateRequestSchema)` to create a new message.
  */
 export const RenewCertificateRequestSchema: GenMessage<RenewCertificateRequest, {jsonType: RenewCertificateRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 9);
+  messageDesc(file_hyperstor_v1_admin, 19);
 
 /**
  * @generated from message hyperstor.v1.RenewCertificateResponse
@@ -579,7 +969,7 @@ export type RenewCertificateResponseJson = {
  * Use `create(RenewCertificateResponseSchema)` to create a new message.
  */
 export const RenewCertificateResponseSchema: GenMessage<RenewCertificateResponse, {jsonType: RenewCertificateResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 10);
+  messageDesc(file_hyperstor_v1_admin, 20);
 
 /**
  * @generated from message hyperstor.v1.ListCertificatesRequest
@@ -598,7 +988,7 @@ export type ListCertificatesRequestJson = {
  * Use `create(ListCertificatesRequestSchema)` to create a new message.
  */
 export const ListCertificatesRequestSchema: GenMessage<ListCertificatesRequest, {jsonType: ListCertificatesRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 11);
+  messageDesc(file_hyperstor_v1_admin, 21);
 
 /**
  * @generated from message hyperstor.v1.Certificate
@@ -687,7 +1077,7 @@ export type CertificateJson = {
  * Use `create(CertificateSchema)` to create a new message.
  */
 export const CertificateSchema: GenMessage<Certificate, {jsonType: CertificateJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 12);
+  messageDesc(file_hyperstor_v1_admin, 22);
 
 /**
  * @generated from message hyperstor.v1.RevokedSerial
@@ -748,7 +1138,7 @@ export type RevokedSerialJson = {
  * Use `create(RevokedSerialSchema)` to create a new message.
  */
 export const RevokedSerialSchema: GenMessage<RevokedSerial, {jsonType: RevokedSerialJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 13);
+  messageDesc(file_hyperstor_v1_admin, 23);
 
 /**
  * @generated from message hyperstor.v1.ListCertificatesResponse
@@ -785,7 +1175,7 @@ export type ListCertificatesResponseJson = {
  * Use `create(ListCertificatesResponseSchema)` to create a new message.
  */
 export const ListCertificatesResponseSchema: GenMessage<ListCertificatesResponse, {jsonType: ListCertificatesResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 14);
+  messageDesc(file_hyperstor_v1_admin, 24);
 
 /**
  * @generated from message hyperstor.v1.RevokeCertificateRequest
@@ -812,7 +1202,7 @@ export type RevokeCertificateRequestJson = {
  * Use `create(RevokeCertificateRequestSchema)` to create a new message.
  */
 export const RevokeCertificateRequestSchema: GenMessage<RevokeCertificateRequest, {jsonType: RevokeCertificateRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 15);
+  messageDesc(file_hyperstor_v1_admin, 25);
 
 /**
  * @generated from message hyperstor.v1.RevokeCertificateResponse
@@ -839,7 +1229,7 @@ export type RevokeCertificateResponseJson = {
  * Use `create(RevokeCertificateResponseSchema)` to create a new message.
  */
 export const RevokeCertificateResponseSchema: GenMessage<RevokeCertificateResponse, {jsonType: RevokeCertificateResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 16);
+  messageDesc(file_hyperstor_v1_admin, 26);
 
 /**
  * @generated from message hyperstor.v1.GetMapBackupRequest
@@ -858,7 +1248,7 @@ export type GetMapBackupRequestJson = {
  * Use `create(GetMapBackupRequestSchema)` to create a new message.
  */
 export const GetMapBackupRequestSchema: GenMessage<GetMapBackupRequest, {jsonType: GetMapBackupRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 17);
+  messageDesc(file_hyperstor_v1_admin, 27);
 
 /**
  * @generated from message hyperstor.v1.GetMapBackupResponse
@@ -905,7 +1295,7 @@ export type GetMapBackupResponseJson = {
  * Use `create(GetMapBackupResponseSchema)` to create a new message.
  */
 export const GetMapBackupResponseSchema: GenMessage<GetMapBackupResponse, {jsonType: GetMapBackupResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 18);
+  messageDesc(file_hyperstor_v1_admin, 28);
 
 /**
  * @generated from message hyperstor.v1.Member
@@ -980,7 +1370,7 @@ export type MemberJson = {
  * Use `create(MemberSchema)` to create a new message.
  */
 export const MemberSchema: GenMessage<Member, {jsonType: MemberJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 19);
+  messageDesc(file_hyperstor_v1_admin, 29);
 
 /**
  * @generated from message hyperstor.v1.ListMembersRequest
@@ -999,7 +1389,7 @@ export type ListMembersRequestJson = {
  * Use `create(ListMembersRequestSchema)` to create a new message.
  */
 export const ListMembersRequestSchema: GenMessage<ListMembersRequest, {jsonType: ListMembersRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 20);
+  messageDesc(file_hyperstor_v1_admin, 30);
 
 /**
  * @generated from message hyperstor.v1.ListMembersResponse
@@ -1040,7 +1430,7 @@ export type ListMembersResponseJson = {
  * Use `create(ListMembersResponseSchema)` to create a new message.
  */
 export const ListMembersResponseSchema: GenMessage<ListMembersResponse, {jsonType: ListMembersResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 21);
+  messageDesc(file_hyperstor_v1_admin, 31);
 
 /**
  * @generated from message hyperstor.v1.AddMemberRequest
@@ -1087,7 +1477,7 @@ export type AddMemberRequestJson = {
  * Use `create(AddMemberRequestSchema)` to create a new message.
  */
 export const AddMemberRequestSchema: GenMessage<AddMemberRequest, {jsonType: AddMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 22);
+  messageDesc(file_hyperstor_v1_admin, 32);
 
 /**
  * @generated from message hyperstor.v1.AddMemberResponse
@@ -1114,7 +1504,7 @@ export type AddMemberResponseJson = {
  * Use `create(AddMemberResponseSchema)` to create a new message.
  */
 export const AddMemberResponseSchema: GenMessage<AddMemberResponse, {jsonType: AddMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 23);
+  messageDesc(file_hyperstor_v1_admin, 33);
 
 /**
  * @generated from message hyperstor.v1.RemoveMemberRequest
@@ -1151,7 +1541,7 @@ export type RemoveMemberRequestJson = {
  * Use `create(RemoveMemberRequestSchema)` to create a new message.
  */
 export const RemoveMemberRequestSchema: GenMessage<RemoveMemberRequest, {jsonType: RemoveMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 24);
+  messageDesc(file_hyperstor_v1_admin, 34);
 
 /**
  * @generated from message hyperstor.v1.RemoveMemberResponse
@@ -1178,7 +1568,7 @@ export type RemoveMemberResponseJson = {
  * Use `create(RemoveMemberResponseSchema)` to create a new message.
  */
 export const RemoveMemberResponseSchema: GenMessage<RemoveMemberResponse, {jsonType: RemoveMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 25);
+  messageDesc(file_hyperstor_v1_admin, 35);
 
 /**
  * @generated from message hyperstor.v1.GetRowRequest
@@ -1205,7 +1595,7 @@ export type GetRowRequestJson = {
  * Use `create(GetRowRequestSchema)` to create a new message.
  */
 export const GetRowRequestSchema: GenMessage<GetRowRequest, {jsonType: GetRowRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 26);
+  messageDesc(file_hyperstor_v1_admin, 36);
 
 /**
  * @generated from message hyperstor.v1.GetRowResponse
@@ -1242,7 +1632,7 @@ export type GetRowResponseJson = {
  * Use `create(GetRowResponseSchema)` to create a new message.
  */
 export const GetRowResponseSchema: GenMessage<GetRowResponse, {jsonType: GetRowResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 27);
+  messageDesc(file_hyperstor_v1_admin, 37);
 
 /**
  * @generated from message hyperstor.v1.PutRowRequest
@@ -1293,7 +1683,7 @@ export type PutRowRequestJson = {
  * Use `create(PutRowRequestSchema)` to create a new message.
  */
 export const PutRowRequestSchema: GenMessage<PutRowRequest, {jsonType: PutRowRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 28);
+  messageDesc(file_hyperstor_v1_admin, 38);
 
 /**
  * @generated from message hyperstor.v1.PutRowResponse
@@ -1312,7 +1702,7 @@ export type PutRowResponseJson = {
  * Use `create(PutRowResponseSchema)` to create a new message.
  */
 export const PutRowResponseSchema: GenMessage<PutRowResponse, {jsonType: PutRowResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 29);
+  messageDesc(file_hyperstor_v1_admin, 39);
 
 /**
  * @generated from message hyperstor.v1.DeleteRowRequest
@@ -1339,7 +1729,7 @@ export type DeleteRowRequestJson = {
  * Use `create(DeleteRowRequestSchema)` to create a new message.
  */
 export const DeleteRowRequestSchema: GenMessage<DeleteRowRequest, {jsonType: DeleteRowRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 30);
+  messageDesc(file_hyperstor_v1_admin, 40);
 
 /**
  * @generated from message hyperstor.v1.DeleteRowResponse
@@ -1366,7 +1756,7 @@ export type DeleteRowResponseJson = {
  * Use `create(DeleteRowResponseSchema)` to create a new message.
  */
 export const DeleteRowResponseSchema: GenMessage<DeleteRowResponse, {jsonType: DeleteRowResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 31);
+  messageDesc(file_hyperstor_v1_admin, 41);
 
 /**
  * @generated from message hyperstor.v1.ListRowsRequest
@@ -1421,7 +1811,7 @@ export type ListRowsRequestJson = {
  * Use `create(ListRowsRequestSchema)` to create a new message.
  */
 export const ListRowsRequestSchema: GenMessage<ListRowsRequest, {jsonType: ListRowsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 32);
+  messageDesc(file_hyperstor_v1_admin, 42);
 
 /**
  * @generated from message hyperstor.v1.Row
@@ -1458,7 +1848,7 @@ export type RowJson = {
  * Use `create(RowSchema)` to create a new message.
  */
 export const RowSchema: GenMessage<Row, {jsonType: RowJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 33);
+  messageDesc(file_hyperstor_v1_admin, 43);
 
 /**
  * @generated from message hyperstor.v1.ListRowsResponse
@@ -1485,7 +1875,7 @@ export type ListRowsResponseJson = {
  * Use `create(ListRowsResponseSchema)` to create a new message.
  */
 export const ListRowsResponseSchema: GenMessage<ListRowsResponse, {jsonType: ListRowsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 34);
+  messageDesc(file_hyperstor_v1_admin, 44);
 
 /**
  * @generated from message hyperstor.v1.DrainNodeRequest
@@ -1522,7 +1912,7 @@ export type DrainNodeRequestJson = {
  * Use `create(DrainNodeRequestSchema)` to create a new message.
  */
 export const DrainNodeRequestSchema: GenMessage<DrainNodeRequest, {jsonType: DrainNodeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 35);
+  messageDesc(file_hyperstor_v1_admin, 45);
 
 /**
  * @generated from message hyperstor.v1.DrainNodeResponse
@@ -1567,7 +1957,7 @@ export type DrainNodeResponseJson = {
  * Use `create(DrainNodeResponseSchema)` to create a new message.
  */
 export const DrainNodeResponseSchema: GenMessage<DrainNodeResponse, {jsonType: DrainNodeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 36);
+  messageDesc(file_hyperstor_v1_admin, 46);
 
 /**
  * @generated from message hyperstor.v1.PgMove
@@ -1624,7 +2014,7 @@ export type PgMoveJson = {
  * Use `create(PgMoveSchema)` to create a new message.
  */
 export const PgMoveSchema: GenMessage<PgMove, {jsonType: PgMoveJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 37);
+  messageDesc(file_hyperstor_v1_admin, 47);
 
 /**
  * @generated from message hyperstor.v1.Operation
@@ -1757,7 +2147,7 @@ export type OperationJson = {
  * Use `create(OperationSchema)` to create a new message.
  */
 export const OperationSchema: GenMessage<Operation, {jsonType: OperationJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 38);
+  messageDesc(file_hyperstor_v1_admin, 48);
 
 /**
  * @generated from message hyperstor.v1.GetOperationRequest
@@ -1784,7 +2174,7 @@ export type GetOperationRequestJson = {
  * Use `create(GetOperationRequestSchema)` to create a new message.
  */
 export const GetOperationRequestSchema: GenMessage<GetOperationRequest, {jsonType: GetOperationRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 39);
+  messageDesc(file_hyperstor_v1_admin, 49);
 
 /**
  * @generated from message hyperstor.v1.ListOperationsRequest
@@ -1803,7 +2193,7 @@ export type ListOperationsRequestJson = {
  * Use `create(ListOperationsRequestSchema)` to create a new message.
  */
 export const ListOperationsRequestSchema: GenMessage<ListOperationsRequest, {jsonType: ListOperationsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 40);
+  messageDesc(file_hyperstor_v1_admin, 50);
 
 /**
  * @generated from message hyperstor.v1.ListOperationsResponse
@@ -1830,7 +2220,7 @@ export type ListOperationsResponseJson = {
  * Use `create(ListOperationsResponseSchema)` to create a new message.
  */
 export const ListOperationsResponseSchema: GenMessage<ListOperationsResponse, {jsonType: ListOperationsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 41);
+  messageDesc(file_hyperstor_v1_admin, 51);
 
 /**
  * @generated from message hyperstor.v1.CancelOperationRequest
@@ -1857,7 +2247,7 @@ export type CancelOperationRequestJson = {
  * Use `create(CancelOperationRequestSchema)` to create a new message.
  */
 export const CancelOperationRequestSchema: GenMessage<CancelOperationRequest, {jsonType: CancelOperationRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 42);
+  messageDesc(file_hyperstor_v1_admin, 52);
 
 /**
  * The reason an API call failed, attached to every error as a detail
@@ -1912,7 +2302,7 @@ export type ErrorInfoJson = {
  * Use `create(ErrorInfoSchema)` to create a new message.
  */
 export const ErrorInfoSchema: GenMessage<ErrorInfo, {jsonType: ErrorInfoJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 43);
+  messageDesc(file_hyperstor_v1_admin, 53);
 
 /**
  * @generated from enum hyperstor.v1.OperationState
@@ -2179,7 +2569,58 @@ export const NodeService: GenService<{
 
 /**
  * Long operations (§23.6): drains for now.
+ * The audit log (spec/administration.md §23.9.4, decisions.md D112,
+ * D113): every change and refused call, kept in .meta a day per object.
  *
+ * @generated from service hyperstor.v1.AuditService
+ */
+export const AuditService: GenService<{
+  /**
+   * Records, newest first, filtered. Security administrators (through
+   * hyperstor-mgmt) and the admin certificate.
+   *
+   * @generated from rpc hyperstor.v1.AuditService.ListAudit
+   */
+  listAudit: {
+    methodKind: "unary";
+    input: typeof ListAuditRequestSchema;
+    output: typeof ListAuditResponseSchema;
+  },
+  /**
+   * hyperstor-mgmt's own records: people's logins, roles and tokens.
+   * The mgmt identity only.
+   *
+   * @generated from rpc hyperstor.v1.AuditService.AppendAudit
+   */
+  appendAudit: {
+    methodKind: "unary";
+    input: typeof AppendAuditRequestSchema;
+    output: typeof AppendAuditResponseSchema;
+  },
+  /**
+   * How long records are kept. Read by security administrators.
+   *
+   * @generated from rpc hyperstor.v1.AuditService.GetAuditSettings
+   */
+  getAuditSettings: {
+    methodKind: "unary";
+    input: typeof GetAuditSettingsRequestSchema;
+    output: typeof GetAuditSettingsResponseSchema;
+  },
+  /**
+   * Sets it. Security administrators, with a fresh login.
+   *
+   * @generated from rpc hyperstor.v1.AuditService.SetAuditSettings
+   */
+  setAuditSettings: {
+    methodKind: "unary";
+    input: typeof SetAuditSettingsRequestSchema;
+    output: typeof SetAuditSettingsResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hyperstor_v1_admin, 6);
+
+/**
  * @generated from service hyperstor.v1.OperationService
  */
 export const OperationService: GenService<{
@@ -2215,5 +2656,5 @@ export const OperationService: GenService<{
     output: typeof OperationSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 6);
+  serviceDesc(file_hyperstor_v1_admin, 7);
 

@@ -221,7 +221,91 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),
+    ("AuditService.ListAudit", "audit list"),
+    // hyperstor-mgmt's own records: no command.
+    ("AuditService.AppendAudit", "hyperstor-mgmt"),
+    ("AuditService.GetAuditSettings", "audit settings"),
+    (
+        "AuditService.SetAuditSettings",
+        "audit settings --retention-days N",
+    ),
+    ("TrashService.ListTrash", "trash list"),
+    ("TrashService.RestoreFromTrash", "trash restore"),
+    ("TrashService.PurgeFromTrash", "trash purge"),
+    ("TrashService.GetTrashSettings", "trash settings"),
+    (
+        "TrashService.SetTrashSettings",
+        "trash settings --grace S --on-full keep|purge",
+    ),
 ];
+
+/// `30s`, `30m`, `2h`, `7d` (or bare seconds): seconds.
+pub fn parse_ago(s: &str) -> Option<u64> {
+    let (n, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => (&s[..i], &s[i..]),
+        None => (s, "s"),
+    };
+    let n: u64 = n.parse().ok()?;
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return None,
+    };
+    n.checked_mul(mult)
+}
+
+/// `audit list` as lines: time, principal, operation, target, result.
+pub fn audit_text(r: &pb::ListAuditResponse) -> String {
+    if r.records.is_empty() {
+        return "No audit records.\n".into();
+    }
+    let mut t = String::new();
+    for x in &r.records {
+        let _ = writeln!(
+            t,
+            "{}.{:03}  {}  {}  {}  {}",
+            utc(x.time_ms / 1000),
+            x.time_ms % 1000,
+            x.principal,
+            x.op,
+            x.target,
+            x.result
+        );
+    }
+    t
+}
+
+/// `trash list` as a table: what, which volume, name, pool, when it went,
+/// when it's purged.
+pub fn trash_text(r: &pb::ListTrashResponse) -> String {
+    if r.items.is_empty() {
+        return "The trash is empty.\n".into();
+    }
+    let mut t = format!(
+        "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
+        "KIND", "VOLUME", "EPOCH", "NAME", "POOL", "TRASHED", "PURGED"
+    );
+    for i in &r.items {
+        let epoch = if i.kind == "snapshot" {
+            i.epoch.to_string()
+        } else {
+            "-".into()
+        };
+        t.push_str(&format!(
+            "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
+            i.kind,
+            i.id,
+            epoch,
+            if i.name.is_empty() { "-" } else { &i.name },
+            i.pool,
+            utc(i.trashed_unix),
+            utc(i.purge_unix)
+        ));
+    }
+    t
+}
 
 /// `Service.Rpc` for every RPC in the proto files' text.
 pub fn rpcs_in(proto: &str) -> Vec<String> {
@@ -564,6 +648,16 @@ mod tests {
             stale.is_empty(),
             "COMMANDS names RPCs the protos lack: {stale:?}"
         );
+    }
+
+    #[test]
+    fn ago_durations() {
+        assert_eq!(parse_ago("90"), Some(90));
+        assert_eq!(parse_ago("30m"), Some(1800));
+        assert_eq!(parse_ago("2h"), Some(7200));
+        assert_eq!(parse_ago("7d"), Some(604_800));
+        assert_eq!(parse_ago("1w"), None);
+        assert_eq!(parse_ago("h"), None);
     }
 
     #[test]

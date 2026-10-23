@@ -288,6 +288,7 @@ impl Client {
                 group,
                 deleting: false,
                 chain: v.chain.clone(),
+                trashed_unix: 0,
             };
             let mut new = v.clone();
             new.snapshots.push(snap.clone());
@@ -427,20 +428,7 @@ impl Client {
     /// Deletes group `gid`: every member's snapshot tagged with it, then the
     /// group. Also how a group that stopped half-way is cleaned up.
     pub async fn delete_group(self: &Rc<Self>, gid: u128) -> Result<(), ClientError> {
-        let Some(l) = self
-            .lookup(META_POOL, NS_META, &group_key(gid), b"", None, 0)
-            .await?
-        else {
-            return Err(ClientError::Refused(format!("no group {gid:032x}")));
-        };
-        let members: Vec<u128> = attr(&l, MEMBERS)
-            .unwrap_or_default()
-            .as_chunks::<16>()
-            .0
-            .iter()
-            .map(|c| u128::from_be_bytes(*c))
-            .collect();
-        for id in members {
+        for id in self.group_members(gid).await? {
             let Some(v) = self.volume(id).await? else {
                 continue;
             };
@@ -450,6 +438,59 @@ impl Client {
         }
         self.exec(META_POOL, NS_META, &group_key(gid), &[WireOp::Delete])
             .await
+    }
+
+    /// The volumes of consistency group `gid`.
+    pub(crate) async fn group_members(&self, gid: u128) -> Result<Vec<u128>, ClientError> {
+        let Some(l) = self
+            .lookup(META_POOL, NS_META, &group_key(gid), b"", None, 0)
+            .await?
+        else {
+            return Err(ClientError::Refused(format!("no group {gid:032x}")));
+        };
+        Ok(attr(&l, MEMBERS)
+            .unwrap_or_default()
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|c| u128::from_be_bytes(*c))
+            .collect())
+    }
+
+    /// Deletes group `gid`'s object once none of its members has a
+    /// snapshot of it left (a purge of its last one).
+    pub(crate) async fn forget_group_if_empty(&self, gid: u128) -> Result<(), ClientError> {
+        let Ok(members) = self.group_members(gid).await else {
+            return Ok(());
+        };
+        for id in members {
+            if self
+                .volume(id)
+                .await?
+                .is_some_and(|v| v.snapshots.iter().any(|s| s.group == gid))
+            {
+                return Ok(());
+            }
+        }
+        self.exec(META_POOL, NS_META, &group_key(gid), &[WireOp::Delete])
+            .await
+    }
+
+    /// Whether a clone, a rollback or another snapshot of `v` reads
+    /// through snapshot `s`.
+    pub(crate) async fn snapshot_used(
+        &self,
+        v: &Volume,
+        s: &Snapshot,
+    ) -> Result<bool, ClientError> {
+        let branches = self.branches(v.lineage).await?;
+        let reading = self.reading(&branches).await?;
+        let at = (s.branch, s.epoch);
+        Ok(reading.iter().any(|r| r.chain.contains(&at))
+            || v.chain.contains(&at)
+            || v.snapshots
+                .iter()
+                .any(|x| x.epoch != s.epoch && x.chain.contains(&at)))
     }
 
     /// Runs `f` for every chunk a volume of `v`'s size can have, 32 at a
@@ -645,9 +686,10 @@ impl Client {
         new_id: Option<u128>,
     ) -> Result<Volume, ClientError> {
         let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        // Not one in the trash (D54).
         let s = v
             .snapshot(epoch)
-            .filter(|s| !s.deleting)
+            .filter(|s| !s.deleting && s.trashed_unix == 0)
             .cloned()
             .ok_or(ClientError::NoSnapshot(epoch))?;
         let chain: Vec<(u32, u64)> = std::iter::once((s.branch, epoch))
@@ -670,10 +712,10 @@ impl Client {
         self.record_branch(v.lineage, &rec).await?;
         // Recorded first, then the snapshot checked again: a delete that
         // marked it meanwhile wins, and this clone gives up.
-        let still = self
-            .volume(id)
-            .await?
-            .is_some_and(|v| v.snapshot(epoch).is_some_and(|s| !s.deleting));
+        let still = self.volume(id).await?.is_some_and(|v| {
+            v.snapshot(epoch)
+                .is_some_and(|s| !s.deleting && s.trashed_unix == 0)
+        });
         if !still {
             self.forget_branch(v.lineage, b).await?;
             return Err(ClientError::NoSnapshot(epoch));
@@ -693,6 +735,7 @@ impl Client {
             snapshots: Vec::new(),
             skip: Vec::new(),
             incarnation: v.incarnation,
+            trashed_unix: 0,
         };
         if let Err(e) = self.put_new(&c).await {
             self.forget_branch(v.lineage, b).await?;
@@ -712,7 +755,7 @@ impl Client {
         }
         let s = v
             .snapshot(epoch)
-            .filter(|s| !s.deleting)
+            .filter(|s| !s.deleting && s.trashed_unix == 0)
             .cloned()
             .ok_or(ClientError::NoSnapshot(epoch))?;
         // To the newest snapshot of the head's branch, which reads through

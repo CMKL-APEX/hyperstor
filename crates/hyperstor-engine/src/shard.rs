@@ -1954,7 +1954,7 @@ mod tests {
     }
 
     /// A checkpoint with no room is abandoned, not fatal (implementation-
-    /// notes.md I156): the shard refuses what takes space, still deletes,
+    /// notes.md I162): the shard refuses what takes space, still deletes,
     /// and checkpoints again once room is back; it reopens consistent.
     #[test]
     fn a_checkpoint_without_room_is_abandoned() {

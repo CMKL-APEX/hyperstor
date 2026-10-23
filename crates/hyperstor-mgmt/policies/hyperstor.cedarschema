@@ -53,7 +53,7 @@ namespace Hyperstor {
   action "ClusterService.ListSnapshots" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
-  action "ClusterService.CreateSnapshot" in [Action::"store"] appliesTo {
+  action "ClusterService.CreateSnapshot" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.DeleteSnapshot" in [Action::"store", Action::"step-up"] appliesTo {
@@ -68,10 +68,34 @@ namespace Hyperstor {
   action "ClusterService.FlattenVolume" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
-  action "ClusterService.CreateGroupSnapshot" in [Action::"store"] appliesTo {
+  action "ClusterService.CreateGroupSnapshot" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.DeleteGroupSnapshot" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrashService.ListTrash" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrashService.GetTrashSettings" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrashService.RestoreFromTrash" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrashService.PurgeFromTrash" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrashService.SetTrashSettings" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "AuditService.ListAudit" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "AuditService.GetAuditSettings" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "AuditService.SetAuditSettings" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "MemberService.AddMember" in [Action::"store"] appliesTo {
