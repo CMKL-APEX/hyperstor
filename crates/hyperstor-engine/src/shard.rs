@@ -299,6 +299,10 @@ pub struct Shard {
     legacy_blob: Vec<(u64, u64)>,
     page_bytes: usize,
     ckpt_pages_written: u64,
+    /// A checkpoint found no room and was abandoned: changes that take
+    /// space are refused until one completes (it is retried once the room
+    /// it needs is free).
+    ckpt_stalled: bool,
     /// A fuzzy checkpoint in progress.
     fuzzy: Option<Fuzzy>,
     slice_bytes: usize,
@@ -397,6 +401,7 @@ impl Shard {
             legacy_blob: Vec::new(),
             page_bytes: PAGE_BYTES,
             ckpt_pages_written: 0,
+            ckpt_stalled: false,
             fuzzy: None,
             slice_bytes: SLICE_BYTES,
             opened_lsn: 0,
@@ -443,8 +448,18 @@ impl Shard {
         sh.pending = fx.pending;
         sh.rebuild_allocator()?;
         sh.apply_deferred()?;
+        let salt = sh.salt;
         sh.salt = random_u32();
-        sh.checkpoint()?;
+        if let Err(e) = sh.checkpoint() {
+            if !matches!(e, EngineError::NoSpace) {
+                return Err(e);
+            }
+            // A full shard opens without its fresh checkpoint: it keeps
+            // the salt its superblock names, so the records it writes
+            // replay.
+            sh.poisoned = false;
+            sh.salt = salt;
+        }
         sh.opened_lsn = sh.tail_lsn;
         sh.ckpt_written = 0;
         sh.ckpt_pages_written = 0;
@@ -792,23 +807,40 @@ impl Shard {
         // used, write a slice of it each round, and finish it at once if
         // the log reaches three quarters first.
         let used = self.tail_lsn - self.head_lsn;
-        if used > self.region.log_blocks * 3 / 4 {
+        let can = !self.ckpt_stalled || self.alloc.free_blocks() >= self.checkpoint_reserve();
+        let r = if !can {
+            Ok(())
+        } else if self.ckpt_stalled {
+            // Room again: checkpoint now, which lifts the stall (nothing
+            // that would grow the log is let through until then).
+            self.checkpoint_inner()
+        } else if used > self.region.log_blocks * 3 / 4 {
             if self.fuzzy.is_some() {
                 self.checkpoint_forced += 1;
             }
-            self.checkpoint_inner()?;
+            self.checkpoint_inner()
         } else if self.fuzzy.is_some() {
             let slice = if used > self.region.log_blocks / 2 {
                 self.slice_bytes.saturating_mul(8)
             } else {
                 self.slice_bytes
             };
-            self.checkpoint_slice(slice)?;
+            self.checkpoint_slice(slice)
         } else if used > self.region.log_blocks / 4 {
-            self.checkpoint_start()?;
-            self.checkpoint_slice(self.slice_bytes)?;
+            self.checkpoint_start()
+                .and_then(|()| self.checkpoint_slice(self.slice_bytes))
+        } else {
+            Ok(())
+        };
+        match r {
+            Err(EngineError::NoSpace) => self.abandon_checkpoint(),
+            r => r?,
         }
-        let budget = self.max_payload();
+        // A stalled checkpoint can't move the log's head: a round takes at
+        // most what the ring has left.
+        let used = self.tail_lsn - self.head_lsn;
+        let room = ((self.region.log_blocks - used) as usize * BLOCK).saturating_sub(HEADER_LEN);
+        let budget = self.max_payload().min(room);
         self.round_fresh.clear();
         let mut results = Vec::new();
         let mut payload = Enc::new();
@@ -824,7 +856,11 @@ impl Shard {
             let est = self.estimate(list);
             if est > budget {
                 lists.pop_front();
-                results.push(Err(OpError::TooLarge));
+                results.push(Err(if est > self.max_payload() {
+                    OpError::TooLarge
+                } else {
+                    OpError::NoSpace
+                }));
                 continue;
             }
             if count > 0 && payload.len() + est > budget {
@@ -910,6 +946,9 @@ impl Shard {
         let cur = self.index.objects.get(&key).map_or(0, |o| o.revision);
         let mut need = 0u64;
         let mut mutates = false;
+        // Whether the list can take space (data or index); one that only
+        // frees is let through on a full shard, so it can be emptied.
+        let mut grows = false;
         for op in &list.ops {
             match op {
                 Op::AssertRevision(r) if *r != cur => {
@@ -926,6 +965,7 @@ impl Shard {
                     }
                     need += (data.len() / BLOCK) as u64;
                     mutates = true;
+                    grows = true;
                 }
                 Op::Zero { off, len } => {
                     if off % BLOCK as u64 != 0 || len % BLOCK as u64 != 0 {
@@ -934,7 +974,16 @@ impl Shard {
                     mutates = true;
                 }
                 Op::Absorb(src) if *src == key => return Err(OpError::SelfAbsorb),
-                _ => mutates = true,
+                Op::Delete
+                | Op::Truncate(_)
+                | Op::KvDel(_)
+                | Op::KvDelRange(..)
+                | Op::RmAttr(_)
+                | Op::Absorb(_) => mutates = true,
+                _ => {
+                    mutates = true;
+                    grows = true;
+                }
             }
         }
         if !mutates {
@@ -946,7 +995,9 @@ impl Shard {
                 Committed { revision: cur },
             ));
         }
-        if need > self.alloc.free_blocks() {
+        let free = self.alloc.free_blocks();
+        if need > free || (grows && (self.ckpt_stalled || need + self.checkpoint_reserve() > free))
+        {
             return Err(OpError::NoSpace);
         }
         let mut rops = Vec::new();
@@ -1171,10 +1222,41 @@ impl Shard {
     pub fn checkpoint(&mut self) -> Result<(), EngineError> {
         self.check()?;
         let r = self.checkpoint_inner();
-        if r.is_err() {
-            self.poisoned = true;
+        match &r {
+            Err(EngineError::NoSpace) => self.abandon_checkpoint(),
+            Err(_) => self.poisoned = true,
+            Ok(()) => {}
         }
         r
+    }
+
+    /// Gives up a checkpoint that found no room: frees the pages it wrote,
+    /// puts back the page bounds it cut or dropped, and marks every page it
+    /// was to write, so the next one writes them. The shard stays usable;
+    /// changes that take space are refused until a checkpoint completes.
+    fn abandon_checkpoint(&mut self) {
+        self.ckpt_stalled = true;
+        let Some(f) = self.fuzzy.take() else { return };
+        for loc in f.written.values() {
+            for &(s, n) in &loc.runs {
+                self.alloc.free(s, n);
+            }
+        }
+        // The bounds are the last checkpoint's pages again; a mark on a
+        // bound that goes moves to the page that now holds its range.
+        self.index.bounds = self.pages.keys().flatten().cloned().collect();
+        let marks = std::mem::take(&mut self.index.dirty);
+        for b in marks {
+            let page = self.index.page_of(&b).cloned();
+            self.index.mark(page);
+        }
+        for p in f.replaced.iter().chain(f.todo.iter()) {
+            let page = match p {
+                Some(b) => self.index.page_of(b).cloned(),
+                None => None,
+            };
+            self.index.mark(page);
+        }
     }
 
     /// True while a fuzzy checkpoint is being written.
@@ -1199,6 +1281,19 @@ impl Shard {
             self.checkpoint_slice(usize::MAX)?;
         }
         Ok(())
+    }
+
+    /// Blocks the next checkpoint may need, kept free for it: every page
+    /// written anew (the pages it replaces are freed only once it is
+    /// named) and the directory, with room for the index to grow until
+    /// then. Without it, a full shard's checkpoint fails and poisons it.
+    fn checkpoint_reserve(&self) -> u64 {
+        let blocks = |len: u64| len.div_ceil(BLOCK as u64);
+        let pages: u64 = self.pages.values().map(|p| blocks(p.len) + 1).sum();
+        let legacy: u64 = self.legacy_blob.iter().map(|r| r.1).sum();
+        let dir = self.ckpt.as_ref().map_or(1, |c| blocks(c.len));
+        let base = pages + legacy + dir + 1;
+        base + base / 4 + 8
     }
 
     /// Sets the size at which checkpoint pages are cut (tests make it
@@ -1399,7 +1494,7 @@ impl Shard {
                 free.extend(old.runs);
             }
         }
-        pages.extend(f.written);
+        pages.extend(f.written.clone());
         debug_assert!(
             pages
                 .keys()
@@ -1436,9 +1531,13 @@ impl Shard {
                 for (s, n) in r {
                     self.alloc.free(s, n);
                 }
+                self.fuzzy = Some(f);
                 return Err(EngineError::NoSpace);
             }
-            None => return Err(EngineError::NoSpace),
+            None => {
+                self.fuzzy = Some(f);
+                return Err(EngineError::NoSpace);
+            }
         };
         let buf = AlignedBuf::from_slice(&dir);
         let mut io = Vec::new();
@@ -1482,6 +1581,7 @@ impl Shard {
         }
         self.pages = pages;
         self.checkpoints += 1;
+        self.ckpt_stalled = false;
         Ok(())
     }
 
@@ -1851,6 +1951,80 @@ mod tests {
 
     fn key(i: u64) -> ObjKey {
         ObjKey::new(1, 1, Namespace::Vol, format!("o{i:03}").into_bytes(), 0)
+    }
+
+    /// A checkpoint with no room is abandoned, not fatal (implementation-
+    /// notes.md I156): the shard refuses what takes space, still deletes,
+    /// and checkpoints again once room is back; it reopens consistent.
+    #[test]
+    fn a_checkpoint_without_room_is_abandoned() {
+        let region = Region {
+            start: 0,
+            blocks: 2048,
+            log_blocks: 64,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(2048 * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        let mut sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        sh.set_checkpoint_page(256);
+        let put = |sh: &mut Shard, i: u64| {
+            sh.commit(vec![OpList {
+                key: key(i),
+                ops: vec![Op::KvPut(b"k".to_vec(), vec![i as u8; 100])],
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+        };
+        for i in 0..60 {
+            put(&mut sh, i).unwrap();
+        }
+        sh.checkpoint().unwrap();
+        let bounds = sh.index.bounds.clone();
+        for i in 0..60 {
+            put(&mut sh, i).unwrap();
+        }
+        // Every free block taken: the checkpoint the log asks for finds
+        // none, and the commit that started it still goes through.
+        let stolen = sh.alloc.alloc(sh.alloc.free_blocks()).unwrap();
+        let mut i = 0u64;
+        while !sh.ckpt_stalled {
+            let r = sh
+                .commit(vec![OpList {
+                    key: key(i % 60),
+                    ops: vec![Op::KvDel(b"absent".to_vec())],
+                }])
+                .expect("a checkpoint without room doesn't fail the commit");
+            assert!(r[0].is_ok());
+            i += 1;
+            assert!(i < 10_000, "no checkpoint was started");
+        }
+        // And one asked for directly fails alone.
+        assert!(matches!(sh.checkpoint(), Err(EngineError::NoSpace)));
+        assert!(!sh.poisoned && sh.ckpt_stalled && sh.fuzzy.is_none());
+        assert_eq!(sh.index.bounds, bounds, "no bound of the failed one stays");
+        assert_eq!(put(&mut sh, 99), Err(OpError::NoSpace), "growth refused");
+        let gone = sh
+            .commit(vec![OpList {
+                key: key(5),
+                ops: vec![Op::Delete],
+            }])
+            .unwrap();
+        assert!(gone[0].is_ok(), "deletes still go");
+        for (s, n) in stolen {
+            sh.alloc.free(s, n);
+        }
+        // Room again: the next rounds checkpoint, and growth is let through.
+        for i in 0..200 {
+            let _ = put(&mut sh, i % 50 + 100);
+        }
+        assert!(!sh.ckpt_stalled, "a checkpoint completed");
+        put(&mut sh, 99).unwrap();
+        let idx = sh.index.clone();
+        drop(sh);
+        let sh = Shard::open(dev, region, 7, 0).unwrap();
+        assert_eq!(sh.index, idx);
+        assert!(!sh.index.objects.contains_key(&key(5)));
     }
 
     /// A device whose checkpoint is one blob (before D105) opens, and its

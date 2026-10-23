@@ -175,6 +175,11 @@ log device, which has its own superblock naming the data device (§6.2).
   sent a deallocate.
 - The engine reports used, free and allocated-per-lineage bytes to the
   daemon, which reports them to the metadata service with its heartbeat.
+- **A full shard stays up** (as built, I156). Room for a whole checkpoint
+  is kept free: a change that would take it is refused (no space), while
+  one that only frees is let through. A checkpoint that still finds no
+  room is abandoned, not fatal: the shard refuses what takes space until
+  the room is back, then checkpoints at once.
 
 ### 7.5 The transactional key–value store (D35)
 
