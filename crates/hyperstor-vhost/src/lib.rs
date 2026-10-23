@@ -1,8 +1,8 @@
 //! `hyperstor-vhost` serves the volumes attached on this node to its VMs
-//! over vhost-user-blk (frontends.md §11.1, decisions.md D1, D26, D111).
+//! over vhost-user-blk (frontends.md §11.1, decisions.md D1, D26, D116).
 //!
 //! One reactor thread runs everything: a client of the cluster, a control
-//! socket (D112) through which glidex attaches and detaches volumes, and
+//! socket (D117) through which glidex attaches and detaches volumes, and
 //! a vhost-user socket per attached volume, `<dir>/<volume id>.sock`, which
 //! the hypervisor connects to (and reconnects to after either side
 //! restarts). Each queue of a connected disk is a task on the same

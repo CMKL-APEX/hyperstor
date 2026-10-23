@@ -1,7 +1,7 @@
 //! One vhost-user-blk connection: the frontend (Cloud Hypervisor or QEMU)
 //! sets up guest memory and the virtqueues through `vhost`'s request
 //! handler, and each enabled queue is served by a task on this reactor
-//! (decisions.md D111): it waits on the queue's kick eventfd, takes the
+//! (decisions.md D116): it waits on the queue's kick eventfd, takes the
 //! chains the guest made available, does each request against the
 //! attached volume, and signals the call eventfd when the guest wants it
 //! (`EVENT_IDX`).

@@ -3,7 +3,7 @@
 //!
 //! `serve` runs the service (frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
-//! service's control socket and prints the reply (decisions.md D112).
+//! service's control socket and prints the reply (decisions.md D117).
 
 use hyperstor_vhost::{Options, control_path, serve};
 use serde_json::json;

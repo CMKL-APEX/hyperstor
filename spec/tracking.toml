@@ -333,7 +333,7 @@ title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
 [[milestone.item]]
 what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket"
-spec = ["frontends.md §11.1", "D26", "D111", "D112", "I152", "I153", "I154", "I155"]
+spec = ["frontends.md §11.1", "D26", "D116", "D117", "I152", "I153", "I154", "I155"]
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",
@@ -345,7 +345,7 @@ tests = [
 
 [[milestone.item]]
 what = "VMs boot from volumes under Cloud Hypervisor and QEMU"
-spec = ["frontends.md §11.1", "glidex.md §17", "D113", "I152"]
+spec = ["frontends.md §11.1", "glidex.md §17", "D118", "I152"]
 status = "done"
 tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
@@ -371,7 +371,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering"
-spec = ["glidex.md §17", "D79", "D113"]
+spec = ["glidex.md §17", "D79", "D118"]
 status = "planned"
 
 [[milestone]]

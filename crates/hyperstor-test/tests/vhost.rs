@@ -1,4 +1,4 @@
-//! `hyperstor-vhost` (frontends.md §11.1, decisions.md D111, D112): volumes
+//! `hyperstor-vhost` (frontends.md §11.1, decisions.md D116, D117): volumes
 //! attached through its control socket and served over vhost-user-blk,
 //! with the test playing the hypervisor (`hyperstor_test::vhost`). No VM
 //! or root needed.

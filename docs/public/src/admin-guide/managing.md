@@ -51,6 +51,15 @@ websites). To avoid that, give it a certificate browsers already trust:
   `sudo hyperstor-install install --tailscale-cert`, then
   `https://NODE.TAILNET.ts.net:8852/`.
 
+**Air-gapped sites.** Nothing here needs the internet: the cluster's CA
+and mgmt's certificate are made on the map service's host, and renewed
+there. To have browsers trust it without a warning, either distribute the
+cluster's root (`/etc/hyperstor/pki/root.crt`) to the site's machines once,
+with whatever configuration management the site uses, after which every
+hyperstor host verifies; or issue mgmt a certificate from the site's own
+internal CA and give it with `--web-tls DIR` (mgmt re-reads the files when
+they are renewed). mgmt serves no self-signed certificate.
+
 To keep it on loopback instead, `--mgmt-listen loopback`, and reach it
 through a tunnel:
 

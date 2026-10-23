@@ -1,4 +1,4 @@
-//! The control socket (decisions.md D112): how glidex, on this node,
+//! The control socket (decisions.md D117): how glidex, on this node,
 //! attaches a volume and gets the socket its hypervisor connects to.
 //!
 //! One JSON object per line, as glidex's netd and stord take theirs:

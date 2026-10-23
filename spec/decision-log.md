@@ -572,6 +572,20 @@ options and a recommendation:
 | 60 | ACME: reload certificate files plus the node's Tailscale certificate, a built-in client with HTTP-01 (port 80) or DNS-01 (RFC 2136), or reload only | Reload and Tailscale | D109 |
 | 61 | What mgmt serves beyond loopback before an operator configures a certificate: a cluster-CA certificate on every address, loopback only, or self-signed as glidex | A cluster-CA certificate on every address | D110 |
 
+## Self-signed certificates and AD3 (2026-10-23)
+
+The owner asked whether mgmt should serve self-signed certificates, for
+when no other way is available or in an air-gapped site, and then for
+AD3. Asked with options and a recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 62 | Self-signed certificates for mgmt: a fallback for a hand-started mgmt, an installer option with first-use pinning, or none (the cluster CA's certificate needs nothing from outside) | None; the cluster CA's, and a note for air-gapped sites | D111 |
+| 63 | Where the audit log lives: append-only objects in `.meta`, rows in the map service's store, or journald only | Objects in `.meta` | D112 |
+| 64 | How long audit records are kept | A year by default, configurable | D113 |
+| 65 | What operators may do: as §23.9.2's table (snapshots, restore from trash), as built (no snapshots), or restore only | As the table | D114 |
+| 66 | The full-pool trash rule before D27's thresholds exist: the setting now, acting with D27; all with D27; or a simple rule now | The setting now, acting with D27 | D115 |
+
 ## HS3: the vhost-user service (2026-10-23)
 
 Before building `hyperstor-vhost`, three choices, each with options and a
@@ -579,4 +593,4 @@ recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 62 | How to implement vhost-user-blk (rust-vmm's crates as libraries on our reactor; rust-vmm's `vhost-user-backend` daemon with its own threads; all our own); how glidex stages a disk (a local control socket; through the cluster API); what to build first (the service, then glidex's driver; the service only; both at once) | rust-vmm's crates on our reactor; a local control socket; the service, then the driver | D111, D112, D113 |
+| 67 | How to implement vhost-user-blk (rust-vmm's crates as libraries on our reactor; rust-vmm's `vhost-user-backend` daemon with its own threads; all our own); how glidex stages a disk (a local control socket; through the cluster API); what to build first (the service, then glidex's driver; the service only; both at once) | rust-vmm's crates on our reactor; a local control socket; the service, then the driver | D116, D117, D118 |
