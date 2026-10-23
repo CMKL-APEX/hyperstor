@@ -377,6 +377,12 @@ spec = ["volumes.md §10.1"]
 status = "planned"
 
 [[milestone.item]]
+what = "hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
+spec = ["glidex.md §17", "D120", "D121", "I163"]
+status = "done"
+tests = ["enroll::a_management_client_enrolls_and_manages_volumes"]
+
+[[milestone.item]]
 what = "The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering"
 spec = ["glidex.md §17", "D79", "D118"]
 status = "planned"

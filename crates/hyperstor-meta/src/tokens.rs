@@ -31,12 +31,15 @@ pub struct Record {
     pub hash: String,
     /// The first 12 hex digits of `hash`: what lists and revocations name.
     pub id: String,
-    /// `node` or `meta`.
+    /// `node`, `meta` or `mgmt`.
     pub role: String,
     pub expires_unix: u64,
     pub used: bool,
     pub revoked: bool,
     pub created_by: String,
+    /// `mgmt`: the identity it enrolls (D120); empty otherwise, and in
+    /// records written before.
+    pub name: String,
 }
 
 impl Record {
@@ -47,7 +50,8 @@ impl Record {
             .u64(self.expires_unix)
             .bool(self.used)
             .bool(self.revoked)
-            .str(&self.created_by);
+            .str(&self.created_by)
+            .str(&self.name);
         e.into_vec()
     }
 
@@ -61,6 +65,11 @@ impl Record {
             used: d.bool()?,
             revoked: d.bool()?,
             created_by: d.str()?.to_string(),
+            name: if d.remaining() > 0 {
+                d.str()?.to_string()
+            } else {
+                String::new()
+            },
         };
         d.finish()?;
         Ok(r)
@@ -128,7 +137,13 @@ impl Ledger {
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('\t').collect();
-                let [hash, id, role, exp, used, revoked, by] = f[..] else {
+                // An eighth field, the name, came with mgmt tokens.
+                let (base, name) = match f.len() {
+                    7 => (&f[..], ""),
+                    8 => (&f[..7], f[7]),
+                    _ => return None,
+                };
+                let [hash, id, role, exp, used, revoked, by] = base[..] else {
                     return None;
                 };
                 Some(Record {
@@ -139,6 +154,7 @@ impl Ledger {
                     used: used == "1",
                     revoked: revoked == "1",
                     created_by: by.into(),
+                    name: name.into(),
                 })
             })
             .collect()
@@ -154,7 +170,7 @@ impl Ledger {
             .iter()
             .map(|r| {
                 format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}{}\n",
                     r.hash,
                     r.id,
                     r.role,
@@ -162,7 +178,12 @@ impl Ledger {
                     u8::from(r.used),
                     u8::from(r.revoked),
                     // The audit's names have no tabs; keep it so.
-                    r.created_by.replace(['\t', '\n'], " ")
+                    r.created_by.replace(['\t', '\n'], " "),
+                    if r.name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\t{}", r.name)
+                    }
                 )
             })
             .collect();
@@ -386,6 +407,7 @@ mod tests {
             used: false,
             revoked: false,
             created_by: "test".into(),
+            name: String::new(),
         }
     }
 

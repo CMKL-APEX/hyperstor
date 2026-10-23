@@ -90,6 +90,7 @@ covered by tests that run on every change.
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
 | Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates | Planned |
 | Client readahead | Planned |
+| hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume | Done |
 | The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering | Planned |
 
 ## HS4: Snapshots, clones and the host read cache

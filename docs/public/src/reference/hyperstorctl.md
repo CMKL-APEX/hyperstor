@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]
 ```
 
 | Command | Does |
@@ -28,13 +28,17 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `trash purge` | Deletes volume `--id` (or its snapshot at `--epoch`) from the trash for good, at once |
 | `trash settings` | Shows `--pool`'s grace period and what a full pool does with its trash; with `--grace` or `--on-full`, sets them |
 | `clone-volume` | Creates a volume from the snapshot at `--epoch` of volume `--id`, sharing its data, named `--name`, with `--new-id` or a random id |
+| `expand-volume` | Grows volume `--id` to `--size`; never shrinks it. A client that has it attached sees the new size after it attaches again |
+| `write-volume` | Writes `--file` into volume `--id` at `--offset` (default 0), in whole 4 KiB blocks (the file's last block padded with zeros), holding the volume's lease meanwhile: refused while another client has it attached. `--sparse` skips blocks of zeros, for a volume that reads zeros there (a new one). With `--map`, goes straight to the map service, without the API or a certificate |
+| `read-volume` | Reads `--size` bytes of volume `--id` at `--offset` into `--out`, in whole 4 KiB blocks; with `--map` as above |
+| `enroll` | Makes this client a management client of the cluster from a `mgmt` token in `--file`: a key made here, the API (`--api`) checked against the root the token names; writes `admin.crt`, `admin.key` and `root.crt` into `--out`, as `--tls` reads them. The certificate lives 30 days |
 | `rollback-volume` | Rolls volume `--id` (detached) back to its snapshot at `--epoch` |
 | `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
 | `drain` | Takes every device of `--node` out and follows its PGs as an operation, until none lives on the node; prints each PG that moves. With `--dry-run`, only prints what would move |
-| `token create` | Makes a single-use join token for `--role node` (a storage host) or `--role meta` (a map service member), valid `--ttl` seconds. Prints the token alone on standard output, and the command that joins a host with it on standard error. Storage tokens are made on the map service's leader |
+| `token create` | Makes a single-use join token for `--role node` (a storage host), `--role meta` (a map service member) or `--role mgmt --name N` (a management client such as glidex, named N: 1–32 of a–z, 0–9 and -), valid `--ttl` seconds. Prints the token alone on standard output, and how to use it on standard error. Storage tokens are made on the map service's leader |
 | `token list` | The tokens this map service member made: id, role, expiry, and whether used, revoked or expired. Never the tokens themselves |
 | `token revoke` | Makes token `--id` unusable |
 | `op list` | Running and recent operations, newest first |
@@ -59,6 +63,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
+| `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
+| `--sparse` | off | `write-volume`: skip blocks of zeros |
 | `--pool P` | the first data pool | The pool for `pgs`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
 | `--device D` | | The device for `out` and `in` |

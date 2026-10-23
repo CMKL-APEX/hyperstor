@@ -40,9 +40,20 @@
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
-//! - `token create --role node|meta [--ttl SECS]`, `token list`, `token
-//!   revoke --id ID`: join tokens (§23.4.2); `create` prints the token
-//!   alone on standard output, and how to join with it on standard error;
+//! - `token create --role node|meta|mgmt [--name N] [--ttl SECS]`, `token
+//!   list`, `token revoke --id ID`: join tokens (§23.4.2); a `mgmt` token
+//!   enrolls a management client named N, such as glidex (D120); `create`
+//!   prints the token alone on standard output, and how to use it on
+//!   standard error;
+//! - `enroll --file TOKEN --out DIR`: a management client's identity from a
+//!   mgmt token: a key made here, the API pinned to the token's root; DIR
+//!   gets `admin.crt`, `admin.key` and `root.crt`, as `--tls` reads them;
+//! - `expand-volume --id ID --size S`: grows a volume;
+//! - `write-volume --id ID --file F [--offset O] [--sparse] [--map ADDR]`,
+//!   `read-volume --id ID --size S --out F [--offset O] [--map ADDR]`: a
+//!   file into a volume, holding its lease, or a range of it into a file,
+//!   in whole 4 KiB blocks; `--sparse` skips zero blocks; with `--map`,
+//!   straight to the map service, without the API (D121);
 //! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
 //!   would move and changes nothing;
@@ -99,7 +110,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -173,6 +184,9 @@ struct Args {
     limit: Option<u32>,
     /// `audit settings`.
     retention_days: Option<u32>,
+    /// `write-volume`, `read-volume`: where in the volume; skip zero blocks.
+    offset: u64,
+    sparse: bool,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -226,6 +240,8 @@ fn main() {
         op: None,
         limit: None,
         retention_days: None,
+        offset: 0,
+        sparse: false,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -266,6 +282,13 @@ fn main() {
                 )
             }
             "--name" => a.name = it.next().cloned().unwrap_or_else(|| usage()),
+            "--offset" => {
+                a.offset = it
+                    .next()
+                    .and_then(|s| parse_size(s))
+                    .unwrap_or_else(|| usage())
+            }
+            "--sparse" => a.sparse = true,
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--force" => a.force = true,
             "--epoch" => {
@@ -310,7 +333,8 @@ fn main() {
             },
             "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "drain" | "clone-volume"
-            | "rollback-volume" | "flatten-volume"
+            | "rollback-volume" | "flatten-volume" | "expand-volume" | "write-volume"
+            | "read-volume" | "enroll"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
@@ -364,7 +388,15 @@ fn main() {
             | "flatten-volume"
             | "trash restore"
             | "trash purge"
+            | "expand-volume"
+            | "write-volume"
+            | "read-volume"
     );
+    // The data path's commands: --map instead of the API, if given.
+    let data_path = matches!(cmd.as_str(), "write-volume" | "read-volume");
+    if ((a.offset != 0) && !data_path) || (a.sparse && cmd != "write-volume") {
+        usage();
+    }
     // A trashed snapshot, or the volume when there's no epoch.
     let may_epoch = matches!(cmd.as_str(), "trash restore" | "trash purge");
     // The snapshot commands' own flags, and only theirs.
@@ -384,10 +416,11 @@ fn main() {
         usage();
     }
     if (cmd == "cert revoke") != a.serial.is_some()
-        || (cmd == "cert show") != a.file.is_some()
-        || (cmd == "map backup") != a.out.is_some()
-        || (cmd == "member add") != (a.raft.is_some() && a.map.is_some())
-        || ((a.raft.is_some() || a.map.is_some()) && cmd != "member add")
+        || matches!(cmd.as_str(), "cert show" | "write-volume" | "enroll") != a.file.is_some()
+        || matches!(cmd.as_str(), "map backup" | "read-volume" | "enroll") != a.out.is_some()
+        || (cmd == "member add" && !(a.raft.is_some() && a.map.is_some()))
+        || (a.raft.is_some() && cmd != "member add")
+        || (a.map.is_some() && cmd != "member add" && !data_path)
         || (matches!(cmd.as_str(), "member add" | "member remove") && a.id.is_none())
     {
         usage();
@@ -410,6 +443,18 @@ fn main() {
             }
         }
     }
+    if cmd == "enroll" {
+        // A management client's identity from a mgmt token (D120): local
+        // key, the API pinned to the root the token names.
+        std::process::exit(enroll(&api_addr(api.clone()), &a));
+    }
+    if data_path && let Some(map) = a.map.clone() {
+        // Straight to the data path: no API, no certificate.
+        let map = map.parse().unwrap_or_else(|_| usage());
+        std::process::exit(hyperstor_reactor::block_on(async move {
+            volume_io(map, &cmd, &a).await
+        }));
+    }
     if (cmd == "token create") != a.role.is_some()
         || (a.dry_run && cmd != "drain")
         || (a.ttl != 0 && cmd != "token create")
@@ -417,8 +462,12 @@ fn main() {
     {
         usage();
     }
-    // create-volume needs a size; delete-volume an id, which only these two take.
-    if (cmd == "create-volume") != a.size.is_some()
+    // create-volume, expand-volume and read-volume need a size;
+    // delete-volume an id, which only these two take.
+    if matches!(
+        cmd.as_str(),
+        "create-volume" | "expand-volume" | "read-volume"
+    ) != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
         || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
         || (a.force && cmd != "delete-volume" && cmd != "member remove")
@@ -519,6 +568,10 @@ fn main() {
         Ok(Next::IoTest { map, pool }) => {
             hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib).await })
         }
+        Ok(Next::VolumeIo { map }) => {
+            let cmd = cmd.clone();
+            hyperstor_reactor::block_on(async move { volume_io(map, &cmd, &a).await })
+        }
         Err(e) => {
             eprintln!("hyperstorctl: {api}: {}", error_text(&e));
             exit_code(&e)
@@ -596,6 +649,10 @@ enum Next {
     IoTest {
         map: std::net::SocketAddr,
         pool: u32,
+    },
+    /// `write-volume`, `read-volume`, through the map service the API named.
+    VolumeIo {
+        map: std::net::SocketAddr,
     },
 }
 
@@ -872,6 +929,39 @@ where
             }
             Next::Exit(0)
         }
+        "expand-volume" => {
+            let r = client
+                .expand_volume(pb::ExpandVolumeRequest {
+                    id: a.id.clone().expect("checked with the arguments"),
+                    size: a.size.expect("checked with the arguments"),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    show(a, &r, || {
+                        r.volume
+                            .as_option()
+                            .map(|v| format!("volume {} is {} bytes\n", v.id, v.size))
+                            .unwrap_or_default()
+                    });
+                    Next::Exit(0)
+                }
+                Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
+                    eprintln!("hyperstorctl: {}", error_text(&e));
+                    Next::Exit(1)
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "write-volume" | "read-volume" => {
+            let s = status().await?;
+            let map = s.map_address.parse().map_err(|_| {
+                connectrpc::ConnectError::internal("the API gave no map service address")
+            })?;
+            Next::VolumeIo { map }
+        }
         _ => {
             let s = status().await?;
             let Some(pool) = first_pool(&s) else {
@@ -903,12 +993,25 @@ where
                 .create_token(pb::CreateTokenRequest {
                     role: role.clone(),
                     ttl_seconds: a.ttl,
+                    name: a.name.clone(),
                     ..Default::default()
                 })
                 .await?
                 .into_owned();
             show(a, &r, || format!("{}\n", r.token));
-            if !a.json {
+            if !a.json && role == "mgmt" {
+                let info = r.info.as_option().cloned().unwrap_or_default();
+                eprintln!(
+                    "Token {} for management client {:?}, single-use, expires {} (UTC). Give it\n\
+                     to the client (glidex: gxctl datastore create … --hyperstor-token-file FILE),\n\
+                     or enroll with it here:\n  \
+                     hyperstorctl --api {} enroll --file FILE --out DIR",
+                    info.id,
+                    info.name,
+                    utc(info.expires_unix),
+                    r.api_address
+                );
+            } else if !a.json {
                 let info = r.info.as_option().cloned().unwrap_or_default();
                 let how = if role == "meta" {
                     "--role meta --members LIST --member-id N"
@@ -1537,6 +1640,251 @@ fn op_exit(op: &pb::Operation) -> i32 {
 /// Writes `mib` MiB to a fresh volume in 1 MiB requests, reads it back
 /// and compares. A new random lineage each run, so runs never see each
 /// other's data.
+/// Data written and read a piece at a time.
+const IO_PIECE: usize = 1 << 20;
+
+/// `write-volume`: `--file` into the volume at `--offset`, holding its
+/// lease meanwhile (refused while another client has it attached);
+/// `--sparse` skips blocks of zeros, for a volume that reads zeros there.
+/// `read-volume`: `--size` bytes at `--offset` into `--out`. Both in whole
+/// 4 KiB blocks; a file's last block is padded with zeros (D121).
+async fn volume_io(meta: std::net::SocketAddr, cmd: &str, a: &Args) -> i32 {
+    let fail = |m: String| {
+        eprintln!("hyperstorctl: {m}");
+        1
+    };
+    let Some(id) = a.id.as_deref().and_then(parse_volume_id) else {
+        return fail("--id: a volume id, up to 32 hexadecimal digits".into());
+    };
+    if !a.offset.is_multiple_of(4096) {
+        return fail("--offset: a multiple of 4096".into());
+    }
+    let cl = match hyperstor_reactor::time::timeout(
+        Duration::from_secs(5),
+        Client::connect(meta, random_u64()),
+    )
+    .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => return fail(format!("map service {meta}: {e}")),
+        Err(_) => return fail(format!("map service {meta}: no answer in 5 s")),
+    };
+    let vol = match cl.volume(id).await {
+        Ok(Some(v)) => v,
+        Ok(None) => return fail(format!("volume {id:032x}: no such volume")),
+        Err(e) => return fail(format!("volume {id:032x}: {e}")),
+    };
+    if cmd == "read-volume" {
+        let size = a.size.unwrap_or(0);
+        if !size.is_multiple_of(4096) || a.offset.saturating_add(size) > vol.size {
+            return fail(format!(
+                "{size} bytes at {}: whole blocks inside the volume ({} bytes)",
+                a.offset, vol.size
+            ));
+        }
+        let path = a.out.clone().unwrap_or_default();
+        let mut f = match std::fs::File::create(&path) {
+            Ok(f) => f,
+            Err(e) => return fail(format!("{path}: {e}")),
+        };
+        let layers = vol.layers();
+        let mut at = 0u64;
+        while at < size {
+            let n = (IO_PIECE as u64).min(size - at);
+            let data = match cl
+                .read_at(vol.pool, vol.lineage, &layers, a.offset + at, n)
+                .await
+            {
+                Ok(d) => d,
+                Err(e) => return fail(format!("read at {}: {e}", a.offset + at)),
+            };
+            if let Err(e) = std::io::Write::write_all(&mut f, &data) {
+                return fail(format!("{path}: {e}"));
+            }
+            at += n;
+        }
+        println!("read {size} bytes at {} into {path}", a.offset);
+        return 0;
+    }
+    let path = a.file.clone().unwrap_or_default();
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => return fail(format!("{path}: {e}")),
+    };
+    let len = match f.metadata() {
+        Ok(m) => m.len().next_multiple_of(4096),
+        Err(e) => return fail(format!("{path}: {e}")),
+    };
+    if a.offset.saturating_add(len) > vol.size {
+        return fail(format!(
+            "{path}: {len} bytes at {} don't fit the volume ({} bytes)",
+            a.offset, vol.size
+        ));
+    }
+    let att = match cl.attach(id).await {
+        Ok(v) => v,
+        Err(e) => return fail(format!("volume {id:032x}: {e}")),
+    };
+    let (mut at, mut skipped) = (0u64, 0u64);
+    let mut buf = vec![0u8; IO_PIECE];
+    let r = loop {
+        // Fill a piece; the buffer is zeroed between pieces, so a short
+        // last one is padded with zeros to whole blocks.
+        let mut n = 0;
+        let mut failed = None;
+        while n < buf.len() {
+            match std::io::Read::read(&mut f, &mut buf[n..]) {
+                Ok(0) => break,
+                Ok(k) => n += k,
+                Err(e) => {
+                    failed = Some(format!("{path}: {e}"));
+                    break;
+                }
+            }
+        }
+        if let Some(e) = failed {
+            break Err(e);
+        }
+        if n == 0 {
+            break Ok(());
+        }
+        let n = n.next_multiple_of(4096);
+        let piece = &buf[..n];
+        let mut start = 0;
+        let mut result = Ok(());
+        while start < n {
+            // Runs of non-zero blocks are written; zero blocks are skipped
+            // with --sparse.
+            let zero = |b: &[u8]| b.iter().all(|x| *x == 0);
+            let block_zero = zero(&piece[start..start + 4096]);
+            let mut end = start + 4096;
+            while end < n && zero(&piece[end..end + 4096]) == block_zero {
+                end += 4096;
+            }
+            if block_zero && a.sparse {
+                skipped += (end - start) as u64;
+            } else if let Err(e) = att
+                .write(a.offset + at + start as u64, piece[start..end].to_vec())
+                .await
+            {
+                result = Err(format!("write at {}: {e}", a.offset + at + start as u64));
+                break;
+            }
+            start = end;
+        }
+        if let Err(e) = result {
+            break Err(e);
+        }
+        at += n as u64;
+        buf.iter_mut().for_each(|b| *b = 0);
+    };
+    let detached = att.detach().await;
+    if let Err(e) = r {
+        return fail(e);
+    }
+    if let Err(e) = detached {
+        return fail(format!("volume {id:032x}: detaching: {e}"));
+    }
+    println!(
+        "wrote {at} bytes at {} from {path}{}",
+        a.offset,
+        if a.sparse {
+            format!(" ({skipped} bytes of zeros skipped)")
+        } else {
+            String::new()
+        }
+    );
+    0
+}
+
+fn parse_volume_id(s: &str) -> Option<u128> {
+    (!s.is_empty() && s.len() <= 32)
+        .then(|| u128::from_str_radix(s, 16).ok())
+        .flatten()
+}
+
+/// `enroll`: a management client's identity from a mgmt token (D120).
+/// The key is made here and never leaves; the API is reached over TLS
+/// pinned to the root the token names. Writes `admin.crt` (the chain),
+/// `admin.key` and `root.crt` into `--out`, the layout `--tls` reads.
+fn enroll(api: &str, a: &Args) -> i32 {
+    let fail = |m: String| {
+        eprintln!("hyperstorctl: {m}");
+        1
+    };
+    let path = a.file.clone().unwrap_or_default();
+    let token = match std::fs::read_to_string(&path) {
+        Ok(t) => t.trim().to_string(),
+        Err(e) => return fail(format!("{path}: {e}")),
+    };
+    let Some((pin, _)) = hyperstor_pki::parse_join_token(&token) else {
+        return fail(format!("{path}: not a hyperstor join token (hsj1-…)"));
+    };
+    let (key, csr) = match hyperstor_pki::new_request() {
+        Ok(k) => k,
+        Err(e) => return fail(format!("key: {e}")),
+    };
+    let tls = match hyperstor_pki::pinned_client_config(pin) {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => return fail(e),
+    };
+    let uri: http::Uri = match format!("https://{api}").parse() {
+        Ok(u) => u,
+        Err(_) => return fail(format!("{api}: not an address")),
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let r = rt.block_on(async {
+        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        hyperstor_api::TokenServiceClient::new(HttpClient::with_tls(tls), config)
+            .join(pb::JoinRequest {
+                token: token.clone(),
+                csr,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+    });
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => return fail(format!("{api}: {}", error_text(&e))),
+    };
+    let dir = std::path::PathBuf::from(a.out.clone().unwrap_or_default());
+    let write = |name: &str, content: &str, mode: u32| -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let p = dir.join(name);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(mode)
+            .open(&p)
+            .and_then(|mut f| f.write_all(content.as_bytes()))
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    let made = std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))
+        .and_then(|()| write("admin.key", &key, 0o600))
+        .and_then(|()| write("admin.crt", &r.certificate, 0o644))
+        .and_then(|()| write("root.crt", &r.root, 0o644));
+    if let Err(e) = made {
+        return fail(e);
+    }
+    let who = hyperstor_pki::identity_in(&r.certificate)
+        .map(|i| i.uri())
+        .unwrap_or_default();
+    println!(
+        "enrolled as {who} in cluster {}; certificate in {} (renew within 30 days); map service {}",
+        r.cluster_id,
+        dir.display(),
+        r.map_addresses
+    );
+    0
+}
+
 async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
     let cl = match hyperstor_reactor::time::timeout(
         Duration::from_secs(5),

@@ -54,6 +54,11 @@ pub enum Admin {
         id: Option<u128>,
         reply: VolumeReply<Volume>,
     },
+    ExpandVolume {
+        id: u128,
+        size: u64,
+        reply: VolumeReply<Volume>,
+    },
     /// Moves a volume to the trash (D54): replies with it as trashed.
     DeleteVolume {
         id: u128,
@@ -732,6 +737,17 @@ impl Meta {
                             c.create_volume(pool, size, id, &name)
                                 .await
                                 .map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
+                Admin::ExpandVolume { id, size, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            c.expand_volume(id, size).await.map_err(volume_fault)
                         };
                         let _ = reply.send(r.await);
                     });

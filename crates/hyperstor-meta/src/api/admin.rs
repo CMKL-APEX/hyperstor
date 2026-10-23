@@ -120,10 +120,7 @@ fn random_hex(bytes: usize) -> String {
 
 /// A join token's parts: the root's fingerprint and the secret.
 pub fn parse_token(t: &str) -> Option<(&str, &str)> {
-    let rest = t.trim().strip_prefix("hsj1-")?;
-    let (pin, secret) = rest.split_once('-')?;
-    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit());
-    (hex(pin, 64) && hex(secret, 64)).then_some((pin, secret))
+    hyperstor_pki::parse_join_token(t)
 }
 
 /// The first certificate of a PEM chain, in DER.
@@ -327,9 +324,28 @@ impl TokenService for Api {
         let target = format!("role {}", req.role);
         let who = self.authorize(&ctx, "CreateToken", &target, true)?;
         let (_, root) = self.signing()?;
-        if !matches!(req.role, "node" | "meta") {
+        if !matches!(req.role, "node" | "meta" | "mgmt") {
             return Err(invalid(
-                format!("{}: a token is for role node or meta", req.role),
+                format!("{}: a token is for role node, meta or mgmt", req.role),
+                "invalid_argument",
+            ));
+        }
+        // A management client's token names the identity it enrolls (D120).
+        let name = req.name.to_string();
+        if req.role == "mgmt" {
+            let ok = (1..=32).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !ok {
+                return Err(invalid(
+                    format!("{name:?}: a mgmt token names its identity: 1-32 of a-z, 0-9 and -"),
+                    "invalid_argument",
+                ));
+            }
+        } else if !name.is_empty() {
+            return Err(invalid(
+                "only a mgmt token takes a name",
                 "invalid_argument",
             ));
         }
@@ -351,6 +367,7 @@ impl TokenService for Api {
             role: req.role.to_string(),
             expires_unix: now_unix() + u64::from(ttl),
             created_by: who.clone(),
+            name: name.clone(),
             ..Default::default()
         };
         let rec = Record {
@@ -361,6 +378,7 @@ impl TokenService for Api {
             used: false,
             revoked: false,
             created_by: who.clone(),
+            name,
         };
         let now = now_unix();
         if let Err(e) = self.tokens(move |t| t.create(rec, now)).await {
@@ -404,6 +422,7 @@ impl TokenService for Api {
                     used: r.used,
                     revoked: r.revoked,
                     created_by: r.created_by,
+                    name: r.name,
                     ..Default::default()
                 })
                 .collect(),
@@ -500,6 +519,35 @@ impl TokenService for Api {
                             certificate,
                             root: root.to_string(),
                             node,
+                            map_addresses: signing.map_addresses.clone(),
+                            ..Default::default()
+                        },
+                    ))
+                }
+                "mgmt" => {
+                    // A management client (D120): a client certificate
+                    // naming no address, the root, and the map service's
+                    // addresses for its data path.
+                    let who = Identity {
+                        cluster: cluster.clone(),
+                        role: Role::Mgmt,
+                        id: token.name.clone(),
+                    };
+                    let certificate = hyperstor_pki::sign_request(
+                        &signing.ca,
+                        req.csr,
+                        &who,
+                        &[],
+                        &[],
+                        hyperstor_pki::LEAF_DAYS,
+                    )
+                    .map_err(|e| invalid(e, "bad_request"))?;
+                    Ok((
+                        format!("{who_token}: mgmt {}", token.name),
+                        pb::JoinResponse {
+                            cluster_id: cluster.clone(),
+                            certificate,
+                            root: root.to_string(),
                             map_addresses: signing.map_addresses.clone(),
                             ..Default::default()
                         },
