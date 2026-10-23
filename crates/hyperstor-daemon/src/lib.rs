@@ -2628,6 +2628,9 @@ impl ShardState {
                 }
             }
             let now = std::time::Instant::now();
+            // A peer that left (down, or no longer sharing a PG) starts
+            // afresh when it comes back: its old silence isn't news.
+            last_ok.borrow_mut().retain(|p, _| peers.contains_key(p));
             for (peer, addr) in peers {
                 let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
                 if now.duration_since(first) > peer_timeout && !self.cut_off() {

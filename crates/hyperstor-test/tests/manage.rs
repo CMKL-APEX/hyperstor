@@ -91,6 +91,45 @@ fn a_killed_node_is_reported_and_comes_back() {
     c.ctl(&["io-test", "--mib", "4"]).ok();
 }
 
+/// A node that comes back isn't reported silent again (D40): its peers
+/// forget its old silence, so it goes down once, for the kill, and stays
+/// up after. The map service says why each change happened.
+#[test]
+fn a_returning_node_goes_down_once() {
+    let mut c = Cluster::all_in_one("return", 3);
+    c.kill_node(2);
+    wait_for("node 2 down", 20, || {
+        c.ctl(&["status"]).has("node(s) down: 2").then_some(())
+    });
+    c.start_node(2);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    // Long enough for stale reports to have done their damage.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let log = std::fs::read_to_string(&c.meta_log).unwrap();
+    let changes: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with("hyperstor-meta: node 2 "))
+        .collect();
+    assert_eq!(
+        changes.iter().filter(|l| l.contains(" down (")).count(),
+        1,
+        "{changes:#?}"
+    );
+    // Its peers notice a dead node first (300 ms, before the 800 ms
+    // heartbeat timeout).
+    assert!(
+        changes[0].contains("down (reported silent by nodes [0, 1])"),
+        "{changes:#?}"
+    );
+    assert!(
+        changes
+            .last()
+            .unwrap()
+            .contains("node 2 up (heartbeats again)"),
+        "{changes:#?}"
+    );
+}
+
 /// Volumes through the cluster API (D77): `hyperstorctl` creates, lists
 /// and deletes them; an id in use and a volume that isn't there are
 /// refused.

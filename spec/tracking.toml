@@ -255,6 +255,7 @@ status = "done"
 tests = [
     "cluster::peers_report_a_dead_node_before_the_map_service_notices",
     "hyperstor_meta::tests::two_peer_reports_mark_a_node_down_and_stop_its_lease",
+    "manage::a_returning_node_goes_down_once",
 ]
 
 [[milestone.item]]

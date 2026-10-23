@@ -728,10 +728,34 @@ impl Meta {
             }
             for n in map.nodes.values_mut() {
                 let last = beats.get(&n.id).copied().unwrap_or(self.started.get());
-                let alive = now.duration_since(last) < timeout && !suspect.contains(&n.id);
+                let silent = now.duration_since(last) >= timeout;
+                let reported = suspect.contains(&n.id);
+                let alive = !silent && !reported;
                 if n.up != alive {
                     n.up = alive;
                     changed = true;
+                    // In the journal: why a node went down is the first
+                    // question about any failover.
+                    let why = match (silent, reported) {
+                        (false, false) => "heartbeats again".to_string(),
+                        (true, _) => format!(
+                            "no heartbeat for {} ms",
+                            now.duration_since(last).as_millis()
+                        ),
+                        (false, true) => {
+                            let mut by: Vec<u32> = reports
+                                .get(&n.id)
+                                .map(|r| r.keys().copied().collect())
+                                .unwrap_or_default();
+                            by.sort();
+                            format!("reported silent by nodes {by:?}")
+                        }
+                    };
+                    eprintln!(
+                        "hyperstor-meta: node {} {} ({why})",
+                        n.id,
+                        if alive { "up" } else { "down" }
+                    );
                 }
             }
             // Down and out (placement.md §5.3): a node down for the
