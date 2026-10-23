@@ -10,7 +10,7 @@
 //!   in, cancels operations, takes snapshots and restores from the trash
 //!   (D114); `storage-admin` also manages volumes and
 //!   members; `security-admin` manages people, tokens, certificates and
-//!   backups, and nothing else.
+//!   backups, and reads the audit log, and nothing else.
 //! - Step-up: what is hard to undo (deleting volumes, snapshots and
 //!   members, rolling a volume back, tokens, revocations, backups, people's
 //!   roles) needs a login of the last 10 minutes.
@@ -74,6 +74,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),
+    ("AuditService.ListAudit", Group::Secure, false),
+    ("AuditService.GetAuditSettings", Group::Secure, false),
+    ("AuditService.SetAuditSettings", Group::Secure, true),
     ("People.ListUsers", Group::Secure, false),
     ("People.SetRoles", Group::Secure, true),
     ("People.DeleteUser", Group::Secure, true),
@@ -82,6 +85,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("People.RevokeToken", Group::Own, false),
     ("TokenService.Join", Group::Machine, false),
     ("CaService.RenewCertificate", Group::Machine, false),
+    ("AuditService.AppendAudit", Group::Machine, false),
     ("MgmtStoreService.GetRow", Group::Machine, false),
     ("MgmtStoreService.PutRow", Group::Machine, false),
     ("MgmtStoreService.DeleteRow", Group::Machine, false),

@@ -13,6 +13,7 @@ import Operations from "./pages/Operations";
 import Members from "./pages/Members";
 import Security from "./pages/Security";
 import Trash from "./pages/Trash";
+import Audit from "./pages/Audit";
 
 const SSO = [{ label: "your identity provider" }];
 
@@ -53,6 +54,7 @@ const PAGES = [
   ["/operations", "Operations"],
   ["/members", "Members"],
   ["/security", "Security"],
+  ["/audit", "Audit"],
 ] as const;
 
 function Shell() {
@@ -97,6 +99,7 @@ function Shell() {
           <Route path="/operations" element={<Operations />} />
           <Route path="/members" element={<Members />} />
           <Route path="/security" element={<Security />} />
+          <Route path="/audit" element={<Audit />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

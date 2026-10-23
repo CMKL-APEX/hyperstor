@@ -50,6 +50,7 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]";
 
+mod audit_ship;
 mod oidc;
 mod people;
 mod policy;
@@ -258,6 +259,9 @@ fn main() {
         } else {
             eprintln!("hyperstor-mgmt: dashboard on {at} (read-only)");
         }
+        if state.login.is_some() {
+            tokio::spawn(audit_ship::ship(state.api_addrs.clone(), state.tls.clone()));
+        }
         let acceptor = web.map(|w| tokio_rustls::TlsAcceptor::from(w.config));
         let mut tasks = tokio::task::JoinSet::new();
         for listener in listeners {
@@ -406,13 +410,14 @@ fn audit(principal: &str, op: &str, target: &str, result: &str) {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    eprintln!(
-        "{}",
-        serde_json::json!({
-            "audit": 1, "time": format!("{}.{:03}", t.as_secs(), t.subsec_millis()),
-            "principal": principal, "op": op, "target": target, "result": result,
-        })
-    );
+    let line = serde_json::json!({
+        "audit": 1, "time": format!("{}.{:03}", t.as_secs(), t.subsec_millis()),
+        "principal": principal, "op": op, "target": target, "result": result,
+    })
+    .to_string();
+    eprintln!("{line}");
+    // And into the cluster's audit log in .meta (D112).
+    audit_ship::push(line);
 }
 
 /// Whether `host` (a `Host` header) names this machine's loopback, or one

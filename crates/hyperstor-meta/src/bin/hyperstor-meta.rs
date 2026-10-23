@@ -246,18 +246,16 @@ fn main() {
         let aside = std::path::PathBuf::from(format!("{d}.forced-{now}"));
         std::fs::rename(&dir, &aside)
             .unwrap_or_else(|e| fail(format!("moving {} aside: {e}", dir.display())));
-        eprintln!(
-            "{}",
-            hyperstor_meta::api::audit_line(
-                "local:force-alone",
-                "ForceAlone",
-                &format!("member {id}"),
-                &format!(
-                    "ok, map epoch {}, old store kept in {}",
-                    b.epoch,
-                    aside.display()
-                )
-            )
+        // Into the audit log too, once the map service runs (D112).
+        hyperstor_meta::audit_log::record(
+            "local:force-alone",
+            "ForceAlone",
+            &format!("member {id}"),
+            &format!(
+                "ok, map epoch {}, old store kept in {}",
+                b.epoch,
+                aside.display()
+            ),
         );
         (me, b)
     });
@@ -436,6 +434,15 @@ fn main() {
                 .and_then(|v| v.parse().ok())
                 .map_or(Duration::from_secs(60), Duration::from_millis);
             hyperstor_reactor::spawn(meta.clone().purger(addr, settings.clone(), every));
+            // The audit log in .meta (D112): this member's records, and
+            // on the leader the daily pruning (D113).
+            hyperstor_reactor::spawn(hyperstor_meta::audit_log::writer(addr));
+            hyperstor_reactor::spawn(hyperstor_meta::audit_log::pruner(
+                meta.clone(),
+                addr,
+                settings.clone(),
+                Duration::from_secs(3600),
+            ));
             eprintln!(
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")
