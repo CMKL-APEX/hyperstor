@@ -37,7 +37,7 @@ pub struct Record {
     pub used: bool,
     pub revoked: bool,
     pub created_by: String,
-    /// `mgmt`: the identity it enrolls (D120); empty otherwise, and in
+    /// `mgmt`: the identity it enrolls (D122); empty otherwise, and in
     /// records written before.
     pub name: String,
 }

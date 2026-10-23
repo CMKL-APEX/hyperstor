@@ -166,7 +166,7 @@ service OperationService {
 
 message CreateTokenRequest {
   // "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-  // management client such as glidex's control plane, decisions.md D120).
+  // management client such as glidex's control plane, decisions.md D122).
   string role = 1;
   // How long the token is valid; 0 means an hour. At most a week.
   uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];

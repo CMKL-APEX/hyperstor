@@ -42,7 +42,7 @@
 //!   reads it back and compares;
 //! - `token create --role node|meta|mgmt [--name N] [--ttl SECS]`, `token
 //!   list`, `token revoke --id ID`: join tokens (§23.4.2); a `mgmt` token
-//!   enrolls a management client named N, such as glidex (D120); `create`
+//!   enrolls a management client named N, such as glidex (D122); `create`
 //!   prints the token alone on standard output, and how to use it on
 //!   standard error;
 //! - `enroll --file TOKEN --out DIR`: a management client's identity from a
@@ -53,7 +53,7 @@
 //!   `read-volume --id ID --size S --out F [--offset O] [--map ADDR]`: a
 //!   file into a volume, holding its lease, or a range of it into a file,
 //!   in whole 4 KiB blocks; `--sparse` skips zero blocks; with `--map`,
-//!   straight to the map service, without the API (D121);
+//!   straight to the map service, without the API (D123);
 //! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
 //!   would move and changes nothing;
@@ -444,7 +444,7 @@ fn main() {
         }
     }
     if cmd == "enroll" {
-        // A management client's identity from a mgmt token (D120): local
+        // A management client's identity from a mgmt token (D122): local
         // key, the API pinned to the root the token names.
         std::process::exit(enroll(&api_addr(api.clone()), &a));
     }
@@ -1647,7 +1647,7 @@ const IO_PIECE: usize = 1 << 20;
 /// lease meanwhile (refused while another client has it attached);
 /// `--sparse` skips blocks of zeros, for a volume that reads zeros there.
 /// `read-volume`: `--size` bytes at `--offset` into `--out`. Both in whole
-/// 4 KiB blocks; a file's last block is padded with zeros (D121).
+/// 4 KiB blocks; a file's last block is padded with zeros (D123).
 async fn volume_io(meta: std::net::SocketAddr, cmd: &str, a: &Args) -> i32 {
     let fail = |m: String| {
         eprintln!("hyperstorctl: {m}");
@@ -1803,7 +1803,7 @@ fn parse_volume_id(s: &str) -> Option<u128> {
         .flatten()
 }
 
-/// `enroll`: a management client's identity from a mgmt token (D120).
+/// `enroll`: a management client's identity from a mgmt token (D122).
 /// The key is made here and never leaves; the API is reached over TLS
 /// pinned to the root the token names. Writes `admin.crt` (the chain),
 /// `admin.key` and `root.crt` into `--out`, the layout `--tls` reads.

@@ -330,7 +330,7 @@ impl TokenService for Api {
                 "invalid_argument",
             ));
         }
-        // A management client's token names the identity it enrolls (D120).
+        // A management client's token names the identity it enrolls (D122).
         let name = req.name.to_string();
         if req.role == "mgmt" {
             let ok = (1..=32).contains(&name.len())
@@ -525,7 +525,7 @@ impl TokenService for Api {
                     ))
                 }
                 "mgmt" => {
-                    // A management client (D120): a client certificate
+                    // A management client (D122): a client certificate
                     // naming no address, the root, and the map service's
                     // addresses for its data path.
                     let who = Identity {

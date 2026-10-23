@@ -1,5 +1,5 @@
 //! A management client, as glidex's control plane is (decisions.md D60,
-//! D120, D121): it enrolls with a mgmt token, manages volumes through the
+//! D122, D123): it enrolls with a mgmt token, manages volumes through the
 //! cluster API with the certificate it got, and writes and reads volumes
 //! through the data path with `hyperstorctl write-volume`/`read-volume`.
 
@@ -113,7 +113,7 @@ fn a_management_client_enrolls_and_manages_volumes() {
     want.resize(3 << 20, 0);
     assert!(back == want, "read back differs (padded with zeros)");
     // A partition table's region, edited and written back (glidex's
-    // extend-root on a clone, D121).
+    // extend-root on a clone, D123).
     let head = read(false, "0", "4096", &out);
     let mut edited = head.clone();
     edited[510] = 0x55;

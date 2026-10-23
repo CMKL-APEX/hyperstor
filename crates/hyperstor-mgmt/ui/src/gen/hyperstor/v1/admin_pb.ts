@@ -412,7 +412,7 @@ export const SetAuditSettingsResponseSchema: GenMessage<SetAuditSettingsResponse
 export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   /**
    * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, decisions.md D120).
+   * management client such as glidex's control plane, decisions.md D122).
    *
    * @generated from field: string role = 1;
    */
@@ -440,7 +440,7 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
 export type CreateTokenRequestJson = {
   /**
    * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, decisions.md D120).
+   * management client such as glidex's control plane, decisions.md D122).
    *
    * @generated from field: string role = 1;
    */

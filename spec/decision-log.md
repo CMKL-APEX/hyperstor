@@ -612,4 +612,4 @@ recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 69 | How glidex gets and keeps its certificate (a mgmt token it enrolls with, sealed in its store and renewed; files placed on every node; each node enrolling); how a worker writes disk bytes without root (a range read/write tool, editing partitions as files; ublk devices through stord; leaving extend-root to the guest); how `stage` knows to preempt (a mark the scheduler sets at re-placement; asking hyperstor who holds the disk) | A mgmt token, sealed and renewed; the range tool; the scheduler's mark | D120, D121, D122 |
+| 71 | How glidex gets and keeps its certificate (a mgmt token it enrolls with, sealed in its store and renewed; files placed on every node; each node enrolling); how a worker writes disk bytes without root (a range read/write tool, editing partitions as files; ublk devices through stord; leaving extend-root to the guest); how `stage` knows to preempt (a mark the scheduler sets at re-placement; asking hyperstor who holds the disk) | A mgmt token, sealed and renewed; the range tool; the scheduler's mark | D122, D123, D124 |
