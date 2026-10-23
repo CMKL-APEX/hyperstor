@@ -83,8 +83,7 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket | In progress |
-| 512e disks: 512-byte sectors on 4 KiB blocks, partial blocks read, merged and written under a block lock | Done |
+| hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks | In progress |
 | VMs boot from volumes under Cloud Hypervisor and QEMU | Done |
 | Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect | Planned |
