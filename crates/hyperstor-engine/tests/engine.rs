@@ -677,6 +677,11 @@ fn checkpoints_write_only_the_pages_that_changed() {
     sh.checkpoint().unwrap();
     let st = sh.stats();
     assert!(st.checkpoint_pages > 15, "pages are cut: {st:?}");
+    // A bound, length, checksum and extent per page.
+    assert!(
+        st.checkpoint_directory_bytes > st.checkpoint_pages * 30,
+        "{st:?}"
+    );
     let written = |sh: &Shard| sh.stats().checkpoint_pages_written;
     // The checkpoint above began before the puts that followed its first
     // pages; one more settles everything.

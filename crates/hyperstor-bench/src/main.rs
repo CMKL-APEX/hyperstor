@@ -865,24 +865,32 @@ fn log_size_sweep() {
     println!();
 }
 
-/// Paged checkpoints (D105) against the share of chunks written: each
-/// checkpoint writes only the pages changed since the last one began, so
-/// its traffic follows how much of the index changes. A whole-index page
-/// is the checkpoint before D105.
+/// Paged checkpoints (D105) against the share of chunks written and the
+/// page size: each checkpoint writes only the pages changed since the
+/// last one began, plus a directory of every page. A whole-index page is
+/// the checkpoint before D105.
 fn paged_sweep() {
-    println!("### Paged checkpoints against the share of chunks written (memory device)\n");
     println!(
-        "2 GiB of 4 MiB chunks (a 4 MiB index of dense maps, 128 chunk groups like PGs), aged by one full pass of random 4 KiB overwrites, a 256 MiB log; then batches of 32 random overwrites to the first share of the chunks until three checkpoints finish. Whole: one page, the checkpoint before D105. The last column scales the traffic to a 1 TiB shard.\n"
+        "### Paged checkpoints against the share of chunks written and the page size (memory device)\n"
     );
     println!(
-        "| Chunks written | checkpoint | pages | pages written per checkpoint | checkpoint B per write | checkpoint MB/s at 50k writes/s per TiB | open ms |"
+        "2 GiB of 4 MiB chunks (a 4 MiB index of dense maps, 128 chunk groups like PGs), aged by one full pass of random 4 KiB overwrites, a 256 MiB log; then batches of 32 random overwrites to the first share of the chunks until three checkpoints finish, after two to settle. Whole: one page, the checkpoint before D105. Per TiB: the traffic scaled to a 1 TiB shard with the same share written; the directory scales with it.\n"
     );
-    println!("|---|---|---|---|---|---|---|");
+    println!(
+        "| Chunks written | page | pages | pages written per checkpoint | directory KiB | checkpoint B per write | of which directory | checkpoint MB/s at 50k writes/s per TiB | open ms |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|");
     let gib = 2u64;
     let objects = (gib << 30) / (OBJ_BLOCKS * BLOCK as u64);
     let log_mib = 256u64;
     for share in [100u64, 10, 1] {
-        for (label, page) in [("whole", usize::MAX), ("paged", 128 << 10)] {
+        for (label, page) in [
+            ("whole", usize::MAX),
+            ("128 KiB", 128 << 10),
+            ("64 KiB", 64 << 10),
+            ("32 KiB", 32 << 10),
+            ("16 KiB", 16 << 10),
+        ] {
             let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(((gib + 1) << 30) + (log_mib << 20)));
             format(
                 &dev,
@@ -929,16 +937,20 @@ fn paged_sweep() {
             let st = sh.stats();
             let ck_b = st.checkpoint_bytes_written - before.checkpoint_bytes_written;
             let pages_w = st.checkpoint_pages_written - before.checkpoint_pages_written;
+            // The directory, padded to blocks, three times.
+            let dir_b = st.checkpoint_directory_bytes.div_ceil(BLOCK as u64) * BLOCK as u64 * 3;
             drop(sh);
             let t = Instant::now();
             let sh = open(&dev).unwrap().1.pop().unwrap();
             let open_ms = t.elapsed().as_secs_f64() * 1e3;
             drop(sh);
             println!(
-                "| {share}% | {label} | {} | {:.1} | {:.2} | {:.0} | {open_ms:.0} |",
+                "| {share}% | {label} | {} | {:.1} | {:.1} | {:.2} | {:.0}% | {:.0} | {open_ms:.0} |",
                 st.checkpoint_pages,
                 pages_w as f64 / 3.0,
+                st.checkpoint_directory_bytes as f64 / 1024.0,
                 ck_b as f64 / writes as f64,
+                dir_b as f64 / ck_b as f64 * 100.0,
                 ck_b as f64 / writes as f64 * 50_000.0 / 1e6 * 512.0
             );
         }
