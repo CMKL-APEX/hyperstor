@@ -632,3 +632,14 @@ harm consistency or durability, with fixes and a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 72 | Whether a former leader's run of a flatten or purge can harm data: copies stay consistent and flatten only fills blocks the clone lacks, but a late volume purge could delete a new volume created with the same id. Fixes: blocklist the last leader's client before resuming (recommended); refuse reusing the id; stop on losing the lead | Fence by blocklisting | D125 |
+
+## Block size for VMs (HS3, 2026-10-23)
+
+glidex's driver booted a cloud image from a volume: the firmware found
+no bootable device, because `hyperstor-vhost` offered 4 KiB logical
+blocks and the image's GPT is in 512-byte sectors (glidex storage.md
+H9). Asked how disks should look to VMs, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 73 | 512e in `hyperstor-vhost` (read-modify-write for partial blocks, the engine unchanged); a block size per volume; glidex converting images to 4Kn | 512e in `hyperstor-vhost` | D126 |

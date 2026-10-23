@@ -8,6 +8,7 @@
 
 use crate::blk::{self, Bad, Request};
 use hyperstor_client::volume::Attached;
+use hyperstor_reactor::chan::{OneSender, oneshot};
 use hyperstor_reactor::fd;
 use std::cell::RefCell;
 use std::fs::File;
@@ -43,6 +44,98 @@ pub struct Disk {
     pub serial: String,
     /// Queues offered.
     pub queues: u16,
+    pub locks: Locks,
+}
+
+/// The volume blocks writes in flight cover. A write waits for those
+/// overlapping its own, so the read-modify-write of a partial block
+/// (512e, decisions.md D126) never puts back data another write replaced
+/// in between. Guests may reorder overlapping writes anyway; this only
+/// keeps each one whole.
+#[derive(Default)]
+pub struct Locks {
+    held: RefCell<Vec<(u64, u64)>>,
+    waiting: RefCell<Vec<OneSender<()>>>,
+}
+
+impl Locks {
+    async fn lock(&self, start: u64, end: u64) -> Held<'_> {
+        loop {
+            let busy = self
+                .held
+                .borrow()
+                .iter()
+                .any(|&(s, e)| s < end && start < e);
+            if !busy {
+                self.held.borrow_mut().push((start, end));
+                return Held {
+                    locks: self,
+                    range: (start, end),
+                };
+            }
+            let (tx, rx) = oneshot();
+            self.waiting.borrow_mut().push(tx);
+            rx.recv().await;
+        }
+    }
+}
+
+struct Held<'a> {
+    locks: &'a Locks,
+    range: (u64, u64),
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let mut held = self.locks.held.borrow_mut();
+        if let Some(i) = held.iter().position(|r| *r == self.range) {
+            held.swap_remove(i);
+        }
+        drop(held);
+        // Every waiter looks again; few writes overlap.
+        for w in self.locks.waiting.take() {
+            let _ = w.send(());
+        }
+    }
+}
+
+/// Reads bytes `off..off + len` (whole sectors) through the volume blocks
+/// they are in.
+async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ()> {
+    let (start, end) = blk::blocks(off, len);
+    let mut data = v.read(start, end - start).await.map_err(drop)?;
+    if start != off || end != off + len {
+        let at = (off - start) as usize;
+        data.drain(..at);
+        data.truncate(len as usize);
+    }
+    Ok(data)
+}
+
+/// Writes `data` (whole sectors) at `off`: whole volume blocks as they
+/// are; a partial block at either end read, merged and written with them.
+async fn write_at(disk: &Disk, off: u64, data: Vec<u8>) -> Result<(), ()> {
+    let v = &disk.volume;
+    let len = data.len() as u64;
+    let (start, end) = blk::blocks(off, len);
+    let _held = disk.locks.lock(start, end).await;
+    if start == off && end == off + len {
+        return v.write(off, data).await.map_err(drop);
+    }
+    let block = blk::BLOCK as usize;
+    let mut buf = vec![0u8; (end - start) as usize];
+    if off != start {
+        let b = v.read(start, blk::BLOCK).await.map_err(drop)?;
+        buf[..block].copy_from_slice(&b);
+    }
+    if off + len != end && (off == start || end - start > blk::BLOCK) {
+        let b = v.read(end - blk::BLOCK, blk::BLOCK).await.map_err(drop)?;
+        let n = buf.len();
+        buf[n - block..].copy_from_slice(&b);
+    }
+    let at = (off - start) as usize;
+    buf[at..at + data.len()].copy_from_slice(&data);
+    v.write(start, buf).await.map_err(drop)
 }
 
 type Mem = Rc<GuestMemoryMmap>;
@@ -350,9 +443,8 @@ async fn run_request(
     req: Request,
     writable_len: u64,
 ) -> (u8, u32) {
-    let v = &disk.volume;
     match req {
-        Request::Read { off, len } => match v.read(off, len).await {
+        Request::Read { off, len } => match read_at(&disk.volume, off, len).await {
             Ok(data) => match write_stream(mem, &segs.writable, 0, &data) {
                 Some(()) => (blk::S_OK, writable_len as u32),
                 None => (blk::S_IOERR, 1),
@@ -363,7 +455,7 @@ async fn run_request(
             let Some(data) = read_stream(mem, &segs.readable, 16, len) else {
                 return (blk::S_IOERR, 1);
             };
-            match v.write(off, data).await {
+            match write_at(disk, off, data).await {
                 Ok(()) => (blk::S_OK, 1),
                 Err(_) => (blk::S_IOERR, 1),
             }
@@ -377,10 +469,13 @@ async fn run_request(
         },
         Request::WriteZeroes(ranges) => {
             for (off, len) in ranges {
+                // Pieces end on piece boundaries: only the range's own ends
+                // can be partial blocks.
                 let mut at = off;
                 while at < off + len {
-                    let n = blk::ZERO_PIECE.min(off + len - at);
-                    if v.write(at, vec![0; n as usize]).await.is_err() {
+                    let next = (at / blk::ZERO_PIECE + 1) * blk::ZERO_PIECE;
+                    let n = next.min(off + len) - at;
+                    if write_at(disk, at, vec![0; n as usize]).await.is_err() {
                         return (blk::S_IOERR, 1);
                     }
                     at += n;

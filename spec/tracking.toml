@@ -334,12 +334,12 @@ id = "HS3"
 title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
 [[milestone.item]]
-what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket"
-spec = ["frontends.md §11.1", "D26", "D116", "D117", "I158", "I159", "I160", "I161"]
+what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks"
+spec = ["frontends.md §11.1", "D26", "D116", "D117", "D126", "I158", "I159", "I160", "I161", "I169"]
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",
-    "hyperstor_vhost::blk::tests::requests_decode_to_whole_blocks_inside_the_volume",
+    "hyperstor_vhost::blk::tests::requests_decode_to_whole_sectors_inside_the_volume",
     "hyperstor_vhost::blk::tests::the_config_space_names_the_size_and_queues",
     "hyperstor_vhost::control::tests::requests_parse_and_bad_ones_say_why",
     "hyperstor_reactor::fd::tests::an_eventfd_wakes_a_waiting_task",
