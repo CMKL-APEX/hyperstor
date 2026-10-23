@@ -2,7 +2,8 @@
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
-//!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]`
+//!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
+//!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -32,6 +33,10 @@
 //!   as N if given; `trash purge --id ID [--epoch E]` deletes it for good;
 //!   `trash settings [--pool P] [--grace SECS] [--on-full keep|purge]`
 //!   shows or sets how long a pool keeps it (default a day);
+//! - `audit list [--since AGO] [--principal P] [--op OP] [--limit N]`:
+//!   the audit log, newest first (AGO as `30m`, `2h`, `7d`; default the
+//!   last 100 records); `audit settings [--retention-days N]` shows or sets
+//!   how long it is kept (0: forever; D112, D113);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
@@ -86,14 +91,15 @@
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    CaServiceClient, ClusterServiceClient, MapServiceClient, MemberServiceClient,
-    NodeServiceClient, OperationServiceClient, TokenServiceClient, TrashServiceClient,
+    AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
+    MemberServiceClient, NodeServiceClient, OperationServiceClient, TokenServiceClient,
+    TrashServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -160,6 +166,13 @@ struct Args {
     /// `trash settings`: the grace period, and what a full pool does.
     grace: Option<u64>,
     on_full: Option<String>,
+    /// `audit list`: how far back (seconds), whose, which operation, how many.
+    since: Option<u64>,
+    principal: Option<String>,
+    op: Option<String>,
+    limit: Option<u32>,
+    /// `audit settings`.
+    retention_days: Option<u32>,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -208,6 +221,11 @@ fn main() {
         new_id: None,
         grace: None,
         on_full: None,
+        since: None,
+        principal: None,
+        op: None,
+        limit: None,
+        retention_days: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -275,6 +293,17 @@ fn main() {
                         .unwrap_or_else(|| usage()),
                 )
             }
+            "--since" => {
+                a.since = Some(
+                    it.next()
+                        .and_then(|s| hyperstor_ctl::parse_ago(s))
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--principal" => a.principal = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--op" => a.op = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--limit" => a.limit = Some(num(it.next()).clamp(1, 10_000)),
+            "--retention-days" => a.retention_days = Some(num(it.next())),
             "--on-full" => match it.next().map(String::as_str) {
                 Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
                 _ => usage(),
@@ -287,7 +316,9 @@ fn main() {
                 cmd = Some(arg.clone())
             }
             // Two words: the group, then what to do.
-            "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" if cmd.is_none() => {
+            "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
+                if cmd.is_none() =>
+            {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
@@ -299,6 +330,7 @@ fn main() {
                         Some("list" | "create" | "delete" | "group" | "group-delete")
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
+                    "audit" => matches!(sub, Some("list" | "settings")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -342,6 +374,9 @@ fn main() {
     );
     if (needs_epoch != a.epoch.is_some() && !may_epoch)
         || ((a.grace.is_some() || a.on_full.is_some()) && cmd != "trash settings")
+        || ((a.since.is_some() || a.principal.is_some() || a.op.is_some() || a.limit.is_some())
+            && cmd != "audit list")
+        || (a.retention_days.is_some() && cmd != "audit settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
         || (a.new_id.is_some() && cmd != "clone-volume")
@@ -610,6 +645,7 @@ where
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
         "trash" => return trash(TrashServiceClient::new(transport, config), cmd, a).await,
+        "audit" => return audit(AuditServiceClient::new(transport, config), cmd, a).await,
         "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
             return snapshots(ClusterServiceClient::new(transport, config), cmd, a).await;
         }
@@ -914,6 +950,81 @@ where
 
 /// `snapshot list|create|delete|group|group-delete`, `clone-volume`,
 /// `rollback-volume`, `flatten-volume` (volumes.md §10.3, §10.4).
+/// The audit log (D112, D113): records newest first, and how long it's kept.
+async fn audit<T>(
+    client: AuditServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    Ok(match cmd {
+        "audit list" => {
+            let want = a.limit.unwrap_or(100) as usize;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let mut records = Vec::new();
+            let mut after = String::new();
+            // Page by page, up to --limit.
+            loop {
+                let r = client
+                    .list_audit(pb::ListAuditRequest {
+                        since_unix: a.since.map_or(0, |s| now.saturating_sub(s)),
+                        principal: a.principal.clone().unwrap_or_default(),
+                        op: a.op.clone().unwrap_or_default(),
+                        limit: (want - records.len()).min(1000) as u32,
+                        after,
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned();
+                records.extend(r.records);
+                if r.next.is_empty() || records.len() >= want {
+                    break;
+                }
+                after = r.next;
+            }
+            let r = pb::ListAuditResponse {
+                records,
+                ..Default::default()
+            };
+            show(a, &r, || hyperstor_ctl::audit_text(&r));
+            Next::Exit(0)
+        }
+        "audit settings" => {
+            let s = match a.retention_days {
+                Some(d) => {
+                    client
+                        .set_audit_settings(pb::SetAuditSettingsRequest {
+                            retention_days: d,
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_owned()
+                        .settings
+                }
+                None => {
+                    client
+                        .get_audit_settings(pb::GetAuditSettingsRequest::default())
+                        .await?
+                        .into_owned()
+                        .settings
+                }
+            };
+            let s = s.into_option().unwrap_or_default();
+            show(a, &s, || match s.retention_days {
+                0 => "audit records are kept forever\n".to_string(),
+                d => format!("audit records are kept {d} days\n"),
+            });
+            Next::Exit(0)
+        }
+        _ => unreachable!("checked with the arguments"),
+    })
+}
+
 /// The trash (D54): what's in it, restore, purge, a pool's settings.
 async fn trash<T>(
     client: TrashServiceClient<T>,

@@ -8,6 +8,7 @@
 //! the map. Each device records the address its reactor listens on.
 
 pub mod api;
+pub mod audit_log;
 pub mod backup;
 pub mod certs;
 pub mod health;
@@ -59,6 +60,11 @@ pub enum Admin {
         /// Even if attached: preempts the holder (D80).
         force: bool,
         reply: VolumeReply<Volume>,
+    },
+    /// Reads the audit log in `.meta` (D112): the lines, and where to go on.
+    AuditRead {
+        query: audit_log::Query,
+        reply: VolumeReply<(Vec<String>, Option<String>)>,
     },
     /// The trash: what's in it, restore, purge (administration.md §23.9.3).
     Trash {
@@ -451,7 +457,7 @@ impl Meta {
         }
     }
 
-    fn leads(&self) -> bool {
+    pub(crate) fn leads(&self) -> bool {
         !matches!(self.role.get(), Role::Follower { .. })
     }
 
@@ -747,6 +753,17 @@ impl Meta {
                 } => {
                     let _ = reply.send(self.drain(node, dry_run));
                 }
+                Admin::AuditRead { query, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            audit_log::read(&c, &query).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
                 Admin::Trash { op, reply } => {
                     let c = connect(client.clone());
                     hyperstor_reactor::spawn(async move {
@@ -852,10 +869,7 @@ impl Meta {
                         Ok(()) => format!("ok, after {grace} s in the trash"),
                         Err(e) => format!("failed: {e}"),
                     };
-                    eprintln!(
-                        "{}",
-                        api::audit_line("map-service/purger", "PurgeFromTrash", &target, &result)
-                    );
+                    audit_log::record("map-service/purger", "PurgeFromTrash", &target, &result);
                 }
             }
         }

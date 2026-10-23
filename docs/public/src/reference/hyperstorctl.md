@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]
 ```
 
 | Command | Does |
@@ -21,6 +21,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `snapshot delete` | Moves the snapshot at `--epoch` of volume `--id` to the trash; refused while a clone or rollback depends on it |
 | `snapshot group` | Takes a snapshot of every volume in `--ids` at one moment (a consistency group); prints the group and each snapshot |
 | `snapshot group-delete` | Moves group `--group`'s snapshots to the trash; the group goes with the last of them |
+| `audit list` | The audit log, newest first: every change and every refused call, by the map service and by `hyperstor-mgmt` for people; `--since`, `--principal`, `--op` and `--limit` (default 100) narrow it. Administrators only |
+| `audit settings` | How long audit records are kept; with `--retention-days`, sets it (0: forever) |
 | `trash list` | What's in the trash, in `--pool` or every pool: volumes and snapshots, when each was deleted and when it will be purged |
 | `trash restore` | Brings volume `--id` back (or its snapshot at `--epoch`), as `--name` if given, else under its own name, or `NAME-restored` if another volume took it meanwhile. Operators may |
 | `trash purge` | Deletes volume `--id` (or its snapshot at `--epoch`) from the trash for good, at once |
@@ -70,6 +72,11 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--new-id ID` | random | `clone-volume`: the clone's id (32 hex digits) |
 | `--grace SECS` | | `trash settings`: how long a deleted volume or snapshot stays in the trash; 0 purges at once; at most a year |
 | `--on-full keep\|purge` | `keep` | `trash settings`: what a full pool does with its trash (purge the oldest first, or keep it). Acts once pools have fullness thresholds |
+| `--since AGO` | | `audit list`: only records from the last `AGO`: `30m`, `2h`, `7d`, or seconds |
+| `--principal P` | | `audit list`: only records whose principal contains `P` (`user:ann`, `/admin/`) |
+| `--op OP` | | `audit list`: only records of operation `OP` (`CreateVolume`) |
+| `--limit N` | 100 | `audit list`: at most `N` records |
+| `--retention-days N` | 365 | `audit settings`: keep records `N` days; 0 keeps them forever |
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |

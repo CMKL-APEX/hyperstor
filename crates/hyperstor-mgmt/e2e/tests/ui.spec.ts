@@ -114,6 +114,23 @@ test("the trash restores and purges", async ({ page }) => {
   await expect(page.getByText("The trash is empty.")).toBeVisible();
 });
 
+test("the audit log shows who did what", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Audit" }).click();
+  await page.getByLabel("Operation").fill("CreateVolume");
+  // Records reach .meta within a second or two.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Show" }).click();
+    await expect(page.getByTestId("audit-record").first()).toContainText("CreateVolume", { timeout: 1000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(page.getByTestId("audit-record").first()).toContainText("user:ann");
+  await expect(page.getByText("hyperstorctl audit list --op CreateVolume")).toBeVisible();
+  await expect(page.getByTestId("audit-retention")).toContainText("kept 365 days");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  expect((await download).suggestedFilename()).toBe("hyperstor-audit.jsonl");
+});
+
 test("an API token is shown once", async ({ page }) => {
   await logIn(page, "ann");
   await page.getByRole("link", { name: "Security" }).click();

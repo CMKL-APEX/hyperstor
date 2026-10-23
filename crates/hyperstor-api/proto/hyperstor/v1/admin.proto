@@ -79,6 +79,79 @@ service NodeService {
 }
 
 // Long operations (§23.6): drains for now.
+// The audit log (spec/administration.md §23.9.4, decisions.md D112,
+// D113): every change and refused call, kept in .meta a day per object.
+service AuditService {
+  // Records, newest first, filtered. Security administrators (through
+  // hyperstor-mgmt) and the admin certificate.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+
+  // hyperstor-mgmt's own records: people's logins, roles and tokens.
+  // The mgmt identity only.
+  rpc AppendAudit(AppendAuditRequest) returns (AppendAuditResponse);
+
+  // How long records are kept. Read by security administrators.
+  rpc GetAuditSettings(GetAuditSettingsRequest) returns (GetAuditSettingsResponse);
+
+  // Sets it. Security administrators, with a fresh login.
+  rpc SetAuditSettings(SetAuditSettingsRequest) returns (SetAuditSettingsResponse);
+}
+
+message ListAuditRequest {
+  // Unix seconds; 0: no bound.
+  uint64 since_unix = 1 [json_name = "since_unix"];
+  uint64 until_unix = 2 [json_name = "until_unix"];
+  // Records whose principal contains this.
+  string principal = 3;
+  // Records of this operation (exactly).
+  string op = 4;
+  // At most this many (default 100, at most 1000).
+  uint32 limit = 5;
+  // A previous answer's `next`: go on from there.
+  string after = 6;
+}
+
+message AuditRecord {
+  // Unix milliseconds.
+  uint64 time_ms = 1 [json_name = "time_ms"];
+  string principal = 2;
+  string op = 3;
+  string target = 4;
+  string result = 5;
+}
+
+message ListAuditResponse {
+  repeated AuditRecord records = 1;
+  // Where to go on from for more; empty: that was all.
+  string next = 2;
+}
+
+message AppendAuditRequest {
+  // JSON lines, as hyperstor-mgmt writes them to standard error.
+  repeated string lines = 1;
+}
+
+message AppendAuditResponse {}
+
+message AuditSettings {
+  // Days records are kept; 0: forever.
+  uint32 retention_days = 1 [json_name = "retention_days"];
+}
+
+message GetAuditSettingsRequest {}
+
+message GetAuditSettingsResponse {
+  AuditSettings settings = 1;
+}
+
+message SetAuditSettingsRequest {
+  uint32 retention_days = 1 [json_name = "retention_days"];
+}
+
+message SetAuditSettingsResponse {
+  AuditSettings settings = 1;
+}
+
 service OperationService {
   // One operation. Read.
   rpc GetOperation(GetOperationRequest) returns (Operation);

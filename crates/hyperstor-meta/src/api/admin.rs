@@ -154,6 +154,11 @@ impl Api {
             .unwrap_or_default()
     }
 
+    /// The settings store, for a read (none without `--data`).
+    pub(super) fn admin_settings(&self) -> Option<Arc<crate::settings::Settings>> {
+        self.admin.signing.as_ref().and_then(|s| s.settings.clone())
+    }
+
     /// The settings store, for a write.
     pub(super) fn settings_store(&self) -> Result<Arc<crate::settings::Settings>, ConnectError> {
         self.admin
@@ -1190,6 +1195,7 @@ impl OperationService for Api {
                 .filter(|d| d.node == node)
                 .map(|d| d.id)
                 .collect();
+            let mut epoch = 0;
             for device in devices {
                 let r = self
                     .ask(|reply| Admin::SetDeviceIn {
@@ -1198,12 +1204,23 @@ impl OperationService for Api {
                         reply,
                     })
                     .await?;
-                if let Err(e) = r {
-                    message = format!("cancelled; device {device} not brought back in: {e}");
-                    break;
+                match r {
+                    Ok(e) => epoch = epoch.max(e),
+                    Err(e) => {
+                        message = format!("cancelled; device {device} not brought back in: {e}");
+                        break;
+                    }
                 }
             }
             if !message.contains(':') {
+                // Answered once the map that has them back is published,
+                // so what's read next shows it (it is fenced first).
+                let t = std::time::Instant::now();
+                while self.published().await?.0.epoch < epoch
+                    && t.elapsed() < Duration::from_secs(5)
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
                 message = format!("cancelled; node {node}'s devices are back in");
             }
         }

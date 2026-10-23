@@ -693,10 +693,16 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Audit of every change and every refused call to the cluster API"
-spec = ["administration.md §23.9.4"]
-status = "partial"
-tests = ["hyperstor_meta::api::tests::audit_lines_are_json_with_escapes"]
+what = "Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI"
+spec = ["administration.md §23.9.4", "D112", "D113"]
+status = "done"
+tests = [
+    "hyperstor_meta::api::tests::audit_lines_are_json_with_escapes",
+    "hyperstor_meta::audit_log::tests::days_keys_and_lines",
+    "hyperstor_meta::audit_log::tests::retention_drops_whole_days",
+    "audit::every_change_lands_in_the_audit_log",
+    "browser::the_audit_log_shows_who_did_what",
+]
 
 [[milestone.item]]
 what = "Long operations: draining a node, with a dry run, followed to the end or cancelled"

@@ -128,5 +128,5 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI | Done |
-| Audit of every change and every refused call to the cluster API | In progress |
+| Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
 | Long operations: draining a node, with a dry run, followed to the end or cancelled | In progress |

@@ -1,6 +1,6 @@
 //! Settings the map service keeps for the cluster, in the replicated store
-//! (`Table::Settings`): for now each pool's trash (decisions.md D54,
-//! D115). Not in the map: only the map service needs them. Writes go
+//! (`Table::Settings`): each pool's trash (decisions.md D54, D115) and how
+//! long the audit log is kept (D113). Not in the map: only the map service needs them. Writes go
 //! through the leader; reads come from the member's applied copy.
 
 use crate::store::{self, Db, Origin, Table};
@@ -56,6 +56,9 @@ impl Default for Trash {
     }
 }
 
+/// How long the audit log is kept by default, in days (D113).
+pub const DEFAULT_AUDIT_DAYS: u32 = 365;
+
 pub struct Settings(Arc<Db>);
 
 fn key(pool: u32) -> String {
@@ -96,6 +99,42 @@ impl Settings {
         }
     }
 
+    /// Days the audit log is kept; 0: forever.
+    pub fn audit_days(&self) -> Result<u32, Error> {
+        Ok(self
+            .get("audit/days")?
+            .and_then(|v| String::from_utf8_lossy(&v).trim().parse().ok())
+            .unwrap_or(DEFAULT_AUDIT_DAYS))
+    }
+
+    /// Sets the days the audit log is kept. Only the leader.
+    pub fn set_audit_days(&self, days: u32) -> Result<(), Error> {
+        self.put("audit/days", days.to_string().as_bytes())
+    }
+
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        let txn = self
+            .0
+            .begin_read()
+            .map_err(|e| Error::Store(e.to_string()))?;
+        let Ok(t) = txn.open_table(definition::<store::MapSchema>(Table::Settings)) else {
+            return Ok(None);
+        };
+        Ok(t.get(key)
+            .map_err(|e| Error::Store(e.to_string()))?
+            .map(|v| v.value().to_vec()))
+    }
+
+    fn put(&self, key: &str, value: &[u8]) -> Result<(), Error> {
+        self.0.write(Origin::Leader, |tx| -> Result<(), Error> {
+            let mut tb = tx
+                .open_table(definition::<store::MapSchema>(Table::Settings))
+                .map_err(StoreError::from)?;
+            tb.insert(key, value).map_err(StoreError::from)?;
+            Ok(())
+        })
+    }
+
     /// Sets pool `pool`'s trash. Only the leader.
     pub fn set_trash(&self, pool: u32, t: Trash) -> Result<(), Error> {
         let value = format!("{} {}", t.grace_secs, t.on_full.as_str());
@@ -128,6 +167,9 @@ mod tests {
         assert_eq!(s.trash(1).unwrap(), t);
         assert_eq!(s.trash(2).unwrap(), Trash::default(), "per pool");
         assert_eq!(OnFull::parse("keep"), Some(OnFull::Keep));
+        assert_eq!(s.audit_days().unwrap(), 365);
+        s.set_audit_days(30).unwrap();
+        assert_eq!(s.audit_days().unwrap(), 30);
         assert_eq!(OnFull::parse("drop"), None);
     }
 }

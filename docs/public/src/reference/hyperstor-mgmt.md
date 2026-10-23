@@ -60,11 +60,11 @@ first login makes an account with no roles. What a role allows:
 | `viewer` | Read: status, PGs, volumes, snapshots, operations, members, the dashboard |
 | `operator` | Also take devices out and in, drain nodes, cancel operations, take snapshots, restore from the trash |
 | `storage-admin` | Also create and delete volumes and snapshots, clones, roll volumes back, purge the trash and set its grace periods, add and remove members |
-| `security-admin` | People and their roles, join tokens, certificates, map backups; nothing else |
+| `security-admin` | People and their roles, join tokens, certificates, map backups, the audit log; nothing else |
 
 Everyone may make API tokens for themselves. Deleting a volume, a
 snapshot or a member, rolling a volume back, purging the trash or
-changing its grace period, making a join token or an API token, revoking
+changing its grace period, changing how long the audit log is kept, making a join token or an API token, revoking
 a certificate, fetching a map backup, and changing people's roles need a
 login of the last 10 minutes; an API token is never fresh enough for
 these.
@@ -143,7 +143,8 @@ again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
   refused.
 - Pages carry a strict Content-Security-Policy and may not be framed.
 - Every login and every change is audited on standard error as a JSON
-  line with the person (`user:NAME`) and how they logged in. mgmt names
+  line with the person (`user:NAME`) and how they logged in, and sent to
+  the cluster's audit log in `.meta`. mgmt names
   the person to the map service (`X-Hyperstor-On-Behalf-Of`, believed
   only from mgmt's certificate), whose audit then reads `…/mgmt/dashboard
   for user:NAME`; a browser's own such header is dropped.

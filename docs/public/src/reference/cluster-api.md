@@ -89,6 +89,15 @@ values are left out of answers.
 | `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
 | `DeleteGroupSnapshot` | `{"group": "…"}` | `purge_unix`: its snapshots are in the trash |
 
+`AuditService` (the audit log in `.meta`, newest first):
+
+| Method | Request | Answer |
+|---|---|---|
+| `ListAudit` | optionally `since_unix`, `until_unix`, `principal` (contains), `op`, `limit` (default 100, at most 1000), `after` (a previous `next`) | `records` (`time_ms`, `principal`, `op`, `target`, `result`) and `next`, empty when that was all. Administrators only |
+| `AppendAudit` | `lines` (JSON audit records) | `{}`. hyperstor-mgmt's identity only |
+| `GetAuditSettings` | `{}` | `settings`: `retention_days` (default 365; 0 forever) |
+| `SetAuditSettings` | `{"retention_days": 30}` | `settings`. On the leader |
+
 `TrashService` (deleted volumes and snapshots, kept for their pool's grace period):
 
 | Method | Request | Answer |
