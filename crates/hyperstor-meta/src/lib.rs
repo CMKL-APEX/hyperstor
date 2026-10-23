@@ -93,6 +93,15 @@ pub enum Admin {
     /// Whether this member leads: `Ok`, or why not (with the leader's
     /// map service address when known).
     Leads(hyperstor_reactor::chan::OneSender<Result<(), String>>),
+    /// This member's role, and the client instance its volume work uses
+    /// now (D125).
+    Lead(hyperstor_reactor::chan::OneSender<Lead>),
+    /// Blocklists a client instance: the map epoch that has it, once every
+    /// storage node holds it or its lease has run out ([`Meta::blocklist`]).
+    Blocklist {
+        instance: u64,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Takes every device of `node` out (or, with `dry_run`, only works
     /// out what that would do). Replies with each PG that moves: pool, PG,
     /// acting before, up after.
@@ -330,6 +339,11 @@ pub struct Meta {
     pub map: RefCell<ClusterMap>,
     pub published: RefCell<ClusterMap>,
     role: Cell<Role>,
+    /// Bumped each time this member gains or loses the lead: its volume
+    /// work (operations among it) then gets a new client, with a new
+    /// instance, so the next leader can blocklist what a former leader
+    /// still runs (D125).
+    lead_gen: Cell<u64>,
     /// Where the leader commits what it publishes (none: a map service
     /// of one, without a store).
     commits: Option<tokio::sync::mpsc::UnboundedSender<replica::Commit>>,
@@ -367,6 +381,19 @@ pub type Inconsistent = BTreeMap<(u32, u32), u32>;
 
 /// Default down-out interval (placement.md §5.3).
 pub const DOWN_OUT: Duration = Duration::from_secs(600);
+
+/// A member's role as [`Admin::Lead`] reports it (D125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lead {
+    /// The only member, without Raft: no other leader to fence.
+    Standalone,
+    /// Leads since `since`, its volume work as client `instance`.
+    Leader {
+        since: Instant,
+        instance: u64,
+    },
+    Follower,
+}
 
 /// What a map service member does (decisions.md D72, D73).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +451,7 @@ impl Meta {
             published: RefCell::new(map.clone()),
             map: RefCell::new(map),
             role: Cell::new(role),
+            lead_gen: Cell::new(0),
             commits,
             seed: None,
             persisted: Cell::new(true),
@@ -474,6 +502,16 @@ impl Meta {
         !matches!(self.role.get(), Role::Follower { .. })
     }
 
+    /// This member's role, with `instance`, its volume work's client
+    /// instance, if it leads (D125).
+    fn lead(&self, instance: u64) -> Lead {
+        match self.role.get() {
+            Role::Standalone => Lead::Standalone,
+            Role::Leader { since } => Lead::Leader { since, instance },
+            Role::Follower { .. } => Lead::Follower,
+        }
+    }
+
     /// Applies what the Raft side reports (`replica::spawn`): maps the
     /// group committed, and who leads.
     pub async fn follow(
@@ -500,6 +538,7 @@ impl Meta {
                     }
                     let now = Instant::now();
                     self.role.set(Role::Leader { since: now });
+                    self.lead_gen.set(self.lead_gen.get() + 1);
                     // Liveness starts afresh (D73): every node gets a
                     // timeout's grace from now.
                     self.started.set(now);
@@ -524,11 +563,17 @@ impl Meta {
                         self.map.borrow_mut().merge_new(seed);
                     }
                 }
-                ToReactor::Leader(Leading::Other(a)) => {
-                    self.role.set(Role::Follower { leader: Some(a) })
-                }
-                ToReactor::Leader(Leading::Unknown) => {
-                    self.role.set(Role::Follower { leader: None })
+                ToReactor::Leader(l) => {
+                    if self.leads() {
+                        // What it ran as leader may be blocklisted next.
+                        self.lead_gen.set(self.lead_gen.get() + 1);
+                    }
+                    self.role.set(Role::Follower {
+                        leader: match l {
+                            Leading::Other(a) => Some(a),
+                            _ => None,
+                        },
+                    })
                 }
             }
         }
@@ -677,16 +722,26 @@ impl Meta {
     ) {
         // The client for volume operations, connected on first use to this
         // member, which serves the map (and redirects the rest).
-        let client: Rc<RefCell<Option<Rc<hyperstor_client::Client>>>> = Rc::default();
-        let connect = move |client: Rc<RefCell<Option<Rc<hyperstor_client::Client>>>>| async move {
-            if let Some(c) = client.borrow().clone() {
-                return Ok(c);
+        // A new one each time this member gains or loses the lead (D125):
+        // what still runs keeps the old one, which the next leader may
+        // blocklist.
+        type Cached = Rc<RefCell<Option<(u64, Rc<hyperstor_client::Client>)>>>;
+        let client: Cached = Rc::default();
+        let me = self.clone();
+        let connect = move |client: Cached| {
+            let generation = me.lead_gen.get();
+            async move {
+                if let Some((g, c)) = client.borrow().clone()
+                    && g == generation
+                {
+                    return Ok(c);
+                }
+                let c = hyperstor_client::Client::connect(map_address, 0)
+                    .await
+                    .map_err(volume_fault)?;
+                *client.borrow_mut() = Some((generation, c.clone()));
+                Ok::<_, (VolumeFault, String)>(c)
             }
-            let c = hyperstor_client::Client::connect(map_address, 0)
-                .await
-                .map_err(volume_fault)?;
-            *client.borrow_mut() = Some(c.clone());
-            Ok::<_, (VolumeFault, String)>(c)
         };
         while let Some(req) = rx.recv().await {
             match req {
@@ -758,6 +813,32 @@ impl Meta {
                             c.expand_volume(id, size).await.map_err(volume_fault)
                         };
                         let _ = reply.send(r.await);
+                    });
+                }
+                Admin::Lead(reply) => {
+                    let (me, c) = (self.clone(), connect(client.clone()));
+                    hyperstor_reactor::spawn(async move {
+                        let lead = match me.lead(0) {
+                            Lead::Leader { .. } => match c.await {
+                                // Read after connecting: the lead may have
+                                // changed meanwhile.
+                                Ok(c) => me.lead(c.instance),
+                                Err(_) => Lead::Follower,
+                            },
+                            l => l,
+                        };
+                        let _ = reply.send(lead);
+                    });
+                }
+                Admin::Blocklist { instance, reply } => {
+                    let me = self.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let r = match me.blocklist(instance).await {
+                            hyperstor_proto::Msg::BlocklistOk { map_epoch } => Ok(map_epoch),
+                            hyperstor_proto::Msg::Error { detail, .. } => Err(detail),
+                            m => Err(format!("unexpected {m:?}")),
+                        };
+                        let _ = reply.send(r);
                     });
                 }
                 Admin::Leads(reply) => {

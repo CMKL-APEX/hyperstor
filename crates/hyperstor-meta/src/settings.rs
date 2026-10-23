@@ -112,6 +112,19 @@ impl Settings {
         self.put("audit/days", days.to_string().as_bytes())
     }
 
+    /// The client instance the last leader to fence ran operations as
+    /// (D125), if any did.
+    pub fn ops_instance(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .get("operations/instance")?
+            .and_then(|v| String::from_utf8_lossy(&v).trim().parse().ok()))
+    }
+
+    /// Records the instance this leader runs operations as. Only the leader.
+    pub fn set_ops_instance(&self, instance: u64) -> Result<(), Error> {
+        self.put("operations/instance", instance.to_string().as_bytes())
+    }
+
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         let txn = self
             .0
@@ -171,5 +184,8 @@ mod tests {
         s.set_audit_days(30).unwrap();
         assert_eq!(s.audit_days().unwrap(), 30);
         assert_eq!(OnFull::parse("drop"), None);
+        assert_eq!(s.ops_instance().unwrap(), None);
+        s.set_ops_instance(u64::MAX).unwrap();
+        assert_eq!(s.ops_instance().unwrap(), Some(u64::MAX));
     }
 }
