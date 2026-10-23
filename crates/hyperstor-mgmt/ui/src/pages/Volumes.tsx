@@ -4,7 +4,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { cluster } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, input, parseSize, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll } from "../ui";
 
 type Dialog =
   | { kind: "create" }
@@ -94,7 +94,7 @@ export default function Volumes() {
               </option>
             ))}
           </select>
-          {can("store") && picked.length > 1 && <Button onClick={() => show({ kind: "group", ids: picked })}>Snapshot together</Button>}
+          {can("operate") && picked.length > 1 && <Button onClick={() => show({ kind: "group", ids: picked })}>Snapshot together</Button>}
           {can("store") && (
             <Button kind="primary" onClick={() => show({ kind: "create" })}>
               Create volume
@@ -126,9 +126,9 @@ export default function Volumes() {
               <td className={`${td} text-xs`}>{v.attachedBy || "–"}</td>
               <td className={`${td} flex gap-2`}>
                 <Button onClick={() => setOpen(open === v.id ? null : v.id)}>{open === v.id ? "Hide snapshots" : "Snapshots"}</Button>
+                {can("operate") && <Button onClick={() => show({ kind: "snapshot", v })}>Snapshot</Button>}
                 {can("store") && (
                   <>
-                    <Button onClick={() => show({ kind: "snapshot", v })}>Snapshot</Button>
                     <Button onClick={() => show({ kind: "flatten", v })}>Flatten</Button>
                     <Button kind="danger" onClick={() => show({ kind: "delete", v })}>
                       Delete
@@ -173,13 +173,19 @@ export default function Volumes() {
       {dialog?.kind === "delete" && (
         <ActionDialog
           title={`Delete volume ${dialog.v.name || dialog.v.id}`}
-          submit="Delete"
+          submit="Move to the trash"
           kind="danger"
           cli={`delete-volume --id ${dialog.v.id}${force ? " --force" : ""}`}
-          run={() => cluster.deleteVolume({ id: dialog.v.id, force })}
+          run={async () => {
+            const r = await cluster.deleteVolume({ id: dialog.v.id, force });
+            setNotice(`Moved to the trash: purged ${fmtTime(r.purgeUnix)} unless restored (Trash).`);
+          }}
           onClose={close}
         >
-          <p className="text-sm">Its data is deleted and can't be brought back. This needs a login of the last 10 minutes.</p>
+          <p className="text-sm">
+            It goes to the trash with its snapshots, and stays there for the pool's grace period (a day by default):
+            restore it from the Trash page until then. This needs a login of the last 10 minutes.
+          </p>
           {dialog.v.attachedBy && (
             <label className="text-sm flex gap-2 items-center">
               <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
@@ -227,25 +233,25 @@ export default function Volumes() {
       {dialog?.kind === "deleteSnap" && (
         <ActionDialog
           title={`Delete snapshot ${dialog.s.name || String(dialog.s.epoch)}`}
-          submit="Delete"
+          submit="Move to the trash"
           kind="danger"
           cli={`snapshot delete --id ${dialog.v.id} --epoch ${String(dialog.s.epoch)}`}
           run={() => cluster.deleteSnapshot({ id: dialog.v.id, epoch: dialog.s.epoch })}
           onClose={close}
         >
-          <p className="text-sm">Refused while a clone or a rollback depends on it.</p>
+          <p className="text-sm">It goes to the trash until the pool's grace period ends. Refused while a clone or a rollback depends on it.</p>
         </ActionDialog>
       )}
       {dialog?.kind === "deleteGroup" && (
         <ActionDialog
           title={`Delete group ${dialog.group}`}
-          submit="Delete"
+          submit="Move to the trash"
           kind="danger"
           cli={`snapshot group-delete --group ${dialog.group}`}
           run={() => cluster.deleteGroupSnapshot({ group: dialog.group })}
           onClose={close}
         >
-          <p className="text-sm">Every snapshot of the group is deleted.</p>
+          <p className="text-sm">Every snapshot of the group goes to the trash.</p>
         </ActionDialog>
       )}
       {dialog?.kind === "clone" && (

@@ -35,6 +35,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod admin;
+mod trash;
 pub use admin::{Signing, parse_token};
 
 struct Api {
@@ -683,13 +684,17 @@ impl ClusterService for Api {
             "DeleteVolume",
             &target,
             &match &r {
-                Some(Ok(())) => "ok".into(),
+                Some(Ok(_)) => "ok, to the trash".into(),
                 Some(Err((_, e))) => format!("failed: {e}"),
                 None => "failed: map service stopped".into(),
             },
         );
-        volume_result(r)?;
-        Ok(pb::DeleteVolumeResponse::default().into())
+        let v = volume_result(r)?;
+        Ok(pb::DeleteVolumeResponse {
+            purge_unix: self.purge_at(v.pool, v.trashed_unix),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn list_snapshots(
@@ -756,8 +761,12 @@ impl ClusterService for Api {
         let epoch = req.epoch;
         let target = format!("volume {id:032x} snapshot {epoch}");
         let op = crate::SnapOp::Delete { id, epoch };
-        self.snap(&ctx, "DeleteSnapshot", target, true, op).await?;
-        Ok(pb::DeleteSnapshotResponse::default().into())
+        let done = self.snap(&ctx, "DeleteSnapshot", target, true, op).await?;
+        Ok(pb::DeleteSnapshotResponse {
+            purge_unix: self.purge_of(&done),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn clone_volume(
@@ -878,15 +887,20 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::DeleteGroupSnapshotResponse> {
         let group = parse_volume_id(req.group)?;
         let op = crate::SnapOp::DeleteGroup { group };
-        self.snap(
-            &ctx,
-            "DeleteGroupSnapshot",
-            format!("group {group:032x}"),
-            true,
-            op,
-        )
-        .await?;
-        Ok(pb::DeleteGroupSnapshotResponse::default().into())
+        let done = self
+            .snap(
+                &ctx,
+                "DeleteGroupSnapshot",
+                format!("group {group:032x}"),
+                true,
+                op,
+            )
+            .await?;
+        Ok(pb::DeleteGroupSnapshotResponse {
+            purge_unix: self.purge_of(&done),
+            ..Default::default()
+        }
+        .into())
     }
 }
 
@@ -938,6 +952,20 @@ impl Api {
     }
 }
 
+impl Api {
+    /// When the last of what a delete trashed is purged.
+    fn purge_of(&self, d: &crate::SnapDone) -> u64 {
+        match d {
+            crate::SnapDone::Trashed(v) => v
+                .iter()
+                .map(|(pool, _, s)| self.purge_at(*pool, s.trashed_unix))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+}
+
 fn unexpected_done(d: crate::SnapDone) -> ConnectError {
     ConnectError::internal(format!("unexpected result {d:?}"))
 }
@@ -961,6 +989,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         state: match v.state {
             crate::VolumeState::Active => "active",
             crate::VolumeState::Deleting => "deleting",
+            crate::VolumeState::Trashed => "trashed",
         }
         .into(),
         version: v.version,
@@ -1059,6 +1088,7 @@ pub fn spawn(
                     admin: admin::State::new(signing, root, api_address),
                 });
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
+                let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
                 let router = admin::register(api, router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {

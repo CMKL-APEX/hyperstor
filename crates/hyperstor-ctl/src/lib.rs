@@ -221,7 +221,45 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("OperationService.GetOperation", "op get, op watch"),
     ("OperationService.ListOperations", "op list"),
     ("OperationService.CancelOperation", "op cancel"),
+    ("TrashService.ListTrash", "trash list"),
+    ("TrashService.RestoreFromTrash", "trash restore"),
+    ("TrashService.PurgeFromTrash", "trash purge"),
+    ("TrashService.GetTrashSettings", "trash settings"),
+    (
+        "TrashService.SetTrashSettings",
+        "trash settings --grace S --on-full keep|purge",
+    ),
 ];
+
+/// `trash list` as a table: what, which volume, name, pool, when it went,
+/// when it's purged.
+pub fn trash_text(r: &pb::ListTrashResponse) -> String {
+    if r.items.is_empty() {
+        return "The trash is empty.\n".into();
+    }
+    let mut t = format!(
+        "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
+        "KIND", "VOLUME", "EPOCH", "NAME", "POOL", "TRASHED", "PURGED"
+    );
+    for i in &r.items {
+        let epoch = if i.kind == "snapshot" {
+            i.epoch.to_string()
+        } else {
+            "-".into()
+        };
+        t.push_str(&format!(
+            "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
+            i.kind,
+            i.id,
+            epoch,
+            if i.name.is_empty() { "-" } else { &i.name },
+            i.pool,
+            utc(i.trashed_unix),
+            utc(i.purge_unix)
+        ));
+    }
+    t
+}
 
 /// `Service.Rpc` for every RPC in the proto files' text.
 pub fn rpcs_in(proto: &str) -> Vec<String> {

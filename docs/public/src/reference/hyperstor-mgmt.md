@@ -58,15 +58,16 @@ first login makes an account with no roles. What a role allows:
 | Role | May |
 |---|---|
 | `viewer` | Read: status, PGs, volumes, snapshots, operations, members, the dashboard |
-| `operator` | Also take devices out and in, drain nodes, cancel operations |
-| `storage-admin` | Also create and delete volumes, snapshots and clones, roll volumes back, add and remove members |
+| `operator` | Also take devices out and in, drain nodes, cancel operations, take snapshots, restore from the trash |
+| `storage-admin` | Also create and delete volumes and snapshots, clones, roll volumes back, purge the trash and set its grace periods, add and remove members |
 | `security-admin` | People and their roles, join tokens, certificates, map backups; nothing else |
 
 Everyone may make API tokens for themselves. Deleting a volume, a
-snapshot or a member, rolling a volume back, making a join token or an
-API token, revoking a certificate, fetching a map backup, and changing
-people's roles need a login of the last 10 minutes; an API token is
-never fresh enough for these.
+snapshot or a member, rolling a volume back, purging the trash or
+changing its grace period, making a join token or an API token, revoking
+a certificate, fetching a map backup, and changing people's roles need a
+login of the last 10 minutes; an API token is never fresh enough for
+these.
 
 **The first security administrator.** While no one is one, the service
 prints a claim code to its log (`journalctl -u hyperstor-mgmt`), valid

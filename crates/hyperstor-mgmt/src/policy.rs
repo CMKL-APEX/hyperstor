@@ -7,7 +7,8 @@
 //!   is in the group of the role that allows it ([`ACTIONS`]); a test
 //!   fails when an RPC of the protos has no row.
 //! - Roles: `viewer` reads; `operator` also drains, takes devices out and
-//!   in, and cancels operations; `storage-admin` also manages volumes and
+//!   in, cancels operations, takes snapshots and restores from the trash
+//!   (D114); `storage-admin` also manages volumes and
 //!   members; `security-admin` manages people, tokens, certificates and
 //!   backups, and nothing else.
 //! - Step-up: what is hard to undo (deleting volumes, snapshots and
@@ -42,6 +43,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.ListPgs", Group::Read, false),
     ("ClusterService.ListVolumes", Group::Read, false),
     ("ClusterService.ListSnapshots", Group::Read, false),
+    ("TrashService.ListTrash", Group::Read, false),
+    ("TrashService.GetTrashSettings", Group::Read, false),
     ("OperationService.GetOperation", Group::Read, false),
     ("OperationService.ListOperations", Group::Read, false),
     ("MemberService.ListMembers", Group::Read, false),
@@ -49,15 +52,20 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("NodeService.DrainNode", Group::Operate, false),
     ("OperationService.CancelOperation", Group::Operate, false),
+    // Operators protect data before maintenance and undo a mistaken
+    // delete (D114).
+    ("ClusterService.CreateSnapshot", Group::Operate, false),
+    ("ClusterService.CreateGroupSnapshot", Group::Operate, false),
+    ("TrashService.RestoreFromTrash", Group::Operate, false),
     ("ClusterService.CreateVolume", Group::Store, false),
     ("ClusterService.DeleteVolume", Group::Store, true),
-    ("ClusterService.CreateSnapshot", Group::Store, false),
     ("ClusterService.DeleteSnapshot", Group::Store, true),
     ("ClusterService.CloneVolume", Group::Store, false),
     ("ClusterService.RollbackVolume", Group::Store, true),
     ("ClusterService.FlattenVolume", Group::Store, false),
-    ("ClusterService.CreateGroupSnapshot", Group::Store, false),
     ("ClusterService.DeleteGroupSnapshot", Group::Store, true),
+    ("TrashService.PurgeFromTrash", Group::Store, true),
+    ("TrashService.SetTrashSettings", Group::Store, true),
     ("MemberService.AddMember", Group::Store, false),
     ("MemberService.RemoveMember", Group::Store, true),
     ("TokenService.CreateToken", Group::Secure, true),

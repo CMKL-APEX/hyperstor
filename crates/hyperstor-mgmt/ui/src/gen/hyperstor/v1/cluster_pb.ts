@@ -15,7 +15,535 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/cluster.proto.
  */
 export const file_hyperstor_v1_cluster: GenFile = /*@__PURE__*/
-  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIhIKEEdldFN0YXR1c1JlcXVlc3Qi9wEKEUdldFN0YXR1c1Jlc3BvbnNlEh4KCmNsdXN0ZXJfaWQYASABKAlSCmNsdXN0ZXJfaWQSDQoFZXBvY2gYAiABKAQSJAoGaGVhbHRoGAMgASgOMhQuaHlwZXJzdG9yLnYxLkhlYWx0aBIlCgdyZWFzb25zGAQgAygLMhQuaHlwZXJzdG9yLnYxLlJlYXNvbhIhCgVub2RlcxgFIAMoCzISLmh5cGVyc3Rvci52MS5Ob2RlEiEKBXBvb2xzGAYgAygLMhIuaHlwZXJzdG9yLnYxLlBvb2wSIAoLbWFwX2FkZHJlc3MYByABKAlSC21hcF9hZGRyZXNzIjsKBlJlYXNvbhIjCgVsZXZlbBgBIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSDAoEdGV4dBgCIAEoCSKQAQoETm9kZRIKCgJpZBgBIAEoDRIMCgRyYWNrGAIgASgNEgoKAnVwGAMgASgIEiUKB2RldmljZXMYBCADKAsyFC5oeXBlcnN0b3IudjEuRGV2aWNlEikKDWxhc3RfaGVhcmRfbXMYBSABKARIAFINbGFzdF9oZWFyZF9tc4gBAUIQCg5fbGFzdF9oZWFyZF9tcyJXCgZEZXZpY2USCgoCaWQYASABKA0SDAoEYWRkchgCIAEoCRIUCgV1cF9pbhgDIAEoCFIFdXBfaW4SDgoGd2VpZ2h0GAQgASgBEg0KBWNsYXNzGAUgASgJIskBCgRQb29sEgoKAmlkGAEgASgNEgwKBG5hbWUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRzaXplGAQgASgNEhoKCG1pbl9zaXplGAUgASgNUghtaW5fc2l6ZRIaCghwZ19jb3VudBgGIAEoDVIIcGdfY291bnQSHgoKY2h1bmtfc2l6ZRgHIAEoDVIKY2h1bmtfc2l6ZRIOCgZkb21haW4YCCABKAkSIwoDcGdzGAkgASgLMhYuaHlwZXJzdG9yLnYxLlBnQ291bnRzIlIKCFBnQ291bnRzEg0KBWNsZWFuGAEgASgNEhAKCGRlZ3JhZGVkGAIgASgNEhMKC2JhY2tmaWxsaW5nGAMgASgNEhAKCGluYWN0aXZlGAQgASgNIh4KDkxpc3RQZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0iMAoPTGlzdFBnc1Jlc3BvbnNlEh0KA3BncxgBIAMoCzIQLmh5cGVyc3Rvci52MS5QZyJJCgJQZxIMCgRwb29sGAEgASgNEgoKAnBnGAIgASgNEg0KBWVwb2NoGAMgASgEEg4KBmFjdGluZxgEIAMoDRIKCgJ1cBgFIAMoDSI6ChJTZXREZXZpY2VJblJlcXVlc3QSDgoGZGV2aWNlGAEgASgNEhQKBXVwX2luGAIgASgIUgV1cF9pbiIzChNTZXREZXZpY2VJblJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoIoABCgZWb2x1bWUSCgoCaWQYASABKAkSDAoEcG9vbBgCIAEoDRIMCgRzaXplGAMgASgEEgwKBG5hbWUYBCABKAkSDQoFc3RhdGUYBSABKAkSDwoHdmVyc2lvbhgGIAEoBBIgCgthdHRhY2hlZF9ieRgHIAEoCVILYXR0YWNoZWRfYnkiIgoSTGlzdFZvbHVtZXNSZXF1ZXN0EgwKBHBvb2wYASABKA0iPAoTTGlzdFZvbHVtZXNSZXNwb25zZRIlCgd2b2x1bWVzGAEgAygLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJLChNDcmVhdGVWb2x1bWVSZXF1ZXN0EgwKBHBvb2wYASABKA0SDAoEc2l6ZRgCIAEoBBIMCgRuYW1lGAMgASgJEgoKAmlkGAQgASgJIjwKFENyZWF0ZVZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiMAoTRGVsZXRlVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVmb3JjZRgCIAEoCCIWChREZWxldGVWb2x1bWVSZXNwb25zZSJFCghTbmFwc2hvdBINCgVlcG9jaBgBIAEoBBIMCgRuYW1lGAIgASgJEg0KBWdyb3VwGAMgASgJEg0KBXN0YXRlGAQgASgJIiIKFExpc3RTbmFwc2hvdHNSZXF1ZXN0EgoKAmlkGAEgASgJIkIKFUxpc3RTbmFwc2hvdHNSZXNwb25zZRIpCglzbmFwc2hvdHMYASADKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiMQoVQ3JlYXRlU25hcHNob3RSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkiQgoWQ3JlYXRlU25hcHNob3RSZXNwb25zZRIoCghzbmFwc2hvdBgBIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCIyChVEZWxldGVTbmFwc2hvdFJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQiGAoWRGVsZXRlU25hcHNob3RSZXNwb25zZSJVChJDbG9uZVZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQSDAoEbmFtZRgDIAEoCRIWCgZuZXdfaWQYBCABKAlSBm5ld19pZCI7ChNDbG9uZVZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiMgoVUm9sbGJhY2tWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWVwb2NoGAIgASgEIj4KFlJvbGxiYWNrVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSIiChRGbGF0dGVuVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCSI9ChVGbGF0dGVuVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSI3ChpDcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBILCgNpZHMYASADKAkSDAoEbmFtZRgCIAEoCSJDCgtHcm91cE1lbWJlchIKCgJpZBgBIAEoCRIoCghzbmFwc2hvdBgCIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCJYChtDcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USDQoFZ3JvdXAYASABKAkSKgoHbWVtYmVycxgCIAMoCzIZLmh5cGVyc3Rvci52MS5Hcm91cE1lbWJlciIrChpEZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBINCgVncm91cBgBIAEoCSIdChtEZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2UqUgoGSGVhbHRoEhYKEkhFQUxUSF9VTlNQRUNJRklFRBAAEg0KCUhFQUxUSF9PSxABEg8KC0hFQUxUSF9XQVJOEAISEAoMSEVBTFRIX0VSUk9SEAMy8wkKDkNsdXN0ZXJTZXJ2aWNlEkwKCUdldFN0YXR1cxIeLmh5cGVyc3Rvci52MS5HZXRTdGF0dXNSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1Jlc3BvbnNlEkYKB0xpc3RQZ3MSHC5oeXBlcnN0b3IudjEuTGlzdFBnc1JlcXVlc3QaHS5oeXBlcnN0b3IudjEuTGlzdFBnc1Jlc3BvbnNlElIKC1NldERldmljZUluEiAuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVxdWVzdBohLmh5cGVyc3Rvci52MS5TZXREZXZpY2VJblJlc3BvbnNlElIKC0xpc3RWb2x1bWVzEiAuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVxdWVzdBohLmh5cGVyc3Rvci52MS5MaXN0Vm9sdW1lc1Jlc3BvbnNlElUKDENyZWF0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5DcmVhdGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlc3BvbnNlElUKDERlbGV0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5EZWxldGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlc3BvbnNlElgKDUxpc3RTbmFwc2hvdHMSIi5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1JlcXVlc3QaIy5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1Jlc3BvbnNlElsKDkNyZWF0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5DcmVhdGVTbmFwc2hvdFJlc3BvbnNlElsKDkRlbGV0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5EZWxldGVTbmFwc2hvdFJlc3BvbnNlElIKC0Nsb25lVm9sdW1lEiAuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DbG9uZVZvbHVtZVJlc3BvbnNlElsKDlJvbGxiYWNrVm9sdW1lEiMuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVxdWVzdBokLmh5cGVyc3Rvci52MS5Sb2xsYmFja1ZvbHVtZVJlc3BvbnNlElgKDUZsYXR0ZW5Wb2x1bWUSIi5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlcXVlc3QaIy5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlc3BvbnNlEmoKE0NyZWF0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEmoKE0RlbGV0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlYgZwcm90bzM");
+  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIrEBCglUcmFzaEl0ZW0SDAoEa2luZBgBIAEoCRIKCgJpZBgCIAEoCRINCgVlcG9jaBgDIAEoBBIMCgRuYW1lGAQgASgJEgwKBHBvb2wYBSABKA0SDAoEc2l6ZRgGIAEoBBIiCgx0cmFzaGVkX3VuaXgYByABKARSDHRyYXNoZWRfdW5peBIeCgpwdXJnZV91bml4GAggASgEUgpwdXJnZV91bml4Eg0KBWdyb3VwGAkgASgJIiAKEExpc3RUcmFzaFJlcXVlc3QSDAoEcG9vbBgBIAEoDSI7ChFMaXN0VHJhc2hSZXNwb25zZRImCgVpdGVtcxgBIAMoCzIXLmh5cGVyc3Rvci52MS5UcmFzaEl0ZW0iUQoXUmVzdG9yZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBARIMCgRuYW1lGAMgASgJQggKBl9lcG9jaCJAChhSZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJBChVQdXJnZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBAUIICgZfZXBvY2giGAoWUHVyZ2VGcm9tVHJhc2hSZXNwb25zZSInChdHZXRUcmFzaFNldHRpbmdzUmVxdWVzdBIMCgRwb29sGAEgASgNImcKF1NldFRyYXNoU2V0dGluZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0SJAoNZ3JhY2Vfc2Vjb25kcxgCIAEoBFINZ3JhY2Vfc2Vjb25kcxIYCgdvbl9mdWxsGAMgASgJUgdvbl9mdWxsIl0KDVRyYXNoU2V0dGluZ3MSDAoEcG9vbBgBIAEoDRIkCg1ncmFjZV9zZWNvbmRzGAIgASgEUg1ncmFjZV9zZWNvbmRzEhgKB29uX2Z1bGwYAyABKAlSB29uX2Z1bGwiSQoYR2V0VHJhc2hTZXR0aW5nc1Jlc3BvbnNlEi0KCHNldHRpbmdzGAEgASgLMhsuaHlwZXJzdG9yLnYxLlRyYXNoU2V0dGluZ3MiSQoYU2V0VHJhc2hTZXR0aW5nc1Jlc3BvbnNlEi0KCHNldHRpbmdzGAEgASgLMhsuaHlwZXJzdG9yLnYxLlRyYXNoU2V0dGluZ3MiEgoQR2V0U3RhdHVzUmVxdWVzdCL3AQoRR2V0U3RhdHVzUmVzcG9uc2USHgoKY2x1c3Rlcl9pZBgBIAEoCVIKY2x1c3Rlcl9pZBINCgVlcG9jaBgCIAEoBBIkCgZoZWFsdGgYAyABKA4yFC5oeXBlcnN0b3IudjEuSGVhbHRoEiUKB3JlYXNvbnMYBCADKAsyFC5oeXBlcnN0b3IudjEuUmVhc29uEiEKBW5vZGVzGAUgAygLMhIuaHlwZXJzdG9yLnYxLk5vZGUSIQoFcG9vbHMYBiADKAsyEi5oeXBlcnN0b3IudjEuUG9vbBIgCgttYXBfYWRkcmVzcxgHIAEoCVILbWFwX2FkZHJlc3MiOwoGUmVhc29uEiMKBWxldmVsGAEgASgOMhQuaHlwZXJzdG9yLnYxLkhlYWx0aBIMCgR0ZXh0GAIgASgJIpABCgROb2RlEgoKAmlkGAEgASgNEgwKBHJhY2sYAiABKA0SCgoCdXAYAyABKAgSJQoHZGV2aWNlcxgEIAMoCzIULmh5cGVyc3Rvci52MS5EZXZpY2USKQoNbGFzdF9oZWFyZF9tcxgFIAEoBEgAUg1sYXN0X2hlYXJkX21ziAEBQhAKDl9sYXN0X2hlYXJkX21zIlcKBkRldmljZRIKCgJpZBgBIAEoDRIMCgRhZGRyGAIgASgJEhQKBXVwX2luGAMgASgIUgV1cF9pbhIOCgZ3ZWlnaHQYBCABKAESDQoFY2xhc3MYBSABKAkiyQEKBFBvb2wSCgoCaWQYASABKA0SDAoEbmFtZRgCIAEoCRIMCgRraW5kGAMgASgJEgwKBHNpemUYBCABKA0SGgoIbWluX3NpemUYBSABKA1SCG1pbl9zaXplEhoKCHBnX2NvdW50GAYgASgNUghwZ19jb3VudBIeCgpjaHVua19zaXplGAcgASgNUgpjaHVua19zaXplEg4KBmRvbWFpbhgIIAEoCRIjCgNwZ3MYCSABKAsyFi5oeXBlcnN0b3IudjEuUGdDb3VudHMiUgoIUGdDb3VudHMSDQoFY2xlYW4YASABKA0SEAoIZGVncmFkZWQYAiABKA0SEwoLYmFja2ZpbGxpbmcYAyABKA0SEAoIaW5hY3RpdmUYBCABKA0iHgoOTGlzdFBnc1JlcXVlc3QSDAoEcG9vbBgBIAEoDSIwCg9MaXN0UGdzUmVzcG9uc2USHQoDcGdzGAEgAygLMhAuaHlwZXJzdG9yLnYxLlBnIkkKAlBnEgwKBHBvb2wYASABKA0SCgoCcGcYAiABKA0SDQoFZXBvY2gYAyABKAQSDgoGYWN0aW5nGAQgAygNEgoKAnVwGAUgAygNIjoKElNldERldmljZUluUmVxdWVzdBIOCgZkZXZpY2UYASABKA0SFAoFdXBfaW4YAiABKAhSBXVwX2luIjMKE1NldERldmljZUluUmVzcG9uc2USHAoJbWFwX2Vwb2NoGAEgASgEUgltYXBfZXBvY2gigAEKBlZvbHVtZRIKCgJpZBgBIAEoCRIMCgRwb29sGAIgASgNEgwKBHNpemUYAyABKAQSDAoEbmFtZRgEIAEoCRINCgVzdGF0ZRgFIAEoCRIPCgd2ZXJzaW9uGAYgASgEEiAKC2F0dGFjaGVkX2J5GAcgASgJUgthdHRhY2hlZF9ieSIiChJMaXN0Vm9sdW1lc1JlcXVlc3QSDAoEcG9vbBgBIAEoDSI8ChNMaXN0Vm9sdW1lc1Jlc3BvbnNlEiUKB3ZvbHVtZXMYASADKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIksKE0NyZWF0ZVZvbHVtZVJlcXVlc3QSDAoEcG9vbBgBIAEoDRIMCgRzaXplGAIgASgEEgwKBG5hbWUYAyABKAkSCgoCaWQYBCABKAkiPAoUQ3JlYXRlVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSIwChNEZWxldGVWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWZvcmNlGAIgASgIIjYKFERlbGV0ZVZvbHVtZVJlc3BvbnNlEh4KCnB1cmdlX3VuaXgYASABKARSCnB1cmdlX3VuaXgiRQoIU25hcHNob3QSDQoFZXBvY2gYASABKAQSDAoEbmFtZRgCIAEoCRINCgVncm91cBgDIAEoCRINCgVzdGF0ZRgEIAEoCSIiChRMaXN0U25hcHNob3RzUmVxdWVzdBIKCgJpZBgBIAEoCSJCChVMaXN0U25hcHNob3RzUmVzcG9uc2USKQoJc25hcHNob3RzGAEgAygLMhYuaHlwZXJzdG9yLnYxLlNuYXBzaG90IjEKFUNyZWF0ZVNuYXBzaG90UmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJIkIKFkNyZWF0ZVNuYXBzaG90UmVzcG9uc2USKAoIc25hcHNob3QYASABKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiMgoVRGVsZXRlU25hcHNob3RSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWVwb2NoGAIgASgEIjgKFkRlbGV0ZVNuYXBzaG90UmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCJVChJDbG9uZVZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQSDAoEbmFtZRgDIAEoCRIWCgZuZXdfaWQYBCABKAlSBm5ld19pZCI7ChNDbG9uZVZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiMgoVUm9sbGJhY2tWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWVwb2NoGAIgASgEIj4KFlJvbGxiYWNrVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSIiChRGbGF0dGVuVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCSI9ChVGbGF0dGVuVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSI3ChpDcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBILCgNpZHMYASADKAkSDAoEbmFtZRgCIAEoCSJDCgtHcm91cE1lbWJlchIKCgJpZBgBIAEoCRIoCghzbmFwc2hvdBgCIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCJYChtDcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USDQoFZ3JvdXAYASABKAkSKgoHbWVtYmVycxgCIAMoCzIZLmh5cGVyc3Rvci52MS5Hcm91cE1lbWJlciIrChpEZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBINCgVncm91cBgBIAEoCSI9ChtEZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCpSCgZIZWFsdGgSFgoSSEVBTFRIX1VOU1BFQ0lGSUVEEAASDQoJSEVBTFRIX09LEAESDwoLSEVBTFRIX1dBUk4QAhIQCgxIRUFMVEhfRVJST1IQAzLzCQoOQ2x1c3RlclNlcnZpY2USTAoJR2V0U3RhdHVzEh4uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuR2V0U3RhdHVzUmVzcG9uc2USRgoHTGlzdFBncxIcLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVxdWVzdBodLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVzcG9uc2USUgoLU2V0RGV2aWNlSW4SIC5oeXBlcnN0b3IudjEuU2V0RGV2aWNlSW5SZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVzcG9uc2USUgoLTGlzdFZvbHVtZXMSIC5oeXBlcnN0b3IudjEuTGlzdFZvbHVtZXNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVzcG9uc2USVQoMQ3JlYXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuQ3JlYXRlVm9sdW1lUmVzcG9uc2USVQoMRGVsZXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuRGVsZXRlVm9sdW1lUmVzcG9uc2USWAoNTGlzdFNuYXBzaG90cxIiLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVxdWVzdBojLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVzcG9uc2USWwoOQ3JlYXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuQ3JlYXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVzcG9uc2USWwoORGVsZXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuRGVsZXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVzcG9uc2USUgoLQ2xvbmVWb2x1bWUSIC5oeXBlcnN0b3IudjEuQ2xvbmVWb2x1bWVSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVzcG9uc2USWwoOUm9sbGJhY2tWb2x1bWUSIy5oeXBlcnN0b3IudjEuUm9sbGJhY2tWb2x1bWVSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVzcG9uc2USWAoNRmxhdHRlblZvbHVtZRIiLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVxdWVzdBojLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVzcG9uc2USagoTQ3JlYXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USagoTRGVsZXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2Uy4gMKDFRyYXNoU2VydmljZRJMCglMaXN0VHJhc2gSHi5oeXBlcnN0b3IudjEuTGlzdFRyYXNoUmVxdWVzdBofLmh5cGVyc3Rvci52MS5MaXN0VHJhc2hSZXNwb25zZRJhChBSZXN0b3JlRnJvbVRyYXNoEiUuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXNwb25zZRJbCg5QdXJnZUZyb21UcmFzaBIjLmh5cGVyc3Rvci52MS5QdXJnZUZyb21UcmFzaFJlcXVlc3QaJC5oeXBlcnN0b3IudjEuUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRJhChBHZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXNwb25zZRJhChBTZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXNwb25zZWIGcHJvdG8z");
+
+/**
+ * Something in the trash: a volume (with its snapshots), or a snapshot
+ * of a volume that isn't.
+ *
+ * @generated from message hyperstor.v1.TrashItem
+ */
+export type TrashItem = Message<"hyperstor.v1.TrashItem"> & {
+  /**
+   * "volume" or "snapshot".
+   *
+   * @generated from field: string kind = 1;
+   */
+  kind: string;
+
+  /**
+   * The volume (32 hexadecimal digits).
+   *
+   * @generated from field: string id = 2;
+   */
+  id: string;
+
+  /**
+   * The snapshot's epoch; 0 for a volume.
+   *
+   * @generated from field: uint64 epoch = 3;
+   */
+  epoch: bigint;
+
+  /**
+   * @generated from field: string name = 4;
+   */
+  name: string;
+
+  /**
+   * @generated from field: uint32 pool = 5;
+   */
+  pool: number;
+
+  /**
+   * The volume's size in bytes.
+   *
+   * @generated from field: uint64 size = 6;
+   */
+  size: bigint;
+
+  /**
+   * @generated from field: uint64 trashed_unix = 7 [json_name = "trashed_unix"];
+   */
+  trashedUnix: bigint;
+
+  /**
+   * When the trash purges it (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 8 [json_name = "purge_unix"];
+   */
+  purgeUnix: bigint;
+
+  /**
+   * A snapshot's consistency group, if any.
+   *
+   * @generated from field: string group = 9;
+   */
+  group: string;
+};
+
+/**
+ * Something in the trash: a volume (with its snapshots), or a snapshot
+ * of a volume that isn't.
+ *
+ * @generated from message hyperstor.v1.TrashItem
+ */
+export type TrashItemJson = {
+  /**
+   * "volume" or "snapshot".
+   *
+   * @generated from field: string kind = 1;
+   */
+  kind?: string;
+
+  /**
+   * The volume (32 hexadecimal digits).
+   *
+   * @generated from field: string id = 2;
+   */
+  id?: string;
+
+  /**
+   * The snapshot's epoch; 0 for a volume.
+   *
+   * @generated from field: uint64 epoch = 3;
+   */
+  epoch?: string;
+
+  /**
+   * @generated from field: string name = 4;
+   */
+  name?: string;
+
+  /**
+   * @generated from field: uint32 pool = 5;
+   */
+  pool?: number;
+
+  /**
+   * The volume's size in bytes.
+   *
+   * @generated from field: uint64 size = 6;
+   */
+  size?: string;
+
+  /**
+   * @generated from field: uint64 trashed_unix = 7 [json_name = "trashed_unix"];
+   */
+  trashed_unix?: string;
+
+  /**
+   * When the trash purges it (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 8 [json_name = "purge_unix"];
+   */
+  purge_unix?: string;
+
+  /**
+   * A snapshot's consistency group, if any.
+   *
+   * @generated from field: string group = 9;
+   */
+  group?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.TrashItem.
+ * Use `create(TrashItemSchema)` to create a new message.
+ */
+export const TrashItemSchema: GenMessage<TrashItem, {jsonType: TrashItemJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 0);
+
+/**
+ * @generated from message hyperstor.v1.ListTrashRequest
+ */
+export type ListTrashRequest = Message<"hyperstor.v1.ListTrashRequest"> & {
+  /**
+   * 0: every data pool.
+   *
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+};
+
+/**
+ * @generated from message hyperstor.v1.ListTrashRequest
+ */
+export type ListTrashRequestJson = {
+  /**
+   * 0: every data pool.
+   *
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.ListTrashRequest.
+ * Use `create(ListTrashRequestSchema)` to create a new message.
+ */
+export const ListTrashRequestSchema: GenMessage<ListTrashRequest, {jsonType: ListTrashRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 1);
+
+/**
+ * @generated from message hyperstor.v1.ListTrashResponse
+ */
+export type ListTrashResponse = Message<"hyperstor.v1.ListTrashResponse"> & {
+  /**
+   * @generated from field: repeated hyperstor.v1.TrashItem items = 1;
+   */
+  items: TrashItem[];
+};
+
+/**
+ * @generated from message hyperstor.v1.ListTrashResponse
+ */
+export type ListTrashResponseJson = {
+  /**
+   * @generated from field: repeated hyperstor.v1.TrashItem items = 1;
+   */
+  items?: TrashItemJson[];
+};
+
+/**
+ * Describes the message hyperstor.v1.ListTrashResponse.
+ * Use `create(ListTrashResponseSchema)` to create a new message.
+ */
+export const ListTrashResponseSchema: GenMessage<ListTrashResponse, {jsonType: ListTrashResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 2);
+
+/**
+ * @generated from message hyperstor.v1.RestoreFromTrashRequest
+ */
+export type RestoreFromTrashRequest = Message<"hyperstor.v1.RestoreFromTrashRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * A snapshot of the volume; absent: the volume.
+   *
+   * @generated from field: optional uint64 epoch = 2;
+   */
+  epoch?: bigint | undefined;
+
+  /**
+   * The restored volume's name; empty: its own, or NAME-restored if
+   * another volume of the pool took it meanwhile.
+   *
+   * @generated from field: string name = 3;
+   */
+  name: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.RestoreFromTrashRequest
+ */
+export type RestoreFromTrashRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * A snapshot of the volume; absent: the volume.
+   *
+   * @generated from field: optional uint64 epoch = 2;
+   */
+  epoch?: string;
+
+  /**
+   * The restored volume's name; empty: its own, or NAME-restored if
+   * another volume of the pool took it meanwhile.
+   *
+   * @generated from field: string name = 3;
+   */
+  name?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.RestoreFromTrashRequest.
+ * Use `create(RestoreFromTrashRequestSchema)` to create a new message.
+ */
+export const RestoreFromTrashRequestSchema: GenMessage<RestoreFromTrashRequest, {jsonType: RestoreFromTrashRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 3);
+
+/**
+ * @generated from message hyperstor.v1.RestoreFromTrashResponse
+ */
+export type RestoreFromTrashResponse = Message<"hyperstor.v1.RestoreFromTrashResponse"> & {
+  /**
+   * The volume, as restored (or the one whose snapshot was).
+   *
+   * @generated from field: hyperstor.v1.Volume volume = 1;
+   */
+  volume?: Volume | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.RestoreFromTrashResponse
+ */
+export type RestoreFromTrashResponseJson = {
+  /**
+   * The volume, as restored (or the one whose snapshot was).
+   *
+   * @generated from field: hyperstor.v1.Volume volume = 1;
+   */
+  volume?: VolumeJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.RestoreFromTrashResponse.
+ * Use `create(RestoreFromTrashResponseSchema)` to create a new message.
+ */
+export const RestoreFromTrashResponseSchema: GenMessage<RestoreFromTrashResponse, {jsonType: RestoreFromTrashResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 4);
+
+/**
+ * @generated from message hyperstor.v1.PurgeFromTrashRequest
+ */
+export type PurgeFromTrashRequest = Message<"hyperstor.v1.PurgeFromTrashRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * A snapshot of the volume; absent: the volume.
+   *
+   * @generated from field: optional uint64 epoch = 2;
+   */
+  epoch?: bigint | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.PurgeFromTrashRequest
+ */
+export type PurgeFromTrashRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * A snapshot of the volume; absent: the volume.
+   *
+   * @generated from field: optional uint64 epoch = 2;
+   */
+  epoch?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.PurgeFromTrashRequest.
+ * Use `create(PurgeFromTrashRequestSchema)` to create a new message.
+ */
+export const PurgeFromTrashRequestSchema: GenMessage<PurgeFromTrashRequest, {jsonType: PurgeFromTrashRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 5);
+
+/**
+ * @generated from message hyperstor.v1.PurgeFromTrashResponse
+ */
+export type PurgeFromTrashResponse = Message<"hyperstor.v1.PurgeFromTrashResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.PurgeFromTrashResponse
+ */
+export type PurgeFromTrashResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.PurgeFromTrashResponse.
+ * Use `create(PurgeFromTrashResponseSchema)` to create a new message.
+ */
+export const PurgeFromTrashResponseSchema: GenMessage<PurgeFromTrashResponse, {jsonType: PurgeFromTrashResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 6);
+
+/**
+ * @generated from message hyperstor.v1.GetTrashSettingsRequest
+ */
+export type GetTrashSettingsRequest = Message<"hyperstor.v1.GetTrashSettingsRequest"> & {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+};
+
+/**
+ * @generated from message hyperstor.v1.GetTrashSettingsRequest
+ */
+export type GetTrashSettingsRequestJson = {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.GetTrashSettingsRequest.
+ * Use `create(GetTrashSettingsRequestSchema)` to create a new message.
+ */
+export const GetTrashSettingsRequestSchema: GenMessage<GetTrashSettingsRequest, {jsonType: GetTrashSettingsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 7);
+
+/**
+ * @generated from message hyperstor.v1.SetTrashSettingsRequest
+ */
+export type SetTrashSettingsRequest = Message<"hyperstor.v1.SetTrashSettingsRequest"> & {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+
+  /**
+   * Seconds a deleted volume or snapshot stays; 0 purges at once.
+   *
+   * @generated from field: uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+   */
+  graceSeconds: bigint;
+
+  /**
+   * "keep" or "purge": what a full pool does with its trash (D115;
+   * acts once pools have fullness thresholds, D27).
+   *
+   * @generated from field: string on_full = 3 [json_name = "on_full"];
+   */
+  onFull: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetTrashSettingsRequest
+ */
+export type SetTrashSettingsRequestJson = {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+
+  /**
+   * Seconds a deleted volume or snapshot stays; 0 purges at once.
+   *
+   * @generated from field: uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+   */
+  grace_seconds?: string;
+
+  /**
+   * "keep" or "purge": what a full pool does with its trash (D115;
+   * acts once pools have fullness thresholds, D27).
+   *
+   * @generated from field: string on_full = 3 [json_name = "on_full"];
+   */
+  on_full?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetTrashSettingsRequest.
+ * Use `create(SetTrashSettingsRequestSchema)` to create a new message.
+ */
+export const SetTrashSettingsRequestSchema: GenMessage<SetTrashSettingsRequest, {jsonType: SetTrashSettingsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 8);
+
+/**
+ * @generated from message hyperstor.v1.TrashSettings
+ */
+export type TrashSettings = Message<"hyperstor.v1.TrashSettings"> & {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+
+  /**
+   * @generated from field: uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+   */
+  graceSeconds: bigint;
+
+  /**
+   * @generated from field: string on_full = 3 [json_name = "on_full"];
+   */
+  onFull: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.TrashSettings
+ */
+export type TrashSettingsJson = {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+
+  /**
+   * @generated from field: uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+   */
+  grace_seconds?: string;
+
+  /**
+   * @generated from field: string on_full = 3 [json_name = "on_full"];
+   */
+  on_full?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.TrashSettings.
+ * Use `create(TrashSettingsSchema)` to create a new message.
+ */
+export const TrashSettingsSchema: GenMessage<TrashSettings, {jsonType: TrashSettingsJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 9);
+
+/**
+ * @generated from message hyperstor.v1.GetTrashSettingsResponse
+ */
+export type GetTrashSettingsResponse = Message<"hyperstor.v1.GetTrashSettingsResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.TrashSettings settings = 1;
+   */
+  settings?: TrashSettings | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.GetTrashSettingsResponse
+ */
+export type GetTrashSettingsResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.TrashSettings settings = 1;
+   */
+  settings?: TrashSettingsJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.GetTrashSettingsResponse.
+ * Use `create(GetTrashSettingsResponseSchema)` to create a new message.
+ */
+export const GetTrashSettingsResponseSchema: GenMessage<GetTrashSettingsResponse, {jsonType: GetTrashSettingsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 10);
+
+/**
+ * @generated from message hyperstor.v1.SetTrashSettingsResponse
+ */
+export type SetTrashSettingsResponse = Message<"hyperstor.v1.SetTrashSettingsResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.TrashSettings settings = 1;
+   */
+  settings?: TrashSettings | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetTrashSettingsResponse
+ */
+export type SetTrashSettingsResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.TrashSettings settings = 1;
+   */
+  settings?: TrashSettingsJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetTrashSettingsResponse.
+ * Use `create(SetTrashSettingsResponseSchema)` to create a new message.
+ */
+export const SetTrashSettingsResponseSchema: GenMessage<SetTrashSettingsResponse, {jsonType: SetTrashSettingsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 11);
 
 /**
  * @generated from message hyperstor.v1.GetStatusRequest
@@ -34,7 +562,7 @@ export type GetStatusRequestJson = {
  * Use `create(GetStatusRequestSchema)` to create a new message.
  */
 export const GetStatusRequestSchema: GenMessage<GetStatusRequest, {jsonType: GetStatusRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 0);
+  messageDesc(file_hyperstor_v1_cluster, 12);
 
 /**
  * @generated from message hyperstor.v1.GetStatusResponse
@@ -131,7 +659,7 @@ export type GetStatusResponseJson = {
  * Use `create(GetStatusResponseSchema)` to create a new message.
  */
 export const GetStatusResponseSchema: GenMessage<GetStatusResponse, {jsonType: GetStatusResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 1);
+  messageDesc(file_hyperstor_v1_cluster, 13);
 
 /**
  * @generated from message hyperstor.v1.Reason
@@ -168,7 +696,7 @@ export type ReasonJson = {
  * Use `create(ReasonSchema)` to create a new message.
  */
 export const ReasonSchema: GenMessage<Reason, {jsonType: ReasonJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 2);
+  messageDesc(file_hyperstor_v1_cluster, 14);
 
 /**
  * @generated from message hyperstor.v1.Node
@@ -245,7 +773,7 @@ export type NodeJson = {
  * Use `create(NodeSchema)` to create a new message.
  */
 export const NodeSchema: GenMessage<Node, {jsonType: NodeJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 3);
+  messageDesc(file_hyperstor_v1_cluster, 15);
 
 /**
  * @generated from message hyperstor.v1.Device
@@ -320,7 +848,7 @@ export type DeviceJson = {
  * Use `create(DeviceSchema)` to create a new message.
  */
 export const DeviceSchema: GenMessage<Device, {jsonType: DeviceJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 4);
+  messageDesc(file_hyperstor_v1_cluster, 16);
 
 /**
  * @generated from message hyperstor.v1.Pool
@@ -435,7 +963,7 @@ export type PoolJson = {
  * Use `create(PoolSchema)` to create a new message.
  */
 export const PoolSchema: GenMessage<Pool, {jsonType: PoolJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 5);
+  messageDesc(file_hyperstor_v1_cluster, 17);
 
 /**
  * Each PG is counted once, under its worst state.
@@ -512,7 +1040,7 @@ export type PgCountsJson = {
  * Use `create(PgCountsSchema)` to create a new message.
  */
 export const PgCountsSchema: GenMessage<PgCounts, {jsonType: PgCountsJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 6);
+  messageDesc(file_hyperstor_v1_cluster, 18);
 
 /**
  * @generated from message hyperstor.v1.ListPgsRequest
@@ -539,7 +1067,7 @@ export type ListPgsRequestJson = {
  * Use `create(ListPgsRequestSchema)` to create a new message.
  */
 export const ListPgsRequestSchema: GenMessage<ListPgsRequest, {jsonType: ListPgsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 7);
+  messageDesc(file_hyperstor_v1_cluster, 19);
 
 /**
  * @generated from message hyperstor.v1.ListPgsResponse
@@ -566,7 +1094,7 @@ export type ListPgsResponseJson = {
  * Use `create(ListPgsResponseSchema)` to create a new message.
  */
 export const ListPgsResponseSchema: GenMessage<ListPgsResponse, {jsonType: ListPgsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 8);
+  messageDesc(file_hyperstor_v1_cluster, 20);
 
 /**
  * @generated from message hyperstor.v1.Pg
@@ -645,7 +1173,7 @@ export type PgJson = {
  * Use `create(PgSchema)` to create a new message.
  */
 export const PgSchema: GenMessage<Pg, {jsonType: PgJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 9);
+  messageDesc(file_hyperstor_v1_cluster, 21);
 
 /**
  * @generated from message hyperstor.v1.SetDeviceInRequest
@@ -682,7 +1210,7 @@ export type SetDeviceInRequestJson = {
  * Use `create(SetDeviceInRequestSchema)` to create a new message.
  */
 export const SetDeviceInRequestSchema: GenMessage<SetDeviceInRequest, {jsonType: SetDeviceInRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 10);
+  messageDesc(file_hyperstor_v1_cluster, 22);
 
 /**
  * @generated from message hyperstor.v1.SetDeviceInResponse
@@ -713,7 +1241,7 @@ export type SetDeviceInResponseJson = {
  * Use `create(SetDeviceInResponseSchema)` to create a new message.
  */
 export const SetDeviceInResponseSchema: GenMessage<SetDeviceInResponse, {jsonType: SetDeviceInResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 11);
+  messageDesc(file_hyperstor_v1_cluster, 23);
 
 /**
  * @generated from message hyperstor.v1.Volume
@@ -826,7 +1354,7 @@ export type VolumeJson = {
  * Use `create(VolumeSchema)` to create a new message.
  */
 export const VolumeSchema: GenMessage<Volume, {jsonType: VolumeJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 12);
+  messageDesc(file_hyperstor_v1_cluster, 24);
 
 /**
  * @generated from message hyperstor.v1.ListVolumesRequest
@@ -853,7 +1381,7 @@ export type ListVolumesRequestJson = {
  * Use `create(ListVolumesRequestSchema)` to create a new message.
  */
 export const ListVolumesRequestSchema: GenMessage<ListVolumesRequest, {jsonType: ListVolumesRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 13);
+  messageDesc(file_hyperstor_v1_cluster, 25);
 
 /**
  * @generated from message hyperstor.v1.ListVolumesResponse
@@ -880,7 +1408,7 @@ export type ListVolumesResponseJson = {
  * Use `create(ListVolumesResponseSchema)` to create a new message.
  */
 export const ListVolumesResponseSchema: GenMessage<ListVolumesResponse, {jsonType: ListVolumesResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 14);
+  messageDesc(file_hyperstor_v1_cluster, 26);
 
 /**
  * @generated from message hyperstor.v1.CreateVolumeRequest
@@ -949,7 +1477,7 @@ export type CreateVolumeRequestJson = {
  * Use `create(CreateVolumeRequestSchema)` to create a new message.
  */
 export const CreateVolumeRequestSchema: GenMessage<CreateVolumeRequest, {jsonType: CreateVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 15);
+  messageDesc(file_hyperstor_v1_cluster, 27);
 
 /**
  * @generated from message hyperstor.v1.CreateVolumeResponse
@@ -976,7 +1504,7 @@ export type CreateVolumeResponseJson = {
  * Use `create(CreateVolumeResponseSchema)` to create a new message.
  */
 export const CreateVolumeResponseSchema: GenMessage<CreateVolumeResponse, {jsonType: CreateVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 16);
+  messageDesc(file_hyperstor_v1_cluster, 28);
 
 /**
  * @generated from message hyperstor.v1.DeleteVolumeRequest
@@ -1019,18 +1547,30 @@ export type DeleteVolumeRequestJson = {
  * Use `create(DeleteVolumeRequestSchema)` to create a new message.
  */
 export const DeleteVolumeRequestSchema: GenMessage<DeleteVolumeRequest, {jsonType: DeleteVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 17);
+  messageDesc(file_hyperstor_v1_cluster, 29);
 
 /**
  * @generated from message hyperstor.v1.DeleteVolumeResponse
  */
 export type DeleteVolumeResponse = Message<"hyperstor.v1.DeleteVolumeResponse"> & {
+  /**
+   * When the trash purges it, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purgeUnix: bigint;
 };
 
 /**
  * @generated from message hyperstor.v1.DeleteVolumeResponse
  */
 export type DeleteVolumeResponseJson = {
+  /**
+   * When the trash purges it, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purge_unix?: string;
 };
 
 /**
@@ -1038,7 +1578,7 @@ export type DeleteVolumeResponseJson = {
  * Use `create(DeleteVolumeResponseSchema)` to create a new message.
  */
 export const DeleteVolumeResponseSchema: GenMessage<DeleteVolumeResponse, {jsonType: DeleteVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 18);
+  messageDesc(file_hyperstor_v1_cluster, 30);
 
 /**
  * @generated from message hyperstor.v1.Snapshot
@@ -1109,7 +1649,7 @@ export type SnapshotJson = {
  * Use `create(SnapshotSchema)` to create a new message.
  */
 export const SnapshotSchema: GenMessage<Snapshot, {jsonType: SnapshotJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 19);
+  messageDesc(file_hyperstor_v1_cluster, 31);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsRequest
@@ -1140,7 +1680,7 @@ export type ListSnapshotsRequestJson = {
  * Use `create(ListSnapshotsRequestSchema)` to create a new message.
  */
 export const ListSnapshotsRequestSchema: GenMessage<ListSnapshotsRequest, {jsonType: ListSnapshotsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 20);
+  messageDesc(file_hyperstor_v1_cluster, 32);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsResponse
@@ -1167,7 +1707,7 @@ export type ListSnapshotsResponseJson = {
  * Use `create(ListSnapshotsResponseSchema)` to create a new message.
  */
 export const ListSnapshotsResponseSchema: GenMessage<ListSnapshotsResponse, {jsonType: ListSnapshotsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 21);
+  messageDesc(file_hyperstor_v1_cluster, 33);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotRequest
@@ -1204,7 +1744,7 @@ export type CreateSnapshotRequestJson = {
  * Use `create(CreateSnapshotRequestSchema)` to create a new message.
  */
 export const CreateSnapshotRequestSchema: GenMessage<CreateSnapshotRequest, {jsonType: CreateSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 22);
+  messageDesc(file_hyperstor_v1_cluster, 34);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotResponse
@@ -1231,7 +1771,7 @@ export type CreateSnapshotResponseJson = {
  * Use `create(CreateSnapshotResponseSchema)` to create a new message.
  */
 export const CreateSnapshotResponseSchema: GenMessage<CreateSnapshotResponse, {jsonType: CreateSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 23);
+  messageDesc(file_hyperstor_v1_cluster, 35);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotRequest
@@ -1268,18 +1808,30 @@ export type DeleteSnapshotRequestJson = {
  * Use `create(DeleteSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteSnapshotRequestSchema: GenMessage<DeleteSnapshotRequest, {jsonType: DeleteSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 24);
+  messageDesc(file_hyperstor_v1_cluster, 36);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotResponse
  */
 export type DeleteSnapshotResponse = Message<"hyperstor.v1.DeleteSnapshotResponse"> & {
+  /**
+   * When the trash purges it, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purgeUnix: bigint;
 };
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotResponse
  */
 export type DeleteSnapshotResponseJson = {
+  /**
+   * When the trash purges it, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purge_unix?: string;
 };
 
 /**
@@ -1287,7 +1839,7 @@ export type DeleteSnapshotResponseJson = {
  * Use `create(DeleteSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteSnapshotResponseSchema: GenMessage<DeleteSnapshotResponse, {jsonType: DeleteSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 25);
+  messageDesc(file_hyperstor_v1_cluster, 37);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeRequest
@@ -1352,7 +1904,7 @@ export type CloneVolumeRequestJson = {
  * Use `create(CloneVolumeRequestSchema)` to create a new message.
  */
 export const CloneVolumeRequestSchema: GenMessage<CloneVolumeRequest, {jsonType: CloneVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 26);
+  messageDesc(file_hyperstor_v1_cluster, 38);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeResponse
@@ -1379,7 +1931,7 @@ export type CloneVolumeResponseJson = {
  * Use `create(CloneVolumeResponseSchema)` to create a new message.
  */
 export const CloneVolumeResponseSchema: GenMessage<CloneVolumeResponse, {jsonType: CloneVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 27);
+  messageDesc(file_hyperstor_v1_cluster, 39);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeRequest
@@ -1416,7 +1968,7 @@ export type RollbackVolumeRequestJson = {
  * Use `create(RollbackVolumeRequestSchema)` to create a new message.
  */
 export const RollbackVolumeRequestSchema: GenMessage<RollbackVolumeRequest, {jsonType: RollbackVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 28);
+  messageDesc(file_hyperstor_v1_cluster, 40);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeResponse
@@ -1443,7 +1995,7 @@ export type RollbackVolumeResponseJson = {
  * Use `create(RollbackVolumeResponseSchema)` to create a new message.
  */
 export const RollbackVolumeResponseSchema: GenMessage<RollbackVolumeResponse, {jsonType: RollbackVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 29);
+  messageDesc(file_hyperstor_v1_cluster, 41);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeRequest
@@ -1470,7 +2022,7 @@ export type FlattenVolumeRequestJson = {
  * Use `create(FlattenVolumeRequestSchema)` to create a new message.
  */
 export const FlattenVolumeRequestSchema: GenMessage<FlattenVolumeRequest, {jsonType: FlattenVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 30);
+  messageDesc(file_hyperstor_v1_cluster, 42);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeResponse
@@ -1497,7 +2049,7 @@ export type FlattenVolumeResponseJson = {
  * Use `create(FlattenVolumeResponseSchema)` to create a new message.
  */
 export const FlattenVolumeResponseSchema: GenMessage<FlattenVolumeResponse, {jsonType: FlattenVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 31);
+  messageDesc(file_hyperstor_v1_cluster, 43);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotRequest
@@ -1534,7 +2086,7 @@ export type CreateGroupSnapshotRequestJson = {
  * Use `create(CreateGroupSnapshotRequestSchema)` to create a new message.
  */
 export const CreateGroupSnapshotRequestSchema: GenMessage<CreateGroupSnapshotRequest, {jsonType: CreateGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 32);
+  messageDesc(file_hyperstor_v1_cluster, 44);
 
 /**
  * @generated from message hyperstor.v1.GroupMember
@@ -1571,7 +2123,7 @@ export type GroupMemberJson = {
  * Use `create(GroupMemberSchema)` to create a new message.
  */
 export const GroupMemberSchema: GenMessage<GroupMember, {jsonType: GroupMemberJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 33);
+  messageDesc(file_hyperstor_v1_cluster, 45);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotResponse
@@ -1612,7 +2164,7 @@ export type CreateGroupSnapshotResponseJson = {
  * Use `create(CreateGroupSnapshotResponseSchema)` to create a new message.
  */
 export const CreateGroupSnapshotResponseSchema: GenMessage<CreateGroupSnapshotResponse, {jsonType: CreateGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 34);
+  messageDesc(file_hyperstor_v1_cluster, 46);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotRequest
@@ -1639,18 +2191,30 @@ export type DeleteGroupSnapshotRequestJson = {
  * Use `create(DeleteGroupSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotRequestSchema: GenMessage<DeleteGroupSnapshotRequest, {jsonType: DeleteGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 35);
+  messageDesc(file_hyperstor_v1_cluster, 47);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotResponse
  */
 export type DeleteGroupSnapshotResponse = Message<"hyperstor.v1.DeleteGroupSnapshotResponse"> & {
+  /**
+   * When the trash purges them, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purgeUnix: bigint;
 };
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotResponse
  */
 export type DeleteGroupSnapshotResponseJson = {
+  /**
+   * When the trash purges them, unless restored first (Unix seconds).
+   *
+   * @generated from field: uint64 purge_unix = 1 [json_name = "purge_unix"];
+   */
+  purge_unix?: string;
 };
 
 /**
@@ -1658,7 +2222,7 @@ export type DeleteGroupSnapshotResponseJson = {
  * Use `create(DeleteGroupSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotResponseSchema: GenMessage<DeleteGroupSnapshotResponse, {jsonType: DeleteGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 36);
+  messageDesc(file_hyperstor_v1_cluster, 48);
 
 /**
  * @generated from enum hyperstor.v1.Health
@@ -1759,7 +2323,8 @@ export const ClusterService: GenService<{
     output: typeof CreateVolumeResponseSchema;
   },
   /**
-   * Deletes a volume and its data. Write.
+   * Moves a volume to the trash (decisions.md D54): purged after its
+   * pool's grace period, or restored. Write.
    *
    * @generated from rpc hyperstor.v1.ClusterService.DeleteVolume
    */
@@ -1790,7 +2355,7 @@ export const ClusterService: GenService<{
     output: typeof CreateSnapshotResponseSchema;
   },
   /**
-   * Deletes a snapshot nothing depends on. Write.
+   * Moves a snapshot nothing depends on to the trash. Write.
    *
    * @generated from rpc hyperstor.v1.ClusterService.DeleteSnapshot
    */
@@ -1843,7 +2408,8 @@ export const ClusterService: GenService<{
     output: typeof CreateGroupSnapshotResponseSchema;
   },
   /**
-   * Deletes a group's snapshots, and the group. Write.
+   * Moves a group's snapshots to the trash; the group goes with the last
+   * of them. Write.
    *
    * @generated from rpc hyperstor.v1.ClusterService.DeleteGroupSnapshot
    */
@@ -1854,4 +2420,65 @@ export const ClusterService: GenService<{
   },
 }> = /*@__PURE__*/
   serviceDesc(file_hyperstor_v1_cluster, 0);
+
+/**
+ * The trash (administration.md §23.9.3, decisions.md D54, D115):
+ * deleted volumes and snapshots, kept for their pool's grace period.
+ *
+ * @generated from service hyperstor.v1.TrashService
+ */
+export const TrashService: GenService<{
+  /**
+   * What's in the trash, in a pool or every data pool. Read.
+   *
+   * @generated from rpc hyperstor.v1.TrashService.ListTrash
+   */
+  listTrash: {
+    methodKind: "unary";
+    input: typeof ListTrashRequestSchema;
+    output: typeof ListTrashResponseSchema;
+  },
+  /**
+   * Brings a volume or a snapshot back. Write (operators, D114).
+   *
+   * @generated from rpc hyperstor.v1.TrashService.RestoreFromTrash
+   */
+  restoreFromTrash: {
+    methodKind: "unary";
+    input: typeof RestoreFromTrashRequestSchema;
+    output: typeof RestoreFromTrashResponseSchema;
+  },
+  /**
+   * Deletes a volume or a snapshot in the trash for good, at once.
+   * Write (storage administrators, with a fresh login).
+   *
+   * @generated from rpc hyperstor.v1.TrashService.PurgeFromTrash
+   */
+  purgeFromTrash: {
+    methodKind: "unary";
+    input: typeof PurgeFromTrashRequestSchema;
+    output: typeof PurgeFromTrashResponseSchema;
+  },
+  /**
+   * A pool's grace period and what a full pool does with its trash. Read.
+   *
+   * @generated from rpc hyperstor.v1.TrashService.GetTrashSettings
+   */
+  getTrashSettings: {
+    methodKind: "unary";
+    input: typeof GetTrashSettingsRequestSchema;
+    output: typeof GetTrashSettingsResponseSchema;
+  },
+  /**
+   * Sets them. Write (storage administrators, with a fresh login).
+   *
+   * @generated from rpc hyperstor.v1.TrashService.SetTrashSettings
+   */
+  setTrashSettings: {
+    methodKind: "unary";
+    input: typeof SetTrashSettingsRequestSchema;
+    output: typeof SetTrashSettingsResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hyperstor_v1_cluster, 1);
 

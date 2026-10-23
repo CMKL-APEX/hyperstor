@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 ```
 
 | Command | Does |
@@ -15,12 +15,16 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `pgs` | One pool's PGs with their acting and up sets |
 | `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
 | `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
-| `delete-volume` | Deletes volume `--id` and its data; refused while it is attached, unless `--force` |
+| `delete-volume` | Moves volume `--id` (with its snapshots) to the trash, where it stays for its pool's grace period (a day by default); refused while it is attached, unless `--force`. Prints when it will be purged |
 | `snapshot list` | Volume `--id`'s snapshots: epoch, name, group and state |
 | `snapshot create` | Takes a snapshot of volume `--id`, named `--name`; an attached volume's client is paused for it (at most 2 s, else the snapshot is abandoned) |
-| `snapshot delete` | Deletes the snapshot at `--epoch` of volume `--id`; refused while a clone or rollback depends on it |
+| `snapshot delete` | Moves the snapshot at `--epoch` of volume `--id` to the trash; refused while a clone or rollback depends on it |
 | `snapshot group` | Takes a snapshot of every volume in `--ids` at one moment (a consistency group); prints the group and each snapshot |
-| `snapshot group-delete` | Deletes group `--group`'s snapshots, and the group |
+| `snapshot group-delete` | Moves group `--group`'s snapshots to the trash; the group goes with the last of them |
+| `trash list` | What's in the trash, in `--pool` or every pool: volumes and snapshots, when each was deleted and when it will be purged |
+| `trash restore` | Brings volume `--id` back (or its snapshot at `--epoch`), as `--name` if given, else under its own name, or `NAME-restored` if another volume took it meanwhile. Operators may |
+| `trash purge` | Deletes volume `--id` (or its snapshot at `--epoch`) from the trash for good, at once |
+| `trash settings` | Shows `--pool`'s grace period and what a full pool does with its trash; with `--grace` or `--on-full`, sets them |
 | `clone-volume` | Creates a volume from the snapshot at `--epoch` of volume `--id`, sharing its data, named `--name`, with `--new-id` or a random id |
 | `rollback-volume` | Rolls volume `--id` (detached) back to its snapshot at `--epoch` |
 | `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted |
@@ -60,10 +64,12 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
 | `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique |
 | `--id ID` | | `delete-volume` and the snapshot commands: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
-| `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`: the snapshot, by the epoch `snapshot list` shows |
+| `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`: the snapshot, by the epoch `snapshot list` shows. `trash restore`, `trash purge`: a snapshot in the trash; without it, the volume |
 | `--ids ID,ID...` | | `snapshot group`: the volumes, comma-separated |
 | `--group G` | | `snapshot group-delete`: the group, as `snapshot group` printed it |
 | `--new-id ID` | random | `clone-volume`: the clone's id (32 hex digits) |
+| `--grace SECS` | | `trash settings`: how long a deleted volume or snapshot stays in the trash; 0 purges at once; at most a year |
+| `--on-full keep\|purge` | `keep` | `trash settings`: what a full pool does with its trash (purge the oldest first, or keep it). Acts once pools have fullness thresholds |
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |

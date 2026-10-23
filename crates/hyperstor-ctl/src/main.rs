@@ -2,7 +2,7 @@
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
-//!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]`
+//!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
 //! (spec/administration.md §23.5, §23.6):
@@ -26,6 +26,12 @@
 //!   --group G` deletes a group's; `clone-volume --id ID --epoch E [--name
 //!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
 //!   `flatten-volume --id ID` (§10.4);
+//! - `delete-volume`, `snapshot delete` and `snapshot group-delete` move
+//!   to the trash (D54): `trash list [--pool P]`; `trash restore --id ID
+//!   [--epoch E] [--name N]` brings a volume (or its snapshot at E) back,
+//!   as N if given; `trash purge --id ID [--epoch E]` deletes it for good;
+//!   `trash settings [--pool P] [--grace SECS] [--on-full keep|purge]`
+//!   shows or sets how long a pool keeps it (default a day);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
@@ -81,13 +87,13 @@ use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
     CaServiceClient, ClusterServiceClient, MapServiceClient, MemberServiceClient,
-    NodeServiceClient, OperationServiceClient, TokenServiceClient,
+    NodeServiceClient, OperationServiceClient, TokenServiceClient, TrashServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|trash list|trash restore|trash purge|trash settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -151,6 +157,9 @@ struct Args {
     ids: Vec<String>,
     group: Option<String>,
     new_id: Option<String>,
+    /// `trash settings`: the grace period, and what a full pool does.
+    grace: Option<u64>,
+    on_full: Option<String>,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -197,6 +206,8 @@ fn main() {
         ids: Vec::new(),
         group: None,
         new_id: None,
+        grace: None,
+        on_full: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -257,6 +268,17 @@ fn main() {
             }
             "--group" => a.group = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--new-id" => a.new_id = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--grace" => {
+                a.grace = Some(
+                    it.next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--on-full" => match it.next().map(String::as_str) {
+                Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
+                _ => usage(),
+            },
             "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "drain" | "clone-volume"
             | "rollback-volume" | "flatten-volume"
@@ -265,7 +287,7 @@ fn main() {
                 cmd = Some(arg.clone())
             }
             // Two words: the group, then what to do.
-            "token" | "op" | "cert" | "map" | "member" | "snapshot" if cmd.is_none() => {
+            "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" if cmd.is_none() => {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
@@ -276,6 +298,7 @@ fn main() {
                         sub,
                         Some("list" | "create" | "delete" | "group" | "group-delete")
                     ),
+                    "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -307,13 +330,18 @@ fn main() {
             | "clone-volume"
             | "rollback-volume"
             | "flatten-volume"
+            | "trash restore"
+            | "trash purge"
     );
+    // A trashed snapshot, or the volume when there's no epoch.
+    let may_epoch = matches!(cmd.as_str(), "trash restore" | "trash purge");
     // The snapshot commands' own flags, and only theirs.
     let needs_epoch = matches!(
         cmd.as_str(),
         "snapshot delete" | "clone-volume" | "rollback-volume"
     );
-    if needs_epoch != a.epoch.is_some()
+    if (needs_epoch != a.epoch.is_some() && !may_epoch)
+        || ((a.grace.is_some() || a.on_full.is_some()) && cmd != "trash settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
         || (a.new_id.is_some() && cmd != "clone-volume")
@@ -581,6 +609,7 @@ where
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
+        "trash" => return trash(TrashServiceClient::new(transport, config), cmd, a).await,
         "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
             return snapshots(ClusterServiceClient::new(transport, config), cmd, a).await;
         }
@@ -714,8 +743,12 @@ where
                 })
                 .await
             {
-                Ok(_) => {
-                    println!("volume {id} deleted");
+                Ok(r) => {
+                    // To the trash (D54), not gone.
+                    println!(
+                        "volume {id} moved to the trash: purged at {} unless restored (hyperstorctl trash restore --id {id})",
+                        hyperstor_ctl::utc(r.into_owned().purge_unix)
+                    );
                     Next::Exit(0)
                 }
                 // Its reason and exit status as every other refusal's.
@@ -881,6 +914,109 @@ where
 
 /// `snapshot list|create|delete|group|group-delete`, `clone-volume`,
 /// `rollback-volume`, `flatten-volume` (volumes.md §10.3, §10.4).
+/// The trash (D54): what's in it, restore, purge, a pool's settings.
+async fn trash<T>(
+    client: TrashServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let id = || a.id.clone().unwrap_or_default();
+    let what = || match a.epoch {
+        Some(e) => format!("snapshot {e} of volume {}", id()),
+        None => format!("volume {}", id()),
+    };
+    Ok(match cmd {
+        "trash list" => {
+            let r = client
+                .list_trash(pb::ListTrashRequest {
+                    pool: a.pool.unwrap_or(0),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || hyperstor_ctl::trash_text(&r));
+            Next::Exit(0)
+        }
+        "trash restore" => {
+            let r = client
+                .restore_from_trash(pb::RestoreFromTrashRequest {
+                    id: id(),
+                    epoch: a.epoch,
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || {
+                let v = r.volume.as_option().cloned().unwrap_or_default();
+                match a.epoch {
+                    Some(_) => format!("{} restored\n", what()),
+                    None => format!("volume {} restored as {:?}\n", v.id, v.name),
+                }
+            });
+            Next::Exit(0)
+        }
+        "trash purge" => {
+            client
+                .purge_from_trash(pb::PurgeFromTrashRequest {
+                    id: id(),
+                    epoch: a.epoch,
+                    ..Default::default()
+                })
+                .await?;
+            println!("{} purged: its data is gone", what());
+            Next::Exit(0)
+        }
+        "trash settings" => {
+            let pool = a.pool.unwrap_or(1);
+            let s = if a.grace.is_some() || a.on_full.is_some() {
+                let now = client
+                    .get_trash_settings(pb::GetTrashSettingsRequest {
+                        pool,
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned()
+                    .settings
+                    .into_option()
+                    .unwrap_or_default();
+                client
+                    .set_trash_settings(pb::SetTrashSettingsRequest {
+                        pool,
+                        grace_seconds: a.grace.unwrap_or(now.grace_seconds),
+                        on_full: a.on_full.clone().unwrap_or_default(),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned()
+                    .settings
+            } else {
+                client
+                    .get_trash_settings(pb::GetTrashSettingsRequest {
+                        pool,
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned()
+                    .settings
+            };
+            let s = s.into_option().unwrap_or_default();
+            show(a, &s, || {
+                format!(
+                    "pool {}: kept {} s in the trash; a full pool would {} it (once pools have fullness thresholds, D27)\n",
+                    s.pool, s.grace_seconds, s.on_full
+                )
+            });
+            Next::Exit(0)
+        }
+        _ => unreachable!("checked with the arguments"),
+    })
+}
+
 async fn snapshots<T>(
     client: ClusterServiceClient<T>,
     cmd: &str,
@@ -924,14 +1060,19 @@ where
             Next::Exit(0)
         }
         "snapshot delete" => {
-            client
+            let r = client
                 .delete_snapshot(pb::DeleteSnapshotRequest {
                     id: id(),
                     epoch,
                     ..Default::default()
                 })
-                .await?;
-            println!("snapshot {epoch} of volume {} deleted", id());
+                .await?
+                .into_owned();
+            println!(
+                "snapshot {epoch} of volume {} moved to the trash: purged at {} unless restored",
+                id(),
+                hyperstor_ctl::utc(r.purge_unix)
+            );
             Next::Exit(0)
         }
         "snapshot group" => {
@@ -955,13 +1096,17 @@ where
         }
         "snapshot group-delete" => {
             let g = a.group.clone().unwrap_or_default();
-            client
+            let r = client
                 .delete_group_snapshot(pb::DeleteGroupSnapshotRequest {
                     group: g.clone(),
                     ..Default::default()
                 })
-                .await?;
-            println!("group {g} deleted");
+                .await?
+                .into_owned();
+            println!(
+                "group {g}'s snapshots moved to the trash: purged at {} unless restored",
+                hyperstor_ctl::utc(r.purge_unix)
+            );
             Next::Exit(0)
         }
         "clone-volume" => {

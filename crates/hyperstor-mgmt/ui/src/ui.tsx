@@ -197,6 +197,8 @@ export function ActionDialog({
 const GROUPS: Record<string, string[]> = {
   read: ["viewer", "operator", "storage-admin"],
   operate: ["operator", "storage-admin"],
+  // Taking snapshots and restoring from the trash are the operator's too
+  // (D114): the server decides; this only hides what it would refuse.
   store: ["storage-admin"],
   secure: ["security-admin"],
 };

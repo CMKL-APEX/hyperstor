@@ -82,13 +82,36 @@ test("volumes and snapshots", async ({ page }) => {
   await expect(page.getByTestId("volume-web-clone")).toBeVisible();
   // A snapshot a clone depends on can't go: the API's reason shows.
   await page.getByTestId("snapshot-s1").getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText("in_use");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
-  // The clone goes.
+  // The clone goes, to the trash.
   await page.getByTestId("volume-web-clone").getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
   await expect(page.getByTestId("volume-web-clone")).toHaveCount(0);
+  await expect(page.getByText(/Moved to the trash: purged/)).toBeVisible();
+});
+
+test("the trash restores and purges", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Trash" }).click();
+  const row = page.getByTestId("trash-web-clone");
+  await expect(row).toContainText("volume");
+  await expect(page.getByTestId("trash-settings-1")).toContainText("kept 24 h");
+  // Restored: back among the volumes.
+  await row.getByRole("button", { name: "Restore" }).click();
+  await expect(page.getByRole("dialog")).toContainText("hyperstorctl trash restore --id");
+  await page.getByRole("dialog").getByRole("button", { name: "Restore" }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-web-clone")).toBeVisible();
+  // Deleted again, then purged at once.
+  await page.getByTestId("volume-web-clone").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
+  await page.getByRole("link", { name: "Trash" }).click();
+  await row.getByRole("button", { name: "Purge now" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Purge now" }).click();
+  await expect(page.getByText("The trash is empty.")).toBeVisible();
 });
 
 test("an API token is shown once", async ({ page }) => {

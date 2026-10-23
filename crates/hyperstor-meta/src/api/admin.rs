@@ -57,6 +57,9 @@ pub struct Signing {
     pub mgmt: Option<Arc<crate::mgmt_store::MgmtStore>>,
     /// Member changes (D87); none without `--data`.
     pub members: Option<tokio::sync::mpsc::UnboundedSender<crate::replica::MemberOp>>,
+    /// The cluster's settings, the trash's among them (D54, D115); none
+    /// without `--data` (then the defaults).
+    pub settings: Option<Arc<crate::settings::Settings>>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -136,11 +139,41 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn invalid(msg: impl Into<String>, reason: &str) -> ConnectError {
+pub(super) fn invalid(msg: impl Into<String>, reason: &str) -> ConnectError {
     with_reason(ConnectError::invalid_argument(msg.into()), reason)
 }
 
 impl Api {
+    /// Pool `pool`'s trash settings: the store's, else the defaults.
+    pub(super) fn trash_settings(&self, pool: u32) -> crate::settings::Trash {
+        self.admin
+            .signing
+            .as_ref()
+            .and_then(|s| s.settings.as_ref())
+            .and_then(|s| s.trash(pool).ok())
+            .unwrap_or_default()
+    }
+
+    /// The settings store, for a write.
+    pub(super) fn settings_store(&self) -> Result<Arc<crate::settings::Settings>, ConnectError> {
+        self.admin
+            .signing
+            .as_ref()
+            .and_then(|s| s.settings.clone())
+            .ok_or_else(|| {
+                with_reason(
+                    ConnectError::failed_precondition(
+                        "this map service keeps no store (no --data)",
+                    ),
+                    "no_store",
+                )
+            })
+    }
+
+    pub(super) async fn store_error(&self, e: TokenError) -> ConnectError {
+        self.token_error(e).await
+    }
+
     fn signing(&self) -> Result<(&Signing, &str), ConnectError> {
         match (&self.admin.signing, &self.admin.root) {
             (Some(s), Some(r)) => Ok((s, r)),

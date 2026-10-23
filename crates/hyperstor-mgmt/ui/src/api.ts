@@ -8,7 +8,7 @@ import { Code, ConnectError, createClient, type Client, type Interceptor } from 
 import { createConnectTransport } from "@connectrpc/connect-web";
 import type { DescService } from "@bufbuild/protobuf";
 import { csrfToken, setCsrf, withSession, type AuthApi, type HttpError, type WhoAmIBase } from "@glidex/ui-kit";
-import { ClusterService } from "./gen/hyperstor/v1/cluster_pb";
+import { ClusterService, TrashService } from "./gen/hyperstor/v1/cluster_pb";
 import {
   CaService,
   ErrorInfoSchema,
@@ -82,6 +82,7 @@ export const ca = client(CaService);
 export const members = client(MemberService);
 export const nodes = client(NodeService);
 export const ops = client(OperationService);
+export const trash = client(TrashService);
 
 /** mgmt's own JSON routes. */
 async function call<T>(method: string, path: string, body?: unknown, quiet401 = false): Promise<T> {

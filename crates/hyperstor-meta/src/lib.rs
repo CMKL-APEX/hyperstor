@@ -13,6 +13,7 @@ pub mod certs;
 pub mod health;
 pub mod mgmt_store;
 pub mod replica;
+pub mod settings;
 pub mod store;
 pub mod tokens;
 
@@ -52,11 +53,17 @@ pub enum Admin {
         id: Option<u128>,
         reply: VolumeReply<Volume>,
     },
+    /// Moves a volume to the trash (D54): replies with it as trashed.
     DeleteVolume {
         id: u128,
         /// Even if attached: preempts the holder (D80).
         force: bool,
-        reply: VolumeReply<()>,
+        reply: VolumeReply<Volume>,
+    },
+    /// The trash: what's in it, restore, purge (administration.md §23.9.3).
+    Trash {
+        op: TrashOp,
+        reply: VolumeReply<TrashDone>,
     },
     /// Snapshots, clones, rollback, flatten and groups (volumes.md §10.3,
     /// §10.4), as a client of `.meta`.
@@ -131,10 +138,81 @@ pub enum SnapOp {
     },
 }
 
+/// A trash operation of the cluster API ([`Admin::Trash`]); `epoch`
+/// names a snapshot, none the volume itself.
+#[derive(Debug, Clone)]
+pub enum TrashOp {
+    /// What's in the trash, in `pool` or every data pool.
+    List {
+        pool: Option<u32>,
+    },
+    Restore {
+        id: u128,
+        epoch: Option<u64>,
+        name: Option<String>,
+    },
+    Purge {
+        id: u128,
+        epoch: Option<u64>,
+    },
+}
+
+/// What a [`TrashOp`] gives back.
+#[derive(Debug, Clone)]
+pub enum TrashDone {
+    Items(Vec<hyperstor_client::trash::Trashed>),
+    Volume(Volume),
+    Snapshot(Snapshot),
+    Done,
+}
+
+async fn run_trash_op(
+    c: std::rc::Rc<hyperstor_client::Client>,
+    op: TrashOp,
+) -> Result<TrashDone, hyperstor_client::ClientError> {
+    Ok(match op {
+        TrashOp::List { pool } => {
+            let pools: Vec<u32> = match pool {
+                Some(p) => vec![p],
+                None => c
+                    .map()
+                    .pools
+                    .keys()
+                    .copied()
+                    .filter(|p| *p != META_POOL)
+                    .collect(),
+            };
+            let mut items = Vec::new();
+            for p in pools {
+                items.extend(hyperstor_client::trash::trash_of(&c.list_volumes(p).await?));
+            }
+            TrashDone::Items(items)
+        }
+        TrashOp::Restore {
+            id,
+            epoch: None,
+            name,
+        } => TrashDone::Volume(c.restore_volume(id, name.as_deref()).await?),
+        TrashOp::Restore {
+            id, epoch: Some(e), ..
+        } => TrashDone::Snapshot(c.restore_snapshot(id, e).await?),
+        TrashOp::Purge { id, epoch: None } => {
+            c.purge_volume(id).await?;
+            TrashDone::Done
+        }
+        TrashOp::Purge { id, epoch: Some(e) } => {
+            c.purge_snapshot(id, e).await?;
+            TrashDone::Done
+        }
+    })
+}
+
 /// What a [`SnapOp`] gives back.
 #[derive(Debug, Clone)]
 pub enum SnapDone {
     Snapshots(Vec<Snapshot>),
+    /// Moved to the trash: each (pool, volume, snapshot).
+    Trashed(Vec<(u32, u128, Snapshot)>),
     Snapshot(Snapshot),
     Volume(Volume),
     Group(u128, Vec<(u128, Snapshot)>),
@@ -147,16 +225,23 @@ async fn run_snap_op(
 ) -> Result<SnapDone, hyperstor_client::ClientError> {
     use hyperstor_client::ClientError;
     Ok(match op {
+        // What's in the trash isn't listed (D54).
         SnapOp::List { id } => SnapDone::Snapshots(
             c.volume(id)
                 .await?
+                .filter(|v| v.state != VolumeState::Trashed)
                 .ok_or(ClientError::NoVolume(id))?
-                .snapshots,
+                .snapshots
+                .into_iter()
+                .filter(|s| s.trashed_unix == 0)
+                .collect(),
         ),
         SnapOp::Create { id, name } => SnapDone::Snapshot(c.snapshot(id, &name).await?),
+        // To the trash (D54); purged later.
         SnapOp::Delete { id, epoch } => {
-            c.delete_snapshot(id, epoch).await?;
-            SnapDone::Done
+            let s = c.trash_snapshot(id, epoch).await?;
+            let pool = c.volume(id).await?.map_or(0, |v| v.pool);
+            SnapDone::Trashed(vec![(pool, id, s)])
         }
         SnapOp::Clone {
             id,
@@ -171,8 +256,12 @@ async fn run_snap_op(
             SnapDone::Group(g, s)
         }
         SnapOp::DeleteGroup { group } => {
-            c.delete_group(group).await?;
-            SnapDone::Done
+            let mut out = Vec::new();
+            for (id, s) in c.trash_group(group).await? {
+                let pool = c.volume(id).await?.map_or(0, |v| v.pool);
+                out.push((pool, id, s));
+            }
+            SnapDone::Trashed(out)
         }
     })
 }
@@ -611,7 +700,13 @@ impl Meta {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            c.list_volumes(pool).await.map_err(volume_fault)
+                            // What's in the trash isn't listed (D54).
+                            Ok(c.list_volumes(pool)
+                                .await
+                                .map_err(volume_fault)?
+                                .into_iter()
+                                .filter(|v| v.state != VolumeState::Trashed)
+                                .collect())
                         };
                         let _ = reply.send(r.await);
                     });
@@ -652,6 +747,17 @@ impl Meta {
                 } => {
                     let _ = reply.send(self.drain(node, dry_run));
                 }
+                Admin::Trash { op, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            run_trash_op(c, op).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
                 Admin::Snapshots { op, reply } => {
                     let c = connect(client.clone());
                     hyperstor_reactor::spawn(async move {
@@ -669,12 +775,7 @@ impl Meta {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            if force {
-                                c.force_delete_volume(id).await
-                            } else {
-                                c.delete_volume(id).await
-                            }
-                            .map_err(volume_fault)
+                            c.trash_volume(id, force).await.map_err(volume_fault)
                         };
                         let _ = reply.send(r.await);
                     });
@@ -685,6 +786,79 @@ impl Meta {
 
     pub fn lease(&self) -> Duration {
         self.lease
+    }
+
+    /// Empties the trash (D54): every `every`, while this member leads, each
+    /// data pool's volumes and snapshots whose grace (`settings`, else the
+    /// default day) has passed are purged, as a client of `.meta` at
+    /// `map_address`. Failures are logged and tried again next time.
+    pub async fn purger(
+        self: Rc<Self>,
+        map_address: SocketAddr,
+        settings: Option<std::sync::Arc<settings::Settings>>,
+        every: Duration,
+    ) {
+        use hyperstor_client::trash::{Trashed, now_unix, trash_of};
+        let mut client: Option<Rc<hyperstor_client::Client>> = None;
+        loop {
+            sleep(every).await;
+            if !self.leads() {
+                continue;
+            }
+            let c = match &client {
+                Some(c) => c.clone(),
+                None => match hyperstor_client::Client::connect(map_address, 0).await {
+                    Ok(c) => {
+                        client = Some(c.clone());
+                        c
+                    }
+                    Err(_) => continue,
+                },
+            };
+            if c.refresh_map().await.is_err() {
+                continue;
+            }
+            let pools: Vec<u32> = c
+                .map()
+                .pools
+                .keys()
+                .copied()
+                .filter(|p| *p != META_POOL)
+                .collect();
+            for pool in pools {
+                let grace = settings
+                    .as_ref()
+                    .and_then(|s| s.trash(pool).ok())
+                    .unwrap_or_default()
+                    .grace_secs;
+                let Ok(volumes) = c.list_volumes(pool).await else {
+                    continue;
+                };
+                let now = now_unix();
+                for item in trash_of(&volumes) {
+                    if item.trashed_unix().saturating_add(grace) > now {
+                        continue;
+                    }
+                    let (target, r) = match &item {
+                        Trashed::Volume(v) => {
+                            (format!("volume {:032x}", v.id), c.purge_volume(v.id).await)
+                        }
+                        Trashed::Snapshot(v, s) => (
+                            format!("volume {:032x} snapshot {}", v.id, s.epoch),
+                            c.purge_snapshot(v.id, s.epoch).await,
+                        ),
+                    };
+                    let result = match &r {
+                        Ok(()) => format!("ok, after {grace} s in the trash"),
+                        Err(e) => format!("failed: {e}"),
+                    };
+                    eprintln!(
+                        "{}",
+                        api::audit_line("map-service/purger", "PurgeFromTrash", &target, &result)
+                    );
+                }
+            }
+        }
     }
 
     /// Marks nodes down after `timeout` without a heartbeat, and up again

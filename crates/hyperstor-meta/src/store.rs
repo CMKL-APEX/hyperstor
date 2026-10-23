@@ -35,6 +35,9 @@ pub enum Table {
     Revoked = 5,
     /// `hyperstor-mgmt`'s rows (`mgmt_store.rs`, D98).
     Mgmt = 6,
+    /// Settings the map service keeps for the cluster (`settings.rs`): the
+    /// trash's per pool (D54, D115).
+    Settings = 7,
 }
 
 impl Serialize for Table {
@@ -67,6 +70,7 @@ impl MapSchema {
             Table::Issued,
             Table::Revoked,
             Table::Mgmt,
+            Table::Settings,
         ]
         .into_iter()
         .find(|t| *t as u16 == id)
@@ -83,6 +87,7 @@ impl rs::Schema for MapSchema {
         Table::Issued,
         Table::Revoked,
         Table::Mgmt,
+        Table::Settings,
     ];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
@@ -100,6 +105,7 @@ impl rs::Schema for MapSchema {
             Table::Issued => "issued",
             Table::Revoked => "revoked",
             Table::Mgmt => "mgmt",
+            Table::Settings => "settings",
         }
     }
     fn table_id(t: Table) -> u16 {
