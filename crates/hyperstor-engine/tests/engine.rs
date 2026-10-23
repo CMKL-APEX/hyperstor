@@ -655,3 +655,55 @@ fn versions_read_through_layers_and_merge_without_copying() {
     assert_eq!(sh.stats().free_blocks, free + 2);
     assert!(sh.stat(&v(1)).is_none());
 }
+
+/// Paged checkpoints (D105): a checkpoint writes the pages changed since
+/// the last one began; pages are cut as they fill and dropped once empty,
+/// and a reopen loads every page.
+#[test]
+fn checkpoints_write_only_the_pages_that_changed() {
+    let (d, mut sh) = fresh(8192, None);
+    sh.set_checkpoint_page(1024);
+    let put = |sh: &mut Shard, i: u64, v: u8| {
+        one(
+            sh,
+            key(&format!("o{i:03}")),
+            vec![Op::KvPut(b"v".to_vec(), vec![v; 100])],
+        )
+        .unwrap();
+    };
+    for i in 0..200 {
+        put(&mut sh, i, 1);
+    }
+    sh.checkpoint().unwrap();
+    let st = sh.stats();
+    assert!(st.checkpoint_pages > 15, "pages are cut: {st:?}");
+    let written = |sh: &Shard| sh.stats().checkpoint_pages_written;
+    // The checkpoint above began before the puts that followed its first
+    // pages; one more settles everything.
+    sh.checkpoint().unwrap();
+    let w = written(&sh);
+    sh.checkpoint().unwrap();
+    assert_eq!(written(&sh) - w, 0, "nothing changed, no page written");
+    put(&mut sh, 50, 2);
+    let w = written(&sh);
+    sh.checkpoint().unwrap();
+    assert_eq!(written(&sh) - w, 1, "one change, one page");
+    // Deleting a run of objects empties pages, which are dropped.
+    let pages = sh.stats().checkpoint_pages;
+    for i in 100..160 {
+        one(&mut sh, key(&format!("o{i:03}")), vec![Op::Delete]).unwrap();
+    }
+    sh.checkpoint().unwrap();
+    sh.checkpoint().unwrap();
+    let st = sh.stats();
+    assert!(st.checkpoint_pages < pages, "empty pages dropped: {st:?}");
+    let idx = sh.index().clone();
+    let bounds = idx.bounds.clone();
+    drop(sh);
+    let sh = reopen(&d);
+    assert_eq!(sh.index(), &idx, "reopen reproduces the index exactly");
+    assert_eq!(sh.index().bounds, bounds);
+    assert_eq!(sh.stats().checkpoint_pages, st.checkpoint_pages);
+    assert_eq!(sh.kv_get(&key("o050"), b"v"), Some(&[2u8; 100][..]));
+    assert_eq!(sh.kv_get(&key("o120"), b"v"), None);
+}

@@ -19,8 +19,9 @@ design is split by topic, with section numbers kept across files.
   its own copy, and the in-process fault rig; volumes as ublk block
   devices (`hyperstor-ublk`, our own ublk on the reactor); snapshots,
   clones, rollback (in place to the newest snapshot), flatten and
-  consistency groups, in the client library, the API and `hyperstorctl`
-  (HS4; the read cache next); the first part of AD0 and AD1: the cluster API on the map
+  consistency groups, in the client library, the API and `hyperstorctl`,
+  and the host read cache (HS4); paged checkpoints that write only the
+  pages changed (D105); the first part of AD0 and AD1: the cluster API on the map
   service over mutual TLS with roles and stable error reasons,
   `hyperstorctl` (checked against every RPC of the protos), join tokens
   (replicated through Raft) for storage hosts and map service members
@@ -38,12 +39,11 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D110 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I148, and every host check (G1–G24,
+  rule, F1–F12 in detail, I1–I78, I80–I150, and every host check (G1–G24,
   FG1–FG2).
-- **Next:** the
-  copy-on-write B+tree with snapshots and clones (D43, D44, HS4, which
-  also gives D47's paged checkpoints); `hyperstor-vhost` and the glidex
-  driver (HS3); cache-pool expiry and eviction and priority classes
+- **Next:** `hyperstor-vhost` and the glidex
+  driver (HS3); zone or FDP placement for write-once pools (D105, G23);
+  the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
   `spec/administration.md`, milestones AD0–AD4; next there:
