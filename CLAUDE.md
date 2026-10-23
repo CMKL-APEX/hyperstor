@@ -38,19 +38,19 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D119 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D121 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I162, and every host check (G1–G24,
+  rule, F1–F12 in detail, I1–I78, I80–I166, and every host check (G1–G24,
   FG1–FG2).
 - **Next:** glidex's `hyperstor` driver (HS3, D118), then the rest of
   §11.1 (adaptive polling, reactors per NUMA node, the state file); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
-  `spec/administration.md`, milestones AD0–AD4; next there:
-  web certificates beyond loopback by ACME or a CA from glidex (D107);
-  AD3 (trash, audit with its UI page).
+  `spec/administration.md`, milestones AD0–AD4; AD3 is done (trash,
+  audit, long operations); next there: AD4, storage administration in
+  glidex; operations streamed through mgmt (I166).
   Installing on whole devices waits for a storage test host.
 
 ## Design work

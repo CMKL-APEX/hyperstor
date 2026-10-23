@@ -213,7 +213,16 @@ fn snapshots_through_hyperstorctl() {
         .ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
         .expect(1);
     assert!(r.has("in_use"), "{}", r.out);
-    c.ctl(&["flatten-volume", "--id", &kid]).ok();
+    // A flatten is an operation (D121): its id at once, then followed.
+    let f = c
+        .ctl(&["flatten-volume", "--id", &kid, "--wait", "120"])
+        .ok();
+    assert!(
+        f.has(&format!("volume {kid} flattening: operation "))
+            && f.has(&format!("flatten volume {kid}: done")),
+        "{}",
+        f.out
+    );
     c.ctl(&["snapshot", "create", "--id", &v, "--name", "second"])
         .ok();
     let r = c.ctl(&["rollback-volume", "--id", &v, "--epoch", "1"]).ok();
@@ -222,7 +231,7 @@ fn snapshots_through_hyperstorctl() {
     // flattened.
     c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
         .expect(1);
-    c.ctl(&["flatten-volume", "--id", &v]).ok();
+    c.ctl(&["flatten-volume", "--id", &v, "--wait", "120"]).ok();
     c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
         .ok();
     let l = c.ctl(&["snapshot", "list", "--id", &v, "--json"]).ok();

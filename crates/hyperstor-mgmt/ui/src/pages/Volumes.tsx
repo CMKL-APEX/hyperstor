@@ -291,10 +291,16 @@ export default function Volumes() {
           title={`Flatten ${dialog.v.name || dialog.v.id}`}
           submit="Flatten"
           cli={`flatten-volume --id ${dialog.v.id}`}
-          run={() => cluster.flattenVolume({ id: dialog.v.id })}
+          run={async () => {
+            const r = await cluster.flattenVolume({ id: dialog.v.id });
+            setNotice(`Flattening: operation ${r.operation?.id} (Operations).`);
+          }}
           onClose={close}
         >
-          <p className="text-sm">Copies in what a clone reads from its parents, so they can be deleted.</p>
+          <p className="text-sm">
+            Copies in what a clone reads from its parents, so they can be deleted. It runs as an operation, followed on
+            the Operations page.
+          </p>
         </ActionDialog>
       )}
     </Card>

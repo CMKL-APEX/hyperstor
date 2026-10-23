@@ -13,6 +13,7 @@ pub mod backup;
 pub mod certs;
 pub mod health;
 pub mod mgmt_store;
+pub mod operations;
 pub mod replica;
 pub mod settings;
 pub mod store;
@@ -112,6 +113,10 @@ pub use hyperstor_client::volume::{Snapshot, Volume, VolumeState};
 #[derive(Debug, Clone)]
 pub enum SnapOp {
     List {
+        id: u128,
+    },
+    /// The volume's header, whatever its state (a long operation's check).
+    Get {
         id: u128,
     },
     Create {
@@ -256,6 +261,9 @@ async fn run_snap_op(
             new_id,
         } => SnapDone::Volume(c.clone_snapshot(id, epoch, &name, new_id).await?),
         SnapOp::Rollback { id, epoch } => SnapDone::Volume(c.rollback(id, epoch).await?),
+        SnapOp::Get { id } => {
+            SnapDone::Volume(c.volume(id).await?.ok_or(ClientError::NoVolume(id))?)
+        }
         SnapOp::Flatten { id } => SnapDone::Volume(c.flatten(id).await?),
         SnapOp::Group { ids, name } => {
             let (g, s) = c.snapshot_group(&ids, &name).await?;
@@ -803,76 +811,6 @@ impl Meta {
 
     pub fn lease(&self) -> Duration {
         self.lease
-    }
-
-    /// Empties the trash (D54): every `every`, while this member leads, each
-    /// data pool's volumes and snapshots whose grace (`settings`, else the
-    /// default day) has passed are purged, as a client of `.meta` at
-    /// `map_address`. Failures are logged and tried again next time.
-    pub async fn purger(
-        self: Rc<Self>,
-        map_address: SocketAddr,
-        settings: Option<std::sync::Arc<settings::Settings>>,
-        every: Duration,
-    ) {
-        use hyperstor_client::trash::{Trashed, now_unix, trash_of};
-        let mut client: Option<Rc<hyperstor_client::Client>> = None;
-        loop {
-            sleep(every).await;
-            if !self.leads() {
-                continue;
-            }
-            let c = match &client {
-                Some(c) => c.clone(),
-                None => match hyperstor_client::Client::connect(map_address, 0).await {
-                    Ok(c) => {
-                        client = Some(c.clone());
-                        c
-                    }
-                    Err(_) => continue,
-                },
-            };
-            if c.refresh_map().await.is_err() {
-                continue;
-            }
-            let pools: Vec<u32> = c
-                .map()
-                .pools
-                .keys()
-                .copied()
-                .filter(|p| *p != META_POOL)
-                .collect();
-            for pool in pools {
-                let grace = settings
-                    .as_ref()
-                    .and_then(|s| s.trash(pool).ok())
-                    .unwrap_or_default()
-                    .grace_secs;
-                let Ok(volumes) = c.list_volumes(pool).await else {
-                    continue;
-                };
-                let now = now_unix();
-                for item in trash_of(&volumes) {
-                    if item.trashed_unix().saturating_add(grace) > now {
-                        continue;
-                    }
-                    let (target, r) = match &item {
-                        Trashed::Volume(v) => {
-                            (format!("volume {:032x}", v.id), c.purge_volume(v.id).await)
-                        }
-                        Trashed::Snapshot(v, s) => (
-                            format!("volume {:032x} snapshot {}", v.id, s.epoch),
-                            c.purge_snapshot(v.id, s.epoch).await,
-                        ),
-                    };
-                    let result = match &r {
-                        Ok(()) => format!("ok, after {grace} s in the trash"),
-                        Err(e) => format!("failed: {e}"),
-                    };
-                    audit_log::record("map-service/purger", "PurgeFromTrash", &target, &result);
-                }
-            }
-        }
     }
 
     /// Marks nodes down after `timeout` without a heartbeat, and up again

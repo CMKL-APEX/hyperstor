@@ -4,7 +4,7 @@
 //! `.meta` ([`crate::TrashOp`]); settings are rows of the replicated store.
 
 use super::admin::invalid;
-use super::{Api, audit, parse_volume_id, volume_pb, volume_result};
+use super::{Api, audit, parse_volume_id, volume_pb, volume_result, with_reason};
 use crate::settings::{OnFull, Trash};
 use crate::{Admin, TrashDone, TrashOp};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
@@ -130,23 +130,45 @@ impl TrashService for Api {
     ) -> ServiceResult<pb::PurgeFromTrashResponse> {
         let id = parse_volume_id(req.id)?;
         let epoch = req.epoch;
-        let target = match epoch {
-            Some(e) => format!("volume {id:032x} snapshot {e}"),
-            None => format!("volume {id:032x}"),
-        };
+        let target = super::ops::purge_target(id, epoch);
         let who = self.authorize(&ctx, "PurgeFromTrash", &target, true)?;
-        let r = self.trash_op(TrashOp::Purge { id, epoch }).await;
-        audit(
-            &who,
-            "PurgeFromTrash",
-            &target,
-            &match &r {
-                Ok(_) => "ok".into(),
-                Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
+        // Checked now, run as an operation (D121): it deletes every chunk.
+        let v = self.volume_any(id).await?;
+        let refused = |e: String| with_reason(ConnectError::failed_precondition(e), "in_use");
+        match epoch {
+            None if v.state == crate::VolumeState::Active => {
+                return Err(refused(format!("volume {id:032x} isn't in the trash")));
+            }
+            None => {}
+            Some(e) => match v.snapshot(e) {
+                None => {
+                    return Err(with_reason(
+                        ConnectError::not_found(format!("no snapshot at epoch {e}")),
+                        "not_found",
+                    ));
+                }
+                Some(s) if s.trashed_unix == 0 && !s.deleting => {
+                    return Err(refused(format!(
+                        "the snapshot at epoch {e} isn't in the trash"
+                    )));
+                }
+                Some(_) => {}
             },
-        );
-        r?;
-        Ok(pb::PurgeFromTrashResponse::default().into())
+        }
+        let op = self
+            .start_op(
+                &who,
+                "PurgeFromTrash",
+                crate::operations::Work::Purge { volume: id, epoch },
+                target,
+                "deleting its data".into(),
+            )
+            .await?;
+        Ok(pb::PurgeFromTrashResponse {
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn get_trash_settings(
