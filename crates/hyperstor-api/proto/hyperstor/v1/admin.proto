@@ -246,6 +246,8 @@ message JoinResponse {
   string intermediate = 6;
   string intermediate_key = 7 [json_name = "intermediate_key"];
   string cluster_file = 8 [json_name = "cluster_file"];
+  // The identity the certificate names (`hyperstor://<cluster>/<role>/<id>`).
+  string identity = 9;
 }
 
 message RenewCertificateRequest {

@@ -1996,11 +1996,11 @@ fn enroll(api: &str, a: &Args) -> i32 {
     if let Err(e) = made {
         return fail(e);
     }
-    let who = hyperstor_pki::identity_in(&r.certificate)
-        .map(|i| i.uri())
-        .unwrap_or_default();
+    // The identity as the cluster states it, not read back from the
+    // certificate.
     println!(
-        "enrolled as {who} in cluster {}; certificate in {} (renew within 30 days); map service {}",
+        "enrolled as {} in cluster {}; certificate in {} (renew within 30 days); map service {}",
+        r.identity,
         r.cluster_id,
         dir.display(),
         r.map_addresses

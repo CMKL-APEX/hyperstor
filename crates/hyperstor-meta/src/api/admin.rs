@@ -520,6 +520,7 @@ impl TokenService for Api {
                             root: root.to_string(),
                             node,
                             map_addresses: signing.map_addresses.clone(),
+                            identity: who.uri(),
                             ..Default::default()
                         },
                     ))
@@ -549,6 +550,7 @@ impl TokenService for Api {
                             certificate,
                             root: root.to_string(),
                             map_addresses: signing.map_addresses.clone(),
+                            identity: who.uri(),
                             ..Default::default()
                         },
                     ))
@@ -596,6 +598,7 @@ impl TokenService for Api {
                             intermediate: signing.ca.cert.clone(),
                             intermediate_key: signing.ca.key.clone(),
                             cluster_file: signing.cluster_file.clone(),
+                            identity: who.uri(),
                             ..Default::default()
                         },
                     ))

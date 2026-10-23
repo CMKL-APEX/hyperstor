@@ -47,6 +47,15 @@ fn a_management_client_enrolls_and_manages_volumes() {
     for f in ["admin.crt", "admin.key", "root.crt"] {
         assert!(dir.join(f).exists(), "{f}");
     }
+    // The identity printed is the cluster's answer, and the certificate's.
+    let cert = std::fs::read_to_string(dir.join("admin.crt")).unwrap();
+    let who = hyperstor_pki::identity_in(&cert).unwrap();
+    assert_eq!(who.role, hyperstor_pki::Role::Mgmt);
+    assert!(
+        e.has(&format!("enrolled as {} in cluster", who.uri())),
+        "{}",
+        e.out
+    );
     // Single-use.
     let again = c.scratch.path("again");
     c.ctl_via(
