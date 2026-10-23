@@ -571,3 +571,12 @@ options and a recommendation:
 | 59 | "The cluster's CA from glidex": hyperstor's own CA, glidex's CA signing mgmt's certificate through its API, or serving glidex-ui's certificate | hyperstor's own CA | D108 |
 | 60 | ACME: reload certificate files plus the node's Tailscale certificate, a built-in client with HTTP-01 (port 80) or DNS-01 (RFC 2136), or reload only | Reload and Tailscale | D109 |
 | 61 | What mgmt serves beyond loopback before an operator configures a certificate: a cluster-CA certificate on every address, loopback only, or self-signed as glidex | A cluster-CA certificate on every address | D110 |
+
+## HS3: the vhost-user service (2026-10-23)
+
+Before building `hyperstor-vhost`, three choices, each with options and a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 62 | How to implement vhost-user-blk (rust-vmm's crates as libraries on our reactor; rust-vmm's `vhost-user-backend` daemon with its own threads; all our own); how glidex stages a disk (a local control socket; through the cluster API); what to build first (the service, then glidex's driver; the service only; both at once) | rust-vmm's crates on our reactor; a local control socket; the service, then the driver | D111, D112, D113 |

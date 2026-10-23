@@ -967,7 +967,7 @@ open times are within run-to-run variation.
 3. **The directory stays small** (0.4% of the index at 16 KiB, about
    8 MiB per TiB of shard) but is written every time: at 16 KiB it is 14%
    of what a checkpoint writes when 1% of the chunks change.
-4. **128 KiB stays the default** (implementation-notes.md I150). The
+4. **128 KiB stays the default** (implementation-notes.md I151). The
    gain from smaller pages is small until 16 KiB, which costs a quarter
    more for VM disks written all over, the common case with dense maps
    (benchmarks above). What the hot-volume case needs is fewer pages per

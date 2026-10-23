@@ -331,6 +331,49 @@ tests = [
 id = "HS3"
 title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
+[[milestone.item]]
+what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket"
+spec = ["frontends.md §11.1", "D26", "D111", "D112", "I152", "I153", "I154", "I155"]
+status = "partial"
+tests = [
+    "vhost::a_volume_is_served_over_vhost_user_blk",
+    "hyperstor_vhost::blk::tests::requests_decode_to_whole_blocks_inside_the_volume",
+    "hyperstor_vhost::blk::tests::the_config_space_names_the_size_and_queues",
+    "hyperstor_vhost::control::tests::requests_parse_and_bad_ones_say_why",
+    "hyperstor_reactor::fd::tests::an_eventfd_wakes_a_waiting_task",
+]
+
+[[milestone.item]]
+what = "VMs boot from volumes under Cloud Hypervisor and QEMU"
+spec = ["frontends.md §11.1", "glidex.md §17", "D113", "I152"]
+status = "done"
+tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
+
+[[milestone.item]]
+what = "Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory"
+spec = ["frontends.md §11.1", "D26", "G8"]
+status = "planned"
+
+[[milestone.item]]
+what = "A restarted service keeps its leases; hypervisors reconnect"
+spec = ["frontends.md §11.1", "G6"]
+status = "planned"
+
+[[milestone.item]]
+what = "Discard and write-zeroes without allocating; expand signalled to the guest"
+spec = ["frontends.md §11.1", "I153"]
+status = "planned"
+
+[[milestone.item]]
+what = "Client readahead"
+spec = ["volumes.md §10.1"]
+status = "planned"
+
+[[milestone.item]]
+what = "The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering"
+spec = ["glidex.md §17", "D79", "D113"]
+status = "planned"
+
 [[milestone]]
 id = "HS4"
 title = "Snapshots, clones and the host read cache"

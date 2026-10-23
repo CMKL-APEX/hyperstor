@@ -1,0 +1,102 @@
+//! `hyperstor-vhost` (frontends.md §11.1, decisions.md D111, D112): volumes
+//! attached through its control socket and served over vhost-user-blk,
+//! with the test playing the hypervisor (`hyperstor_test::vhost`). No VM
+//! or root needed.
+
+use hyperstor_test::Cluster;
+use hyperstor_test::vhost::*;
+use std::path::PathBuf;
+
+fn volume(c: &Cluster, size: &str) -> String {
+    let made = c
+        .ctl(&["create-volume", "--size", size, "--name", "vhost"])
+        .ok();
+    made.out.split_whitespace().nth(1).unwrap().to_string()
+}
+
+#[test]
+fn a_volume_is_served_over_vhost_user_blk() {
+    let c = Cluster::all_in_one("vhost", 3);
+    let id = volume(&c, "64M");
+    let svc = Service::start(&c, "vhost-a", &[]);
+    assert_eq!(
+        svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
+        1
+    );
+    let r = svc.attach(&id, "attach");
+    let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    assert_eq!(r["ok"]["size"], 64 << 20);
+    // A retry answers with the same socket.
+    assert_eq!(svc.attach(&id, "attach")["ok"]["socket"], r["ok"]["socket"]);
+    let mut g = Guest::connect(&socket, false);
+    assert_eq!(g.capacity(), 64 << 20);
+    // Writes and reads, across a 4 MiB chunk boundary.
+    let data = pattern(5, 256 << 10);
+    let off = (4 << 20) - (128 << 10);
+    g.write(off, &data);
+    assert!(g.called(), "the device calls on completion");
+    assert!(g.read(off, data.len() as u32) == data, "read back differs");
+    assert!(g.read(0, 4096).iter().all(|b| *b == 0), "never written");
+    // Flush, the id, write-zeroes, and what's refused.
+    assert_eq!(g.request(T_FLUSH, 0, &[], 0).0, S_OK);
+    let (s, idb, _) = g.request(T_GET_ID, 0, &[], 20);
+    assert_eq!(s, S_OK);
+    assert_eq!(&idb[..15], b"disk-under-test");
+    let mut z = (off / 512).to_le_bytes().to_vec();
+    z.extend(16u32.to_le_bytes());
+    z.extend(0u32.to_le_bytes());
+    assert_eq!(g.request(T_WRITE_ZEROES, 0, &z, 0).0, S_OK);
+    assert!(g.read(off, 8192).iter().all(|b| *b == 0), "zeroed");
+    assert!(g.read(off + 8192, 4096) == data[8192..12288]);
+    assert_eq!(g.request(99, 0, &[], 0).0, S_UNSUPP);
+    let (s, _, _) = g.request(T_IN, (64 << 20) / 512, &[], 4096);
+    assert_eq!(s, S_IOERR, "past the end");
+    let (s, _, _) = g.request(T_IN, 1, &[], 4096);
+    assert_eq!(s, S_IOERR, "not whole blocks");
+    // The hypervisor reconnects (it restarted, say): the volume stayed
+    // attached and serves the same data.
+    drop(g);
+    let mut g = Guest::connect(&socket, true);
+    assert!(g.read(off + 8192, 4096) == data[8192..12288]);
+    g.write(0, &data[..8192]);
+    assert!(g.read(0, 8192) == data[..8192], "with EVENT_IDX");
+    let listed = svc.ctl(serde_json::json!({"id": 2, "op": "list"}));
+    assert_eq!(listed["ok"]["disks"][0]["connected"], true, "{listed}");
+    drop(g);
+    // Another node's service can't take a held volume, but preempts it
+    // (D79): the first holder's I/O fails from then on.
+    let other = Service::start(&c, "vhost-b", &[]);
+    let held = other.attach(&id, "attach");
+    assert_eq!(held["error"]["code"], "held", "{held}");
+    let mut g = Guest::connect(&socket, false);
+    let r2 = other.attach(&id, "preempt");
+    let socket2 = PathBuf::from(
+        r2["ok"]["socket"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r2}")),
+    );
+    let (s, _, _) = g.request(T_IN, 0, &[], 4096);
+    assert_eq!(s, S_IOERR, "the preempted holder is cut off");
+    drop(g);
+    let mut g2 = Guest::connect(&socket2, true);
+    assert!(
+        g2.read(off + 8192, 4096) == data[8192..12288],
+        "data moved with the lease"
+    );
+    drop(g2);
+    // Detach: the socket goes, and the volume can be attached elsewhere.
+    let d = other.ctl(serde_json::json!({"id": 3, "op": "detach", "args": {"volume": id}}));
+    assert!(d.get("ok").is_some(), "{d}");
+    assert!(!socket2.exists());
+    // The preempted service is blocklisted as a client (metadata.md §9):
+    // it can't detach cleanly or attach again; a new service can.
+    let d = svc.ctl(serde_json::json!({"id": 4, "op": "detach", "args": {"volume": id}}));
+    assert!(d.get("error").is_some(), "{d}");
+    assert!(svc.attach(&id, "attach").get("error").is_some());
+    let fresh = Service::start(&c, "vhost-c", &[]);
+    let r3 = fresh.attach(&id, "attach");
+    assert!(r3.get("ok").is_some(), "{r3}");
+    fresh.stop();
+    svc.stop();
+    other.stop();
+}
