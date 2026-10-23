@@ -39,7 +39,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D110 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I150, and every host check (G1–G24,
+  rule, F1–F12 in detail, I1–I78, I80–I151, and every host check (G1–G24,
   FG1–FG2).
 - **Next:** `hyperstor-vhost` and the glidex
   driver (HS3); zone or FDP placement for write-once pools (D105, G23);
