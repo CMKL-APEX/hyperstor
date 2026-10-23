@@ -48,9 +48,9 @@ design is split by topic, with section numbers kept across files.
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
-  `spec/administration.md`, milestones AD0–AD4; next there:
-  web certificates beyond loopback by ACME or a CA from glidex (D107);
-  AD3 (trash, audit with its UI page).
+  `spec/administration.md`, milestones AD0–AD4; AD3 is done (trash,
+  audit, long operations); next there: AD4, storage administration in
+  glidex; operations streamed through mgmt (I166).
   Installing on whole devices waits for a storage test host.
 
 ## Design work

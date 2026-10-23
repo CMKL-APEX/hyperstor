@@ -1,7 +1,7 @@
 //! The trash through `hyperstorctl` (administration.md §23.9.3, D54,
 //! D115): deletes go to it and leave the lists, restore brings them back,
-//! purge removes them at once, and the map service's purger empties it
-//! once a pool's grace period has passed.
+//! purge removes them at once (as an operation, D121), and the map
+//! service's purger empties it once a pool's grace period has passed.
 
 use hyperstor_test::*;
 
@@ -52,10 +52,19 @@ fn deletes_go_to_the_trash_until_purged() {
     assert!(c.ctl(&["snapshot", "list", "--id", &v]).ok().has("s1"));
     c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", &epoch])
         .ok();
+    // A purge is an operation (D121), followed with --wait.
     let r = c
-        .ctl(&["trash", "purge", "--id", &v, "--epoch", &epoch])
+        .ctl(&[
+            "trash", "purge", "--id", &v, "--epoch", &epoch, "--wait", "60",
+        ])
         .ok();
-    assert!(r.has("purged: its data is gone"), "{}", r.out);
+    assert!(
+        r.has(&format!(
+            "snapshot {epoch} of volume {v} purging: operation "
+        )) && r.has(&format!("purge volume {v} snapshot {epoch}: done")),
+        "{}",
+        r.out
+    );
     assert!(c.ctl(&["trash", "list"]).ok().has("The trash is empty."));
     // Only what's in the trash is purged.
     let r = c.ctl(&["trash", "purge", "--id", &v]).expect(1);
@@ -96,6 +105,13 @@ fn deletes_go_to_the_trash_until_purged() {
         c.ctl(&["delete-volume", "--id", &v])
             .expect(1)
             .has("no volume")
+    );
+    // Its purge is an operation of the purger's.
+    let ops = c.ctl(&["op", "list", "--json"]).ok();
+    assert!(
+        ops.has("\"created_by\":\"map-service/purger\"") && ops.has(&format!("volume {v}")),
+        "{}",
+        ops.out
     );
     let audit = c.audit();
     for (who, op) in [

@@ -29,6 +29,9 @@ namespace Hyperstor {
   action "OperationService.ListOperations" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "OperationService.WatchOperation" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "MemberService.ListMembers" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

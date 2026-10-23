@@ -6,6 +6,8 @@ syntax = "proto3";
 
 package hyperstor.v1;
 
+import "hyperstor/v1/admin.proto";
+
 service ClusterService {
   // Health with its reasons, nodes, devices and pools. Read.
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
@@ -50,7 +52,7 @@ service ClusterService {
   rpc RollbackVolume(RollbackVolumeRequest) returns (RollbackVolumeResponse);
 
   // Copies into a clone what it reads from its parents, so it depends on
-  // them no more. Write.
+  // them no more: a long operation (D120). Write.
   rpc FlattenVolume(FlattenVolumeRequest) returns (FlattenVolumeResponse);
 
   // Snapshots several volumes at one moment (a consistency group).
@@ -71,8 +73,8 @@ service TrashService {
   // Brings a volume or a snapshot back. Write (operators, D114).
   rpc RestoreFromTrash(RestoreFromTrashRequest) returns (RestoreFromTrashResponse);
 
-  // Deletes a volume or a snapshot in the trash for good, at once.
-  // Write (storage administrators, with a fresh login).
+  // Deletes a volume or a snapshot in the trash for good, now: a long
+  // operation (D120). Write (storage administrators, with a fresh login).
   rpc PurgeFromTrash(PurgeFromTrashRequest) returns (PurgeFromTrashResponse);
 
   // A pool's grace period and what a full pool does with its trash. Read.
@@ -131,7 +133,10 @@ message PurgeFromTrashRequest {
   optional uint64 epoch = 2;
 }
 
-message PurgeFromTrashResponse {}
+message PurgeFromTrashResponse {
+  // The purge, which runs in the background (decisions.md D120).
+  Operation operation = 1;
+}
 
 message GetTrashSettingsRequest {
   uint32 pool = 1;
@@ -393,7 +398,10 @@ message FlattenVolumeRequest {
 }
 
 message FlattenVolumeResponse {
+  // The volume as it is when the flatten starts.
   Volume volume = 1;
+  // The flatten, which runs in the background (decisions.md D120).
+  Operation operation = 2;
 }
 
 message CreateGroupSnapshotRequest {

@@ -604,6 +604,16 @@ attached through. Asked for alternatives, with a recommendation:
 |---|---|---|---|
 | 68 | Preempt only from a fenced node, planned moves detaching first (glidex's driver, no hyperstor change); a client instance per volume (connections multiply with VMs); per-volume identities on shared connections (a protocol change, with D33's delegates); fencing tokens per volume (unsafe without fencing every chunk) | Preempt only from a fenced node, for now | D119 |
 
+## Long operations (AD3, 2026-10-23)
+
+To finish AD3's operations (§23.5–§23.7), asked which calls become
+long operations and where operations live, with a recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 69 | Which calls become long operations: flatten, purge and snapshot delete; flatten only; or none new | Flatten, purge and snapshot delete | D120 |
+| 70 | Where operations live: rows of the replicated store (seen by every member, resumed by a new leader); memory on the leader; or objects in `.meta` | The replicated store | D121 |
+
 ## glidex's hyperstor driver (2026-10-23)
 
 Before writing glidex's `hyperstor` datastore driver, three choices the

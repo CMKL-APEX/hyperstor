@@ -38,6 +38,8 @@ pub enum Table {
     /// Settings the map service keeps for the cluster (`settings.rs`): the
     /// trash's per pool (D54, D115).
     Settings = 7,
+    /// Long operations (`operations.rs`, D121).
+    Operations = 8,
 }
 
 impl Serialize for Table {
@@ -71,6 +73,7 @@ impl MapSchema {
             Table::Revoked,
             Table::Mgmt,
             Table::Settings,
+            Table::Operations,
         ]
         .into_iter()
         .find(|t| *t as u16 == id)
@@ -88,6 +91,7 @@ impl rs::Schema for MapSchema {
         Table::Revoked,
         Table::Mgmt,
         Table::Settings,
+        Table::Operations,
     ];
     const LOCAL: Table = Table::Local;
     const SYSTEM: Origin = Origin::System;
@@ -106,6 +110,7 @@ impl rs::Schema for MapSchema {
             Table::Revoked => "revoked",
             Table::Mgmt => "mgmt",
             Table::Settings => "settings",
+            Table::Operations => "operations",
         }
     }
     fn table_id(t: Table) -> u16 {

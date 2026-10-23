@@ -156,8 +156,13 @@ service OperationService {
   // One operation. Read.
   rpc GetOperation(GetOperationRequest) returns (Operation);
 
-  // Running and recent operations, newest first. Read.
+  // Running and recent operations (finished ones are kept a week),
+  // newest first. Read.
   rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+
+  // An operation as it is now, then each change, until it finishes
+  // (decisions.md D121). Read.
+  rpc WatchOperation(WatchOperationRequest) returns (stream WatchOperationResponse);
 
   // Stops an operation and undoes what it can (a drain brings the
   // devices back in). Write.
@@ -426,6 +431,14 @@ message GetOperationRequest {
 }
 
 message ListOperationsRequest {}
+
+message WatchOperationRequest {
+  string id = 1;
+}
+
+message WatchOperationResponse {
+  Operation operation = 1;
+}
 
 message ListOperationsResponse {
   repeated Operation operations = 1;

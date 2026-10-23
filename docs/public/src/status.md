@@ -33,7 +33,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -143,4 +143,4 @@ covered by tests that run on every change.
 |---|---|
 | Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI | Done |
 | Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
-| Long operations: draining a node, with a dry run, followed to the end or cancelled | In progress |
+| Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI | Done |

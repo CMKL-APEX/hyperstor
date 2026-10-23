@@ -47,6 +47,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrashService.GetTrashSettings", Group::Read, false),
     ("OperationService.GetOperation", Group::Read, false),
     ("OperationService.ListOperations", Group::Read, false),
+    ("OperationService.WatchOperation", Group::Read, false),
     ("MemberService.ListMembers", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),

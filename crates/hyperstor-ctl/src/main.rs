@@ -26,11 +26,13 @@
 //!   them at one moment (a consistency group), `snapshot group-delete
 //!   --group G` deletes a group's; `clone-volume --id ID --epoch E [--name
 //!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
-//!   `flatten-volume --id ID` (§10.4);
+//!   `flatten-volume --id ID [--wait SECS]` (§10.4), which runs as an
+//!   operation (D121);
 //! - `delete-volume`, `snapshot delete` and `snapshot group-delete` move
 //!   to the trash (D54): `trash list [--pool P]`; `trash restore --id ID
 //!   [--epoch E] [--name N]` brings a volume (or its snapshot at E) back,
-//!   as N if given; `trash purge --id ID [--epoch E]` deletes it for good;
+//!   as N if given; `trash purge --id ID [--epoch E] [--wait SECS]`
+//!   deletes it for good, as an operation;
 //!   `trash settings [--pool P] [--grace SECS] [--on-full keep|purge]`
 //!   shows or sets how long a pool keeps it (default a day);
 //! - `audit list [--since AGO] [--principal P] [--op OP] [--limit N]`:
@@ -58,7 +60,9 @@
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
 //!   would move and changes nothing;
 //! - `op list`, `op get --id ID`, `op watch --id ID [--wait SECS]`, `op
-//!   cancel --id ID`: long operations (a cancelled drain brings the
+//!   cancel --id ID`: long operations, drains, flattens and purges, kept a
+//!   week after they finish (D120); `op watch` and `--wait` follow one's
+//!   changes as they come; only a drain can be cancelled (it brings the
 //!   devices back in);
 //! - `member list`, `member add --id N --raft ADDR --map ADDR`, `member
 //!   remove --id N [--force]`: the map service's members (D87). A new
@@ -187,6 +191,9 @@ struct Args {
     /// `write-volume`, `read-volume`: where in the volume; skip zero blocks.
     offset: u64,
     sparse: bool,
+    /// Through hyperstor-mgmt, which passes on whole answers only: an
+    /// operation is followed by asking again, not by a watch.
+    poll: bool,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -242,6 +249,7 @@ fn main() {
         retention_days: None,
         offset: 0,
         sparse: false,
+        poll: false,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -252,7 +260,10 @@ fn main() {
             "--api" => api = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--socket" => socket = Some(it.next().cloned().unwrap_or_else(|| usage())),
-            "--mgmt" => mgmt = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--mgmt" => {
+                mgmt = Some(it.next().cloned().unwrap_or_else(|| usage()));
+                a.poll = true;
+            }
             "--token-file" => token_file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--mgmt-ca" => mgmt_ca = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--json" => a.json = true,
@@ -565,6 +576,7 @@ fn main() {
         .unwrap_or(api);
     let code = match outcome {
         Ok(Next::Exit(code)) => code,
+        Ok(Next::Follow(_)) => unreachable!("followed in manage"),
         Ok(Next::IoTest { map, pool }) => {
             hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib).await })
         }
@@ -646,6 +658,8 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>) -> Mgmt {
 
 enum Next {
     Exit(i32),
+    /// Follow this operation (`--wait`).
+    Follow(String),
     IoTest {
         map: std::net::SocketAddr,
         pool: u32,
@@ -695,17 +709,26 @@ async fn manage<T>(
 where
     T: connectrpc::client::ClientTransport,
     <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+    T::ResponseBody: Unpin,
 {
     match cmd.split_once(' ').map_or(cmd, |(g, _)| g) {
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
-        "trash" => return trash(TrashServiceClient::new(transport, config), cmd, a).await,
-        "audit" => return audit(AuditServiceClient::new(transport, config), cmd, a).await,
-        "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
-            return snapshots(ClusterServiceClient::new(transport, config), cmd, a).await;
+        "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
+            let ops = OperationServiceClient::new(transport.clone(), config.clone());
+            let next = if cmd.starts_with("trash") {
+                trash(TrashServiceClient::new(transport, config), cmd, a).await?
+            } else {
+                snapshots(ClusterServiceClient::new(transport, config), cmd, a).await?
+            };
+            return match next {
+                Next::Follow(id) => follow(&ops, id, a).await,
+                n => Ok(n),
+            };
         }
+        "audit" => return audit(AuditServiceClient::new(transport, config), cmd, a).await,
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),
@@ -1175,15 +1198,27 @@ where
             Next::Exit(0)
         }
         "trash purge" => {
-            client
+            let r = client
                 .purge_from_trash(pb::PurgeFromTrashRequest {
                     id: id(),
                     epoch: a.epoch,
                     ..Default::default()
                 })
-                .await?;
-            println!("{} purged: its data is gone", what());
-            Next::Exit(0)
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "{} purging: operation {} (hyperstorctl op watch --id {})\n",
+                    what(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            }
         }
         "trash settings" => {
             let pool = a.pool.unwrap_or(1);
@@ -1368,12 +1403,19 @@ where
                 })
                 .await?
                 .into_owned();
-            if a.json {
-                show(a, &r, String::new);
-            } else {
-                volume(r.volume.as_option().cloned(), "flattened");
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "volume {} flattening: operation {} (hyperstorctl op watch --id {})\n",
+                    id(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
             }
-            Next::Exit(0)
         }
     })
 }
@@ -1534,6 +1576,7 @@ async fn operations<T>(
 where
     T: connectrpc::client::ClientTransport,
     <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+    T::ResponseBody: Unpin,
 {
     let get = |id: String| {
         let ops = &ops;
@@ -1603,28 +1646,108 @@ where
         _ => a.id.clone().expect("checked"),
     };
     // op watch, or drain --wait: follow until it finishes.
-    let deadline = a
-        .wait
-        .map(|s| Instant::now() + Duration::from_secs(s.into()));
+    follow(&ops, id, a).await
+}
+
+/// Follows operation `id` until it finishes (`WatchOperation`), printing
+/// each change, for `--wait SECS` at most (else as long as it runs); a
+/// watch cut off (a new leader, a restart) is started again.
+async fn follow<T>(
+    ops: &OperationServiceClient<T>,
+    id: String,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+    T::ResponseBody: Unpin,
+{
+    let deadline = Instant::now()
+        + a.wait.map_or(Duration::from_secs(86400), |s| {
+            Duration::from_secs(s.into())
+        });
     let mut last = String::new();
-    loop {
-        let op = get(id.clone()).await?;
-        let line = op_line(&op);
+    let mut op: Option<pb::Operation> = None;
+    let mut print = |o: &pb::Operation| {
+        let line = op_line(o);
         if line != last && !a.json {
             println!("{line}");
             last = line;
         }
-        if op.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING) {
-            if a.json {
-                show(a, &op, String::new);
-            }
-            return Ok(Next::Exit(op_exit(&op)));
-        }
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            eprintln!("hyperstorctl: operation {id} still running");
-            return Ok(Next::Exit(1));
+    };
+    while a.poll && Instant::now() < deadline {
+        let o = ops
+            .get_operation(pb::GetOperationRequest {
+                id: id.clone(),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        print(&o);
+        let done = o.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING);
+        op = Some(o);
+        if done {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    'watch: while !a.poll && Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let opts = CallOptions::default().with_timeout(left);
+        let mut stream = match ops
+            .watch_operation_with_options(
+                pb::WatchOperationRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                },
+                opts,
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) if e.code == connectrpc::ErrorCode::Unavailable => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            Err(e) if e.code == connectrpc::ErrorCode::DeadlineExceeded => break,
+            Err(e) => return Err(e),
+        };
+        loop {
+            match stream.message().await {
+                Ok(Some(m)) => {
+                    let Some(o) = m.to_owned_message().operation.into_option() else {
+                        continue;
+                    };
+                    print(&o);
+                    let done =
+                        o.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING);
+                    op = Some(o);
+                    if done {
+                        break 'watch;
+                    }
+                }
+                // Ended while running: watch again.
+                Ok(None) => continue 'watch,
+                Err(e) if e.code == connectrpc::ErrorCode::DeadlineExceeded => break 'watch,
+                Err(e) if e.code == connectrpc::ErrorCode::Unavailable => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue 'watch;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    match op {
+        Some(o) if o.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING) => {
+            if a.json {
+                show(a, &o, String::new);
+            }
+            Ok(Next::Exit(op_exit(&o)))
+        }
+        _ => {
+            eprintln!("hyperstorctl: operation {id} still running");
+            Ok(Next::Exit(1))
+        }
     }
 }
 

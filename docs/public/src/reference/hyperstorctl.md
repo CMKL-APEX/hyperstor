@@ -25,7 +25,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `audit settings` | How long audit records are kept; with `--retention-days`, sets it (0: forever) |
 | `trash list` | What's in the trash, in `--pool` or every pool: volumes and snapshots, when each was deleted and when it will be purged |
 | `trash restore` | Brings volume `--id` back (or its snapshot at `--epoch`), as `--name` if given, else under its own name, or `NAME-restored` if another volume took it meanwhile. Operators may |
-| `trash purge` | Deletes volume `--id` (or its snapshot at `--epoch`) from the trash for good, at once |
+| `trash purge` | Deletes volume `--id` (or its snapshot at `--epoch`) from the trash for good, at once, as an operation: prints its id; with `--wait`, follows it to the end |
 | `trash settings` | Shows `--pool`'s grace period and what a full pool does with its trash; with `--grace` or `--on-full`, sets them |
 | `clone-volume` | Creates a volume from the snapshot at `--epoch` of volume `--id`, sharing its data, named `--name`, with `--new-id` or a random id |
 | `expand-volume` | Grows volume `--id` to `--size`; never shrinks it. A client that has it attached sees the new size after it attaches again |
@@ -33,7 +33,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `read-volume` | Reads `--size` bytes of volume `--id` at `--offset` into `--out`, in whole 4 KiB blocks; with `--map` as above |
 | `enroll` | Makes this client a management client of the cluster from a `mgmt` token in `--file`: a key made here, the API (`--api`) checked against the root the token names; writes `admin.crt`, `admin.key` and `root.crt` into `--out`, as `--tls` reads them. The certificate lives 30 days |
 | `rollback-volume` | Rolls volume `--id` (detached) back to its snapshot at `--epoch` |
-| `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted |
+| `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted, as an operation: prints its id; with `--wait`, follows it to the end |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
@@ -41,9 +41,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `token create` | Makes a single-use join token for `--role node` (a storage host), `--role meta` (a map service member) or `--role mgmt --name N` (a management client such as glidex, named N: 1–32 of a–z, 0–9 and -), valid `--ttl` seconds. Prints the token alone on standard output, and how to use it on standard error. Storage tokens are made on the map service's leader |
 | `token list` | The tokens this map service member made: id, role, expiry, and whether used, revoked or expired. Never the tokens themselves |
 | `token revoke` | Makes token `--id` unusable |
-| `op list` | Running and recent operations, newest first |
+| `op list` | Running and recent operations (drains, flattens, purges), newest first; finished ones are kept a week |
 | `op get` | Operation `--id` |
-| `op watch` | Prints operation `--id` as it progresses, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
+| `op watch` | Prints operation `--id` as it changes, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
 | `member list` | The map service's members: voters and learners, their Raft and map addresses, and who leads |
 | `member add` | Adds member `--id` at `--raft` and `--map`, already running and joined with a `meta` token: a learner until it has caught up (up to two minutes), then a voter. On the leader |
 | `member remove` | Removes member `--id`; refused if fewer than three voters would be left, unless `--force`. On the leader |
@@ -51,7 +51,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
 | `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired |
 | `cert show` | Prints the identity, serial and expiry of the certificate in `--file`, without the API: how to find the serial of a certificate the installer made |
-| `op cancel` | Stops operation `--id`; a cancelled drain brings the node's devices back in |
+| `op cancel` | Stops drain `--id`, bringing the node's devices back in; a flatten or a purge can't be cancelled |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -61,7 +61,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
 | `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
-| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
+| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `flatten-volume`, `trash purge`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
 | `--sparse` | off | `write-volume`: skip blocks of zeros |
