@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 mod admin;
 mod audit;
+mod ops;
 mod trash;
 pub use admin::{Signing, parse_token};
 
@@ -805,18 +806,31 @@ impl ClusterService for Api {
         req: ServiceRequest<'_, pb::FlattenVolumeRequest>,
     ) -> ServiceResult<pb::FlattenVolumeResponse> {
         let id = parse_volume_id(req.id)?;
-        let op = crate::SnapOp::Flatten { id };
-        match self
-            .snap(&ctx, "FlattenVolume", format!("volume {id:032x}"), true, op)
-            .await?
-        {
-            crate::SnapDone::Volume(v) => Ok(pb::FlattenVolumeResponse {
-                volume: Some(volume_pb(&v)).into(),
-                ..Default::default()
-            }
-            .into()),
-            d => Err(unexpected_done(d)),
+        let target = format!("volume {id:032x}");
+        let who = self.authorize(&ctx, "FlattenVolume", &target, true)?;
+        // Checked now, run as an operation (D121): it copies every chunk.
+        let v = self.volume_any(id).await?;
+        if v.state == crate::VolumeState::Trashed {
+            return Err(with_reason(
+                ConnectError::not_found(format!("no volume {id:032x}")),
+                "not_found",
+            ));
         }
+        let op = self
+            .start_op(
+                &who,
+                "FlattenVolume",
+                crate::operations::Work::Flatten { volume: id },
+                target,
+                format!("copying what {} reads through its parents", v.name),
+            )
+            .await?;
+        Ok(pb::FlattenVolumeResponse {
+            volume: Some(volume_pb(&v)).into(),
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn create_group_snapshot(
@@ -903,6 +917,58 @@ impl Api {
     /// A snapshot operation (volumes.md §10.3, §10.4): authorized, run on
     /// the map service's reactor as a client of `.meta`, and audited if
     /// it changes anything.
+    /// Volume `id`'s header, whatever its state.
+    async fn volume_any(&self, id: u128) -> Result<crate::Volume, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Snapshots {
+                op: crate::SnapOp::Get { id },
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        match volume_result(rx.recv().await)? {
+            crate::SnapDone::Volume(v) => Ok(v),
+            d => Err(unexpected_done(d)),
+        }
+    }
+
+    /// A long operation started for `who` (D120): on the leader only,
+    /// audited as `rpc`'s start; its end is audited too.
+    async fn start_op(
+        &self,
+        who: &str,
+        rpc: &str,
+        work: crate::operations::Work,
+        target: String,
+        message: String,
+    ) -> Result<pb::Operation, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Leads(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        if let Some(Err(e)) = rx.recv().await {
+            return Err(meta_error(e, ConnectError::unavailable, "not_leader"));
+        }
+        let r = self
+            .admin
+            .runner
+            .create(work, target.clone(), 1, message, who.to_string())
+            .await;
+        audit(
+            who,
+            rpc,
+            &target,
+            &match &r {
+                Ok(o) => format!("ok, operation {} started", o.id),
+                Err(e) => format!("failed: {e:?}"),
+            },
+        );
+        match r {
+            Ok(o) => Ok(ops::op_pb(&o)),
+            Err(e) => Err(self.store_error(e).await),
+        }
+    }
+
     async fn snap(
         &self,
         ctx: &RequestContext,
@@ -1034,7 +1100,10 @@ pub fn tls_from_dir(dir: &std::path::Path, cluster: u128) -> Result<Tls, String>
 /// single-threaded tokio runtime, over TLS when `tls` is given, and on
 /// the local socket `unix` if given. `map_address` is reported to clients
 /// as where the map service listens. With `signing`, this member signs
-/// joins and renewals (§23.4.2).
+/// joins and renewals (§23.4.2). Long operations are kept in `store`
+/// (D120), else in memory; the leader runs the trash's purger (D54) every
+/// `trash_scan`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     listener: std::net::TcpListener,
     unix: Option<std::os::unix::net::UnixListener>,
@@ -1042,6 +1111,8 @@ pub fn spawn(
     map_address: SocketAddr,
     tls: Option<Tls>,
     signing: Option<Signing>,
+    store: Option<Arc<crate::store::Db>>,
+    trash_scan: std::time::Duration,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("hyperstor-api".into())
@@ -1061,12 +1132,23 @@ pub fn spawn(
                     Some(t) => (Some(Arc::new(t.config)), Some(t.cluster), Some(t.root)),
                     None => (None, None, None),
                 };
+                let settings = store
+                    .clone()
+                    .map(|db| Arc::new(crate::settings::Settings::new(db)));
+                let runner = ops::Runner::new(
+                    tx.clone(),
+                    Arc::new(match store {
+                        Some(db) => crate::operations::Ops::replicated(db),
+                        None => crate::operations::Ops::in_memory(),
+                    }),
+                );
+                tokio::spawn(runner.clone().upkeep(settings, trash_scan));
                 let api = Arc::new(Api {
                     tx,
                     map_address: map_address.to_string(),
                     cluster,
                     buckets: Default::default(),
-                    admin: admin::State::new(signing, root, api_address),
+                    admin: admin::State::new(signing, root, api_address, runner),
                 });
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
                 let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);

@@ -17,9 +17,10 @@
 //!   intermediate CA, which every member holds (§23.8).
 //! - **Renewal** signs a new key for the caller's own identity and
 //!   addresses, read from the certificate it connected with (D56).
-//! - **Operations** are held in memory too, the last 100: a drain takes a
-//!   node's devices out and follows its PGs until none still lives on the
-//!   node and none is moving.
+//! - **Operations** (D120, D121) are rows of the replicated store, run by
+//!   `super::ops`: a drain takes a node's devices out and follows its PGs
+//!   until none still lives on the node and none is moving. Any member
+//!   answers for them; `WatchOperation` streams one's changes.
 
 use super::{Api, Need, audit, meta_error, with_reason};
 use crate::Admin;
@@ -33,9 +34,8 @@ use hyperstor_api::{
 };
 use hyperstor_pki::{Identity, Pem, Role};
 use hyperstor_reactor::chan::oneshot;
-use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What a member needs to sign joins and renewals.
@@ -65,13 +65,12 @@ pub struct Signing {
 /// Tokens live an hour by default and a week at most.
 const TOKEN_TTL: u32 = 3600;
 const TOKEN_TTL_MAX: u32 = 7 * 86400;
-const OPS_KEPT: usize = 100;
 
 pub(super) struct State {
     signing: Option<Signing>,
     root: Option<String>,
     api_address: String,
-    ops: Mutex<VecDeque<Arc<Mutex<pb::Operation>>>>,
+    pub(super) runner: super::ops::Runner,
 }
 
 impl State {
@@ -83,12 +82,17 @@ impl State {
             .is_some_and(|s| s.certs.is_revoked_cert(der, now_unix()))
     }
 
-    pub(super) fn new(signing: Option<Signing>, root: Option<String>, api_address: String) -> Self {
+    pub(super) fn new(
+        signing: Option<Signing>,
+        root: Option<String>,
+        api_address: String,
+        runner: super::ops::Runner,
+    ) -> Self {
         State {
             signing,
             root,
             api_address,
-            ops: Mutex::new(VecDeque::new()),
+            runner,
         }
     }
 }
@@ -110,7 +114,7 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-fn random_hex(bytes: usize) -> String {
+pub(super) fn random_hex(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
     // SAFETY: getrandom writes at most `b.len()` bytes into `b`.
     let n = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
@@ -133,10 +137,6 @@ fn rustls_pemfile_first(pem: &str) -> Option<Vec<u8>> {
         .next()?
         .ok()
         .map(|c| c.to_vec())
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(super) fn invalid(msg: impl Into<String>, reason: &str) -> ConnectError {
@@ -303,17 +303,17 @@ impl Api {
         }
     }
 
-    fn op(&self, id: &str) -> Result<Arc<Mutex<pb::Operation>>, ConnectError> {
-        lock(&self.admin.ops)
-            .iter()
-            .find(|o| lock(o).id == id)
-            .cloned()
-            .ok_or_else(|| {
-                with_reason(
-                    ConnectError::not_found(format!("no operation {id}")),
-                    "not_found",
-                )
-            })
+    async fn op(&self, id: &str) -> Result<crate::operations::Op, ConnectError> {
+        let key = id.to_string();
+        let r = self.admin.runner.store(move |s| s.get(&key)).await;
+        match r {
+            Ok(Some(o)) => Ok(o),
+            Ok(None) => Err(with_reason(
+                ConnectError::not_found(format!("no operation {id}")),
+                "not_found",
+            )),
+            Err(e) => Err(self.token_error(e).await),
+        }
     }
 }
 
@@ -1040,92 +1040,28 @@ impl NodeService for Api {
             }
             .into());
         }
-        let op = Arc::new(Mutex::new(pb::Operation {
-            id: random_hex(8),
-            kind: "drain".into(),
-            target: target.clone(),
-            state: pb::OperationState::OPERATION_STATE_RUNNING.into(),
-            total: moves.len() as u32,
-            message: format!("{} PG(s) to move off node {node}", moves.len()),
-            started_unix: now_unix(),
-            created_by: who,
-            ..Default::default()
-        }));
-        {
-            let mut ops = lock(&self.admin.ops);
-            ops.push_front(op.clone());
-            ops.truncate(OPS_KEPT);
-        }
-        let tx = self.tx.clone();
-        let follow = op.clone();
-        tokio::spawn(async move { follow_drain(tx, follow, node, devices, moves).await });
-        let snapshot = lock(&op).clone();
+        let pgs = moves.iter().map(|m| (m.pool, m.pg)).collect();
+        let op = self
+            .admin
+            .runner
+            .create(
+                crate::operations::Work::Drain { node, devices, pgs },
+                target,
+                moves.len() as u32,
+                format!("{} PG(s) to move off node {node}", moves.len()),
+                who,
+            )
+            .await;
+        let snapshot = match op {
+            Ok(o) => super::ops::op_pb(&o),
+            Err(e) => return Err(self.token_error(e).await),
+        };
         Ok(pb::DrainNodeResponse {
             operation: buffa::MessageField::some(snapshot),
             moves: pb_moves,
             ..Default::default()
         }
         .into())
-    }
-}
-
-/// Follows a drain every half second until every moved PG is clean of
-/// the node's devices and settled (`acting` = `up`); stops when the
-/// operation is cancelled, and fails if the devices come back in.
-async fn follow_drain(
-    tx: hyperstor_reactor::chan::Sender<Admin>,
-    op: Arc<Mutex<pb::Operation>>,
-    node: u32,
-    devices: Vec<u32>,
-    moves: Vec<crate::PgMove>,
-) {
-    let running = pb::OperationState::OPERATION_STATE_RUNNING;
-    // The drain is fenced and then published: until the published map has
-    // the devices out, it's in progress, not undone.
-    let mut seen_out = false;
-    loop {
-        if lock(&op).state.as_known() != Some(running) {
-            return;
-        }
-        let (reply, rx) = oneshot();
-        if tx.send(Admin::Published(reply)).is_err() {
-            return;
-        }
-        let Some((map, ..)) = rx.recv().await else {
-            return;
-        };
-        let any_in = map.devices.values().any(|d| d.node == node && d.up_in);
-        let back_in = seen_out && any_in;
-        seen_out |= !any_in;
-        let left = moves
-            .iter()
-            .filter(|m| {
-                map.pgs.get(&(m.pool, m.pg)).is_none_or(|pg| {
-                    pg.acting != pg.up || pg.acting.iter().any(|d| devices.contains(d))
-                })
-            })
-            .count() as u32;
-        {
-            let mut o = lock(&op);
-            if o.state.as_known() != Some(running) {
-                return;
-            }
-            o.done = o.total - left.min(o.total);
-            if back_in {
-                o.state = pb::OperationState::OPERATION_STATE_FAILED.into();
-                o.message = format!("node {node}'s devices were brought back in");
-                o.finished_unix = now_unix();
-                return;
-            }
-            if left == 0 && seen_out {
-                o.state = pb::OperationState::OPERATION_STATE_DONE.into();
-                o.message = format!("node {node} drained: no PG lives on it");
-                o.finished_unix = now_unix();
-                return;
-            }
-            o.message = format!("{left} PG(s) still moving off node {node}");
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -1142,9 +1078,7 @@ impl OperationService for Api {
             &format!("operation {}", req.id),
             false,
         )?;
-        let op = self.op(req.id)?;
-        let snapshot = lock(&op).clone();
-        Ok(snapshot.into())
+        Ok(super::ops::op_pb(&self.op(req.id).await?).into())
     }
 
     async fn list_operations(
@@ -1153,14 +1087,80 @@ impl OperationService for Api {
         _req: ServiceRequest<'_, pb::ListOperationsRequest>,
     ) -> ServiceResult<pb::ListOperationsResponse> {
         self.authorize(&ctx, "ListOperations", "operations", false)?;
+        let all = match self.admin.runner.store(|s| s.list()).await {
+            Ok(v) => v,
+            Err(e) => return Err(self.token_error(e).await),
+        };
         Ok(pb::ListOperationsResponse {
-            operations: lock(&self.admin.ops)
-                .iter()
-                .map(|o| lock(o).clone())
-                .collect(),
+            operations: all.iter().map(super::ops::op_pb).collect(),
             ..Default::default()
         }
         .into())
+    }
+
+    async fn watch_operation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::WatchOperationRequest>,
+    ) -> ServiceResult<connectrpc::ServiceStream<pb::WatchOperationResponse>> {
+        self.authorize(
+            &ctx,
+            "WatchOperation",
+            &format!("operation {}", req.id),
+            false,
+        )?;
+        let first = self.op(req.id).await?;
+        let runner = self.admin.runner.clone();
+        // The operation now, then each change (polled every 250 ms), and
+        // again every 2 s so a client's per-message timeout never fires;
+        // the stream ends after a finished state.
+        struct Watch {
+            next: Option<crate::operations::Op>,
+            last: Option<crate::operations::Op>,
+            sent: std::time::Instant,
+        }
+        let start = Watch {
+            next: Some(first),
+            last: None,
+            sent: std::time::Instant::now(),
+        };
+        let stream = futures_util::stream::unfold(start, move |mut w| {
+            let runner = runner.clone();
+            async move {
+                loop {
+                    if let Some(o) = w.next.take() {
+                        w.sent = std::time::Instant::now();
+                        let msg = pb::WatchOperationResponse {
+                            operation: buffa::MessageField::some(super::ops::op_pb(&o)),
+                            ..Default::default()
+                        };
+                        w.last = Some(o);
+                        return Some((Ok(msg), w));
+                    }
+                    let last = w.last.as_ref()?;
+                    if !last.running() {
+                        return None;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let id = last.id.clone();
+                    match runner.store(move |s| s.get(&id)).await {
+                        Ok(Some(o)) => {
+                            if Some(&o) != w.last.as_ref()
+                                || w.sent.elapsed() >= Duration::from_secs(2)
+                            {
+                                w.next = Some(o);
+                            }
+                        }
+                        Ok(None) => return None,
+                        Err(e) => {
+                            w.last = None;
+                            return Some((Err(ConnectError::unavailable(format!("{e:?}"))), w));
+                        }
+                    }
+                }
+            }
+        });
+        Ok((Box::pin(stream) as connectrpc::ServiceStream<pb::WatchOperationResponse>).into())
     }
 
     async fn cancel_operation(
@@ -1168,69 +1168,102 @@ impl OperationService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::CancelOperationRequest>,
     ) -> ServiceResult<pb::Operation> {
+        use crate::operations::{State as S, Work};
         let target = format!("operation {}", req.id);
         let who = self.authorize(&ctx, "CancelOperation", &target, true)?;
-        let op = self.op(req.id)?;
-        let node = {
-            let mut o = lock(&op);
-            if o.state.as_known() != Some(pb::OperationState::OPERATION_STATE_RUNNING) {
+        let op = self.op(req.id).await?;
+        // Only a drain stops part way: a flatten or a purge runs to its end
+        // (D121).
+        let Work::Drain { node, .. } = op.work else {
+            return Err(with_reason(
+                ConnectError::failed_precondition(format!(
+                    "a {} can't be cancelled",
+                    op.work.kind()
+                )),
+                "not_cancellable",
+            ));
+        };
+        if !op.running() {
+            return Err(with_reason(
+                ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
+                "finished",
+            ));
+        }
+        let id = op.id.clone();
+        let cancelled = self
+            .admin
+            .runner
+            .store(move |s| {
+                s.update(&id, |o| {
+                    if o.running() {
+                        o.state = S::Cancelled;
+                        o.finished_unix = now_unix();
+                        o.message = "cancelled".into();
+                    }
+                })
+            })
+            .await;
+        match cancelled {
+            Ok(Some(o)) if o.state == S::Cancelled => {}
+            Ok(_) => {
                 return Err(with_reason(
-                    ConnectError::failed_precondition(format!("operation {} has finished", o.id)),
+                    ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
                     "finished",
                 ));
             }
-            o.state = pb::OperationState::OPERATION_STATE_CANCELLED.into();
-            o.finished_unix = now_unix();
-            o.target
-                .strip_prefix("node ")
-                .and_then(|n| n.parse::<u32>().ok())
-        };
+            Err(e) => return Err(self.token_error(e).await),
+        }
         // A cancelled drain brings the node's devices back in.
-        let mut message = "cancelled".to_string();
-        if let Some(node) = node {
-            let (map, ..) = self.published().await?;
-            let devices: Vec<u32> = map
-                .devices
-                .values()
-                .filter(|d| d.node == node)
-                .map(|d| d.id)
-                .collect();
-            let mut epoch = 0;
-            for device in devices {
-                let r = self
-                    .ask(|reply| Admin::SetDeviceIn {
-                        device,
-                        up_in: true,
-                        reply,
-                    })
-                    .await?;
-                match r {
-                    Ok(e) => epoch = epoch.max(e),
-                    Err(e) => {
-                        message = format!("cancelled; device {device} not brought back in: {e}");
-                        break;
-                    }
+        let mut message = String::new();
+        let (map, ..) = self.published().await?;
+        let devices: Vec<u32> = map
+            .devices
+            .values()
+            .filter(|d| d.node == node)
+            .map(|d| d.id)
+            .collect();
+        let mut epoch = 0;
+        for device in devices {
+            let r = self
+                .ask(|reply| Admin::SetDeviceIn {
+                    device,
+                    up_in: true,
+                    reply,
+                })
+                .await?;
+            match r {
+                Ok(e) => epoch = epoch.max(e),
+                Err(e) => {
+                    message = format!("cancelled; device {device} not brought back in: {e}");
+                    break;
                 }
-            }
-            if !message.contains(':') {
-                // Answered once the map that has them back is published,
-                // so what's read next shows it (it is fenced first).
-                let t = std::time::Instant::now();
-                while self.published().await?.0.epoch < epoch
-                    && t.elapsed() < Duration::from_secs(5)
-                {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                message = format!("cancelled; node {node}'s devices are back in");
             }
         }
+        if message.is_empty() {
+            // Answered once the map that has them back is published, so
+            // what's read next shows it (it is fenced first).
+            let t = std::time::Instant::now();
+            while self.published().await?.0.epoch < epoch && t.elapsed() < Duration::from_secs(5) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            message = format!("cancelled; node {node}'s devices are back in");
+        }
         audit(&who, "CancelOperation", &target, &format!("ok, {message}"));
-        let snapshot = {
-            let mut o = lock(&op);
-            o.message = message;
-            o.clone()
-        };
-        Ok(snapshot.into())
+        let id = op.id.clone();
+        let m = message.clone();
+        let r = self
+            .admin
+            .runner
+            .store(move |s| s.update(&id, |o| o.message = m))
+            .await;
+        match r {
+            Ok(Some(o)) => Ok(super::ops::op_pb(&o).into()),
+            Ok(None) => Err(with_reason(
+                ConnectError::not_found("no such operation"),
+                "not_found",
+            )),
+            Err(e) => Err(self.token_error(e).await),
+        }
     }
 }
 

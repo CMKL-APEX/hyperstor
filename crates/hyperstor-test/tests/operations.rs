@@ -126,3 +126,51 @@ fn drains_run_as_operations() {
             .any(|l| l.contains("\"op\":\"DrainNode\"") && l.contains("refused"))
     );
 }
+
+/// Operations are rows of the replicated store (D120): they outlive the
+/// map service, which carries on with a drain it was following; a flatten
+/// can't be cancelled (D121); `op watch` follows a change at a time.
+#[test]
+fn operations_outlive_the_map_service() {
+    let mut c = Cluster::all_in_one("ops-restart", 4);
+    let id_of = |r: &Run| r.out.split_whitespace().nth(1).unwrap().to_string();
+    let v = id_of(
+        &c.ctl(&["create-volume", "--size", "64M", "--name", "v"])
+            .ok(),
+    );
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "s"])
+        .ok();
+    let k = id_of(
+        &c.ctl(&["clone-volume", "--id", &v, "--epoch", "1", "--name", "k"])
+            .ok(),
+    );
+    let f = c.ctl(&["flatten-volume", "--id", &k]).ok();
+    let flatten = op_id(&f.out);
+    let r = c
+        .ctl(&["op", "watch", "--id", &flatten, "--wait", "120"])
+        .ok();
+    assert!(
+        r.has(&format!("{flatten} flatten volume {k}: done")),
+        "{}",
+        r.out
+    );
+    let r = c.ctl(&["op", "cancel", "--id", &flatten]).expect(1);
+    assert!(r.has("(not_cancellable)"), "{}", r.out);
+
+    // A drain under way when the map service stops is carried on by the
+    // next one to lead (here, the same member again).
+    let d = c.ctl(&["drain", "--node", "3"]).ok();
+    let drain = op_id(&d.out);
+    c.stop_meta();
+    c.start_meta();
+    wait_for("the map service", 60, || {
+        (c.ctl(&["op", "list"]).code == 0).then_some(())
+    });
+    let r = c
+        .ctl(&["op", "watch", "--id", &drain, "--wait", "120"])
+        .ok();
+    assert!(r.has(&format!("{drain} drain node 3: done")), "{}", r.out);
+    let list = c.ctl(&["op", "list"]).ok();
+    assert!(list.has(&flatten) && list.has(&drain), "{}", list.out);
+    c.ctl(&["in", "--node", "3", "--wait", "60"]).ok();
+}

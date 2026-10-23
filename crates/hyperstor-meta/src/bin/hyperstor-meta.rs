@@ -377,7 +377,7 @@ fn main() {
         // The cluster's settings, the trash's among them (D54): in the
         // replicated store when there is one, else the defaults.
         let mut settings: Option<std::sync::Arc<hyperstor_meta::settings::Settings>> = None;
-        let (meta, _replica) = match raft {
+        let (meta, replica) = match raft {
             None => (
                 hyperstor_meta::Meta::with_lease(map, Duration::from_millis(lease)),
                 None,
@@ -427,13 +427,12 @@ fn main() {
         if let Some(api) = api {
             let (tx, rx) = hyperstor_reactor::chan::channel();
             hyperstor_reactor::spawn(meta.clone().admin(rx, addr));
-            // The trash's purger (D54), every minute (HS_TRASH_SCAN_MS
-            // for tests).
+            // The trash's purger (D54), on the API's thread, every minute
+            // (HS_TRASH_SCAN_MS for tests).
             let every = std::env::var("HS_TRASH_SCAN_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .map_or(Duration::from_secs(60), Duration::from_millis);
-            hyperstor_reactor::spawn(meta.clone().purger(addr, settings.clone(), every));
             // The audit log in .meta (D112): this member's records, and
             // on the leader the daily pruning (D113).
             hyperstor_reactor::spawn(hyperstor_meta::audit_log::writer(addr));
@@ -447,7 +446,8 @@ fn main() {
                 "hyperstor-meta: cluster API on {}",
                 api.local_addr().expect("address")
             );
-            hyperstor_meta::api::spawn(api, socket, tx, addr, tls, signing);
+            let store = replica.as_ref().map(|r| r.db.clone());
+            hyperstor_meta::api::spawn(api, socket, tx, addr, tls, signing, store, every);
         }
         hyperstor_meta::serve(l, meta).await
     });

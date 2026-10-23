@@ -85,6 +85,18 @@ test("volumes and snapshots", async ({ page }) => {
   await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText("in_use");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  // Flattening is an operation: its id at once, its progress on Operations.
+  await page.getByTestId("volume-web-clone").getByRole("button", { name: "Flatten" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Flatten" }).click();
+  const notice = page.getByText(/Flattening: operation [0-9a-f]{16}/);
+  await expect(notice).toBeVisible();
+  const opId = /operation ([0-9a-f]{16})/.exec((await notice.textContent()) ?? "")![1];
+  await page.getByRole("link", { name: "Operations" }).click();
+  const flatten = page.getByTestId(`op-${opId}`);
+  await expect(flatten).toContainText("flatten");
+  await expect(flatten).toContainText("done", { timeout: 30_000 });
+  await expect(flatten.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Volumes" }).click();
   // The clone goes, to the trash.
   await page.getByTestId("volume-web-clone").getByRole("button", { name: "Delete" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
@@ -111,7 +123,9 @@ test("the trash restores and purges", async ({ page }) => {
   await page.getByRole("link", { name: "Trash" }).click();
   await row.getByRole("button", { name: "Purge now" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Purge now" }).click();
-  await expect(page.getByText("The trash is empty.")).toBeVisible();
+  await expect(page.getByText(/Purging volume web-clone: operation [0-9a-f]{16}/)).toBeVisible();
+  // The purge runs in the background; the list catches up.
+  await expect(page.getByText("The trash is empty.")).toBeVisible({ timeout: 30_000 });
 });
 
 test("the audit log shows who did what", async ({ page }) => {

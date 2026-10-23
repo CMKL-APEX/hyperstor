@@ -71,6 +71,7 @@ export default function Trash() {
   const pools = (status.data?.pools ?? []).filter((p) => p.id !== 0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [name, setName] = useState("");
+  const [notice, setNotice] = useState("");
   const close = (done: boolean) => {
     setDialog(null);
     setName("");
@@ -80,6 +81,7 @@ export default function Trash() {
     <>
       <Card title="Trash">
         <ErrorText error={items.error} />
+        {notice && <p className="text-sm text-emerald-700 mb-2">{notice}</p>}
         <Table head={["What", "Volume", "Name", "Pool", "Size", "Deleted", "Purged", ""]} empty="The trash is empty.">
           {(items.data ?? []).map((i) => (
             <tr key={`${i.id}-${String(i.epoch)}`} data-testid={`trash-${i.name}`}>
@@ -139,15 +141,18 @@ export default function Trash() {
           submit="Purge now"
           kind="danger"
           cli={`trash purge ${cliOf(dialog.item)}`}
-          run={() =>
-            trash.purgeFromTrash({
+          run={async () => {
+            const r = await trash.purgeFromTrash({
               id: dialog.item.id,
               epoch: dialog.item.kind === "snapshot" ? dialog.item.epoch : undefined,
-            })
-          }
+            });
+            setNotice(`Purging ${what(dialog.item)}: operation ${r.operation?.id} (Operations).`);
+          }}
           onClose={close}
         >
-          <p className="text-sm">Its data is deleted for good. This needs a login of the last 10 minutes.</p>
+          <p className="text-sm">
+            Its data is deleted for good, as an operation (Operations). This needs a login of the last 10 minutes.
+          </p>
         </ActionDialog>
       )}
     </>

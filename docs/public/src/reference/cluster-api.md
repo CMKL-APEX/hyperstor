@@ -85,7 +85,7 @@ values are left out of answers.
 | `DeleteSnapshot` | `{"id": "…", "epoch": "4"}` | `purge_unix`: to the trash; `failed_precondition` (`in_use`) while a clone or rollback depends on it |
 | `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone |
 | `RollbackVolume` | `{"id": "…", "epoch": "4"}` | `volume`; `failed_precondition` (`attached`) while attached |
-| `FlattenVolume` | `{"id": "…"}` | `volume` |
+| `FlattenVolume` | `{"id": "…"}` | `volume` as it is now, and the `operation` that copies its data (follow it with `WatchOperation`) |
 | `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
 | `DeleteGroupSnapshot` | `{"group": "…"}` | `purge_unix`: its snapshots are in the trash |
 
@@ -104,7 +104,7 @@ values are left out of answers.
 |---|---|---|
 | `ListTrash` | `{"pool": 1}` (0: every pool) | `items`: `kind` (`volume` or `snapshot`), `id`, `epoch`, `name`, `pool`, `size`, `trashed_unix`, `purge_unix`, `group` |
 | `RestoreFromTrash` | `{"id": "…"}`, optionally `"epoch"` (a snapshot) and `"name"` | `volume`; a volume whose name was taken comes back as `NAME-restored` |
-| `PurgeFromTrash` | `{"id": "…"}`, optionally `"epoch"` | `{}`, once its data is gone; `failed_precondition` if it isn't in the trash |
+| `PurgeFromTrash` | `{"id": "…"}`, optionally `"epoch"` | the `operation` that deletes its data; `failed_precondition` if it isn't in the trash |
 | `GetTrashSettings` | `{"pool": 1}` | `settings`: `pool`, `grace_seconds` (default 86400), `on_full` (`keep` or `purge`) |
 | `SetTrashSettings` | `{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}` | `settings`. On the leader |
 
@@ -125,8 +125,9 @@ values are left out of answers.
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
-| `ListOperations` | `{}` | `operations`, newest first (the last 100, kept in memory) |
-| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain brings the node's devices back in |
+| `ListOperations` | `{}` | `operations`, newest first: drains, flattens and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
+| `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |
+| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain brings the node's devices back in. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
 
 ```sh
 cd /etc/hyperstor/pki
@@ -156,7 +157,7 @@ word for scripts (the message is for people, and may change):
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
-| `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished |
+| `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished`, `not_cancellable` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished, or isn't a drain |
 | `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
 | `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 

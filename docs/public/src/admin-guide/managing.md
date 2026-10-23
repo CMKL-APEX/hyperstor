@@ -83,7 +83,7 @@ Then the map service purges it.
 hyperstorctl delete-volume --id ID        # → the trash, purged in a day
 hyperstorctl trash list
 hyperstorctl trash restore --id ID        # back, under its name
-hyperstorctl trash purge --id ID          # gone now (a fresh login, through mgmt)
+hyperstorctl trash purge --id ID --wait 600   # gone now (a fresh login, through mgmt)
 hyperstorctl trash settings --pool 1 --grace 604800   # keep a week
 ```
 
@@ -175,9 +175,12 @@ hyperstorctl in --node 3                # after the service
 ```
 
 `drain` prints each PG that moves, with its acting set before and where
-it goes. Operations are kept in the map service's memory, the last 100;
-`op watch` exits with status 1 if the operation failed or was
-cancelled, for scripts.
+it goes. Flattening a clone and purging from the trash are operations
+too, as is each purge the map service makes when a grace period ends.
+Operations are kept in the map service's replicated store, a week after
+they finish, and a new leader carries on with those still running. Only
+a drain can be cancelled. `op watch` exits with status 1 if the
+operation failed or was cancelled, for scripts.
 
 ## Revoking a certificate
 
@@ -204,7 +207,7 @@ hyperstorctl snapshot list --id ID
 hyperstorctl snapshot group --ids ID1,ID2 --name db  # one instant for both
 hyperstorctl clone-volume --id ID --epoch E --name test-copy
 hyperstorctl rollback-volume --id ID --epoch E       # the volume must be detached
-hyperstorctl flatten-volume --id CLONE               # so its parents can go
+hyperstorctl flatten-volume --id CLONE --wait 3600  # so its parents can go
 hyperstorctl snapshot delete --id ID --epoch E
 ```
 

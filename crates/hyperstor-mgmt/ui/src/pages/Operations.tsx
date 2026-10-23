@@ -1,4 +1,5 @@
-// Running and recent operations with their progress; cancel (operators).
+// Running and recent operations (drains, flattens, purges; finished ones
+// are kept a week) with their progress; cancel a drain (operators).
 import { useState } from "react";
 import { ops } from "../api";
 import { OperationState, type Operation } from "../gen/hyperstor/v1/admin_pb";
@@ -46,7 +47,7 @@ export default function Operations() {
               <td className={`${td} text-xs`}>{o.createdBy}</td>
               <td className={`${td} whitespace-normal`}>{o.message}</td>
               <td className={td}>
-                {can("operate") && o.state === OperationState.RUNNING && <Button onClick={() => setCancel(o)}>Cancel</Button>}
+                {can("operate") && o.state === OperationState.RUNNING && o.kind === "drain" && <Button onClick={() => setCancel(o)}>Cancel</Button>}
               </td>
             </tr>
           );

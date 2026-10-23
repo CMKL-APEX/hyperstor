@@ -218,8 +218,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("MgmtStoreService.PutRow", "hyperstor-mgmt"),
     ("MgmtStoreService.DeleteRow", "hyperstor-mgmt"),
     ("MgmtStoreService.ListRows", "hyperstor-mgmt"),
-    ("OperationService.GetOperation", "op get, op watch"),
+    (
+        "OperationService.GetOperation",
+        "op get, op watch through hyperstor-mgmt",
+    ),
     ("OperationService.ListOperations", "op list"),
+    ("OperationService.WatchOperation", "op watch, --wait"),
     ("OperationService.CancelOperation", "op cancel"),
     ("AuditService.ListAudit", "audit list"),
     // hyperstor-mgmt's own records: no command.
@@ -478,13 +482,13 @@ pub fn ops_text(ops: &[pb::Operation]) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<16}  {:<6} {:<10} {:<9} {:>9}  {:<16}  MESSAGE",
+        "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  MESSAGE",
         "OPERATION", "KIND", "TARGET", "STATE", "PROGRESS", "STARTED (UTC)"
     );
     for op in ops {
         let _ = writeln!(
             o,
-            "{:<16}  {:<6} {:<10} {:<9} {:>9}  {:<16}  {}",
+            "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  {}",
             op.id,
             op.kind,
             op.target,
