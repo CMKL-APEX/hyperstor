@@ -4,6 +4,11 @@
 //! following (after a restart or a change of leader), prunes finished ones
 //! past a week, and runs the trash's purger (D54), whose purges are
 //! operations too.
+//!
+//! A leader runs nothing before it has fenced the last one (D125): that
+//! one's client instance, recorded in the settings, is blocklisted, so a
+//! flatten or a purge a former leader still runs can't write once this
+//! one carries it on.
 
 use super::audit;
 use crate::Admin;
@@ -51,15 +56,74 @@ pub(super) struct Runner {
     pub(super) ops: Arc<Ops>,
     /// Operations this member follows now.
     running: Arc<Mutex<HashSet<String>>>,
+    /// Where the leaders' instances are recorded (none: no store, a map
+    /// service of one).
+    settings: Option<Arc<crate::settings::Settings>>,
+    /// The lead this member has fenced for, by when it began.
+    fenced: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl Runner {
-    pub(super) fn new(tx: Sender<Admin>, ops: Arc<Ops>) -> Runner {
+    pub(super) fn new(
+        tx: Sender<Admin>,
+        ops: Arc<Ops>,
+        settings: Option<Arc<crate::settings::Settings>>,
+    ) -> Runner {
         Runner {
             tx,
             ops,
             running: Arc::default(),
+            settings,
+            fenced: Arc::default(),
         }
+    }
+
+    /// Fences the last leader once per lead of this member (D125): its
+    /// client instance is blocklisted (answered once every storage node
+    /// holds that, or its lease has run out), then this one's recorded.
+    /// Refused unless this member leads.
+    pub(super) async fn fence(&self) -> Result<(), TokenError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Lead(reply))
+            .map_err(|_| TokenError::Store("map service stopped".into()))?;
+        let (since, instance) = match rx.recv().await {
+            Some(crate::Lead::Standalone) => return Ok(()),
+            Some(crate::Lead::Leader { since, instance }) => (since, instance),
+            Some(crate::Lead::Follower) | None => return Err(TokenError::NotLeader),
+        };
+        let mut fenced = self.fenced.lock().await;
+        if *fenced == Some(since) {
+            return Ok(());
+        }
+        if let Some(settings) = self.settings.clone() {
+            let s = settings.clone();
+            let last = tokio::task::spawn_blocking(move || s.ops_instance())
+                .await
+                .map_err(|e| TokenError::Store(e.to_string()))??;
+            if let Some(last) = last.filter(|l| *l != instance) {
+                let (reply, rx) = oneshot();
+                self.tx
+                    .send(Admin::Blocklist {
+                        instance: last,
+                        reply,
+                    })
+                    .map_err(|_| TokenError::Store("map service stopped".into()))?;
+                match rx.recv().await {
+                    Some(Ok(epoch)) => eprintln!(
+                        "hyperstor-meta: operations: the last leader's client \
+                         {last:016x} is blocklisted (map epoch {epoch})"
+                    ),
+                    Some(Err(e)) => return Err(TokenError::Store(e)),
+                    None => return Err(TokenError::Store("map service stopped".into())),
+                }
+            }
+            tokio::task::spawn_blocking(move || settings.set_ops_instance(instance))
+                .await
+                .map_err(|e| TokenError::Store(e.to_string()))??;
+        }
+        *fenced = Some(since);
+        Ok(())
     }
 
     /// `f` on the store, off this thread: a write waits for Raft.
@@ -87,6 +151,7 @@ impl Runner {
         message: String,
         created_by: String,
     ) -> Result<Op, TokenError> {
+        self.fence().await?;
         let op = Op {
             id: super::admin::random_hex(8),
             work,
@@ -291,19 +356,17 @@ impl Runner {
         }
     }
 
-    /// While this member leads: resumes running operations it doesn't
+    /// While this member leads, once it has fenced the last leader:
+    /// resumes running operations it doesn't
     /// follow (every 2 s), prunes finished ones past a week (hourly), and
     /// purges the trash past each pool's grace (every `scan`).
-    pub(super) async fn upkeep(
-        self,
-        settings: Option<Arc<crate::settings::Settings>>,
-        scan: Duration,
-    ) {
+    pub(super) async fn upkeep(self, scan: Duration) {
+        let settings = self.settings.clone();
         let mut last_prune = std::time::Instant::now() - Duration::from_secs(3600);
         let mut last_scan = std::time::Instant::now();
         loop {
             tokio::time::sleep(Duration::from_secs(2).min(scan)).await;
-            if !self.leads().await {
+            if !self.leads().await || self.fence().await.is_err() {
                 continue;
             }
             if let Ok(all) = self.store(|s| s.list()).await {
