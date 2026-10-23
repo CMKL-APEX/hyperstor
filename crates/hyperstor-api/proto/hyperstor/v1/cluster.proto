@@ -24,7 +24,8 @@ service ClusterService {
   // Creates a volume (decisions.md D77). Write.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
-  // Deletes a volume and its data. Write.
+  // Moves a volume to the trash (decisions.md D54): purged after its
+  // pool's grace period, or restored. Write.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 
   // A volume's snapshots (volumes.md §10.3). Read.
@@ -34,7 +35,7 @@ service ClusterService {
   // Write.
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
 
-  // Deletes a snapshot nothing depends on. Write.
+  // Moves a snapshot nothing depends on to the trash. Write.
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 
   // Creates a volume from a snapshot, sharing its data (volumes.md
@@ -52,8 +53,107 @@ service ClusterService {
   // Write.
   rpc CreateGroupSnapshot(CreateGroupSnapshotRequest) returns (CreateGroupSnapshotResponse);
 
-  // Deletes a group's snapshots, and the group. Write.
+  // Moves a group's snapshots to the trash; the group goes with the last
+  // of them. Write.
   rpc DeleteGroupSnapshot(DeleteGroupSnapshotRequest) returns (DeleteGroupSnapshotResponse);
+}
+
+// The trash (administration.md §23.9.3, decisions.md D54, D115):
+// deleted volumes and snapshots, kept for their pool's grace period.
+service TrashService {
+  // What's in the trash, in a pool or every data pool. Read.
+  rpc ListTrash(ListTrashRequest) returns (ListTrashResponse);
+
+  // Brings a volume or a snapshot back. Write (operators, D114).
+  rpc RestoreFromTrash(RestoreFromTrashRequest) returns (RestoreFromTrashResponse);
+
+  // Deletes a volume or a snapshot in the trash for good, at once.
+  // Write (storage administrators, with a fresh login).
+  rpc PurgeFromTrash(PurgeFromTrashRequest) returns (PurgeFromTrashResponse);
+
+  // A pool's grace period and what a full pool does with its trash. Read.
+  rpc GetTrashSettings(GetTrashSettingsRequest) returns (GetTrashSettingsResponse);
+
+  // Sets them. Write (storage administrators, with a fresh login).
+  rpc SetTrashSettings(SetTrashSettingsRequest) returns (SetTrashSettingsResponse);
+}
+
+// Something in the trash: a volume (with its snapshots), or a snapshot
+// of a volume that isn't.
+message TrashItem {
+  // "volume" or "snapshot".
+  string kind = 1;
+  // The volume (32 hexadecimal digits).
+  string id = 2;
+  // The snapshot's epoch; 0 for a volume.
+  uint64 epoch = 3;
+  string name = 4;
+  uint32 pool = 5;
+  // The volume's size in bytes.
+  uint64 size = 6;
+  uint64 trashed_unix = 7 [json_name = "trashed_unix"];
+  // When the trash purges it (Unix seconds).
+  uint64 purge_unix = 8 [json_name = "purge_unix"];
+  // A snapshot's consistency group, if any.
+  string group = 9;
+}
+
+message ListTrashRequest {
+  // 0: every data pool.
+  uint32 pool = 1;
+}
+
+message ListTrashResponse {
+  repeated TrashItem items = 1;
+}
+
+message RestoreFromTrashRequest {
+  string id = 1;
+  // A snapshot of the volume; absent: the volume.
+  optional uint64 epoch = 2;
+  // The restored volume's name; empty: its own, or NAME-restored if
+  // another volume of the pool took it meanwhile.
+  string name = 3;
+}
+
+message RestoreFromTrashResponse {
+  // The volume, as restored (or the one whose snapshot was).
+  Volume volume = 1;
+}
+
+message PurgeFromTrashRequest {
+  string id = 1;
+  // A snapshot of the volume; absent: the volume.
+  optional uint64 epoch = 2;
+}
+
+message PurgeFromTrashResponse {}
+
+message GetTrashSettingsRequest {
+  uint32 pool = 1;
+}
+
+message SetTrashSettingsRequest {
+  uint32 pool = 1;
+  // Seconds a deleted volume or snapshot stays; 0 purges at once.
+  uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+  // "keep" or "purge": what a full pool does with its trash (D115;
+  // acts once pools have fullness thresholds, D27).
+  string on_full = 3 [json_name = "on_full"];
+}
+
+message TrashSettings {
+  uint32 pool = 1;
+  uint64 grace_seconds = 2 [json_name = "grace_seconds"];
+  string on_full = 3 [json_name = "on_full"];
+}
+
+message GetTrashSettingsResponse {
+  TrashSettings settings = 1;
+}
+
+message SetTrashSettingsResponse {
+  TrashSettings settings = 1;
 }
 
 enum Health {
@@ -208,7 +308,10 @@ message DeleteVolumeRequest {
   bool force = 2;
 }
 
-message DeleteVolumeResponse {}
+message DeleteVolumeResponse {
+  // When the trash purges it, unless restored first (Unix seconds).
+  uint64 purge_unix = 1 [json_name = "purge_unix"];
+}
 
 message Snapshot {
   // The epoch it was taken at: its identity within its volume.
@@ -244,7 +347,10 @@ message DeleteSnapshotRequest {
   uint64 epoch = 2;
 }
 
-message DeleteSnapshotResponse {}
+message DeleteSnapshotResponse {
+  // When the trash purges it, unless restored first (Unix seconds).
+  uint64 purge_unix = 1 [json_name = "purge_unix"];
+}
 
 message CloneVolumeRequest {
   // The volume whose snapshot is cloned.
@@ -296,4 +402,7 @@ message DeleteGroupSnapshotRequest {
   string group = 1;
 }
 
-message DeleteGroupSnapshotResponse {}
+message DeleteGroupSnapshotResponse {
+  // When the trash purges them, unless restored first (Unix seconds).
+  uint64 purge_unix = 1 [json_name = "purge_unix"];
+}

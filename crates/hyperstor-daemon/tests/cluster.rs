@@ -3075,3 +3075,143 @@ fn clones_of_a_golden_image_share_the_read_cache() {
     });
     c.stop();
 }
+
+/// The trash (D54): a trashed volume keeps its data, isn't listed or
+/// attachable, comes back as it was (renamed if its name was taken), and
+/// goes for good when purged; a trashed snapshot can't be cloned from,
+/// isn't trashed while a clone depends on it, and a group's object goes
+/// with its last snapshot.
+#[test]
+fn the_trash_keeps_what_it_holds_until_purged() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::trash::{Trashed, trash_of};
+    use hyperstor_client::volume::VolumeState;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, pattern(7, 8192)).await.unwrap();
+        // Attached: refused, unless forced.
+        assert!(matches!(
+            cl.trash_volume(v.id, false).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        va.detach().await.unwrap();
+        let t = cl.trash_volume(v.id, false).await.unwrap();
+        assert_eq!(t.state, VolumeState::Trashed);
+        assert!(t.trashed_unix > 0);
+        assert!(
+            cl.attach(v.id).await.is_err(),
+            "a trashed volume can't be attached"
+        );
+        assert!(cl.snapshot(v.id, "no").await.is_err());
+        let listed = cl.list_volumes(POOL).await.unwrap();
+        assert!(matches!(&trash_of(&listed)[..], [Trashed::Volume(x)] if x.id == v.id));
+        // Its name taken meanwhile: back as v-restored, with its data.
+        let other = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let back = cl.restore_volume(v.id, None).await.unwrap();
+        assert_eq!(
+            (back.state, back.name.as_str()),
+            (VolumeState::Active, "v-restored")
+        );
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(
+            va.read(0, 8192).await.unwrap() == pattern(7, 8192),
+            "its data came back"
+        );
+
+        // Snapshots: trashed, not cloned from; restored, cloned; then
+        // not trashed while the clone reads it.
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        cl.trash_snapshot(v.id, s1.epoch).await.unwrap();
+        assert!(matches!(
+            cl.clone_snapshot(v.id, s1.epoch, "k", None).await,
+            Err(ClientError::NoSnapshot(_))
+        ));
+        assert!(
+            matches!(
+                cl.trash_snapshot(v.id, s1.epoch).await,
+                Err(ClientError::NoSnapshot(_))
+            ),
+            "already there"
+        );
+        cl.restore_snapshot(v.id, s1.epoch).await.unwrap();
+        let k = cl.clone_snapshot(v.id, s1.epoch, "k", None).await.unwrap();
+        assert!(matches!(
+            cl.trash_snapshot(v.id, s1.epoch).await,
+            Err(ClientError::SnapshotInUse(_))
+        ));
+        let vol = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(
+            vol.snapshot(s1.epoch).unwrap().trashed_unix,
+            0,
+            "left as it was"
+        );
+        assert!(
+            cl.purge_snapshot(v.id, s1.epoch).await.is_err(),
+            "not in the trash"
+        );
+        // The volume isn't trashed while its clone reads it, either.
+        va.detach().await.unwrap();
+        assert!(matches!(
+            cl.trash_volume(v.id, false).await,
+            Err(ClientError::SnapshotInUse(_))
+        ));
+
+        // A snapshot nothing reads: trashed, then purged for good.
+        let s2 = cl.snapshot(other.id, "s2").await.unwrap();
+        cl.trash_snapshot(other.id, s2.epoch).await.unwrap();
+        cl.purge_snapshot(other.id, s2.epoch).await.unwrap();
+        assert!(
+            cl.volume(other.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .snapshot(s2.epoch)
+                .is_none()
+        );
+
+        // A group: every member's snapshot trashed together; its object
+        // goes with the last purge.
+        let (g, members) = cl.snapshot_group(&[other.id, k.id], "g").await.unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(cl.trash_group(g).await.unwrap().len(), 2);
+        for (id, s) in &members {
+            assert_ne!(
+                cl.volume(*id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .snapshot(s.epoch)
+                    .unwrap()
+                    .trashed_unix,
+                0
+            );
+        }
+        cl.purge_snapshot(members[0].0, members[0].1.epoch)
+            .await
+            .unwrap();
+        assert!(cl.group_complete(g).await.unwrap().is_some(), "one left");
+        cl.purge_snapshot(members[1].0, members[1].1.epoch)
+            .await
+            .unwrap();
+        assert!(
+            cl.group_complete(g).await.unwrap().is_none(),
+            "gone with its last"
+        );
+
+        // A purged volume is gone.
+        cl.trash_volume(other.id, false).await.unwrap();
+        assert!(cl.purge_volume(k.id).await.is_err(), "not in the trash");
+        cl.purge_volume(other.id).await.unwrap();
+        assert!(cl.volume(other.id).await.unwrap().is_none());
+    });
+    c.stop();
+}
