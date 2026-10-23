@@ -260,6 +260,15 @@ pub fn sign_request(
 
 /// The SHA-256 of the first certificate in `pem` (its DER), in hex: what a
 /// join token pins the root by (D57).
+/// A join token's parts, `hsj1-<root fingerprint>-<secret>`: the pin a
+/// joining client checks the API's chain against, and the secret.
+pub fn parse_join_token(t: &str) -> Option<(&str, &str)> {
+    let rest = t.trim().strip_prefix("hsj1-")?;
+    let (pin, secret) = rest.split_once('-')?;
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit());
+    (hex(pin, 64) && hex(secret, 64)).then_some((pin, secret))
+}
+
 pub fn fingerprint(pem: &str) -> Result<String, String> {
     let der = first_cert(pem)?;
     Ok(hex(

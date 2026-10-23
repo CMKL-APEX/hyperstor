@@ -188,6 +188,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
+    ("ClusterService.ExpandVolume", "expand-volume"),
     ("ClusterService.ListSnapshots", "snapshot list"),
     ("ClusterService.CreateSnapshot", "snapshot create"),
     ("ClusterService.DeleteSnapshot", "snapshot delete"),

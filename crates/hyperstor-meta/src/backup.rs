@@ -260,6 +260,7 @@ mod tests {
                     used: false,
                     revoked: false,
                     created_by: "t".into(),
+                    name: String::new(),
                 },
                 1,
             )

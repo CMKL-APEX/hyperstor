@@ -613,3 +613,13 @@ long operations and where operations live, with a recommendation each:
 |---|---|---|---|
 | 69 | Which calls become long operations: flatten, purge and snapshot delete; flatten only; or none new | Flatten, purge and snapshot delete | D120 |
 | 70 | Where operations live: rows of the replicated store (seen by every member, resumed by a new leader); memory on the leader; or objects in `.meta` | The replicated store | D121 |
+
+## glidex's hyperstor driver (2026-10-23)
+
+Before writing glidex's `hyperstor` datastore driver, three choices the
+spec's table (glidex.md §17) didn't settle, each with options and a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 71 | How glidex gets and keeps its certificate (a mgmt token it enrolls with, sealed in its store and renewed; files placed on every node; each node enrolling); how a worker writes disk bytes without root (a range read/write tool, editing partitions as files; ublk devices through stord; leaving extend-root to the guest); how `stage` knows to preempt (a mark the scheduler sets at re-placement; asking hyperstor who holds the disk) | A mgmt token, sealed and renewed; the range tool; the scheduler's mark | D122, D123, D124 |

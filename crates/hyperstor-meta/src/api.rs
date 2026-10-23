@@ -640,6 +640,41 @@ impl ClusterService for Api {
         .into())
     }
 
+    async fn expand_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ExpandVolumeRequest>,
+    ) -> ServiceResult<pb::ExpandVolumeResponse> {
+        let target = format!("volume {} size {}", req.id, req.size);
+        let who = self.authorize(&ctx, "ExpandVolume", &target, true)?;
+        let id = parse_volume_id(req.id)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ExpandVolume {
+                id,
+                size: req.size,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "ExpandVolume",
+            &target,
+            &match &r {
+                Some(Ok(v)) => format!("ok, {} bytes", v.size),
+                Some(Err((_, e))) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        let v = volume_result(r)?;
+        Ok(pb::ExpandVolumeResponse {
+            volume: buffa::MessageField::some(volume_pb(&v)),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn delete_volume(
         &self,
         ctx: RequestContext,
