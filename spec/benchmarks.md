@@ -924,3 +924,52 @@ host, with other sessions' builds), so it shows no difference either way.
 3. **Recovery time is unchanged**: reading every page in one batch costs
    no more than the one blob did, and the logged operation stays the same
    size.
+
+## 2026-10-23: checkpoint page size (dev-2)
+
+`hyperstor-bench paged`, as above, with page sizes from 16 to 128 KiB.
+The default chunk is 4 MiB, so a chunk's dense block map is 8 KiB; a
+128 KiB page holds about 16 chunks. "Of which directory" is the
+directory's share of the checkpoint bytes (it is written by every
+checkpoint, whatever changed). Load average about 3 on a shared host;
+open times are within run-to-run variation.
+
+| Chunks written | page | pages | pages written per checkpoint | directory KiB | checkpoint B per write | of which directory | checkpoint MB/s at 50k writes/s per TiB | open ms |
+|---|---|---|---|---|---|---|---|---|
+| 100% | whole | 1 | 1.0 | 0.1 | 8.07 | 0% | 207 | 385 |
+| 100% | 128 KiB | 32 | 32.0 | 1.9 | 8.26 | 0% | 211 | 376 |
+| 100% | 64 KiB | 64 | 64.0 | 3.9 | 8.51 | 0% | 218 | 371 |
+| 100% | 32 KiB | 128 | 128.0 | 7.8 | 9.02 | 0% | 231 | 367 |
+| 100% | 16 KiB | 256 | 256.0 | 15.5 | 10.03 | 0% | 257 | 370 |
+| 10% | whole | 1 | 1.0 | 0.1 | 8.07 | 0% | 207 | 308 |
+| 10% | 128 KiB | 32 | 13.0 | 1.9 | 3.36 | 0% | 86 | 305 |
+| 10% | 64 KiB | 64 | 26.0 | 3.9 | 3.46 | 0% | 89 | 316 |
+| 10% | 32 KiB | 128 | 51.0 | 7.8 | 3.60 | 0% | 92 | 303 |
+| 10% | 16 KiB | 256 | 51.0 | 15.5 | 2.02 | 2% | 52 | 305 |
+| 1% | whole | 1 | 1.0 | 0.1 | 8.07 | 0% | 207 | 303 |
+| 1% | 128 KiB | 32 | 2.0 | 1.9 | 0.52 | 1% | 13 | 299 |
+| 1% | 64 KiB | 64 | 3.0 | 3.9 | 0.41 | 2% | 10 | 300 |
+| 1% | 32 KiB | 128 | 5.0 | 7.8 | 0.37 | 4% | 9 | 296 |
+| 1% | 16 KiB | 256 | 5.0 | 15.5 | 0.23 | 14% | 6 | 299 |
+
+### Findings
+
+1. **Smaller pages help a busy volume only once a page nears one
+   chunk's map.** A volume's chunks spread over every PG, so its hot
+   chunks land in different pages: halving the page doubles the pages
+   written and leaves the bytes about the same (10% of the chunks: 3.36
+   B per write at 128 KiB, 3.60 at 32 KiB). At 16 KiB, about two chunks
+   a page, each hot chunk costs its own page: 2.02 B per write, 40% less.
+2. **Every halving costs uniform writes**, which change every page: +2%
+   at 128 KiB, +5% at 64, +12% at 32 and +24% at 16 against one page.
+   Most of it is padding (each page is rounded up to whole blocks) and
+   page headers, not the directory.
+3. **The directory stays small** (0.4% of the index at 16 KiB, about
+   8 MiB per TiB of shard) but is written every time: at 16 KiB it is 14%
+   of what a checkpoint writes when 1% of the chunks change.
+4. **128 KiB stays the default** (implementation-notes.md I150). The
+   gain from smaller pages is small until 16 KiB, which costs a quarter
+   more for VM disks written all over, the common case with dense maps
+   (benchmarks above). What the hot-volume case needs is fewer pages per
+   volume, which the on-device index of D43 gives by writing changed
+   nodes, not smaller pages.

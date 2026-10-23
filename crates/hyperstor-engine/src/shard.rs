@@ -249,6 +249,9 @@ pub struct ShardStats {
     /// Pages of the last checkpoint, and pages written since opened (D105).
     pub checkpoint_pages: u64,
     pub checkpoint_pages_written: u64,
+    /// The last checkpoint's directory, in bytes: written by every
+    /// checkpoint, whatever changed.
+    pub checkpoint_directory_bytes: u64,
 }
 
 /// Totals over the whole index. Computing them walks every block map, so
@@ -1656,6 +1659,7 @@ impl Shard {
             checkpoint_bytes: self.pages.values().map(|p| p.len).sum(),
             checkpoint_pages: self.pages.len() as u64,
             checkpoint_pages_written: self.ckpt_pages_written,
+            checkpoint_directory_bytes: self.ckpt.as_ref().map_or(0, |c| c.len),
             checkpoint_slices: self.checkpoint_slices,
             checkpoint_forced: self.checkpoint_forced,
             log_blocks_written: self.tail_lsn - self.opened_lsn,
