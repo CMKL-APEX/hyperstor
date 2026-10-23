@@ -12,7 +12,7 @@ covered by tests that run on every change.
 | HS0: Local storage engine and reactor | In progress |
 | HS1: Replicated pools over TCP | In progress |
 | HS2: Failure handling | Done |
-| HS3: Virtual machine disks (vhost-user-blk) and the glidex driver | Planned |
+| HS3: Virtual machine disks (vhost-user-blk) and the glidex driver | In progress |
 | HS4: Snapshots, clones and the host read cache | In progress |
 | HS5: NVMe over TCP | Planned |
 | HS5b: Lower CPU cost per operation | Planned |
@@ -78,6 +78,19 @@ covered by tests that run on every change.
 | Down and out, and failed devices | Done |
 | Slow and unreachable replicas leave a PG | Done |
 | Fault-injection test rig: kill, partition, slow disk | Done |
+
+## HS3: Virtual machine disks (vhost-user-blk) and the glidex driver
+
+| Feature | Status |
+|---|---|
+| hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket | In progress |
+| VMs boot from volumes under Cloud Hypervisor and QEMU | Done |
+| Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
+| A restarted service keeps its leases; hypervisors reconnect | Planned |
+| Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
+| Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates | Planned |
+| Client readahead | Planned |
+| The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering | Planned |
 
 ## HS4: Snapshots, clones and the host read cache
 

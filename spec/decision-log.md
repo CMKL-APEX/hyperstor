@@ -585,3 +585,21 @@ AD3. Asked with options and a recommendation each:
 | 64 | How long audit records are kept | A year by default, configurable | D113 |
 | 65 | What operators may do: as §23.9.2's table (snapshots, restore from trash), as built (no snapshots), or restore only | As the table | D114 |
 | 66 | The full-pool trash rule before D27's thresholds exist: the setting now, acting with D27; all with D27; or a simple rule now | The setting now, acting with D27 | D115 |
+
+## HS3: the vhost-user service (2026-10-23)
+
+Before building `hyperstor-vhost`, three choices, each with options and a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 67 | How to implement vhost-user-blk (rust-vmm's crates as libraries on our reactor; rust-vmm's `vhost-user-backend` daemon with its own threads; all our own); how glidex stages a disk (a local control socket; through the cluster API); what to build first (the service, then glidex's driver; the service only; both at once) | rust-vmm's crates on our reactor; a local control socket; the service, then the driver | D116, D117, D118 |
+
+## Preempting one disk (2026-10-23)
+
+I160: preempting a volume blocklists the whole `hyperstor-vhost` it was
+attached through. Asked for alternatives, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 68 | Preempt only from a fenced node, planned moves detaching first (glidex's driver, no hyperstor change); a client instance per volume (connections multiply with VMs); per-volume identities on shared connections (a protocol change, with D33's delegates); fencing tokens per volume (unsafe without fencing every chunk) | Preempt only from a fenced node, for now | D119 |

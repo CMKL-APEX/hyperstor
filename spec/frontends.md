@@ -40,6 +40,12 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
 - **Restart.** The service keeps its leases in a state file. After a
   restart it re-registers them, and the hypervisor reconnects to its
   sockets: QEMU with `reconnect`, Cloud Hypervisor to be checked (G6).
+- **As built** (HS3, D116, D117; implementation-notes.md I158–I161):
+  one reactor, the control socket, write-through 4 KiB-block disks with
+  multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
+  under Cloud Hypervisor and QEMU. Not yet: discard, packed rings,
+  adaptive polling, zero copy, the state file and the config-change
+  event.
 
 ### 11.2 NVMe-oF target (D19)
 

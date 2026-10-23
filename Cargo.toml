@@ -19,6 +19,7 @@ members = [
     "crates/hyperstor-rpc",
     "crates/hyperstor-test",
     "crates/hyperstor-ublk",
+    "crates/hyperstor-vhost",
 ]
 resolver = "2"
 

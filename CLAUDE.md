@@ -32,17 +32,19 @@ design is split by topic, with section numbers kept across files.
   Cedar roles with step-up, the first administrator's claim, the cluster
   API on their behalf, named in the map service's audit), and
   `hyperstorctl --mgmt` with a person's token, and the React web UI on
-  `@glidex/ui-kit` with browser tests. `spec/implementation-notes.md` has
+  `@glidex/ui-kit` with browser tests; in HS3, `hyperstor-vhost` (volumes
+  as VM disks over vhost-user-blk, staged through its control socket; VMs
+  boot from them under Cloud Hypervisor and QEMU). `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D115 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D119 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I157, I162, and every host check (G1–G24,
+  rule, F1–F12 in detail, I1–I78, I80–I162, and every host check (G1–G24,
   FG1–FG2).
-- **Next:** `hyperstor-vhost` and the glidex
-  driver (HS3); zone or FDP placement for write-once pools (D105, G23);
+- **Next:** glidex's `hyperstor` driver (HS3, D118), then the rest of
+  §11.1 (adaptive polling, reactors per NUMA node, the state file); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in
