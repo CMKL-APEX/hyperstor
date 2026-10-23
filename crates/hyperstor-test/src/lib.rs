@@ -980,6 +980,23 @@ impl Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
+        // A failed test shows what the cluster said: on CI the scratch
+        // directory is gone afterwards.
+        if std::thread::panicking() {
+            let mut logs = vec![self.meta_log.clone()];
+            logs.extend((0..self.nodes).map(|n| self.scratch.path(&format!("node-{n}.log"))));
+            for log in logs {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|l| !l.starts_with("{\"audit\""))
+                    .collect();
+                eprintln!("--- {} (last {} lines)", log.display(), lines.len().min(40));
+                for l in &lines[lines.len().saturating_sub(40)..] {
+                    eprintln!("{l}");
+                }
+            }
+        }
         for p in self
             .node_procs
             .values_mut()
