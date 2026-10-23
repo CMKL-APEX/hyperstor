@@ -62,6 +62,9 @@ namespace Hyperstor {
   action "ClusterService.DeleteSnapshot" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.ExpandVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.CloneVolume" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

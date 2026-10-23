@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -79,6 +79,7 @@ values are left out of answers.
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`; trashed volumes aren't listed), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
+| `ExpandVolume` | `{"id": "…", "size": "2147483648"}` (a multiple of 4096, not smaller than now) | `volume`; `invalid_argument` for a smaller size |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `purge_unix`: it is in the trash until then (`TrashService` below); `failed_precondition` while it is attached, without `force` |
 | `ListSnapshots` | `{"id": "…"}` | `snapshots`: `epoch`, `name`, `group` (32 hex digits, or empty), `state` (`active` or `deleting`) |
 | `CreateSnapshot` | `{"id": "…", "name": "before-upgrade"}` | `snapshot`; `unavailable` if the volume's client didn't pause within 2 s |
@@ -112,10 +113,10 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `CreateToken` | `{"role": "node"}` (or `"meta"`), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
-| `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by` |
+| `CreateToken` | `{"role": "node"}` (or `"meta"`, or `"mgmt"` with `"name"`: a management client such as glidex, 1–32 of a–z, 0–9 and -), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
+| `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by`, and a mgmt token's `name` |
 | `RevokeToken` | `{"id": "…"}` | `{}` |
-| `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips` | `cluster_id`, `certificate` (chain), `root`; a storage host: `node`, `map_addresses`; a member: `intermediate`, `intermediate_key`, `cluster_file` |
+| `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips`; a management client: nothing more | `cluster_id`, `certificate` (chain), `root`, `identity` (the URI the certificate names); a storage host: `node`, `map_addresses`; a management client: `map_addresses` (it renews with `RenewCertificate`); a member: `intermediate`, `intermediate_key`, `cluster_file` |
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |

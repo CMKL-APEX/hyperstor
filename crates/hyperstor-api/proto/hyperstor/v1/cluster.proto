@@ -30,6 +30,10 @@ service ClusterService {
   // pool's grace period, or restored. Write.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 
+  // Grows a volume (volumes.md §10.2); never shrinks it. An attached
+  // holder sees the new size after its next attach. Write.
+  rpc ExpandVolume(ExpandVolumeRequest) returns (ExpandVolumeResponse);
+
   // A volume's snapshots (volumes.md §10.3). Read.
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
 
@@ -311,6 +315,16 @@ message DeleteVolumeRequest {
   // Delete it even if a client has it attached: the holder is
   // blocklisted first (decisions.md D80).
   bool force = 2;
+}
+
+message ExpandVolumeRequest {
+  string id = 1;
+  // The new size, in bytes: a multiple of 4096, not smaller than now.
+  uint64 size = 2;
+}
+
+message ExpandVolumeResponse {
+  Volume volume = 1;
 }
 
 message DeleteVolumeResponse {

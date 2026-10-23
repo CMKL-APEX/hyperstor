@@ -10,23 +10,25 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
 
 | glidex | hyperstor |
 |---|---|
-| `Datastore{driver: hyperstor}` | parameters: management endpoints, pool, the admin identity's credential (credentials.md). Topology `shared`. |
+| `Datastore{driver: hyperstor}` | parameters: the cluster API's endpoints, the pool, and the map service's addresses (from the join). The identity: a `mgmt` certificate glidex enrolls with a token and keeps sealed in its store, renewed through the API (D122). Topology `shared`. |
 | `capabilities` | block, linked clones, expand, shared, snapshots (new). No shrink. |
 | `probe` | the node runs `hyperstor-vhost` and reaches the metadata service: the node reaches the datastore. |
 | `create_volume` | blank: create. From an image copy: clone of the image's golden snapshot. From a volume: snapshot, clone, then flatten in the background. |
-| `delete_volume`, `expand_volume`, `capacity` | delete, expand, pool free space |
-| `stage` / `unstage` | attach (`rw` lease) and a vhost-user socket: `VolumeBinding::VhostUserBlk{socket}` (new). Detach on unstage. |
-| image copies (S9) | one per datastore: a volume holding the image, plus its snapshot `golden` |
+| `delete_volume`, `expand_volume`, `capacity` | delete (to the trash), `ExpandVolume`; capacity: not reported yet (glidex shows 0 and refuses no-overcommit) |
+| `stage` / `unstage` | `attach` through the node's `hyperstor-vhost` control socket (D117), `preempt` only for a VM re-placed from a fenced node (D119, D124); its socket is `VolumeBinding::VhostUserBlk{socket}` (new). Stopping the VM detaches. |
+| image copies (S9) | one per datastore: a volume holding the image (converted to raw, written with `hyperstorctl write-volume --sparse`, D123), plus its snapshot `golden`, named `glidex image <image> on <datastore>`. A deleted disk's clone in the trash still needs it, so glidex's leader deletes it once the clone is purged (glidex storage.md S24). |
 | linked clones (S8) | clones of `golden` (D21), instant |
-| extend-root | on the worker: attach through a ublk device mapped by stord, run `images::partition` on it as for `Block`, detach |
-| disk move (S5) | through two bindings on the worker, as S6c does for `lvm` |
+| extend-root | on the worker, without root (D123): read the partition table's region with `read-volume`, edit it as a file with `images::partition`'s shadow-file code, write it back with `write-volume` |
+| disk move (S5) | not yet: glidex refuses moves onto and off hyperstor. Later through two bindings on the worker, as S6c does for `lvm` |
 | volume lock (S16) | replaced by the lease (D11); the shim takes it at start through `hyperstor-vhost` |
-| metering `disk.stored` | volume allocated bytes, head plus snapshots |
+| metering `disk.stored` | volume allocated bytes, head plus snapshots (not reported by hyperstor yet: unknown until then) |
 
 - **Hypervisor arguments.** `VhostUserBlk` gives Cloud Hypervisor
   `--disk vhost_user=true,socket=…` and QEMU a `vhost-user-blk-pci`
   device, with the VM's memory backend shared (frontends.md §11.1). Command-line pin
-  tests cover both.
+  tests cover both; glidex's ignored boot tests boot a cloud image from
+  a linked disk under each (glidex storage.md §11.2), which needed
+  512-byte sectors in `hyperstor-vhost` (D125).
 - **Disk snapshots in glidex** (API, Cedar, UI) are a separate glidex
   spec change. storage.md lists disk snapshots as out of scope today, and
   hyperstor is the first datastore that can do them.

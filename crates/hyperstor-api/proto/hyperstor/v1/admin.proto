@@ -170,10 +170,14 @@ service OperationService {
 }
 
 message CreateTokenRequest {
-  // "node" (a storage host) or "meta" (a map service member).
+  // "node" (a storage host), "meta" (a map service member) or "mgmt" (a
+  // management client such as glidex's control plane, decisions.md D122).
   string role = 1;
   // How long the token is valid; 0 means an hour. At most a week.
   uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];
+  // "mgmt": the identity's name, which its certificate carries
+  // (hyperstor://<cluster>/mgmt/<name>): 1-32 of a-z, 0-9 and -.
+  string name = 3;
 }
 
 message CreateTokenResponse {
@@ -196,6 +200,8 @@ message Token {
   bool revoked = 5;
   // Who made it, as the audit names callers.
   string created_by = 6 [json_name = "created_by"];
+  // "mgmt": the identity it enrolls.
+  string name = 7;
 }
 
 message ListTokensRequest {}
@@ -224,6 +230,9 @@ message JoinRequest {
   repeated string member_ips = 6 [json_name = "member_ips"];
 }
 
+// A "mgmt" token's join: the client's certificate, the root, and the map
+// service's addresses (for its data path); it renews the certificate with
+// RenewCertificate.
 message JoinResponse {
   string cluster_id = 1 [json_name = "cluster_id"];
   // The host's certificate chain (leaf, intermediate) and the root, PEM.
@@ -237,6 +246,8 @@ message JoinResponse {
   string intermediate = 6;
   string intermediate_key = 7 [json_name = "intermediate_key"];
   string cluster_file = 8 [json_name = "cluster_file"];
+  // The identity the certificate names (`hyperstor://<cluster>/<role>/<id>`).
+  string identity = 9;
 }
 
 message RenewCertificateRequest {

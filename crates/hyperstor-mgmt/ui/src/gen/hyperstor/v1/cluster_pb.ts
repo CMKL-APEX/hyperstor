@@ -17,7 +17,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/cluster.proto.
  */
 export const file_hyperstor_v1_cluster: GenFile = /*@__PURE__*/
-  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIrEBCglUcmFzaEl0ZW0SDAoEa2luZBgBIAEoCRIKCgJpZBgCIAEoCRINCgVlcG9jaBgDIAEoBBIMCgRuYW1lGAQgASgJEgwKBHBvb2wYBSABKA0SDAoEc2l6ZRgGIAEoBBIiCgx0cmFzaGVkX3VuaXgYByABKARSDHRyYXNoZWRfdW5peBIeCgpwdXJnZV91bml4GAggASgEUgpwdXJnZV91bml4Eg0KBWdyb3VwGAkgASgJIiAKEExpc3RUcmFzaFJlcXVlc3QSDAoEcG9vbBgBIAEoDSI7ChFMaXN0VHJhc2hSZXNwb25zZRImCgVpdGVtcxgBIAMoCzIXLmh5cGVyc3Rvci52MS5UcmFzaEl0ZW0iUQoXUmVzdG9yZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBARIMCgRuYW1lGAMgASgJQggKBl9lcG9jaCJAChhSZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJBChVQdXJnZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBAUIICgZfZXBvY2giRAoWUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIicKF0dldFRyYXNoU2V0dGluZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0iZwoXU2V0VHJhc2hTZXR0aW5nc1JlcXVlc3QSDAoEcG9vbBgBIAEoDRIkCg1ncmFjZV9zZWNvbmRzGAIgASgEUg1ncmFjZV9zZWNvbmRzEhgKB29uX2Z1bGwYAyABKAlSB29uX2Z1bGwiXQoNVHJhc2hTZXR0aW5ncxIMCgRwb29sGAEgASgNEiQKDWdyYWNlX3NlY29uZHMYAiABKARSDWdyYWNlX3NlY29uZHMSGAoHb25fZnVsbBgDIAEoCVIHb25fZnVsbCJJChhHZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyJJChhTZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyISChBHZXRTdGF0dXNSZXF1ZXN0IvcBChFHZXRTdGF0dXNSZXNwb25zZRIeCgpjbHVzdGVyX2lkGAEgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAIgASgEEiQKBmhlYWx0aBgDIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSJQoHcmVhc29ucxgEIAMoCzIULmh5cGVyc3Rvci52MS5SZWFzb24SIQoFbm9kZXMYBSADKAsyEi5oeXBlcnN0b3IudjEuTm9kZRIhCgVwb29scxgGIAMoCzISLmh5cGVyc3Rvci52MS5Qb29sEiAKC21hcF9hZGRyZXNzGAcgASgJUgttYXBfYWRkcmVzcyI7CgZSZWFzb24SIwoFbGV2ZWwYASABKA4yFC5oeXBlcnN0b3IudjEuSGVhbHRoEgwKBHRleHQYAiABKAkikAEKBE5vZGUSCgoCaWQYASABKA0SDAoEcmFjaxgCIAEoDRIKCgJ1cBgDIAEoCBIlCgdkZXZpY2VzGAQgAygLMhQuaHlwZXJzdG9yLnYxLkRldmljZRIpCg1sYXN0X2hlYXJkX21zGAUgASgESABSDWxhc3RfaGVhcmRfbXOIAQFCEAoOX2xhc3RfaGVhcmRfbXMiVwoGRGV2aWNlEgoKAmlkGAEgASgNEgwKBGFkZHIYAiABKAkSFAoFdXBfaW4YAyABKAhSBXVwX2luEg4KBndlaWdodBgEIAEoARINCgVjbGFzcxgFIAEoCSLJAQoEUG9vbBIKCgJpZBgBIAEoDRIMCgRuYW1lGAIgASgJEgwKBGtpbmQYAyABKAkSDAoEc2l6ZRgEIAEoDRIaCghtaW5fc2l6ZRgFIAEoDVIIbWluX3NpemUSGgoIcGdfY291bnQYBiABKA1SCHBnX2NvdW50Eh4KCmNodW5rX3NpemUYByABKA1SCmNodW5rX3NpemUSDgoGZG9tYWluGAggASgJEiMKA3BncxgJIAEoCzIWLmh5cGVyc3Rvci52MS5QZ0NvdW50cyJSCghQZ0NvdW50cxINCgVjbGVhbhgBIAEoDRIQCghkZWdyYWRlZBgCIAEoDRITCgtiYWNrZmlsbGluZxgDIAEoDRIQCghpbmFjdGl2ZRgEIAEoDSIeCg5MaXN0UGdzUmVxdWVzdBIMCgRwb29sGAEgASgNIjAKD0xpc3RQZ3NSZXNwb25zZRIdCgNwZ3MYASADKAsyEC5oeXBlcnN0b3IudjEuUGciSQoCUGcSDAoEcG9vbBgBIAEoDRIKCgJwZxgCIAEoDRINCgVlcG9jaBgDIAEoBBIOCgZhY3RpbmcYBCADKA0SCgoCdXAYBSADKA0iOgoSU2V0RGV2aWNlSW5SZXF1ZXN0Eg4KBmRldmljZRgBIAEoDRIUCgV1cF9pbhgCIAEoCFIFdXBfaW4iMwoTU2V0RGV2aWNlSW5SZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaCKAAQoGVm9sdW1lEgoKAmlkGAEgASgJEgwKBHBvb2wYAiABKA0SDAoEc2l6ZRgDIAEoBBIMCgRuYW1lGAQgASgJEg0KBXN0YXRlGAUgASgJEg8KB3ZlcnNpb24YBiABKAQSIAoLYXR0YWNoZWRfYnkYByABKAlSC2F0dGFjaGVkX2J5IiIKEkxpc3RWb2x1bWVzUmVxdWVzdBIMCgRwb29sGAEgASgNIjwKE0xpc3RWb2x1bWVzUmVzcG9uc2USJQoHdm9sdW1lcxgBIAMoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiSwoTQ3JlYXRlVm9sdW1lUmVxdWVzdBIMCgRwb29sGAEgASgNEgwKBHNpemUYAiABKAQSDAoEbmFtZRgDIAEoCRIKCgJpZBgEIAEoCSI8ChRDcmVhdGVWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIjAKE0RlbGV0ZVZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZm9yY2UYAiABKAgiNgoURGVsZXRlVm9sdW1lUmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCJFCghTbmFwc2hvdBINCgVlcG9jaBgBIAEoBBIMCgRuYW1lGAIgASgJEg0KBWdyb3VwGAMgASgJEg0KBXN0YXRlGAQgASgJIiIKFExpc3RTbmFwc2hvdHNSZXF1ZXN0EgoKAmlkGAEgASgJIkIKFUxpc3RTbmFwc2hvdHNSZXNwb25zZRIpCglzbmFwc2hvdHMYASADKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiMQoVQ3JlYXRlU25hcHNob3RSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkiQgoWQ3JlYXRlU25hcHNob3RSZXNwb25zZRIoCghzbmFwc2hvdBgBIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCIyChVEZWxldGVTbmFwc2hvdFJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQiOAoWRGVsZXRlU25hcHNob3RSZXNwb25zZRIeCgpwdXJnZV91bml4GAEgASgEUgpwdXJnZV91bml4IlUKEkNsb25lVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBBIMCgRuYW1lGAMgASgJEhYKBm5ld19pZBgEIAEoCVIGbmV3X2lkIjsKE0Nsb25lVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSIyChVSb2xsYmFja1ZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQiPgoWUm9sbGJhY2tWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIiIKFEZsYXR0ZW5Wb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJImkKFUZsYXR0ZW5Wb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lEioKCW9wZXJhdGlvbhgCIAEoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iNwoaQ3JlYXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QSCwoDaWRzGAEgAygJEgwKBG5hbWUYAiABKAkiQwoLR3JvdXBNZW1iZXISCgoCaWQYASABKAkSKAoIc25hcHNob3QYAiABKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiWAobQ3JlYXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEg0KBWdyb3VwGAEgASgJEioKB21lbWJlcnMYAiADKAsyGS5oeXBlcnN0b3IudjEuR3JvdXBNZW1iZXIiKwoaRGVsZXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QSDQoFZ3JvdXAYASABKAkiPQobRGVsZXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEh4KCnB1cmdlX3VuaXgYASABKARSCnB1cmdlX3VuaXgqUgoGSGVhbHRoEhYKEkhFQUxUSF9VTlNQRUNJRklFRBAAEg0KCUhFQUxUSF9PSxABEg8KC0hFQUxUSF9XQVJOEAISEAoMSEVBTFRIX0VSUk9SEAMy8wkKDkNsdXN0ZXJTZXJ2aWNlEkwKCUdldFN0YXR1cxIeLmh5cGVyc3Rvci52MS5HZXRTdGF0dXNSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1Jlc3BvbnNlEkYKB0xpc3RQZ3MSHC5oeXBlcnN0b3IudjEuTGlzdFBnc1JlcXVlc3QaHS5oeXBlcnN0b3IudjEuTGlzdFBnc1Jlc3BvbnNlElIKC1NldERldmljZUluEiAuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVxdWVzdBohLmh5cGVyc3Rvci52MS5TZXREZXZpY2VJblJlc3BvbnNlElIKC0xpc3RWb2x1bWVzEiAuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVxdWVzdBohLmh5cGVyc3Rvci52MS5MaXN0Vm9sdW1lc1Jlc3BvbnNlElUKDENyZWF0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5DcmVhdGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlc3BvbnNlElUKDERlbGV0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5EZWxldGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlc3BvbnNlElgKDUxpc3RTbmFwc2hvdHMSIi5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1JlcXVlc3QaIy5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1Jlc3BvbnNlElsKDkNyZWF0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5DcmVhdGVTbmFwc2hvdFJlc3BvbnNlElsKDkRlbGV0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5EZWxldGVTbmFwc2hvdFJlc3BvbnNlElIKC0Nsb25lVm9sdW1lEiAuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DbG9uZVZvbHVtZVJlc3BvbnNlElsKDlJvbGxiYWNrVm9sdW1lEiMuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVxdWVzdBokLmh5cGVyc3Rvci52MS5Sb2xsYmFja1ZvbHVtZVJlc3BvbnNlElgKDUZsYXR0ZW5Wb2x1bWUSIi5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlcXVlc3QaIy5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlc3BvbnNlEmoKE0NyZWF0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEmoKE0RlbGV0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlMuIDCgxUcmFzaFNlcnZpY2USTAoJTGlzdFRyYXNoEh4uaHlwZXJzdG9yLnYxLkxpc3RUcmFzaFJlcXVlc3QaHy5oeXBlcnN0b3IudjEuTGlzdFRyYXNoUmVzcG9uc2USYQoQUmVzdG9yZUZyb21UcmFzaBIlLmh5cGVyc3Rvci52MS5SZXN0b3JlRnJvbVRyYXNoUmVxdWVzdBomLmh5cGVyc3Rvci52MS5SZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USWwoOUHVyZ2VGcm9tVHJhc2gSIy5oeXBlcnN0b3IudjEuUHVyZ2VGcm9tVHJhc2hSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlB1cmdlRnJvbVRyYXNoUmVzcG9uc2USYQoQR2V0VHJhc2hTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5HZXRUcmFzaFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5HZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USYQoQU2V0VHJhc2hTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5TZXRUcmFzaFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5TZXRUcmFzaFNldHRpbmdzUmVzcG9uc2ViBnByb3RvMw", [file_hyperstor_v1_admin]);
+  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIrEBCglUcmFzaEl0ZW0SDAoEa2luZBgBIAEoCRIKCgJpZBgCIAEoCRINCgVlcG9jaBgDIAEoBBIMCgRuYW1lGAQgASgJEgwKBHBvb2wYBSABKA0SDAoEc2l6ZRgGIAEoBBIiCgx0cmFzaGVkX3VuaXgYByABKARSDHRyYXNoZWRfdW5peBIeCgpwdXJnZV91bml4GAggASgEUgpwdXJnZV91bml4Eg0KBWdyb3VwGAkgASgJIiAKEExpc3RUcmFzaFJlcXVlc3QSDAoEcG9vbBgBIAEoDSI7ChFMaXN0VHJhc2hSZXNwb25zZRImCgVpdGVtcxgBIAMoCzIXLmh5cGVyc3Rvci52MS5UcmFzaEl0ZW0iUQoXUmVzdG9yZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBARIMCgRuYW1lGAMgASgJQggKBl9lcG9jaCJAChhSZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJBChVQdXJnZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBAUIICgZfZXBvY2giRAoWUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIicKF0dldFRyYXNoU2V0dGluZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0iZwoXU2V0VHJhc2hTZXR0aW5nc1JlcXVlc3QSDAoEcG9vbBgBIAEoDRIkCg1ncmFjZV9zZWNvbmRzGAIgASgEUg1ncmFjZV9zZWNvbmRzEhgKB29uX2Z1bGwYAyABKAlSB29uX2Z1bGwiXQoNVHJhc2hTZXR0aW5ncxIMCgRwb29sGAEgASgNEiQKDWdyYWNlX3NlY29uZHMYAiABKARSDWdyYWNlX3NlY29uZHMSGAoHb25fZnVsbBgDIAEoCVIHb25fZnVsbCJJChhHZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyJJChhTZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyISChBHZXRTdGF0dXNSZXF1ZXN0IvcBChFHZXRTdGF0dXNSZXNwb25zZRIeCgpjbHVzdGVyX2lkGAEgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAIgASgEEiQKBmhlYWx0aBgDIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSJQoHcmVhc29ucxgEIAMoCzIULmh5cGVyc3Rvci52MS5SZWFzb24SIQoFbm9kZXMYBSADKAsyEi5oeXBlcnN0b3IudjEuTm9kZRIhCgVwb29scxgGIAMoCzISLmh5cGVyc3Rvci52MS5Qb29sEiAKC21hcF9hZGRyZXNzGAcgASgJUgttYXBfYWRkcmVzcyI7CgZSZWFzb24SIwoFbGV2ZWwYASABKA4yFC5oeXBlcnN0b3IudjEuSGVhbHRoEgwKBHRleHQYAiABKAkikAEKBE5vZGUSCgoCaWQYASABKA0SDAoEcmFjaxgCIAEoDRIKCgJ1cBgDIAEoCBIlCgdkZXZpY2VzGAQgAygLMhQuaHlwZXJzdG9yLnYxLkRldmljZRIpCg1sYXN0X2hlYXJkX21zGAUgASgESABSDWxhc3RfaGVhcmRfbXOIAQFCEAoOX2xhc3RfaGVhcmRfbXMiVwoGRGV2aWNlEgoKAmlkGAEgASgNEgwKBGFkZHIYAiABKAkSFAoFdXBfaW4YAyABKAhSBXVwX2luEg4KBndlaWdodBgEIAEoARINCgVjbGFzcxgFIAEoCSLJAQoEUG9vbBIKCgJpZBgBIAEoDRIMCgRuYW1lGAIgASgJEgwKBGtpbmQYAyABKAkSDAoEc2l6ZRgEIAEoDRIaCghtaW5fc2l6ZRgFIAEoDVIIbWluX3NpemUSGgoIcGdfY291bnQYBiABKA1SCHBnX2NvdW50Eh4KCmNodW5rX3NpemUYByABKA1SCmNodW5rX3NpemUSDgoGZG9tYWluGAggASgJEiMKA3BncxgJIAEoCzIWLmh5cGVyc3Rvci52MS5QZ0NvdW50cyJSCghQZ0NvdW50cxINCgVjbGVhbhgBIAEoDRIQCghkZWdyYWRlZBgCIAEoDRITCgtiYWNrZmlsbGluZxgDIAEoDRIQCghpbmFjdGl2ZRgEIAEoDSIeCg5MaXN0UGdzUmVxdWVzdBIMCgRwb29sGAEgASgNIjAKD0xpc3RQZ3NSZXNwb25zZRIdCgNwZ3MYASADKAsyEC5oeXBlcnN0b3IudjEuUGciSQoCUGcSDAoEcG9vbBgBIAEoDRIKCgJwZxgCIAEoDRINCgVlcG9jaBgDIAEoBBIOCgZhY3RpbmcYBCADKA0SCgoCdXAYBSADKA0iOgoSU2V0RGV2aWNlSW5SZXF1ZXN0Eg4KBmRldmljZRgBIAEoDRIUCgV1cF9pbhgCIAEoCFIFdXBfaW4iMwoTU2V0RGV2aWNlSW5SZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaCKAAQoGVm9sdW1lEgoKAmlkGAEgASgJEgwKBHBvb2wYAiABKA0SDAoEc2l6ZRgDIAEoBBIMCgRuYW1lGAQgASgJEg0KBXN0YXRlGAUgASgJEg8KB3ZlcnNpb24YBiABKAQSIAoLYXR0YWNoZWRfYnkYByABKAlSC2F0dGFjaGVkX2J5IiIKEkxpc3RWb2x1bWVzUmVxdWVzdBIMCgRwb29sGAEgASgNIjwKE0xpc3RWb2x1bWVzUmVzcG9uc2USJQoHdm9sdW1lcxgBIAMoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiSwoTQ3JlYXRlVm9sdW1lUmVxdWVzdBIMCgRwb29sGAEgASgNEgwKBHNpemUYAiABKAQSDAoEbmFtZRgDIAEoCRIKCgJpZBgEIAEoCSI8ChRDcmVhdGVWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIjAKE0RlbGV0ZVZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZm9yY2UYAiABKAgiLwoTRXhwYW5kVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRzaXplGAIgASgEIjwKFEV4cGFuZFZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiNgoURGVsZXRlVm9sdW1lUmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCJFCghTbmFwc2hvdBINCgVlcG9jaBgBIAEoBBIMCgRuYW1lGAIgASgJEg0KBWdyb3VwGAMgASgJEg0KBXN0YXRlGAQgASgJIiIKFExpc3RTbmFwc2hvdHNSZXF1ZXN0EgoKAmlkGAEgASgJIkIKFUxpc3RTbmFwc2hvdHNSZXNwb25zZRIpCglzbmFwc2hvdHMYASADKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiMQoVQ3JlYXRlU25hcHNob3RSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkiQgoWQ3JlYXRlU25hcHNob3RSZXNwb25zZRIoCghzbmFwc2hvdBgBIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCIyChVEZWxldGVTbmFwc2hvdFJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQiOAoWRGVsZXRlU25hcHNob3RSZXNwb25zZRIeCgpwdXJnZV91bml4GAEgASgEUgpwdXJnZV91bml4IlUKEkNsb25lVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBBIMCgRuYW1lGAMgASgJEhYKBm5ld19pZBgEIAEoCVIGbmV3X2lkIjsKE0Nsb25lVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSIyChVSb2xsYmFja1ZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkSDQoFZXBvY2gYAiABKAQiPgoWUm9sbGJhY2tWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIiIKFEZsYXR0ZW5Wb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJImkKFUZsYXR0ZW5Wb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lEioKCW9wZXJhdGlvbhgCIAEoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iNwoaQ3JlYXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QSCwoDaWRzGAEgAygJEgwKBG5hbWUYAiABKAkiQwoLR3JvdXBNZW1iZXISCgoCaWQYASABKAkSKAoIc25hcHNob3QYAiABKAsyFi5oeXBlcnN0b3IudjEuU25hcHNob3QiWAobQ3JlYXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEg0KBWdyb3VwGAEgASgJEioKB21lbWJlcnMYAiADKAsyGS5oeXBlcnN0b3IudjEuR3JvdXBNZW1iZXIiKwoaRGVsZXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QSDQoFZ3JvdXAYASABKAkiPQobRGVsZXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEh4KCnB1cmdlX3VuaXgYASABKARSCnB1cmdlX3VuaXgqUgoGSGVhbHRoEhYKEkhFQUxUSF9VTlNQRUNJRklFRBAAEg0KCUhFQUxUSF9PSxABEg8KC0hFQUxUSF9XQVJOEAISEAoMSEVBTFRIX0VSUk9SEAMyygoKDkNsdXN0ZXJTZXJ2aWNlEkwKCUdldFN0YXR1cxIeLmh5cGVyc3Rvci52MS5HZXRTdGF0dXNSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1Jlc3BvbnNlEkYKB0xpc3RQZ3MSHC5oeXBlcnN0b3IudjEuTGlzdFBnc1JlcXVlc3QaHS5oeXBlcnN0b3IudjEuTGlzdFBnc1Jlc3BvbnNlElIKC1NldERldmljZUluEiAuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVxdWVzdBohLmh5cGVyc3Rvci52MS5TZXREZXZpY2VJblJlc3BvbnNlElIKC0xpc3RWb2x1bWVzEiAuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVxdWVzdBohLmh5cGVyc3Rvci52MS5MaXN0Vm9sdW1lc1Jlc3BvbnNlElUKDENyZWF0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5DcmVhdGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlc3BvbnNlElUKDERlbGV0ZVZvbHVtZRIhLmh5cGVyc3Rvci52MS5EZWxldGVWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlc3BvbnNlElUKDEV4cGFuZFZvbHVtZRIhLmh5cGVyc3Rvci52MS5FeHBhbmRWb2x1bWVSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkV4cGFuZFZvbHVtZVJlc3BvbnNlElgKDUxpc3RTbmFwc2hvdHMSIi5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1JlcXVlc3QaIy5oeXBlcnN0b3IudjEuTGlzdFNuYXBzaG90c1Jlc3BvbnNlElsKDkNyZWF0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5DcmVhdGVTbmFwc2hvdFJlc3BvbnNlElsKDkRlbGV0ZVNuYXBzaG90EiMuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVxdWVzdBokLmh5cGVyc3Rvci52MS5EZWxldGVTbmFwc2hvdFJlc3BvbnNlElIKC0Nsb25lVm9sdW1lEiAuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DbG9uZVZvbHVtZVJlc3BvbnNlElsKDlJvbGxiYWNrVm9sdW1lEiMuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVxdWVzdBokLmh5cGVyc3Rvci52MS5Sb2xsYmFja1ZvbHVtZVJlc3BvbnNlElgKDUZsYXR0ZW5Wb2x1bWUSIi5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlcXVlc3QaIy5oeXBlcnN0b3IudjEuRmxhdHRlblZvbHVtZVJlc3BvbnNlEmoKE0NyZWF0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuQ3JlYXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlEmoKE0RlbGV0ZUdyb3VwU25hcHNob3QSKC5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlcXVlc3QaKS5oeXBlcnN0b3IudjEuRGVsZXRlR3JvdXBTbmFwc2hvdFJlc3BvbnNlMuIDCgxUcmFzaFNlcnZpY2USTAoJTGlzdFRyYXNoEh4uaHlwZXJzdG9yLnYxLkxpc3RUcmFzaFJlcXVlc3QaHy5oeXBlcnN0b3IudjEuTGlzdFRyYXNoUmVzcG9uc2USYQoQUmVzdG9yZUZyb21UcmFzaBIlLmh5cGVyc3Rvci52MS5SZXN0b3JlRnJvbVRyYXNoUmVxdWVzdBomLmh5cGVyc3Rvci52MS5SZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USWwoOUHVyZ2VGcm9tVHJhc2gSIy5oeXBlcnN0b3IudjEuUHVyZ2VGcm9tVHJhc2hSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlB1cmdlRnJvbVRyYXNoUmVzcG9uc2USYQoQR2V0VHJhc2hTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5HZXRUcmFzaFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5HZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USYQoQU2V0VHJhc2hTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5TZXRUcmFzaFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5TZXRUcmFzaFNldHRpbmdzUmVzcG9uc2ViBnByb3RvMw", [file_hyperstor_v1_admin]);
 
 /**
  * Something in the trash: a volume (with its snapshots), or a snapshot
@@ -1564,6 +1564,74 @@ export const DeleteVolumeRequestSchema: GenMessage<DeleteVolumeRequest, {jsonTyp
   messageDesc(file_hyperstor_v1_cluster, 29);
 
 /**
+ * @generated from message hyperstor.v1.ExpandVolumeRequest
+ */
+export type ExpandVolumeRequest = Message<"hyperstor.v1.ExpandVolumeRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * The new size, in bytes: a multiple of 4096, not smaller than now.
+   *
+   * @generated from field: uint64 size = 2;
+   */
+  size: bigint;
+};
+
+/**
+ * @generated from message hyperstor.v1.ExpandVolumeRequest
+ */
+export type ExpandVolumeRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * The new size, in bytes: a multiple of 4096, not smaller than now.
+   *
+   * @generated from field: uint64 size = 2;
+   */
+  size?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.ExpandVolumeRequest.
+ * Use `create(ExpandVolumeRequestSchema)` to create a new message.
+ */
+export const ExpandVolumeRequestSchema: GenMessage<ExpandVolumeRequest, {jsonType: ExpandVolumeRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 30);
+
+/**
+ * @generated from message hyperstor.v1.ExpandVolumeResponse
+ */
+export type ExpandVolumeResponse = Message<"hyperstor.v1.ExpandVolumeResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.Volume volume = 1;
+   */
+  volume?: Volume | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.ExpandVolumeResponse
+ */
+export type ExpandVolumeResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.Volume volume = 1;
+   */
+  volume?: VolumeJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.ExpandVolumeResponse.
+ * Use `create(ExpandVolumeResponseSchema)` to create a new message.
+ */
+export const ExpandVolumeResponseSchema: GenMessage<ExpandVolumeResponse, {jsonType: ExpandVolumeResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 31);
+
+/**
  * @generated from message hyperstor.v1.DeleteVolumeResponse
  */
 export type DeleteVolumeResponse = Message<"hyperstor.v1.DeleteVolumeResponse"> & {
@@ -1592,7 +1660,7 @@ export type DeleteVolumeResponseJson = {
  * Use `create(DeleteVolumeResponseSchema)` to create a new message.
  */
 export const DeleteVolumeResponseSchema: GenMessage<DeleteVolumeResponse, {jsonType: DeleteVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 30);
+  messageDesc(file_hyperstor_v1_cluster, 32);
 
 /**
  * @generated from message hyperstor.v1.Snapshot
@@ -1663,7 +1731,7 @@ export type SnapshotJson = {
  * Use `create(SnapshotSchema)` to create a new message.
  */
 export const SnapshotSchema: GenMessage<Snapshot, {jsonType: SnapshotJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 31);
+  messageDesc(file_hyperstor_v1_cluster, 33);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsRequest
@@ -1694,7 +1762,7 @@ export type ListSnapshotsRequestJson = {
  * Use `create(ListSnapshotsRequestSchema)` to create a new message.
  */
 export const ListSnapshotsRequestSchema: GenMessage<ListSnapshotsRequest, {jsonType: ListSnapshotsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 32);
+  messageDesc(file_hyperstor_v1_cluster, 34);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsResponse
@@ -1721,7 +1789,7 @@ export type ListSnapshotsResponseJson = {
  * Use `create(ListSnapshotsResponseSchema)` to create a new message.
  */
 export const ListSnapshotsResponseSchema: GenMessage<ListSnapshotsResponse, {jsonType: ListSnapshotsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 33);
+  messageDesc(file_hyperstor_v1_cluster, 35);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotRequest
@@ -1758,7 +1826,7 @@ export type CreateSnapshotRequestJson = {
  * Use `create(CreateSnapshotRequestSchema)` to create a new message.
  */
 export const CreateSnapshotRequestSchema: GenMessage<CreateSnapshotRequest, {jsonType: CreateSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 34);
+  messageDesc(file_hyperstor_v1_cluster, 36);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotResponse
@@ -1785,7 +1853,7 @@ export type CreateSnapshotResponseJson = {
  * Use `create(CreateSnapshotResponseSchema)` to create a new message.
  */
 export const CreateSnapshotResponseSchema: GenMessage<CreateSnapshotResponse, {jsonType: CreateSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 35);
+  messageDesc(file_hyperstor_v1_cluster, 37);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotRequest
@@ -1822,7 +1890,7 @@ export type DeleteSnapshotRequestJson = {
  * Use `create(DeleteSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteSnapshotRequestSchema: GenMessage<DeleteSnapshotRequest, {jsonType: DeleteSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 36);
+  messageDesc(file_hyperstor_v1_cluster, 38);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotResponse
@@ -1853,7 +1921,7 @@ export type DeleteSnapshotResponseJson = {
  * Use `create(DeleteSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteSnapshotResponseSchema: GenMessage<DeleteSnapshotResponse, {jsonType: DeleteSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 37);
+  messageDesc(file_hyperstor_v1_cluster, 39);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeRequest
@@ -1918,7 +1986,7 @@ export type CloneVolumeRequestJson = {
  * Use `create(CloneVolumeRequestSchema)` to create a new message.
  */
 export const CloneVolumeRequestSchema: GenMessage<CloneVolumeRequest, {jsonType: CloneVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 38);
+  messageDesc(file_hyperstor_v1_cluster, 40);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeResponse
@@ -1945,7 +2013,7 @@ export type CloneVolumeResponseJson = {
  * Use `create(CloneVolumeResponseSchema)` to create a new message.
  */
 export const CloneVolumeResponseSchema: GenMessage<CloneVolumeResponse, {jsonType: CloneVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 39);
+  messageDesc(file_hyperstor_v1_cluster, 41);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeRequest
@@ -1982,7 +2050,7 @@ export type RollbackVolumeRequestJson = {
  * Use `create(RollbackVolumeRequestSchema)` to create a new message.
  */
 export const RollbackVolumeRequestSchema: GenMessage<RollbackVolumeRequest, {jsonType: RollbackVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 40);
+  messageDesc(file_hyperstor_v1_cluster, 42);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeResponse
@@ -2009,7 +2077,7 @@ export type RollbackVolumeResponseJson = {
  * Use `create(RollbackVolumeResponseSchema)` to create a new message.
  */
 export const RollbackVolumeResponseSchema: GenMessage<RollbackVolumeResponse, {jsonType: RollbackVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 41);
+  messageDesc(file_hyperstor_v1_cluster, 43);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeRequest
@@ -2036,7 +2104,7 @@ export type FlattenVolumeRequestJson = {
  * Use `create(FlattenVolumeRequestSchema)` to create a new message.
  */
 export const FlattenVolumeRequestSchema: GenMessage<FlattenVolumeRequest, {jsonType: FlattenVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 42);
+  messageDesc(file_hyperstor_v1_cluster, 44);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeResponse
@@ -2081,7 +2149,7 @@ export type FlattenVolumeResponseJson = {
  * Use `create(FlattenVolumeResponseSchema)` to create a new message.
  */
 export const FlattenVolumeResponseSchema: GenMessage<FlattenVolumeResponse, {jsonType: FlattenVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 43);
+  messageDesc(file_hyperstor_v1_cluster, 45);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotRequest
@@ -2118,7 +2186,7 @@ export type CreateGroupSnapshotRequestJson = {
  * Use `create(CreateGroupSnapshotRequestSchema)` to create a new message.
  */
 export const CreateGroupSnapshotRequestSchema: GenMessage<CreateGroupSnapshotRequest, {jsonType: CreateGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 44);
+  messageDesc(file_hyperstor_v1_cluster, 46);
 
 /**
  * @generated from message hyperstor.v1.GroupMember
@@ -2155,7 +2223,7 @@ export type GroupMemberJson = {
  * Use `create(GroupMemberSchema)` to create a new message.
  */
 export const GroupMemberSchema: GenMessage<GroupMember, {jsonType: GroupMemberJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 45);
+  messageDesc(file_hyperstor_v1_cluster, 47);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotResponse
@@ -2196,7 +2264,7 @@ export type CreateGroupSnapshotResponseJson = {
  * Use `create(CreateGroupSnapshotResponseSchema)` to create a new message.
  */
 export const CreateGroupSnapshotResponseSchema: GenMessage<CreateGroupSnapshotResponse, {jsonType: CreateGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 46);
+  messageDesc(file_hyperstor_v1_cluster, 48);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotRequest
@@ -2223,7 +2291,7 @@ export type DeleteGroupSnapshotRequestJson = {
  * Use `create(DeleteGroupSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotRequestSchema: GenMessage<DeleteGroupSnapshotRequest, {jsonType: DeleteGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 47);
+  messageDesc(file_hyperstor_v1_cluster, 49);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotResponse
@@ -2254,7 +2322,7 @@ export type DeleteGroupSnapshotResponseJson = {
  * Use `create(DeleteGroupSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotResponseSchema: GenMessage<DeleteGroupSnapshotResponse, {jsonType: DeleteGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 48);
+  messageDesc(file_hyperstor_v1_cluster, 50);
 
 /**
  * @generated from enum hyperstor.v1.Health
@@ -2364,6 +2432,17 @@ export const ClusterService: GenService<{
     methodKind: "unary";
     input: typeof DeleteVolumeRequestSchema;
     output: typeof DeleteVolumeResponseSchema;
+  },
+  /**
+   * Grows a volume (volumes.md §10.2); never shrinks it. An attached
+   * holder sees the new size after its next attach. Write.
+   *
+   * @generated from rpc hyperstor.v1.ClusterService.ExpandVolume
+   */
+  expandVolume: {
+    methodKind: "unary";
+    input: typeof ExpandVolumeRequestSchema;
+    output: typeof ExpandVolumeResponseSchema;
   },
   /**
    * A volume's snapshots (volumes.md §10.3). Read.
