@@ -73,6 +73,14 @@ pub fn serve(
     ready: impl FnOnce(&Path) + 'static,
     stop: std::sync::mpsc::Receiver<()>,
 ) -> Result<(), String> {
+    // A volume's socket must fit a Unix socket's path (107 bytes).
+    let longest = disk_path(&opts.dir, u128::MAX);
+    if longest.as_os_str().len() > 107 {
+        return Err(format!(
+            "{}: too long for the volumes' sockets (a socket's path is at most 107 bytes)",
+            opts.dir.display()
+        ));
+    }
     std::fs::create_dir_all(&opts.dir).map_err(|e| format!("{}: {e}", opts.dir.display()))?;
     let path = control_path(&opts.dir);
     let _ = std::fs::remove_file(&path);
