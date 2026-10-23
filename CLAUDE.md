@@ -38,10 +38,10 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D118 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68 and D69–D119 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I155, and every host check (G1–G24,
+  rule, F1–F12 in detail, I1–I78, I80–I161, and every host check (G1–G24,
   FG1–FG2).
 - **Next:** glidex's `hyperstor` driver (HS3, D118), then the rest of
   §11.1 (adaptive polling, reactors per NUMA node, the state file); zone or FDP placement for write-once pools (D105, G23);

@@ -82,13 +82,53 @@ test("volumes and snapshots", async ({ page }) => {
   await expect(page.getByTestId("volume-web-clone")).toBeVisible();
   // A snapshot a clone depends on can't go: the API's reason shows.
   await page.getByTestId("snapshot-s1").getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText("in_use");
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
-  // The clone goes.
+  // The clone goes, to the trash.
   await page.getByTestId("volume-web-clone").getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
   await expect(page.getByTestId("volume-web-clone")).toHaveCount(0);
+  await expect(page.getByText(/Moved to the trash: purged/)).toBeVisible();
+});
+
+test("the trash restores and purges", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Trash" }).click();
+  const row = page.getByTestId("trash-web-clone");
+  await expect(row).toContainText("volume");
+  await expect(page.getByTestId("trash-settings-1")).toContainText("kept 24 h");
+  // Restored: back among the volumes.
+  await row.getByRole("button", { name: "Restore" }).click();
+  await expect(page.getByRole("dialog")).toContainText("hyperstorctl trash restore --id");
+  await page.getByRole("dialog").getByRole("button", { name: "Restore" }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-web-clone")).toBeVisible();
+  // Deleted again, then purged at once.
+  await page.getByTestId("volume-web-clone").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Move to the trash" }).click();
+  await page.getByRole("link", { name: "Trash" }).click();
+  await row.getByRole("button", { name: "Purge now" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Purge now" }).click();
+  await expect(page.getByText("The trash is empty.")).toBeVisible();
+});
+
+test("the audit log shows who did what", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Audit" }).click();
+  await page.getByLabel("Operation").fill("CreateVolume");
+  // Records reach .meta within a second or two.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Show" }).click();
+    await expect(page.getByTestId("audit-record").first()).toContainText("CreateVolume", { timeout: 1000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(page.getByTestId("audit-record").first()).toContainText("user:ann");
+  await expect(page.getByText("hyperstorctl audit list --op CreateVolume")).toBeVisible();
+  await expect(page.getByTestId("audit-retention")).toContainText("kept 365 days");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  expect((await download).suggestedFilename()).toBe("hyperstor-audit.jsonl");
 });
 
 test("an API token is shown once", async ({ page }) => {

@@ -333,7 +333,7 @@ title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
 [[milestone.item]]
 what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket"
-spec = ["frontends.md §11.1", "D26", "D116", "D117", "I152", "I153", "I154", "I155"]
+spec = ["frontends.md §11.1", "D26", "D116", "D117", "I158", "I159", "I160", "I161"]
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",
@@ -345,7 +345,7 @@ tests = [
 
 [[milestone.item]]
 what = "VMs boot from volumes under Cloud Hypervisor and QEMU"
-spec = ["frontends.md §11.1", "glidex.md §17", "D118", "I152"]
+spec = ["frontends.md §11.1", "glidex.md §17", "D118", "I158"]
 status = "done"
 tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
@@ -361,7 +361,12 @@ status = "planned"
 
 [[milestone.item]]
 what = "Discard and write-zeroes without allocating; expand signalled to the guest"
-spec = ["frontends.md §11.1", "I153"]
+spec = ["frontends.md §11.1", "I159"]
+status = "planned"
+
+[[milestone.item]]
+what = "Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates"
+spec = ["metadata.md §9", "D33", "D119", "I160"]
 status = "planned"
 
 [[milestone.item]]
@@ -725,10 +730,27 @@ id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
-what = "Audit of every change and every refused call to the cluster API"
-spec = ["administration.md §23.9.4"]
-status = "partial"
-tests = ["hyperstor_meta::api::tests::audit_lines_are_json_with_escapes"]
+what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI"
+spec = ["administration.md §23.9.3", "D54", "D114", "D115"]
+status = "done"
+tests = [
+    "cluster::the_trash_keeps_what_it_holds_until_purged",
+    "trash::deletes_go_to_the_trash_until_purged",
+    "browser::the_trash_restores_and_purges",
+    "hyperstor_meta::settings::tests::defaults_until_set_then_what_was_set",
+]
+
+[[milestone.item]]
+what = "Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI"
+spec = ["administration.md §23.9.4", "D112", "D113"]
+status = "done"
+tests = [
+    "hyperstor_meta::api::tests::audit_lines_are_json_with_escapes",
+    "hyperstor_meta::audit_log::tests::days_keys_and_lines",
+    "hyperstor_meta::audit_log::tests::retention_drops_whole_days",
+    "audit::every_change_lands_in_the_audit_log",
+    "browser::the_audit_log_shows_who_did_what",
+]
 
 [[milestone.item]]
 what = "Long operations: draining a node, with a dry run, followed to the end or cancelled"

@@ -167,3 +167,26 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
   `--fenced` for VMs whose disks are all on hyperstor is for
   clustering.md to decide. The VM's network identity is affected too, not
   only its disks.
+- **Fencing one volume of a shared client** (planned, D119). A blocklist
+  entry names a client instance, and a storage node refuses everything on
+  that instance's connections, so preempting one volume of a
+  `hyperstor-vhost` cuts off every disk it serves (implementation-notes.md
+  I160). Until this lands, glidex preempts only from fenced nodes (D119).
+  The plan:
+  - **A lease identity per attached volume**, chosen by the client at
+    attach and recorded in the header with the lease, alongside the
+    instance it belongs to. It travels on every request to that volume's
+    chunks, so connections stay shared: one per storage node, as now.
+  - **Blocklist entries name an identity or an instance.** A storage node
+    refuses a request whose identity, or whose connection's instance, is
+    listed; preempting one volume lists its identity only, and fencing a
+    node still lists the instance.
+  - **D33's delegates are the same thing seen from the guest**: an
+    identity that acts under a holder, blocklisted with it. Both are
+    built together.
+  - **Costs:** a field on every chunk request and a second lookup per
+    request on storage nodes; the blocklist grows by one entry per
+    preempted volume, until its lease would have expired.
+  - **To check before building:** the request header's size budget
+    (protocol.md), and that renewals per identity still batch per
+    primary (D75).

@@ -35,6 +35,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod admin;
+mod audit;
+mod trash;
 pub use admin::{Signing, parse_token};
 
 struct Api {
@@ -79,34 +81,13 @@ fn meta_error(e: String, kind: fn(String) -> ConnectError, reason: &str) -> Conn
 const RATE: f64 = 200.0;
 const BURST: f64 = 1000.0;
 
-fn json_str(s: &str) -> String {
-    let mut o = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
-}
-
-/// One audit record (§23.9.4), as a JSON line on standard error.
+/// One audit record (§23.9.4), as a JSON line: now, as
+/// [`crate::audit_log::line_at`] writes it.
 pub fn audit_line(principal: &str, op: &str, target: &str, result: &str) -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!(
-        "{{\"audit\":1,\"time\":{}.{:03},\"principal\":{},\"op\":{},\"target\":{},\"result\":{}}}",
-        t.as_secs(),
-        t.subsec_millis(),
-        json_str(principal),
-        json_str(op),
-        json_str(target),
-        json_str(result)
-    )
+        .map_or(0, |d| d.as_micros() as u64);
+    crate::audit_log::line_at(t, principal, op, target, result)
 }
 
 /// The caller on the local socket, from the kernel.
@@ -161,8 +142,9 @@ fn take(buckets: &Buckets, principal: &str, now: std::time::Instant) -> bool {
     true
 }
 
+/// Records a call: on standard error, and in `.meta`'s audit log (D112).
 fn audit(principal: &str, op: &str, target: &str, result: &str) {
-    eprintln!("{}", audit_line(principal, op, target, result));
+    crate::audit_log::record(principal, op, target, result);
 }
 
 impl Api {
@@ -683,13 +665,17 @@ impl ClusterService for Api {
             "DeleteVolume",
             &target,
             &match &r {
-                Some(Ok(())) => "ok".into(),
+                Some(Ok(_)) => "ok, to the trash".into(),
                 Some(Err((_, e))) => format!("failed: {e}"),
                 None => "failed: map service stopped".into(),
             },
         );
-        volume_result(r)?;
-        Ok(pb::DeleteVolumeResponse::default().into())
+        let v = volume_result(r)?;
+        Ok(pb::DeleteVolumeResponse {
+            purge_unix: self.purge_at(v.pool, v.trashed_unix),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn list_snapshots(
@@ -756,8 +742,12 @@ impl ClusterService for Api {
         let epoch = req.epoch;
         let target = format!("volume {id:032x} snapshot {epoch}");
         let op = crate::SnapOp::Delete { id, epoch };
-        self.snap(&ctx, "DeleteSnapshot", target, true, op).await?;
-        Ok(pb::DeleteSnapshotResponse::default().into())
+        let done = self.snap(&ctx, "DeleteSnapshot", target, true, op).await?;
+        Ok(pb::DeleteSnapshotResponse {
+            purge_unix: self.purge_of(&done),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn clone_volume(
@@ -878,15 +868,20 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::DeleteGroupSnapshotResponse> {
         let group = parse_volume_id(req.group)?;
         let op = crate::SnapOp::DeleteGroup { group };
-        self.snap(
-            &ctx,
-            "DeleteGroupSnapshot",
-            format!("group {group:032x}"),
-            true,
-            op,
-        )
-        .await?;
-        Ok(pb::DeleteGroupSnapshotResponse::default().into())
+        let done = self
+            .snap(
+                &ctx,
+                "DeleteGroupSnapshot",
+                format!("group {group:032x}"),
+                true,
+                op,
+            )
+            .await?;
+        Ok(pb::DeleteGroupSnapshotResponse {
+            purge_unix: self.purge_of(&done),
+            ..Default::default()
+        }
+        .into())
     }
 }
 
@@ -938,6 +933,20 @@ impl Api {
     }
 }
 
+impl Api {
+    /// When the last of what a delete trashed is purged.
+    fn purge_of(&self, d: &crate::SnapDone) -> u64 {
+        match d {
+            crate::SnapDone::Trashed(v) => v
+                .iter()
+                .map(|(pool, _, s)| self.purge_at(*pool, s.trashed_unix))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+}
+
 fn unexpected_done(d: crate::SnapDone) -> ConnectError {
     ConnectError::internal(format!("unexpected result {d:?}"))
 }
@@ -961,6 +970,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         state: match v.state {
             crate::VolumeState::Active => "active",
             crate::VolumeState::Deleting => "deleting",
+            crate::VolumeState::Trashed => "trashed",
         }
         .into(),
         version: v.version,
@@ -1059,6 +1069,8 @@ pub fn spawn(
                     admin: admin::State::new(signing, root, api_address),
                 });
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
+                let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
+                let router = hyperstor_api::AuditServiceExt::register(api.clone(), router);
                 let router = admin::register(api, router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {

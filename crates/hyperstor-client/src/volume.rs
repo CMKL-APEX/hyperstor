@@ -76,6 +76,10 @@ pub enum VolumeState {
     Active,
     /// Being deleted: its data is going, and it can't be attached.
     Deleting,
+    /// In the trash (decisions.md D54): its data stays until it is purged
+    /// or restored; it isn't listed and can't be attached (storage nodes
+    /// grant no lease on a header that isn't active).
+    Trashed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +114,8 @@ pub struct Volume {
     /// cache (D102): a volume recreated with the same id has a new one.
     /// 0, in a header written before it, turns the cache off.
     pub incarnation: u64,
+    /// When it went to the trash (Unix seconds), while [`VolumeState::Trashed`].
+    pub trashed_unix: u64,
 }
 
 /// A snapshot of a volume (volumes.md §10.3): the volume as it was at
@@ -126,6 +132,8 @@ pub struct Snapshot {
     /// The chain below its branch when it was taken: what it reads through
     /// after its own branch.
     pub chain: Vec<(u32, u64)>,
+    /// When it went to the trash (Unix seconds); 0: it isn't there.
+    pub trashed_unix: u64,
 }
 
 impl Volume {
@@ -183,6 +191,7 @@ fn encode(v: &Volume) -> Vec<u8> {
         .u8(match v.state {
             VolumeState::Active => 0,
             VolumeState::Deleting => 1,
+            VolumeState::Trashed => 2,
         })
         .str(&v.name);
     e.u64(v.head_epoch).u32(v.branch);
@@ -203,6 +212,18 @@ fn encode(v: &Volume) -> Vec<u8> {
         e.u64(*lo).u64(*hi);
     });
     e.u64(v.incarnation);
+    // The trash (D54): when the volume went, and each trashed snapshot's
+    // epoch and time. Older readers stop before these.
+    e.u64(v.trashed_unix);
+    let trashed: Vec<(u64, u64)> = v
+        .snapshots
+        .iter()
+        .filter(|s| s.trashed_unix != 0)
+        .map(|s| (s.epoch, s.trashed_unix))
+        .collect();
+    e.seq(&trashed, |e, (ep, t)| {
+        e.u64(*ep).u64(*t);
+    });
     e.into_vec()
 }
 
@@ -229,10 +250,10 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             pool: d.u32()?,
             size: d.u64()?,
             lineage: d.u128()?,
-            state: if d.u8()? == 0 {
-                VolumeState::Active
-            } else {
-                VolumeState::Deleting
+            state: match d.u8()? {
+                0 => VolumeState::Active,
+                2 => VolumeState::Trashed,
+                _ => VolumeState::Deleting,
             },
             name: d.str()?.to_string(),
             version,
@@ -243,6 +264,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             snapshots: Vec::new(),
             skip: Vec::new(),
             incarnation: 0,
+            trashed_unix: 0,
         };
         if fmt == 2 {
             v.head_epoch = d.u64()?;
@@ -256,11 +278,20 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
                     group: d.u128()?,
                     deleting: d.bool()?,
                     chain: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
+                    trashed_unix: 0,
                 })
             })?;
             v.skip = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
             if d.remaining() > 0 {
                 v.incarnation = d.u64()?;
+            }
+            if d.remaining() > 0 {
+                v.trashed_unix = d.u64()?;
+                for (ep, t) in d.seq(16, |d| Ok((d.u64()?, d.u64()?)))? {
+                    if let Some(s) = v.snapshots.iter_mut().find(|s| s.epoch == ep) {
+                        s.trashed_unix = t;
+                    }
+                }
             }
         }
         Ok::<_, hyperstor_codec::DecodeError>(v)
@@ -328,6 +359,7 @@ impl Client {
             snapshots: Vec::new(),
             skip: Vec::new(),
             incarnation: random_u64() | 1,
+            trashed_unix: 0,
         };
         self.put_new(&v).await?;
         Ok(v)
@@ -490,8 +522,9 @@ impl Client {
         r
     }
 
-    /// Deletes `v`, which has no holder, or is held through `held`.
-    async fn delete_held(
+    /// Deletes `v`, which has no holder, or is held through `held`: from
+    /// active, from the trash, or a delete that stopped half-way.
+    pub(crate) async fn delete_held(
         self: &Rc<Self>,
         mut v: Volume,
         held: Option<&Attached>,
@@ -499,7 +532,7 @@ impl Client {
         let id = v.id;
         let me = held.map(|_| self.instance);
         let mut tries = 0;
-        while v.state == VolumeState::Active {
+        while v.state != VolumeState::Deleting {
             tries += 1;
             if tries > 10 {
                 return Err(ClientError::BadVolume(format!(
@@ -604,7 +637,7 @@ impl Client {
 pub struct Attached {
     client: Rc<Client>,
     volume: RefCell<Volume>,
-    lost: Cell<bool>,
+    pub(crate) lost: Cell<bool>,
     /// Quiesced for a snapshot: writes wait (D103).
     paused: Cell<bool>,
     /// Writes in flight, which a quiesce waits for.
@@ -1139,6 +1172,7 @@ mod tests {
             snapshots: Vec::new(),
             skip: Vec::new(),
             incarnation: 0,
+            trashed_unix: 0,
         };
         assert_eq!(v.layers(), vec![(2, 0, 9), (0, 0, 3)]);
         // Reset to 3 at head 5, then to 6 at head 8.
@@ -1170,9 +1204,11 @@ mod tests {
                 group: 0,
                 deleting: false,
                 chain: vec![(0, 3)],
+                trashed_unix: 0,
             }],
             skip: vec![(2, 3)],
             incarnation: 11,
+            trashed_unix: 0,
         };
         let l = Looked {
             size: 0,
@@ -1184,16 +1220,35 @@ mod tests {
             kv: vec![],
         };
         assert_eq!(decode(7, &l).unwrap(), v);
-        // A header from before incarnations reads with none.
-        let mut old = l.clone();
+        // The trash's fields come last: 8 bytes of the volume's time, then
+        // the trashed snapshots (none here: a 4-byte count).
         let h = encode(&v);
-        old.attrs[1].1 = h[..h.len() - 8].to_vec();
+        let trash_len = 8 + 4;
+        // A header from before the trash reads as not in it...
+        let mut old = l.clone();
+        old.attrs[1].1 = h[..h.len() - trash_len].to_vec();
+        assert_eq!(decode(7, &old).unwrap(), v);
+        // ...and from before incarnations, with none.
+        old.attrs[1].1 = h[..h.len() - trash_len - 8].to_vec();
         assert_eq!(
             decode(7, &old).unwrap(),
             Volume {
                 incarnation: 0,
                 ..v.clone()
             }
+        );
+        // In the trash: the volume's time, and its trashed snapshots'.
+        let mut t = v.clone();
+        t.state = VolumeState::Trashed;
+        t.trashed_unix = 1_800_000_000;
+        t.snapshots[0].trashed_unix = 1_800_000_100;
+        let mut lt = l.clone();
+        lt.attrs[1].1 = encode(&t);
+        assert_eq!(decode(7, &lt).unwrap(), t);
+        let attrs: std::collections::BTreeMap<_, _> = lt.attrs.iter().cloned().collect();
+        assert!(
+            header_deleting(&attrs),
+            "storage nodes grant a trashed volume no lease"
         );
         let attrs: std::collections::BTreeMap<_, _> = l.attrs.iter().cloned().collect();
         assert_eq!(header_version(&attrs), 3);

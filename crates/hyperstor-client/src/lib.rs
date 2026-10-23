@@ -9,6 +9,7 @@ pub use hyperstor_rpc as rpc;
 
 pub mod cache;
 pub mod snapshot;
+pub mod trash;
 pub mod volume;
 
 use hyperstor_map::ClusterMap;

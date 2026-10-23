@@ -88,6 +88,7 @@ covered by tests that run on every change.
 | Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect | Planned |
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
+| Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates | Planned |
 | Client readahead | Planned |
 | The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering | Planned |
 
@@ -139,5 +140,6 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Audit of every change and every refused call to the cluster API | In progress |
+| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI | Done |
+| Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
 | Long operations: draining a node, with a dry run, followed to the end or cancelled | In progress |
