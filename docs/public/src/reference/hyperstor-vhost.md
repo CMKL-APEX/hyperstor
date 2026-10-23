@@ -21,7 +21,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | Option | Default | Meaning |
 |---|---|---|
 | `--meta ADDR[,ADDR...]` | | `serve`: the map service's members (their `--listen` addresses) |
-| `--dir DIR` | `/run/hyperstor/vhost` | Where the control socket (`control.sock`) and the volumes' sockets (`<volume id>.sock`) are |
+| `--dir DIR` | `/run/hyperstor/vhost` | Where the control socket (`control.sock`) and the volumes' sockets (`<volume id>.sock`) are; at most 69 bytes, so a socket's path fits Unix's 107 |
 | `--allow-uid UID` | | `serve`: a user allowed on the control socket besides root and the service's own; repeat for more |
 | `--group GID` | | `serve`: the group given the sockets (mode 0660), so a hypervisor running as that group can connect |
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |

@@ -55,13 +55,15 @@ tests = [
 
 [[milestone.item]]
 what = "Group commit, small-write deferral, checkpoints and recovery"
-spec = ["engine.md §7.2", "D22", "D38", "I2", "I3", "I4"]
+spec = ["engine.md §7.2", "engine.md §7.4", "D22", "D38", "I2", "I3", "I4", "I162"]
 status = "done"
 tests = [
     "engine::small_overwrites_are_deferred_and_survive_reopen",
     "engine::large_overwrites_redirect_and_free_old_blocks",
     "engine::log_wraps_and_checkpoints_keep_state",
     "engine::shards_are_independent",
+    "engine::a_full_shard_refuses_data_but_keeps_checkpointing",
+    "hyperstor_engine::shard::tests::a_checkpoint_without_room_is_abandoned",
     "hyperstor_engine::index::tests::map_unmap_split",
     "hyperstor_engine::index::tests::deferred_then_free_cancels_pending",
     "hyperstor_engine::index::tests::encode_round_trip",

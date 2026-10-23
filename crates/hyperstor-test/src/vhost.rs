@@ -35,8 +35,12 @@ pub struct Service {
 }
 
 impl Service {
+    /// Its sockets go in a short directory of their own under the system's
+    /// temporary one (removed with it): a Unix socket's path has at most
+    /// 107 bytes, which a scratch root's path can take up on its own (CI).
     pub fn start(c: &Cluster, name: &str, extra: &[&str]) -> Service {
-        let dir = c.scratch.path(name);
+        let dir = std::env::temp_dir().join(format!("hsv-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let mut child = Command::new(bin_dir().join("hyperstor-vhost"))
             .args(["serve", "--meta", &c.map, "--dir", dir.to_str().unwrap()])
             .args(extra)
@@ -71,6 +75,7 @@ impl Service {
         unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
         let st = self.child.wait().unwrap();
         assert!(st.success(), "hyperstor-vhost exited with {st}");
+        let _ = std::fs::remove_dir_all(&self.dir);
         self.dir.clear();
     }
 }
@@ -83,6 +88,7 @@ impl Drop for Service {
         // SAFETY: kill on our own child's pid.
         unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

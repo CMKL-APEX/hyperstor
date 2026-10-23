@@ -18,6 +18,18 @@ fn volume(c: &Cluster, size: &str) -> String {
 fn a_volume_is_served_over_vhost_user_blk() {
     let c = Cluster::all_in_one("vhost", 3);
     let id = volume(&c, "64M");
+    // A directory too long for the volumes' sockets is refused at start.
+    let long = std::env::temp_dir().join("d".repeat(90));
+    let o = std::process::Command::new(hyperstor_test::bin_dir().join("hyperstor-vhost"))
+        .args(["serve", "--meta", &c.map, "--dir", long.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("too long"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let svc = Service::start(&c, "vhost-a", &[]);
     assert_eq!(
         svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],

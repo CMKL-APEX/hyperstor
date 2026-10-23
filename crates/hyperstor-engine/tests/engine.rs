@@ -712,3 +712,74 @@ fn checkpoints_write_only_the_pages_that_changed() {
     assert_eq!(sh.kv_get(&key("o050"), b"v"), Some(&[2u8; 100][..]));
     assert_eq!(sh.kv_get(&key("o120"), b"v"), None);
 }
+
+/// A full shard stays usable: data that doesn't fit is refused, but the
+/// checkpoints that keep the log moving still find room, so the shard
+/// isn't poisoned and frees space again when objects go.
+#[test]
+fn a_full_shard_refuses_data_but_keeps_checkpointing() {
+    let (d, mut sh) = fresh(2048, Some(64));
+    sh.set_checkpoint_page(1024);
+    let mut n = 0u64;
+    loop {
+        let k = key(&format!("f{n:04}"));
+        let r = sh
+            .commit(vec![OpList {
+                key: k,
+                ops: vec![
+                    Op::Write {
+                        off: 0,
+                        data: block(n as u8, 1),
+                    },
+                    Op::KvPut(b"k".to_vec(), vec![1; 64]),
+                ],
+            }])
+            .expect("a full shard is not poisoned");
+        match r.into_iter().next().unwrap() {
+            Ok(_) => n += 1,
+            Err(OpError::NoSpace) => break,
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+    assert!(n > 1000, "filled with {n} objects");
+    // Full: more data is refused, and that doesn't poison the shard.
+    let r = sh
+        .commit(vec![OpList {
+            key: key("new"),
+            ops: vec![Op::Write {
+                off: 0,
+                data: block(1, 1),
+            }],
+        }])
+        .expect("not poisoned");
+    assert_eq!(r[0], Err(OpError::NoSpace));
+    // What frees space still goes through the log, and the log's
+    // checkpoints still find room.
+    let c0 = sh.stats().checkpoints;
+    for i in 0..2000u64 {
+        sh.commit(vec![OpList {
+            key: key(&format!("f{:04}", i % n)),
+            ops: vec![Op::KvDel(b"absent".to_vec())],
+        }])
+        .expect("checkpoints find room on a full shard")
+        .pop()
+        .unwrap()
+        .unwrap();
+    }
+    assert!(sh.stats().checkpoints > c0 + 5, "{:?}", sh.stats());
+    for i in 0..n / 2 {
+        one(&mut sh, key(&format!("f{i:04}")), vec![Op::Delete]).unwrap();
+    }
+    one(
+        &mut sh,
+        key("again"),
+        vec![Op::Write {
+            off: 0,
+            data: block(9, 4),
+        }],
+    )
+    .unwrap();
+    drop(sh);
+    let sh = reopen(&d);
+    assert_eq!(sh.read(&key("again"), 0, 4096).unwrap()[0], 9);
+}
