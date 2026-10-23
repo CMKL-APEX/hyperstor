@@ -12,8 +12,8 @@
 //!   or rolled back to. It is marked first and then checked for
 //!   dependents, as a delete is, so a clone that recorded itself meanwhile
 //!   is seen.
-//! - **Purging** is the delete of before: [`Client::delete_held`] for a
-//!   volume, [`Client::delete_snapshot`] for a snapshot; a group's object
+//! - **Purging** is the delete of before: the volume delete that resumes
+//!   after a crash, [`Client::delete_snapshot`] for a snapshot; a group's object
 //!   goes with its last snapshot.
 //! - **Restoring** clears the mark; a volume whose name another volume of
 //!   the pool took meanwhile comes back as `NAME-restored`.
