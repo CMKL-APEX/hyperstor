@@ -22,6 +22,11 @@ glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164a
 tokio = { version = "1", features = ["rt", "net"] }
 # HTTPS to hyperstor-mgmt, verified against the cluster's root (D108).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+libc.workspace = true
+# The hypervisor's side of vhost-user, for hyperstor-vhost's tests.
+vhost = { version = "=0.18.0", features = ["vhost-user-frontend"] }
+vm-memory = { version = "=0.18.0", features = ["backend-mmap"] }
+vmm-sys-util = "=0.15.0"
 
 [lints]
 workspace = true

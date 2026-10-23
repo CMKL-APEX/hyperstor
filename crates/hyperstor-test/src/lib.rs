@@ -21,6 +21,8 @@
 //! really has Hyperstor installed are in `tests/installed.rs`, ignored by
 //! default (`cargo test -p hyperstor-test --release -- --ignored`).
 
+pub mod vhost;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};

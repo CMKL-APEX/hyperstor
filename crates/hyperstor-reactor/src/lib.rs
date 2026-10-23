@@ -17,6 +17,7 @@
 //! `io_uring_enter` wakes up.
 
 pub mod chan;
+pub mod fd;
 pub mod net;
 pub mod passthrough;
 pub mod time;

@@ -8,6 +8,7 @@
 | [hyperstor-bench](hyperstor-bench.md) | The load generator's modes |
 | [hyperstorctl](hyperstorctl.md) | Managing and testing a cluster |
 | [hyperstor-ublk](hyperstor-ublk.md) | A volume as a Linux block device |
+| [hyperstor-vhost](hyperstor-vhost.md) | Volumes as virtual machines' disks, over vhost-user-blk |
 | [hyperstor-install](hyperstor-install.md) | Host checks and the installer |
 | [hyperstor-mgmt](hyperstor-mgmt.md) | The dashboard |
 | [hyperstor-authd](hyperstor-authd.md) | Checks people's passwords for the management service |
