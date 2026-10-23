@@ -28,7 +28,7 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
   device, with the VM's memory backend shared (frontends.md §11.1). Command-line pin
   tests cover both; glidex's ignored boot tests boot a cloud image from
   a linked disk under each (glidex storage.md §11.2), which needed
-  512-byte sectors in `hyperstor-vhost` (D125).
+  512-byte sectors in `hyperstor-vhost` (D126).
 - **Disk snapshots in glidex** (API, Cedar, UI) are a separate glidex
   spec change. storage.md lists disk snapshots as out of scope today, and
   hyperstor is the first datastore that can do them.

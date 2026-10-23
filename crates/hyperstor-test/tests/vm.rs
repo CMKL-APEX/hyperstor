@@ -232,7 +232,7 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
     has(&wrote, "HS serial disk-under-test");
     has(&wrote, &format!("HS size {}", (256u64 << 20) / 512));
     has(&wrote, "HS queues 2");
-    // 512e (D125): sectors as logical blocks, the volume's 4 KiB blocks as
+    // 512e (D126): sectors as logical blocks, the volume's 4 KiB blocks as
     // physical ones.
     has(&wrote, "HS blocks 512 4096");
     has(&wrote, "HS wrote");

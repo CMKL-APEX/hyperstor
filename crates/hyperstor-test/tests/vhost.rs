@@ -65,7 +65,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     assert_eq!(s, S_IOERR, "past the end");
     let (s, _, _) = g.request(T_IN, 1, &[], 4000);
     assert_eq!(s, S_IOERR, "not whole sectors");
-    // 512-byte sectors (D125): the disk's logical blocks are sectors, its
+    // 512-byte sectors (D126): the disk's logical blocks are sectors, its
     // physical ones the volume's 4 KiB blocks.
     assert_eq!(g.config_u32(20), 512, "blk_size");
     assert_eq!(g.config_u8(24), 3, "physical blocks of 2^3 sectors");

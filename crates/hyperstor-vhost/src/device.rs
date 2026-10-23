@@ -49,7 +49,7 @@ pub struct Disk {
 
 /// The volume blocks writes in flight cover. A write waits for those
 /// overlapping its own, so the read-modify-write of a partial block
-/// (512e, decisions.md D125) never puts back data another write replaced
+/// (512e, decisions.md D126) never puts back data another write replaced
 /// in between. Guests may reorder overlapping writes anyway; this only
 /// keeps each one whole.
 #[derive(Default)]

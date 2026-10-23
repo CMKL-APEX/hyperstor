@@ -335,7 +335,7 @@ title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
 [[milestone.item]]
 what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks"
-spec = ["frontends.md §11.1", "D26", "D116", "D117", "D125", "I158", "I159", "I160", "I161", "I168"]
+spec = ["frontends.md §11.1", "D26", "D116", "D117", "D126", "I158", "I159", "I160", "I161", "I169"]
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",

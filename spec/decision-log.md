@@ -633,4 +633,4 @@ H9). Asked how disks should look to VMs, with a recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 72 | 512e in `hyperstor-vhost` (read-modify-write for partial blocks, the engine unchanged); a block size per volume; glidex converting images to 4Kn | 512e in `hyperstor-vhost` | D125 |
+| 73 | 512e in `hyperstor-vhost` (read-modify-write for partial blocks, the engine unchanged); a block size per volume; glidex converting images to 4Kn | 512e in `hyperstor-vhost` | D126 |

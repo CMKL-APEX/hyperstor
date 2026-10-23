@@ -15,7 +15,7 @@ use virtio_bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRE
 /// The volume's block size, which the guest sees as the disk's physical
 /// block size: requests in whole blocks go to the volume as they are.
 pub const BLOCK: u64 = 4096;
-/// The disk's logical block size (512e, decisions.md D125): what cloud
+/// The disk's logical block size (512e, decisions.md D126): what cloud
 /// images' partition tables and firmware assume. A request is in whole
 /// sectors; a partial block at either end is read, merged and written.
 pub const SECTOR: u64 = 512;
