@@ -20,6 +20,7 @@
 //! recovery, read leases. A write whose replica is unreachable fails with
 //! `Unavailable`, and the client retries.
 
+pub mod diag;
 pub mod faults;
 pub mod metrics;
 
@@ -136,7 +137,15 @@ pub struct NodeConfig {
     /// Test hook: node pairs that can't reach each other (decisions.md
     /// D92); this node's reactors send nothing to a node it is cut from.
     pub partitions: Option<Arc<faults::Partitions>>,
+    /// The most bytes of an object's key–value table one push carries
+    /// before the rest follows in parts ([`Msg::PushKv`]); zero: a quarter
+    /// of the frame limit ([`PUSH_PART_BYTES`]). Tests set it small.
+    pub push_part_bytes: usize,
 }
+
+/// An object's key–value table goes in parts of about this many bytes, so
+/// that no push exceeds the frame limit ([`hyperstor_proto::MAX_PAYLOAD`]).
+pub const PUSH_PART_BYTES: usize = hyperstor_proto::MAX_PAYLOAD / 4;
 
 /// A running node. Dropping it without [`NodeHandle::stop`] leaves the
 /// threads running.
@@ -188,6 +197,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
+        let push_part_bytes = match cfg.push_part_bytes {
+            0 => PUSH_PART_BYTES,
+            n => n,
+        };
         let partitions = cfg.partitions.clone();
         threads.push(
             std::thread::Builder::new()
@@ -211,6 +224,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
+                        st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         let l = TcpListener::from_std(sh.listener);
                         spawn(st.clone().committer());
@@ -276,6 +290,8 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
+    /// `NodeConfig::push_part_bytes`, resolved.
+    push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
     /// push replaces them; reported with the digest [`DAMAGED`].
     damaged: RefCell<HashSet<ObjKey>>,
@@ -592,6 +608,7 @@ impl ShardState {
             fenced: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
+            push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
             leases: RefCell::new(HashMap::new()),
@@ -833,10 +850,10 @@ impl ShardState {
                     return false;
                 };
                 self.drained().await;
-                let Some((msg, data)) = self.push_of(to, &key, false) else {
+                let Some(parts) = self.push_parts(to, &key, false) else {
                     return false;
                 };
-                if !matches!(conn.call(&msg, &data).await, Ok((Msg::PushOk, _))) {
+                if !push_all(&conn, parts).await {
                     return false;
                 }
                 metrics::ShardMetrics::add(&self.metrics.peer_pushes, 1);
@@ -983,6 +1000,11 @@ impl ShardState {
                     metrics::ShardMetrics::add(&self.metrics.pushes, 1);
                     metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
                     self.push_object(h.req, to, key, payload, tx.clone()).await
+                }
+                Msg::PushKv { to, key } => {
+                    metrics::ShardMetrics::add(&self.metrics.pushes, 1);
+                    metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
+                    self.push_kv(h.req, to, key, payload, tx.clone()).await
                 }
                 Msg::Read { to, key, off, len } => {
                     let arrived = std::time::Instant::now();
@@ -2377,28 +2399,59 @@ impl ShardState {
         });
     }
 
-    /// The lists that replace an object with `obj`, in lists the engine
-    /// accepts: the first replaces the data and attributes, the rest carry
-    /// the key–value table in batches. Reads come from the primary, so a
-    /// member between two lists serves no one the half-copied object.
-    fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
-        let limit = self.shard.borrow().max_list_bytes() / 2;
-        let mut first = vec![Op::Delete];
-        if !obj.data.is_empty() {
-            first.push(Op::Write {
-                off: 0,
-                data: obj.data,
-            });
+    /// A part of an object too large for one push ([`Msg::PushKv`]): its
+    /// key–value entries added to what the last [`Msg::PushObject`] on
+    /// this connection made. This connection's messages are handled in
+    /// order, so the parts land after the object they continue.
+    async fn push_kv(
+        self: &Rc<Self>,
+        req: u64,
+        to: Target,
+        key: WireKey,
+        payload: Vec<u8>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if let Err(m) = self.check(&to, false).await {
+            return send(m);
         }
-        first.push(Op::Truncate(obj.size));
-        first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
-        let mut lists = vec![OpList {
-            key: okey.clone(),
-            ops: first,
-        }];
+        let Ok(kv) = hyperstor_proto::decode_pairs(&payload) else {
+            return send(err(Code::Checksum, &self.map(), "malformed key-value part"));
+        };
+        let Ok(okey) = engine_key(&to, &key) else {
+            return send(err(Code::Invalid, &self.map(), "bad namespace"));
+        };
+        let done: Vec<_> = self
+            .kv_lists(&okey, kv)
+            .into_iter()
+            .map(|l| self.enqueue(l))
+            .collect();
+        spawn(async move {
+            let mut ok = true;
+            for d in done {
+                ok &= d.await.is_ok();
+            }
+            send(if ok {
+                Msg::PushOk
+            } else {
+                Msg::Error {
+                    code: Code::Io,
+                    map_epoch: 0,
+                    detail: "push failed".into(),
+                }
+            });
+        });
+    }
+
+    /// Key–value entries as `KvPut` lists the engine accepts.
+    fn kv_lists(&self, okey: &ObjKey, kv: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<OpList> {
+        let limit = self.shard.borrow().max_list_bytes() / 2;
+        let mut lists = Vec::new();
         let mut batch = Vec::new();
         let mut bytes = 0;
-        for (k, v) in obj.kv {
+        for (k, v) in kv {
             bytes += k.len() + v.len() + 32;
             batch.push(Op::KvPut(k, v));
             if bytes >= limit {
@@ -2415,6 +2468,28 @@ impl ShardState {
                 ops: batch,
             });
         }
+        lists
+    }
+
+    /// The lists that replace an object with `obj`, in lists the engine
+    /// accepts: the first replaces the data and attributes, the rest carry
+    /// the key–value table in batches. Reads come from the primary, so a
+    /// member between two lists serves no one the half-copied object.
+    fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
+        let mut first = vec![Op::Delete];
+        if !obj.data.is_empty() {
+            first.push(Op::Write {
+                off: 0,
+                data: obj.data,
+            });
+        }
+        first.push(Op::Truncate(obj.size));
+        first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
+        let mut lists = vec![OpList {
+            key: okey.clone(),
+            ops: first,
+        }];
+        lists.extend(self.kv_lists(okey, obj.kv));
         lists
     }
 
@@ -2729,7 +2804,10 @@ impl ShardState {
     /// Waits until every queued commit is done, so the engine holds every
     /// write queued so far.
     async fn drained(&self) {
+        #[cfg(hs_diag)]
+        let t = std::time::Instant::now();
         while !self.queue.borrow().is_empty() {
+            crate::diag!("drain {}", self.me; "device {}: waiting {:?} for {} queued commits to drain", self.me, t.elapsed(), self.queue.borrow().len());
             hyperstor_reactor::yield_now().await;
         }
     }
@@ -2737,6 +2815,22 @@ impl ShardState {
     async fn backfill(self: Rc<Self>, pool: u32, pg: u32, target: u32, pg_epoch: u64) {
         let k = (pool, pg, target);
         let mut reported = false;
+        // A diagnostic build says when an attempt runs long (a hung call).
+        #[cfg(hs_diag)]
+        let watched = {
+            let done = Rc::new(std::cell::Cell::new(false));
+            let (d, t) = (done.clone(), std::time::Instant::now());
+            spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(10)).await;
+                    if d.get() {
+                        return;
+                    }
+                    crate::diag!("long {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target} still running after {:?}", t.elapsed());
+                }
+            });
+            done
+        };
         if self.backfill_once(pool, pg, target, pg_epoch).await {
             // From here on every write must reach the target. Then wait for
             // the best-effort writes already sent to it: if any failed, the
@@ -2757,6 +2851,11 @@ impl ShardState {
                     })
                     .await;
                 reported = matches!(r, Ok((Msg::BackfillOk { .. }, _)));
+                if !reported {
+                    crate::diag!("done {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: BackfillDone answered {r:?}");
+                } else {
+                    crate::diag!("ok {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: done");
+                }
                 let _ = self.client.refresh_map().await;
             }
         }
@@ -2764,6 +2863,8 @@ impl ShardState {
             self.required.borrow_mut().remove(&k);
             sleep(Duration::from_millis(200)).await;
         }
+        #[cfg(hs_diag)]
+        watched.set(true);
         // Allow a new attempt (or none, once the map says it's done).
         self.backfills.borrow_mut().remove(&k);
     }
@@ -2771,10 +2872,16 @@ impl ShardState {
     async fn backfill_once(&self, pool: u32, pg: u32, target: u32, pg_epoch: u64) -> bool {
         let map = self.map();
         let Some(addr) = map.device_addr(target) else {
+            crate::diag!("addr {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target} has no address in map {}", map.epoch);
             return false;
         };
-        let Ok(conn) = self.peer(addr).await else {
-            return false;
+        let conn = match self.peer(addr).await {
+            Ok(c) => c,
+            Err(e) => {
+                crate::diag!("conn {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: connecting to device {target} at {addr}: {e:?}");
+                let _ = e;
+                return false;
+            }
         };
         let to = Target {
             pool,
@@ -2790,10 +2897,18 @@ impl ShardState {
         // same connection. A key that changes after the comparison is
         // carried by the live writes backfill targets get anyway.
         let mut legacy = false;
+        #[cfg(hs_diag)]
+        let asked = std::time::Instant::now();
         let theirs = match conn.start(&Msg::Digests { to, deep: false }, &[]).await {
             Ok((Msg::DigestsOk, p)) => match decode_digests(&p) {
-                Ok(v) => v,
-                Err(_) => return false,
+                Ok(v) => {
+                    crate::diag!("digests {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target} holds {} objects ({} bytes of digests, {:?})", v.len(), p.len(), asked.elapsed());
+                    v
+                }
+                Err(_) => {
+                    crate::diag!("decode {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target}'s digests don't decode");
+                    return false;
+                }
             },
             // A node from before digests (a rolling upgrade, operations.md
             // §18.4): reset its copy and send everything, as backfill did.
@@ -2823,13 +2938,19 @@ impl ShardState {
                 legacy = true;
                 Vec::new()
             }
-            _ => return false,
+            other => {
+                crate::diag!("refused {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} (pg epoch {pg_epoch}, map {}): device {target} answered Digests with {:?}", to.map_epoch, other.as_ref().map(|(m, _)| m));
+                let _ = other;
+                return false;
+            }
         };
         let theirs: HashMap<ObjKey, u64> = theirs
             .into_iter()
             .filter_map(|(k, d)| Some((engine_key(&to, &k).ok()?, d)))
             .collect();
         self.drained().await;
+        #[cfg(hs_diag)]
+        let listed = std::time::Instant::now();
         let keys: BTreeSet<ObjKey> = {
             let sh = self.shard.borrow();
             let ours = sh.list_pg(pool, pg);
@@ -2844,33 +2965,117 @@ impl ShardState {
             );
             differ
         };
+        crate::diag!("keys {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: {} objects differ (compared in {:?})", keys.len(), listed.elapsed());
         let mut inflight = Vec::new();
         for key in keys {
             if self.map().pg(pool, pg).map(|p| p.epoch) != Some(pg_epoch) {
+                crate::diag!("epoch {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: the PG changed (epoch {pg_epoch} gone) mid-copy");
                 return false;
             }
             self.drained().await;
-            let Some((m, data)) = self.push_of(to, &key, legacy) else {
+            let Some(parts) = self.push_parts(to, &key, legacy) else {
                 return false;
             };
-            inflight.push(conn.start(&m, &data));
+            // An object's parts in order on this connection, which the
+            // target handles in order.
+            for (m, data) in parts {
+                inflight.push(conn.start(&m, &data));
+            }
             if inflight.len() >= 16 {
                 for f in inflight.drain(..) {
-                    if !matches!(f.await, Ok((Msg::PushOk, _))) {
+                    let r = f.await;
+                    if !matches!(r, Ok((Msg::PushOk, _))) {
+                        crate::diag!("push {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: a push answered {:?}", r.as_ref().map(|(m, _)| m));
                         return false;
                     }
                 }
             }
         }
         for f in inflight {
-            if !matches!(f.await, Ok((Msg::PushOk, _))) {
+            let r = f.await;
+            if !matches!(r, Ok((Msg::PushOk, _))) {
+                crate::diag!("push {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: a push answered {:?}", r.as_ref().map(|(m, _)| m));
                 return false;
             }
         }
         true
     }
 
-    /// The push of this node's copy of `key` (a delete if it has none).
+    /// The pushes of this node's copy of `key`, to send in order on one
+    /// connection: a [`Msg::PushObject`], and for an object whose
+    /// key–value table is larger than a part (`push_part_bytes`), the rest
+    /// of the table as [`Msg::PushKv`] parts, so that no frame exceeds the
+    /// limit. Read all at once, with no wait in between, as
+    /// [`Self::push_of`] reads.
+    fn push_parts(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<Vec<(Msg, Vec<u8>)>> {
+        let whole = legacy || self.shard.borrow().stat(key).is_none();
+        if whole {
+            return self.push_of(to, key, legacy).map(|p| vec![p]);
+        }
+        let limit = self.push_part_bytes.get();
+        let sh = self.shard.borrow();
+        let st = sh.stat(key)?;
+        let data = sh
+            .read(key, 0, st.size.div_ceil(4096) * 4096)
+            .ok()?
+            .to_vec();
+        let attrs = sh
+            .attrs(key)
+            .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        // The table in parts of about `limit` bytes, read in batches.
+        const BATCH: usize = 4096;
+        let mut parts: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![Vec::new()];
+        let (mut bytes, mut start) = (0, Vec::new());
+        loop {
+            let batch = sh.kv_scan(key, &start, None, BATCH);
+            let n = batch.len();
+            if let Some((last, _)) = batch.last() {
+                start = last.clone();
+                start.push(0);
+            }
+            for (k, v) in batch {
+                let b = hyperstor_proto::pair_bytes(&k, &v);
+                if bytes + b > limit && parts.last().is_some_and(|p| !p.is_empty()) {
+                    parts.push(Vec::new());
+                    bytes = 0;
+                }
+                bytes += b;
+                parts.last_mut().expect("a part").push((k, v));
+            }
+            if n < BATCH {
+                break;
+            }
+        }
+        let mut rest = parts.into_iter();
+        let obj = WireObject {
+            size: st.size,
+            data,
+            attrs,
+            kv: rest.next().unwrap_or_default(),
+        };
+        let mut out = vec![(
+            Msg::PushObject {
+                to,
+                key: wire_key(key),
+            },
+            encode_object(&obj),
+        )];
+        out.extend(rest.map(|kv| {
+            (
+                Msg::PushKv {
+                    to,
+                    key: wire_key(key),
+                },
+                hyperstor_proto::encode_pairs(&kv),
+            )
+        }));
+        Some(out)
+    }
+
+    /// The push of this node's copy of `key` (a delete if it has none), in
+    /// one frame: for [`Msg::Fetch`]'s answer; members get
+    /// [`Self::push_parts`].
     /// Read it and send it with no wait in between, once every queued
     /// commit is done ([`Self::drained`]): writes queued later then follow
     /// the push on the same connection.
@@ -3084,11 +3289,11 @@ impl ShardState {
                             continue;
                         };
                         self.drained().await;
-                        let Some((m, data)) = self.push_of(to, &key, false) else {
+                        let Some(parts) = self.push_parts(to, &key, false) else {
                             ok = false;
                             continue;
                         };
-                        ok &= matches!(conn.call(&m, &data).await, Ok((Msg::PushOk, _)));
+                        ok &= push_all(&conn, parts).await;
                     }
                     if ok {
                         metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
@@ -3324,6 +3529,17 @@ impl Drop for InflightGuard {
             *n = n.saturating_sub(1);
         }
     }
+}
+
+/// Sends an object's pushes ([`ShardState::push_parts`]) in order on
+/// `conn`, each answered before the next.
+async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
+    for (m, data) in parts {
+        if !matches!(conn.call(&m, &data).await, Ok((Msg::PushOk, _))) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

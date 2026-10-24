@@ -373,6 +373,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 })
                 .collect();
             start(NodeConfig {
+                push_part_bytes: 0,
                 partitions: None,
                 node_id: n as u32,
                 meta: vec![meta],
@@ -526,6 +527,7 @@ fn adminload_suite(secs: f64) {
         .enumerate()
         .map(|(n, l)| {
             start(NodeConfig {
+                push_part_bytes: 0,
                 partitions: None,
                 node_id: n as u32,
                 meta: vec![meta],
@@ -1297,6 +1299,7 @@ fn failover_suite() {
                 .enumerate()
                 .map(|(n, l)| {
                     Some(start(NodeConfig {
+                        push_part_bytes: 0,
                         partitions: None,
                         node_id: n as u32,
                         meta: vec![meta],
@@ -1410,6 +1413,7 @@ fn rejoin_suite() {
         });
         let node = |n: u32, device: DeviceSpec, l: std::net::TcpListener| {
             start(NodeConfig {
+                push_part_bytes: 0,
                 partitions: None,
                 node_id: n,
                 meta: vec![meta],

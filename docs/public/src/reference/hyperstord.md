@@ -17,6 +17,13 @@ usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] 
 | `--admin ADDR` | off | Serve metrics (`GET /metrics`, Prometheus format) and `GET /health` on `IP:PORT`; plain HTTP, read-only: keep it on the management network |
 | `--scrub-hours N` | 24 | Compare every copy of each placement group this node leads, every N hours, and repair a copy the others outvote; the first pass and every seventh also read every block and check its checksum; `0` turns it off |
 
+**Diagnostic build.** Built with `HYPERSTOR_DIAG=1 cargo build --release
+-p hyperstor-daemon`, a node also logs, to standard error (the journal),
+what it otherwise does silently: each backfill attempt and why it fails,
+attempts that run long, and waits for queued writes; each kind of line at
+most once every 10 s. Use it to find out why a placement group stays
+below its copies; run ordinary builds otherwise.
+
 Devices without Hyperstor's format are formatted on first start. The node
 runs until `SIGINT` or `SIGTERM`, and recovers on the next start.
 

@@ -128,6 +128,9 @@ members, as long as there are at least `min_size` of them. Below
   a majority member's copy first (I104). PGs left with unresolved
   objects are reported to the map service and shown in cluster health
   (I105).
+- **Large objects** go to a member in parts (D146, I177): the object
+  with the first part of its key–value table, then the rest, each part
+  well under the frame limit, in order on one connection.
 
 ### 8.6 Erasure-coded pools (D6)
 
