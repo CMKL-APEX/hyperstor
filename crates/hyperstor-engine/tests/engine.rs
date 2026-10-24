@@ -580,6 +580,62 @@ fn digests_follow_content_not_history() {
     assert_eq!(before, after, "digests survive a reopen");
 }
 
+/// A large object's digest is kept until the object changes (I179): two
+/// objects built alike agree, every kind of change to one sets them apart
+/// until the other gets the same change, and nothing stale is answered
+/// after a delete and remake or a reopen.
+#[test]
+fn large_objects_keep_their_digest_until_they_change() {
+    use hyperstor_engine::DIGEST_CACHE_MIN;
+    let (d, mut sh) = fresh(8192, None);
+    let table: Vec<Op> = (0..DIGEST_CACHE_MIN + 10)
+        .map(|i| Op::KvPut(format!("k{i:06}").into_bytes(), vec![i as u8; 64]))
+        .collect();
+    for k in ["x", "y"] {
+        // In a few lists: each one gives the object a new revision.
+        for part in table.chunks(300) {
+            one(&mut sh, key(k), part.to_vec()).unwrap();
+        }
+    }
+    let digest = |sh: &Shard, k: &str| sh.digest(&key(k)).unwrap();
+    assert_eq!(digest(&sh, "x"), digest(&sh, "y"));
+    assert_eq!(digest(&sh, "x"), digest(&sh, "x"), "asked again");
+    let changes: Vec<(&str, Vec<Op>)> = vec![
+        ("new key", vec![Op::KvPut(b"new".to_vec(), b"v".to_vec())]),
+        (
+            "changed value",
+            vec![Op::KvPut(b"k000001".to_vec(), b"other".to_vec())],
+        ),
+        ("deleted key", vec![Op::KvDel(b"k000002".to_vec())]),
+        ("attribute", vec![Op::SetAttr(b"a".to_vec(), b"v".to_vec())]),
+        (
+            "data",
+            vec![Op::Write {
+                off: 0,
+                data: block(5, 1),
+            }],
+        ),
+        ("size", vec![Op::Truncate(3 * BLOCK as u64)]),
+    ];
+    for (what, ops) in changes {
+        one(&mut sh, key("x"), ops.clone()).unwrap();
+        assert_ne!(digest(&sh, "x"), digest(&sh, "y"), "{what} must change it");
+        one(&mut sh, key("y"), ops).unwrap();
+        assert_eq!(digest(&sh, "x"), digest(&sh, "y"), "{what} on both");
+    }
+    // Deleted and made again as it was: the digest of what is there now.
+    let now = digest(&sh, "y");
+    one(&mut sh, key("x"), vec![Op::Delete]).unwrap();
+    assert_eq!(sh.digest(&key("x")), None);
+    for part in table.chunks(300) {
+        one(&mut sh, key("x"), part.to_vec()).unwrap();
+    }
+    assert_ne!(digest(&sh, "x"), now);
+    drop(sh);
+    let sh = reopen(&d);
+    assert_eq!(digest(&sh, "y"), now, "the same after a reopen");
+}
+
 /// Snapshot versions (engine.md §7.2, D104): a read through layers takes
 /// each block from the first version that holds it; absorbing an older
 /// version moves the blocks the newer one lacks without copying, frees

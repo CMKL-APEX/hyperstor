@@ -29,7 +29,7 @@ use crate::dev::BlockDev;
 use crate::index::{DeferredWrite, Effects, Index, Loc, Object, RList, ROp};
 use crate::types::{Committed, EngineError, ObjKey, ObjStat, Op, OpError, OpList};
 use hyperstor_codec::{Dec, DecodeError, Enc, crc32c, crc32c_append};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
@@ -54,6 +54,11 @@ const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
 /// the log and are applied in place later (spec/decisions.md D22).
 pub const DEFER_MAX: usize = 64 * 1024;
+/// Objects with at least this many key–value entries and attributes keep
+/// their digest until they change ([`Shard::digest`]).
+pub const DIGEST_CACHE_MIN: usize = 1024;
+/// At most this many digests are kept; past it the cache starts again.
+const DIGEST_CACHE_MAX: usize = 4096;
 /// Pending in-place writes above this many blocks are applied before the
 /// next commit, to bound memory.
 const PENDING_LIMIT: usize = 16 * 1024;
@@ -297,6 +302,11 @@ pub struct Shard {
     /// The blob of a checkpoint from before pages, freed once a paged one
     /// replaces it.
     legacy_blob: Vec<(u64, u64)>,
+    /// Digests of large objects at the revision they were taken
+    /// ([`Shard::digest`]): hashing a table of hundreds of megabytes takes
+    /// the reactor for most of a second, and backfill and scrub ask again
+    /// and again while it doesn't change.
+    digests: std::cell::RefCell<HashMap<ObjKey, (u64, u64)>>,
     page_bytes: usize,
     ckpt_pages_written: u64,
     /// A checkpoint found no room and was abandoned: changes that take
@@ -393,6 +403,7 @@ impl Shard {
             tail_lsn: sup.head_lsn,
             next_group: 1,
             next_revision: 1,
+            digests: Default::default(),
             ckpt: sup.ckpt.clone(),
             poisoned: false,
             round_fresh: BTreeMap::new(),
@@ -1673,6 +1684,28 @@ impl Shard {
     /// and version.
     pub fn digest(&self, key: &ObjKey) -> Option<u64> {
         let o = self.index.objects.get(key)?;
+        // Every list that leaves an object gives it a revision of its own,
+        // so a large object's digest is kept until its revision changes.
+        // Revision 0 (an object from before revisions) is never trusted.
+        let cache = o.revision != 0 && o.kv.len() + o.attrs.len() >= DIGEST_CACHE_MIN;
+        if cache
+            && let Some((rev, d)) = self.digests.borrow().get(key)
+            && *rev == o.revision
+        {
+            return Some(*d);
+        }
+        let d = Self::digest_of(o);
+        if cache {
+            let mut c = self.digests.borrow_mut();
+            if c.len() >= DIGEST_CACHE_MAX {
+                c.clear();
+            }
+            c.insert(key.clone(), (o.revision, d));
+        }
+        Some(d)
+    }
+
+    fn digest_of(o: &Object) -> u64 {
         let mut h = Fnv::new();
         h.u64(o.size.div_ceil(BLOCK as u64));
         for (lb, _, crcs) in o.blocks.runs() {
@@ -1688,7 +1721,7 @@ impl Shard {
                 h.bytes(k).bytes(v);
             }
         }
-        Some(h.0)
+        h.0
     }
 
     pub fn attrs(&self, key: &ObjKey) -> Option<&BTreeMap<Vec<u8>, Vec<u8>>> {
