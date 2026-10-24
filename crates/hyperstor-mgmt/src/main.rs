@@ -341,10 +341,11 @@ async fn serve(
 
 /// While no one is a security administrator, prints a claim code: whoever
 /// logs in with it becomes the first (§23.7). Waits for the map service
-/// while it starts.
+/// as long as it takes (a new group of members has no quorum until the
+/// others join), asking again every second, then every 30 s.
 async fn offer_claim(s: Arc<State>, at: String) {
     let Some(l) = &s.login else { return };
-    for _ in 0..120 {
+    for i in 0u32.. {
         match l.people.claimed().await {
             Ok(true) => return,
             Ok(false) => {
@@ -357,7 +358,7 @@ async fn offer_claim(s: Arc<State>, at: String) {
             }
             Err(_) => {}
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(if i < 120 { 1 } else { 30 })).await;
     }
 }
 
