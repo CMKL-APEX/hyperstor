@@ -122,7 +122,9 @@ fn a_management_client_enrolls_and_manages_volumes() {
     want.resize(3 << 20, 0);
     assert!(back == want, "read back differs (padded with zeros)");
     // A partition table's region, edited and written back (glidex's
-    // extend-root on a clone, D123).
+    // extend-root on a clone, D123), through a map service named by its
+    // members as glidex has them: one that doesn't answer, then this one.
+    let members = format!("127.0.0.1:1,{}", c.map);
     let head = read(false, "0", "4096", &out);
     let mut edited = head.clone();
     edited[510] = 0x55;
@@ -135,7 +137,7 @@ fn a_management_client_enrolls_and_manages_volumes() {
         "--file",
         edit.to_str().unwrap(),
         "--map",
-        &c.map,
+        &members,
     ])
     .ok();
     assert_eq!(read(true, "0", "4096", &out)[510], 0x55);

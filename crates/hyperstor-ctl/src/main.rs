@@ -1,7 +1,7 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
-//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR]
+//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
 //!
@@ -51,11 +51,12 @@
 //!   mgmt token: a key made here, the API pinned to the token's root; DIR
 //!   gets `admin.crt`, `admin.key` and `root.crt`, as `--tls` reads them;
 //! - `expand-volume --id ID --size S`: grows a volume;
-//! - `write-volume --id ID --file F [--offset O] [--sparse] [--map ADDR]`,
-//!   `read-volume --id ID --size S --out F [--offset O] [--map ADDR]`: a
+//! - `write-volume --id ID --file F [--offset O] [--sparse] [--map ADDR[,ADDR...]]`,
+//!   `read-volume --id ID --size S --out F [--offset O] [--map ADDR[,ADDR...]]`: a
 //!   file into a volume, holding its lease, or a range of it into a file,
 //!   in whole 4 KiB blocks; `--sparse` skips zero blocks; with `--map`,
-//!   straight to the map service, without the API (D123);
+//!   straight to the map service (any of its members), without the API
+//!   (D123);
 //! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
 //!   would move and changes nothing;
@@ -114,7 +115,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -430,6 +431,7 @@ fn main() {
         || matches!(cmd.as_str(), "cert show" | "write-volume" | "enroll") != a.file.is_some()
         || matches!(cmd.as_str(), "map backup" | "read-volume" | "enroll") != a.out.is_some()
         || (cmd == "member add" && !(a.raft.is_some() && a.map.is_some()))
+        || (cmd == "member add" && a.map.as_deref().is_some_and(|m| m.contains(',')))
         || (a.raft.is_some() && cmd != "member add")
         || (a.map.is_some() && cmd != "member add" && !data_path)
         || (matches!(cmd.as_str(), "member add" | "member remove") && a.id.is_none())
@@ -461,7 +463,12 @@ fn main() {
     }
     if data_path && let Some(map) = a.map.clone() {
         // Straight to the data path: no API, no certificate.
-        let map = map.parse().unwrap_or_else(|_| usage());
+        // The map service's members, any of which answers.
+        let map: Vec<std::net::SocketAddr> = map
+            .split(',')
+            .map(|m| m.trim().parse())
+            .collect::<Result<_, _>>()
+            .unwrap_or_else(|_| usage());
         std::process::exit(hyperstor_reactor::block_on(async move {
             volume_io(map, &cmd, &a).await
         }));
@@ -666,7 +673,7 @@ enum Next {
     },
     /// `write-volume`, `read-volume`, through the map service the API named.
     VolumeIo {
-        map: std::net::SocketAddr,
+        map: Vec<std::net::SocketAddr>,
     },
 }
 
@@ -983,7 +990,7 @@ where
             let map = s.map_address.parse().map_err(|_| {
                 connectrpc::ConnectError::internal("the API gave no map service address")
             })?;
-            Next::VolumeIo { map }
+            Next::VolumeIo { map: vec![map] }
         }
         _ => {
             let s = status().await?;
@@ -1771,7 +1778,7 @@ const IO_PIECE: usize = 1 << 20;
 /// `--sparse` skips blocks of zeros, for a volume that reads zeros there.
 /// `read-volume`: `--size` bytes at `--offset` into `--out`. Both in whole
 /// 4 KiB blocks; a file's last block is padded with zeros (D123).
-async fn volume_io(meta: std::net::SocketAddr, cmd: &str, a: &Args) -> i32 {
+async fn volume_io(meta: Vec<std::net::SocketAddr>, cmd: &str, a: &Args) -> i32 {
     let fail = |m: String| {
         eprintln!("hyperstorctl: {m}");
         1
@@ -1782,15 +1789,17 @@ async fn volume_io(meta: std::net::SocketAddr, cmd: &str, a: &Args) -> i32 {
     if !a.offset.is_multiple_of(4096) {
         return fail("--offset: a multiple of 4096".into());
     }
+    let named: Vec<String> = meta.iter().map(|m| m.to_string()).collect();
+    let named = named.join(",");
     let cl = match hyperstor_reactor::time::timeout(
         Duration::from_secs(5),
-        Client::connect(meta, random_u64()),
+        Client::connect_members(meta, random_u64()),
     )
     .await
     {
         Ok(Ok(c)) => c,
-        Ok(Err(e)) => return fail(format!("map service {meta}: {e}")),
-        Err(_) => return fail(format!("map service {meta}: no answer in 5 s")),
+        Ok(Err(e)) => return fail(format!("map service {named}: {e}")),
+        Err(_) => return fail(format!("map service {named}: no answer in 5 s")),
     };
     let vol = match cl.volume(id).await {
         Ok(Some(v)) => v,
