@@ -133,6 +133,11 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
     --role meta --members $M --member-id 2
 ```
 
+A member's host can also run a storage node: list the nodes in the
+cluster file, and give each member `--role both --node N` (the first
+with `--cluster`, the others with `--join`); a joined member gets the
+file, and so its node, from the first.
+
 Tokens are made and used through the leader; the other members refuse
 with the leader's address. Before the members have formed a group, the
 first member makes the `meta` tokens itself.

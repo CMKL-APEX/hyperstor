@@ -20,7 +20,8 @@
 //!   to the map as a new storage node, and installs it with N reactors on
 //!   IP, ports from `--node-port`. `--role meta --members LIST --member-id
 //!   N --join API` joins a map service member with a `--role meta` token
-//!   instead: it gets the cluster file and the intermediate CA. The token
+//!   instead: it gets the cluster file and the intermediate CA; `--role
+//!   both --node N` also runs storage node N of that file. The token
 //!   is read from `--token-file`, `--token` or `$HYPERSTOR_JOIN_TOKEN` and
 //!   never saved; later runs renew the host's certificate over the API.
 //! - `install --all-in-one` sets up a trial cluster on this host: the map
@@ -1045,10 +1046,16 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
     let dir = under(root, "/etc/hyperstor/pki");
     let (cert_name, key_group) = match s.role.as_str() {
         "storage" => ("node", "hyperstor"),
-        "meta" => ("api", "hyperstor"),
-        _ => fail("--join installs one role: --role storage or --role meta"),
+        // A member that also runs a storage node of the cluster file joins
+        // as the member; its node, like the first member's, has no
+        // certificate of its own (the storage network uses none yet).
+        "meta" | "both" => ("api", "hyperstor"),
+        _ => fail("--join takes --role storage, meta or both"),
     };
-    if dir.join(format!("{cert_name}.crt")).exists() && (s.role == "meta" || s.node.is_some()) {
+    if s.role == "both" && s.node.is_none() {
+        fail("--node N is needed for a storage role: which node of the cluster file");
+    }
+    if dir.join(format!("{cert_name}.crt")).exists() && (s.role != "storage" || s.node.is_some()) {
         if s.role == "storage" {
             renew_node(root, real, s);
         }
@@ -1104,7 +1111,7 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         );
     };
     write("root.crt", &r.root, 0o644);
-    let chain = if s.role == "meta" {
+    let chain = if s.role != "storage" {
         // A member's server certificate carries the root, so the hosts
         // that join through it can pin it.
         format!("{}{}", r.certificate, r.root)
