@@ -96,6 +96,7 @@ that; flags are saved to `/etc/hyperstor/install.conf` and reused.
 | `--join URL --token T` | Join an existing cluster (§23.4.2) |
 | `--all-in-one` | One-node trial: meta, `hyperstord` on the given devices, mgmt and the UI, a pool with one copy |
 | `--prebuilt` | Use release binaries already built in this checkout (as glidex's `--prebuilt`) |
+| `--vhost`, `--role vhost` | Also run `hyperstor-vhost`, or only it, on a host that runs VMs (D142); `--vhost-user NAME` names who may use it (D144) |
 
 - **Under glidex**, `glidex-install --hyperstor …` runs
   `hyperstor-install` with the matching flags, and `glidex-stord`

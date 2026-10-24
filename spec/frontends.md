@@ -39,13 +39,16 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   With TCP, sends use `SEND_ZC` from guest memory.
 - **Restart.** The service keeps its leases in a state file. After a
   restart it re-registers them, and the hypervisor reconnects to its
-  sockets: QEMU with `reconnect`, Cloud Hypervisor to be checked (G6).
+  sockets: QEMU with `reconnect`, Cloud Hypervisor on its own (G6). The
+  requests in flight run again from the frontend's in-flight buffer
+  (D143, D145).
 - **As built** (HS3, D116, D117; implementation-notes.md I158–I161):
   one reactor, the control socket, write-through 512e disks (512-byte
   sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
-  under Cloud Hypervisor and QEMU. Not yet: discard, packed rings,
-  adaptive polling, zero copy, the state file and the config-change
-  event.
+  under Cloud Hypervisor and QEMU; restarts that keep the volumes (the
+  state file, in-flight tracking; D143, D145, I173, I174), and its unit
+  from `hyperstor-install --vhost` (D142, D144, I175). Not yet: discard,
+  packed rings, adaptive polling, zero copy and the config-change event.
 
 ### 11.2 NVMe-oF target (D19)
 

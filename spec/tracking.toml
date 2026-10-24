@@ -357,9 +357,24 @@ spec = ["frontends.md §11.1", "D26", "G8"]
 status = "planned"
 
 [[milestone.item]]
-what = "A restarted service keeps its leases; hypervisors reconnect"
-spec = ["frontends.md §11.1", "G6"]
-status = "planned"
+what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
+spec = ["frontends.md §11.1", "G6", "D143", "D145", "I173", "I174"]
+status = "done"
+tests = [
+    "vhost::a_restarted_service_takes_its_volumes_back",
+    "hyperstor_vhost::tests::the_state_file_round_trips_and_bad_ones_say_why",
+    "hyperstor_vhost::inflight::tests::requests_taken_and_not_answered_are_found_after_a_restart",
+]
+
+[[milestone.item]]
+what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
+spec = ["administration.md §23.4", "D142", "D144", "I175"]
+status = "done"
+tests = [
+    "install::hyperstor_vhost_is_installed_for_its_users",
+    "hyperstor_install::tests::vhost_is_installed_for_its_users",
+    "hyperstor_install::tests::the_volumes_hyperstor_vhost_lists_are_read",
+]
 
 [[milestone.item]]
 what = "Discard and write-zeroes without allocating; expand signalled to the guest"

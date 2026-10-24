@@ -169,6 +169,21 @@ hosts installed this way get no certificate; joined ones do, though the
 storage network doesn't use them yet: it has no authentication (see
 [Running a cluster](index.md)).
 
+## Hosts that run VMs
+
+[`hyperstor-vhost`](../reference/hyperstor-vhost.md) serves volumes to
+the VMs on a host, for glidex's `hyperstor` datastores. Add it to a
+host's role, or install a host that only runs VMs:
+
+```bash
+sudo hyperstor-install install --vhost --vhost-user glidex          # with what the host runs already
+sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user glidex
+```
+
+`--vhost-user glidex` lets glidex's control plane attach volumes and its
+hypervisors open their sockets. Restarting the service (an upgrade, say)
+keeps the VMs' disks.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:

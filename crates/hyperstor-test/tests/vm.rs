@@ -2,7 +2,9 @@
 //! `hyperstor-vhost` (frontends.md §11.1, decisions.md D118): Cloud
 //! Hypervisor writes it from a guest, then QEMU reads it back. The guest
 //! is the host's kernel with a busybox initramfs built here, whose init
-//! checks the disk and prints `HS` lines on the serial console.
+//! checks the disk and prints `HS` lines on the serial console. Then each
+//! hypervisor again, on a fresh volume, while `hyperstor-vhost` restarts
+//! under it (D143, host check G6).
 //!
 //! Needs `HS_VM=1`, `/dev/kvm` (directly, or through `sg kvm`), a kernel
 //! image the test can read (`HS_VM_KERNEL`, default
@@ -30,6 +32,19 @@ echo "HS serial $(cat /sys/block/vda/serial)"
 echo "HS size $(cat /sys/block/vda/size)"
 echo "HS queues $(ls /sys/block/vda/mq | wc -l)"
 echo "HS blocks $(cat /sys/block/vda/queue/logical_block_size) $(cat /sys/block/vda/queue/physical_block_size)"
+if [ "$mode" = restart ]; then
+  # The test restarts hyperstor-vhost when it sees "HS paused"; the
+  # second write runs across that, and both are read back after.
+  yes "hyperstor 1" | head -c 4194304 | dd of=/dev/vda bs=64k seek=64 conv=fsync 2>/dev/null
+  # Straight to the device, 4 KiB a request, already under way when the
+  # service goes: some requests are taken and not yet answered.
+  (yes "hyperstor 2" | head -c 16777216 | dd of=/dev/vda bs=4k seek=2048 oflag=direct 2>/dev/null) &
+  sleep 0.3
+  echo "HS paused"
+  wait
+  echo "HS wrote"
+  echo "HS big $(dd if=/dev/vda bs=64k skip=128 count=256 iflag=direct 2>/dev/null | md5sum | cut -d' ' -f1)"
+fi
 if [ "$mode" = write ]; then
   for i in 1 2 3 4; do
     (yes "hyperstor $i" | head -c 4194304 | dd of=/dev/vda bs=64k seek=$((i * 64)) conv=fsync 2>/dev/null) &
@@ -105,6 +120,11 @@ fn initramfs(path: &Path) {
 /// Runs `cmd` with access to /dev/kvm (through `sg kvm` if this process
 /// lacks it) for at most 120 s; returns the `HS` lines of its console.
 fn boot(name: &str, cmd: &[String]) -> Vec<String> {
+    boot_with(name, cmd, |_| {})
+}
+
+/// [`boot`], calling `on_line` with each `HS` line as it arrives.
+fn boot_with(name: &str, cmd: &[String], mut on_line: impl FnMut(&str)) -> Vec<String> {
     let direct = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -120,35 +140,63 @@ fn boot(name: &str, cmd: &[String]) -> Vec<String> {
         c.args(["kvm", "-c", &quoted.join(" ")]);
         c
     };
-    let mut child = c
+    // A group of its own: `sg` runs the hypervisor as its child, and a
+    // hung one is killed with it.
+    let mut child = std::os::unix::process::CommandExt::process_group(&mut c, 0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut err_pipe = child.stderr.take().unwrap();
+    let stderr = std::thread::spawn(move || {
+        let mut err = String::new();
+        let _ = std::io::Read::read_to_string(&mut err_pipe, &mut err);
+        err
+    });
     let out = child.stdout.take().unwrap();
-    let lines = std::thread::spawn(move || {
-        BufReader::new(out)
-            .lines()
-            .map_while(Result::ok)
-            .collect::<Vec<_>>()
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for l in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(l);
+        }
     });
     let t = Instant::now();
+    let mut all = Vec::new();
+    let mut take = |all: &mut Vec<String>, l: String| {
+        if let Some(i) = l.find("HS ") {
+            on_line(l[i..].trim_end());
+        }
+        all.push(l);
+    };
     while child.try_wait().unwrap().is_none() {
         if t.elapsed() > Duration::from_secs(120) {
-            let _ = child.kill();
-            panic!("{name}: no poweroff within 120 s");
+            // SAFETY: kill on our own child's process group.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            let _ = child.wait();
+            let err = stderr.join().unwrap();
+            while let Ok(l) = rx.try_recv() {
+                all.push(l);
+            }
+            panic!(
+                "{name}: no poweroff within 120 s\n--- console\n{}\n--- stderr\n{err}",
+                all.join("\n")
+            );
         }
-        std::thread::sleep(Duration::from_millis(100));
+        while let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
+            take(&mut all, l);
+        }
     }
-    let all = lines.join().unwrap();
+    reader.join().unwrap();
+    while let Ok(l) = rx.try_recv() {
+        take(&mut all, l);
+    }
     let hs: Vec<String> = all
         .iter()
         .filter_map(|l| l.find("HS ").map(|i| l[i..].trim_end().to_string()))
         .collect();
+    let err = stderr.join().unwrap();
     if !hs.iter().any(|l| l == "HS done") {
-        let mut err = String::new();
-        let _ = std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err);
         panic!(
             "{name}: the guest didn't finish\n--- console\n{}\n--- stderr\n{err}",
             all.join("\n")
@@ -159,10 +207,15 @@ fn boot(name: &str, cmd: &[String]) -> Vec<String> {
 
 /// The MD5 of what the guest's writer `i` writes.
 fn expected(i: u32) -> String {
+    expected_of(i, 4 << 20)
+}
+
+/// The MD5 of the first `len` bytes of writer `i`'s pattern.
+fn expected_of(i: u32, len: u64) -> String {
     let o = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "yes 'hyperstor {i}' | head -c 4194304 | md5sum | cut -d' ' -f1"
+            "yes 'hyperstor {i}' | head -c {len} | md5sum | cut -d' ' -f1"
         ))
         .output()
         .unwrap();
@@ -192,7 +245,7 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
         .ctl(&["create-volume", "--size", "256M", "--name", "vm"])
         .ok();
     let id = made.out.split_whitespace().nth(1).unwrap().to_string();
-    let svc = Service::start(&c, "vhost-vm", &["--queues", "2"]);
+    let mut svc = Service::start(&c, "vhost-vm", &["--queues", "2"]);
     let r = svc.attach(&id, "attach");
     let socket = r["ok"]["socket"]
         .as_str()
@@ -255,7 +308,7 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
         s("-numa"),
         s("node,memdev=mem"),
         s("-chardev"),
-        format!("socket,id=disk,path={socket}"),
+        format!("socket,id=disk,path={socket},reconnect=1"),
         s("-device"),
         s("vhost-user-blk-pci,chardev=disk,num-queues=2"),
         s("-kernel"),
@@ -275,6 +328,41 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
     has(&read, "HS queues 2");
     for n in 1..=4 {
         has(&read, &format!("HS sum {n} {}", expected(n)));
+    }
+    // hyperstor-vhost restarts under a running VM (D143; host check G6):
+    // the guest's write across the restart lands, and so does the one
+    // before it. A fresh volume for each, so nothing earlier hides a
+    // lost write.
+    for (name, cmd) in [("cloud-hypervisor", &ch), ("qemu", &qemu)] {
+        let made = c
+            .ctl(&["create-volume", "--size", "64M", "--name", "restart"])
+            .ok();
+        let vol = made.out.split_whitespace().nth(1).unwrap().to_string();
+        let r = svc.attach(&vol, "attach");
+        let fresh = r["ok"]["socket"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r}"))
+            .to_string();
+        let cmd: Vec<String> = cmd
+            .iter()
+            .map(|a| {
+                a.replace(&socket, &fresh)
+                    .replace("hs=write", "hs=restart")
+                    .replace("hs=read", "hs=restart")
+            })
+            .collect();
+        let mut restarted = false;
+        let lines = boot_with(name, &cmd, |l| {
+            if l == "HS paused" {
+                svc.restart();
+                restarted = true;
+            }
+        });
+        eprintln!("{name} across a restart: {lines:?}");
+        assert!(restarted, "{name}: the guest never paused");
+        has(&lines, "HS wrote");
+        has(&lines, &format!("HS sum 1 {}", expected(1)));
+        has(&lines, &format!("HS big {}", expected_of(2, 16 << 20)));
     }
     svc.stop();
 }

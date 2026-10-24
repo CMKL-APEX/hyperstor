@@ -4,14 +4,14 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]...
 ```
 
 | Command | Does |
 |---|---|
 | `check` | Runs the host checks and changes nothing |
 | `install` | Installs, or brings an installation up to date: only what differs is changed |
-| `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data |
+| `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
 | `root-backup` | Writes the root CA's certificate and key to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the key from this host |
 | `root-restore` | Puts the root CA from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster |
 
@@ -25,9 +25,9 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `--address IP` | | A joining storage host: the IP its reactors listen on, on the storage network; the metrics port is on it too |
 | `--reactors N` | 1 | A joining storage host: how many reactors, each on its own device file and port (`--node-port` + i) |
 | `--rack R` | 0 | A joining storage host: its rack, the failure domain pools may spread copies across |
-| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage`, `meta` or `both` |
+| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage`, `meta` or `both`. `vhost`: a host that only runs VMs, with [`hyperstor-vhost`](hyperstor-vhost.md) for the map service at `--map` |
 | `--node N` | | With a `storage` or `both` role: which node of the cluster file this host runs. It gets one reactor per address the file lists for it, each on a file in the data directory |
-| `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there. Not needed with `--members` |
+| `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there. Not needed with `--members`. With `--role vhost`: the map service's members, separated by commas |
 | `--members LIST` | | With `--cluster`, for a map service of several members: every member as `N=RAFT_ADDR/MAP_ADDR`, separated by commas, the same on every host (see [the map service](../admin-guide/map-service.md#several-members)). Storage nodes connect to all of them |
 | `--member-id N` | | With `--members` and a `meta` or `both` role: which member this host runs |
 | `--nodes N` | 3 | All-in-one: storage nodes (1 to 16). The pool keeps `min(N, 3)` copies |
@@ -49,6 +49,9 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `--tailscale-cert` | off | Also serve the node's Tailscale certificate for its `ts.net` names: grants the `hyperstor` user `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` (the tailnet drops for a few seconds). Refused, changing nothing, when `tailscaled` already grants it to someone else (glidex-ui, say). Saved |
 | `--no-tailscale-cert` | | Turn it off again: removes that drop-in |
 | `--remove-key` | off | `root-backup`: once the backup opens, remove the root's key from this host, keeping the root offline |
+| `--vhost` | off | Also run [`hyperstor-vhost`](hyperstor-vhost.md) here, for VMs on this host (glidex's `hyperstor` datastores): the unit `hyperstor-vhost.service`, its sockets in `/run/hyperstor/vhost`. Restarting it keeps the VMs' disks. Saved |
+| `--no-vhost` | | Remove it again: its volumes are detached first |
+| `--vhost-user NAME` | | A user who may use `hyperstor-vhost` (glidex's, say): its control socket, and, for the first one named, the sockets go to the user's primary group. Repeat for more; given at all, it replaces the saved list. Saved |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
 runs, so `sudo hyperstor-install install` alone updates an existing

@@ -32,6 +32,7 @@ pub const S_UNSUPP: u8 = 2;
 pub struct Service {
     child: Child,
     pub dir: PathBuf,
+    args: Vec<String>,
 }
 
 impl Service {
@@ -41,9 +42,21 @@ impl Service {
     pub fn start(c: &Cluster, name: &str, extra: &[&str]) -> Service {
         let dir = std::env::temp_dir().join(format!("hsv-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let mut args: Vec<String> = ["serve", "--meta", &c.map, "--dir", dir.to_str().unwrap()]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        args.extend(extra.iter().map(|a| a.to_string()));
+        Service {
+            child: Self::spawn(&args),
+            dir,
+            args,
+        }
+    }
+
+    fn spawn(args: &[String]) -> Child {
         let mut child = Command::new(bin_dir().join("hyperstor-vhost"))
-            .args(["serve", "--meta", &c.map, "--dir", dir.to_str().unwrap()])
-            .args(extra)
+            .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -53,7 +66,38 @@ impl Service {
             .read_line(&mut line)
             .unwrap();
         assert!(line.contains("control socket"), "{line:?}");
-        Service { child, dir }
+        child
+    }
+
+    /// Stops it with SIGTERM and starts it again on the same directory,
+    /// as systemd's restart does; returns once it answers again.
+    pub fn restart(&mut self) {
+        self.pause();
+        self.resume();
+    }
+
+    /// Stops it with SIGTERM, keeping its directory (and state file).
+    pub fn pause(&mut self) {
+        // SAFETY: kill on our own child's pid.
+        unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
+        let st = self.child.wait().unwrap();
+        assert!(st.success(), "hyperstor-vhost exited with {st}");
+    }
+
+    /// Starts it again after [`Service::pause`].
+    pub fn resume(&mut self) {
+        self.child = Self::spawn(&self.args);
+    }
+
+    /// The volumes it serves, as `list` answers.
+    pub fn listed(&self) -> Vec<String> {
+        let r = self.ctl(serde_json::json!({"id": 1, "op": "list"}));
+        r["ok"]["disks"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{r}"))
+            .iter()
+            .map(|d| d["volume"].as_str().unwrap().to_string())
+            .collect()
     }
 
     /// One control request; the reply.

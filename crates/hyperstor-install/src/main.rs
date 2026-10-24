@@ -33,8 +33,14 @@
 //!   `/etc/hyperstor/install.conf` and reused by later runs.
 //!   It also installs itself and a daily timer that runs `install` again,
 //!   which renews certificates (D56) and repairs drift.
+//! - `--vhost` adds `hyperstor-vhost` (frontends.md §11.1, D142) to
+//!   whatever the host runs: VM disks over vhost-user-blk, for glidex.
+//!   `install --role vhost --map ADDR[,ADDR...]` sets up a host that only
+//!   runs VMs. `--vhost-user NAME` (repeatable) lets that user use its
+//!   control socket and gives its sockets the user's primary group
+//!   (D144); `--no-vhost` removes it. A restart keeps its volumes (D143).
 //! - `uninstall` stops and removes the units and binaries; configuration
-//!   and data stay.
+//!   and data stay. It detaches `hyperstor-vhost`'s volumes first.
 //! - `root-backup --out FILE --passphrase-file F [--remove-key]` writes the
 //!   root CA (certificate and key) to FILE, encrypted with the passphrase
 //!   (D84), checks that it opens, and records the backup; with
@@ -62,15 +68,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]...";
 
-const BINARIES: [&str; 5] = [
+const BINARIES: [&str; 6] = [
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
     "hyperstor-mgmt",
     "hyperstor-authd",
+    "hyperstor-vhost",
 ];
+
+/// Where `hyperstor-vhost`'s sockets and state file are (its unit's
+/// runtime directory).
+const VHOST_DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -123,6 +134,10 @@ struct Settings {
     web_tls: String,
     /// Serve the node's Tailscale certificate too (D109), opt-in.
     tailscale_cert: bool,
+    /// Run `hyperstor-vhost` here (D142), besides the role.
+    vhost: bool,
+    /// The users who may use it (D144), comma-separated.
+    vhost_users: String,
 }
 
 impl Settings {
@@ -149,7 +164,21 @@ impl Settings {
             mgmt_listen: "all".into(),
             web_tls: String::new(),
             tailscale_cert: false,
+            vhost: false,
+            vhost_users: String::new(),
         }
+    }
+
+    /// Whether this host runs `hyperstor-vhost`.
+    fn runs_vhost(&self) -> bool {
+        self.vhost || self.role == "vhost"
+    }
+
+    fn vhost_users(&self) -> Vec<&str> {
+        self.vhost_users
+            .split(',')
+            .filter(|u| !u.is_empty())
+            .collect()
     }
 
     /// Reads `key = value` lines over `self`; unknown keys are ignored.
@@ -181,6 +210,8 @@ impl Settings {
                 "mgmt_listen" => self.mgmt_listen = v.to_string(),
                 "web_tls" => self.web_tls = v.to_string(),
                 "tailscale_cert" => self.tailscale_cert = v == "true",
+                "vhost" => self.vhost = v == "true",
+                "vhost_users" => self.vhost_users = v.to_string(),
                 _ => {}
             }
         }
@@ -189,7 +220,7 @@ impl Settings {
     fn save(&self) -> String {
         format!(
             "# Written by hyperstor-install; flags given on the command line override these.\n\
-             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\njoin = {}\naddress = {}\nreactors = {}\nrack = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\nmgmt_listen = {}\nweb_tls = {}\ntailscale_cert = {}\n",
+             all_in_one = {}\nrole = {}\nnode = {}\nmap = {}\nmembers = {}\nmember_id = {}\njoin = {}\naddress = {}\nreactors = {}\nrack = {}\nnodes = {}\nsize_gib = {}\ndata_dir = {}\napi_port = {}\nmap_port = {}\nnode_port = {}\nadmin_port = {}\nmgmt_port = {}\nmgmt_listen = {}\nweb_tls = {}\ntailscale_cert = {}\nvhost = {}\nvhost_users = {}\n",
             self.all_in_one,
             self.role,
             self.node.map(|n| n.to_string()).unwrap_or_default(),
@@ -210,7 +241,9 @@ impl Settings {
             self.mgmt_port,
             self.mgmt_listen,
             self.web_tls,
-            self.tailscale_cert
+            self.tailscale_cert,
+            self.vhost,
+            self.vhost_users
         )
     }
 }
@@ -236,6 +269,8 @@ fn main() {
     // Never saved: a token is single-use and secret (§23.10).
     let mut token: Option<String> = std::env::var("HYPERSTOR_JOIN_TOKEN").ok();
     let mut given: BTreeMap<&str, String> = BTreeMap::new();
+    // Repeatable: replaces the saved list when given at all.
+    let mut vhost_users: Vec<String> = Vec::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| usage());
@@ -277,6 +312,23 @@ fn main() {
             }
             "--no-tailscale-cert" => {
                 given.insert("tailscale_cert", "false".into());
+                continue;
+            }
+            "--vhost" => {
+                given.insert("vhost", "true".into());
+                continue;
+            }
+            "--no-vhost" => {
+                given.insert("vhost", "false".into());
+                continue;
+            }
+            "--vhost-user" => {
+                let u = val();
+                if !user_name_ok(&u) {
+                    eprintln!("hyperstor-install: bad value for --vhost-user: {u}");
+                    usage();
+                }
+                vhost_users.push(u);
                 continue;
             }
             "--out" => {
@@ -325,12 +377,15 @@ fn main() {
             "api_port" | "map_port" | "node_port" | "admin_port" | "mgmt_port" => {
                 v.parse::<u16>().is_ok_and(|n| n > 0)
             }
-            "role" => matches!(v.as_str(), "meta" | "storage" | "both"),
+            "role" => matches!(v.as_str(), "meta" | "storage" | "both" | "vhost"),
             "mgmt_listen" => matches!(v.as_str(), "all" | "loopback"),
             // Empty: back to the cluster CA's certificate.
             "web_tls" => v.is_empty() || v.starts_with('/'),
             "node" => v.parse::<u32>().is_ok(),
-            "map" => v.parse::<std::net::SocketAddr>().is_ok(),
+            // One address, or a map service's members for `--role vhost`.
+            "map" => v
+                .split(',')
+                .all(|a| a.parse::<std::net::SocketAddr>().is_ok()),
             "members" => parse_members(&v).is_ok(),
             "member_id" => v.parse::<u32>().is_ok(),
             "join" => v.parse::<std::net::SocketAddr>().is_ok(),
@@ -346,6 +401,9 @@ fn main() {
             usage();
         }
         given.insert(key, v);
+    }
+    if !vhost_users.is_empty() {
+        given.insert("vhost_users", vhost_users.join(","));
     }
     let real = root == Path::new("/");
     let mut s = Settings::defaults();
@@ -594,6 +652,31 @@ fn check(root: &Path, s: &Settings) -> bool {
             "not running: install with --no-start and start the services by hand".into(),
         );
     }
+
+    // hyperstor-vhost's users must exist (D144).
+    if s.runs_vhost() {
+        let users = s.vhost_users();
+        let missing: Vec<&str> = users
+            .iter()
+            .copied()
+            .filter(|u| user_ids(u).is_none())
+            .collect();
+        if !missing.is_empty() {
+            note(
+                Level::Fail,
+                "vhost",
+                format!("--vhost-user {}: no such user", missing.join(", ")),
+            );
+        } else if users.is_empty() {
+            note(
+                Level::Info,
+                "vhost",
+                "no --vhost-user: only root and hyperstor may use hyperstor-vhost".into(),
+            );
+        } else {
+            note(Level::Ok, "vhost", format!("for {}", users.join(", ")));
+        }
+    }
     worst == Level::Fail
 }
 
@@ -787,6 +870,44 @@ ReadWritePaths=DATA_DIR
 WantedBy=multi-user.target
 ";
 
+const VHOST_UNIT: &str = "\
+# Written by hyperstor-install. VM disks over vhost-user-blk (frontends.md §11.1).
+[Unit]
+Description=Hyperstor vhost-user-blk service (VM disks)
+Documentation=https://github.com/CMKL-APEX/hyperstor
+After=network-online.target hyperstor-meta.service
+Wants=network-online.target
+
+[Service]
+User=hyperstor
+GROUPS_LINE
+EnvironmentFile=/etc/hyperstor/vhost.env
+ExecStart=/usr/local/bin/hyperstor-vhost serve $HS_ARGS
+# Kept across restarts (D143): its state file names the volumes the next
+# start takes back, and the hypervisors reconnect to the same sockets.
+RuntimeDirectory=hyperstor/vhost
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=1
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+";
+
+/// `hyperstor-vhost`'s users (D144), as ids: who may use its control
+/// socket, and the groups its sockets go to (the first) and it runs in.
+#[derive(Debug, Clone, PartialEq)]
+struct VhostPlan {
+    uids: Vec<u32>,
+    gids: Vec<u32>,
+}
+
 /// What this host runs: the map service and which storage nodes.
 struct Plan {
     cluster: String,
@@ -814,6 +935,8 @@ struct Plan {
     /// mgmt serves the node's Tailscale certificate too (D109): asked
     /// for, and `tailscaled` lets the `hyperstor` user have it.
     tailscale: bool,
+    /// `hyperstor-vhost`, if this host runs it (D142).
+    vhost: Option<VhostPlan>,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -854,6 +977,77 @@ struct NodePlan {
 /// the cluster described by a cluster file (given now, or installed by an
 /// earlier run).
 fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
+    let mut p = role_plan(root, s, cluster_file);
+    p.vhost = s.runs_vhost().then(|| vhost_plan(s));
+    if p.vhost.is_some() && p.map.is_empty() {
+        fail("--vhost needs the map service's addresses: --map ADDR[,ADDR...]");
+    }
+    p
+}
+
+/// The users `--vhost-user` names, as ids; an unknown one fails the
+/// install.
+fn vhost_plan(s: &Settings) -> VhostPlan {
+    let mut v = VhostPlan {
+        uids: Vec::new(),
+        gids: Vec::new(),
+    };
+    for u in s.vhost_users() {
+        let (uid, gid) =
+            user_ids(u).unwrap_or_else(|| fail(&format!("--vhost-user {u}: no such user")));
+        v.uids.push(uid);
+        if !v.gids.contains(&gid) {
+            v.gids.push(gid);
+        }
+    }
+    v
+}
+
+/// A user's uid and primary gid.
+fn user_ids(name: &str) -> Option<(u32, u32)> {
+    let c = std::ffi::CString::new(name).ok()?;
+    // SAFETY: getpwnam with a NUL-terminated name; the entry is read
+    // before any other call can replace it.
+    let pw = unsafe { libc::getpwnam(c.as_ptr()) };
+    // SAFETY: a non-null result points to a valid passwd entry.
+    (!pw.is_null()).then(|| unsafe { ((*pw).pw_uid, (*pw).pw_gid) })
+}
+
+/// A plain user name: what `--vhost-user` takes.
+fn user_name_ok(u: &str) -> bool {
+    !u.is_empty()
+        && u.len() <= 32
+        && u.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && u.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// A host that only runs VMs (D142): `hyperstor-vhost` for the map
+/// service at `--map`, and nothing else of the cluster's.
+fn vhost_only_plan(s: &Settings) -> Plan {
+    if s.map.is_empty() {
+        fail("--role vhost needs --map ADDR[,ADDR...]: the map service's addresses");
+    }
+    Plan {
+        ui: false,
+        tailscale: false,
+        api: String::new(),
+        cluster: String::new(),
+        cluster_id: String::new(),
+        meta: None,
+        map: s.map.clone(),
+        members: Vec::new(),
+        member_id: None,
+        server_ips: Vec::new(),
+        nodes: Vec::new(),
+        metrics: Vec::new(),
+        vhost: None,
+    }
+}
+
+fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     if s.all_in_one {
         let id = cluster_id(root);
         let size = s.nodes.min(3);
@@ -876,6 +1070,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
             .collect();
         return Plan {
+            vhost: None,
             ui: false,
             tailscale: false,
             api: format!("127.0.0.1:{}", s.api_port),
@@ -898,8 +1093,11 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     }
     if s.role.is_empty() {
         fail(
-            "give --all-in-one, --cluster FILE with --role meta|storage|both, or --join API with --role",
+            "give --all-in-one, --cluster FILE with --role meta|storage|both, --join API with --role, or --role vhost --map ADDR",
         );
+    }
+    if s.role == "vhost" {
+        return vhost_only_plan(s);
     }
     if !s.join.is_empty() && s.role == "storage" {
         return joined_storage_plan(s);
@@ -981,7 +1179,11 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         .parse::<std::net::SocketAddr>()
         .map(|a| std::net::SocketAddr::new(a.ip(), s.api_port).to_string())
         .unwrap_or_else(|_| format!("127.0.0.1:{}", s.api_port));
+    if s.map.contains(',') {
+        fail("--map takes several addresses only with --role vhost");
+    }
     Plan {
+        vhost: None,
         ui: false,
         tailscale: false,
         api,
@@ -1016,6 +1218,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
         .parse()
         .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
     Plan {
+        vhost: None,
         ui: false,
         tailscale: false,
         api: String::new(),
@@ -1378,6 +1581,34 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             0o644,
         ));
     }
+    if let Some(v) = &p.vhost {
+        let mut args = format!("--meta {} --dir {VHOST_DIR}", p.map);
+        for u in &v.uids {
+            args += &format!(" --allow-uid {u}");
+        }
+        if let Some(g) = v.gids.first() {
+            args += &format!(" --group {g}");
+        }
+        // It hands its sockets to these groups, so it is in them.
+        let groups = if v.gids.is_empty() {
+            "# No --vhost-user: only root and hyperstor use it.".to_string()
+        } else {
+            let g: Vec<String> = v.gids.iter().map(u32::to_string).collect();
+            format!("SupplementaryGroups={}", g.join(" "))
+        };
+        out.extend([
+            (
+                "/etc/hyperstor/vhost.env".to_string(),
+                format!("HS_ARGS={args}\n"),
+                0o644,
+            ),
+            (
+                "/etc/systemd/system/hyperstor-vhost.service".to_string(),
+                VHOST_UNIT.replace("GROUPS_LINE", &groups),
+                0o644,
+            ),
+        ]);
+    }
     for node in &p.nodes {
         let n = node.n;
         let shards: Vec<String> = node
@@ -1478,6 +1709,56 @@ fn units(p: &Plan) -> Vec<String> {
                 .iter()
                 .map(|n| format!("hyperstord@{}.service", n.n)),
         )
+        .chain(
+            p.vhost
+                .iter()
+                .map(|_| "hyperstor-vhost.service".to_string()),
+        )
+        .collect()
+}
+
+/// Detaches every volume `hyperstor-vhost` serves (before it stops for
+/// good: a stopped service's volumes stay held, D143), then stops and
+/// removes it. Returns what it removed.
+fn remove_vhost(root: &Path, real: bool) -> Vec<String> {
+    let unit = "/etc/systemd/system/hyperstor-vhost.service";
+    if !under(root, unit).exists() {
+        return Vec::new();
+    }
+    if real {
+        let ctl = "/usr/local/bin/hyperstor-vhost";
+        let listed = Command::new(ctl)
+            .args(["ctl", "--dir", VHOST_DIR, "list"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        for v in listed_volumes(&listed) {
+            if !run(ctl, &["ctl", "--dir", VHOST_DIR, "detach", &v]) {
+                eprintln!("hyperstor-install: detaching volume {v} failed; it stays held");
+            }
+        }
+        let _ = run(
+            "systemctl",
+            &["disable", "--now", "hyperstor-vhost.service"],
+        );
+    }
+    let mut removed = Vec::new();
+    for f in [unit, "/etc/hyperstor/vhost.env"] {
+        if fs::remove_file(under(root, f)).is_ok() {
+            removed.push(f.to_string());
+        }
+    }
+    removed
+}
+
+/// The volume ids in `hyperstor-vhost ctl list`'s answer.
+fn listed_volumes(answer: &str) -> Vec<String> {
+    answer
+        .split("\"volume\":\"")
+        .skip(1)
+        .filter_map(|r| r.get(..32))
+        .filter(|v| v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
         .collect()
 }
 
@@ -1731,6 +2012,11 @@ fn install(
         }
     }
     let mut units_changed = false;
+    if p.vhost.is_none() {
+        let removed = remove_vhost(root, real && !no_start);
+        units_changed |= !removed.is_empty();
+        changed.extend(removed.into_iter().map(|r| format!("removed {r}")));
+    }
     let mut service_units_changed: Vec<&str> = Vec::new();
     for (path, content, mode) in files(s, &p) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
@@ -1752,6 +2038,10 @@ fn install(
         if path.ends_with("hyperstord@.service") {
             service_units_changed.push("hyperstord");
         }
+        // Restarting it keeps its VMs' disks (D143).
+        if path.ends_with("hyperstor-vhost.service") || path.ends_with("vhost.env") {
+            restart.push("hyperstor-vhost.service".into());
+        }
         if path.ends_with("cluster.txt") || path.ends_with("meta.env") {
             restart.push("hyperstor-meta.service".into());
         }
@@ -1771,6 +2061,7 @@ fn install(
             "hyperstord" => u.starts_with("hyperstord@"),
             "hyperstor-meta" => u == "hyperstor-meta.service",
             "hyperstor-mgmt" => u == "hyperstor-mgmt.service",
+            "hyperstor-vhost" => u == "hyperstor-vhost.service",
             _ => false,
         }));
         // The helper's service, not its socket, which stays: systemd hands
@@ -2115,6 +2406,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     if real && unsafe { libc::geteuid() } != 0 {
         fail("uninstalling from / needs root: run it with sudo (or use --root DIR)");
     }
+    // Its volumes detached first, so they don't stay held (D143).
+    let mut removed = remove_vhost(root, real);
     if real {
         // What was installed: the map service if its options are, and
         // every storage node with an options file.
@@ -2146,7 +2439,6 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         // Units that were never installed make this fail; that's fine.
         let _ = run("systemctl", &args);
     }
-    let mut removed = Vec::new();
     let paths = [
         "/etc/systemd/system/hyperstor-meta.service".to_string(),
         "/etc/systemd/system/hyperstord@.service".to_string(),
@@ -2457,5 +2749,73 @@ mod tests {
             ),
             "{env}"
         );
+    }
+
+    /// `--vhost` adds hyperstor-vhost to a role (D142), for the users
+    /// named (D144); `--role vhost` is a host with only it.
+    #[test]
+    fn vhost_is_installed_for_its_users() {
+        let mut s = Settings::defaults();
+        s.all_in_one = true;
+        assert!(plan(Path::new("/nonexistent"), &s, None).vhost.is_none());
+        assert!(
+            !files(&s, &plan(Path::new("/nonexistent"), &s, None))
+                .iter()
+                .any(|f| f.0.contains("vhost"))
+        );
+        s.vhost = true;
+        s.vhost_users = "root".into();
+        let p = plan(Path::new("/nonexistent"), &s, None);
+        assert_eq!(
+            p.vhost,
+            Some(VhostPlan {
+                uids: vec![0],
+                gids: vec![0]
+            })
+        );
+        assert!(units(&p).contains(&"hyperstor-vhost.service".to_string()));
+        let f = files(&s, &p);
+        let file = |n: &str| f.iter().find(|x| x.0 == n).unwrap().1.clone();
+        assert_eq!(
+            file("/etc/hyperstor/vhost.env"),
+            "HS_ARGS=--meta 127.0.0.1:8849 --dir /run/hyperstor/vhost --allow-uid 0 --group 0\n"
+        );
+        let unit = file("/etc/systemd/system/hyperstor-vhost.service");
+        assert!(unit.contains("\nSupplementaryGroups=0\n"), "{unit}");
+        assert!(unit.contains("\nRuntimeDirectoryPreserve=yes\n"), "{unit}");
+        // Only VMs here: the map service's members, nothing of the cluster's.
+        let mut v = Settings::defaults();
+        v.role = "vhost".into();
+        v.map = "10.0.0.5:8849,10.0.0.6:8849".into();
+        let p = plan(Path::new("/nonexistent"), &v, None);
+        assert_eq!(units(&p), vec!["hyperstor-vhost.service".to_string()]);
+        let f = files(&v, &p);
+        let env = &f.iter().find(|x| x.0.ends_with("vhost.env")).unwrap().1;
+        assert!(
+            env.starts_with("HS_ARGS=--meta 10.0.0.5:8849,10.0.0.6:8849 "),
+            "{env}"
+        );
+        assert!(!env.contains("--allow-uid"), "{env}");
+        let unit = &f.iter().find(|x| x.0.ends_with("vhost.service")).unwrap().1;
+        assert!(!unit.contains("SupplementaryGroups="), "{unit}");
+        assert!(
+            !f.iter()
+                .any(|x| x.0.contains("cluster.txt") || x.0.contains("node-"))
+        );
+        // Saved and read back.
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert!(t.vhost && t.vhost_users == "root");
+        assert!(user_name_ok("glidex") && !user_name_ok("Root") && !user_name_ok("a b"));
+    }
+
+    #[test]
+    fn the_volumes_hyperstor_vhost_lists_are_read() {
+        let a = "0123456789abcdef0123456789abcdef";
+        let answer = format!(
+            r#"{{"id":1,"ok":{{"disks":[{{"volume":"{a}","socket":"/x","size":1,"connected":true}},{{"volume":"zz"}}]}}}}"#
+        );
+        assert_eq!(listed_volumes(&answer), vec![a.to_string()]);
+        assert!(listed_volumes("").is_empty());
     }
 }

@@ -86,7 +86,8 @@ covered by tests that run on every change.
 | hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks | In progress |
 | VMs boot from volumes under Cloud Hypervisor and QEMU | Done |
 | Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
-| A restarted service keeps its leases; hypervisors reconnect | Planned |
+| A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
+| hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
 | Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates | Planned |
 | Client readahead | Planned |

@@ -7,14 +7,20 @@
 //! the hypervisor connects to (and reconnects to after either side
 //! restarts). Each queue of a connected disk is a task on the same
 //! reactor; more reactors, pinned per NUMA node, come later.
+//!
+//! Stopping the service leaves its volumes attached (decisions.md D143):
+//! `<dir>/state.json` names them and the instance that held them, and the
+//! next start takes them back from that instance, which the hypervisors
+//! then reconnect to. A volume another client took meanwhile is dropped.
 
 pub mod blk;
 pub mod control;
 pub mod device;
+pub mod inflight;
 
 use control::{Reply, Request, Take};
 use device::Disk;
-use hyperstor_client::Client;
+use hyperstor_client::{Client, ClientError};
 use hyperstor_reactor::fd;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -42,6 +48,49 @@ pub struct Options {
 /// The control socket's path in `dir`.
 pub fn control_path(dir: &Path) -> PathBuf {
     dir.join("control.sock")
+}
+
+/// The state file's path in `dir`.
+pub fn state_path(dir: &Path) -> PathBuf {
+    dir.join("state.json")
+}
+
+/// What survives a restart (D143): the instance that held the volumes,
+/// and each volume with its serial.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct State {
+    pub instance: u64,
+    pub disks: Vec<(u128, String)>,
+}
+
+impl State {
+    pub fn to_json(&self) -> String {
+        let disks: Vec<serde_json::Value> = self
+            .disks
+            .iter()
+            .map(|(v, s)| serde_json::json!({"volume": format!("{v:032x}"), "serial": s}))
+            .collect();
+        serde_json::json!({"instance": format!("{:016x}", self.instance), "disks": disks})
+            .to_string()
+    }
+
+    pub fn parse(text: &str) -> Result<State, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let hex = |v: &serde_json::Value, what: &str| {
+            v.as_str()
+                .ok_or_else(|| format!("no {what}"))
+                .map(str::to_string)
+        };
+        let instance = u64::from_str_radix(&hex(&v["instance"], "instance")?, 16)
+            .map_err(|e| format!("instance: {e}"))?;
+        let mut disks = Vec::new();
+        for d in v["disks"].as_array().ok_or("no disks")? {
+            let volume = u128::from_str_radix(&hex(&d["volume"], "volume")?, 16)
+                .map_err(|e| format!("volume: {e}"))?;
+            disks.push((volume, hex(&d["serial"], "serial")?));
+        }
+        Ok(State { instance, disks })
+    }
 }
 
 /// A disk socket's path in `dir`.
@@ -82,6 +131,23 @@ pub fn serve(
         ));
     }
     std::fs::create_dir_all(&opts.dir).map_err(|e| format!("{}: {e}", opts.dir.display()))?;
+    // The sockets' group may pass through to them, no one else (D144).
+    if let Some(g) = opts.group {
+        std::fs::set_permissions(&opts.dir, std::fs::Permissions::from_mode(0o750))
+            .map_err(|e| format!("{}: {e}", opts.dir.display()))?;
+        chown_group(&opts.dir, g)?;
+    }
+    let previous = match std::fs::read_to_string(state_path(&opts.dir)) {
+        Ok(t) => State::parse(&t)
+            .map_err(|e| {
+                eprintln!(
+                    "hyperstor-vhost: {}: {e}; ignored",
+                    state_path(&opts.dir).display()
+                )
+            })
+            .ok(),
+        Err(_) => None,
+    };
     let path = control_path(&opts.dir);
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -104,15 +170,21 @@ pub fn serve(
             client,
             disks: RefCell::new(BTreeMap::new()),
         });
+        // Before glidex can ask: the volumes the last instance had.
+        if let Some(prev) = previous {
+            for (volume, serial) in prev.disks {
+                match svc.reclaim(volume, serial, prev.instance).await {
+                    Ok(()) => eprintln!("hyperstor-vhost: volume {volume:032x}: taken back"),
+                    Err(e) => eprintln!("hyperstor-vhost: volume {volume:032x}: dropped: {e}"),
+                }
+            }
+        }
+        svc.save_state();
         ready(&path);
         let _accept = hyperstor_reactor::spawn(accept_control(svc.clone(), listener));
         let _ = rx.recv().await;
-        let ids: Vec<u128> = svc.disks.borrow().keys().copied().collect();
-        for id in ids {
-            if let Err((_, e)) = svc.detach(id).await {
-                eprintln!("hyperstor-vhost: volume {id:032x}: {e}");
-            }
-        }
+        // The volumes stay attached for the next start (D143): their
+        // leases lapse with this process, and the state file names them.
         let _ = std::fs::remove_file(&path);
         Ok(())
     })
@@ -235,6 +307,52 @@ impl Service {
             .collect()
     }
 
+    /// Writes the state file (D143): this instance and its volumes. A
+    /// failure is reported, not fatal: only a restart needs the file.
+    fn save_state(&self) {
+        let state = State {
+            instance: self.client.instance,
+            disks: self
+                .disks
+                .borrow()
+                .iter()
+                .map(|(v, d)| (*v, d.disk.serial.clone()))
+                .collect(),
+        };
+        let path = state_path(&self.opts.dir);
+        let tmp = path.with_extension("json.new");
+        let r = std::fs::write(&tmp, state.to_json())
+            .and_then(|()| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = r {
+            eprintln!("hyperstor-vhost: {}: {e}", path.display());
+        }
+    }
+
+    /// Takes `volume` back after a restart: from no one, or from `old`,
+    /// the instance this service was before (its lease lapses within
+    /// seconds of its exit). Held by anyone else, it is left to them.
+    async fn reclaim(
+        self: &Rc<Self>,
+        volume: u128,
+        serial: String,
+        old: u64,
+    ) -> Result<(), String> {
+        let att = match self.client.attach(volume).await {
+            Ok(a) => a,
+            Err(ClientError::LeaseHeld { holder, .. }) if holder == old => self
+                .client
+                .take_over(volume)
+                .await
+                .map_err(|e| e.to_string())?,
+            Err(e) => return Err(e.to_string()),
+        };
+        self.open_disk(volume, serial, att)
+            .await
+            .map(|_| ())
+            .map_err(|(_, e)| e)
+    }
+
     /// Attaches `volume` and opens its socket; for a volume attached here
     /// already, answers with its socket (a retry, or glidex restarting).
     async fn attach(
@@ -252,6 +370,16 @@ impl Service {
             Take::Preempt => self.client.preempt(volume).await,
         }
         .map_err(|e| (control::error_code(&e), e.to_string()))?;
+        self.open_disk(volume, serial, att).await
+    }
+
+    /// Opens the socket of `volume`, attached as `att`, and serves it.
+    async fn open_disk(
+        self: &Rc<Self>,
+        volume: u128,
+        serial: String,
+        att: Rc<hyperstor_client::volume::Attached>,
+    ) -> Result<control::Value, (&'static str, String)> {
         // Another request may have attached it meanwhile.
         if let Some(d) = self.disks.borrow().get(&volume) {
             return Ok(control::attached(&d.socket, d.disk.volume.volume().size));
@@ -303,6 +431,7 @@ impl Service {
                 task,
             },
         );
+        self.save_state();
         Ok(control::attached(&socket, size))
     }
 
@@ -325,6 +454,7 @@ impl Service {
         }
         d.task.await;
         let _ = std::fs::remove_file(&d.socket);
+        self.save_state();
         d.disk
             .volume
             .detach()
@@ -363,5 +493,26 @@ async fn serve_disk(
                 disk.volume.volume().id
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_state_file_round_trips_and_bad_ones_say_why() {
+        let s = State {
+            instance: 0x0123_4567_89ab_cdef,
+            disks: vec![(u128::MAX, "serial-1".into()), (7, String::new())],
+        };
+        assert_eq!(State::parse(&s.to_json()), Ok(s));
+        assert!(State::parse("{}").is_err());
+        assert!(State::parse(r#"{"instance": "zz", "disks": []}"#).is_err());
+        assert!(
+            State::parse(r#"{"instance": "1", "disks": [{"volume": "1"}]}"#)
+                .unwrap_err()
+                .contains("serial")
+        );
     }
 }
