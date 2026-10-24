@@ -32,12 +32,13 @@ documents cite them by number.
 | [gpu.md](gpu.md) | §12 | GPU-direct storage behind cuFile and hipFile, in VMs, alongside NCCL and RCCL |
 | [protocol.md](protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
 | [s3.md](s3.md) | §14 | The S3 gateway and S3 over RDMA |
+| [nfs.md](nfs.md) | §26 | NFSv4.1/4.2 and pNFS for unmodified clients: the metadata server, files layouts, data servers in the storage nodes, stripe groups, fencing, failover (investigation; D127, D129, D130 settled) |
 | [operations.md](operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
 | [administration.md](administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
 | [tenants.md](tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [federation.md](federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
 | [glidex.md](glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
-| [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24 |
+| [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24 (G25–G33 in nfs.md) |
 | [filesystem.md](filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
 | [decision-log.md](decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
 | [implementation-notes.md](implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |

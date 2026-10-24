@@ -37,7 +37,8 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 ## 22. Questions
 
 Decisions are settled. These need checking on real hosts before the
-sections that depend on them are final:
+sections that depend on them are final. G25–G33, for the proposed NFS
+and pNFS front end, are in nfs.md §26.11.
 
 - **G1. cuFile's userspace-FS path without nvidia-fs.** Does `libcufile`
   accept a userspace-FS handle on a P2PDMA-only install (open kernel

@@ -643,3 +643,13 @@ H9). Asked how disks should look to VMs, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 73 | 512e in `hyperstor-vhost` (read-modify-write for partial blocks, the engine unchanged); a block size per volume; glidex converting images to 4Kn | 512e in `hyperstor-vhost` | D126 |
+
+## NFS and pNFS for unmodified clients (2026-10-24)
+
+An investigation of how unmodified NFS clients could use the filesystem
+in parallel (nfs.md §26), with options and a recommendation for each
+choice. The owner took three; the rest of D128–D137 stay open.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 74 | Placing file data: F4's hash per chunk (one layout segment per 4 MiB), or stripe groups (each 64 GiB segment round-robin over `W` consecutive PGs from a random base, for every client path); the NFS server: hyperstor's own in Rust, NFS-Ganesha with a FSAL, or the kernel's `nfsd` over FUSE; where data servers run: inside `hyperstord` per reactor, a process per storage host, or gateways | Stripe groups; our own Rust server; data servers inside `hyperstord` | D127, D129, D130 |
