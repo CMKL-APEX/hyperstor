@@ -19,13 +19,13 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 |---|---|---|
 | `--all-in-one` | off | A trial cluster on this host: the map service and several storage nodes on files |
 | `--cluster FILE` | | Install this host's part of the cluster the [cluster file](cluster-file.md) describes; give every host the same file. Needed the first time; later runs use the installed copy |
-| `--join API` | | Join this host to a running cluster through its cluster API (`IP:PORT`) with a token (see [Joining hosts](../admin-guide/installation.md#joining-hosts-with-tokens)): with `--role storage`, as a new storage node; with `--role meta`, as a map service member listed in `--members`. Later runs need no token |
+| `--join API` | | Join this host to a running cluster through its cluster API (`IP:PORT`) with a token (see [Joining hosts](../admin-guide/installation.md#joining-hosts-with-tokens)): with `--role storage`, as a new storage node; with `--role meta`, as a map service member listed in `--members`; with `--role both --node N`, as that member, also running node N of the cluster file it gets. Later runs need no token |
 | `--token-file F` | | The join token, from `hyperstorctl token create`, read from a file. Also `--token T` or `$HYPERSTOR_JOIN_TOKEN`; the token is never saved |
 | `--token T` | | The join token itself (it shows in the process list: prefer `--token-file`) |
 | `--address IP` | | A joining storage host: the IP its reactors listen on, on the storage network; the metrics port is on it too |
 | `--reactors N` | 1 | A joining storage host: how many reactors, each on its own device file and port (`--node-port` + i) |
 | `--rack R` | 0 | A joining storage host: its rack, the failure domain pools may spread copies across |
-| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage` or `meta` |
+| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage`, `meta` or `both` |
 | `--node N` | | With a `storage` or `both` role: which node of the cluster file this host runs. It gets one reactor per address the file lists for it, each on a file in the data directory |
 | `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there. Not needed with `--members` |
 | `--members LIST` | | With `--cluster`, for a map service of several members: every member as `N=RAFT_ADDR/MAP_ADDR`, separated by commas, the same on every host (see [the map service](../admin-guide/map-service.md#several-members)). Storage nodes connect to all of them |

@@ -676,3 +676,130 @@ fn map_service_members_join_the_first() {
         r.has("nodes   2 up of 2").then_some(())
     });
 }
+
+/// A host that is both a map service member and a storage node of the
+/// cluster file (`--join --role both --node N`): it joins as the member,
+/// with the first host's CAs and the cluster file, and installs its node
+/// from that file.
+#[test]
+fn a_member_host_also_runs_storage() {
+    let _one = one_at_a_time();
+    let s = Scratch::new("join-both");
+    let base = free_ports(12);
+    let member = |i: u16| (base + 3 * i, base + 3 * i + 1, base + 3 * i + 2); // api, map, raft
+    let members: String = (0..3)
+        .map(|i| {
+            let (_, m, r) = member(i);
+            format!("{}=127.0.0.1:{r}/127.0.0.1:{m}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let (n0, n1) = (base + 9, base + 10);
+    let file = s.path("cluster.txt");
+    std::fs::write(
+        &file,
+        format!(
+            "cluster 13\nnode 0 rack 0 127.0.0.1:{n0}\nnode 1 rack 1 127.0.0.1:{n1}\n\
+             pool 1 vol replicated size 2 min 1 pgs 16 domain host\n"
+        ),
+    )
+    .unwrap();
+    let mut procs = Procs::default();
+    let install_member = |i: u16, extra: &[&str]| {
+        let root = s.path(&format!("member-{}", i + 1));
+        link_binaries(&root);
+        let data = s.path(&format!("member-data-{}", i + 1));
+        std::fs::create_dir_all(&data).unwrap();
+        let (api_port, _, _) = member(i);
+        let (id, node, api_s) = ((i + 1).to_string(), i.to_string(), api_port.to_string());
+        let mut args = vec![
+            "--role",
+            "both",
+            "--node",
+            &node,
+            "--members",
+            &members,
+            "--member-id",
+            &id,
+            "--api-port",
+            &api_s,
+            "--size-gib",
+            "1",
+            "--data-dir",
+            data.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        (root.clone(), install(&root, &args))
+    };
+    let (first, r) = install_member(0, &["--cluster", file.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let first_pki = first.join("etc/hyperstor/pki");
+    let bin = first.join("usr/local/bin");
+    procs.0.push(start(
+        &bin.join("hyperstor-meta"),
+        env_args(&first, s.run(), "meta.env"),
+        s.path("member-1.log"),
+    ));
+    let api = format!("127.0.0.1:{}", member(0).0);
+    wait_api(&bin, &api, &first_pki);
+
+    // Without --node, a storage role is refused before anything is sent.
+    let tok = token(&bin, &api, &first_pki, &s, "meta", &[]);
+    let lone = s.path("lone");
+    link_binaries(&lone);
+    let r = install_cmd(
+        &lone,
+        "install",
+        &[
+            "--role",
+            "both",
+            "--members",
+            &members,
+            "--member-id",
+            "2",
+            "--join",
+            &api,
+            "--token-file",
+            tok.to_str().unwrap(),
+        ],
+    );
+    assert!(r.code != 0 && r.has("--node N is needed"), "{}", r.out);
+
+    // The token wasn't burnt: the second host joins with it.
+    let (second, r) = install_member(1, &["--join", &api, "--token-file", tok.to_str().unwrap()]);
+    assert!(r.has("Joined cluster 13"), "{}", r.out);
+    let pki = second.join("etc/hyperstor/pki");
+    assert!(
+        !pki.join("root.key").exists(),
+        "the root key stays on the first host"
+    );
+    for f in ["root.crt", "intermediate.crt", "intermediate.key"] {
+        assert_eq!(
+            std::fs::read(pki.join(f)).unwrap(),
+            std::fs::read(first_pki.join(f)).unwrap(),
+            "{f}"
+        );
+    }
+    let who =
+        hyperstor_pki::identity_in(&std::fs::read_to_string(pki.join("api.crt")).unwrap()).unwrap();
+    assert_eq!(
+        (who.role, who.id),
+        (hyperstor_pki::Role::Meta, "2".to_string())
+    );
+    // Both services: the member, and node 1 of the file, reaching every
+    // member.
+    let etc = second.join("etc/hyperstor");
+    assert!(etc.join("meta.env").exists());
+    let node = std::fs::read_to_string(etc.join("node-1.env")).unwrap();
+    assert!(node.contains(&format!("127.0.0.1:{n1}")), "{node}");
+    for i in 0..3 {
+        assert!(
+            node.contains(&format!("127.0.0.1:{}", member(i).1)),
+            "{node}"
+        );
+    }
+    // Run again without a token: nothing to join, nothing changes.
+    let (_, again) = install_member(1, &[]);
+    assert_eq!(again.code, 0, "{}", again.out);
+    assert!(!again.has("Joined cluster"), "{}", again.out);
+}
