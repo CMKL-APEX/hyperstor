@@ -381,6 +381,44 @@ fn domain(d: Domain) -> String {
     .into()
 }
 
+/// The status as this member can tell it: `leads` is `Err(why)` on a
+/// follower, which hears no heartbeats and gets no scrub results (they go
+/// to the leader). A follower answers from the map, which the leader
+/// published, without warning about what only the leader knows, and says
+/// so in a note; one that knows no leader warns, since nothing can change
+/// the map (and `hyperstorctl status --wait` waits for an election).
+pub fn status_for(
+    map: &ClusterMap,
+    heard: &std::collections::BTreeMap<u32, std::time::Duration>,
+    inconsistent: &crate::Inconsistent,
+    map_address: &str,
+    leads: Result<(), String>,
+) -> pb::GetStatusResponse {
+    match leads {
+        Ok(()) => status(map, Some(heard), inconsistent, map_address),
+        Err(why) => {
+            let mut s = status(map, None, &Default::default(), map_address);
+            if why == crate::NO_LEADER {
+                s.health = pb::Health::HEALTH_WARN.into();
+                s.reasons.push(pb::Reason {
+                    level: pb::Health::HEALTH_WARN.into(),
+                    text: format!("{why}: the map can't change until one is elected"),
+                    ..Default::default()
+                });
+                return s;
+            }
+            s.reasons.push(pb::Reason {
+                level: pb::Health::HEALTH_OK.into(),
+                text: format!(
+                    "{why}: nodes' heartbeats and scrub results are only the leader's; ask it for those"
+                ),
+                ..Default::default()
+            });
+            s
+        }
+    }
+}
+
 /// The status of `map`, as the API answers it. `heard` is how long ago
 /// each node was last heard from, when the map service knows (I43): a
 /// node it hasn't heard from since it started is reported, since the map
@@ -506,8 +544,16 @@ impl ClusterService for Api {
         _req: ServiceRequest<'_, pb::GetStatusRequest>,
     ) -> ServiceResult<pb::GetStatusResponse> {
         self.authorize(&ctx, "GetStatus", "cluster", false)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Leads(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let leads = rx
+            .recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))?;
         let (map, heard, inconsistent) = self.published().await?;
-        Ok(status(&map, Some(&heard), &inconsistent, &self.map_address).into())
+        Ok(status_for(&map, &heard, &inconsistent, &self.map_address, leads).into())
     }
 
     async fn list_pgs(
@@ -1268,6 +1314,33 @@ mod tests {
         );
         assert_eq!(s.nodes[0].last_heard_ms, Some(40));
         assert_eq!(s.nodes[1].last_heard_ms, None);
+        // A follower hears no heartbeats: no warning for that, a note
+        // naming the leader, and no time heard.
+        let empty = Default::default();
+        let s = super::status_for(
+            &m,
+            &empty,
+            &Default::default(),
+            "127.0.0.1:8849",
+            Err("this map service member isn't the leader; the leader is 127.0.0.1:9849".into()),
+        );
+        assert_eq!(s.health, super::pb::Health::HEALTH_OK);
+        assert_eq!(s.reasons.len(), 1);
+        assert!(s.reasons[0].text.contains("the leader is 127.0.0.1:9849"));
+        assert_eq!(s.nodes[0].last_heard_ms, None);
+        // One that knows no leader warns: nothing can change the map.
+        let s = super::status_for(
+            &m,
+            &empty,
+            &Default::default(),
+            "127.0.0.1:8849",
+            Err(crate::NO_LEADER.into()),
+        );
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert!(s.reasons[0].text.contains("until one is elected"));
+        // The leader warns as before.
+        let s = super::status_for(&m, &heard, &Default::default(), "127.0.0.1:8849", Ok(()));
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         // Scrub left objects unresolved: warn, naming the PGs.
         let inc = [((1, 2), 3)].into();
         let s = super::status(&m, None, &inc, "127.0.0.1:8849");

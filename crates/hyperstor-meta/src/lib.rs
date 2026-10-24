@@ -382,6 +382,10 @@ pub type Inconsistent = BTreeMap<(u32, u32), u32>;
 /// Default down-out interval (placement.md §5.3).
 pub const DOWN_OUT: Duration = Duration::from_secs(600);
 
+/// What a member that doesn't lead says while it knows no leader: nothing
+/// can change the map until one is elected.
+pub const NO_LEADER: &str = "this map service member isn't the leader, and no leader is known";
+
 /// A member's role as [`Admin::Lead`] reports it (D125).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lead {
@@ -625,7 +629,7 @@ impl Meta {
 
     fn not_leader(&self) -> String {
         match self.leader_hint().as_str() {
-            "" => "this map service member isn't the leader, and no leader is known".into(),
+            "" => NO_LEADER.into(),
             l => format!("this map service member isn't the leader; the leader is {l}"),
         }
     }
