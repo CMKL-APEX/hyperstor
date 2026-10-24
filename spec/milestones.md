@@ -69,7 +69,11 @@ and pNFS front end, are in nfs.md §26.11.
   `vhost_user=true` disk survive a restart of its backend, and how long
   does the guest wait? If not, `hyperstor-vhost` restarts must be
   avoided for running VMs (upgrades by live migration later) or the
-  feature must go upstream.
+  feature must go upstream. **Checked 2026-10-24:** Cloud Hypervisor v53
+  reconnects on its own, QEMU 8.2.2 with `reconnect=1` on the chardev;
+  both offer `INFLIGHT_SHMFD`, and with it (D145) a guest writing
+  through a restart loses nothing; the guest waits about as long as the
+  takeover, 4 s (I174).
 - **G7. Passthrough without root** (operations.md §18.2). Since Linux 6.2 the NVMe
   driver allows read, write and dataset-management commands without
   `CAP_SYS_ADMIN` when the device is open for writing (`nvme_cmd_allowed`).

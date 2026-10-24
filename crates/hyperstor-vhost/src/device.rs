@@ -4,9 +4,12 @@
 //! (decisions.md D116): it waits on the queue's kick eventfd, takes the
 //! chains the guest made available, does each request against the
 //! attached volume, and signals the call eventfd when the guest wants it
-//! (`EVENT_IDX`).
+//! (`EVENT_IDX`). Requests are tracked in the frontend's in-flight buffer
+//! (D145, [`crate::inflight`]), so a restarted service runs again the
+//! ones its last process took and never answered.
 
 use crate::blk::{self, Bad, Request};
+use crate::inflight::Inflight;
 use hyperstor_client::volume::Attached;
 use hyperstor_reactor::chan::{OneSender, oneshot};
 use hyperstor_reactor::fd;
@@ -149,6 +152,9 @@ struct Vring {
     /// ends, and its requests' completions are dropped.
     generation: u64,
     running: bool,
+    /// Requests taken from this ring so far, for the in-flight buffer's
+    /// order.
+    counter: u64,
 }
 
 struct State {
@@ -158,6 +164,8 @@ struct State {
     mem: Option<Mem>,
     regions: Vec<VhostUserMemoryRegion>,
     vrings: Vec<Vring>,
+    /// The frontend's in-flight buffer, once it has given one.
+    inflight: Option<Rc<Inflight>>,
 }
 
 type Shared = Rc<RefCell<State>>;
@@ -172,6 +180,7 @@ impl State {
                 enabled: false,
                 generation: 0,
                 running: false,
+                counter: 0,
             })
             .collect();
         Self {
@@ -181,6 +190,7 @@ impl State {
             mem: None,
             regions: Vec::new(),
             vrings,
+            inflight: None,
         }
     }
 
@@ -255,10 +265,98 @@ fn start(shared: &Shared, index: usize) {
     if !v.queue.is_valid(&*mem) {
         return;
     }
+    // Requests a previous process took and never answered (D145): the
+    // ring goes on after them, and they run again first.
+    let mut again = Vec::new();
+    if let Some(inf) = s.inflight.clone() {
+        let v = &mut s.vrings[index];
+        let used = v
+            .queue
+            .used_idx(&*mem, std::sync::atomic::Ordering::Acquire)
+            .map(|w| w.0)
+            .unwrap_or(0);
+        if let Some(r) = inf.recover(index as u16, used) {
+            v.queue.set_next_avail(r.next_avail);
+            v.queue.set_next_used(used);
+            v.counter = r.next_counter;
+            again = r.heads;
+        }
+    }
+    let disk = s.disk.clone();
+    let v = &mut s.vrings[index];
     v.running = true;
     let generation = v.generation;
+    let (table, size) = (GuestAddress(v.queue.desc_table()), v.queue.size());
     drop(s);
+    for head in again {
+        match chain_segments(&mem, table, size, head) {
+            Some(segs) => {
+                hyperstor_reactor::spawn(serve(
+                    shared.clone(),
+                    disk.clone(),
+                    index,
+                    generation,
+                    mem.clone(),
+                    head,
+                    segs,
+                ));
+            }
+            // Not a chain we can read: given back empty, as one can't be
+            // answered.
+            None => complete(shared, index, generation, &mem, head, 0),
+        }
+    }
     hyperstor_reactor::spawn(run(shared.clone(), index, generation));
+}
+
+/// The readable and writable parts of the chain at `head` of the
+/// descriptor table at `table` (`size` entries), followed through an
+/// indirect table: for requests run again after a restart, which the ring
+/// no longer hands out.
+fn chain_segments(
+    mem: &GuestMemoryMmap,
+    table: GuestAddress,
+    size: u16,
+    head: u16,
+) -> Option<Segments> {
+    use virtio_bindings::virtio_ring::{
+        VRING_DESC_F_INDIRECT, VRING_DESC_F_NEXT, VRING_DESC_F_WRITE,
+    };
+    let mut segs = Segments {
+        readable: Vec::new(),
+        writable: Vec::new(),
+    };
+    let (mut table, mut size, mut i) = (table, size as u32, head as u32);
+    let mut indirect = false;
+    for _ in 0..1024 {
+        if i >= size {
+            return None;
+        }
+        let mut d = [0u8; 16];
+        mem.read_slice(&mut d, table.checked_add(16 * i as u64)?)
+            .ok()?;
+        let addr = u64::from_le_bytes(d[0..8].try_into().ok()?);
+        let len = u32::from_le_bytes(d[8..12].try_into().ok()?);
+        let flags = u16::from_le_bytes(d[12..14].try_into().ok()?) as u32;
+        let next = u16::from_le_bytes(d[14..16].try_into().ok()?) as u32;
+        if flags & VRING_DESC_F_INDIRECT != 0 {
+            if indirect || len % 16 != 0 || len == 0 {
+                return None;
+            }
+            (table, size, i, indirect) = (GuestAddress(addr), len / 16, 0, true);
+            continue;
+        }
+        if flags & VRING_DESC_F_WRITE != 0 {
+            segs.writable.push((GuestAddress(addr), len));
+        } else {
+            segs.readable.push((GuestAddress(addr), len));
+        }
+        if flags & VRING_DESC_F_NEXT == 0 {
+            return Some(segs);
+        }
+        i = next;
+    }
+    None
 }
 
 /// Serves ring `index` until it stops.
@@ -292,6 +390,7 @@ fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
         let Some(mem) = s.mem.clone() else {
             return false;
         };
+        let inflight = s.inflight.clone();
         let v = &mut s.vrings[index];
         if v.generation != generation {
             return false;
@@ -301,6 +400,10 @@ fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
         }
         let mut chains = Vec::new();
         while let Some(c) = v.queue.pop_descriptor_chain(mem.clone()) {
+            if let Some(inf) = &inflight {
+                inf.take(index as u16, c.head_index(), v.counter);
+            }
+            v.counter += 1;
             chains.push(c);
         }
         // With EVENT_IDX, chains added while notifications were off are
@@ -309,7 +412,16 @@ fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
         let disk = s.disk.clone();
         drop(s);
         for c in chains {
-            hyperstor_reactor::spawn(serve(shared.clone(), disk.clone(), index, generation, c));
+            let segs = Segments::of(&c);
+            hyperstor_reactor::spawn(serve(
+                shared.clone(),
+                disk.clone(),
+                index,
+                generation,
+                mem.clone(),
+                c.head_index(),
+                segs,
+            ));
         }
         if !more {
             return true;
@@ -397,17 +509,17 @@ fn write_stream(
     (done == data.len()).then_some(())
 }
 
-/// Does one request and completes its chain.
+/// Does one request (the chain at `head`) and completes it.
 async fn serve(
     shared: Shared,
     disk: Rc<Disk>,
     index: usize,
     generation: u64,
-    chain: DescriptorChain<Mem>,
+    mem: Mem,
+    head: u16,
+    segs: Segments,
 ) {
-    let mem = chain.memory();
-    let head = chain.head_index();
-    let segs = Segments::of(&chain);
+    let mem = &*mem;
     let readable_len = Segments::total(&segs.readable);
     let writable_len = Segments::total(&segs.writable);
     let size = disk.volume.volume().size;
@@ -499,12 +611,19 @@ fn complete(
     used: u32,
 ) {
     let mut s = shared.borrow_mut();
+    let inflight = s.inflight.clone();
     let v = &mut s.vrings[index];
     if v.generation != generation {
         return;
     }
+    if let Some(inf) = &inflight {
+        inf.pre_put(index as u16, head);
+    }
     if v.queue.add_used(mem, head, used).is_err() {
         return;
+    }
+    if let Some(inf) = &inflight {
+        inf.post_put(index as u16, head, v.queue.next_used());
     }
     if v.queue.needs_notification(mem).unwrap_or(true)
         && let Some(c) = &v.call
@@ -655,6 +774,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
 
     fn get_protocol_features(&mut self) -> VResult<VhostUserProtocolFeatures> {
         Ok(VhostUserProtocolFeatures::MQ
+            | VhostUserProtocolFeatures::INFLIGHT_SHMFD
             | VhostUserProtocolFeatures::REPLY_ACK
             | VhostUserProtocolFeatures::CONFIG
             | VhostUserProtocolFeatures::RESET_DEVICE)
@@ -716,15 +836,48 @@ impl VhostUserBackendReqHandlerMut for Handler {
         unsupported()
     }
 
+    /// A fresh in-flight buffer for the frontend to keep (D145).
     fn get_inflight_fd(
         &mut self,
-        _inflight: &VhostUserInflight,
+        inflight: &VhostUserInflight,
     ) -> VResult<(VhostUserInflight, File)> {
-        unsupported()
+        let mut s = self.shared();
+        if inflight.num_queues as usize > s.vrings.len()
+            || inflight.queue_size == 0
+            || inflight.queue_size > QUEUE_MAX
+        {
+            return Err(VError::InvalidParam);
+        }
+        let inf = Inflight::create(inflight.num_queues, inflight.queue_size)
+            .map_err(|_| VError::InvalidParam)?;
+        let file = inf.file().try_clone().map_err(|_| VError::InvalidParam)?;
+        let answer = VhostUserInflight {
+            mmap_size: inf.size(),
+            mmap_offset: 0,
+            num_queues: inflight.num_queues,
+            queue_size: inflight.queue_size,
+        };
+        s.inflight = Some(Rc::new(inf));
+        Ok((answer, file))
     }
 
-    fn set_inflight_fd(&mut self, _inflight: &VhostUserInflight, _file: File) -> VResult<()> {
-        unsupported()
+    /// The frontend's in-flight buffer: the one it got from this process,
+    /// or after a restart from the last (D145).
+    fn set_inflight_fd(&mut self, inflight: &VhostUserInflight, file: File) -> VResult<()> {
+        let mut s = self.shared();
+        if inflight.num_queues as usize > s.vrings.len() || inflight.queue_size > QUEUE_MAX {
+            return Err(VError::InvalidParam);
+        }
+        let inf = Inflight::open(
+            file,
+            inflight.mmap_offset,
+            inflight.mmap_size,
+            inflight.num_queues,
+            inflight.queue_size,
+        )
+        .map_err(|_| VError::InvalidParam)?;
+        s.inflight = Some(Rc::new(inf));
+        Ok(())
     }
 
     fn get_max_mem_slots(&mut self) -> VResult<u64> {

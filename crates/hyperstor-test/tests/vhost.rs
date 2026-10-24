@@ -157,3 +157,47 @@ fn a_volume_is_served_over_vhost_user_blk() {
     svc.stop();
     other.stop();
 }
+
+/// A restart keeps the volumes attached (decisions.md D143): the service
+/// names them in its state file, takes them back from the instance it was
+/// before, and serves them on the same sockets, where the hypervisor
+/// reconnects. One that another client took while it was down is left to
+/// that client.
+#[test]
+fn a_restarted_service_takes_its_volumes_back() {
+    let c = Cluster::all_in_one("vhost-restart", 3);
+    let (a, b) = (volume(&c, "16M"), volume(&c, "16M"));
+    let mut svc = Service::start(&c, "vhost-r", &[]);
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    assert!(svc.attach(&b, "attach").get("ok").is_some());
+    let data = pattern(3, 64 << 10);
+    let mut g = Guest::connect(&sa, true);
+    g.write(4096, &data);
+    // A restart while the hypervisor is connected: the guest's next
+    // requests go to the new process, on the same socket.
+    svc.restart();
+    assert_eq!(svc.listed().len(), 2, "both taken back");
+    drop(g);
+    let mut g = Guest::connect(&sa, true);
+    assert!(g.read(4096, data.len() as u32) == data, "the data is there");
+    g.write(0, &data[..4096]);
+    drop(g);
+    // Stopped: the control socket goes, the state file stays.
+    svc.pause();
+    assert!(!svc.dir.join("control.sock").exists());
+    let state = std::fs::read_to_string(svc.dir.join("state.json")).unwrap();
+    assert!(state.contains(&a) && state.contains(&b), "{state}");
+    // Meanwhile another node takes volume b over (its holder is gone).
+    let other = Service::start(&c, "vhost-o", &[]);
+    let r = other.attach(&b, "take_over");
+    assert!(r.get("ok").is_some(), "{r}");
+    svc.resume();
+    assert_eq!(svc.listed(), vec![a.clone()], "b is left to the other");
+    let mut g = Guest::connect(&sa, true);
+    assert!(g.read(0, 4096) == data[..4096], "written before the stop");
+    drop(g);
+    // The other keeps b, and serves it.
+    assert_eq!(other.listed(), vec![b.clone()]);
+    other.stop();
+    svc.stop();
+}

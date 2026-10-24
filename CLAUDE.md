@@ -38,13 +38,15 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130 and D138–D141 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141 and D142–D144 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, F1–F12 in detail, I1–I78, I80–I172, the NFS and pNFS proposals
+  rule, D145, F1–F12 in detail, I1–I78, I80–I175, the NFS and pNFS proposals
   D128 and D131–D137 (`spec/nfs.md`), and every host check (G1–G36, FG1–FG2).
-- **Next:** glidex's `hyperstor` driver (HS3, D118), then the rest of
-  §11.1 (adaptive polling, reactors per NUMA node, the state file); zone or FDP placement for write-once pools (D105, G23);
+- **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
+  `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
+  then fencing one volume (D119's option 3), the rest of
+  §11.1 (adaptive polling, reactors per NUMA node); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
   Administration (installer, API, CLI, UI, security) is designed in

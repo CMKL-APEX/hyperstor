@@ -667,3 +667,12 @@ recommendation each; the owner took every recommendation.
 | 80 | Exports: cluster objects in kv through the API and `hyperstorctl` (recommended); or an `exports(5)` file per MDS | Cluster objects | D141 |
 | 81 | Binding I/O credentials to the open: set `EXCHGID4_FLAG_BIND_PRINC_STATEID` and check that Linux honours it (recommended); or re-check the user against the file mode at the DS | Set the flag | D133 (G35) |
 | 82 | Which pools may back NFS files: any pool, EC unaligned writes measured before the default is final (recommended); or replicated pools only | Any pool | D132 (G36) |
+
+## hyperstor-vhost as a service (2026-10-24)
+
+To install `hyperstor-vhost` for glidex and keep VMs' disks across its
+restarts, asked three questions, each with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 83 | Which hosts run it (a `--vhost` flag on any role plus `--role vhost`; always with storage; its own role only); what stopping it does to attached volumes (keep them, the restart takes them back; detach them); how glidex gets at its sockets (`--vhost-user NAME`; run it as glidex) | `--vhost` on any role; keep, the restart takes them back; `--vhost-user NAME` | D142, D143, D144 |

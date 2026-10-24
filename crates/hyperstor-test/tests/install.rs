@@ -474,3 +474,90 @@ fn mgmt_listens_on_every_address_with_a_cluster_certificate() {
             .contains("glidex-ui")
     );
 }
+
+/// `--vhost` (D142) installs `hyperstor-vhost` for the users named (D144);
+/// started from what was installed, it serves a volume. `--no-vhost`
+/// removes it again; `--role vhost` needs the map service's addresses, and
+/// an unknown user is refused.
+#[test]
+fn hyperstor_vhost_is_installed_for_its_users() {
+    let c = Cluster::all_in_one("inst-vhost", 3);
+    let out = Command::new("id").arg("-un").output().unwrap();
+    let me = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    let r = install(&c.root, &["--vhost", "--vhost-user", &me]);
+    for f in [
+        "/etc/hyperstor/vhost.env",
+        "/etc/systemd/system/hyperstor-vhost.service",
+        "would restart hyperstor-vhost.service",
+    ] {
+        assert!(r.has(f), "{f}:\n{}", r.out);
+    }
+    // Installed on every host with the others.
+    assert!(c.root.join("usr/local/bin/hyperstor-vhost").exists());
+    // Started as its unit would start it, its sockets somewhere short.
+    let dir = std::env::temp_dir().join(format!("hsi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let args: Vec<String> = env_args(&c.root, c.scratch.run(), "vhost.env")
+        .into_iter()
+        .map(|a| a.replace("/run/hyperstor/vhost", dir.to_str().unwrap()))
+        .collect();
+    let mut child = Command::new(c.root.join("usr/local/bin/hyperstor-vhost"))
+        .arg("serve")
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    assert!(line.contains("control socket"), "{line}");
+    let made = c
+        .ctl(&["create-volume", "--size", "8M", "--name", "v"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let ctl = |a: &[&str]| {
+        Command::new(c.root.join("usr/local/bin/hyperstor-vhost"))
+            .args(["ctl", "--dir", dir.to_str().unwrap()])
+            .args(a)
+            .output()
+            .unwrap()
+    };
+    let a = ctl(&["attach", &id]);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stdout));
+    assert!(ctl(&["detach", &id]).status.success());
+    // SAFETY: kill on our own child's pid.
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    assert!(child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+    // Saved: a run with no flags changes nothing; --no-vhost removes it.
+    assert!(install(&c.root, &[]).has("Nothing to change"));
+    let r = install(&c.root, &["--no-vhost"]);
+    assert!(
+        r.has("removed /etc/systemd/system/hyperstor-vhost.service"),
+        "{}",
+        r.out
+    );
+    assert!(!c.root.join("etc/hyperstor/vhost.env").exists());
+    // Refused: a VM host without the map service's addresses, a user
+    // that doesn't exist.
+    let s = Scratch::new("vhost-refused");
+    let r = install_cmd(&s.path("a"), "install", &["--role", "vhost"]).expect(1);
+    assert!(r.has("--map"), "{}", r.out);
+    let r = install_cmd(
+        &s.path("b"),
+        "install",
+        &[
+            "--role",
+            "vhost",
+            "--map",
+            "127.0.0.1:1",
+            "--vhost-user",
+            "no-such-user-hs",
+        ],
+    )
+    .expect(1);
+    assert!(r.has("no such user"), "{}", r.out);
+}

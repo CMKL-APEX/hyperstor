@@ -12,7 +12,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 
 | Command | Does |
 |---|---|
-| `serve` | Runs the service until SIGINT or SIGTERM, then detaches every volume |
+| `serve` | Runs the service until SIGINT or SIGTERM. Its volumes stay attached for its next start (see [Restarts](#restarts)) |
 | `ctl hello` | Checks the service answers, and its protocol version |
 | `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
@@ -43,8 +43,9 @@ cloud-hypervisor --memory size=2G,shared=on \
 
 The VM's memory must be shared with the service (`shared=on` in Cloud
 Hypervisor; a `memory-backend-memfd` with `share=on` in QEMU). The disk
-has 4 KiB blocks and no volatile write cache: a write is answered once
-every copy has it. Discard isn't offered yet.
+has 512-byte sectors on 4 KiB physical blocks and no volatile write
+cache: a write is answered once every copy has it. Discard isn't offered
+yet.
 
 The control socket takes one JSON request per line and answers each on
 one line:
@@ -57,3 +58,22 @@ one line:
 Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
 `invalid`, `denied`, `held`, `not_found`, `not_attached`, `unavailable`
 and `internal`.
+
+## Restarts
+
+Stopping or restarting the service doesn't detach its volumes. It keeps
+them in `DIR/state.json`, and its next start takes them back and opens
+their sockets again; the hypervisors reconnect and the guests carry on,
+after a pause of about 4 s. Requests the guest had in flight are run
+again from the hypervisor's in-flight buffer. Cloud Hypervisor
+reconnects by itself; give QEMU's chardev `reconnect=1` (QEMU 9.2 and
+later: `reconnect-ms=1000`). A volume another node took while the
+service was down is left to it.
+
+The state file is in the runtime directory: a reboot clears it, and with
+it the VMs that used the volumes. To stop the service for good, detach
+its volumes first (`ctl detach`); a stopped service's volumes stay held.
+`hyperstor-install uninstall` and `--no-vhost` do this.
+
+`hyperstor-install --vhost` installs it as `hyperstor-vhost.service`
+(see [hyperstor-install](hyperstor-install.md)).
