@@ -5,8 +5,8 @@ Status: **draft, implementation started.** The design is split by topic
 [decisions.md](decisions.md): D1–D19, D38–D55, D61–D68, D69–D92, D94–D97 and D101–D106 were settled
 with the owner; D20–D37, D56–D60 and D66's merge rule were made while
 drafting and are open to review. For NFS and pNFS (nfs.md), D127, D129
-and D130 are settled; D128 and D131–D137 are proposed and open. Host checks G1–G24 (milestones.md
-§22) and G25–G33 (nfs.md §26.11) are still open. What is built, and the
+D130 and D138–D141 are settled; D128 and D131–D137 are proposed and open. Host checks G1–G24 (milestones.md
+§22) and G25–G36 (nfs.md §26.11) are still open. What is built, and the
 decision points still open, are in
 [implementation-notes.md](implementation-notes.md) and
 [decision-log.md](decision-log.md).
