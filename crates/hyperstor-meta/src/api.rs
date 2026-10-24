@@ -385,7 +385,8 @@ fn domain(d: Domain) -> String {
 /// follower, which hears no heartbeats and gets no scrub results (they go
 /// to the leader). A follower answers from the map, which the leader
 /// published, without warning about what only the leader knows, and says
-/// so in a note.
+/// so in a note; one that knows no leader warns, since nothing can change
+/// the map (and `hyperstorctl status --wait` waits for an election).
 pub fn status_for(
     map: &ClusterMap,
     heard: &std::collections::BTreeMap<u32, std::time::Duration>,
@@ -397,6 +398,15 @@ pub fn status_for(
         Ok(()) => status(map, Some(heard), inconsistent, map_address),
         Err(why) => {
             let mut s = status(map, None, &Default::default(), map_address);
+            if why == crate::NO_LEADER {
+                s.health = pb::Health::HEALTH_WARN.into();
+                s.reasons.push(pb::Reason {
+                    level: pb::Health::HEALTH_WARN.into(),
+                    text: format!("{why}: the map can't change until one is elected"),
+                    ..Default::default()
+                });
+                return s;
+            }
             s.reasons.push(pb::Reason {
                 level: pb::Health::HEALTH_OK.into(),
                 text: format!(
@@ -1318,6 +1328,16 @@ mod tests {
         assert_eq!(s.reasons.len(), 1);
         assert!(s.reasons[0].text.contains("the leader is 127.0.0.1:9849"));
         assert_eq!(s.nodes[0].last_heard_ms, None);
+        // One that knows no leader warns: nothing can change the map.
+        let s = super::status_for(
+            &m,
+            &empty,
+            &Default::default(),
+            "127.0.0.1:8849",
+            Err(crate::NO_LEADER.into()),
+        );
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert!(s.reasons[0].text.contains("until one is elected"));
         // The leader warns as before.
         let s = super::status_for(&m, &heard, &Default::default(), "127.0.0.1:8849", Ok(()));
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
