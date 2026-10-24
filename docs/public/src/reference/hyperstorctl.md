@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]
 ```
 
 | Command | Does |
@@ -88,7 +88,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
 | `--serial S` | | `cert revoke`: the certificate's serial, hex, as `cert list` and `cert show` print it |
 | `--raft ADDR` | | `member add`: where the new member talks Raft, `IP:PORT` |
-| `--map ADDR` | | `member add`: where the new member serves the map, `IP:PORT` |
+| `--map ADDR[,ADDR...]` | | `member add`: where the new member serves the map, one `IP:PORT`. `write-volume`, `read-volume`: the map service's members, any of which answers; the volume is reached without the API |
 | `--out FILE` | | `map backup`: the file to write (mode 0600; never over an existing file) |
 | `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
