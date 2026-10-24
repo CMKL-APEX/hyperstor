@@ -30,7 +30,8 @@ datasets and checkpoints shared by many GPU nodes.
   - filesystem snapshots;
   - quotas per directory tree;
   - POSIX ACLs;
-  - re-export over NFS and SMB;
+  - NFSv4.1/4.2 with pNFS for unmodified clients (proposed in
+    [nfs.md](nfs.md), D127–D137); SMB;
   - a Kubernetes CSI driver (`ReadWriteMany`);
   - one filesystem across clusters, through range homes and the
     partition allowlist (D65, D66, federation.md §25.4).
@@ -45,7 +46,7 @@ datasets and checkpoints shared by many GPU nodes.
 | F1 | **Stateless metadata servers** (`hyperstor-fsmeta`). Any server handles any operation on any filesystem, as a client of `hyperstor-kv`. They scale by adding servers and fail over by retrying on another. | No subtree ownership to balance, journal to replay or lease to hand over, as stateful metadata servers need. The transactional store gives atomicity and isolation (the DeepSeek 3FS model). |
 | F2 | **Key schema.** Inodes are `i/<fs>/<inode>` (attributes, layout, data version, link count). Directory entries are `d/<fs>/<parent>/<h>/<name>` (child inode and type), where `<h>` is a short hash of the name. | `readdir` is a range scan under the parent's prefix. The hash spreads a busy directory's new entries over every range its span covers, so creating many files in one directory doesn't load one range. POSIX doesn't require `readdir` to be sorted. Inodes apart from entries make hard links simple. |
 | F3 | **Inode numbers are 64-bit**, handed out in blocks of 1,024 per metadata server from a counter key. | No transaction per create to allocate a number. |
-| F4 | **File data is in `fs` chunk objects** named `(inode, chunk_index)` and placed by hash. Each file's layout (pool, chunk size) is fixed at creation and recorded in its inode, inherited from the directory's policy. | Large files spread over many PGs and are read in parallel, as volumes and S3 objects are. Directory policies let a dataset tree live on EC and a scratch tree on replicas. |
+| F4 | **File data is in `fs` chunk objects** named `(inode, chunk_index)` and placed by hash. Each file's layout (pool, chunk size) is fixed at creation and recorded in its inode, inherited from the directory's policy. Amended by D130 (settled 2026-10-24): chunks are placed in stripe groups, each 64 GiB segment round-robin over `W` consecutive PGs from a hashed base, so pNFS layouts stay small (nfs.md §26.5). | Large files spread over many PGs and are read in parallel, as volumes and S3 objects are. Directory policies let a dataset tree live on EC and a scratch tree on replicas. |
 | F5 | **Clients read and write file data directly with the storage nodes.** Metadata servers aren't on the data path. Size, modification time and the data version are committed at `close`, `fsync` or after a time limit (5 s), in one metadata transaction. | Data bandwidth scales with storage nodes, not metadata servers. |
 | F6 | **Metadata operations are atomic and immediately visible everywhere; file data is close-to-open.** Opening a file reads its inode; a client keeps its cached data only if the data version hasn't changed. `close` and `fsync` make a client's writes visible to opens that follow. `O_DIRECT` reads and writes bypass caches and are visible at once. | What training data, checkpoints and shared working directories need, without data leases and invalidation traffic between clients. NFS works this way. |
 | F7 | **Advisory locks are records in `hyperstor-kv`**, held by a client session. A session has a time-to-live renewed by the client; when it expires, the client is blocklisted (decisions.md D24) and its locks are released. | Locks survive metadata server restarts, and a dead or partitioned client can't keep writing under a lock it lost. |

@@ -26,6 +26,7 @@
 - [glidex integration](glidex.md)
 - [Milestones and host checks](milestones.md)
 - [Filesystem](filesystem.md)
+- [NFS and pNFS](nfs.md)
 
 # Implementation
 
