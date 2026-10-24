@@ -265,6 +265,15 @@ pub enum Msg {
         to: Target,
         key: WireKey,
     },
+    /// Primary to a member: add the payload's key–value entries
+    /// ([`encode_pairs`]) to the object the last [`Msg::PushObject`] on
+    /// this connection replaced. An object whose table doesn't fit one
+    /// frame ([`MAX_PAYLOAD`]) is pushed as a `PushObject` with the first
+    /// part, then `PushKv` for the rest, in order (replication.md §8.3).
+    PushKv {
+        to: Target,
+        key: WireKey,
+    },
     /// Primary to replica: apply this write (replication.md §8.1).
     Repl {
         to: Target,
@@ -592,6 +601,7 @@ mod kind {
     pub const RELEASE: u16 = 64;
     pub const READ_AT_OK: u16 = 65;
     pub const SOURCES: u16 = 66;
+    pub const PUSH_KV: u16 = 67;
     pub const ERROR: u16 = 99;
 }
 
@@ -615,6 +625,7 @@ impl Msg {
             Msg::Lookup { .. } => LOOKUP,
             Msg::LookupOk { .. } => LOOKUP_OK,
             Msg::PushObject { .. } => PUSH_OBJECT,
+            Msg::PushKv { .. } => PUSH_KV,
             Msg::Repl { .. } => REPL,
             Msg::ReplOk { .. } => REPL_OK,
             Msg::Push { .. } => PUSH,
@@ -719,7 +730,7 @@ impl Msg {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
             Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::ExecOk => {}
-            Msg::Exec { to, key } | Msg::PushObject { to, key } => {
+            Msg::Exec { to, key } | Msg::PushObject { to, key } | Msg::PushKv { to, key } => {
                 to.enc(e);
                 key.enc(e);
             }
@@ -1059,6 +1070,10 @@ impl Msg {
             },
             LOOKUP_OK => Msg::LookupOk { found: d.bool()? },
             PUSH_OBJECT => Msg::PushObject {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+            },
+            PUSH_KV => Msg::PushKv {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
             },
@@ -1444,6 +1459,26 @@ fn dec_pairs(d: &mut Dec<'_>) -> Result<Pairs, DecodeError> {
     d.seq(8, |d| Ok((d.bytes()?.to_vec(), d.bytes()?.to_vec())))
 }
 
+/// Key–value entries alone ([`Msg::PushKv`]'s payload).
+pub fn encode_pairs(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut e = Enc::new();
+    enc_pairs(&mut e, pairs);
+    e.into_vec()
+}
+
+pub fn decode_pairs(b: &[u8]) -> Result<Pairs, DecodeError> {
+    let mut d = Dec::new(b);
+    let p = dec_pairs(&mut d)?;
+    d.finish()?;
+    Ok(p)
+}
+
+/// What an entry adds to a [`Msg::PushKv`] payload, counted as the
+/// sender splits a table into parts.
+pub fn pair_bytes(k: &[u8], v: &[u8]) -> usize {
+    k.len() + v.len() + 8
+}
+
 pub fn encode_looked(l: &Looked) -> Vec<u8> {
     let mut e = Enc::new();
     e.u64(l.size);
@@ -1640,6 +1675,14 @@ mod tests {
             },
             Msg::LookupOk { found: true },
             Msg::PushObject {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+            },
+            Msg::PushKv {
                 to,
                 key: WireKey {
                     ns: 3,

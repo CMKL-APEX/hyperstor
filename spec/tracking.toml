@@ -242,6 +242,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair)"
+spec = ["replication.md §8.5", "D146", "I177"]
+status = "done"
+tests = [
+    "cluster::a_large_key_value_table_is_refilled_in_parts",
+]
+
+[[milestone.item]]
 what = "Map leases with fencing and pushes: a cut-off primary stops serving"
 spec = ["replication.md §8.4", "D42"]
 status = "done"

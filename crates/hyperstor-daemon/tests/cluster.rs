@@ -32,6 +32,10 @@ enum MetaCmd {
 /// Each stopped device, by device id.
 type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
+/// Pushes split an object's key–value table into parts this small here,
+/// so that tests exercise the parts without tables of tens of megabytes.
+const TEST_PART_BYTES: usize = 16 << 10;
+
 struct Cluster {
     /// Peer timeout given to restarted nodes.
     peer_timeout: std::time::Duration,
@@ -158,6 +162,7 @@ impl Cluster {
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    push_part_bytes: TEST_PART_BYTES,
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -231,6 +236,7 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            push_part_bytes: TEST_PART_BYTES,
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -1259,6 +1265,95 @@ fn objects_change_atomically_and_every_copy_follows() {
     );
     let kv: Vec<Vec<u8>> = copies[0].2.iter().map(|(k, _)| k.clone()).collect();
     assert!(kv.contains(&b"c".to_vec()) && !kv.contains(&b"a".to_vec()));
+}
+
+/// An object whose key–value table is larger than a push part is
+/// refilled in parts ([`hyperstor_proto::Msg::PushKv`]): every copy ends
+/// with the whole table. (A `.meta` audit day once outgrew the frame
+/// limit, and its PG could never be backfilled.)
+#[test]
+fn a_large_key_value_table_is_refilled_in_parts() {
+    use hyperstor_client::{NS_META, object_pg};
+    use hyperstor_proto::WireOp as W;
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let name = b"audit/day".to_vec();
+    let n = name.clone();
+    let entries = |from: u32, count: u32| -> Vec<W> {
+        (from..from + count)
+            .map(|i| W::KvPut(format!("k{i:08}").into_bytes(), vec![(i % 251) as u8; 200]))
+            .collect()
+    };
+    // About 420 KiB of entries: some 26 parts of 16 KiB.
+    let (pg, acting) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            for b in 0..20 {
+                cl.exec(POOL, NS_META, &n, &entries(b * 100, 100))
+                    .await
+                    .unwrap();
+            }
+            let m = cl.map();
+            let pg = object_pg(&n, m.pools[&POOL].pg_count);
+            (pg, m.pg(POOL, pg).unwrap().acting.clone())
+        })
+    })
+    .join()
+    .unwrap();
+    // A replica is away while the table changes: it comes back with an
+    // old table and gets the whole object again.
+    let away = (acting[1] / 1000) as usize;
+    c.kill(away);
+    let n = name.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let mut ops = entries(2000, 50);
+            ops.push(W::KvDel(b"k00000000".to_vec()));
+            cl.exec(POOL, NS_META, &n, &ops).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.restart(away);
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 7).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let (map, devs) = c.stop();
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let info = map.pg(POOL, pg).unwrap();
+    assert!(
+        info.acting.iter().any(|d| *d / 1000 == away as u32),
+        "the replica is back"
+    );
+    let key = ObjKey::new(POOL, pg, Namespace::Meta, name, 0);
+    let tables: Vec<_> = info
+        .acting
+        .iter()
+        .map(|d| shards[d].kv_scan(&key, b"", None, usize::MAX))
+        .collect();
+    assert_eq!(tables[0].len(), 2049, "2050 written, one deleted");
+    assert!(
+        tables.windows(2).all(|w| w[0] == w[1]),
+        "copies differ: {:?}",
+        tables.iter().map(|t| t.len()).collect::<Vec<_>>()
+    );
+    assert!(tables[0].iter().all(|(k, _)| k != b"k00000000"));
 }
 
 /// Volumes (metadata.md §4.2, D77): created with a header and a directory
