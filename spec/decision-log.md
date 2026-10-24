@@ -650,6 +650,20 @@ An investigation of how unmodified NFS clients could use the filesystem
 in parallel (nfs.md §26), with options and a recommendation for each
 choice. The owner took three; the rest of D128–D137 stay open.
 
+A review of the proposals against RFC 8881, RFC 8434, RFC 8435 and the
+Linux client (`fs/nfs`) found three that were wrong as written (D132,
+D133, D134) and reopened the layout choice (D128); it also raised seven
+points the spec had left implicit. Asked with options and a
+recommendation each; the owner took every recommendation.
+
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 74 | Placing file data: F4's hash per chunk (one layout segment per 4 MiB), or stripe groups (each 64 GiB segment round-robin over `W` consecutive PGs from a random base, for every client path); the NFS server: hyperstor's own in Rust, NFS-Ganesha with a FSAL, or the kernel's `nfsd` over FUSE; where data servers run: inside `hyperstord` per reactor, a process per storage host, or gateways | Stripe groups; our own Rust server; data servers inside `hyperstord` | D127, D129, D130 |
+| 75 | The review's fixes: `DATA_SYNC` instead of `FILE_SYNC` (Linux skips `LAYOUTCOMMIT` after `FILE_SYNC`); seal open, lock and delegation stateids, not layout stateids (RFC 8881 section 13.9.1); sessions and `csa_sequence` in kv with `CREATE_SESSION4_FLAG_PERSIST`; a lease check in every transaction; device IDs at the primaries' last change epoch; and both layouts, tightly coupled, over one model, chosen per export (`files` by default, `flexfiles`, or `auto` from the implementation id) | As recommended | D128, D131, D132, D133, D134 revised |
+| 76 | Who moves an export's address on MDS failover: `hyperstor-nfs` itself under the kv lease (recommended); keepalived/VRRP; DNS records with client trunking | `hyperstor-nfs` itself | D138 |
+| 77 | How a data server validates I/O: the sealed stateid alone, stateless, with bounded staleness after `CLOSE` or `chmod` (recommended); or opens and permission changes propagated to the `W` primaries (RFC-exact) | Stateless | D139 |
+| 78 | Where pNFS reads go: the primary only, as native reads (recommended); or any in-sync replica for replicated pools | Primary only | D140 |
+| 79 | Where stripe groups and kv state land in the plan: stripe groups with HS14's placement and N0 with state in kv from the start (recommended); or N0–N2 as first proposed | With HS14; kv from the start | D137 revised |
+| 80 | Exports: cluster objects in kv through the API and `hyperstorctl` (recommended); or an `exports(5)` file per MDS | Cluster objects | D141 |
+| 81 | Binding I/O credentials to the open: set `EXCHGID4_FLAG_BIND_PRINC_STATEID` and check that Linux honours it (recommended); or re-check the user against the file mode at the DS | Set the flag | D133 (G35) |
+| 82 | Which pools may back NFS files: any pool, EC unaligned writes measured before the default is final (recommended); or replicated pools only | Any pool | D132 (G36) |
