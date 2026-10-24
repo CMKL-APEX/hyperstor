@@ -20,7 +20,8 @@
 //!   to the map as a new storage node, and installs it with N reactors on
 //!   IP, ports from `--node-port`. `--role meta --members LIST --member-id
 //!   N --join API` joins a map service member with a `--role meta` token
-//!   instead: it gets the cluster file and the intermediate CA. The token
+//!   instead: it gets the cluster file and the intermediate CA; `--role
+//!   both --node N` also runs storage node N of that file. The token
 //!   is read from `--token-file`, `--token` or `$HYPERSTOR_JOIN_TOKEN` and
 //!   never saved; later runs renew the host's certificate over the API.
 //! - `install --all-in-one` sets up a trial cluster on this host: the map
@@ -1045,10 +1046,16 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
     let dir = under(root, "/etc/hyperstor/pki");
     let (cert_name, key_group) = match s.role.as_str() {
         "storage" => ("node", "hyperstor"),
-        "meta" => ("api", "hyperstor"),
-        _ => fail("--join installs one role: --role storage or --role meta"),
+        // A member that also runs a storage node of the cluster file joins
+        // as the member; its node, like the first member's, has no
+        // certificate of its own (the storage network uses none yet).
+        "meta" | "both" => ("api", "hyperstor"),
+        _ => fail("--join takes --role storage, meta or both"),
     };
-    if dir.join(format!("{cert_name}.crt")).exists() && (s.role == "meta" || s.node.is_some()) {
+    if s.role == "both" && s.node.is_none() {
+        fail("--node N is needed for a storage role: which node of the cluster file");
+    }
+    if dir.join(format!("{cert_name}.crt")).exists() && (s.role != "storage" || s.node.is_some()) {
         if s.role == "storage" {
             renew_node(root, real, s);
         }
@@ -1104,13 +1111,29 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         );
     };
     write("root.crt", &r.root, 0o644);
-    let chain = if s.role == "meta" {
+    let chain = if s.role != "storage" {
         // A member's server certificate carries the root, so the hosts
         // that join through it can pin it.
         format!("{}{}", r.certificate, r.root)
     } else {
         r.certificate.clone()
     };
+    // The key's group is the service user's, which a fresh host doesn't
+    // have yet.
+    if real {
+        service_user(s);
+    }
+    if s.role != "storage" {
+        // Before anything can fail: a later run, without the spent token,
+        // finds everything a member needs.
+        write("intermediate.crt", &r.intermediate, 0o644);
+        write("intermediate.key", &r.intermediate_key, 0o600);
+        converge(
+            &under(root, "/etc/hyperstor/cluster.txt"),
+            r.cluster_file.as_bytes(),
+            0o644,
+        );
+    }
     write(&format!("{cert_name}.key"), &key, 0o640);
     write(&format!("{cert_name}.crt"), &chain, 0o644);
     if real {
@@ -1126,10 +1149,37 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         println!("This host is storage node {}.", r.node);
         None
     } else {
-        write("intermediate.crt", &r.intermediate, 0o644);
-        write("intermediate.key", &r.intermediate_key, 0o600);
         Some(r.cluster_file.clone())
     }
+}
+
+/// Creates the `hyperstor` system user and its group, the services' own,
+/// unless it exists; whether it was created.
+fn service_user(s: &Settings) -> bool {
+    let exists = Command::new("id")
+        .arg("hyperstor")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if exists {
+        return false;
+    }
+    if !run(
+        "useradd",
+        &[
+            "--system",
+            // The group too: the API's key is readable by it.
+            "--user-group",
+            "--no-create-home",
+            "--home-dir",
+            s.data_dir.as_str(),
+            "--shell",
+            "/usr/sbin/nologin",
+            "hyperstor",
+        ],
+    ) {
+        fail("useradd hyperstor failed");
+    }
+    true
 }
 
 /// Renews a joined storage host's certificate over the API, with the
@@ -1566,31 +1616,8 @@ fn install(
     }
 
     // 2. The service user and the data directory.
-    if real {
-        let exists = Command::new("id")
-            .arg("hyperstor")
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if !exists {
-            let home = s.data_dir.as_str();
-            if !run(
-                "useradd",
-                &[
-                    "--system",
-                    // The group too: the API's key is readable by it.
-                    "--user-group",
-                    "--no-create-home",
-                    "--home-dir",
-                    home,
-                    "--shell",
-                    "/usr/sbin/nologin",
-                    "hyperstor",
-                ],
-            ) {
-                fail("useradd hyperstor failed");
-            }
-            changed.push("user hyperstor".into());
-        }
+    if real && service_user(s) {
+        changed.push("user hyperstor".into());
     }
     // People who may log in to hyperstor-mgmt with their password (D99).
     if real
