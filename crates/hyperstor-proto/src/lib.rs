@@ -430,6 +430,23 @@ pub enum Msg {
     FetchOk {
         found: bool,
     },
+    /// [`Msg::Fetch`] in parts, for an object whose key–value table
+    /// doesn't fit one frame (implementation-notes.md I182): with `first`,
+    /// the object with the first part of its table; otherwise the table's
+    /// next part from `kv_from` on.
+    FetchPart {
+        to: Target,
+        key: WireKey,
+        first: bool,
+        kv_from: Vec<u8>,
+    },
+    /// A part: with `first`, an object ([`encode_object`]) if `found`;
+    /// otherwise entries ([`encode_pairs`]). `next`: where the next part
+    /// starts, if there is one.
+    FetchPartOk {
+        found: bool,
+        next: Option<Vec<u8>>,
+    },
     /// Client to primary: read a volume chunk at an epoch (engine.md
     /// §7.2). `key.name` is the chunk without a branch; each layer is a
     /// branch and the range of epochs read from it (both ends included),
@@ -602,6 +619,8 @@ mod kind {
     pub const READ_AT_OK: u16 = 65;
     pub const SOURCES: u16 = 66;
     pub const PUSH_KV: u16 = 67;
+    pub const FETCH_PART: u16 = 68;
+    pub const FETCH_PART_OK: u16 = 69;
     pub const ERROR: u16 = 99;
 }
 
@@ -656,6 +675,8 @@ impl Msg {
             Msg::Noted { .. } => NOTED,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
+            Msg::FetchPart { .. } => FETCH_PART,
+            Msg::FetchPartOk { .. } => FETCH_PART_OK,
             Msg::ReadAt { .. } => READ_AT,
             Msg::Versions { .. } => VERSIONS,
             Msg::VersionsOk { .. } => VERSIONS_OK,
@@ -697,6 +718,7 @@ impl Msg {
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
                 | Msg::FetchOk { .. }
+                | Msg::FetchPartOk { .. }
                 | Msg::VersionsOk { .. }
                 | Msg::ReadAtOk { .. }
                 | Msg::WatchOk { .. }
@@ -912,6 +934,23 @@ impl Msg {
             }
             Msg::FetchOk { found } => {
                 e.bool(*found);
+            }
+            Msg::FetchPart {
+                to,
+                key,
+                first,
+                kv_from,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                e.bool(*first).bytes(kv_from);
+            }
+            Msg::FetchPartOk { found, next } => {
+                e.bool(*found);
+                match next {
+                    Some(n) => e.bool(true).bytes(n),
+                    None => e.bool(false),
+                };
             }
             Msg::ReadAt {
                 to,
@@ -1159,6 +1198,20 @@ impl Msg {
                 key: WireKey::dec(&mut d)?,
             },
             FETCH_OK => Msg::FetchOk { found: d.bool()? },
+            FETCH_PART => Msg::FetchPart {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                first: d.bool()?,
+                kv_from: d.bytes()?.to_vec(),
+            },
+            FETCH_PART_OK => Msg::FetchPartOk {
+                found: d.bool()?,
+                next: if d.bool()? {
+                    Some(d.bytes()?.to_vec())
+                } else {
+                    None
+                },
+            },
             READ_AT => Msg::ReadAt {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
@@ -1775,6 +1828,24 @@ mod tests {
                 },
             },
             Msg::FetchOk { found: true },
+            Msg::FetchPart {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+                first: false,
+                kv_from: b"k7".to_vec(),
+            },
+            Msg::FetchPartOk {
+                found: true,
+                next: Some(b"k9".to_vec()),
+            },
+            Msg::FetchPartOk {
+                found: false,
+                next: None,
+            },
             Msg::ReadAt {
                 to,
                 key: WireKey {

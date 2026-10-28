@@ -1356,6 +1356,103 @@ fn a_large_key_value_table_is_refilled_in_parts() {
     assert!(tables[0].iter().all(|(k, _)| k != b"k00000000"));
 }
 
+/// A primary whose copy of an object with a large key–value table is
+/// outvoted fetches the majority's in parts (I182), so that no frame
+/// exceeds the limit: about 420 KiB of entries in 16 KiB parts.
+#[test]
+fn an_outvoted_primary_fetches_a_large_table_in_parts() {
+    use hyperstor_client::{NS_META, object_pg};
+    use hyperstor_proto::{Msg, Target, WireKey, WireObject, WireOp as W, encode_object};
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let name = b"audit/day".to_vec();
+    let n = name.clone();
+    let (pg, primary) = with_client(meta, 5, move |cl| async move {
+        for b in 0..20u32 {
+            let ops: Vec<W> = (b * 100..b * 100 + 100)
+                .map(|i| W::KvPut(format!("k{i:08}").into_bytes(), vec![(i % 251) as u8; 200]))
+                .collect();
+            cl.exec(POOL, NS_META, &n, &ops).await.unwrap();
+        }
+        wait_backfilled(&cl).await;
+        let m = cl.map();
+        let pg = object_pg(&n, m.pools[&POOL].pg_count);
+        let info = m.pg(POOL, pg).unwrap().clone();
+        // The primary's copy replaced by a small one: outvoted.
+        let conn = hyperstor_rpc::Conn::connect(m.device_addr(info.acting[0]).unwrap())
+            .await
+            .unwrap();
+        let bad = WireObject {
+            size: 0,
+            data: Vec::new(),
+            attrs: Vec::new(),
+            kv: vec![(b"stray".to_vec(), b"entry".to_vec())],
+        };
+        let (reply, _) = conn
+            .call(
+                &Msg::PushObject {
+                    to: Target {
+                        pool: POOL,
+                        pg,
+                        map_epoch: m.epoch,
+                        pg_epoch: info.epoch,
+                    },
+                    key: WireKey {
+                        ns: NS_META,
+                        name: n.clone(),
+                        version: 0,
+                    },
+                },
+                &encode_object(&bad),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply, Msg::PushOk);
+        (pg, info.acting[0])
+    });
+    let repaired = || {
+        c.nodes[(primary / 1000) as usize].as_ref().unwrap().metrics[0]
+            .1
+            .scrub_repaired
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    while repaired() == 0 {
+        assert!(t.elapsed().as_secs() < 20, "not repaired");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (map, devs) = c.stop();
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let info = map.pg(POOL, pg).unwrap();
+    let key = ObjKey::new(POOL, pg, Namespace::Meta, name, 0);
+    let tables: Vec<_> = info
+        .acting
+        .iter()
+        .map(|d| shards[d].kv_scan(&key, b"", None, usize::MAX))
+        .collect();
+    assert_eq!(tables[0].len(), 2000, "the primary's table");
+    assert!(
+        tables.windows(2).all(|w| w[0] == w[1]),
+        "copies differ: {:?}",
+        tables.iter().map(|t| t.len()).collect::<Vec<_>>()
+    );
+}
+
 /// Volumes (metadata.md §4.2, D77): created with a header and a directory
 /// entry in `.meta`, listed per pool, grown but not shrunk, and deleted
 /// with their data.

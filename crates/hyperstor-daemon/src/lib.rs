@@ -24,7 +24,7 @@ pub mod diag;
 pub mod faults;
 pub mod metrics;
 
-use hyperstor_client::rpc::{Conn, read_frame, writer};
+use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
 use hyperstor_client::volume::{
     LEASE_ATTR, decode_holder, encode_holder, header_deleting, header_version,
 };
@@ -267,7 +267,8 @@ struct ShardState {
     /// Per-PG replication sequence numbers (primary side).
     seqs: RefCell<HashMap<(u32, u32), u64>>,
     /// Connections to replicas, by address.
-    peers: RefCell<HashMap<SocketAddr, Conn>>,
+    /// Connections to peers, one live each (I184).
+    peers: hyperstor_client::rpc::Pool,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
@@ -599,7 +600,7 @@ impl ShardState {
             queue: RefCell::new(Vec::new()),
             committer: RefCell::new(None),
             seqs: RefCell::new(HashMap::new()),
-            peers: RefCell::new(HashMap::new()),
+            peers: Default::default(),
             batches: Cell::new(0),
             backfills: RefCell::new(HashMap::new()),
             fill_inflight: RefCell::new(HashMap::new()),
@@ -871,14 +872,7 @@ impl ShardState {
                 "partitioned (test hook)".into(),
             )));
         }
-        if let Some(c) = self.peers.borrow().get(&addr)
-            && !c.is_dead()
-        {
-            return Ok(c.clone());
-        }
-        let c = Conn::connect(addr).await?;
-        self.peers.borrow_mut().insert(addr, c.clone());
-        Ok(c)
+        Ok(self.peers.get(addr).await?)
     }
 
     /// Copies the engine's counters into the admin port's gauges, once a
@@ -1146,6 +1140,18 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.fetch(to, key).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
+                }
+                Msg::FetchPart {
+                    to,
+                    key,
+                    first,
+                    kv_from,
+                } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.fetch_part(to, key, first, kv_from).await;
                         let _ = tx.send(encode_frame(req, &m, &p));
                     });
                 }
@@ -2720,9 +2726,14 @@ impl ShardState {
                 let me = self.clone();
                 let last_ok = last_ok.clone();
                 spawn(async move {
+                    // The ping gives up on its own (its pending entry
+                    // with it); the connection, which replication shares,
+                    // stays.
                     let ping = async {
                         let c = me.peer(addr).await.ok()?;
-                        c.call(&Msg::Ping, &[]).await.ok()
+                        c.try_within(&Msg::Ping, &[], Duration::from_millis(200))
+                            .await
+                            .ok()
                     };
                     if let Ok(Some((Msg::Pong, _))) =
                         hyperstor_reactor::time::timeout(Duration::from_millis(200), ping).await
@@ -2899,7 +2910,10 @@ impl ShardState {
         let mut legacy = false;
         #[cfg(hs_diag)]
         let asked = std::time::Instant::now();
-        let theirs = match conn.start(&Msg::Digests { to, deep: false }, &[]).await {
+        let theirs = match conn
+            .start_within(&Msg::Digests { to, deep: false }, &[], CALL_TIMEOUT)
+            .await
+        {
             Ok((Msg::DigestsOk, p)) => match decode_digests(&p) {
                 Ok(v) => {
                     crate::diag!("digests {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target} holds {} objects ({} bytes of digests, {:?})", v.len(), p.len(), asked.elapsed());
@@ -2920,7 +2934,7 @@ impl ShardState {
                 _,
             )) => {
                 self.drained().await;
-                let reset = conn.start(
+                let reset = conn.start_within(
                     &Msg::Push {
                         to,
                         key: WireKey {
@@ -2931,6 +2945,7 @@ impl ShardState {
                         crcs: Vec::new(),
                     },
                     &[],
+                    CALL_TIMEOUT,
                 );
                 if !matches!(reset.await, Ok((Msg::PushOk, _))) {
                     return false;
@@ -2979,7 +2994,7 @@ impl ShardState {
             // An object's parts in order on this connection, which the
             // target handles in order.
             for (m, data) in parts {
-                inflight.push(conn.start(&m, &data));
+                inflight.push(conn.start_within(&m, &data, CALL_TIMEOUT));
             }
             if inflight.len() >= 16 {
                 for f in inflight.drain(..) {
@@ -3187,7 +3202,16 @@ impl ShardState {
                 continue;
             }
             let conn = self.peer(map.device_addr(*d)?).await.ok()?;
-            match conn.call(&Msg::Digests { to, deep }, &[]).await {
+            // A deep scrub reads every block: it may take minutes, and
+            // keepalive catches a peer that's gone. A light one answers
+            // from the index.
+            let asked = if deep {
+                conn.call(&Msg::Digests { to, deep }, &[]).await
+            } else {
+                conn.call_within(&Msg::Digests { to, deep }, &[], CALL_TIMEOUT)
+                    .await
+            };
+            match asked {
                 Ok((Msg::DigestsOk, p)) => theirs.push(Some(
                     decode_digests(&p)
                         .ok()?
@@ -3395,13 +3419,95 @@ impl ShardState {
         let Ok(conn) = self.peer(addr).await else {
             return false;
         };
+        // In parts (I182); a member from before parts answers that it
+        // doesn't know the request, and gets a whole-object Fetch.
+        let part = |first: bool, kv_from: Vec<u8>| {
+            let (conn, m) = (
+                &conn,
+                Msg::FetchPart {
+                    to,
+                    key: wire_key(key),
+                    first,
+                    kv_from,
+                },
+            );
+            async move { conn.call_within(&m, &[], CALL_TIMEOUT).await }
+        };
+        match part(true, Vec::new()).await {
+            Ok((
+                Msg::Error {
+                    code: Code::Invalid,
+                    ..
+                },
+                _,
+            )) => {}
+            Ok((Msg::FetchPartOk { found: false, .. }, _)) => {
+                return self
+                    .apply_fetched(
+                        key,
+                        vec![OpList {
+                            key: key.clone(),
+                            ops: vec![Op::Delete],
+                        }],
+                    )
+                    .await;
+            }
+            Ok((Msg::FetchPartOk { found: true, next }, payload)) => {
+                let Ok(obj) = decode_object(&payload) else {
+                    return false;
+                };
+                let mut done: Vec<_> = self
+                    .object_lists(key, obj)
+                    .into_iter()
+                    .map(|l| self.enqueue(l))
+                    .collect();
+                let mut next = next;
+                let mut ok = true;
+                while let Some(from) = next.take() {
+                    match part(false, from).await {
+                        Ok((
+                            Msg::FetchPartOk {
+                                found: true,
+                                next: n,
+                            },
+                            payload,
+                        )) => {
+                            let Ok(kv) = hyperstor_proto::decode_pairs(&payload) else {
+                                ok = false;
+                                break;
+                            };
+                            done.extend(
+                                self.kv_lists(key, kv).into_iter().map(|l| self.enqueue(l)),
+                            );
+                            next = n;
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                for d in done {
+                    ok &= d.await.is_ok();
+                }
+                if ok {
+                    self.damaged.borrow_mut().remove(key);
+                } else {
+                    // Half replaced: reads go to repair, not to this copy.
+                    self.damaged.borrow_mut().insert(key.clone());
+                }
+                return ok;
+            }
+            _ => return false,
+        }
         let lists = match conn
-            .call(
+            .call_within(
                 &Msg::Fetch {
                     to,
                     key: wire_key(key),
                 },
                 &[],
+                CALL_TIMEOUT,
             )
             .await
         {
@@ -3415,6 +3521,12 @@ impl ShardState {
             }],
             _ => return false,
         };
+        self.apply_fetched(key, lists).await
+    }
+
+    /// Applies a fetched copy's lists; the key is no longer damaged once
+    /// they all are.
+    async fn apply_fetched(&self, key: &ObjKey, lists: Vec<OpList>) -> bool {
         let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
         let mut ok = true;
         for d in done {
@@ -3456,6 +3568,69 @@ impl ShardState {
                 Vec::new(),
             ),
         }
+    }
+
+    /// A member's answer to [`Msg::FetchPart`]: a part of its copy, about
+    /// `push_part_bytes` of key–value table each (I182). The primary
+    /// fetching holds the key's exec lock, so no write changes the copy
+    /// between parts.
+    async fn fetch_part(
+        &self,
+        to: Target,
+        key: WireKey,
+        first: bool,
+        kv_from: Vec<u8>,
+    ) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
+            return (m, Vec::new());
+        }
+        let Ok(okey) = engine_key(&to, &key) else {
+            return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
+        };
+        self.drained().await;
+        if self.damaged.borrow().contains(&okey) {
+            return (
+                err(Code::Checksum, &self.map(), "this copy is damaged too"),
+                Vec::new(),
+            );
+        }
+        let sh = self.shard.borrow();
+        let Some(st) = sh.stat(&okey) else {
+            return (
+                Msg::FetchPartOk {
+                    found: false,
+                    next: None,
+                },
+                Vec::new(),
+            );
+        };
+        let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
+        if !first {
+            return (
+                Msg::FetchPartOk { found: true, next },
+                hyperstor_proto::encode_pairs(&kv),
+            );
+        }
+        let Ok(data) = sh.read(&okey, 0, st.size.div_ceil(4096) * 4096) else {
+            return (
+                err(
+                    Code::Checksum,
+                    &self.map(),
+                    "this copy fails its checksums too",
+                ),
+                Vec::new(),
+            );
+        };
+        let obj = WireObject {
+            size: st.size,
+            data: data.to_vec(),
+            attrs: sh
+                .attrs(&okey)
+                .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
+            kv,
+        };
+        (Msg::FetchPartOk { found: true, next }, encode_object(&obj))
     }
 
     async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
@@ -3531,11 +3706,43 @@ impl Drop for InflightGuard {
     }
 }
 
+/// Entries of `key`'s table from `from` on, up to about `limit` bytes (at
+/// least one), and where the rest starts if any is left.
+fn kv_part(
+    sh: &hyperstor_engine::Shard,
+    key: &ObjKey,
+    from: &[u8],
+    limit: usize,
+) -> (hyperstor_proto::Pairs, Option<Vec<u8>>) {
+    const BATCH: usize = 4096;
+    let (mut out, mut bytes, mut start) = (Vec::new(), 0, from.to_vec());
+    loop {
+        let batch = sh.kv_scan(key, &start, None, BATCH);
+        let n = batch.len();
+        for (k, v) in batch {
+            let b = hyperstor_proto::pair_bytes(&k, &v);
+            if bytes + b > limit && !out.is_empty() {
+                return (out, Some(k));
+            }
+            bytes += b;
+            start = k.clone();
+            out.push((k, v));
+        }
+        if n < BATCH {
+            return (out, None);
+        }
+        start.push(0);
+    }
+}
+
 /// Sends an object's pushes ([`ShardState::push_parts`]) in order on
 /// `conn`, each answered before the next.
 async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
     for (m, data) in parts {
-        if !matches!(conn.call(&m, &data).await, Ok((Msg::PushOk, _))) {
+        if !matches!(
+            conn.call_within(&m, &data, CALL_TIMEOUT).await,
+            Ok((Msg::PushOk, _))
+        ) {
             return false;
         }
     }

@@ -70,6 +70,8 @@ covered by tests that run on every change.
 | Failure detection by heartbeats, and writes that continue with fewer copies | Done |
 | Backfill: returning or replacement nodes are refilled | Done |
 | Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair) | Done |
+| A primary fetches a member's copy of a large object in parts (repair of its own copy) | Done |
+| Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts | Done |
 | Map leases with fencing and pushes: a cut-off primary stops serving | Done |
 | Failure reports from peers | Done |
 | Peering and delta recovery, by content digests instead of a PG log | Done |

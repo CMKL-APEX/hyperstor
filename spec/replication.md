@@ -130,7 +130,11 @@ members, as long as there are at least `min_size` of them. Below
   (I105).
 - **Large objects** go to a member in parts (D146, I177): the object
   with the first part of its key–value table, then the rest, each part
-  well under the frame limit, in order on one connection.
+  well under the frame limit, in order on one connection. A primary
+  fetching a member's copy (a damaged or outvoted copy of its own)
+  takes it in parts the same way, holding the object's lock so the
+  member's copy can't change between parts; a copy left half replaced
+  stays marked damaged, so reads go to repair (I182).
 
 ### 8.6 Erasure-coded pools (D6)
 
@@ -199,6 +203,7 @@ Expiry and eviction are not built yet.
 | A node is down for good | After `down_out_interval` its PGs are re-placed and backfilled (placement.md §5.3). |
 | A device fails | It is marked `failed`; its PGs are re-placed at once, without waiting for `down_out_interval` (I102). |
 | A replica is slow, or its primary can't reach it | Its primary reports it after the operation timeout (2 s) and it is dropped from that PG's acting set, then backfilled back (D91, I103). |
+| A peer stops answering, or its host vanishes | A call to it gives up after 10 s (a ping after 200 ms) and its connection is dropped; TCP keepalive (10 s idle, then every 5 s, 3 probes) and a 30 s send timeout close a connection to a host that is gone, and a connect gives up after 3 s. Each daemon and client keeps one connection per peer, so concurrent callers share it (I184). Replication keeps its own timeouts (D91). |
 | The primary is cut off from its replicas | Its peers report it and it is marked down; its map lease runs out, so it stops serving, and a new primary takes over (§8.4, D40). |
 | The metadata service loses quorum | I/O, lease renewals, releases and ordinary volume operations continue on the current map. PG failover, rebalancing, blocklisting and so forced lease takeovers wait (D23). A PG that loses a member meanwhile can't shrink its in-sync set, so its writes stall until quorum is back. |
 | The client's host dies | Its volume leases expire; the next attachment is a forced takeover with a blocklist round (metadata.md §9). |

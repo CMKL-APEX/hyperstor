@@ -27,6 +27,79 @@ pub fn bind_retrying(addr: SocketAddr) -> io::Result<StdListener> {
     }
 }
 
+/// TCP keepalive on every connection (implementation-notes.md I184):
+/// probes start after this long idle, every [`KEEPALIVE_INTERVAL`], and
+/// [`KEEPALIVE_COUNT`] unanswered probes close it. A peer that vanished
+/// without a FIN or RST (a host gone, a network cut) is noticed in about
+/// 25 s instead of never.
+pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
+pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+pub const KEEPALIVE_COUNT: u32 = 3;
+/// Data sent and not acknowledged for this long closes the connection
+/// (`TCP_USER_TIMEOUT`): keepalive covers idle connections, this one
+/// those with writes stuck in flight.
+pub const USER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn setsockopt(fd: i32, level: i32, name: i32, v: i32) -> io::Result<()> {
+    // SAFETY: setsockopt reads `size_of::<i32>()` bytes from a local i32.
+    let r = unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            (&v as *const i32).cast(),
+            std::mem::size_of::<i32>() as libc::socklen_t,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn getsockopt(fd: i32, level: i32, name: i32) -> io::Result<i32> {
+    let mut v: i32 = 0;
+    let mut len = std::mem::size_of::<i32>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into a local i32.
+    let r = unsafe { libc::getsockopt(fd, level, name, (&mut v as *mut i32).cast(), &mut len) };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(v)
+}
+
+/// Settings every connection gets, connected or accepted: no Nagle delay,
+/// keepalive, and a bound on unacknowledged data.
+fn tune(s: &StdStream) -> io::Result<()> {
+    s.set_nodelay(true)?;
+    let fd = s.as_raw_fd();
+    setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1)?;
+    setsockopt(
+        fd,
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPIDLE,
+        KEEPALIVE_IDLE.as_secs() as i32,
+    )?;
+    setsockopt(
+        fd,
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPINTVL,
+        KEEPALIVE_INTERVAL.as_secs() as i32,
+    )?;
+    setsockopt(
+        fd,
+        libc::IPPROTO_TCP,
+        libc::TCP_KEEPCNT,
+        KEEPALIVE_COUNT as i32,
+    )?;
+    setsockopt(
+        fd,
+        libc::IPPROTO_TCP,
+        libc::TCP_USER_TIMEOUT,
+        USER_TIMEOUT.as_millis() as i32,
+    )
+}
+
 /// A listening socket.
 pub struct TcpListener {
     inner: StdListener,
@@ -63,7 +136,7 @@ impl TcpListener {
         // SAFETY: accept returned a new descriptor that we now own.
         let s = unsafe { StdStream::from_raw_fd(fd) };
         let peer = s.peer_addr()?;
-        s.set_nodelay(true)?;
+        tune(&s)?;
         Ok((TcpStream { inner: s }, peer))
     }
 }
@@ -110,6 +183,17 @@ fn sockaddr(addr: SocketAddr) -> Box<(libc::sockaddr_storage, libc::socklen_t)> 
 }
 
 impl TcpStream {
+    /// The keepalive this socket has: on, idle seconds before probing, and
+    /// the user timeout in milliseconds ([`KEEPALIVE_IDLE`], [`USER_TIMEOUT`]).
+    pub fn keepalive(&self) -> io::Result<(bool, u32, u32)> {
+        let fd = self.inner.as_raw_fd();
+        Ok((
+            getsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE)? != 0,
+            getsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE)? as u32,
+            getsockopt(fd, libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT)? as u32,
+        ))
+    }
+
     /// Connects to `addr`.
     pub async fn connect(addr: SocketAddr) -> io::Result<Self> {
         let domain = if addr.is_ipv4() {
@@ -133,7 +217,7 @@ impl TcpStream {
         .build();
         let (r, _) = current().submit(sqe, Resource::Addr(sa)).await;
         check(r)?;
-        s.set_nodelay(true)?;
+        tune(&s)?;
         Ok(Self { inner: s })
     }
 
@@ -235,6 +319,26 @@ impl IntoRawFd for TcpStream {
 mod tests {
     use super::*;
     use crate::{block_on, spawn};
+
+    /// Both ends get keepalive and a user timeout (I184): a peer that
+    /// vanishes without closing is noticed instead of held for ever.
+    #[test]
+    fn connections_keep_alive_both_ways() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let accepted = spawn(async move { l.accept().await.unwrap().0 });
+            let c = TcpStream::connect(addr).await.unwrap();
+            let a = accepted.await;
+            let want = (
+                true,
+                KEEPALIVE_IDLE.as_secs() as u32,
+                USER_TIMEOUT.as_millis() as u32,
+            );
+            assert_eq!(c.keepalive().unwrap(), want, "connected");
+            assert_eq!(a.keepalive().unwrap(), want, "accepted");
+        });
+    }
 
     #[test]
     fn echo_many_clients() {
