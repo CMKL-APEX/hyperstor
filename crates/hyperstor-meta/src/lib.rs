@@ -32,10 +32,16 @@ pub use hyperstor_map::*;
 /// (`Meta::admin`). Replies go back on one-shot channels that work across
 /// threads and runtimes.
 pub enum Admin {
-    /// The published map, what clients and storage nodes see, and how
-    /// long ago each node was last heard from (absent: not since start).
+    /// The published map, what clients and storage nodes see, how long
+    /// ago each node was last heard from (absent: not since start), the
+    /// PGs scrub couldn't repair, and the nodes flapping (D149).
     Published(
-        hyperstor_reactor::chan::OneSender<(ClusterMap, BTreeMap<u32, Duration>, Inconsistent)>,
+        hyperstor_reactor::chan::OneSender<(
+            ClusterMap,
+            BTreeMap<u32, Duration>,
+            Inconsistent,
+            Flapping,
+        )>,
     ),
     SetDeviceIn {
         device: u32,
@@ -376,6 +382,8 @@ pub struct Meta {
     /// (placement.md §5.3), and since when each down node has been.
     down_out: Cell<Duration>,
     down_since: RefCell<HashMap<u32, Instant>>,
+    /// Flap damping (D149): each node's recent downs and hold.
+    damping: RefCell<HashMap<u32, Damping>>,
     /// PGs whose last scrub left objects it couldn't repair, with how many
     /// (their primaries' `ScrubReport`s, kept by the leader).
     pub inconsistent: RefCell<Inconsistent>,
@@ -421,6 +429,34 @@ pub enum Role {
 
 /// Default map lease (decisions.md D48).
 pub const LEASE: Duration = Duration::from_millis(600);
+
+/// Flap damping (decisions.md D149): a node marked down stays down at
+/// least this long, doubled for each further down within
+/// [`FLAP_WINDOW`], up to [`FLAP_HOLD_MAX`].
+pub const FLAP_HOLD_MIN: Duration = Duration::from_secs(2);
+pub const FLAP_HOLD_MAX: Duration = Duration::from_secs(60);
+/// How long a node's down transitions count toward its damping and its
+/// flapping warning; after this long without one, it starts afresh.
+pub const FLAP_WINDOW: Duration = Duration::from_secs(600);
+
+/// Nodes that went down at least twice within [`FLAP_WINDOW`], with how
+/// many times (health warns about them, D149).
+pub type Flapping = BTreeMap<u32, u32>;
+
+/// How long a node is held down after its `downs`th down within the
+/// window: [`FLAP_HOLD_MIN`] doubled for each before, at most
+/// [`FLAP_HOLD_MAX`].
+pub fn flap_hold(downs: usize) -> Duration {
+    let doublings = downs.saturating_sub(1).min(16) as u32;
+    (FLAP_HOLD_MIN * 2u32.pow(doublings)).min(FLAP_HOLD_MAX)
+}
+
+/// A node's recent down transitions and how long it is held down.
+#[derive(Default)]
+struct Damping {
+    downs: std::collections::VecDeque<Instant>,
+    hold_until: Option<Instant>,
+}
 
 impl Meta {
     pub fn new(map: ClusterMap) -> Rc<Self> {
@@ -479,6 +515,7 @@ impl Meta {
             acked: RefCell::new(HashMap::new()),
             down_out: Cell::new(DOWN_OUT),
             down_since: RefCell::new(HashMap::new()),
+            damping: RefCell::new(HashMap::new()),
             inconsistent: RefCell::new(BTreeMap::new()),
         })
     }
@@ -561,6 +598,7 @@ impl Meta {
                     self.suspect.borrow_mut().clear();
                     self.fencing.borrow_mut().clear();
                     self.down_since.borrow_mut().clear();
+                    self.damping.borrow_mut().clear();
                     self.inconsistent.borrow_mut().clear();
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
@@ -784,6 +822,7 @@ impl Meta {
                         self.published.borrow().clone(),
                         heard,
                         self.inconsistent.borrow().clone(),
+                        self.flapping(now),
                     ));
                 }
                 Admin::SetDeviceIn {
@@ -980,12 +1019,36 @@ impl Meta {
                     suspect.insert(*peer);
                 }
             }
+            let mut damping = self.damping.borrow_mut();
             for n in map.nodes.values_mut() {
                 let last = beats.get(&n.id).copied().unwrap_or(self.started.get());
                 let silent = now.duration_since(last) >= timeout;
                 let reported = suspect.contains(&n.id);
                 let alive = !silent && !reported;
-                if n.up != alive {
+                // Damping (D149): a node that went down comes back only
+                // once its hold has passed. It never keeps a node up.
+                let held = !n.up
+                    && alive
+                    && damping
+                        .get(&n.id)
+                        .and_then(|d| d.hold_until)
+                        .is_some_and(|t| now < t);
+                if n.up != alive && !held {
+                    let mut hold_note = String::new();
+                    if !alive {
+                        let d = damping.entry(n.id).or_default();
+                        d.downs.push_back(now);
+                        while d
+                            .downs
+                            .front()
+                            .is_some_and(|t| now.duration_since(*t) >= FLAP_WINDOW)
+                        {
+                            d.downs.pop_front();
+                        }
+                        let hold = flap_hold(d.downs.len());
+                        d.hold_until = Some(now + hold);
+                        hold_note = format!("; held down {} s", hold.as_secs());
+                    }
                     n.up = alive;
                     changed = true;
                     // In the journal: why a node went down is the first
@@ -1006,7 +1069,7 @@ impl Meta {
                         }
                     };
                     eprintln!(
-                        "hyperstor-meta: node {} {} ({why})",
+                        "hyperstor-meta: node {} {} ({why}{hold_note})",
                         n.id,
                         if alive { "up" } else { "down" }
                     );
@@ -1032,6 +1095,22 @@ impl Meta {
             }
         }
         changed
+    }
+
+    /// Nodes that went down at least twice within [`FLAP_WINDOW`] (D149).
+    pub fn flapping(&self, now: Instant) -> Flapping {
+        self.damping
+            .borrow()
+            .iter()
+            .filter_map(|(n, d)| {
+                let k = d
+                    .downs
+                    .iter()
+                    .filter(|t| now.duration_since(**t) < FLAP_WINDOW)
+                    .count() as u32;
+                (k >= 2).then_some((*n, k))
+            })
+            .collect()
     }
 
     /// Publishes working-map changes: fence, publish, push.
@@ -1634,6 +1713,90 @@ mod tests {
         assert!(m.liveness_tick(timeout, later));
         assert!(m.map.borrow().nodes[&3].up);
         assert_eq!(beat(3), 400);
+    }
+
+    /// D149: a node that went down stays down for its hold, which doubles
+    /// with each further down within the window, up to a minute; health
+    /// warns while it flaps; ten quiet minutes start it afresh. A report
+    /// still takes its lease at once.
+    #[test]
+    fn a_flapping_node_is_held_down_longer_each_time() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        let timeout = Duration::from_secs(3);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let beats = |t: Instant| {
+            for n in 0..4 {
+                m.beats.borrow_mut().insert(n, t);
+            }
+        };
+        let report = |t: Instant| {
+            m.reports
+                .borrow_mut()
+                .insert(3, [(0, t), (1, t)].into_iter().collect());
+        };
+        let up = || m.map.borrow().nodes[&3].up;
+        // Reported: down at once, and no lease.
+        beats(at(0));
+        report(at(0));
+        assert!(m.liveness_tick(timeout, at(0)));
+        assert!(!up());
+        match m.handle(Ok(Msg::Heartbeat { node: 3 })) {
+            Msg::HeartbeatOk { lease_ms, .. } => assert_eq!(lease_ms, 0, "no lease while reported"),
+            other => panic!("{other:?}"),
+        }
+        // Reports gone and heartbeats fresh, but held for 2 s.
+        m.reports.borrow_mut().clear();
+        beats(at(1900));
+        assert!(!m.liveness_tick(timeout, at(1900)), "held down");
+        assert!(!up());
+        beats(at(2100));
+        assert!(m.liveness_tick(timeout, at(2100)));
+        assert!(up());
+        // Down again within the window: held twice as long.
+        beats(at(3000));
+        report(at(3000));
+        assert!(m.liveness_tick(timeout, at(3000)));
+        m.reports.borrow_mut().clear();
+        beats(at(6900));
+        assert!(!m.liveness_tick(timeout, at(6900)), "held 4 s now");
+        beats(at(7100));
+        assert!(m.liveness_tick(timeout, at(7100)));
+        assert!(up());
+        // Health warns about it.
+        let f = m.flapping(at(7100));
+        assert_eq!(f, [(3, 2)].into_iter().collect::<Flapping>());
+        let s = api::status(
+            &m.map.borrow(),
+            None,
+            &Default::default(),
+            &f,
+            "127.0.0.1:8849",
+        );
+        assert_eq!(s.health, hyperstor_api::Health::HEALTH_WARN);
+        assert!(
+            s.reasons
+                .iter()
+                .any(|r| r.text == "node 3 flapping (2 transitions in 10 min)"),
+            "{:?}",
+            s.reasons
+        );
+        // The hold doubles up to a minute.
+        assert_eq!(flap_hold(1), Duration::from_secs(2));
+        assert_eq!(flap_hold(3), Duration::from_secs(8));
+        assert_eq!(flap_hold(6), Duration::from_secs(60));
+        assert_eq!(flap_hold(100), Duration::from_secs(60));
+        // Ten quiet minutes: no longer flapping, and the next hold is 2 s.
+        let quiet = 7100 + 600_000;
+        assert!(m.flapping(at(quiet)).is_empty());
+        beats(at(quiet));
+        report(at(quiet));
+        assert!(m.liveness_tick(timeout, at(quiet)));
+        m.reports.borrow_mut().clear();
+        beats(at(quiet + 2100));
+        assert!(m.liveness_tick(timeout, at(quiet + 2100)), "back after 2 s");
+        assert!(up());
     }
 
     /// D91: a slow member leaves a PG on its primary's report only; a

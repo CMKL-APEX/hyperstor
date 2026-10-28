@@ -55,6 +55,12 @@ that no single node sees every change (D28):
   heartbeat timeout expires, so it can tell a down node from one that is
   cut off from the leader alone, and one confused node can't mark healthy
   peers down.
+- **Flap damping** (D149). A node marked down comes back up only after a
+  hold: 2 s, doubled for each further down within 10 minutes, at most
+  60 s. Health warns about a node that went down twice or more in that
+  window. As built (I183), long work on a storage node's reactor
+  (digests and backfill's comparison) also yields in batches, so it
+  misses fewer pings in the first place.
 - **Map lease** (D42). Each heartbeat answer renews the node's *map
   lease* (0.6 s by default, D48), which runs from when the node sent the
   heartbeat. A node without a valid lease serves no PG I/O (reads

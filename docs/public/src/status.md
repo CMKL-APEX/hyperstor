@@ -74,6 +74,7 @@ covered by tests that run on every change.
 | Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts | Done |
 | Map leases with fencing and pushes: a cut-off primary stops serving | Done |
 | Failure reports from peers | Done |
+| Flap damping: a node that goes down is held down, longer each time; health warns | Done |
 | Peering and delta recovery, by content digests instead of a PG log | Done |
 | Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums | Done |
 | Scrub | Done |
