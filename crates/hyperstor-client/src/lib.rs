@@ -121,7 +121,7 @@ pub struct Client {
     /// The member believed to lead, an index into `members`.
     leader: std::cell::Cell<usize>,
     map: RefCell<Rc<ClusterMap>>,
-    conns: RefCell<HashMap<SocketAddr, Conn>>,
+    conns: rpc::Pool,
     /// Volumes attached through this client, whose leases it renews
     /// (`volume`), and whether the renewing task runs.
     attached: RefCell<HashMap<u128, std::rc::Weak<volume::Attached>>>,
@@ -158,7 +158,7 @@ impl Client {
             members: RefCell::new(members),
             leader: std::cell::Cell::new(0),
             map: RefCell::new(Rc::new(ClusterMap::default())),
-            conns: RefCell::new(HashMap::new()),
+            conns: Default::default(),
             attached: RefCell::new(HashMap::new()),
             renewing: std::cell::Cell::new(false),
             cache: RefCell::new(cache::ReadCache::new(cache::DEFAULT_BYTES)),
@@ -245,7 +245,11 @@ impl Client {
         for _ in 0..tries {
             let addr = self.member();
             let reply = match self.conn(addr).await {
-                Ok(conn) => conn.call(msg, &[]).await.map_err(ClientError::Rpc),
+                // A member that doesn't answer is let go: the next is tried.
+                Ok(conn) => conn
+                    .call_within(msg, &[], rpc::CALL_TIMEOUT)
+                    .await
+                    .map_err(ClientError::Rpc),
                 Err(e) => Err(e),
             };
             match reply {
@@ -294,25 +298,23 @@ impl Client {
         self.leader.set(i);
     }
 
-    /// A connection to `addr`, opened (with `Hello`) if needed.
+    /// A connection to `addr`, opened (with `Hello`) if needed; callers at
+    /// once share one connect (I184).
     pub async fn conn(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
-        if let Some(c) = self.conns.borrow().get(&addr)
-            && !c.is_dead()
-        {
-            return Ok(c.clone());
-        }
-        let c = Conn::connect(addr).await?;
-        c.call(
-            &Msg::Hello {
-                min_version: VERSION,
-                max_version: VERSION,
-                id: self.id,
-                instance: self.instance,
-            },
-            &[],
-        )
-        .await?;
-        self.conns.borrow_mut().insert(addr, c.clone());
+        let hello = Msg::Hello {
+            min_version: VERSION,
+            max_version: VERSION,
+            id: self.id,
+            instance: self.instance,
+        };
+        let c = self
+            .conns
+            .get_with(addr, |addr| async move {
+                let c = Conn::connect(addr).await?;
+                c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
+                Ok(c)
+            })
+            .await?;
         Ok(c)
     }
 
