@@ -184,10 +184,11 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Changing the map service's members at run time, and recovering a group that lost its majority"
+what = "Changing the map service's members at run time, recovering a group that lost its majority, and a leader without one saying so"
 spec = ["D85", "D87"]
 status = "done"
 tests = [
+    "members::a_leader_without_a_majority_says_so",
     "members::members_change_at_run_time",
     "members::a_lost_majority_is_recovered_alone",
     "hyperstor_meta::certs::tests::identity_revocations_cover_older_certificates_only",

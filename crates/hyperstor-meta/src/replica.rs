@@ -316,7 +316,12 @@ async fn run(
             let mut metrics = node.raft.metrics();
             let mut last = None;
             loop {
-                let leading = match metrics.borrow().current_leader {
+                // Copied out first: `map_of` reads the metrics again, and a
+                // second read while this one is held deadlocks once
+                // openraft queues a write between them (the lock is fair).
+                // On a follower, that stopped this member's Raft for good.
+                let current = metrics.borrow().current_leader;
+                let leading = match current {
                     Some(l) if l == node.id => Leading::Me,
                     Some(l) => map_of(l).map_or(Leading::Unknown, Leading::Other),
                     None => Leading::Unknown,

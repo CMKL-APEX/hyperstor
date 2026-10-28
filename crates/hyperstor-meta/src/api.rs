@@ -381,6 +381,23 @@ fn domain(d: Domain) -> String {
     .into()
 }
 
+/// Adds that the leader hasn't committed a map change for `d`: the map
+/// shown may be out of date, and failures aren't acted on.
+pub fn stalled(s: &mut pb::GetStatusResponse, d: std::time::Duration) {
+    s.health = pb::Health::HEALTH_ERROR.into();
+    s.reasons.insert(
+        0,
+        pb::Reason {
+            level: pb::Health::HEALTH_ERROR.into(),
+            text: format!(
+                "the map service hasn't committed a map change for {} s: no majority of members answers? Failures can't be acted on until it does",
+                d.as_secs()
+            ),
+            ..Default::default()
+        },
+    );
+}
+
 /// The status as this member can tell it: `leads` is `Err(why)` on a
 /// follower, which hears no heartbeats and gets no scrub results (they go
 /// to the leader). A follower answers from the map, which the leader
@@ -552,8 +569,17 @@ impl ClusterService for Api {
             .recv()
             .await
             .ok_or_else(|| ConnectError::unavailable("map service stopped"))?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Uncommitted(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let uncommitted = rx.recv().await.flatten();
         let (map, heard, inconsistent) = self.published().await?;
-        Ok(status_for(&map, &heard, &inconsistent, &self.map_address, leads).into())
+        let mut s = status_for(&map, &heard, &inconsistent, &self.map_address, leads);
+        if let Some(d) = uncommitted {
+            stalled(&mut s, d);
+        }
+        Ok(s.into())
     }
 
     async fn list_pgs(
@@ -1338,6 +1364,11 @@ mod tests {
         );
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         assert!(s.reasons[0].text.contains("until one is elected"));
+        // A leader that can't commit says so first, as an error.
+        let mut st = super::status_for(&m, &heard, &Default::default(), "x", Ok(()));
+        super::stalled(&mut st, std::time::Duration::from_secs(90));
+        assert_eq!(st.health, super::pb::Health::HEALTH_ERROR);
+        assert!(st.reasons[0].text.contains("for 90 s"));
         // The leader warns as before.
         let s = super::status_for(&m, &heard, &Default::default(), "127.0.0.1:8849", Ok(()));
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
