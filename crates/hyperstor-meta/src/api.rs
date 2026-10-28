@@ -148,6 +148,18 @@ fn audit(principal: &str, op: &str, target: &str, result: &str) {
     crate::audit_log::record(principal, op, target, result);
 }
 
+/// Records a refused call: on standard error, and in `.meta` summarised
+/// when it repeats (D147).
+fn refused(principal: &str, op: &str, target: &str, e: &ConnectError) {
+    crate::audit_log::refused(
+        principal,
+        op,
+        target,
+        e.code.as_str(),
+        e.message.as_deref().unwrap_or(""),
+    );
+}
+
 impl Api {
     /// Checks the caller: with TLS, a certificate of this cluster whose
     /// role allows `op` (any but `host` to read; `admin` or `mgmt` to
@@ -176,12 +188,7 @@ impl Api {
         need: Need,
     ) -> Result<String, ConnectError> {
         let refuse = |who: &str, e: ConnectError| {
-            audit(
-                who,
-                op,
-                target,
-                &format!("refused: {}", e.message.as_deref().unwrap_or("")),
-            );
+            refused(who, op, target, &e);
             e
         };
         let local = ctx.extensions().get::<LocalPeer>().copied();
@@ -325,12 +332,7 @@ impl Api {
                 )),
                 "rate_limited",
             );
-            audit(
-                &principal,
-                op,
-                target,
-                &format!("refused: {}", e.message.as_deref().unwrap_or("")),
-            );
+            refused(&principal, op, target, &e);
             return Err(e);
         }
         Ok(principal)

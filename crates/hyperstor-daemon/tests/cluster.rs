@@ -3425,3 +3425,172 @@ fn the_trash_keeps_what_it_holds_until_purged() {
     });
     c.stop();
 }
+
+/// D148: members write a day's audit records to their own numbered parts,
+/// starting the next when one is full and a new one after a restart; a
+/// read merges the parts, and a day from before parts, newest first and a
+/// page at a time; dropping the day removes every part and index entry.
+#[test]
+fn audit_parts_roll_over_merge_and_are_dropped() {
+    use hyperstor_client::NS_META;
+    use hyperstor_meta::META_POOL;
+    use hyperstor_meta::audit_log::{self as audit, Parts, Query};
+    use hyperstor_proto::WireOp as W;
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let base = 1_792_454_400_000_000u64; // 2026-10-20
+            let d = audit::day(base / 1_000_000);
+            let line = |i: u64, who: &str| audit::line_at(base + i * 1000, who, "Op", "t", "ok");
+            // A day from before parts: one object, listed in the days.
+            let mut ops = vec![W::Touch];
+            for i in (0..60).step_by(3) {
+                ops.push(W::KvPut(
+                    audit::key(base + i * 1000, 9, i as u32),
+                    line(i, "legacy").into_bytes(),
+                ));
+            }
+            cl.exec(META_POOL, NS_META, &audit::object(&d), &ops)
+                .await
+                .unwrap();
+            cl.exec(
+                META_POOL,
+                NS_META,
+                audit::INDEX,
+                &[W::Touch, W::KvPut(d.clone().into_bytes(), vec![])],
+            )
+            .await
+            .unwrap();
+            // Two members, parts of 1 KiB (a record is some 120 bytes).
+            let mut one = Parts::new(1, 1024);
+            let mut two = Parts::new(2, 1024);
+            let lines: Vec<(u64, String, u64)> = (0..60)
+                .filter(|i| i % 3 != 0)
+                .map(|i| {
+                    (
+                        base + i * 1000,
+                        line(i, if i % 3 == 1 { "one" } else { "two" }),
+                        i,
+                    )
+                })
+                .collect();
+            for chunk in lines.chunks(8) {
+                for (who, parts) in [("one", &mut one), ("two", &mut two)] {
+                    let mine: Vec<(u64, &str)> = chunk
+                        .iter()
+                        .filter(|l| l.1.contains(&format!("\"{who}\"")))
+                        .map(|l| (l.0, l.1.as_str()))
+                        .collect();
+                    audit::write(&cl, &mine, parts).await.unwrap();
+                }
+            }
+            // Member 1 restarts: a new part after its last.
+            let before = audit::parts_of(&cl, &d).await.unwrap();
+            let mut again = Parts::new(1, 1024);
+            let last = line(60, "one");
+            audit::write(&cl, &[(base + 60_000, &last)], &mut again)
+                .await
+                .unwrap();
+            let after = audit::parts_of(&cl, &d).await.unwrap();
+            let ones = |ps: &[String]| ps.iter().filter(|p| p.starts_with("1-")).count();
+            assert!(ones(&before) >= 2, "member 1 rolled over: {before:?}");
+            assert!(
+                before.iter().filter(|p| p.starts_with("2-")).count() >= 2,
+                "{before:?}"
+            );
+            assert_eq!(ones(&after), ones(&before) + 1, "{after:?}");
+            assert!(after.contains(&format!("1-{}", ones(&before))), "{after:?}");
+            for p in &after {
+                let l = cl
+                    .lookup(
+                        META_POOL,
+                        NS_META,
+                        &audit::part_object(&d, p),
+                        b"",
+                        None,
+                        1000,
+                    )
+                    .await
+                    .unwrap()
+                    .expect("every listed part exists");
+                let bytes: usize = l.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
+                assert!(bytes <= 1024, "part {p} holds {bytes} bytes");
+            }
+            // Read a page of 7 at a time: every record once, newest first.
+            let mut got = Vec::new();
+            let mut q = Query {
+                limit: 7,
+                ..Default::default()
+            };
+            loop {
+                let (page, next) = audit::read(&cl, &q).await.unwrap();
+                assert!(page.len() <= 7);
+                got.extend(page);
+                match next {
+                    Some(n) => q.after = n,
+                    None => break,
+                }
+            }
+            let want: Vec<String> = (0..=60)
+                .rev()
+                .map(|i| {
+                    line(
+                        i,
+                        if i == 60 || i % 3 == 1 {
+                            "one"
+                        } else if i % 3 == 2 {
+                            "two"
+                        } else {
+                            "legacy"
+                        },
+                    )
+                })
+                .collect();
+            assert_eq!(got, want);
+            // Filtered, across the parts.
+            let (two_only, _) = audit::read(
+                &cl,
+                &Query {
+                    principal: "two".into(),
+                    limit: 1000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(two_only.len(), 20);
+            // Dropped whole: no parts, no index entries, nothing read.
+            assert!(audit::drop_day(&cl, &d).await.unwrap());
+            assert!(audit::parts_of(&cl, &d).await.unwrap().is_empty());
+            for p in &after {
+                assert!(
+                    cl.lookup(META_POOL, NS_META, &audit::part_object(&d, p), b"", None, 1)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            assert!(
+                cl.lookup(META_POOL, NS_META, &audit::object(&d), b"", None, 1)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let (left, next) = audit::read(
+                &cl,
+                &Query {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(left.is_empty() && next.is_none(), "{left:?}");
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}

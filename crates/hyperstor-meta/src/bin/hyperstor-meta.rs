@@ -435,7 +435,7 @@ fn main() {
                 .map_or(Duration::from_secs(60), Duration::from_millis);
             // The audit log in .meta (D112): this member's records, and
             // on the leader the daily pruning (D113).
-            hyperstor_reactor::spawn(hyperstor_meta::audit_log::writer(addr));
+            hyperstor_reactor::spawn(hyperstor_meta::audit_log::writer(addr, id));
             hyperstor_reactor::spawn(hyperstor_meta::audit_log::pruner(
                 meta.clone(),
                 addr,

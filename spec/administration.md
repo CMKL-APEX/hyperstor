@@ -345,9 +345,29 @@ admin error; a day's grace costs only space, and the space is visible.
 - Every mutation, every denied request and every break-glass call is
   recorded: time, principal, source address, operation, target,
   result, and the operation id.
-- Written to journald and to an append-only audit object in `.meta`
-  (D28), readable by `security-admin` and by site policies that grant
-  `readAudit`.
+- Written to journald and to append-only audit objects in `.meta`
+  (D28, D112), readable by `security-admin` and by site policies that
+  grant `readAudit`. Kept a year by default, pruned a day at a time
+  (D113).
+- **As built** (D147, D148, I185):
+  - each map service member writes its own records to numbered parts,
+    `audit/YYYY-MM-DD/<member>-<N>`, starting the next at 16 MiB and
+    after a restart; `audit/days` lists the days and `audit/parts`
+    their parts;
+  - a read merges a day's parts by key (the time counted down, so
+    newest first); the cursor is the day and the last key, opaque to
+    hyperstorctl and the UI;
+  - a day written before parts is one object, `audit/YYYY-MM-DD`,
+    read and pruned with the rest;
+  - refusals of one principal's operation with one error code are
+    recorded ten a minute; the rest are counted into one `Refused`
+    record when the minute ends ("refused N more … calls"); journald
+    has every one.
+
+Why: a client retrying refused calls once grew a day's single object
+past the 64 MiB frame and stalled its PG's backfill (I177). Parts bound
+every object, and summaries bound what a storm adds without losing the
+evidence.
 - Under glidex, glidex's audit (glidex security.md §10) records the
   person; hyperstor's records glidex's admin identity and the request
   id glidex sends, so the two can be joined.

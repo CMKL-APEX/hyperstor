@@ -3,7 +3,18 @@
 //! from one cluster file.
 
 use hyperstor_test::*;
-use std::process::Command;
+use std::process::{Child, Command};
+
+/// A process killed when the test ends, however it ends: one left running
+/// by a failed test holds the suite's output open, and CI waits for it.
+struct Killed(Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 /// `check` reports every check on its own line with a level, and changes
 /// nothing. Verdicts depend on the host, so only the shape is checked.
@@ -501,15 +512,17 @@ fn hyperstor_vhost_is_installed_for_its_users() {
         .into_iter()
         .map(|a| a.replace("/run/hyperstor/vhost", dir.to_str().unwrap()))
         .collect();
-    let mut child = Command::new(c.root.join("usr/local/bin/hyperstor-vhost"))
-        .arg("serve")
-        .args(&args)
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = Killed(
+        Command::new(c.root.join("usr/local/bin/hyperstor-vhost"))
+            .arg("serve")
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let mut line = String::new();
     std::io::BufRead::read_line(
-        &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+        &mut std::io::BufReader::new(child.0.stdout.take().unwrap()),
         &mut line,
     )
     .unwrap();
@@ -529,8 +542,8 @@ fn hyperstor_vhost_is_installed_for_its_users() {
     assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stdout));
     assert!(ctl(&["detach", &id]).status.success());
     // SAFETY: kill on our own child's pid.
-    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-    assert!(child.wait().unwrap().success());
+    unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) };
+    assert!(child.0.wait().unwrap().success());
     let _ = std::fs::remove_dir_all(&dir);
     // Saved: a run with no flags changes nothing; --no-vhost removes it.
     assert!(install(&c.root, &[]).has("Nothing to change"));

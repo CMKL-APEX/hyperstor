@@ -2,8 +2,10 @@
 //! service's records and hyperstor-mgmt's (people's logins and roles) land
 //! in `.meta`; `hyperstorctl audit list` reads them newest first, filtered
 //! and paged; retention is set; through mgmt only security administrators
-//! read it.
+//! read it. A storm of refusals is summarised (D147), and the records
+//! of a day's parts page through mgmt (D148).
 
+use hyperstor_pki::Role;
 use hyperstor_test::*;
 
 #[test]
@@ -86,4 +88,76 @@ fn every_change_lands_in_the_audit_log() {
     // And nobody but mgmt appends.
     let append = "/api/hyperstor.v1.AuditService/AppendAudit";
     assert_eq!(c.as_session(&ann, "POST", append, r#"{"lines":[]}"#).0, 403);
+}
+
+#[test]
+fn a_refusal_storm_is_summarised_and_pages() {
+    let c = Cluster::all_in_one("audit-storm", 3);
+    let node = c.identity(Role::Node, "node7", false);
+    for _ in 0..15 {
+        c.ctl_via(Via::Tls(&node), &["out", "--device", "0"])
+            .expect(4);
+    }
+    let who = format!("hyperstor://{}/node/node7", c.cluster_id);
+    let mine = |l: &String| l.contains(&format!("\"principal\":\"{who}\""));
+    // journald has every one.
+    let refused = |l: &String| mine(l) && l.contains("\"result\":\"refused: ");
+    assert_eq!(c.audit().iter().filter(|l| refused(l)).count(), 15);
+    // .meta has the first ten, then, once the minute is over, how many
+    // more there were.
+    let summary = wait_for("the refusals' summary", 90, || {
+        let r = c.ctl(&["audit", "list", "--op", "Refused"]).ok();
+        r.has("refused 5 more").then_some(r)
+    });
+    assert!(
+        summary.has("node7") && summary.has("permission_denied"),
+        "{}",
+        summary.out
+    );
+    let json = c
+        .ctl(&["audit", "list", "--principal", "node/node7", "--json"])
+        .ok();
+    let v: serde_json::Value = serde_json::from_str(&json.out).unwrap();
+    let recs = v["records"].as_array().unwrap();
+    let kept = recs.iter().filter(|r| r["op"] != "Refused").count();
+    assert_eq!(kept, 10, "{}", json.out);
+    assert_eq!(recs.len(), 11, "{}", json.out);
+
+    // Paged through mgmt, three at a time, with its opaque cursor: every
+    // record once, newest first, as one listing has them.
+    let ann = c.login("ann", Some(&c.claim_code())).unwrap();
+    let roles = r#"{"roles":["security-admin"]}"#;
+    assert_eq!(
+        c.as_session(&ann, "PUT", "/auth/users/ann/roles", roles).0,
+        200
+    );
+    let list = "/api/hyperstor.v1.AuditService/ListAudit";
+    let page = |after: &str| {
+        let body = serde_json::json!({"principal": "node/node7", "limit": 3, "after": after});
+        let (code, _, b) = c.as_session(&ann, "POST", list, &body.to_string());
+        assert_eq!(code, 200, "{b}");
+        serde_json::from_str::<serde_json::Value>(&b).unwrap()
+    };
+    let mut paged = Vec::new();
+    let mut after = String::new();
+    loop {
+        let p = page(&after);
+        let rs = p["records"].as_array().cloned().unwrap_or_default();
+        assert!(rs.len() <= 3);
+        paged.extend(rs);
+        match p["next"].as_str() {
+            Some(n) if !n.is_empty() => after = n.to_string(),
+            _ => break,
+        }
+    }
+    // (uint64 is a string in protobuf's JSON, maybe not in hyperstorctl's.)
+    let key = |r: &serde_json::Value| {
+        let t = r["time_ms"]
+            .as_str()
+            .map_or(r["time_ms"].to_string(), String::from);
+        (t, r["op"].to_string(), r["result"].to_string())
+    };
+    let paged: Vec<_> = paged.iter().map(key).collect();
+    let listed: Vec<_> = recs.iter().map(key).collect();
+    assert_eq!(paged, listed);
 }

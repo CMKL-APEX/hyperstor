@@ -812,6 +812,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The audit log bounded after a retry storm: repeated refusals summarised a minute at a time, and a day written as numbered parts per member of at most 16 MiB, merged on read and pruned whole"
+spec = ["administration.md §23.9.4", "D147", "D148"]
+status = "done"
+tests = [
+    "hyperstor_meta::audit_log::tests::repeated_refusals_are_summarised",
+    "cluster::audit_parts_roll_over_merge_and_are_dropped",
+    "audit::a_refusal_storm_is_summarised_and_pages",
+]
+
+[[milestone.item]]
 what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI"
 spec = ["administration.md §23.6", "D120", "D121", "D125"]
 status = "done"
