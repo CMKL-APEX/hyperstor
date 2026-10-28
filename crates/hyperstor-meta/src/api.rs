@@ -345,6 +345,7 @@ impl Api {
             ClusterMap,
             std::collections::BTreeMap<u32, std::time::Duration>,
             crate::Inconsistent,
+            crate::Flapping,
         ),
         ConnectError,
     > {
@@ -410,13 +411,20 @@ pub fn status_for(
     map: &ClusterMap,
     heard: &std::collections::BTreeMap<u32, std::time::Duration>,
     inconsistent: &crate::Inconsistent,
+    flapping: &crate::Flapping,
     map_address: &str,
     leads: Result<(), String>,
 ) -> pb::GetStatusResponse {
     match leads {
-        Ok(()) => status(map, Some(heard), inconsistent, map_address),
+        Ok(()) => status(map, Some(heard), inconsistent, flapping, map_address),
         Err(why) => {
-            let mut s = status(map, None, &Default::default(), map_address);
+            let mut s = status(
+                map,
+                None,
+                &Default::default(),
+                &Default::default(),
+                map_address,
+            );
             if why == crate::NO_LEADER {
                 s.health = pb::Health::HEALTH_WARN.into();
                 s.reasons.push(pb::Reason {
@@ -446,9 +454,22 @@ pub fn status(
     map: &ClusterMap,
     heard: Option<&std::collections::BTreeMap<u32, std::time::Duration>>,
     inconsistent: &crate::Inconsistent,
+    flapping: &crate::Flapping,
     map_address: &str,
 ) -> pb::GetStatusResponse {
     let mut r = health::report(map);
+    // Nodes going down and up again (D149): each down holds the node down
+    // longer, and someone should find out why it keeps going.
+    for (n, k) in flapping {
+        r.reasons.push((
+            Health::Warn,
+            format!(
+                "node {n} flapping ({k} transitions in {} min)",
+                crate::FLAP_WINDOW.as_secs() / 60
+            ),
+        ));
+        r.health = r.health.max(Health::Warn);
+    }
     // Scrub found copies that differ with no majority to decide
     // (replication.md §8.5): someone must look.
     if !inconsistent.is_empty() {
@@ -576,8 +597,15 @@ impl ClusterService for Api {
             .send(Admin::Uncommitted(reply))
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let uncommitted = rx.recv().await.flatten();
-        let (map, heard, inconsistent) = self.published().await?;
-        let mut s = status_for(&map, &heard, &inconsistent, &self.map_address, leads);
+        let (map, heard, inconsistent, flapping) = self.published().await?;
+        let mut s = status_for(
+            &map,
+            &heard,
+            &inconsistent,
+            &flapping,
+            &self.map_address,
+            leads,
+        );
         if let Some(d) = uncommitted {
             stalled(&mut s, d);
         }
@@ -1323,7 +1351,13 @@ mod tests {
              pool 1 vol replicated size 2 min 1 pgs 4 domain host\n",
         )
         .unwrap();
-        let s = super::status(&m, None, &Default::default(), "127.0.0.1:8849");
+        let s = super::status(
+            &m,
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
         assert_eq!(s.cluster_id, "5");
         assert_eq!(s.health, super::pb::Health::HEALTH_OK);
         assert_eq!(s.nodes.len(), 2);
@@ -1333,7 +1367,13 @@ mod tests {
         assert_eq!(s.map_address, "127.0.0.1:8849");
         // Node 1 not heard from since start: warn, though the map says up.
         let heard = [(0, std::time::Duration::from_millis(40))].into();
-        let s = super::status(&m, Some(&heard), &Default::default(), "127.0.0.1:8849");
+        let s = super::status(
+            &m,
+            Some(&heard),
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         assert!(
             s.reasons[0]
@@ -1349,6 +1389,7 @@ mod tests {
             &m,
             &empty,
             &Default::default(),
+            &Default::default(),
             "127.0.0.1:8849",
             Err("this map service member isn't the leader; the leader is 127.0.0.1:9849".into()),
         );
@@ -1361,22 +1402,37 @@ mod tests {
             &m,
             &empty,
             &Default::default(),
+            &Default::default(),
             "127.0.0.1:8849",
             Err(crate::NO_LEADER.into()),
         );
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         assert!(s.reasons[0].text.contains("until one is elected"));
         // A leader that can't commit says so first, as an error.
-        let mut st = super::status_for(&m, &heard, &Default::default(), "x", Ok(()));
+        let mut st = super::status_for(
+            &m,
+            &heard,
+            &Default::default(),
+            &Default::default(),
+            "x",
+            Ok(()),
+        );
         super::stalled(&mut st, std::time::Duration::from_secs(90));
         assert_eq!(st.health, super::pb::Health::HEALTH_ERROR);
         assert!(st.reasons[0].text.contains("for 90 s"));
         // The leader warns as before.
-        let s = super::status_for(&m, &heard, &Default::default(), "127.0.0.1:8849", Ok(()));
+        let s = super::status_for(
+            &m,
+            &heard,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+            Ok(()),
+        );
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         // Scrub left objects unresolved: warn, naming the PGs.
         let inc = [((1, 2), 3)].into();
-        let s = super::status(&m, None, &inc, "127.0.0.1:8849");
+        let s = super::status(&m, None, &inc, &Default::default(), "127.0.0.1:8849");
         assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
         assert!(
             s.reasons[0]

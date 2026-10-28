@@ -511,6 +511,24 @@ fn a_node_fails_writes_continue_and_backfill_restores_copies() {
 }
 
 /// Waits until no PG is backfilling, from a client's view of the map.
+/// Waits until every node is up: the map service holds a node that went
+/// down for at least 2 s before it may come back (D149).
+async fn wait_all_up(cl: &std::rc::Rc<Client>) {
+    let t = std::time::Instant::now();
+    loop {
+        cl.refresh_map().await.unwrap();
+        let down: Vec<u32> = (cl.map().nodes.iter())
+            .filter(|(_, n)| !n.up)
+            .map(|(id, _)| *id)
+            .collect();
+        if down.is_empty() {
+            return;
+        }
+        assert!(t.elapsed().as_secs() < 70, "nodes {down:?} still down");
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 async fn wait_backfilled(cl: &std::rc::Rc<Client>) {
     let t = std::time::Instant::now();
     loop {
@@ -565,7 +583,7 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
             let cl = Client::connect(meta, 7).await.unwrap();
             // Node 3 is placed again; it must be refilled before it serves,
             // and the members that stood in for it are then dropped.
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
             assert!(cl.map().nodes[&3].up);
             assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
@@ -654,7 +672,7 @@ fn a_returning_node_gets_only_what_changed() {
     std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta, 7).await.unwrap();
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
             assert!(cl.map().nodes[&3].up);
             assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
@@ -728,7 +746,7 @@ fn a_returning_node_without_digests_is_refilled_whole() {
     std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta, 7).await.unwrap();
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
             assert!(cl.map().nodes[&3].up);
             assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
@@ -1065,7 +1083,7 @@ fn random_failures(seed: u64) {
     std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta, 99).await.unwrap();
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
             cl.read(POOL, 1, 0, expect.len() as u64).await.unwrap() == expect
         })
@@ -1225,7 +1243,7 @@ fn objects_change_atomically_and_every_copy_follows() {
     std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta, 7).await.unwrap();
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
         })
     })
@@ -1320,7 +1338,7 @@ fn a_large_key_value_table_is_refilled_in_parts() {
     std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta, 7).await.unwrap();
-            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(800)).await;
+            wait_all_up(&cl).await;
             wait_backfilled(&cl).await;
         })
     })
@@ -2558,7 +2576,7 @@ fn random_faults(seed: u64) {
         c.restart(n);
     }
     let read = with_client(meta, 99, move |cl| async move {
-        hyperstor_reactor::time::sleep(Duration::from_millis(800)).await;
+        wait_all_up(&cl).await;
         wait_backfilled(&cl).await;
         cl.read(POOL, 1, 0, CHUNKS * CHUNK as u64).await
     });

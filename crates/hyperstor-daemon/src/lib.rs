@@ -143,6 +143,11 @@ pub struct NodeConfig {
     pub push_part_bytes: usize,
 }
 
+/// Objects digested or compared between two yields (I183): digests of
+/// large objects take long, and a reactor that doesn't yield misses its
+/// peers' pings.
+const DIGEST_BATCH: usize = 64;
+
 /// An object's key–value table goes in parts of about this many bytes, so
 /// that no push exceeds the frame limit ([`hyperstor_proto::MAX_PAYLOAD`]).
 pub const PUSH_PART_BYTES: usize = hyperstor_proto::MAX_PAYLOAD / 4;
@@ -2560,6 +2565,7 @@ impl ShardState {
         self.drained().await;
         let entries: Vec<_> = self
             .local_digests(to.pool, to.pg)
+            .await
             .into_iter()
             .map(|(k, d)| (wire_key(&k), d))
             .collect();
@@ -2567,21 +2573,31 @@ impl ShardState {
     }
 
     /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
-    /// found damaged.
-    fn local_digests(&self, pool: u32, pg: u32) -> Vec<(ObjKey, u64)> {
-        let sh = self.shard.borrow();
-        let damaged = self.damaged.borrow();
-        sh.list_pg(pool, pg)
-            .into_iter()
-            .filter_map(|k| {
-                let d = match sh.digest(&k)? {
-                    _ if damaged.contains(&k) => DAMAGED,
-                    DAMAGED => DAMAGED + 1,
-                    d => d,
-                };
-                Some((k, d))
-            })
-            .collect()
+    /// found damaged. In batches of [`DIGEST_BATCH`] objects with a yield
+    /// between (I183): a large object's digest can take the reactor for
+    /// most of a second, and pings and heartbeats must get through. An
+    /// object written meanwhile is digested as its batch finds it: scrub
+    /// looks twice before it repairs, and backfill sends what differs,
+    /// with live writes covering the rest.
+    async fn local_digests(&self, pool: u32, pg: u32) -> Vec<(ObjKey, u64)> {
+        let keys = self.shard.borrow().list_pg(pool, pg);
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in keys.chunks(DIGEST_BATCH) {
+            {
+                let sh = self.shard.borrow();
+                let damaged = self.damaged.borrow();
+                out.extend(batch.iter().filter_map(|k| {
+                    let d = match sh.digest(k)? {
+                        _ if damaged.contains(k) => DAMAGED,
+                        DAMAGED => DAMAGED + 1,
+                        d => d,
+                    };
+                    Some((k.clone(), d))
+                }));
+            }
+            hyperstor_reactor::yield_now().await;
+        }
+        out
     }
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
@@ -2966,20 +2982,30 @@ impl ShardState {
         self.drained().await;
         #[cfg(hs_diag)]
         let listed = std::time::Instant::now();
-        let keys: BTreeSet<ObjKey> = {
+        // Compared in batches with a yield between, as `local_digests`
+        // digests (I183). A key that changes meanwhile is compared as its
+        // batch finds it; live writes reach this target anyway.
+        let ours = self.shard.borrow().list_pg(pool, pg);
+        let mut keys: BTreeSet<ObjKey> = {
             let sh = self.shard.borrow();
-            let ours = sh.list_pg(pool, pg);
-            let mut differ: BTreeSet<ObjKey> = theirs
+            theirs
                 .keys()
                 .filter(|k| sh.stat(k).is_none())
                 .cloned()
-                .collect();
-            differ.extend(
-                ours.into_iter()
-                    .filter(|k| theirs.get(k).copied() != sh.digest(k)),
-            );
-            differ
+                .collect()
         };
+        for batch in ours.chunks(DIGEST_BATCH) {
+            {
+                let sh = self.shard.borrow();
+                keys.extend(
+                    batch
+                        .iter()
+                        .filter(|k| theirs.get(*k).copied() != sh.digest(k))
+                        .cloned(),
+                );
+            }
+            hyperstor_reactor::yield_now().await;
+        }
         crate::diag!("keys {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: {} objects differ (compared in {:?})", keys.len(), listed.elapsed());
         let mut inflight = Vec::new();
         for key in keys {
@@ -3233,7 +3259,7 @@ impl ShardState {
             self.verify_pg(pool, pg).await;
         }
         self.drained().await;
-        let mine: HashMap<ObjKey, u64> = self.local_digests(pool, pg).into_iter().collect();
+        let mine: HashMap<ObjKey, u64> = self.local_digests(pool, pg).await.into_iter().collect();
         let mut out = vec![mine.clone()];
         out.extend(
             theirs

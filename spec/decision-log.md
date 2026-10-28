@@ -686,3 +686,13 @@ recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 84 | How to keep refusals from flooding the log: summarise repeats (the first 10 of a principal's operation and error a minute recorded, the rest counted into one record a minute; journald keeps all; recommended); a hard cap a day; sampling. And how to bound a day's object: numbered parts per member, a new one at 16 MiB (recommended); an object an hour; parts shared by members | Summarise repeats; numbered parts per member | D147, D148 |
+
+## A node that flaps (issue #64, 2026-10-28)
+
+A reactor stalled by long synchronous work misses its peers' 300 ms
+pings, so the node went down and up again about 150 times a minute.
+Asked how to stop it, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 85 | Damping in the map service (a down node held down 2 s, doubling per flap within 10 minutes up to 60 s, and a health warning) plus long reactor work yielding (recommended); heartbeats and pings from a thread of their own; higher timeouts | Damping and yielding | D149, I183 |
