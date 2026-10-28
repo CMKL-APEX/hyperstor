@@ -252,6 +252,23 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A primary fetches a member's copy of a large object in parts (repair of its own copy)"
+spec = ["replication.md §8.5", "I182"]
+status = "done"
+tests = ["cluster::an_outvoted_primary_fetches_a_large_table_in_parts"]
+
+[[milestone.item]]
+what = "Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts"
+spec = ["replication.md §15", "I184"]
+status = "done"
+tests = [
+    "hyperstor_rpc::tests::a_call_past_its_deadline_fails_and_takes_the_connection_down",
+    "hyperstor_rpc::tests::a_connect_that_hangs_gives_up",
+    "hyperstor_rpc::pool_tests::concurrent_callers_share_one_connect",
+    "hyperstor_reactor::net::tests::connections_keep_alive_both_ways",
+]
+
+[[milestone.item]]
 what = "Map leases with fencing and pushes: a cut-off primary stops serving"
 spec = ["replication.md §8.4", "D42"]
 status = "done"
