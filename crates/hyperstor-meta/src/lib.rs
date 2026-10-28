@@ -93,6 +93,8 @@ pub enum Admin {
     /// Whether this member leads: `Ok`, or why not (with the leader's
     /// map service address when known).
     Leads(hyperstor_reactor::chan::OneSender<Result<(), String>>),
+    /// How long the leader has failed to commit map changes, if it has.
+    Uncommitted(hyperstor_reactor::chan::OneSender<Option<Duration>>),
     /// This member's role, and the client instance its volume work uses
     /// now (D125).
     Lead(hyperstor_reactor::chan::OneSender<Lead>),
@@ -344,6 +346,9 @@ pub struct Meta {
     /// instance, so the next leader can blocklist what a former leader
     /// still runs (D125).
     lead_gen: Cell<u64>,
+    /// Since when the leader's commits have failed or timed out, until one
+    /// succeeds: with no majority of members answering, nothing changes.
+    uncommitted: Cell<Option<Instant>>,
     /// Where the leader commits what it publishes (none: a map service
     /// of one, without a store).
     commits: Option<tokio::sync::mpsc::UnboundedSender<replica::Commit>>,
@@ -378,6 +383,9 @@ pub struct Meta {
 
 /// PGs whose last scrub left objects unresolved, with how many.
 pub type Inconsistent = BTreeMap<(u32, u32), u32>;
+
+/// How long the leader waits for the group to commit a map.
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default down-out interval (placement.md §5.3).
 pub const DOWN_OUT: Duration = Duration::from_secs(600);
@@ -456,6 +464,7 @@ impl Meta {
             map: RefCell::new(map),
             role: Cell::new(role),
             lead_gen: Cell::new(0),
+            uncommitted: Cell::new(None),
             commits,
             seed: None,
             persisted: Cell::new(true),
@@ -600,14 +609,28 @@ impl Meta {
         {
             return false;
         }
-        match rx.recv().await {
-            Some(Ok(())) => true,
-            Some(Err(e)) => {
-                eprintln!("hyperstor-meta: map epoch {} not committed: {e}", map.epoch);
-                false
+        // Not forever: without a majority of members a commit never ends,
+        // and the publisher must keep trying (and say so) instead.
+        let why = match hyperstor_reactor::time::timeout(COMMIT_TIMEOUT, rx.recv()).await {
+            Ok(Some(Ok(()))) => {
+                self.uncommitted.set(None);
+                return true;
             }
-            None => false,
+            Ok(Some(Err(e))) => e.to_string(),
+            Ok(None) => "the Raft side stopped".into(),
+            Err(_) => format!(
+                "no answer in {} s (does a majority of members answer?)",
+                COMMIT_TIMEOUT.as_secs()
+            ),
+        };
+        eprintln!(
+            "hyperstor-meta: map epoch {} not committed: {why}",
+            map.epoch
+        );
+        if self.uncommitted.get().is_none() {
+            self.uncommitted.set(Some(Instant::now()));
         }
+        false
     }
 
     /// Marks a device in or out of placement (administration.md §23.6) and
@@ -845,6 +868,10 @@ impl Meta {
                         let _ = reply.send(r);
                     });
                 }
+                Admin::Uncommitted(reply) => {
+                    let since = self.uncommitted.get().filter(|_| self.leads());
+                    let _ = reply.send(since.map(|t| t.elapsed()));
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -1016,8 +1043,12 @@ impl Meta {
                 pruned = Instant::now();
                 self.map.borrow_mut().blocklist_prune(unix_now());
             }
-            if self.may_change_roles() && self.map.borrow().epoch > self.published.borrow().epoch {
-                self.publish().await;
+            if self.may_change_roles()
+                && self.map.borrow().epoch > self.published.borrow().epoch
+                && !self.publish().await
+            {
+                // Not committed: try again shortly, not every 10 ms.
+                sleep(Duration::from_millis(500)).await;
             }
         }
     }
@@ -1052,7 +1083,9 @@ impl Meta {
         out
     }
 
-    async fn publish(self: &Rc<Self>) {
+    /// Fences, commits and publishes the working map; false if it wasn't
+    /// committed.
+    async fn publish(self: &Rc<Self>) -> bool {
         let new = self.map.borrow().clone();
         let old = self.published.borrow().clone();
         let mut waits = Vec::new();
@@ -1075,7 +1108,7 @@ impl Meta {
         // Committed by the group before anyone sees it: a new leader
         // starts from it.
         if !self.may_change_roles() || !self.commit(&new).await {
-            return;
+            return false;
         }
         if new.epoch > self.published.borrow().epoch {
             *self.published.borrow_mut() = new.clone();
@@ -1109,6 +1142,7 @@ impl Meta {
                 }
             });
         }
+        true
     }
 
     /// Blocklists a client instance (metadata.md §9, a forced takeover):

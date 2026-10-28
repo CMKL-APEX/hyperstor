@@ -406,3 +406,66 @@ fn a_lost_majority_is_recovered_alone() {
     );
     g.ctl(0, &["io-test", "--mib", "4"]).ok();
 }
+
+/// A leader whose members stop answering can't commit: it says so, in
+/// `status` (an error) and its log, instead of waiting silently (the
+/// pilot's map service once waited a day and a half).
+#[test]
+fn a_leader_without_a_majority_says_so() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = group("stall", 3, 3);
+    let l = g.leader(&[0, 1, 2]);
+    // One storage host, so there is something to change.
+    let t = g.ctl(l, &["token", "create", "--role", "node"]).ok();
+    let tf = g.s.path("node-token");
+    std::fs::write(&tf, t.out.lines().next().unwrap()).unwrap();
+    let host = g.s.path("store");
+    let data = g.s.path("store-data");
+    std::fs::create_dir_all(&data).unwrap();
+    link_binaries(&host);
+    let port = (g.base + 9).to_string();
+    let admin = (g.base + 10).to_string();
+    install(
+        &host,
+        &[
+            "--join",
+            &g.m[l].api,
+            "--token-file",
+            tf.to_str().unwrap(),
+            "--role",
+            "storage",
+            "--address",
+            "127.0.0.1",
+            "--node-port",
+            &port,
+            "--admin-port",
+            &admin,
+            "--size-gib",
+            "1",
+            "--data-dir",
+            data.to_str().unwrap(),
+        ],
+    );
+    let mut args = env_args(&host, g.s.run(), "node-0.env");
+    args.extend(["--spin-us".into(), "0".into()]);
+    g.others.push(
+        Command::new(host.join("usr/local/bin/hyperstord"))
+            .args(args)
+            .stderr(std::fs::File::create(g.s.path("store.log")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    g.ctl(l, &["status", "--wait", "30"]).ok();
+    // The other two stop; a change follows that can't be committed.
+    for i in (0..3).filter(|i| *i != l) {
+        g.m[i].stop();
+    }
+    let _ = g.ctl(l, &["out", "--node", "0"]);
+    let r = wait_for("status to report the stall", 40, || {
+        let r = g.ctl(l, &["status"]);
+        r.has("hasn't committed a map change").then_some(r)
+    });
+    assert!(r.code != 0 && r.has("health  error"), "{}", r.out);
+    let log = g.m[l].log();
+    assert!(log.contains("not committed"), "{log}");
+}
