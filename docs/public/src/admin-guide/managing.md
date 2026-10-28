@@ -110,6 +110,15 @@ journalctl -u hyperstor-meta -u hyperstor-mgmt | grep '"audit":1'
 Security administrators read it on the UI's Audit page, and can export
 it there as JSON lines.
 
+A client that keeps retrying a refused call doesn't flood the log: of
+one principal's calls refused for one reason, the first ten a minute are
+recorded, and when the minute ends one `Refused` record says how many
+more there were. The journal has every one:
+
+```sh
+hyperstorctl audit list --op Refused
+```
+
 ## Health
 
 ```sh

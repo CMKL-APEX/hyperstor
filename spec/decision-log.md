@@ -676,3 +676,13 @@ restarts, asked three questions, each with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 83 | Which hosts run it (a `--vhost` flag on any role plus `--role vhost`; always with storage; its own role only); what stopping it does to attached volumes (keep them, the restart takes them back; detach them); how glidex gets at its sockets (`--vhost-user NAME`; run it as glidex) | `--vhost` on any role; keep, the restart takes them back; `--vhost-user NAME` | D142, D143, D144 |
+
+## The audit log after a retry storm (2026-10-28)
+
+A client retrying refused calls filled a day's audit object to about
+220 MiB (I177; hyperstor #60, #61). Asked two questions, each with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 84 | How to keep refusals from flooding the log: summarise repeats (the first 10 of a principal's operation and error a minute recorded, the rest counted into one record a minute; journald keeps all; recommended); a hard cap a day; sampling. And how to bound a day's object: numbered parts per member, a new one at 16 MiB (recommended); an object an hour; parts shared by members | Summarise repeats; numbered parts per member | D147, D148 |
