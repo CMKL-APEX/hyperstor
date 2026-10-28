@@ -139,6 +139,13 @@ right after an install or bringing a device back in.
 
 `hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details.
 
+A node that goes down is kept down for a while before it can come back:
+2 s, doubled each time it goes down again within 10 minutes, up to a
+minute. A node that keeps going down and up shows as `warn  node 2
+flapping (3 transitions in 10 min)`: look at that node's logs and load
+(`journalctl -u hyperstord@2`), since something stalls it for longer than
+its peers wait.
+
 ## Taking a device out for service
 
 ```sh

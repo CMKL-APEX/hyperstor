@@ -271,6 +271,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Flap damping: a node that goes down is held down, longer each time; health warns"
+spec = ["metadata.md", "D149", "I183"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::a_flapping_node_is_held_down_longer_each_time",
+]
+
+[[milestone.item]]
 what = "Peering and delta recovery, by content digests instead of a PG log"
 spec = ["replication.md §8.3", "replication.md §8.4", "D90", "I57", "I61"]
 status = "done"

@@ -676,3 +676,13 @@ restarts, asked three questions, each with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 83 | Which hosts run it (a `--vhost` flag on any role plus `--role vhost`; always with storage; its own role only); what stopping it does to attached volumes (keep them, the restart takes them back; detach them); how glidex gets at its sockets (`--vhost-user NAME`; run it as glidex) | `--vhost` on any role; keep, the restart takes them back; `--vhost-user NAME` | D142, D143, D144 |
+
+## A node that flaps (issue #64, 2026-10-28)
+
+A reactor stalled by long synchronous work misses its peers' 300 ms
+pings, so the node went down and up again about 150 times a minute.
+Asked how to stop it, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 85 | Damping in the map service (a down node held down 2 s, doubling per flap within 10 minutes up to 60 s, and a health warning) plus long reactor work yielding (recommended); heartbeats and pings from a thread of their own; higher timeouts | Damping and yielding | D149, I183 |
