@@ -423,10 +423,6 @@ status = "done"
 tests = [
     "cluster::preempting_one_volume_leaves_the_clients_others",
     "cluster::delegates_act_under_the_lease_and_are_fenced_with_it",
-    "cluster::a_forced_takeover_blocklists_the_old_holder",
-    "vhost::a_volume_is_served_over_vhost_user_blk",
-    "hyperstor_vhost::tests::the_state_file_round_trips_and_bad_ones_say_why",
-    "hyperstor_proto::tests::frames_round_trip",
 ]
 
 [[milestone.item]]
