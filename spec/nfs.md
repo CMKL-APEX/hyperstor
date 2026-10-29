@@ -5,7 +5,7 @@ D129 (data servers inside `hyperstord`) and D130 (stripe groups) are
 settled with the owner (decision-log.md point 74), as are D138–D141 and
 the revisions of D128, D131–D134 and D137 (points 75–82, after a review
 against RFC 8881, RFC 8434, RFC 8435 and the Linux client). D128 and
-D131–D137 as written are open for review, and G25–G37 are the host
+D131–D137 as written are open for review, and G25–G38 are the host
 checks they rest on. It extends the filesystem
 ([filesystem.md](filesystem.md)) with a third way in, beside virtio-fs
 and FUSE (F8): unmodified NFS clients.
@@ -120,7 +120,8 @@ metadata code rather than calling a separate fsmeta process, so an NFS
 **Exports are cluster objects (D141).** An export is a record in kv:
 the filesystem and path, the tenant, the hosts allowed to mount it (by
 certificate, F12), its service address and interface (D138), root
-squash (on by default), the `user@domain` mapping, and the layout
+squash (on by default), `all_squash` or an allowed uid range, the
+`user@domain` mapping, and the layout
 policy (`files`, `flexfiles` or `auto`; D128). It is created and
 changed through the cluster API and `hyperstorctl nfs export …`, by the
 `storage-admin` role that manages NVMe-oF exports (administration.md
@@ -183,7 +184,7 @@ client holds.
 | Stripe order | `nfl_first_stripe_index = (s · C) mod W`, `nfl_pattern_offset` = the segment's start | One mirror whose `W` data servers are listed in PG order from the base, so entry `i mod W` is `pg(i)` (RFC 8435 section 6) |
 | File handles | `nfl_fh_list`: one, the file's | `ffds_fh_vers`: one per data server, the file's |
 | Device | one device: `W` stripe indices, each the DS of a PG's primary | one device per data server (`ff_device_addr4`); the layout lists `W` device IDs |
-| Stateid | the client sends its open, lock or delegation stateid | `ffds_stateid`: the MDS puts the file's open stateid there, and the client sends exactly that |
+| Stateid | the client sends its open, lock or delegation stateid, each open-owner its own | `ffds_stateid`: a sealed stateid of its own kind for `(client, file, iomode)`, which the client sends for every process's I/O on the file (§26.7) |
 | Credential | the user's | the user's: with `ffdv_tightly_coupled` set, Linux uses the mount's credential, not `ffds_user`/`ffds_group` (which are set to the file's owner and ignored) |
 | Flags | — | `FF_FLAGS_NO_IO_THRU_MDS`: on a DS error the client asks for a new layout instead of sending I/O through the MDS; `FF_FLAGS_NO_LAYOUTCOMMIT` off |
 | `LAYOUTCOMMIT` after a stable write | only after `DATA_SYNC` (Linux skips it after `FILE_SYNC`) | always |
@@ -246,7 +247,11 @@ only the operations of RFC 8881 section 13.6, so each reactor keeps a
 small session layer: client IDs (from `EXCHANGE_ID` with
 `EXCHGID4_FLAG_USE_PNFS_DS`), sessions, slots and a reply cache, all in
 memory. Nothing in it is durable: a client that loses a DS session makes
-a new one, and `READ` and `WRITE` are idempotent for it.
+a new one, and `READ` and `WRITE` are idempotent for it. Linux keeps one
+connection per DS address, so a client holds one per reactor it
+touches: 1,000 clients on a node with 16 reactors are 16,000
+connections and TLS sessions, tens of KiB each, which is why the data
+path needs kernel TLS where the network isn't trusted (D25).
 
 | Option | For | Against |
 |---|---|---|
@@ -301,11 +306,24 @@ size wrong for good.
 **Size and mtime through `LAYOUTCOMMIT`.** DS writes don't touch the
 inode. The client's `LAYOUTCOMMIT` (at close, `fsync`, or when the layout
 is returned) carries the last byte written and the mtime, and the MDS
-commits them to the inode in one kv transaction. This is F5's "size and
-mtime at close or `fsync`", reached through the protocol instead of the
-FUSE client. A client that dies before `LAYOUTCOMMIT` leaves data past
-the recorded size, as a crash would with F5; the MDS recovers the true
-size from the chunks when it fences the client.
+commits them to the inode in one kv transaction. The size only grows
+by `LAYOUTCOMMIT`: it takes the larger of the committed and the
+recorded size, since two clients appending commit in any order. This is
+F5's "size and mtime at close or `fsync`", reached through the protocol
+instead of the FUSE client. A client that dies before `LAYOUTCOMMIT`
+leaves data past the recorded size, as a crash would with F5; when the
+MDS fences the client it walks the files of its RW layouts (the kv
+records, §26.7) and probes chunks segment by segment from the recorded
+size until a segment's `W` PGs all answer that no chunk exists, then
+commits the last byte found.
+
+**Size changes recall layouts.** Before `SETATTR` of the size,
+`DEALLOCATE`, `CLONE` or a `COPY` onto a range, the MDS recalls the RW
+layouts that overlap the range and waits for their return, or for the
+recall timeout, after which it blocklists the holder (D133). Otherwise
+a DS write in flight lands after the truncate has deleted its chunk and
+resurrects data past the new size, or is lost under it. Reads need no
+recall: a READ layout on a deleted chunk reads zeros.
 
 **Partial blocks.** NFS writes need not be 4 KiB aligned; the engine is
 (implementation-notes.md I8). The DS reads, merges and writes back a
@@ -331,7 +349,7 @@ knows:
 | session | session id, slot count, channel attributes, flags | at `CREATE_SESSION` and `DESTROY_SESSION` |
 | open | stateid, share access and deny, open owner | in the `OPEN` transaction |
 | lock | byte ranges, lock owner | the same records as F7's locks, so NFS and FUSE clients see each other's locks |
-| layout | stateid, file, ranges, iomode, client | at `LAYOUTGET`, `LAYOUTRETURN` |
+| layout | stateid, file, ranges, client, for RW layouts only | at `LAYOUTGET`, `LAYOUTRETURN`. READ layouts stay in the instance's memory: DSs check stateids, not layouts, and a layout isn't reclaimable, so losing them at failover costs the client one `LAYOUTGET`. RW layouts are kept because fencing a dead client needs the list of files whose size to recover (§26.6) |
 | cached reply | the reply to a non-idempotent request (`sa_cachethis`), keyed by session and slot | in the same transaction as the change it reports |
 
 Sessions are in kv so that a retried `CREATE` or `RENAME` after a
@@ -358,9 +376,14 @@ retries on the new instance reconnects to its session
 **The address moves with the lease (D138).** `hyperstor-nfs` adds the
 export's address to its own interface when it wins the lease, announces
 it with gratuitous ARP (or an unsolicited neighbour advertisement), and
-drops it when it loses or releases the lease. It needs `CAP_NET_ADMIN`
-for that and nothing else. The address and interface are part of the
-export record (D141).
+drops it when it loses or releases the lease. It renews the lease every
+lease/3 and drops the address, and stops answering, when a renewal has
+not succeeded for lease minus the allowed clock skew: before another
+instance can see the lease expire. Until then a partitioned instance
+can still answer `GETATTR` with stale attributes and refuse opens, for
+at most a lease; it cannot change state, because every transaction
+asserts the lease. It needs `CAP_NET_ADMIN` for that and nothing else.
+The address and interface are part of the export record (D141).
 
 | Option | For | Against |
 |---|---|---|
@@ -373,7 +396,10 @@ each export's address is held by one instance. A filesystem with many
 clients can be exported under several addresses. NFSv4.1 trunking across
 instances (the same `server_owner` from all of them) would let one
 client use several MDS instances for one export; whether Linux does that
-is G30.
+is G30. This is the design's metadata ceiling: every `OPEN`, `CREATE`
+and `GETATTR` of an export goes through one process, and each state
+change is a kv transaction. G38 measures what one instance does per
+second before the default export size is set.
 
 | Option | For | Against |
 |---|---|---|
@@ -385,18 +411,42 @@ delegation stateid (RFC 8881 section 13.9.1), never a layout stateid, so
 those are what the MDS seals:
 
 - The 12-byte `other` field of every open, lock and delegation stateid
-  is `(client index: 4, MAC: 8)`. The MAC is computed under a cluster key
-  that every `hyperstord` holds, over the client, the file handle, the
-  share access granted (read, write or both) and the stateid kind.
-- A DS recomputes the MAC over the stateid, the file handle from `PUTFH`
-  and the access the operation needs, and refuses a mismatch with
-  `NFS4ERR_BAD_STATEID`. A read-only open cannot write. There is no
-  lookup and no table.
-- With flexible files the MDS copies the same open stateid into
-  `ffds_stateid`; the DS check is identical.
-- The server sets `EXCHGID4_FLAG_BIND_PRINC_STATEID`, so I/O must carry
+  is `(key id: 1, client: 3, nonce: 3, MAC: 5)`. The client is the NFS
+  client's cluster client-instance id, the key the blocklist uses (D24),
+  so a DS fences without a table. The nonce is a counter per client, so
+  two opens of one file by two open-owners get two stateids, as RFC 8881
+  requires. The MAC is computed under a cluster key that every
+  `hyperstord` holds, over the key id, client, nonce, the file handle,
+  the share access granted (read, write or both), the stateid kind, and
+  the identity of the host the client authenticated as (its certificate,
+  D135).
+- A DS recomputes the MAC over the stateid, the file handle from `PUTFH`,
+  the access the operation needs and the authenticated host of the
+  connection the request arrived on, and refuses a mismatch with
+  `NFS4ERR_BAD_STATEID`. A read-only open cannot write; a stateid seen
+  on the wire of a trusted network (D25) is useless from any other host.
+  There is no lookup and no table. A 40-bit MAC is enough because a
+  forgery is one network round trip per guess from an already
+  authenticated host, and the key id lets two keys be valid at once, so
+  rotation doesn't invalidate every stateid in the cluster and start a
+  re-open storm.
+- A DS refuses the special stateids (anonymous, bypass) outright, as RFC
+  8881 section 13.9.1 requires; with everything resting on the MAC, a
+  guessed file handle of another tenant must not read.
+- A forwarded request (D131) carries the original connection's
+  authenticated host; the receiving primary trusts the forwarder for it
+  because the forwarder is a cluster node under mTLS.
+- With the files layout each open-owner sends its own open stateid, and
+  the server sets `EXCHGID4_FLAG_BIND_PRINC_STATEID`, so I/O must carry
   the principal that opened the file, and the access check made at
   `OPEN` covers the I/O (G35 checks that Linux honours it).
+- With flexible files, `ffds_stateid` is a sealed stateid of its own
+  kind for `(client, file, iomode)`, with no principal binding: Linux
+  sends it for every process's I/O on the file, each with its own
+  credential, so an open stateid bound to one principal would fail the
+  second user. Per-user access is still enforced: the client kernel
+  checks each process's open mode, and the MDS checks access at every
+  `OPEN` and grants an RW layout only to a client holding a write open.
 - **Revoking a client fences it everywhere:** the MDS puts the NFS
   client's instance on the cluster blocklist (D24, D76), and every DS
   refuses its stateids from then on. This happens when a client's lease
@@ -435,9 +485,9 @@ permission changes to reach the DSs; hyperstor does not do that yet.
 |---|---|
 | `SEEK`, `READ_PLUS` | Holes are chunks that don't exist and blocks no chunk maps; the DS asks the engine for a chunk's extents |
 | `ALLOCATE` | Reserves space in the tenant's quota (tenants.md §24.4); blocks aren't written |
-| `DEALLOCATE` | Deletes whole chunks and zeroes partial ones (`Zero`) |
+| `DEALLOCATE` | Recalls RW layouts on the range (§26.6), then deletes whole chunks and zeroes partial ones (`Zero`) |
 | `CLONE` | Needs files that share chunk versions, as volume clones do (volumes.md §10.3). With a lineage per file it is the same mechanism; until then, refused (`NFS4ERR_NOTSUPP`) |
-| `COPY` | Server-side: the MDS has the primaries copy chunk by chunk, so data never reaches the client; asynchronous for large files (`CB_OFFLOAD`) |
+| `COPY` | Server-side: the MDS recalls RW layouts on the target range, then has the primaries copy chunk by chunk, so data never reaches the client; asynchronous for large files (`CB_OFFLOAD`) |
 | `LAYOUTERROR`, `LAYOUTSTATS` | Flexible files only: DS errors and latencies, kept as metrics and used to recall stale layouts (D131) |
 
 ### 26.9 Security and identity (D135)
@@ -452,6 +502,9 @@ permission changes to reach the DSs; hyperstor does not do that yet.
 - **Users:** AUTH_SYS user and group ids are trusted only from an
   authenticated host, with root squashed by default. Owners travel as
   numeric ids; `user@domain` mapping is configured per export (D141).
+  A compromised authorized host can still claim any non-root uid, as
+  with any AUTH_SYS server, so an export may also squash every user
+  (`all_squash`) or allow only a range of uids.
   I/O carries the principal that opened the file
   (`EXCHGID4_FLAG_BIND_PRINC_STATEID`, §26.7).
 - **Kerberos** (RPCSEC_GSS) comes later. Tight coupling allows it (RFC
@@ -543,6 +596,11 @@ would be thrown away at N1.
   single-DS mirrors: throughput per case, and which mirror Linux reads
   from (whether it spreads reads over mirrors or sticks to one until an
   error), to decide whether `reads: any` is worth offering.
+- **G38. Metadata rate of one MDS instance** (D134). `OPEN`/`CLOSE`,
+  `CREATE` and `GETATTR` per second from many clients against one
+  instance with its state in kv, and the kv transaction latency that
+  bounds them, against the kernel's `nfsd` on the same host, to set how
+  many clients an export should carry before it is split.
 
 ### 26.12 References
 

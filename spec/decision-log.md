@@ -667,6 +667,7 @@ recommendation each; the owner took every recommendation.
 | 80 | Exports: cluster objects in kv through the API and `hyperstorctl` (recommended); or an `exports(5)` file per MDS | Cluster objects | D141 |
 | 81 | Binding I/O credentials to the open: set `EXCHGID4_FLAG_BIND_PRINC_STATEID` and check that Linux honours it (recommended); or re-check the user against the file mode at the DS | Set the flag | D133 (G35) |
 | 82 | Which pools may back NFS files: any pool, EC unaligned writes measured before the default is final (recommended); or replicated pools only | Any pool | D132 (G36) |
+| 83 | A second review, for durability, performance and security (2026-10-29): size changes must recall RW layouts; `LAYOUTCOMMIT` takes the max; READ layouts out of kv; the address dropped before the lease can expire elsewhere; stateids unique per open (a nonce), bound to the authenticated host, with a key id for rotation; special stateids refused; a per-layout stateid for flexible files instead of a principal-bound open stateid; `all_squash` and uid ranges per export; G38 for one instance's metadata rate | All taken | D132, D133, D138 revised |
 
 ## hyperstor-vhost as a service (2026-10-24)
 
