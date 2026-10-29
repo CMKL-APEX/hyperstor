@@ -31,8 +31,8 @@ impl Drop for Procs {
 
 fn start(bin: &Path, mut args: Vec<String>, log: PathBuf) -> Child {
     if bin.ends_with("hyperstord") {
-        // As the harness runs storage nodes: no spinning on shared CPUs.
-        args.extend(["--spin-us".into(), "0".into()]);
+        // As the harness runs storage nodes.
+        args.extend(NODE_ARGS.map(String::from));
     }
     Command::new(bin)
         .args(args)

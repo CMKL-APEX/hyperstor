@@ -221,7 +221,7 @@ fn cluster_file_install_across_hosts() {
         procs.push(
             Command::new(root.join("usr/local/bin/hyperstord"))
                 .args(env_args(&root, s.run(), &format!("node-{n}.env")))
-                .args(["--spin-us", "0"])
+                .args(NODE_ARGS)
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap(),
