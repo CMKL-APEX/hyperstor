@@ -5,6 +5,15 @@
 use hyperstor_test::*;
 use std::process::{Child, Command};
 
+/// One at a time: the installer's key work (certificates, the root key's
+/// backup) starves a live cluster on a small machine, whose nodes then miss
+/// their pings, and CI saw the vhost test's cluster time out.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A process killed when the test ends, however it ends: one left running
 /// by a failed test holds the suite's output open, and CI waits for it.
 struct Killed(Child);
@@ -20,6 +29,7 @@ impl Drop for Killed {
 /// nothing. Verdicts depend on the host, so only the shape is checked.
 #[test]
 fn check_reports_every_item() {
+    let _one = one_at_a_time();
     let s = Scratch::new("check");
     let data = s.path("never-made");
     let out = Command::new(bin_dir().join("hyperstor-install"))
@@ -51,6 +61,7 @@ fn check_reports_every_item() {
 /// configuration.
 #[test]
 fn install_is_convergent_and_uninstall_keeps_configuration() {
+    let _one = one_at_a_time();
     let s = Scratch::new("converge");
     let root = s.path("root");
     let first = install(&root, &["--all-in-one", "--nodes", "2", "--size-gib", "1"]);
@@ -115,6 +126,7 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
 /// Bad input is refused with a usage message, and nothing is written.
 #[test]
 fn bad_flags_are_refused() {
+    let _one = one_at_a_time();
     let s = Scratch::new("badflags");
     let root = s.path("root");
     install_cmd(&root, "install", &["--nodes", "0"]).expect(2);
@@ -137,6 +149,7 @@ fn bad_flags_are_refused() {
 /// installed; then managed from the map service's host.
 #[test]
 fn cluster_file_install_across_hosts() {
+    let _one = one_at_a_time();
     let s = Scratch::new("hosts");
     let base = free_ports(8);
     let file = s.path("cluster.txt");
@@ -244,6 +257,7 @@ fn cluster_file_install_across_hosts() {
 /// cluster.
 #[test]
 fn root_key_backup_and_restore() {
+    let _one = one_at_a_time();
     let s = Scratch::new("rootbackup");
     let root = s.path("root");
     let r = install(&root, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
@@ -331,6 +345,7 @@ fn root_key_backup_and_restore() {
 /// build's by a run with a new one, and removed by uninstall.
 #[test]
 fn the_web_ui_is_installed_as_files() {
+    let _one = one_at_a_time();
     let s = Scratch::new("ui-files");
     let root = s.path("root");
     let build = |files: &[(&str, &str)]| {
@@ -406,6 +421,7 @@ fn the_web_ui_is_installed_as_files() {
 /// someone else holds the grant, and removed when turned off.
 #[test]
 fn mgmt_listens_on_every_address_with_a_cluster_certificate() {
+    let _one = one_at_a_time();
     let s = Scratch::new("web-certs");
     let root = s.path("root");
     let env = || std::fs::read_to_string(root.join("etc/hyperstor/mgmt.env")).unwrap();
@@ -492,6 +508,7 @@ fn mgmt_listens_on_every_address_with_a_cluster_certificate() {
 /// an unknown user is refused.
 #[test]
 fn hyperstor_vhost_is_installed_for_its_users() {
+    let _one = one_at_a_time();
     let c = Cluster::all_in_one("inst-vhost", 3);
     let out = Command::new("id").arg("-un").output().unwrap();
     let me = String::from_utf8(out.stdout).unwrap().trim().to_string();
