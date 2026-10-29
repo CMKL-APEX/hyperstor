@@ -5,7 +5,7 @@ D129 (data servers inside `hyperstord`) and D130 (stripe groups) are
 settled with the owner (decision-log.md point 74), as are D138–D141 and
 the revisions of D128, D131–D134 and D137 (points 75–82, after a review
 against RFC 8881, RFC 8434, RFC 8435 and the Linux client). D128 and
-D131–D137 as written are open for review, and G25–G36 are the host
+D131–D137 as written are open for review, and G25–G37 are the host
 checks they rest on. It extends the filesystem
 ([filesystem.md](filesystem.md)) with a third way in, beside virtio-fs
 and FUSE (F8): unmodified NFS clients.
@@ -254,13 +254,39 @@ a new one, and `READ` and `WRITE` are idempotent for it.
 | A DS process per storage host, forwarding to the local reactors | Keeps NFS out of `hyperstord`; can be restarted alone | A local hop and a copy for every byte |
 | DSs on gateway hosts | No change to storage nodes | Two hops for every byte; the gateway tier becomes the bottleneck |
 
-**Reads go to the primary (D140).** A READ layout names the same DSs as
-an RW layout: the primaries. The native client reads from the primary
-too (replication.md §8.1), so NFS sees the same consistency, EC pools
-need nothing special, and forwarding (D131) has one target. Reading from
-any in-sync replica would spread reads over `R` nodes, but a replica
-mid-recovery could answer stale data until replica read leases (D89, not
-built) exist; it can come later as a policy.
+**Reads go to the primary by default (D140).** A READ layout names the
+same DSs as an RW layout: the primaries. The native client reads from
+the primary too (replication.md §8.1), so NFS sees the same consistency,
+EC pools need nothing special, and forwarding (D131) has one target.
+
+Reading from replicas adds no capacity in aggregate: every node is
+primary for about `1/N` of the PGs, so primary-only reads already drive
+every node's NIC and drives. It helps where the load is on a few
+chunks:
+
+| Case | Primary only | Any in-sync replica | Cheaper fix |
+|---|---|---|---|
+| One big file, many readers | A segment uses `W` primaries; each segment has its own base | `W · R` nodes | Raise `W`, a directory policy |
+| One hot chunk or small file read by many clients (a dataset shard, a checkpoint, an image layer) | One node's NIC and one reactor | `R` times that | None; `W` doesn't split a chunk |
+| A slow primary (compaction, recovery, a busy reactor) | Every read waits | A flexible-files READ layout with `R` mirrors lets the client fail over to another replica without a new layout | — |
+| EC pools, or files opened read-write (Linux reads through its RW layout) | — | No benefit | — |
+
+It is safe without new leases. D89 made map leases the read leases, and
+replicas hold them too: an acknowledged write is on every in-sync
+member's stable storage before the primary answers (replication.md
+§8.1), so an in-sync replica under a valid map lease that has peered in
+the current `pg_epoch` has every acknowledged byte. What changes is that
+a chunk being overwritten may read new on one replica and old on
+another until the write is acknowledged; NFS close-to-open consistency
+promises no more, but the native client never sees it.
+
+**Later (N2): a directory policy `reads: primary | any`.** With `any`,
+a READ layout on a replicated pool is a flexible-files layout with `R`
+mirrors of one data server each, in device IDs `(pool, PG, replica,
+epoch)`; a replica DS checks its map lease and in-sync membership as a
+primary does, and forwards to the primary otherwise (D131). RW layouts
+and the files layout keep naming primaries. G37 measures the gain and
+how Linux chooses among mirrors before the policy is offered.
 
 **`DATA_SYNC` after every copy (D132).** A primary answers a write only
 when every copy has it on stable storage. So a DS answers every `WRITE`
@@ -453,7 +479,7 @@ permission changes to reach the DSs; hyperstor does not do that yet.
 |---|---|---|
 | N0 | `hyperstor-nfs` as an NFSv4.1 server doing all I/O itself, with its state in kv (D134) and exports as cluster objects (D141): every v4.1 client works, and a second instance can take an export over | HS11 (kv), the metadata part of HS14 with stripe groups (D130) |
 | N1 | Files layouts and DSs in `hyperstord` with sealed stateids (D128, D129, D133); the address moving with the lease (D138) | N0 |
-| N2 | Flexible files layouts, the `auto` policy, error reports driving recalls (D128, D131) | N1 |
+| N2 | Flexible files layouts, the `auto` policy, error reports driving recalls (D128, D131); the `reads: any` policy with replica mirrors (D140, G37) | N1 |
 | N3 | NFSv4.2 operations, delegations | N1 |
 | N4 | NFS over RDMA, Kerberos | N1, HS6 |
 
@@ -511,6 +537,12 @@ would be thrown away at N1.
   82). Throughput and latency of 4 KiB-unaligned pNFS writes on a
   replicated and an EC pool, against aligned ones, to set the default
   pool policy for NFS directory trees.
+- **G37. Reads from replicas** (D140). On the pilot's three hosts
+  (`R = 3`), many clients reading one 4 MiB chunk and one 64 GiB
+  segment, with READ layouts naming the primary only and then `R`
+  single-DS mirrors: throughput per case, and which mirror Linux reads
+  from (whether it spreads reads over mirrors or sticks to one until an
+  error), to decide whether `reads: any` is worth offering.
 
 ### 26.12 References
 
