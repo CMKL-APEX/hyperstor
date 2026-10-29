@@ -43,6 +43,9 @@ pub enum Request {
         volume: u128,
         serial: String,
         take: Take,
+        /// Who asks, recorded with the lease as `vhost:<holder>` (D153):
+        /// glidex names its node.
+        holder: String,
     },
     Detach {
         volume: u128,
@@ -52,6 +55,9 @@ pub enum Request {
 
 /// The longest serial a disk may have (the virtio-blk id).
 pub const SERIAL_MAX: usize = 20;
+/// The longest `holder` of an `attach`: `vhost:` and it make a lease label
+/// of at most `hyperstor_proto::LABEL_MAX` bytes.
+pub const HOLDER_MAX: usize = 58;
 
 /// Parses one request line: its id and the request.
 pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
@@ -91,10 +97,21 @@ pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
                 "preempt" => Take::Preempt,
                 t => return Err(format!("take {t:?}: attach, take_over or preempt")),
             };
+            let holder = args
+                .get("holder")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if holder.len() > HOLDER_MAX || !holder.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(format!(
+                    "holder {holder:?}: up to {HOLDER_MAX} printable ASCII characters"
+                ));
+            }
             Request::Attach {
                 volume: volume()?,
                 serial,
                 take,
+                holder,
             }
         }
         o => return Err(format!("op {o:?}: hello, attach, detach or list")),
@@ -111,6 +128,15 @@ impl Reply {
 
     pub fn error(id: u64, code: &str, message: &str) -> Self {
         Reply(json!({"id": id, "error": {"code": code, "message": message}}))
+    }
+
+    /// An error naming who holds the volume (`held`, D153): the label its
+    /// holder took the lease with.
+    pub fn held(id: u64, message: &str, holder: &str) -> Self {
+        Reply(json!({
+            "id": id,
+            "error": {"code": "held", "message": message, "holder": holder},
+        }))
     }
 
     pub fn line(&self) -> String {
@@ -136,6 +162,9 @@ pub struct Listed {
     pub socket: PathBuf,
     pub size: u64,
     pub connected: bool,
+    /// Its lease was taken by a take-over or preemption elsewhere (D150):
+    /// its I/O fails until it is detached or attached again.
+    pub lost: bool,
 }
 
 pub fn list(disks: Vec<Listed>) -> Value {
@@ -147,6 +176,7 @@ pub fn list(disks: Vec<Listed>) -> Value {
                 "socket": d.socket.display().to_string(),
                 "size": d.size,
                 "connected": d.connected,
+                "lost": d.lost,
             })
         })
         .collect();
@@ -178,7 +208,8 @@ mod tests {
             Request::Attach {
                 volume: 0xab,
                 serial: "disk-1".into(),
-                take: Take::Preempt
+                take: Take::Preempt,
+                holder: String::new(),
             }
         );
         let (_, r) = parse(br#"{"op": "attach", "args": {"volume": "1"}}"#).unwrap();
@@ -187,7 +218,8 @@ mod tests {
             Request::Attach {
                 volume: 1,
                 serial: String::new(),
-                take: Take::Attach
+                take: Take::Attach,
+                holder: String::new(),
             }
         );
         assert_eq!(parse(br#"{"op": "list"}"#).unwrap().1, Request::List);

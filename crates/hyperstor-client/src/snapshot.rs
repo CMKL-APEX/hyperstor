@@ -300,7 +300,7 @@ impl Client {
                 name: &key,
             };
             match self
-                .to_primary(META_POOL, route, &payload, &|to, key| Msg::Snapshot {
+                .to_primary(META_POOL, route, 0, &payload, &|to, key| Msg::Snapshot {
                     to,
                     key,
                     token,
@@ -358,7 +358,7 @@ impl Client {
                     name: &key,
                 };
                 match me
-                    .to_primary(META_POOL, route, &[], &|to, key| make(to, key, token))
+                    .to_primary(META_POOL, route, 0, &[], &|to, key| make(to, key, token))
                     .await?
                 {
                     (Msg::ExecOk, _) => Ok(()),
@@ -729,6 +729,8 @@ impl Client {
             name: name.to_string(),
             version: 1,
             holder: None,
+            delegates: Vec::new(),
+            holder_label: None,
             head_epoch: 1,
             branch: b,
             chain,

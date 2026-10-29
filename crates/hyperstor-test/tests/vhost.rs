@@ -120,6 +120,21 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let listed = svc.ctl(serde_json::json!({"id": 2, "op": "list"}));
     assert_eq!(listed["ok"]["disks"][0]["connected"], true, "{listed}");
     drop(g);
+    // A second disk on the same service, which a preemption of the first
+    // leaves alone (D150).
+    let id2 = volume(&c, "16M");
+    let r = svc.ctl(serde_json::json!({"id": 7, "op": "attach", "args": {
+        "volume": id2, "take": "attach", "holder": "node-a"}}));
+    let socket_b = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    let mut gb = Guest::connect(&socket_b, false);
+    let other_data = pattern(7, 8192);
+    gb.write(0, &other_data);
+    // Found held, the answer says who holds it (D153).
+    let other0 = Service::start(&c, "vhost-b0", &[]);
+    let held = other0.attach(&id2, "attach");
+    assert_eq!(held["error"]["code"], "held", "{held}");
+    assert_eq!(held["error"]["holder"], "vhost:node-a", "{held}");
+    other0.stop();
     // Another node's service can't take a held volume, but preempts it
     // (D79): the first holder's I/O fails from then on.
     let other = Service::start(&c, "vhost-b", &[]);
@@ -145,15 +160,44 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let d = other.ctl(serde_json::json!({"id": 3, "op": "detach", "args": {"volume": id}}));
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!socket2.exists());
-    // The preempted service is blocklisted as a client (metadata.md §9):
-    // it can't detach cleanly or attach again; a new service can.
+    // Only that volume's lease was fenced, not the service (D150): its
+    // other disk goes on, it lets the preempted one go cleanly, and it can
+    // attach it again.
+    assert!(gb.read(0, 8192) == other_data, "the other disk is cut off");
+    gb.write(8192, &other_data);
+    assert!(gb.read(8192, 8192) == other_data);
+    drop(gb);
+    let listed = svc.ctl(serde_json::json!({"id": 5, "op": "list"}));
+    let lost = |v: &str| {
+        listed["ok"]["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["volume"] == v)
+            .map(|d| d["lost"].clone())
+    };
+    assert_eq!(lost(&id), Some(serde_json::json!(true)), "{listed}");
+    assert_eq!(lost(&id2), Some(serde_json::json!(false)), "{listed}");
     let d = svc.ctl(serde_json::json!({"id": 4, "op": "detach", "args": {"volume": id}}));
-    assert!(d.get("error").is_some(), "{d}");
-    assert!(svc.attach(&id, "attach").get("error").is_some());
-    let fresh = Service::start(&c, "vhost-c", &[]);
-    let r3 = fresh.attach(&id, "attach");
+    assert!(d.get("ok").is_some(), "{d}");
+    let r3 = svc.attach(&id, "attach");
     assert!(r3.get("ok").is_some(), "{r3}");
-    fresh.stop();
+    // Preempted again, and taken back without a detach (glidex starting
+    // its VM here again, D153): the lost disk is let go and attached
+    // afresh.
+    let r4 = other.attach(&id, "preempt");
+    assert!(r4.get("ok").is_some(), "{r4}");
+    let d = other.ctl(serde_json::json!({"id": 6, "op": "detach", "args": {"volume": id}}));
+    assert!(d.get("ok").is_some(), "{d}");
+    let r5 = svc.attach(&id, "preempt");
+    let socket5 = PathBuf::from(
+        r5["ok"]["socket"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r5}")),
+    );
+    let mut g5 = Guest::connect(&socket5, false);
+    assert!(g5.read(off + 8192, 4096) == data[8192..12288]);
+    drop(g5);
     svc.stop();
     other.stop();
 }

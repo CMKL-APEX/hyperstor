@@ -14,7 +14,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 |---|---|
 | `serve` | Runs the service until SIGINT or SIGTERM. Its volumes stay attached for its next start (see [Restarts](#restarts)) |
 | `ctl hello` | Checks the service answers, and its protocol version |
-| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected |
+| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, and whether the volume was taken elsewhere (`lost`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
 | `ctl detach ID` | Disconnects the hypervisor, removes the socket and gives the lease up |
 
@@ -27,11 +27,13 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
-| `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder is blocklisted, with every volume it serves |
+| `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
 
 Without `--take-over` or `--preempt`, `attach` is refused (`held`) while
 another client has the volume attached. Attaching a volume that is
-attached here already answers with its socket.
+attached here already answers with its socket; one that was taken
+elsewhere (`lost` in `list`, its I/O failing) is let go and attached
+afresh.
 
 ```sh
 sudo hyperstor-vhost serve --meta 192.0.2.10:8849 --group kvm &
@@ -57,7 +59,11 @@ one line:
 
 Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
 `invalid`, `denied`, `held`, `not_found`, `not_attached`, `unavailable`
-and `internal`.
+and `internal`. An `attach` may name who asks, `"holder": "<name>"` (up
+to 58 printable characters; glidex gives its node's name): the lease is
+labelled `vhost:<name>` (`vhost` without one). A `held` error names the
+label of whoever holds the volume, `"holder"`: `vhost:<name>` for
+another node's service, `hyperstorctl` for a tool.
 
 ## Restarts
 

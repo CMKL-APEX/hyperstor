@@ -973,3 +973,34 @@ open times are within run-to-run variation.
    (benchmarks above). What the hot-volume case needs is fewer pages per
    volume, which the on-device index of D43 gives by writing changed
    nodes, not smaller pages.
+
+## 2026-10-29: lease identities on the I/O path, A/B against main (dev-2)
+
+Question: does carrying a lease identity on every request, and checking
+it against the blocklist (D150), cost the I/O path anything?
+`hyperstor-bench cluster mem 1` (three storage nodes of one reactor on
+memory devices, 3 s per test), built from `main` (`3475d8b`) and from
+this branch, run alternately twice:
+
+```sh
+HS_BENCH_SECS=3 hyperstor-bench cluster mem 1
+```
+
+| Test (ops/s; p99 µs) | main, run 1 | branch, run 1 | main, run 2 | branch, run 2 |
+|---|---|---|---|---|
+| 4 KiB writes, QD1 | 7322; 157 | 7275; 159 | 7271; 159 | 7267; 159 |
+| 4 KiB writes, QD32 | 26273; 2668 | 25752; 2771 | 25646; 2798 | 26046; 2666 |
+| 4 KiB reads, QD1 | 18350; 66 | 18510; 66 | 18255; 67 | 18270; 67 |
+| 4 KiB reads, QD32 | 53423; 1354 | 53740; 1343 | 53813; 1340 | 53687; 1340 |
+| 1 MiB writes, QD4 | 521; 12776 | 513; 13240 | 521; 12285 | 507; 12751 |
+| 1 MiB reads, QD4 | 1488; 5514 | 1512; 4457 | 1484; 5747 | 1494; 4494 |
+
+### Findings
+
+1. **Nothing measurable**: every difference between the builds is within
+   the difference between two runs of one build (about 2%). The
+   identity adds 8 bytes to each request's target; the blocklist is
+   empty here, so its lookups are skipped, as in a cluster with no
+   recent take-over.
+2. Not measured: a non-empty blocklist, where each client request costs
+   two hash lookups instead of one (I186).

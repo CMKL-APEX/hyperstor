@@ -16,7 +16,8 @@ use hyperstor_codec::{Dec, DecodeError, Enc, crc32c};
 use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
-pub const VERSION: u16 = 1;
+/// 2: [`Target::lease`], delegates and per-volume fencing (D150, D152).
+pub const VERSION: u16 = 2;
 pub const HEADER_LEN: usize = 32;
 /// Limits that a receiver enforces before allocating.
 pub const MAX_BODY: usize = 1 << 20;
@@ -108,6 +109,8 @@ pub enum Code {
     Unavailable = 8,
     /// An assertion in an operation list failed.
     Conflict = 9,
+    /// The connection's client instance is blocklisted: every lease it
+    /// held is gone.
     Blocklisted = 10,
     /// The map service member isn't the leader; `detail` is the leader's
     /// map-service address when known, else empty (decisions.md D72).
@@ -115,6 +118,9 @@ pub enum Code {
     /// Not now: retrying at once won't help (a snapshot whose volume's
     /// holder didn't quiesce in time).
     Busy = 12,
+    /// The request's lease identity ([`Target::lease`]) is blocklisted:
+    /// that volume's lease is gone, the client's others aren't (D150).
+    Fenced = 13,
 }
 
 impl Code {
@@ -131,6 +137,7 @@ impl Code {
             10 => Code::Blocklisted,
             11 => Code::NotLeader,
             12 => Code::Busy,
+            13 => Code::Fenced,
             _ => Code::Invalid,
         }
     }
@@ -158,13 +165,18 @@ impl WireKey {
     }
 }
 
-/// Where a request is addressed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a request is addressed, and under which lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Target {
     pub pool: u32,
     pub pg: u32,
     pub map_epoch: u64,
     pub pg_epoch: u64,
+    /// The lease identity the request acts under (D150): a volume's
+    /// holder's, or one of its delegates'; 0 for none (peers, the map
+    /// service, tools). Storage nodes refuse a request whose identity is
+    /// blocklisted, as they refuse one from a blocklisted instance.
+    pub lease: u64,
 }
 
 impl Target {
@@ -172,7 +184,8 @@ impl Target {
         e.u32(self.pool)
             .u32(self.pg)
             .u64(self.map_epoch)
-            .u64(self.pg_epoch);
+            .u64(self.pg_epoch)
+            .u64(self.lease);
     }
     fn dec(d: &mut Dec<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -180,6 +193,7 @@ impl Target {
             pg: d.u32()?,
             map_epoch: d.u64()?,
             pg_epoch: d.u64()?,
+            lease: d.u64()?,
         })
     }
 }
@@ -347,48 +361,64 @@ pub enum Msg {
         map_epoch: u64,
     },
     /// Client to the primary of a volume's header: take the volume's lease
-    /// for the instance named at `Hello` (metadata.md §9, D75), in mode
-    /// [`LEASE_RW`] or [`LEASE_RO`]. With `takeover`, an expired lease
-    /// whose holder is blocklisted is broken (a forced takeover).
+    /// for the identity `to.lease` (D150) of the instance named at `Hello`
+    /// (metadata.md §9, D75), in mode [`LEASE_RW`] or [`LEASE_RO`]. With
+    /// `takeover`, an expired lease whose holder and delegates are all
+    /// blocklisted is broken (a forced takeover). `label` says who holds
+    /// it, for whoever finds it held (D153; up to [`LABEL_MAX`] bytes).
     Lease {
         to: Target,
         key: WireKey,
         mode: u8,
         takeover: bool,
+        label: String,
     },
     /// The lease is held by the sender (or released): the header's version.
     LeaseOk {
         version: u64,
     },
-    /// Another instance holds the lease for `remaining_ms` more; 0: it has
-    /// expired, and may be broken once its holder is blocklisted.
+    /// Another identity holds the lease for `remaining_ms` more; 0: it has
+    /// expired, and may be broken once its holder and its delegates (D33)
+    /// are blocklisted.
     LeaseHeld {
         holder: u64,
+        delegates: Vec<u64>,
         remaining_ms: u32,
+        /// The holder's label, as it took the lease.
+        label: String,
     },
-    /// Client to the primary of a volume's header: give the lease up.
+    /// The holder (`to.lease`) to its header's primary: the delegates
+    /// that act under its lease are now `delegates` (D33, D151).
+    LeaseDelegates {
+        to: Target,
+        key: WireKey,
+        delegates: Vec<u64>,
+    },
+    /// Client to the primary of a volume's header: give the lease
+    /// `to.lease` up.
     LeaseRelease {
         to: Target,
         key: WireKey,
     },
     /// Client to a `.meta` primary: renew every lease the sender holds on
     /// headers this device is primary of (D75): each is a PG, its epoch,
-    /// and the header's name, in `pool`.
+    /// the header's name, in `pool`, and the lease's identity.
     LeaseRenew {
         pool: u32,
         map_epoch: u64,
-        leases: Vec<(u32, u64, Vec<u8>)>,
+        leases: Vec<(u32, u64, Vec<u8>, u64)>,
     },
     /// For each lease of a [`Msg::LeaseRenew`], in order: [`LEASE_RENEWED`],
     /// [`LEASE_LOST`] or [`LEASE_RETRY`], and the header's version.
     LeaseRenewOk {
         results: Vec<(u8, u64)>,
     },
-    /// Client to map service: blocklist `instance` (metadata.md §9, a
-    /// forced takeover). Answered once every storage node holds the map
-    /// that has it, or has lost its map lease.
+    /// Client to map service: blocklist `ids`, client instances or lease
+    /// identities (metadata.md §9, a forced takeover; D150). Answered once
+    /// every storage node holds the map that has them, or has lost its
+    /// map lease.
     Blocklist {
-        instance: u64,
+        ids: Vec<u64>,
     },
     BlocklistOk {
         map_epoch: u64,
@@ -621,10 +651,43 @@ mod kind {
     pub const PUSH_KV: u16 = 67;
     pub const FETCH_PART: u16 = 68;
     pub const FETCH_PART_OK: u16 = 69;
+    pub const LEASE_DELEGATES: u16 = 70;
     pub const ERROR: u16 = 99;
 }
 
 impl Msg {
+    /// Where the request is addressed, if it is addressed to a PG.
+    pub fn target(&self) -> Option<&Target> {
+        match self {
+            Msg::Digests { to, .. }
+            | Msg::DropVersions { to, .. }
+            | Msg::Exec { to, .. }
+            | Msg::Fetch { to, .. }
+            | Msg::FetchPart { to, .. }
+            | Msg::Flatten { to, .. }
+            | Msg::Lease { to, .. }
+            | Msg::LeaseDelegates { to, .. }
+            | Msg::LeaseRelease { to, .. }
+            | Msg::Lookup { to, .. }
+            | Msg::Push { to, .. }
+            | Msg::PushKv { to, .. }
+            | Msg::PushObject { to, .. }
+            | Msg::Quiesce { to, .. }
+            | Msg::Quiesced { to, .. }
+            | Msg::Read { to, .. }
+            | Msg::ReadAt { to, .. }
+            | Msg::Release { to, .. }
+            | Msg::Repl { to, .. }
+            | Msg::ReplExec { to, .. }
+            | Msg::Snapshot { to, .. }
+            | Msg::Sources { to, .. }
+            | Msg::Versions { to, .. }
+            | Msg::Watch { to, .. }
+            | Msg::Write { to, .. } => Some(to),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> u16 {
         use kind::*;
         match self {
@@ -677,6 +740,7 @@ impl Msg {
             Msg::FetchOk { .. } => FETCH_OK,
             Msg::FetchPart { .. } => FETCH_PART,
             Msg::FetchPartOk { .. } => FETCH_PART_OK,
+            Msg::LeaseDelegates { .. } => LEASE_DELEGATES,
             Msg::ReadAt { .. } => READ_AT,
             Msg::Versions { .. } => VERSIONS,
             Msg::VersionsOk { .. } => VERSIONS_OK,
@@ -865,23 +929,38 @@ impl Msg {
                 key,
                 mode,
                 takeover,
+                label,
             } => {
                 to.enc(e);
                 key.enc(e);
-                e.u8(*mode).bool(*takeover);
+                e.u8(*mode).bool(*takeover).str(label);
             }
             Msg::LeaseRelease { to, key } => {
                 to.enc(e);
                 key.enc(e);
+            }
+            Msg::LeaseDelegates { to, key, delegates } => {
+                to.enc(e);
+                key.enc(e);
+                e.seq(delegates, |e, d| {
+                    e.u64(*d);
+                });
             }
             Msg::LeaseOk { version } => {
                 e.u64(*version);
             }
             Msg::LeaseHeld {
                 holder,
+                delegates,
                 remaining_ms,
+                label,
             } => {
-                e.u64(*holder).u32(*remaining_ms);
+                e.u64(*holder)
+                    .seq(delegates, |e, d| {
+                        e.u64(*d);
+                    })
+                    .u32(*remaining_ms)
+                    .str(label);
             }
             Msg::LeaseRenew {
                 pool,
@@ -890,8 +969,8 @@ impl Msg {
             } => {
                 e.u32(*pool)
                     .u64(*map_epoch)
-                    .seq(leases, |e, (pg, pe, name)| {
-                        e.u32(*pg).u64(*pe).bytes(name);
+                    .seq(leases, |e, (pg, pe, name, lease)| {
+                        e.u32(*pg).u64(*pe).bytes(name).u64(*lease);
                     });
             }
             Msg::LeaseRenewOk { results } => {
@@ -899,8 +978,10 @@ impl Msg {
                     e.u8(*r).u64(*v);
                 });
             }
-            Msg::Blocklist { instance } => {
-                e.u64(*instance);
+            Msg::Blocklist { ids } => {
+                e.seq(ids, |e, i| {
+                    e.u64(*i);
+                });
             }
             Msg::BlocklistOk { map_epoch } | Msg::Noted { map_epoch } => {
                 e.u64(*map_epoch);
@@ -1155,11 +1236,19 @@ impl Msg {
                 key: WireKey::dec(&mut d)?,
                 mode: d.u8()?,
                 takeover: d.bool()?,
+                label: d.str()?.to_string(),
             },
             LEASE_OK => Msg::LeaseOk { version: d.u64()? },
             LEASE_HELD => Msg::LeaseHeld {
                 holder: d.u64()?,
+                delegates: d.seq(8, |d| d.u64())?,
                 remaining_ms: d.u32()?,
+                label: d.str()?.to_string(),
+            },
+            LEASE_DELEGATES => Msg::LeaseDelegates {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                delegates: d.seq(8, |d| d.u64())?,
             },
             LEASE_RELEASE => Msg::LeaseRelease {
                 to: Target::dec(&mut d)?,
@@ -1168,12 +1257,16 @@ impl Msg {
             LEASE_RENEW => Msg::LeaseRenew {
                 pool: d.u32()?,
                 map_epoch: d.u64()?,
-                leases: d.seq(16, |d| Ok((d.u32()?, d.u64()?, d.bytes()?.to_vec())))?,
+                leases: d.seq(24, |d| {
+                    Ok((d.u32()?, d.u64()?, d.bytes()?.to_vec(), d.u64()?))
+                })?,
             },
             LEASE_RENEW_OK => Msg::LeaseRenewOk {
                 results: d.seq(9, |d| Ok((d.u8()?, d.u64()?)))?,
             },
-            BLOCKLIST => Msg::Blocklist { instance: d.u64()? },
+            BLOCKLIST => Msg::Blocklist {
+                ids: d.seq(8, |d| d.u64())?,
+            },
             BLOCKLIST_OK => Msg::BlocklistOk {
                 map_epoch: d.u64()?,
             },
@@ -1306,6 +1399,8 @@ pub const WATCH_QUIESCE: u8 = 1;
 /// Lease modes (metadata.md §9): `rw` is exclusive; `ro` is shared, and
 /// only for snapshots (D18).
 pub const LEASE_RW: u8 = 0;
+/// The longest lease label ([`Msg::Lease`]).
+pub const LABEL_MAX: usize = 64;
 pub const LEASE_RO: u8 = 1;
 /// Results of a renewal ([`Msg::LeaseRenewOk`]).
 pub const LEASE_RENEWED: u8 = 0;
@@ -1640,6 +1735,7 @@ mod tests {
             pg: 2,
             map_epoch: 3,
             pg_epoch: 4,
+            lease: 5,
         };
         let key = WireKey {
             ns: 1,
@@ -1781,11 +1877,23 @@ mod tests {
                 },
                 mode: LEASE_RW,
                 takeover: true,
+                label: "vhost:node-1".into(),
             },
             Msg::LeaseOk { version: 3 },
             Msg::LeaseHeld {
                 holder: 9,
+                delegates: vec![10, 11],
                 remaining_ms: 1500,
+                label: "tool".into(),
+            },
+            Msg::LeaseDelegates {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                delegates: vec![12],
             },
             Msg::LeaseRelease {
                 to,
@@ -1798,12 +1906,12 @@ mod tests {
             Msg::LeaseRenew {
                 pool: 0,
                 map_epoch: 7,
-                leases: vec![(1, 2, b"h/1".to_vec()), (5, 6, b"h/2".to_vec())],
+                leases: vec![(1, 2, b"h/1".to_vec(), 8), (5, 6, b"h/2".to_vec(), 9)],
             },
             Msg::LeaseRenewOk {
                 results: vec![(LEASE_RENEWED, 2), (LEASE_LOST, 0)],
             },
-            Msg::Blocklist { instance: 77 },
+            Msg::Blocklist { ids: vec![77, 78] },
             Msg::BlocklistOk { map_epoch: 8 },
             Msg::DeviceFailed { device: 2001 },
             Msg::MemberSlow {
