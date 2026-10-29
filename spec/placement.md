@@ -48,3 +48,7 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
   returns, unless an operator marked them out.
 - Backfill and recovery are rate-limited per device and per node, and
   PGs below `min_size` go first.
+  As built (implementation-notes.md I187): only a bound on what is in
+  flight, not a rate: each device's backfills to one target keep at
+  most 16 MiB of pushes on the wire together. No limit per node yet,
+  and PGs start in map order, not below `min_size` first.

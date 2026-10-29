@@ -1004,3 +1004,43 @@ HS_BENCH_SECS=3 hyperstor-bench cluster mem 1
    recent take-over.
 2. Not measured: a non-empty blocklist, where each client request costs
    two hash lookups instead of one (I186).
+
+## 2026-10-29: refilling an empty node (dev-2)
+
+A three-host pilot cluster flapped when a rebuilt host rejoined empty:
+every node reported the others silent while backfill ran, and for a
+while no node was up (I187). The same happens on one host with the
+end-to-end harness: an all-in-one cluster of 3 nodes (1 reactor each,
+1 GiB devices, peer timeout 600 ms, loopback), a 512 MiB volume with
+384 MiB written, node 2 killed, its device file deleted and node 2
+started again:
+
+```sh
+cargo test --release -p hyperstor-test --test manage an_empty_node_is_refilled_without_flapping
+```
+
+| Build | Runs | Nodes reported silent during the refill | Refill to health ok |
+|---|---|---|---|
+| `main` (`3a1e7d5`) | 3 | node 2, 1–2 times each run | not within 180 s (flapping warns for 10 min) |
+| at most 2 PG backfills per reactor, 8 MiB window each | 4 | none | 18.4–18.8 s |
+| pings on their own connection only | 2 | none | 10.5–10.6 s |
+| 16 MiB backfill budget per target only | 2 | none | 10.2–10.9 s |
+| both (this branch) | 2 | none | 10.2–10.9 s |
+
+### Findings
+
+1. **Pings queued behind backfill.** A primary started a backfill for
+   every PG it led at once, each with up to 16 pushes of up to 4 MiB in
+   flight, all on its one connection to the target; a ping sent after
+   them waited until they were on the wire. No request held the
+   target's connection for more than 100 ms (measured with a temporary
+   log in its server loop), so the target was not slow to answer.
+2. Either change alone stops the flapping here. Capping the number of
+   PG backfills slows a refill (18 s against 10 s) and kept PGs at one
+   copy longer: the randomized failure test lost a write at seed 3
+   (`too few copies`) when a second node died before the first was
+   refilled. A byte budget per target bounds the same queue without
+   that cost.
+3. Not measured: a 1 GbE link, where 16 MiB of pushes is about 140 ms
+   ahead of each replicated write; nor a client's write latency while
+   a node is refilled.

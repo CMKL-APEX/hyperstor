@@ -130,6 +130,67 @@ fn a_returning_node_goes_down_once() {
     );
 }
 
+/// A node that comes back empty, as a rebuilt host does, is refilled
+/// without anyone flapping: backfill keeps its peers busy, but pings
+/// still get through, so no node is reported silent. On the pilot, a
+/// rejoining host set off a cascade of every node reporting the others.
+#[test]
+fn an_empty_node_is_refilled_without_flapping() {
+    let mut c = Cluster::all_in_one("refill", 3);
+    let made = c
+        .ctl(&["create-volume", "--size", "512M", "--name", "filler"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let data: Vec<u8> = (0..(384usize << 20))
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    let src = c.scratch.path("filler.raw");
+    std::fs::write(&src, &data).unwrap();
+    drop(data);
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    c.kill_node(2);
+    wait_for("node 2 down", 20, || {
+        c.ctl(&["status"]).has("node(s) down: 2").then_some(())
+    });
+    let before = c.meta_log().lines().count();
+    for f in std::fs::read_dir(c.data_dir()).unwrap() {
+        let p = f.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("node-2") && name.ends_with(".img") {
+            std::fs::remove_file(&p).unwrap();
+        }
+    }
+    c.start_node(2);
+    let t = std::time::Instant::now();
+    let mut status = String::new();
+    while t.elapsed().as_secs() < 180 {
+        status = c.ctl(&["status"]).out;
+        if status.contains("health  ok") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let log = c.meta_log();
+    let changes: Vec<&str> = log
+        .lines()
+        .skip(before)
+        .filter(|l| l.contains(" down (") || l.contains(" up ("))
+        .collect();
+    assert_eq!(
+        changes,
+        ["hyperstor-meta: node 2 up (heartbeats again)"],
+        "only node 2 comes back; no one flaps"
+    );
+    assert!(status.contains("health  ok"), "{status}");
+}
+
 /// Volumes through the cluster API (D77): `hyperstorctl` creates, lists
 /// and deletes them; an id in use and a volume that isn't there are
 /// refused.
