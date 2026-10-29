@@ -42,7 +42,7 @@ design is split by topic, with section numbers kept across files.
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
   rule, D145, D146, F1–F12 in detail, I1–I78, I80–I185, the NFS and pNFS proposals
-  D128 and D131–D137 (`spec/nfs.md`), and every host check (G1–G36, FG1–FG2).
+  D128 and D131–D137 (`spec/nfs.md`), and every host check (G1–G37, FG1–FG2).
 - **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
   `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
   then fencing one volume (D119's option 3), the rest of
