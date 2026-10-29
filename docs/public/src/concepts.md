@@ -63,8 +63,10 @@ own. A **consistency group** snapshots several volumes at one instant.
 One client at a time **attaches** a volume, by holding its lease, which
 it renews every second. To take a volume from a client that died or is
 cut off, another client waits for the lease to run out and
-**blocklists** the old one: every storage node refuses it from then on.
-So a volume never has two writers.
+**blocklists** the old lease: every storage node refuses requests made
+under it from then on. So a volume never has two writers. Each attached
+volume has a lease of its own, so taking one volume from a client leaves
+its other volumes alone.
 
 ## Map leases
 

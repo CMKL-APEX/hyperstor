@@ -34,19 +34,70 @@ const HDR: &[u8] = b"hdr";
 const BY: &[u8] = b"by";
 /// The lease holder's attribute: [`encode_holder`].
 pub const LEASE_ATTR: &[u8] = b"lease";
+/// The lease's delegates (D33, D151): [`encode_delegates`]. Kept apart
+/// from [`LEASE_ATTR`], which stays the same for the lease's life, so a
+/// holder can assert it holds the lease whatever its delegates.
+pub const DELEGATES_ATTR: &[u8] = b"lease.delegates";
 
-/// The `lease` attribute: the holder's instance and mode.
-pub fn encode_holder(instance: u64, mode: u8) -> Vec<u8> {
+/// A volume's lease holder, as its header records it (metadata.md §9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    /// The lease's identity (D150), which every request under the lease
+    /// carries.
+    pub lease: u64,
+    /// The client instance it was taken by.
+    pub instance: u64,
+    pub mode: u8,
+    /// Who holds it, as the holder said (D153).
+    pub label: String,
+}
+
+/// The `lease` attribute: the lease's identity, the holder's instance,
+/// the mode and the label.
+pub fn encode_holder(h: &Holder) -> Vec<u8> {
     let mut e = Enc::new();
-    e.u64(instance).u8(mode);
+    e.u64(h.lease).u64(h.instance).u8(h.mode).str(&h.label);
     e.into_vec()
 }
 
-pub fn decode_holder(b: &[u8]) -> Option<(u64, u8)> {
+/// A `lease` attribute; one written before identities (D150), an
+/// instance and a mode, reads as a lease whose identity is the instance.
+pub fn decode_holder(b: &[u8]) -> Option<Holder> {
     let mut d = Dec::new(b);
-    let h = (d.u64().ok()?, d.u8().ok()?);
+    let h = if b.len() == 9 {
+        let i = d.u64().ok()?;
+        Holder {
+            lease: i,
+            instance: i,
+            mode: d.u8().ok()?,
+            label: String::new(),
+        }
+    } else {
+        Holder {
+            lease: d.u64().ok()?,
+            instance: d.u64().ok()?,
+            mode: d.u8().ok()?,
+            label: d.str().ok()?.to_string(),
+        }
+    };
     d.finish().ok()?;
     Some(h)
+}
+
+pub fn encode_delegates(delegates: &[u64]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.seq(delegates, |e, d| {
+        e.u64(*d);
+    });
+    e.into_vec()
+}
+
+pub fn decode_delegates(b: &[u8]) -> Vec<u64> {
+    let mut d = Dec::new(b);
+    d.seq(8, |d| d.u64())
+        .ok()
+        .filter(|_| d.finish().is_ok())
+        .unwrap_or_default()
 }
 
 /// A header's version, from its attributes (0: none).
@@ -95,8 +146,13 @@ pub struct Volume {
     pub name: String,
     /// The header's version: every change bumps it.
     pub version: u64,
-    /// The client instance that has it attached (holds its lease).
+    /// The identity of the lease it is attached under (D150): the
+    /// holder's.
     pub holder: Option<u64>,
+    /// The identities that act under the holder's lease (D33, D151).
+    pub delegates: Vec<u64>,
+    /// The holder's label (D153).
+    pub holder_label: Option<String>,
     /// The epoch writes go to now (D10): each snapshot takes the epoch it
     /// was, and moves this on.
     pub head_epoch: u64,
@@ -257,7 +313,9 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             },
             name: d.str()?.to_string(),
             version,
-            holder: attr(l, LEASE_ATTR).and_then(|h| decode_holder(h).map(|h| h.0)),
+            holder: attr(l, LEASE_ATTR).and_then(|h| decode_holder(h).map(|h| h.lease)),
+            delegates: attr(l, DELEGATES_ATTR).map_or_else(Vec::new, decode_delegates),
+            holder_label: attr(l, LEASE_ATTR).and_then(|h| decode_holder(h).map(|h| h.label)),
             head_epoch: 0,
             branch: 0,
             chain: Vec::new(),
@@ -353,6 +411,8 @@ impl Client {
             name: name.to_string(),
             version: 1,
             holder: None,
+            delegates: Vec::new(),
+            holder_label: None,
             head_epoch: 1,
             branch: 0,
             chain: Vec::new(),
@@ -530,7 +590,7 @@ impl Client {
         held: Option<&Attached>,
     ) -> Result<(), ClientError> {
         let id = v.id;
-        let me = held.map(|_| self.instance);
+        let me = held.map(|h| h.lease);
         let mut tries = 0;
         while v.state != VolumeState::Deleting {
             tries += 1;
@@ -563,7 +623,7 @@ impl Client {
                 0,
                 WireOp::AssertAttr {
                     name: LEASE_ATTR.to_vec(),
-                    value: me.map(|i| encode_holder(i, LEASE_RW)),
+                    value: held.map(|h| h.holder_attr()),
                 },
             );
             match self.exec(META_POOL, NS_META, &header_key(id), &ops).await {
@@ -630,13 +690,27 @@ impl Client {
 
 /// A volume attached through a [`Client`]: it holds the volume's `rw`
 /// lease (metadata.md §9), which the client renews every second (D75),
-/// and does I/O within the volume. Once the lease is lost (taken over, or
-/// this client blocklisted), I/O fails with [`ClientError::LeaseLost`].
-/// Dropped without [`Attached::detach`], its renewals stop: the lease
-/// runs out, and another instance must [`Client::take_over`].
+/// and does I/O within the volume. Once the lease is lost (taken over,
+/// its identity fenced, or this client blocklisted), I/O fails with
+/// [`ClientError::LeaseLost`]. Dropped without [`Attached::detach`], its
+/// renewals stop: the lease runs out, and another instance must
+/// [`Client::take_over`].
+///
+/// A delegate ([`Client::delegate`]) is the same handle acting under
+/// another client's lease (D33): it renews nothing, and is lost when its
+/// identity is fenced or the holder no longer lists it.
 pub struct Attached {
     client: Rc<Client>,
     volume: RefCell<Volume>,
+    /// The identity every request carries (D150): the lease's, or this
+    /// delegate's.
+    lease: u64,
+    /// A delegate's handle, not the holder's.
+    delegate: bool,
+    /// The holder's delegates, as last recorded (D151).
+    delegates: RefCell<Vec<u64>>,
+    /// The label the lease was taken with (D153).
+    label: String,
     pub(crate) lost: Cell<bool>,
     /// Quiesced for a snapshot: writes wait (D103).
     paused: Cell<bool>,
@@ -675,16 +749,63 @@ impl Attached {
         Ok(v)
     }
 
-    /// A blocklisted client has lost every lease.
+    /// The identity this handle's requests carry (D150): for the holder,
+    /// the lease's; for a delegate, its own.
+    pub fn lease(&self) -> u64 {
+        self.lease
+    }
+
+    /// The label the lease was taken with (D153).
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Whether this is a delegate's handle ([`Client::delegate`]).
+    pub fn is_delegate(&self) -> bool {
+        self.delegate
+    }
+
+    /// The `lease` attribute this handle's header has while it holds the
+    /// lease: what an operation that needs the lease asserts.
+    pub(crate) fn holder_attr(&self) -> Vec<u8> {
+        encode_holder(&Holder {
+            lease: self.lease,
+            instance: self.client.instance,
+            mode: LEASE_RW,
+            label: self.label.clone(),
+        })
+    }
+
+    /// A blocklisted client has lost every lease; a fenced identity, this
+    /// one (D150).
     fn check<T>(&self, r: Result<T, ClientError>) -> Result<T, ClientError> {
-        if let Err(ClientError::Server {
-            code: Code::Blocklisted,
-            ..
-        }) = &r
-        {
-            self.client.lose_all();
+        match &r {
+            Err(ClientError::Server {
+                code: Code::Blocklisted,
+                ..
+            }) => self.client.lose_all(),
+            Err(ClientError::Server {
+                code: Code::Fenced, ..
+            }) => self.lose(),
+            _ => {}
         }
         r
+    }
+
+    /// Marks this lease lost: renewals and I/O stop.
+    fn lose(&self) {
+        self.lost.set(true);
+        if !self.delegate {
+            let id = self.volume.borrow().id;
+            let mut att = self.client.attached.borrow_mut();
+            if att
+                .get(&id)
+                .and_then(|a| a.upgrade())
+                .is_some_and(|a| std::ptr::eq(&*a, self))
+            {
+                att.remove(&id);
+            }
+        }
     }
 
     /// Writes at the head epoch of the volume's branch. While the holder
@@ -704,7 +825,15 @@ impl Attached {
         }
         let r = self
             .client
-            .write_at(v.pool, v.lineage, v.branch, v.head_epoch, off, data)
+            .write_under(
+                self.lease,
+                v.pool,
+                v.lineage,
+                v.branch,
+                v.head_epoch,
+                off,
+                data,
+            )
             .await;
         self.writes.set(self.writes.get() + 1);
         self.inflight.set(self.inflight.get() - 1);
@@ -763,8 +892,9 @@ impl Attached {
         {
             let r = self
                 .client
-                .sources(v.pool, v.lineage, &v.layers(), off, len)
-                .await;
+                .read_layers(self.lease, v.pool, v.lineage, &v.layers(), off, len, false)
+                .await
+                .map(|r| r.1);
             let sources = self.check(r)?;
             if unchanged(self) && sources.iter().all(cacheable) {
                 let mut known = self.known.borrow_mut();
@@ -779,7 +909,7 @@ impl Attached {
         }
         let r = self
             .client
-            .read_sourced(v.pool, v.lineage, &v.layers(), off, len)
+            .read_layers(self.lease, v.pool, v.lineage, &v.layers(), off, len, true)
             .await;
         let (data, sources) = self.check(r)?;
         // Only what no write overlapped, from the header we read through.
@@ -822,6 +952,10 @@ impl Attached {
     async fn refresh(&self) {
         let id = self.volume.borrow().id;
         if let Ok(Some(v)) = self.client.volume(id).await {
+            // A delegate acts only while the holder lists it.
+            if self.delegate && !v.delegates.contains(&self.lease) {
+                self.lose();
+            }
             let old = self.volume.replace(v);
             let v = self.volume.borrow();
             if (
@@ -838,12 +972,20 @@ impl Attached {
     }
 
     /// Gives the lease up; I/O through this handle fails from now on.
+    /// The holder's delegates are fenced first (D151): none of them
+    /// writes after the lease is gone. A delegate's handle just stops.
     pub async fn detach(&self) -> Result<(), ClientError> {
-        let id = self.volume.borrow().id;
-        self.lost.set(true);
-        self.client.attached.borrow_mut().remove(&id);
-        let key = header_key(id);
-        let (msg, _) = self
+        let was_lost = self.lost.get();
+        self.lose();
+        if self.delegate {
+            return Ok(());
+        }
+        let delegates = self.delegates.borrow().clone();
+        if !delegates.is_empty() && !was_lost {
+            self.client.blocklist(&delegates).await?;
+        }
+        let key = header_key(self.volume.borrow().id);
+        let r = self
             .client
             .to_primary(
                 META_POOL,
@@ -851,13 +993,93 @@ impl Attached {
                     ns: NS_META,
                     name: &key,
                 },
+                self.lease,
                 &[],
                 &|to, key| Msg::LeaseRelease { to, key },
             )
-            .await?;
-        match msg {
-            Msg::LeaseOk { .. } => Ok(()),
-            m => Err(unexpected(m)),
+            .await;
+        match r {
+            Ok((Msg::LeaseOk { .. }, _)) => Ok(()),
+            // Fenced: the lease is gone already.
+            Err(ClientError::Server {
+                code: Code::Fenced, ..
+            }) => Ok(()),
+            Ok((m, _)) => Err(unexpected(m)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Adds a delegate (D33, D151): an identity that acts under this
+    /// lease. Returns it: whoever is given it opens the volume with
+    /// [`Client::delegate`]. Delegates renew nothing, and are fenced with
+    /// the holder.
+    pub async fn add_delegate(&self) -> Result<u64, ClientError> {
+        let d = random_u64().max(1);
+        let mut list = self.delegates.borrow().clone();
+        list.push(d);
+        self.set_delegates(list).await?;
+        Ok(d)
+    }
+
+    /// Removes delegate `d`: fences it first (its requests are refused
+    /// from then on), then takes it off the list.
+    pub async fn remove_delegate(&self, d: u64) -> Result<(), ClientError> {
+        if !self.delegates.borrow().contains(&d) {
+            return Ok(());
+        }
+        self.client.blocklist(&[d]).await?;
+        let list = self
+            .delegates
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|x| *x != d)
+            .collect();
+        self.set_delegates(list).await
+    }
+
+    /// The holder's delegates, as last recorded.
+    pub fn delegates(&self) -> Vec<u64> {
+        self.delegates.borrow().clone()
+    }
+
+    async fn set_delegates(&self, list: Vec<u64>) -> Result<(), ClientError> {
+        if self.delegate {
+            return Err(ClientError::BadVolume(
+                "a delegate can't add delegates".into(),
+            ));
+        }
+        if self.lost.get() {
+            return Err(ClientError::LeaseLost(self.volume.borrow().id));
+        }
+        let key = header_key(self.volume.borrow().id);
+        let r = self
+            .client
+            .to_primary(
+                META_POOL,
+                Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                },
+                self.lease,
+                &[],
+                &|to, key| Msg::LeaseDelegates {
+                    to,
+                    key,
+                    delegates: list.clone(),
+                },
+            )
+            .await;
+        match self.check(r)? {
+            (Msg::LeaseOk { .. }, _) => {
+                *self.delegates.borrow_mut() = list;
+                Ok(())
+            }
+            (Msg::LeaseHeld { .. }, _) => {
+                self.lose();
+                Err(ClientError::LeaseLost(self.volume.borrow().id))
+            }
+            (m, _) => Err(unexpected(m)),
         }
     }
 }
@@ -866,11 +1088,38 @@ fn unexpected(m: Msg) -> ClientError {
     ClientError::Rpc(crate::RpcError::Protocol(format!("unexpected {m:?}")))
 }
 
+/// How [`Client::attach_as`] takes a lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Take {
+    /// [`Client::attach`].
+    Attach,
+    /// [`Client::take_over`].
+    TakeOver,
+    /// [`Client::preempt`].
+    Preempt,
+}
+
 impl Client {
     /// Attaches volume `id` read-write: takes its lease, refused with
     /// [`ClientError::LeaseHeld`] while another instance holds it.
     pub async fn attach(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
-        self.acquire(id, false).await
+        self.attach_as(id, Take::Attach, &self.lease_label()).await
+    }
+
+    /// [`Self::attach`], [`Self::take_over`] or [`Self::preempt`], with
+    /// `label` recorded with the lease instead of this client's (D153).
+    pub async fn attach_as(
+        self: &Rc<Self>,
+        id: u128,
+        how: Take,
+        label: &str,
+    ) -> Result<Rc<Attached>, ClientError> {
+        let label = crate::cut_label(label);
+        match how {
+            Take::Attach => self.acquire(id, false, label).await,
+            Take::TakeOver => self.take(id, false, label).await,
+            Take::Preempt => self.take(id, true, label).await,
+        }
     }
 
     /// Attaches volume `id` whose holder has died or is cut off
@@ -880,32 +1129,78 @@ impl Client {
     /// then on. A holder that keeps renewing is left alone:
     /// [`ClientError::LeaseHeld`].
     pub async fn take_over(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
-        self.take(id, false).await
+        self.attach_as(id, Take::TakeOver, &self.lease_label())
+            .await
     }
 
     /// Attaches volume `id` from a live holder (an operator's preemption):
     /// blocklists the holder first, so its renewals and I/O are refused,
     /// then waits for its lease to expire and takes it.
     pub async fn preempt(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
-        self.take(id, true).await
+        self.attach_as(id, Take::Preempt, &self.lease_label()).await
     }
 
-    async fn take(self: &Rc<Self>, id: u128, preempt: bool) -> Result<Rc<Attached>, ClientError> {
+    /// Opens volume `id` as delegate `lease` of its holder (D33, D151):
+    /// I/O under the holder's lease, which this client doesn't renew. The
+    /// holder gave `lease` out ([`Attached::add_delegate`]); refused unless
+    /// the header lists it. Lost once it is fenced or no longer listed.
+    pub async fn delegate(
+        self: &Rc<Self>,
+        id: u128,
+        lease: u64,
+    ) -> Result<Rc<Attached>, ClientError> {
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        if lease == 0 || v.holder.is_none() || !v.delegates.contains(&lease) {
+            return Err(ClientError::BadVolume(format!(
+                "{lease:016x} is not a delegate of volume {id:032x}'s holder"
+            )));
+        }
+        let a = Rc::new(Attached {
+            client: self.clone(),
+            volume: RefCell::new(v),
+            lease,
+            delegate: true,
+            delegates: RefCell::new(Vec::new()),
+            label: String::new(),
+            lost: Cell::new(false),
+            paused: Cell::new(false),
+            inflight: Cell::new(0),
+            known: RefCell::new(HashMap::new()),
+            writes: Cell::new(0),
+        });
+        // Quiesces for snapshots as the holder does.
+        hyperstor_reactor::spawn(self.clone().watch(Rc::downgrade(&a)));
+        Ok(a)
+    }
+
+    async fn take(
+        self: &Rc<Self>,
+        id: u128,
+        preempt: bool,
+        label: String,
+    ) -> Result<Rc<Attached>, ClientError> {
         let t = Instant::now();
-        let mut blocked = None;
+        let mut blocked: Option<Vec<u64>> = None;
         loop {
-            match self.acquire(id, true).await {
+            match self.acquire(id, true, label.clone()).await {
                 Err(ClientError::LeaseHeld {
                     holder,
+                    delegates,
                     remaining_ms,
+                    label: theirs,
                 }) => {
-                    if (remaining_ms == 0 || preempt) && blocked != Some(holder) {
-                        self.blocklist(holder).await?;
-                        blocked = Some(holder);
+                    // The lease's identity and its delegates', not this
+                    // holder's client: its other volumes go on (D150).
+                    let ids: Vec<u64> = std::iter::once(holder).chain(delegates.clone()).collect();
+                    if (remaining_ms == 0 || preempt) && blocked.as_ref() != Some(&ids) {
+                        self.blocklist(&ids).await?;
+                        blocked = Some(ids);
                     } else if t.elapsed() > 3 * LEASE_EXPIRES {
                         return Err(ClientError::LeaseHeld {
                             holder,
+                            delegates,
                             remaining_ms,
+                            label: theirs,
                         });
                     } else {
                         let ms = u64::from(remaining_ms).clamp(10, 1000);
@@ -917,10 +1212,12 @@ impl Client {
         }
     }
 
-    /// Blocklists a client instance (metadata.md §9): returns once every
-    /// storage node refuses it, and this client's map has the entry.
-    pub async fn blocklist(&self, instance: u64) -> Result<(), ClientError> {
-        match self.call_meta(&Msg::Blocklist { instance }).await? {
+    /// Blocklists client instances or lease identities (metadata.md §9,
+    /// D150): returns once every storage node refuses them, and this
+    /// client's map has the entries.
+    pub async fn blocklist(&self, ids: &[u64]) -> Result<(), ClientError> {
+        let msg = Msg::Blocklist { ids: ids.to_vec() };
+        match self.call_meta(&msg).await? {
             (Msg::BlocklistOk { map_epoch }, _) => {
                 while self.map().epoch < map_epoch {
                     self.refresh_map().await?;
@@ -939,8 +1236,11 @@ impl Client {
         self: &Rc<Self>,
         id: u128,
         takeover: bool,
+        label: String,
     ) -> Result<Rc<Attached>, ClientError> {
         let key = header_key(id);
+        // Each attach its own identity (D150).
+        let lease = random_u64().max(1);
         let reply = self
             .to_primary(
                 META_POOL,
@@ -948,12 +1248,14 @@ impl Client {
                     ns: NS_META,
                     name: &key,
                 },
+                lease,
                 &[],
                 &|to, key| Msg::Lease {
                     to,
                     key,
                     mode: LEASE_RW,
                     takeover,
+                    label: label.clone(),
                 },
             )
             .await;
@@ -962,13 +1264,17 @@ impl Client {
             Ok((
                 Msg::LeaseHeld {
                     holder,
+                    delegates,
                     remaining_ms,
+                    label,
                 },
                 _,
             )) => {
                 return Err(ClientError::LeaseHeld {
                     holder,
+                    delegates,
                     remaining_ms,
+                    label,
                 });
             }
             Ok((m, _)) => return Err(unexpected(m)),
@@ -982,6 +1288,10 @@ impl Client {
         let a = Rc::new(Attached {
             client: self.clone(),
             volume: RefCell::new(v),
+            lease,
+            delegate: false,
+            delegates: RefCell::new(Vec::new()),
+            label: label.clone(),
             lost: Cell::new(false),
             paused: Cell::new(false),
             inflight: Cell::new(0),
@@ -1005,9 +1315,9 @@ impl Client {
             let Some(at) = a.upgrade().filter(|at| !at.lost.get()) else {
                 return;
             };
-            let (id, version) = {
+            let (id, version, lease) = {
                 let v = at.volume.borrow();
-                (v.id, v.version)
+                (v.id, v.version, at.lease)
             };
             drop(at);
             let key = header_key(id);
@@ -1016,7 +1326,7 @@ impl Client {
                 name: &key,
             };
             let r = self
-                .to_primary(META_POOL, route, &[], &|to, key| Msg::Watch {
+                .to_primary(META_POOL, route, lease, &[], &|to, key| Msg::Watch {
                     to,
                     key,
                     version,
@@ -1037,11 +1347,9 @@ impl Client {
                     while at.inflight.get() > 0 {
                         sleep(Duration::from_millis(1)).await;
                     }
-                    let _ = self
-                        .to_primary(META_POOL, route, &[], &|to, key| Msg::Quiesced {
-                            to,
-                            key,
-                            token,
+                    let _ =
+                        self.to_primary(META_POOL, route, at.lease, &[], &|to, key| {
+                            Msg::Quiesced { to, key, token }
                         })
                         .await;
                     at.refresh().await;
@@ -1102,7 +1410,7 @@ impl Client {
             for (addr, group) in by_primary {
                 let leases = group
                     .iter()
-                    .map(|(a, pg, e)| (*pg, *e, header_key(a.volume.borrow().id)))
+                    .map(|(a, pg, e)| (*pg, *e, header_key(a.volume.borrow().id), a.lease))
                     .collect();
                 let msg = Msg::LeaseRenew {
                     pool: META_POOL,
@@ -1127,7 +1435,7 @@ impl Client {
                                     });
                                 }
                                 LEASE_RENEWED => {}
-                                LEASE_LOST => a.lost.set(true),
+                                LEASE_LOST => a.lose(),
                                 _ => retry = true,
                             }
                         }
@@ -1166,6 +1474,8 @@ mod tests {
             name: String::new(),
             version: 1,
             holder: None,
+            delegates: Vec::new(),
+            holder_label: None,
             head_epoch: 9,
             branch: 2,
             chain: vec![(0, 3)],
@@ -1194,6 +1504,8 @@ mod tests {
             name: "disk-a".into(),
             version: 3,
             holder: Some(9),
+            delegates: vec![4, 6],
+            holder_label: Some("vhost:n1".into()),
             head_epoch: 5,
             branch: 2,
             chain: vec![(0, 3)],
@@ -1215,7 +1527,16 @@ mod tests {
             attrs: vec![
                 (VER.to_vec(), b"3".to_vec()),
                 (HDR.to_vec(), encode(&v)),
-                (LEASE_ATTR.to_vec(), encode_holder(9, LEASE_RW)),
+                (
+                    LEASE_ATTR.to_vec(),
+                    encode_holder(&Holder {
+                        lease: 9,
+                        instance: 8,
+                        mode: LEASE_RW,
+                        label: "vhost:n1".into(),
+                    }),
+                ),
+                (DELEGATES_ATTR.to_vec(), encode_delegates(&[4, 6])),
             ],
             kv: vec![],
         };
@@ -1259,11 +1580,28 @@ mod tests {
         };
         let attrs = [(HDR.to_vec(), encode(&active))].into_iter().collect();
         assert!(!header_deleting(&attrs));
+        let h = Holder {
+            lease: 9,
+            instance: 8,
+            mode: LEASE_RW,
+            label: "tool".into(),
+        };
+        assert_eq!(decode_holder(&encode_holder(&h)), Some(h));
+        // Written before identities (D150): the instance is the identity.
+        let mut old = 5u64.to_le_bytes().to_vec();
+        old.push(LEASE_RW);
         assert_eq!(
-            decode_holder(&encode_holder(9, LEASE_RW)),
-            Some((9, LEASE_RW))
+            decode_holder(&old),
+            Some(Holder {
+                lease: 5,
+                instance: 5,
+                mode: LEASE_RW,
+                label: String::new(),
+            })
         );
         assert_eq!(decode_holder(b"short"), None);
+        assert_eq!(decode_delegates(&encode_delegates(&[1, 2])), vec![1, 2]);
+        assert_eq!(decode_delegates(b"bad"), Vec::<u64>::new());
         assert!(decode(7, &Looked::default()).is_err());
         assert_eq!(dir_key(1, 65), b"d/1/01".to_vec());
         assert_eq!(

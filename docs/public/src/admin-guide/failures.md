@@ -101,8 +101,9 @@ same PG.
 A volume is attached by one client at a time, which renews its lease
 every second. If that client dies or is cut off, another client takes
 the volume over: it waits for the old lease to run out (up to 4 s) and
-**blocklists** the old client, so every storage node refuses it from then
-on, even if it comes back. See
+**blocklists** the old lease, so every storage node refuses the old
+client's requests for that volume from then on, even if it comes back.
+Its other volumes are not affected. See
 [the client library](../user-guide/client-library.md#attaching-a-volume).
 
 ## The map service fails

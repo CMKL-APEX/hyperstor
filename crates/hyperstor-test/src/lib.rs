@@ -101,6 +101,15 @@ fn ephemeral_low() -> u16 {
         .unwrap_or(32768)
 }
 
+/// What the tests add to every `hyperstord` they start: no spinning on
+/// shared CPUs, and peers reported silent after 600 ms, not 300. A loaded
+/// CI runner pauses every process for a few hundred milliseconds at a time;
+/// at 300 ms that marked every node down at once, and the map service's
+/// damping (D149) then held them down past a client's retries. Still under
+/// the map service's 800 ms heartbeat timeout, so peers notice a dead node
+/// first, as in a deployment.
+pub const NODE_ARGS: [&str; 4] = ["--spin-us", "0", "--peer-timeout-ms", "600"];
+
 /// `n` consecutive free ports on 127.0.0.1, from 10000 up to the
 /// ephemeral range: a block of 500 per process (by pid) and 12 more on
 /// each call, so parallel tests and test processes don't collide.
@@ -856,7 +865,7 @@ impl Cluster {
                 self.scratch.run(),
                 &format!("node-{n}.env"),
             ))
-            .args(["--spin-us", "0"])
+            .args(NODE_ARGS)
             .stderr(log)
             .spawn()
             .unwrap();

@@ -27,6 +27,9 @@ changes. This is the pattern Ceph's RBD uses with its header objects.
 
 A client **attaches** a volume by taking its **lease**: the header's PG
 primary records the holder in the header and keeps the expiry in memory.
+Each attach has a lease **identity** of its own, a random 64-bit number
+recorded with the holder and carried by every request under the lease,
+so one client's leases can be fenced one at a time (D150).
 
 | Timing | Value |
 |---|---|
@@ -45,25 +48,33 @@ while the old one might still have writes in flight. Hyperstor uses a
 
 1. `take_over` waits until the old holder's lease has run out (up to
    4 s). A holder that is still renewing is left alone.
-2. It adds the old holder's client instance to the blocklist: one Raft
-   write. The leader pushes the map and waits until every storage node
+2. It adds the old lease's identity, and its delegates' (below), to the
+   blocklist: one Raft write. The leader pushes the map and waits until every storage node
    has acknowledged it, or 1.25 map leases have passed (after which a
    node that didn't acknowledge has stopped serving).
 3. It takes the lease.
 
-From then on every storage node refuses requests from the old instance,
+From then on every storage node refuses requests under the old lease,
 checked again just before a write is queued, so none of its writes lands
-after the new holder's. `preempt` does the same for a live holder, for
-example when glidex moves a VM off a node it has fenced: it blocklists
-first, then waits out the lease. A forced delete preempts the holder and
-deletes the volume while holding its lease. Blocklist entries expire
-after an hour.
+after the new holder's; the old holder's other volumes go on. Fencing a
+whole client is the same with its instance, which every connection names
+at `Hello`. `preempt` does the same for a live holder, for example when
+glidex finds a disk still held by a node its VM no longer runs on: it
+blocklists first, then waits out the lease. A forced delete preempts the
+holder and deletes the volume while holding its lease. Blocklist entries
+expire after an hour.
 
-**Why a blocklist, not a token on every write:** checking a lease token
-on every write adds work to every write and state to every copy. The
-blocklist costs nothing on the write path that could be measured, and
-one Raft write per takeover. Ceph uses the same approach for RBD
-exclusive locks.
+**Delegates** (D151) act under a holder's lease from another client:
+the holder records their identities in the header, they renew nothing,
+and they are blocklisted with the holder, before the holder detaches,
+and when the holder removes one. A snapshot's quiesce waits for each.
+
+**Why a blocklist, not a token checked on every write:** checking a
+lease token against the header on every write adds work to every write
+and state to every copy. Requests do carry the lease identity, but only
+to look it up in the blocklist, which costs nothing on the write path
+that could be measured, and one Raft write per takeover. Ceph uses the
+same approach for RBD exclusive locks.
 
 A forced takeover takes one volume lease, about 4.0 s; a preemption
 about 3.8 s.

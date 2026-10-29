@@ -115,7 +115,7 @@ fn a_returning_node_goes_down_once() {
         1,
         "{changes:#?}"
     );
-    // Its peers notice a dead node first (300 ms, before the 800 ms
+    // Its peers notice a dead node first (600 ms here, NODE_ARGS; before the 800 ms
     // heartbeat timeout); it is held down at least 2 s (D149).
     assert!(
         changes[0].contains("down (reported silent by nodes [0, 1]; held down 2 s)"),

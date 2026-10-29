@@ -104,10 +104,11 @@ pub enum Admin {
     /// This member's role, and the client instance its volume work uses
     /// now (D125).
     Lead(hyperstor_reactor::chan::OneSender<Lead>),
-    /// Blocklists a client instance: the map epoch that has it, once every
-    /// storage node holds it or its lease has run out ([`Meta::blocklist`]).
+    /// Blocklists client instances or lease identities (D150): the map
+    /// epoch that has them, once every storage node holds it or its lease
+    /// has run out ([`Meta::blocklist`]).
     Blocklist {
-        instance: u64,
+        ids: Vec<u64>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
     /// Takes every device of `node` out (or, with `dry_run`, only works
@@ -896,10 +897,10 @@ impl Meta {
                         let _ = reply.send(lead);
                     });
                 }
-                Admin::Blocklist { instance, reply } => {
+                Admin::Blocklist { ids, reply } => {
                     let me = self.clone();
                     hyperstor_reactor::spawn(async move {
-                        let r = match me.blocklist(instance).await {
+                        let r = match me.blocklist(ids).await {
                             hyperstor_proto::Msg::BlocklistOk { map_epoch } => Ok(map_epoch),
                             hyperstor_proto::Msg::Error { detail, .. } => Err(detail),
                             m => Err(format!("unexpected {m:?}")),
@@ -1224,14 +1225,14 @@ impl Meta {
         true
     }
 
-    /// Blocklists a client instance (metadata.md §9, a forced takeover):
-    /// one map change, answered once every storage node holds a map that
-    /// has it, or has lost its map lease. A node renews its lease only
+    /// Blocklists client instances or lease identities (metadata.md §9, a
+    /// forced takeover; D150) in one published map, answered once every
+    /// storage node holds a map that has them, or has lost its map lease. A node renews its lease only
     /// with a map at least as new as the one the leader has published
     /// (`hyperstord`'s heartbeat), so a lease granted before the change
     /// runs out within 1.25 leases, and none granted after it can be used
     /// without the entry.
-    pub async fn blocklist(self: Rc<Self>, instance: u64) -> hyperstor_proto::Msg {
+    pub async fn blocklist(self: Rc<Self>, ids: Vec<u64>) -> hyperstor_proto::Msg {
         use hyperstor_proto::{Code, Msg};
         let fail = |code: Code, detail: String| Msg::Error {
             code,
@@ -1254,7 +1255,16 @@ impl Meta {
             sleep(Duration::from_millis(10)).await;
         }
         let expires = unix_now() + BLOCKLIST_FOR.as_secs();
-        let epoch = self.map.borrow_mut().blocklist_add(instance, expires);
+        if ids.is_empty() || ids.contains(&0) {
+            return fail(Code::Invalid, "nothing to blocklist".into());
+        }
+        let epoch = {
+            let mut m = self.map.borrow_mut();
+            ids.iter()
+                .map(|i| m.blocklist_add(*i, expires))
+                .max()
+                .unwrap_or(0)
+        };
         // The publisher commits and pushes it.
         while self.published.borrow().epoch < epoch {
             if !self.leads() {
@@ -1532,10 +1542,10 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                 let msg = Msg::decode(h.kind, &body[..h.body_len as usize]);
                 // Answered later, from a task of its own: it waits for the
                 // map to reach every node.
-                if let Ok(Msg::Blocklist { instance }) = msg {
+                if let Ok(Msg::Blocklist { ids }) = msg {
                     let (meta, tx) = (meta.clone(), tx.clone());
                     spawn(async move {
-                        let reply = meta.blocklist(instance).await;
+                        let reply = meta.blocklist(ids).await;
                         let _ = tx.send(encode_frame(h.req, &reply, &[]));
                     });
                     continue;

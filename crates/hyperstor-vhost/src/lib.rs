@@ -56,11 +56,14 @@ pub fn state_path(dir: &Path) -> PathBuf {
 }
 
 /// What survives a restart (D143): the instance that held the volumes,
-/// and each volume with its serial.
+/// and each volume with its serial and lease.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct State {
     pub instance: u64,
-    pub disks: Vec<(u128, String)>,
+    /// Each disk: its volume, serial, the identity of its lease (D150; 0
+    /// in a file written before identities, whose leases have the
+    /// instance as their identity) and its label (D153).
+    pub disks: Vec<(u128, String, u64, String)>,
 }
 
 impl State {
@@ -68,7 +71,14 @@ impl State {
         let disks: Vec<serde_json::Value> = self
             .disks
             .iter()
-            .map(|(v, s)| serde_json::json!({"volume": format!("{v:032x}"), "serial": s}))
+            .map(|(v, s, l, label)| {
+                serde_json::json!({
+                    "volume": format!("{v:032x}"),
+                    "serial": s,
+                    "lease": format!("{l:016x}"),
+                    "label": label,
+                })
+            })
             .collect();
         serde_json::json!({"instance": format!("{:016x}", self.instance), "disks": disks})
             .to_string()
@@ -87,7 +97,12 @@ impl State {
         for d in v["disks"].as_array().ok_or("no disks")? {
             let volume = u128::from_str_radix(&hex(&d["volume"], "volume")?, 16)
                 .map_err(|e| format!("volume: {e}"))?;
-            disks.push((volume, hex(&d["serial"], "serial")?));
+            let lease = match d["lease"].as_str() {
+                Some(l) => u64::from_str_radix(l, 16).map_err(|e| format!("lease: {e}"))?,
+                None => 0,
+            };
+            let label = d["label"].as_str().unwrap_or("vhost").to_string();
+            disks.push((volume, hex(&d["serial"], "serial")?, lease, label));
         }
         Ok(State { instance, disks })
     }
@@ -106,6 +121,18 @@ struct Served {
     conn: Rc<RefCell<Option<UnixStream>>>,
     stopping: Rc<Cell<bool>>,
     task: hyperstor_reactor::JoinHandle<()>,
+}
+
+/// Why an `attach` was refused: held (by whom, D153), or another code.
+enum Refused {
+    Held { message: String, holder: String },
+    Other(&'static str, String),
+}
+
+impl From<(&'static str, String)> for Refused {
+    fn from((code, msg): (&'static str, String)) -> Self {
+        Refused::Other(code, msg)
+    }
 }
 
 struct Service {
@@ -172,8 +199,9 @@ pub fn serve(
         });
         // Before glidex can ask: the volumes the last instance had.
         if let Some(prev) = previous {
-            for (volume, serial) in prev.disks {
-                match svc.reclaim(volume, serial, prev.instance).await {
+            for (volume, serial, lease, label) in prev.disks {
+                let old = if lease == 0 { prev.instance } else { lease };
+                match svc.reclaim(volume, serial, old, &label).await {
                     Ok(()) => eprintln!("hyperstor-vhost: volume {volume:032x}: taken back"),
                     Err(e) => eprintln!("hyperstor-vhost: volume {volume:032x}: dropped: {e}"),
                 }
@@ -283,10 +311,19 @@ impl Service {
                 volume,
                 serial,
                 take,
-            } => match self.attach(volume, serial, take).await {
-                Ok(v) => Reply::ok(id, v),
-                Err((code, msg)) => Reply::error(id, code, &msg),
-            },
+                holder,
+            } => {
+                let label = if holder.is_empty() {
+                    "vhost".to_string()
+                } else {
+                    format!("vhost:{holder}")
+                };
+                match self.attach(volume, serial, take, &label).await {
+                    Ok(v) => Reply::ok(id, v),
+                    Err(Refused::Held { message, holder }) => Reply::held(id, &message, &holder),
+                    Err(Refused::Other(code, msg)) => Reply::error(id, code, &msg),
+                }
+            }
             Request::Detach { volume } => match self.detach(volume).await {
                 Ok(()) => Reply::ok(id, control::detached()),
                 Err((code, msg)) => Reply::error(id, code, &msg),
@@ -303,6 +340,7 @@ impl Service {
                 socket: d.socket.clone(),
                 size: d.disk.volume.volume().size,
                 connected: d.conn.borrow().is_some(),
+                lost: d.disk.volume.lost(),
             })
             .collect()
     }
@@ -316,7 +354,10 @@ impl Service {
                 .disks
                 .borrow()
                 .iter()
-                .map(|(v, d)| (*v, d.disk.serial.clone()))
+                .map(|(v, d)| {
+                    let a = &d.disk.volume;
+                    (*v, d.disk.serial.clone(), a.lease(), a.label().to_string())
+                })
                 .collect(),
         };
         let path = state_path(&self.opts.dir);
@@ -330,19 +371,22 @@ impl Service {
     }
 
     /// Takes `volume` back after a restart: from no one, or from `old`,
-    /// the instance this service was before (its lease lapses within
-    /// seconds of its exit). Held by anyone else, it is left to them.
+    /// the lease this service held it under before (it lapses within
+    /// seconds of its exit; taking it fences only that lease, D150). Held
+    /// by anyone else, it is left to them.
     async fn reclaim(
         self: &Rc<Self>,
         volume: u128,
         serial: String,
         old: u64,
+        label: &str,
     ) -> Result<(), String> {
-        let att = match self.client.attach(volume).await {
+        use hyperstor_client::volume::Take;
+        let att = match self.client.attach_as(volume, Take::Attach, label).await {
             Ok(a) => a,
             Err(ClientError::LeaseHeld { holder, .. }) if holder == old => self
                 .client
-                .take_over(volume)
+                .attach_as(volume, Take::TakeOver, label)
                 .await
                 .map_err(|e| e.to_string())?,
             Err(e) => return Err(e.to_string()),
@@ -355,22 +399,43 @@ impl Service {
 
     /// Attaches `volume` and opens its socket; for a volume attached here
     /// already, answers with its socket (a retry, or glidex restarting).
+    /// One whose lease was taken elsewhere (D150) is let go first and
+    /// attached afresh.
     async fn attach(
         self: &Rc<Self>,
         volume: u128,
         serial: String,
         take: Take,
-    ) -> Result<control::Value, (&'static str, String)> {
-        if let Some(d) = self.disks.borrow().get(&volume) {
-            return Ok(control::attached(&d.socket, d.disk.volume.volume().size));
+        label: &str,
+    ) -> Result<control::Value, Refused> {
+        let lost = match self.disks.borrow().get(&volume) {
+            Some(d) if !d.disk.volume.lost() => {
+                return Ok(control::attached(&d.socket, d.disk.volume.volume().size));
+            }
+            d => d.is_some(),
+        };
+        if lost {
+            self.detach(volume).await.map_err(Refused::from)?;
         }
-        let att = match take {
-            Take::Attach => self.client.attach(volume).await,
-            Take::TakeOver => self.client.take_over(volume).await,
-            Take::Preempt => self.client.preempt(volume).await,
-        }
-        .map_err(|e| (control::error_code(&e), e.to_string()))?;
-        self.open_disk(volume, serial, att).await
+        let how = match take {
+            Take::Attach => hyperstor_client::volume::Take::Attach,
+            Take::TakeOver => hyperstor_client::volume::Take::TakeOver,
+            Take::Preempt => hyperstor_client::volume::Take::Preempt,
+        };
+        let att = self
+            .client
+            .attach_as(volume, how, label)
+            .await
+            .map_err(|e| match &e {
+                ClientError::LeaseHeld { label, .. } => Refused::Held {
+                    holder: label.clone(),
+                    message: e.to_string(),
+                },
+                _ => Refused::Other(control::error_code(&e), e.to_string()),
+            })?;
+        self.open_disk(volume, serial, att)
+            .await
+            .map_err(Refused::from)
     }
 
     /// Opens the socket of `volume`, attached as `att`, and serves it.
@@ -504,9 +569,20 @@ mod tests {
     fn the_state_file_round_trips_and_bad_ones_say_why() {
         let s = State {
             instance: 0x0123_4567_89ab_cdef,
-            disks: vec![(u128::MAX, "serial-1".into()), (7, String::new())],
+            disks: vec![
+                (u128::MAX, "serial-1".into(), 9, "vhost:node-1".into()),
+                (7, String::new(), 1, "vhost".into()),
+            ],
         };
         assert_eq!(State::parse(&s.to_json()), Ok(s));
+        // A file from before lease identities: their leases are the
+        // instance's (D150).
+        let old = State::parse(r#"{"instance": "5", "disks": [{"volume": "1", "serial": "s"}]}"#)
+            .unwrap();
+        assert_eq!(
+            old.disks,
+            vec![(1, "s".to_string(), 0, "vhost".to_string())]
+        );
         assert!(State::parse("{}").is_err());
         assert!(State::parse(r#"{"instance": "zz", "disks": []}"#).is_err());
         assert!(

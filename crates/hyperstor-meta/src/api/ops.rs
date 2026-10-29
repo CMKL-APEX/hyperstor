@@ -105,7 +105,7 @@ impl Runner {
                 let (reply, rx) = oneshot();
                 self.tx
                     .send(Admin::Blocklist {
-                        instance: last,
+                        ids: vec![last],
                         reply,
                     })
                     .map_err(|_| TokenError::Store("map service stopped".into()))?;
