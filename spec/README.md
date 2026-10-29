@@ -38,7 +38,7 @@ documents cite them by number.
 | [tenants.md](tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [federation.md](federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
 | [glidex.md](glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
-| [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24 (G25–G37 in nfs.md) |
+| [milestones.md](milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24 (G25–G38 in nfs.md) |
 | [filesystem.md](filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
 | [decision-log.md](decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
 | [implementation-notes.md](implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
