@@ -153,6 +153,53 @@ pub struct NodeConfig {
 /// peers' pings.
 const DIGEST_BATCH: usize = 64;
 
+/// Bytes of pushes a reactor's backfills, together, have on the wire to
+/// one target before they wait for answers (I187); one object may go
+/// past it. Every PG backfill shares the connection to its target with
+/// replication: unbounded, a refilled node had hundreds of MiB queued
+/// ahead of each write.
+const BACKFILL_BUDGET: usize = 16 << 20;
+
+/// Pushes one PG backfill has on the wire before it waits for answers.
+const BACKFILL_WINDOW: usize = 16;
+
+/// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
+/// once answered, or when the backfill gives up.
+struct Held<'a> {
+    st: &'a ShardState,
+    target: u32,
+    bytes: Cell<usize>,
+}
+
+impl Held<'_> {
+    fn add(&self, n: usize) {
+        self.bytes.set(self.bytes.get() + n);
+        *self
+            .st
+            .backfill_bytes
+            .borrow_mut()
+            .entry(self.target)
+            .or_default() += n;
+    }
+
+    fn release(&self) {
+        let n = self.bytes.replace(0);
+        let mut b = self.st.backfill_bytes.borrow_mut();
+        if let Some(v) = b.get_mut(&self.target) {
+            *v -= n;
+            if *v == 0 {
+                b.remove(&self.target);
+            }
+        }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// An object's key–value table goes in parts of about this many bytes, so
 /// that no push exceeds the frame limit ([`hyperstor_proto::MAX_PAYLOAD`]).
 pub const PUSH_PART_BYTES: usize = hyperstor_proto::MAX_PAYLOAD / 4;
@@ -279,11 +326,19 @@ struct ShardState {
     /// Connections to replicas, by address.
     /// Connections to peers, one live each (I184).
     peers: hyperstor_client::rpc::Pool,
+    /// Connections that carry only pings, one live each per peer (I187):
+    /// on the peer's data connection a ping waits behind every push and
+    /// replication queued before it, and liveness should not depend on how
+    /// much data is on its way.
+    pings: hyperstor_client::rpc::Pool,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
     /// incomplete, so the backfill starts over).
     backfills: RefCell<HashMap<(u32, u32, u32), bool>>,
+    /// Bytes of backfill pushes on the wire, by target device
+    /// ([`BACKFILL_BUDGET`]).
+    backfill_bytes: RefCell<HashMap<u32, usize>>,
     /// Best-effort writes still in flight to each backfill target.
     fill_inflight: RefCell<HashMap<(u32, u32, u32), u32>>,
     /// Backfill targets whose copy is complete (or being reported): every
@@ -630,6 +685,8 @@ impl ShardState {
             committer: RefCell::new(None),
             seqs: RefCell::new(HashMap::new()),
             peers: Default::default(),
+            backfill_bytes: RefCell::new(HashMap::new()),
+            pings: Default::default(),
             batches: Cell::new(0),
             backfills: RefCell::new(HashMap::new()),
             fill_inflight: RefCell::new(HashMap::new()),
@@ -894,6 +951,27 @@ impl ShardState {
     }
 
     async fn peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        self.partitioned(addr)?;
+        Ok(self.peers.get(addr).await?)
+    }
+
+    /// Bytes of backfill pushes on the wire to `target`.
+    fn backfill_bytes(&self, target: u32) -> usize {
+        self.backfill_bytes
+            .borrow()
+            .get(&target)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The connection to `addr` that carries only pings (I187).
+    async fn ping_peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        self.partitioned(addr)?;
+        Ok(self.pings.get(addr).await?)
+    }
+
+    /// Refuses a peer the partitions test hook cuts this node from.
+    fn partitioned(&self, addr: SocketAddr) -> Result<(), ClientError> {
         if let Some((node, p)) = &*self.partitions.borrow()
             && let Some(d) = self.map().devices.values().find(|d| d.addr == addr)
             && p.blocked(*node, d.node)
@@ -902,7 +980,7 @@ impl ShardState {
                 "partitioned (test hook)".into(),
             )));
         }
-        Ok(self.peers.get(addr).await?)
+        Ok(())
     }
 
     /// Copies the engine's counters into the admin port's gauges, once a
@@ -2876,10 +2954,10 @@ impl ShardState {
                 let last_ok = last_ok.clone();
                 spawn(async move {
                     // The ping gives up on its own (its pending entry
-                    // with it); the connection, which replication shares,
-                    // stays.
+                    // with it); its connection, which carries nothing
+                    // else (I187), stays.
                     let ping = async {
-                        let c = me.peer(addr).await.ok()?;
+                        let c = me.ping_peer(addr).await.ok()?;
                         c.try_within(&Msg::Ping, &[], Duration::from_millis(200))
                             .await
                             .ok()
@@ -3142,10 +3220,33 @@ impl ShardState {
         }
         crate::diag!("keys {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: {} objects differ (compared in {:?})", keys.len(), listed.elapsed());
         let mut inflight = Vec::new();
+        let held = Held {
+            st: self,
+            target,
+            bytes: Cell::new(0),
+        };
         for key in keys {
             if self.map().pg(pool, pg).map(|p| p.epoch) != Some(pg_epoch) {
                 crate::diag!("epoch {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: the PG changed (epoch {pg_epoch} gone) mid-copy");
                 return false;
+            }
+            // Room on the connection first (I187): this backfill's own
+            // pushes are answered when its window is full or the target's
+            // budget is spent, then it waits for the other backfills'.
+            if inflight.len() >= BACKFILL_WINDOW
+                || (!inflight.is_empty() && self.backfill_bytes(target) >= BACKFILL_BUDGET)
+            {
+                for f in inflight.drain(..) {
+                    let r = f.await;
+                    if !matches!(r, Ok((Msg::PushOk, _))) {
+                        crate::diag!("push {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: a push answered {:?}", r.as_ref().map(|(m, _)| m));
+                        return false;
+                    }
+                }
+                held.release();
+            }
+            while self.backfill_bytes(target) >= BACKFILL_BUDGET {
+                sleep(Duration::from_millis(1)).await;
             }
             self.drained().await;
             let Some(parts) = self.push_parts(to, &key, legacy) else {
@@ -3154,16 +3255,8 @@ impl ShardState {
             // An object's parts in order on this connection, which the
             // target handles in order.
             for (m, data) in parts {
+                held.add(data.len());
                 inflight.push(conn.start_within(&m, &data, CALL_TIMEOUT));
-            }
-            if inflight.len() >= 16 {
-                for f in inflight.drain(..) {
-                    let r = f.await;
-                    if !matches!(r, Ok((Msg::PushOk, _))) {
-                        crate::diag!("push {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg} to device {target}: a push answered {:?}", r.as_ref().map(|(m, _)| m));
-                        return false;
-                    }
-                }
             }
         }
         for f in inflight {
