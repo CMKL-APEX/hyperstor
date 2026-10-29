@@ -373,7 +373,7 @@ fn a_lost_majority_is_recovered_alone() {
         ],
     );
     let mut args = env_args(&host, g.s.run(), "node-0.env");
-    args.extend(["--spin-us".into(), "0".into()]);
+    args.extend(NODE_ARGS.map(String::from));
     g.others.push(
         Command::new(host.join("usr/local/bin/hyperstord"))
             .args(args)
@@ -447,7 +447,7 @@ fn a_leader_without_a_majority_says_so() {
         ],
     );
     let mut args = env_args(&host, g.s.run(), "node-0.env");
-    args.extend(["--spin-us".into(), "0".into()]);
+    args.extend(NODE_ARGS.map(String::from));
     g.others.push(
         Command::new(host.join("usr/local/bin/hyperstord"))
             .args(args)

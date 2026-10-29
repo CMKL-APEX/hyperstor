@@ -20,13 +20,18 @@
 //! recovery, read leases. A write whose replica is unreachable fails with
 //! `Unavailable`, and the client retries.
 
+// An `Err` here is the reply to send (a protocol message), made once per
+// request: its size costs nothing worth boxing it for.
+#![allow(clippy::result_large_err)]
+
 pub mod diag;
 pub mod faults;
 pub mod metrics;
 
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
 use hyperstor_client::volume::{
-    LEASE_ATTR, decode_holder, encode_holder, header_deleting, header_version,
+    DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
+    encode_holder, header_deleting, header_version,
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
@@ -424,6 +429,9 @@ type Watcher = OneSender<(u8, u64)>;
 /// A snapshot waiting on a holder (`ShardState::quiesce`).
 struct Quiesce {
     token: u64,
+    /// The identities yet to drain: the holder's and its delegates'
+    /// (D151).
+    pending: Vec<u64>,
     drained: Option<OneSender<()>>,
     resume: Vec<OneSender<()>>,
 }
@@ -449,6 +457,22 @@ fn blocklisted(map: &ClusterMap) -> Msg {
         map,
         "this client instance is blocklisted",
     )
+}
+
+/// The refusal for a request from `instance` under lease identity `lease`
+/// (D150), if either is blocklisted: the whole client, or that lease.
+/// Peers (instance 0) are never refused: a primary decides for its
+/// replicas, which get its forwarded requests with the client's identity.
+fn fenced(map: &ClusterMap, instance: u64, lease: u64) -> Option<Msg> {
+    if instance == 0 || map.blocklist.is_empty() {
+        None
+    } else if map.blocked(instance) {
+        Some(blocklisted(map))
+    } else if map.blocked(lease) {
+        Some(err(Code::Fenced, map, "this lease identity is blocklisted"))
+    } else {
+        None
+    }
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -832,6 +856,7 @@ impl ShardState {
             pg,
             map_epoch: map.epoch,
             pg_epoch: info.epoch,
+            lease: 0,
         };
         let others: Vec<u32> = info
             .acting
@@ -920,9 +945,12 @@ impl ShardState {
             if let Msg::Hello { instance: i, .. } = msg {
                 instance = i;
             }
-            // A blocklisted instance gets nothing more (metadata.md §4.1).
-            if self.map().blocked(instance) && !matches!(msg, Msg::Ping) {
-                reply(&blocklisted(&self.map()), &[]);
+            // A blocklisted instance gets nothing more (metadata.md §4.1),
+            // nor does a request under a blocklisted lease identity (D150).
+            if !matches!(msg, Msg::Ping)
+                && let Some(m) = fenced(&self.map(), instance, msg.target().map_or(0, |t| t.lease))
+            {
+                reply(&m, &[]);
                 continue;
             }
             match msg {
@@ -962,12 +990,17 @@ impl ShardState {
                     key,
                     mode,
                     takeover,
+                    label,
                 } => {
-                    self.lease(h.req, instance, to, key, mode, takeover, tx.clone())
+                    self.lease(h.req, instance, to, key, mode, takeover, label, tx.clone())
                         .await
                 }
                 Msg::LeaseRelease { to, key } => {
                     self.lease_release(h.req, instance, to, key, tx.clone())
+                        .await
+                }
+                Msg::LeaseDelegates { to, key, delegates } => {
+                    self.lease_delegates(h.req, instance, to, key, delegates, tx.clone())
                         .await
                 }
                 Msg::LeaseRenew {
@@ -978,7 +1011,7 @@ impl ShardState {
                     // From a task of its own: one check per lease.
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
-                        let m = me.lease_renew(instance, pool, map_epoch, leases).await;
+                        let m = me.lease_renew(pool, map_epoch, leases).await;
                         let _ = tx.send(encode_frame(req, &m, &[]));
                     });
                 }
@@ -1222,8 +1255,8 @@ impl ShardState {
         };
         // Checked again after the last wait: a write queued from here on
         // comes after the map that blocklists its sender.
-        if self.map().blocked(instance) {
-            return send(blocklisted(&self.map()));
+        if let Some(m) = fenced(&self.map(), instance, to.lease) {
+            return send(m);
         }
         // Being repaired from a member (`repair_own`): queued now, the
         // write could be overwritten by the copy fetched. Rare; retried.
@@ -1528,9 +1561,9 @@ impl ShardState {
         let unlock = |me: &Self| {
             me.exec_locks.borrow_mut().remove(&okey);
         };
-        if self.map().blocked(instance) {
+        if let Some(m) = fenced(&self.map(), instance, to.lease) {
             unlock(self);
-            return fail(blocklisted(&self.map()));
+            return fail(m);
         }
         let effects = match decide(self, &okey) {
             Ok(e) => e,
@@ -1888,9 +1921,9 @@ impl ShardState {
         Msg::WatchOk { event, token }
     }
 
-    /// The holder has stopped writing and drained, for quiesce `token`:
-    /// tell the waiting snapshot, then answer once it is taken or
-    /// abandoned.
+    /// The holder, or one of its delegates (`to.lease`), has stopped
+    /// writing and drained, for quiesce `token`: once all have, tell the
+    /// waiting snapshot; answer once it is taken or abandoned.
     async fn quiesced(&self, to: Target, key: WireKey, token: u64) -> Msg {
         let Ok(okey) = engine_key(&to, &key) else {
             return err(Code::Invalid, &self.map(), "bad namespace");
@@ -1900,7 +1933,10 @@ impl ShardState {
             let mut q = self.quiesce.borrow_mut();
             match q.get_mut(&okey) {
                 Some(q) if q.token == token => {
-                    if let Some(d) = q.drained.take() {
+                    q.pending.retain(|l| *l != to.lease);
+                    if q.pending.is_empty()
+                        && let Some(d) = q.drained.take()
+                    {
                         let _ = d.send(());
                     }
                     q.resume.push(tx);
@@ -1994,11 +2030,19 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return Err(err(Code::Invalid, &self.map(), "bad namespace"));
         };
-        let held = self
-            .shard
-            .borrow()
-            .attrs(&okey)
-            .is_some_and(|a| a.contains_key(LEASE_ATTR));
+        // Who must drain: the holder, and every delegate under its lease.
+        let pending: Vec<u64> = self.shard.borrow().attrs(&okey).map_or_else(Vec::new, |a| {
+            a.get(LEASE_ATTR)
+                .and_then(|h| decode_holder(h))
+                .map(|h| h.lease)
+                .into_iter()
+                .chain(
+                    a.get(DELEGATES_ATTR)
+                        .map_or_else(Vec::new, |b| decode_delegates(b)),
+                )
+                .collect()
+        });
+        let held = !pending.is_empty();
         if held {
             if self.quiesce.borrow().contains_key(&okey) {
                 return Err(err(
@@ -2012,6 +2056,7 @@ impl ShardState {
                 okey.clone(),
                 Quiesce {
                     token,
+                    pending,
                     drained: Some(tx),
                     resume: Vec::new(),
                 },
@@ -2057,12 +2102,13 @@ impl ShardState {
         }
     }
 
-    /// Takes a volume's lease for `instance` as its header's primary
-    /// (metadata.md §9, D75). Granted if nobody holds it, or `instance`
-    /// does. Another holder's lease lasts [`LEASE_EXPIRES`] past its last
-    /// renewal here, or past when this device first saw it (a new primary
-    /// gives it a full lease); once it has expired, `takeover` breaks it,
-    /// but only if the holder is blocklisted in this device's map.
+    /// Takes a volume's lease for the identity `to.lease` of `instance` as
+    /// its header's primary (metadata.md §9, D75, D150). Granted if nobody
+    /// holds it, or that identity does. Another holder's lease lasts
+    /// [`LEASE_EXPIRES`] past its last renewal here, or past when this
+    /// device first saw it (a new primary gives it a full lease); once it
+    /// has expired, `takeover` breaks it, but only if its identity and
+    /// every delegate's are blocklisted in this device's map.
     #[allow(clippy::too_many_arguments)]
     async fn lease(
         self: &Rc<Self>,
@@ -2072,6 +2118,7 @@ impl ShardState {
         key: WireKey,
         mode: u8,
         takeover: bool,
+        label: String,
         tx: Sender<Vec<u8>>,
     ) {
         let send = move |m: Msg| {
@@ -2084,6 +2131,13 @@ impl ShardState {
         }
         if instance == 0 {
             return send(err(Code::Invalid, &self.map(), "no instance: send Hello"));
+        }
+        let lease = to.lease;
+        if lease == 0 {
+            return send(err(Code::Invalid, &self.map(), "no lease identity"));
+        }
+        if label.len() > hyperstor_proto::LABEL_MAX {
+            return send(err(Code::Invalid, &self.map(), "label too long"));
         }
         let version = Rc::new(Cell::new(0));
         let v2 = version.clone();
@@ -2098,39 +2152,62 @@ impl ShardState {
                 return Err(err(Code::Invalid, &me.map(), "the volume is being deleted"));
             }
             let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
+            let delegates = attrs
+                .get(DELEGATES_ATTR)
+                .map_or_else(Vec::new, |b| decode_delegates(b));
             let (pg_epoch, now) = (to.pg_epoch, std::time::Instant::now());
             let grant = |me: &Self| {
                 me.leases
                     .borrow_mut()
-                    .insert(okey.clone(), (instance, now + LEASE_EXPIRES, pg_epoch));
+                    .insert(okey.clone(), (lease, now + LEASE_EXPIRES, pg_epoch));
+            };
+            let mine = Holder {
+                lease,
+                instance,
+                mode,
+                label: label.clone(),
             };
             match holder {
                 None => {}
-                Some((h, _)) if h == instance => {
+                Some(h) if h.lease == lease => {
                     grant(me);
-                    return Ok(Vec::new());
+                    // Taken again by another instance with the identity
+                    // (none does yet): the record names it.
+                    return Ok(if h == mine {
+                        Vec::new()
+                    } else {
+                        vec![WireOp::SetAttr(LEASE_ATTR.to_vec(), encode_holder(&mine))]
+                    });
                 }
-                Some((h, _)) => {
-                    let until = me.lease_until(okey, h, pg_epoch, now);
+                Some(h) => {
+                    let until = me.lease_until(okey, h.lease, pg_epoch, now);
                     if now < until {
                         return Err(Msg::LeaseHeld {
-                            holder: h,
+                            holder: h.lease,
+                            delegates,
                             remaining_ms: (until - now).as_millis().max(1) as u32,
+                            label: h.label,
                         });
                     }
-                    if !(takeover && me.map().blocked(h)) {
+                    let map = me.map();
+                    let cut_off = map.blocked(h.lease) && delegates.iter().all(|d| map.blocked(*d));
+                    if !(takeover && cut_off) {
                         return Err(Msg::LeaseHeld {
-                            holder: h,
+                            holder: h.lease,
+                            delegates,
                             remaining_ms: 0,
+                            label: h.label,
                         });
                     }
                 }
             }
             grant(me);
-            Ok(vec![WireOp::SetAttr(
-                LEASE_ATTR.to_vec(),
-                encode_holder(instance, mode),
-            )])
+            let mut ops = vec![WireOp::SetAttr(LEASE_ATTR.to_vec(), encode_holder(&mine))];
+            // The last holder's delegates don't act under this lease.
+            if attrs.contains_key(DELEGATES_ATTR) {
+                ops.push(WireOp::RmAttr(DELEGATES_ATTR.to_vec()));
+            }
+            Ok(ops)
         };
         let okey = engine_key(&to, &key).ok();
         let done = self.decide_and_apply(instance, to, key, decide).await;
@@ -2145,7 +2222,7 @@ impl ShardState {
                     // again next time.
                     if !matches!(m, Msg::LeaseHeld { .. })
                         && let Some(k) = okey
-                        && me.leases.borrow().get(&k).is_some_and(|l| l.0 == instance)
+                        && me.leases.borrow().get(&k).is_some_and(|l| l.0 == lease)
                     {
                         me.leases.borrow_mut().remove(&k);
                     }
@@ -2175,7 +2252,8 @@ impl ShardState {
         }
     }
 
-    /// Gives up `instance`'s lease on a volume; nothing if it holds none.
+    /// Gives up the lease `to.lease` on a volume, with its delegates;
+    /// nothing if that isn't the lease held.
     async fn lease_release(
         self: &Rc<Self>,
         req: u64,
@@ -2196,11 +2274,15 @@ impl ShardState {
             };
             v2.set(header_version(attrs));
             let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
-            if holder.is_none_or(|(h, _)| h != instance) {
+            if holder.is_none_or(|h| h.lease != to.lease) {
                 return Ok(Vec::new());
             }
             me.leases.borrow_mut().remove(okey);
-            Ok(vec![WireOp::RmAttr(LEASE_ATTR.to_vec())])
+            let mut ops = vec![WireOp::RmAttr(LEASE_ATTR.to_vec())];
+            if attrs.contains_key(DELEGATES_ATTR) {
+                ops.push(WireOp::RmAttr(DELEGATES_ATTR.to_vec()));
+            }
+            Ok(ops)
         };
         let done = self.decide_and_apply(instance, to, key, decide).await;
         spawn(async move {
@@ -2213,22 +2295,77 @@ impl ShardState {
         });
     }
 
-    /// Renews `instance`'s leases on headers this device is primary of
-    /// (D75). Nothing is written: the expiry is kept in memory.
+    /// Records the delegates of the lease `to.lease` (D33, D151): refused
+    /// with [`Msg::LeaseHeld`] unless that is the lease held.
+    async fn lease_delegates(
+        self: &Rc<Self>,
+        req: u64,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        delegates: Vec<u64>,
+        tx: Sender<Vec<u8>>,
+    ) {
+        let send = move |m: Msg| {
+            let _ = tx.send(encode_frame(req, &m, &[]));
+        };
+        if delegates.contains(&0) {
+            return send(err(Code::Invalid, &self.map(), "delegate 0"));
+        }
+        let version = Rc::new(Cell::new(0));
+        let v2 = version.clone();
+        let decide = move |me: &Self, okey: &ObjKey| {
+            let sh = me.shard.borrow();
+            let attrs = match sh.attrs(okey) {
+                Some(a) if sh.stat(okey).is_some() => a,
+                _ => return Err(err(Code::NotFound, &me.map(), "no such volume")),
+            };
+            v2.set(header_version(attrs));
+            match attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h)) {
+                Some(h) if h.lease == to.lease => {}
+                h => {
+                    return Err(Msg::LeaseHeld {
+                        holder: h.as_ref().map_or(0, |h| h.lease),
+                        delegates: Vec::new(),
+                        remaining_ms: 0,
+                        label: h.map(|h| h.label).unwrap_or_default(),
+                    });
+                }
+            }
+            Ok(vec![if delegates.is_empty() {
+                WireOp::RmAttr(DELEGATES_ATTR.to_vec())
+            } else {
+                WireOp::SetAttr(DELEGATES_ATTR.to_vec(), encode_delegates(&delegates))
+            }])
+        };
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        spawn(async move {
+            send(match done.await {
+                Ok(()) => Msg::LeaseOk {
+                    version: version.get(),
+                },
+                Err(m) => m,
+            })
+        });
+    }
+
+    /// Renews leases on headers this device is primary of (D75), each by
+    /// its identity (D150); a fenced identity's is lost. Nothing is
+    /// written: the expiry is kept in memory.
     async fn lease_renew(
         &self,
-        instance: u64,
         pool: u32,
         map_epoch: u64,
-        leases: Vec<(u32, u64, Vec<u8>)>,
+        leases: Vec<(u32, u64, Vec<u8>, u64)>,
     ) -> Msg {
         let mut results = Vec::with_capacity(leases.len());
-        for (pg, pg_epoch, name) in leases {
+        for (pg, pg_epoch, name, lease) in leases {
             let to = Target {
                 pool,
                 pg,
                 map_epoch,
                 pg_epoch,
+                lease,
             };
             let key = WireKey {
                 ns: Namespace::Meta as u8,
@@ -2249,15 +2386,11 @@ impl ShardState {
             // Granted to another here, and not yet written.
             let taken = l
                 .get(&okey)
-                .is_some_and(|(h, _, e)| *e == pg_epoch && *h != instance);
-            if holder.is_some_and(|(h, _)| h == instance) && !taken {
+                .is_some_and(|(h, _, e)| *e == pg_epoch && *h != lease);
+            if holder.is_some_and(|h| h.lease == lease) && !taken && !self.map().blocked(lease) {
                 l.insert(
                     okey,
-                    (
-                        instance,
-                        std::time::Instant::now() + LEASE_EXPIRES,
-                        pg_epoch,
-                    ),
+                    (lease, std::time::Instant::now() + LEASE_EXPIRES, pg_epoch),
                 );
                 results.push((LEASE_RENEWED, version));
             } else {
@@ -2915,6 +3048,7 @@ impl ShardState {
             pg,
             map_epoch: map.epoch,
             pg_epoch,
+            lease: 0,
         };
         // Ask the target what it holds, then send what differs: objects
         // whose digests don't match, and objects it has that this copy
@@ -3219,6 +3353,7 @@ impl ShardState {
             pg,
             map_epoch: map.epoch,
             pg_epoch: info.epoch,
+            lease: 0,
         };
         // `None`: a member from before digests (a rolling upgrade), which
         // can't be compared and is taken to agree, as before digests.
@@ -3304,6 +3439,7 @@ impl ShardState {
             pg,
             map_epoch: map.epoch,
             pg_epoch: info.epoch,
+            lease: 0,
         };
         let others: Vec<u32> = info
             .acting

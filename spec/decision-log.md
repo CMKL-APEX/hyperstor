@@ -697,3 +697,18 @@ Asked how to stop it, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 85 | Damping in the map service (a down node held down 2 s, doubling per flap within 10 minutes up to 60 s, and a health warning) plus long reactor work yielding (recommended); heartbeats and pings from a thread of their own; higher timeouts | Damping and yielding | D149, I183 |
+
+## Fencing one volume of a shared client (2026-10-29)
+
+Preempting one volume blocklisted the whole `hyperstor-vhost` that held
+it, so every VM disk on its node was cut off (I160, D119). Asked how to
+fence one volume, each with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 86 | How a request names its lease: a field in `Target`, protocol version 2 (recommended); a connection per attached volume, with its own instance; a flag bit and 8 bytes after the header | A field in `Target` | D150, I186 |
+| 87 | D33's delegates, which nothing uses yet: defer them, leaving room in the header (recommended); build them now | Build them now | D151 |
+| 88 | Upgrading a running cluster: storage nodes speak versions 1 and 2, a version 1 client fenced by instance (recommended); version 2 only, every host at once | Version 2 only | D152 |
+| 89 | glidex: hyperstor only, with a glidex issue to relax its rule (recommended); a glidex pull request in the same round | The glidex pull request too | D153 |
+| 90 | When glidex preempts: a stale hold found when it starts a VM recorded as running nowhere, after asking the last node to detach (recommended); only on an operator's request; no change, the rationale only | A stale hold on start | D153 |
+| 91 | Found while building 90: glidex tracks a disk operation only on the node running it, so preempting every hold could cut a tool off mid-operation. Label each lease with its holder and preempt only another node's `hyperstor-vhost`, each node letting go of holds for VMs placed elsewhere (recommended); that cleanup only, no preemption beyond S23; preempt after a hold lasts 2 minutes | Label holds | D153 |

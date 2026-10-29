@@ -21,7 +21,7 @@
 use crate::volume::{Snapshot, Volume, VolumeState, cas, conflict, header_key};
 use crate::{Client, ClientError, NS_META};
 use hyperstor_map::META_POOL;
-use hyperstor_proto::{LEASE_RW, WireOp};
+use hyperstor_proto::WireOp;
 use std::rc::Rc;
 
 /// Now, in Unix seconds.
@@ -90,8 +90,7 @@ impl Client {
         } else {
             None
         };
-        let me = held.as_ref().map(|_| self.instance);
-        let r = self.trash_held(id, me).await;
+        let r = self.trash_held(id, held.as_deref()).await;
         if let Some(h) = held {
             // Renewals stop: the header is no longer active.
             h.lost.set(true);
@@ -100,7 +99,12 @@ impl Client {
         r
     }
 
-    async fn trash_held(self: &Rc<Self>, id: u128, me: Option<u64>) -> Result<Volume, ClientError> {
+    async fn trash_held(
+        self: &Rc<Self>,
+        id: u128,
+        held: Option<&crate::volume::Attached>,
+    ) -> Result<Volume, ClientError> {
+        let me = held.map(|h| h.lease());
         for _ in 0..10 {
             let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
             if v.state != VolumeState::Active {
@@ -132,7 +136,7 @@ impl Client {
                 0,
                 WireOp::AssertAttr {
                     name: crate::volume::LEASE_ATTR.to_vec(),
-                    value: me.map(|i| crate::volume::encode_holder(i, LEASE_RW)),
+                    value: held.map(|h| h.holder_attr()),
                 },
             );
             match self.exec(META_POOL, NS_META, &header_key(id), &ops).await {

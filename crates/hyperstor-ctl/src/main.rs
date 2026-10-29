@@ -1801,6 +1801,8 @@ async fn volume_io(meta: Vec<std::net::SocketAddr>, cmd: &str, a: &Args) -> i32 
         Ok(Err(e)) => return fail(format!("map service {named}: {e}")),
         Err(_) => return fail(format!("map service {named}: no answer in 5 s")),
     };
+    // Whoever finds the volume held knows a tool holds it (D153).
+    cl.set_lease_label("hyperstorctl");
     let vol = match cl.volume(id).await {
         Ok(Some(v)) => v,
         Ok(None) => return fail(format!("volume {id:032x}: no such volume")),

@@ -13,6 +13,9 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
 
   Then a typed header body, encoded little-endian with a fixed layout
   and no general-purpose serializer, then the payload.
+- **Every request to a PG names its target**: pool, PG, map epoch, PG
+  epoch, and the lease identity it acts under (D150; 0 for none), 32
+  bytes.
 - **Messages:**
 
 | Group | Messages |
@@ -20,14 +23,15 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
 | Session | `Hello` (version range, identity, reactor wanted), `Ping` |
 | I/O | `Read`, `Write`, `WriteZeroes`, `Discard` |
 | Replication | `Repl`, `ReplAck` (with a read-lease grant) |
-| Volume metadata | `ObjGet`, `ObjCas`, `LeaseAcquire`, `LeaseRenew`, `LeaseRelease`, `Quiesce`, `Resume`, `Notify` |
+| Volume metadata | `ObjGet`, `ObjCas`, `LeaseAcquire` (with the holder's label, D153), `LeaseRenew`, `LeaseRelease`, `LeaseDelegates` (D151), `Quiesce`, `Resume`, `Notify` |
 | Peering and recovery | `PeerQuery`, `PeerInfo`, `PushOps`, `BackfillScan`, `BackfillObjects` |
 | EC | `LogAppend`, `FragmentWrite`, `FragmentRead` |
-| Errors | `StaleMap{current}`, `NotPrimary{epoch}`, `Blocklisted`, `CasConflict{version}`, `NoSpace`, `Checksum`, `Busy{retry_after}` |
+| Errors | `StaleMap{current}`, `NotPrimary{epoch}`, `Blocklisted` (the client instance), `Fenced` (the lease identity, D150), `CasConflict{version}`, `NoSpace`, `Checksum`, `Busy{retry_after}` |
 
 - **Versions.** `Hello` agrees on the highest version both sides speak.
   Each release speaks its own version and the one before, so rolling
-  upgrades work node by node (operations.md §18.4).
+  upgrades work node by node (operations.md §18.4). The exception is
+  version 2 (lease identities), which replaced 1 at once (D152).
 - **Security** per D25.
 
 ### 13.2 Transports (D30)

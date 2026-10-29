@@ -806,6 +806,7 @@ fn scrub_repairs_a_copy_the_others_outvote() {
                             pg,
                             map_epoch: m.epoch,
                             pg_epoch: info.epoch,
+                            lease: 0,
                         },
                         key: WireKey {
                             ns: hyperstor_client::NS_VOL,
@@ -966,6 +967,7 @@ fn a_new_primary_makes_its_members_agree_before_serving() {
                             pg,
                             map_epoch: m.epoch,
                             pg_epoch: info.epoch,
+                            lease: 0,
                         },
                         key: WireKey {
                             ns: hyperstor_client::NS_VOL,
@@ -1421,6 +1423,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
                         pg,
                         map_epoch: m.epoch,
                         pg_epoch: info.epoch,
+                        lease: 0,
                     },
                     key: WireKey {
                         ns: NS_META,
@@ -1614,6 +1617,7 @@ fn a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write() {
                 pg,
                 map_epoch: old.epoch,
                 pg_epoch: info.epoch,
+                lease: 0,
             };
             let key = WireKey {
                 ns: hyperstor_client::NS_VOL,
@@ -1866,12 +1870,12 @@ fn a_volume_has_one_writer_and_is_handed_off() {
             let va = a.attach(id).await.unwrap();
             assert_eq!(
                 a.volume(id).await.unwrap().unwrap().holder,
-                Some(a.instance)
+                Some(va.lease())
             );
             assert!(matches!(
                 b.attach(id).await,
-                Err(ClientError::LeaseHeld { holder, remaining_ms })
-                    if holder == a.instance && remaining_ms > 0
+                Err(ClientError::LeaseHeld { holder, remaining_ms, .. })
+                    if holder == va.lease() && remaining_ms > 0
             ));
             assert!(matches!(
                 b.delete_volume(id).await,
@@ -1917,7 +1921,8 @@ fn a_volume_has_one_writer_and_is_handed_off() {
             ));
             a.force_delete_volume(id).await.unwrap();
             assert!(a.volume(id).await.unwrap().is_none());
-            assert!(a.map().blocked(b.instance));
+            assert!(a.map().blocked(vb.lease()));
+            assert!(!a.map().blocked(b.instance), "only its lease (D150)");
             assert!(vb.write(0, vec![0; 4096]).await.is_err());
             assert!(vb.lost());
         })
@@ -1930,8 +1935,9 @@ fn a_volume_has_one_writer_and_is_handed_off() {
 /// A forced takeover (metadata.md §9, D24, D76): the holder stops renewing
 /// but is still running and still writing. The new holder waits out its
 /// lease, blocklists it, and takes the lease; from then on every storage
-/// node refuses the old instance, so none of its writes lands after the
-/// new holder's. A preemption does the same to a holder that is renewing.
+/// node refuses requests under the old lease (D150), so none of its writes
+/// lands after the new holder's. A preemption does the same to a holder
+/// that is renewing.
 #[test]
 fn a_forced_takeover_blocklists_the_old_holder() {
     use hyperstor_client::ClientError;
@@ -1946,13 +1952,16 @@ fn a_forced_takeover_blocklists_the_old_holder() {
             let v = a.create_volume(POOL, size, None, "v").await.unwrap();
             let va = a.attach(v.id).await.unwrap();
             va.write(0, pattern(1, size as usize)).await.unwrap();
-            // A stops renewing (its handle is gone) but keeps writing.
+            // A stops renewing (its handle is gone) but keeps writing under
+            // its lease, as a holder that stalled and woke up would.
+            let lease = va.lease();
             drop(va);
             let (a2, lineage) = (a.clone(), v.lineage);
             let writer = hyperstor_reactor::spawn(async move {
                 let (mut n, t) = (0u64, std::time::Instant::now());
                 while t.elapsed() < std::time::Duration::from_secs(15) {
-                    match a2.write(POOL, lineage, 0, pattern(100 + n, 4096)).await {
+                    let data = pattern(100 + n, 4096);
+                    match a2.write_under(lease, POOL, lineage, 0, 0, 0, data).await {
                         Ok(()) => n += 1,
                         Err(e) => return (n, Some(e)),
                     }
@@ -1968,14 +1977,16 @@ fn a_forced_takeover_blocklists_the_old_holder() {
                     && took < hyperstor_proto::LEASE_EXPIRES * 2,
                 "took {took:?}"
             );
-            assert!(b.map().blocked(a.instance));
+            // Its lease is fenced, not the whole client (D150).
+            assert!(b.map().blocked(lease));
+            assert!(!b.map().blocked(a.instance));
             let (n, e) = writer.await;
             assert!(n > 0, "the old holder was writing until the takeover");
             assert!(
                 matches!(
                     e,
                     Some(ClientError::Server {
-                        code: Code::Blocklisted,
+                        code: Code::Fenced,
                         ..
                     })
                 ),
@@ -1985,7 +1996,7 @@ fn a_forced_takeover_blocklists_the_old_holder() {
             vb.write(0, pattern(2, size as usize)).await.unwrap();
             hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
             assert_eq!(vb.read(0, size).await.unwrap(), pattern(2, size as usize));
-            assert!(a.attach(v.id).await.is_err(), "blocklisted");
+            assert!(a.attach(v.id).await.is_err(), "held by B");
             // Take-over leaves a renewing holder alone; preemption doesn't.
             let c3 = Client::connect(meta, 3).await.unwrap();
             assert!(matches!(
@@ -1994,15 +2005,190 @@ fn a_forced_takeover_blocklists_the_old_holder() {
             ));
             assert!(!vb.lost());
             let vc = c3.preempt(v.id).await.unwrap();
-            assert!(c3.map().blocked(b.instance));
+            assert!(c3.map().blocked(vb.lease()));
             vc.write(0, pattern(3, 4096)).await.unwrap();
             assert!(vb.write(0, pattern(4, 4096)).await.is_err());
-            assert!(vb.lost(), "a blocklisted holder knows it lost the lease");
+            assert!(vb.lost(), "a fenced holder knows it lost the lease");
             assert_eq!(vc.read(0, 4096).await.unwrap(), pattern(3, 4096));
         })
     })
     .join()
     .unwrap();
+    c.stop();
+}
+
+/// Preempting one volume fences only its lease (D150): the client that
+/// held it keeps its other volumes, renewing and writing, can let the
+/// fenced one go, and attach it again later; it isn't blocklisted.
+#[test]
+fn preempting_one_volume_leaves_the_clients_others() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 1, move |a| async move {
+        let size = CHUNK as u64;
+        let v1 = a.create_volume(POOL, size, None, "v1").await.unwrap().id;
+        let v2 = a.create_volume(POOL, size, None, "v2").await.unwrap().id;
+        a.set_lease_label("node-a");
+        let (a1, a2) = (a.attach(v1).await.unwrap(), a.attach(v2).await.unwrap());
+        assert_ne!(a1.lease(), a2.lease());
+        a1.write(0, pattern(1, 4096)).await.unwrap();
+        a2.write(0, pattern(2, 4096)).await.unwrap();
+        let other = Client::connect(meta, 3).await.unwrap();
+        let o1 = other.preempt(v1).await.unwrap();
+        assert!(other.map().blocked(a1.lease()));
+        assert!(!other.map().blocked(a.instance));
+        assert!(!other.map().blocked(a2.lease()));
+        // Refused by the storage nodes, or already known lost from a
+        // renewal while the preemption waited the lease out.
+        let r = a1.write(0, pattern(3, 4096)).await;
+        assert!(
+            matches!(
+                r,
+                Err(ClientError::Server {
+                    code: Code::Fenced,
+                    ..
+                }) | Err(ClientError::LeaseLost(_))
+            ),
+            "{r:?}"
+        );
+        assert!(a1.lost());
+        assert!(matches!(
+            a1.write(0, pattern(3, 4096)).await,
+            Err(ClientError::LeaseLost(_))
+        ));
+        // Under its old identity, as a holder that stalled would write:
+        // refused by the storage nodes.
+        let r = a
+            .write_under(a1.lease(), POOL, v1, 0, 0, 0, pattern(3, 4096))
+            .await;
+        assert!(
+            matches!(
+                r,
+                Err(ClientError::Server {
+                    code: Code::Fenced,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+        // The other volume goes on, past a lease's worth of renewals.
+        let t = std::time::Instant::now();
+        while t.elapsed() < hyperstor_proto::LEASE_EXPIRES * 3 / 2 {
+            a2.write(0, pattern(4, 4096)).await.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        assert!(!a2.lost());
+        assert_eq!(a2.read(0, 4096).await.unwrap(), pattern(4, 4096));
+        // Whoever finds it held learns who holds it (D153).
+        assert!(matches!(
+            other.attach(v2).await,
+            Err(ClientError::LeaseHeld { remaining_ms, label, .. })
+                if remaining_ms > 0 && label == "node-a"
+        ));
+        assert_eq!(
+            other
+                .volume(v2)
+                .await
+                .unwrap()
+                .unwrap()
+                .holder_label
+                .as_deref(),
+            Some("node-a")
+        );
+        assert_eq!(o1.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        // The fenced handle is let go; once released, the client that held
+        // it attaches it again.
+        a1.detach().await.unwrap();
+        o1.detach().await.unwrap();
+        let again = a.attach(v1).await.unwrap();
+        again.write(0, pattern(5, 4096)).await.unwrap();
+        assert_eq!(again.read(0, 4096).await.unwrap(), pattern(5, 4096));
+    });
+    c.stop();
+}
+
+/// Delegates (D33, D151) act under the holder's lease with identities of
+/// their own: only listed ones open the volume; a snapshot quiesces them
+/// with the holder, and is abandoned while one doesn't answer; one
+/// removed, the holder detaching, or the lease preempted, fences them.
+#[test]
+fn delegates_act_under_the_lease_and_are_fenced_with_it() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 1, move |a| async move {
+        let size = CHUNK as u64;
+        let v = a.create_volume(POOL, size, None, "v").await.unwrap().id;
+        let va = a.attach(v).await.unwrap();
+        let g = Client::connect(meta, 2).await.unwrap();
+        assert!(matches!(
+            g.delegate(v, 77).await,
+            Err(ClientError::BadVolume(_))
+        ));
+        let d = va.add_delegate().await.unwrap();
+        assert_eq!(a.volume(v).await.unwrap().unwrap().delegates, vec![d]);
+        let gd = g.delegate(v, d).await.unwrap();
+        assert!(gd.is_delegate() && gd.lease() == d);
+        gd.write(0, pattern(1, 4096)).await.unwrap();
+        assert_eq!(va.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        // A delegate can't add delegates.
+        assert!(gd.add_delegate().await.is_err());
+        // A snapshot quiesces the holder and its delegate.
+        let snapper = Client::connect(meta, 3).await.unwrap();
+        snapper.snapshot(v, "s1").await.unwrap();
+        gd.write(0, pattern(2, 4096)).await.unwrap();
+        // A delegate that doesn't answer (its handle is gone) holds the
+        // snapshot back until it is abandoned; once it is removed, the
+        // snapshot goes ahead.
+        let d2 = va.add_delegate().await.unwrap();
+        drop(g.delegate(v, d2).await.unwrap());
+        let r = snapper.snapshot(v, "s2").await;
+        assert!(
+            matches!(
+                r,
+                Err(ClientError::Server {
+                    code: Code::Busy,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+        va.remove_delegate(d2).await.unwrap();
+        assert!(a.map().blocked(d2));
+        assert_eq!(a.volume(v).await.unwrap().unwrap().delegates, vec![d]);
+        snapper.snapshot(v, "s2").await.unwrap();
+        // Preempted: the holder and its delegate are both fenced.
+        let o = Client::connect(meta, 4).await.unwrap();
+        let vo = o.preempt(v).await.unwrap();
+        assert!(o.map().blocked(va.lease()) && o.map().blocked(d));
+        assert!(!o.map().blocked(a.instance) && !o.map().blocked(g.instance));
+        let r = gd.write(0, pattern(3, 4096)).await;
+        assert!(
+            matches!(
+                r,
+                Err(ClientError::Server {
+                    code: Code::Fenced,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+        assert!(gd.lost());
+        assert!(va.write(0, pattern(3, 4096)).await.is_err());
+        assert!(o.volume(v).await.unwrap().unwrap().delegates.is_empty());
+        // A holder that detaches fences its delegates first.
+        let d3 = vo.add_delegate().await.unwrap();
+        let g3 = g.delegate(v, d3).await.unwrap();
+        g3.write(0, pattern(4, 4096)).await.unwrap();
+        vo.detach().await.unwrap();
+        assert!(o.map().blocked(d3));
+        assert!(g3.write(0, pattern(5, 4096)).await.is_err());
+        let back = a.attach(v).await.unwrap();
+        assert_eq!(back.read(0, 4096).await.unwrap(), pattern(4, 4096));
+    });
     c.stop();
 }
 
@@ -2415,6 +2601,7 @@ fn scrub_repairs_an_outvoted_primary_and_reports_what_it_cant() {
                             pg,
                             map_epoch: m.epoch,
                             pg_epoch: info.epoch,
+                            lease: 0,
                         },
                         key: WireKey {
                             ns: hyperstor_client::NS_VOL,
@@ -3167,6 +3354,7 @@ fn a_quiesce_holds_the_holders_writes_until_released() {
                     pg,
                     map_epoch: m.epoch,
                     pg_epoch: info.epoch,
+                    lease: 0,
                 };
                 let key = WireKey {
                     ns: hyperstor_client::NS_META,

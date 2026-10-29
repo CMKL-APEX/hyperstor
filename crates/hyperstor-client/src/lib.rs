@@ -56,8 +56,16 @@ pub enum ClientError {
     Shrink { have: u64, want: u64 },
     #[error("bad volume request: {0}")]
     BadVolume(String),
-    #[error("the volume is attached by client instance {holder:016x} for {remaining_ms} ms more")]
-    LeaseHeld { holder: u64, remaining_ms: u32 },
+    #[error(
+        "the volume is attached by {label:?} under lease {holder:016x} for {remaining_ms} ms more"
+    )]
+    LeaseHeld {
+        holder: u64,
+        delegates: Vec<u64>,
+        remaining_ms: u32,
+        /// The holder's label (D153).
+        label: String,
+    },
     #[error("the lease on volume {0:032x} is lost")]
     LeaseLost(u128),
     #[error("volume {0:032x} is attached")]
@@ -131,6 +139,20 @@ pub struct Client {
     pub(crate) cache: RefCell<cache::ReadCache>,
     pub id: u64,
     pub instance: u64,
+    /// Recorded with every lease this client takes, for whoever finds the
+    /// volume held (D153): `hyperstor-vhost` names its node, tools
+    /// themselves.
+    lease_label: RefCell<String>,
+}
+
+/// `label` cut to [`hyperstor_proto::LABEL_MAX`] bytes, at a character
+/// boundary.
+pub fn cut_label(label: &str) -> String {
+    let mut end = label.len().min(hyperstor_proto::LABEL_MAX);
+    while !label.is_char_boundary(end) {
+        end -= 1;
+    }
+    label[..end].to_string()
 }
 
 pub fn random_u64() -> u64 {
@@ -166,6 +188,7 @@ impl Client {
             // Never 0: storage nodes take 0 for peers, which are never
             // blocklisted.
             instance: random_u64().max(1),
+            lease_label: RefCell::new(String::new()),
         });
         c.refresh_map().await?;
         Ok(c)
@@ -173,6 +196,16 @@ impl Client {
 
     pub fn map(&self) -> Rc<ClusterMap> {
         self.map.borrow().clone()
+    }
+
+    /// The label recorded with the leases this client takes from now on
+    /// (D153), cut to [`hyperstor_proto::LABEL_MAX`] bytes.
+    pub fn set_lease_label(&self, label: &str) {
+        *self.lease_label.borrow_mut() = cut_label(label);
+    }
+
+    pub fn lease_label(&self) -> String {
+        self.lease_label.borrow().clone()
     }
 
     /// Installs `m` if it is newer than the map held (a pushed map).
@@ -319,12 +352,14 @@ impl Client {
     }
 
     /// Sends `msg` to the primary of the PG that holds chunk `chunk` of
-    /// `lineage` in `pool`, retrying across map changes. `make` builds the
-    /// message for the current map.
+    /// `lineage` in `pool`, retrying across map changes, under the lease
+    /// identity `lease` (D150; 0 for none). `make` builds the message for
+    /// the current map.
     pub(crate) async fn to_primary(
         &self,
         pool: u32,
         route: Route<'_>,
+        lease: u64,
         payload: &[u8],
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
@@ -354,6 +389,7 @@ impl Client {
                 pg,
                 map_epoch: map.epoch,
                 pg_epoch: info.epoch,
+                lease,
             };
             let key = match route {
                 Route::Chunk {
@@ -450,6 +486,23 @@ impl Client {
         off: u64,
         data: Vec<u8>,
     ) -> Result<(), ClientError> {
+        self.write_under(0, pool, lineage, branch, epoch, off, data)
+            .await
+    }
+
+    /// [`Self::write_at`] under the lease identity `lease` (D150), as an
+    /// [`volume::Attached`] writes; refused once `lease` is fenced.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_under(
+        self: &Rc<Self>,
+        lease: u64,
+        pool: u32,
+        lineage: u128,
+        branch: u32,
+        epoch: u64,
+        off: u64,
+        data: Vec<u8>,
+    ) -> Result<(), ClientError> {
         let pieces = self.pieces(pool, off, data.len() as u64)?;
         let data = Rc::new(data);
         let handles: Vec<_> = pieces
@@ -467,7 +520,7 @@ impl Client {
                         epoch,
                     };
                     let (msg, _) = me
-                        .to_primary(pool, route, piece, &|to, key| Msg::Write {
+                        .to_primary(pool, route, lease, piece, &|to, key| Msg::Write {
                             to,
                             key,
                             off: coff,
@@ -510,7 +563,7 @@ impl Client {
                         epoch: 0,
                     };
                     let (msg, payload) = me
-                        .to_primary(pool, route, &[], &|to, key| Msg::Read {
+                        .to_primary(pool, route, 0, &[], &|to, key| Msg::Read {
                             to,
                             key,
                             off: coff,
@@ -561,7 +614,7 @@ impl Client {
         off: u64,
         len: u64,
     ) -> Result<(Vec<u8>, Vec<(u32, u64)>), ClientError> {
-        self.read_layers(pool, lineage, layers, off, len, true)
+        self.read_layers(0, pool, lineage, layers, off, len, true)
             .await
     }
 
@@ -576,13 +629,17 @@ impl Client {
         len: u64,
     ) -> Result<Vec<(u32, u64)>, ClientError> {
         Ok(self
-            .read_layers(pool, lineage, layers, off, len, false)
+            .read_layers(0, pool, lineage, layers, off, len, false)
             .await?
             .1)
     }
 
-    async fn read_layers(
+    /// [`Self::read_sourced`] (with `data`) or [`Self::sources`], under
+    /// the lease identity `lease` (D150).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn read_layers(
         self: &Rc<Self>,
+        lease: u64,
         pool: u32,
         lineage: u128,
         layers: &[(u32, u64, u64)],
@@ -604,7 +661,7 @@ impl Client {
                         epoch: 0,
                     };
                     let (msg, payload) = me
-                        .to_primary(pool, route, &[], &|to, key| {
+                        .to_primary(pool, route, lease, &[], &|to, key| {
                             let layers = layers.to_vec();
                             if data {
                                 Msg::ReadAt {
@@ -675,7 +732,7 @@ impl Client {
             branch,
             epoch,
         };
-        self.to_primary(pool, route, &[], make).await
+        self.to_primary(pool, route, 0, &[], make).await
     }
 
     /// Applies `ops` to the object `name` of namespace `ns` in `pool`,
@@ -702,7 +759,7 @@ impl Client {
     ) -> Result<(), ClientError> {
         let payload = hyperstor_proto::encode_ops(ops);
         let (msg, _) = self
-            .to_primary(pool, route, &payload, &|to, key| Msg::Exec { to, key })
+            .to_primary(pool, route, 0, &payload, &|to, key| Msg::Exec { to, key })
             .await?;
         match msg {
             Msg::ExecOk => Ok(()),
@@ -726,7 +783,7 @@ impl Client {
         kv_limit: u32,
     ) -> Result<Option<hyperstor_proto::Looked>, ClientError> {
         let (msg, payload) = self
-            .to_primary(pool, Route::Object { ns, name }, &[], &|to, key| {
+            .to_primary(pool, Route::Object { ns, name }, 0, &[], &|to, key| {
                 Msg::Lookup {
                     to,
                     key,

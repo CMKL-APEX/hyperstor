@@ -55,7 +55,7 @@ enum ToQueue {
 }
 
 enum Event {
-    Attached(Volume),
+    Attached(Box<Volume>),
     Fetching,
     /// Every tag's fetch ended: the driver stopped the device.
     Ended,
@@ -91,7 +91,7 @@ pub fn serve(
         r
     };
     let volume = match events.recv() {
-        Ok(Event::Attached(v)) => v,
+        Ok(Event::Attached(v)) => *v,
         Ok(Event::Done(Err(e))) => return finish(Err(e)),
         _ => return finish(Err("the queue thread stopped".into())),
     };
@@ -169,13 +169,14 @@ fn queue_thread(
         let client = Client::connect_members(opts.meta.clone(), std::process::id() as u64)
             .await
             .map_err(|e| format!("map service: {e}"))?;
+        client.set_lease_label("ublk");
         let vol = match opts.take {
             Take::Attach => client.attach(opts.volume).await,
             Take::TakeOver => client.take_over(opts.volume).await,
             Take::Preempt => client.preempt(opts.volume).await,
         }
         .map_err(|e| format!("volume {:032x}: {e}", opts.volume))?;
-        let _ = ev2.send(Event::Attached(vol.volume()));
+        let _ = ev2.send(Event::Attached(Box::new(vol.volume())));
         let dev = match from_main.recv().await {
             Some(ToQueue::Dev(d)) => d,
             _ => {

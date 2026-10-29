@@ -34,18 +34,19 @@ design is split by topic, with section numbers kept across files.
   `hyperstorctl --mgmt` with a person's token, and the React web UI on
   `@glidex/ui-kit` with browser tests; in HS3, `hyperstor-vhost` (volumes
   as VM disks over vhost-user-blk, staged through its control socket; VMs
-  boot from them under Cloud Hypervisor and QEMU). `spec/implementation-notes.md` has
+  boot from them under Cloud Hypervisor and QEMU), with each attached
+  volume fenced on its own and D33's delegates (D150–D153). `spec/implementation-notes.md` has
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144 and D147–D149 in decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144, D147–D149 and D150–D153 in decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I185, the NFS and pNFS proposals
+  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I186, the NFS and pNFS proposals
   D128 and D131–D137 (`spec/nfs.md`), and every host check (G1–G38, FG1–FG2).
 - **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
   `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
-  then fencing one volume (D119's option 3), the rest of
+  then the rest of
   §11.1 (adaptive polling, reactors per NUMA node); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).

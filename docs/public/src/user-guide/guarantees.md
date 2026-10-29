@@ -65,8 +65,9 @@ The errors your program sees:
 | `Checksum` | Data was corrupted on the way to the client | Retry the read; report it if it persists |
 | `NoVolume(id)`, `VolumeExists(id)` | No volume has that id; one already does | Check the id |
 | `Shrink { .. }`, `BadVolume(..)` | A smaller size, or a size or name that isn't allowed | Fix the request |
-| `LeaseHeld { holder, remaining_ms }` | Another client instance has the volume attached | Wait, or `take_over` if that client is gone |
+| `LeaseHeld { holder, delegates, remaining_ms, label }` | Another lease holds the volume; `label` says whose | Wait, or `take_over` if its holder is gone |
 | `LeaseLost(id)` | This handle's lease was taken over, or this client was blocklisted | Stop using the handle; attach again if that's right |
+| `Server { code: Fenced, .. }` | This handle's lease was blocklisted by a take-over or preemption; the handle is now lost | As `LeaseLost` |
 | `VolumeAttached(id)` | A delete or rollback of an attached volume | Detach it first, or force the delete |
 | `NoSnapshot(epoch)` | The volume has no snapshot at that epoch | Check `volume(id)`'s snapshots |
 | `SnapshotInUse(epoch)` | A clone or a rollback still reads from that snapshot | Flatten or delete the clone first |

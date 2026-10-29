@@ -128,22 +128,26 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 
 ## 9. Volume leases and fencing (D11, D23, D24)
 
-- **As built** (implementation-notes.md I74–I78): the holder is the
-  header's `lease` attribute; the expiry lives in the primary's memory,
-  so a renewal writes nothing, and a new primary gives the holder a full
+- **As built** (implementation-notes.md I74–I78, I186): the holder is
+  the header's `lease` attribute (the lease's identity, the holder's
+  instance and the mode); the expiry lives in the primary's memory, so a
+  renewal writes nothing, and a new primary gives the holder a full
   lease. The client library's `attach`, `take_over`, `preempt` and
   `detach` do the rest; storage nodes refuse a blocklisted instance by
-  the instance its connection named at `Hello`.
+  the instance its connection named at `Hello`, and a blocklisted lease
+  by the identity its request names (D150).
 - **Attaching** a volume takes a lease, recorded in the volume's header
   object by its PG primary (§4.2):
   - `rw` is exclusive, one holder;
   - `ro` is shared, and is allowed only on snapshots (D18).
-- A lease names its holder (client instance), mode and expiry. The holder
+- A lease names its identity (D150), its holder (client instance), mode
+  and expiry, and its delegates (D33, D151). The holder
   renews it every second, for 4 s (D75), over its connection to the header's
   primary. Raft is not involved.
 - **Every request carries the client's instance id**, bound to its
-  identity at `Hello`. Storage nodes refuse requests from blocklisted
-  instances (§4.1).
+  identity at `Hello`, **and the identity of the lease it acts under**
+  (`Target.lease`, D150). Storage nodes refuse requests from blocklisted
+  instances (§4.1) and under blocklisted identities.
 - **Release and hand-off.** A holder that detaches releases the lease.
   A planned move (a VM re-placed while stopped, a gateway hand-over)
   is a release by the old holder and an acquire by the new one: no
@@ -153,8 +157,8 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
   1. the new holder asks the header primary for the lease; it is refused
      while the old lease hasn't expired;
   2. once it has, the new holder (or the API member acting for it) asks
-     the metadata service to blocklist the old instance: one Raft write,
-     map epoch `N`;
+     the metadata service to blocklist the old lease's identity and its
+     delegates' (D150): one Raft write, map epoch `N`;
   3. the metadata service pushes the map and reports when every storage
      node has acknowledged epoch `N` or has lost its map lease (and so
      refuses all writes, replication.md §8.4);
@@ -169,30 +173,31 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
   before a `Lost` VM is re-placed, because the partitioned node may still
   be running it (clustering.md D8). For disks on hyperstor the blocklist
   round already ensures the old VM's writes fail: glidex's driver
-  preempts the disks of a VM it re-places from a fenced node (D79). Whether glidex relaxes
+  preempts the disks of a VM it re-places from a fenced node (D79), and
+  a disk still held elsewhere when it starts a VM that runs nowhere
+  (D153). Whether glidex relaxes
   `--fenced` for VMs whose disks are all on hyperstor is for
   clustering.md to decide. The VM's network identity is affected too, not
   only its disks.
-- **Fencing one volume of a shared client** (planned, D119). A blocklist
-  entry names a client instance, and a storage node refuses everything on
-  that instance's connections, so preempting one volume of a
-  `hyperstor-vhost` cuts off every disk it serves (implementation-notes.md
-  I160). Until this lands, glidex preempts only from fenced nodes (D119).
-  The plan:
+- **Fencing one volume of a shared client** (D150, D151; built
+  2026-10-29). A `hyperstor-vhost` serves every VM of its node through
+  one client; fencing that client would cut off every disk it serves
+  (implementation-notes.md I160). So:
   - **A lease identity per attached volume**, chosen by the client at
     attach and recorded in the header with the lease, alongside the
-    instance it belongs to. It travels on every request to that volume's
-    chunks, so connections stay shared: one per storage node, as now.
+    instance it belongs to. It travels on every request under the lease,
+    so connections stay shared: one per storage node, as before.
   - **Blocklist entries name an identity or an instance.** A storage node
-    refuses a request whose identity, or whose connection's instance, is
-    listed; preempting one volume lists its identity only, and fencing a
-    node still lists the instance.
+    refuses a client's request whose identity, or whose connection's
+    instance, is listed (`Fenced`, `Blocklisted`); preempting one volume
+    lists its identity and its delegates', and fencing a whole client
+    still lists the instance.
   - **D33's delegates are the same thing seen from the guest**: an
-    identity that acts under a holder, blocklisted with it. Both are
-    built together.
-  - **Costs:** a field on every chunk request and a second lookup per
-    request on storage nodes; the blocklist grows by one entry per
-    preempted volume, until its lease would have expired.
-  - **To check before building:** the request header's size budget
-    (protocol.md), and that renewals per identity still batch per
-    primary (D75).
+    identity that acts under a holder, renews nothing, and is fenced with
+    it (D151). A snapshot's quiesce waits for each.
+  - **Costs:** 8 bytes on every request, not measurable (benchmarks.md,
+    2026-10-29), and a second lookup per request while the blocklist
+    isn't empty (not measured); the blocklist grows by one entry per
+    preempted lease and delegate, for an hour.
+  - **Renewals per identity still batch per primary** (D75): each entry
+    of a `LeaseRenew` names its identity.

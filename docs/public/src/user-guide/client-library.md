@@ -98,13 +98,27 @@ While one client holds it, another's `attach` fails with `LeaseHeld`.
 - `detach()` gives the lease up. A handle dropped without it stops
   renewing, and its lease runs out.
 - `take_over(id)` attaches a volume whose holder has died or is cut off:
-  it waits for the holder's lease to run out, **blocklists** the holder,
-  then takes the lease. From then on every storage node refuses the old
-  holder, so none of its writes can land after the new holder's. A holder
-  that is still renewing is left alone (`LeaseHeld`).
+  it waits for the holder's lease to run out, **blocklists** that lease,
+  then takes it. From then on every storage node refuses requests made
+  under the old lease, so none of the old holder's writes can land after
+  the new holder's. A holder that is still renewing is left alone
+  (`LeaseHeld`).
 - `preempt(id)` takes a volume from a live holder, for example one an
-  operator moves: it blocklists the holder first. A blocklisted client
-  instance has lost every lease; make a new `Client` to go on.
+  operator moves: it blocklists the holder's lease first. Only that
+  volume's lease is cut off: the old holder's other volumes go on, and it
+  can attach the volume again later.
+- `lease()` is the handle's lease identity, which every request through
+  it carries.
+- `set_lease_label(label)` sets a short label (up to 64 bytes) recorded
+  with every lease the client takes, and `attach_as(id, how, label)` sets
+  one lease's. `LeaseHeld` and a volume's `holder_label` give it, so
+  whoever finds a volume held knows what holds it.
+- **Delegates** act under a holder's lease from another client, such as
+  a library inside a VM: `add_delegate()` on the holder's handle returns
+  a new identity, and `Client::delegate(id, identity)` opens the volume
+  with it there. A delegate renews nothing. It is cut off when the holder
+  removes it (`remove_delegate`), detaches, or loses the lease to a
+  take-over, and a snapshot waits for it to pause as for the holder.
 - Once a handle's lease is lost, its I/O fails with `LeaseLost`, and
   `lost()` returns true.
 - An attached volume can't be deleted (`VolumeAttached`); detach it
