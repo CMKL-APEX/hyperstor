@@ -814,6 +814,7 @@ status = "done"
 tests = [
     "hyperstor_meta::api::tests::audit_lines_are_json_with_escapes",
     "hyperstor_meta::audit_log::tests::days_keys_and_lines",
+    "hyperstor_meta::audit_log::tests::a_time_written_as_a_string_is_read",
     "hyperstor_meta::audit_log::tests::retention_drops_whole_days",
     "audit::every_change_lands_in_the_audit_log",
     "browser::the_audit_log_shows_who_did_what",

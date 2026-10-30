@@ -252,10 +252,7 @@ impl Window {
 /// with `audit`, `time`, `principal`, `op`, `target` and `result`).
 pub fn append(line: &str) -> Result<(), String> {
     let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-    let time = v["time"]
-        .as_f64()
-        .or_else(|| v["time"].as_str().and_then(|t| t.parse().ok()))
-        .ok_or("no time")?;
+    let time = time_of(&v).ok_or("no time")?;
     for k in ["principal", "op", "target", "result"] {
         if !v[k].is_string() {
             return Err(format!("no {k}"));
@@ -267,6 +264,14 @@ pub fn append(line: &str) -> Result<(), String> {
     eprintln!("{line}");
     enqueue((time * 1e6) as u64, line.to_string());
     Ok(())
+}
+
+/// A record's time in Unix seconds: a number, or a string holding one,
+/// as hyperstor-mgmt wrote it before 2026-10-30 (records keep it).
+pub fn time_of(v: &serde_json::Value) -> Option<f64> {
+    v["time"]
+        .as_f64()
+        .or_else(|| v["time"].as_str().and_then(|t| t.parse().ok()))
 }
 
 /// The UTC day of `unix` seconds, `YYYY-MM-DD`.
@@ -617,7 +622,7 @@ fn matches(line: &str, q: &Query) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return false;
     };
-    let t = v["time"].as_f64().unwrap_or(0.0) as u64;
+    let t = time_of(&v).unwrap_or(0.0) as u64;
     (q.since == 0 || t >= q.since)
         && (q.until == 0 || t <= q.until)
         && (q.principal.is_empty()
@@ -794,6 +799,23 @@ pub async fn pruner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// hyperstor-mgmt wrote its records' time as a string until
+    /// 2026-10-30: they are read as the time they say, so `--since` keeps
+    /// them and the API doesn't date them 1970.
+    #[test]
+    fn a_time_written_as_a_string_is_read() {
+        let l = r#"{"audit":1,"time":"1792454400.123","principal":"user:ann","op":"Login","target":"mgmt","result":"ok"}"#;
+        let v: serde_json::Value = serde_json::from_str(l).unwrap();
+        assert_eq!(time_of(&v), Some(1_792_454_400.123));
+        let since = |since| Query {
+            since,
+            ..Default::default()
+        };
+        assert!(matches(l, &since(1_792_454_400)));
+        assert!(!matches(l, &since(1_792_454_401)));
+        assert!(append(l).is_ok());
+    }
 
     #[test]
     fn days_keys_and_lines() {

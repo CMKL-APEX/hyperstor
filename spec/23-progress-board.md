@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 0 | 0 | 0 | 3 |
+| 0 | 0 | 1 | 3 |
 
 ## In progress
 
@@ -23,7 +23,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Audit records from mgmt listed with their time** (`audit-list-times`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `fix/audit-string-time`, [#77](https://github.com/CMKL-APEX/hyperstor/pull/77) | Fix and tests ready (I190): string times read as numbers; mgmt writes numbers | Review, merge, deploy to the pilot and check audit list --since shows mgmt's records | 2026-10-30 |
 
 ## Done
 
