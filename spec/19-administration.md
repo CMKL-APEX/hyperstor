@@ -225,7 +225,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Overview | health with reasons (§16), capacity, IOPS and latency | — |
 | Nodes and devices | role, reactors, NUMA, device wear and capacity, peer reports (D40) | drain, out, in, add device |
 | Pools | kind (replicated, EC, cache, D45), fullness against D27's thresholds, PG states | create, thresholds, delete when empty |
-| PGs | a state map by pool (D154: a cell per PG, sent again only when the map changes; by failure domain later) | pick a PG for its acting and up sets |
+| PGs | a state map by pool (D154: a cell per PG, sent again only when the map changes; by failure domain later), each cell shaded by the bytes on its primary (D155) | pick a PG for its acting and up sets |
 | Volumes | size, allocated, lease holder, QoS and class (D46), snapshots and clones | create, expand, snapshot, clone, flatten, QoS, delete to trash |
 | Hosts and exports | bare-metal identities, NVMe-oF exports, allowlists | export, revoke, rotate CHAP |
 | S3 (later) | buckets, access keys | create, revoke |

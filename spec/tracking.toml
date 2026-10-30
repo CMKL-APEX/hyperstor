@@ -851,6 +851,18 @@ tests = [
     "hyperstor_meta::api::tests::pg_grid_follows_the_epoch",
 ]
 
+[[milestone.item]]
+what = "Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG on a log scale, the UI shades each cell and hyperstorctl pg-grid --usage prints a digit"
+spec = ["19-administration.md §23.7", "D155", "I191"]
+status = "done"
+tests = [
+    # Also shown by browser::the_pages_show_the_cluster, tracked earlier.
+    "hyperstor_engine::shard::tests::a_pg_is_summed_in_slices",
+    "hyperstor_meta::tests::usage_reports_follow_the_primaries",
+    "hyperstor_meta::api::tests::usage_levels_are_a_log_scale",
+    "usage::the_grid_shows_where_data_is",
+]
+
 [[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

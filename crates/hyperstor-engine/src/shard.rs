@@ -1860,6 +1860,42 @@ impl Shard {
             .collect()
     }
 
+    /// Blocks mapped by at most `max` objects of one PG, from just after
+    /// `after` (from the PG's first if `None`), and the last key counted
+    /// while the PG may hold more: a PG is summed a slice at a time (D155).
+    pub fn pg_blocks(
+        &self,
+        pool: u32,
+        pg: u32,
+        after: Option<&ObjKey>,
+        max: usize,
+    ) -> (u64, Option<ObjKey>) {
+        use std::ops::Bound;
+        let lo = match after {
+            Some(k) => Bound::Excluded(k.clone()),
+            None => Bound::Included(ObjKey::new(
+                pool,
+                pg,
+                crate::types::Namespace::Vol,
+                Vec::new(),
+                0,
+            )),
+        };
+        let mut blocks = 0;
+        let mut last: Option<&ObjKey> = None;
+        for (n, (k, o)) in self.index.objects.range((lo, Bound::Unbounded)).enumerate() {
+            if (k.pool, k.pg) != (pool, pg) {
+                return (blocks, None);
+            }
+            if n == max {
+                return (blocks, last.cloned());
+            }
+            blocks += o.block_count();
+            last = Some(k);
+        }
+        (blocks, None)
+    }
+
     pub fn stats(&self) -> ShardStats {
         ShardStats {
             objects: self.index.objects.len() as u64,
@@ -2088,6 +2124,54 @@ mod tests {
 
     fn key(i: u64) -> ObjKey {
         ObjKey::new(1, 1, Namespace::Vol, format!("o{i:03}").into_bytes(), 0)
+    }
+
+    /// D155: a PG's blocks, summed a slice at a time, without its
+    /// neighbours'.
+    #[test]
+    fn a_pg_is_summed_in_slices() {
+        let region = Region {
+            start: 0,
+            blocks: 2048,
+            log_blocks: 64,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(2048 * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        let mut sh = Shard::open(dev, region, 7, 0).unwrap();
+        let write = |sh: &mut Shard, pg: u32, i: u64, blocks: usize| {
+            let key = ObjKey::new(1, pg, Namespace::Vol, format!("o{i}").into_bytes(), 0);
+            sh.commit(vec![OpList {
+                key,
+                ops: vec![Op::Write {
+                    off: 0,
+                    data: vec![1; blocks * BLOCK],
+                }],
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
+        };
+        for i in 0..5 {
+            write(&mut sh, 2, i, i as usize + 1);
+        }
+        write(&mut sh, 1, 9, 7);
+        write(&mut sh, 3, 9, 7);
+        let sum = |max| {
+            let (mut total, mut after, mut slices) = (0, None, 0);
+            loop {
+                let (b, next) = sh.pg_blocks(1, 2, after.as_ref(), max);
+                total += b;
+                slices += 1;
+                match next {
+                    Some(k) => after = Some(k),
+                    None => return (total, slices),
+                }
+            }
+        };
+        assert_eq!(sum(100), (15, 1));
+        assert_eq!(sum(2), (15, 3));
+        assert_eq!(sh.pg_blocks(1, 4, None, 2), (0, None));
     }
 
     /// A checkpoint with no room is abandoned, not fatal (implementation-

@@ -139,7 +139,8 @@ pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
 }
 
 /// `hyperstorctl pg-grid`: a character per PG, 64 to a line, each line
-/// led by its first PG (D154).
+/// led by its first PG (D154); with usage (D155), a second grid of digits,
+/// 0 for the emptiest level to 9 for the fullest.
 pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
     let mut o = format!(
         "pool {pool}, map epoch {}: . clean  d degraded  b backfilling  X inactive\n",
@@ -157,6 +158,23 @@ pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
             })
             .collect();
         let _ = writeln!(o, "{:>6}  {cells}", i * 64);
+    }
+    if !r.usage.is_empty() {
+        let _ = writeln!(
+            o,
+            "usage on a log scale, the fullest PG {} bytes: 0 least to 9 most  ? not reported",
+            r.max_bytes
+        );
+        for (i, row) in r.usage.chunks(64).enumerate() {
+            let cells: String = row
+                .iter()
+                .map(|&l| match l {
+                    0 => '?',
+                    l => char::from(b'0' + ((l as u32 - 1) * 10 / 255) as u8),
+                })
+                .collect();
+            let _ = writeln!(o, "{:>6}  {cells}", i * 64);
+        }
     }
     o
 }
@@ -753,5 +771,18 @@ mod tests {
         assert!(lines[0].starts_with("pool 1, map epoch 9"), "{g}");
         assert_eq!(lines[1], format!("     0  {}", ".".repeat(64)));
         assert_eq!(lines[2], "    64  .X....");
+        let g = pg_grid_text(
+            1,
+            &pb::GetPgGridResponse {
+                epoch: 9,
+                states: vec![1; 4],
+                usage: vec![0, 1, 128, 255],
+                max_bytes: 4096,
+                ..Default::default()
+            },
+        );
+        let lines: Vec<&str> = g.lines().collect();
+        assert!(lines[2].contains("the fullest PG 4096 bytes"), "{g}");
+        assert_eq!(lines[3], "     0  ?049");
     }
 }

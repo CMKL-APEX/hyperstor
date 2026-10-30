@@ -17,7 +17,11 @@ export default async function globalSetup() {
     throw new Error(`${bin} is missing: cargo build --release --workspace`);
   }
   const ui = join(here, "..", "ui", "dist");
-  const child = spawn(bin, ["--ui", ui], { stdio: ["pipe", "pipe", "inherit"] });
+  // Primaries report their PGs' usage every half second (D155).
+  const child = spawn(bin, ["--ui", ui], {
+    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, HS_PG_USAGE_MS: "500" },
+  });
   const line = await new Promise<string>((resolve, reject) => {
     const rl = createInterface({ input: child.stdout! });
     rl.once("line", resolve);

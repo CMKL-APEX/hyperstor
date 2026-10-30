@@ -723,3 +723,12 @@ recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 92 | A call that sends a byte per PG and nothing while the map's epoch hasn't moved, polled (recommended); a stream of changed PGs; the existing list, compressed | Polled by epoch | D154, I189 |
+
+## PG usage in the grid (2026-10-30)
+
+Asked to shade each PG's cell by how much it holds, darker for more,
+with a recommendation for each of three choices:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 93 | Where usage comes from: primaries report changes every 30 s to the leader, kept in memory (recommended), or the map service asks every host on demand; what it measures: bytes allocated (recommended) or objects; how it is drawn: the state's colour shaded on a log scale up to the pool's fullest PG (recommended), a toggle between states and a usage heatmap, or an absolute scale | The three recommendations | D155, I191 |

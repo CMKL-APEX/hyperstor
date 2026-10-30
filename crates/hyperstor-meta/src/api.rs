@@ -594,6 +594,24 @@ fn pg_grid(map: &ClusterMap, pool: u32, since: u64) -> Result<pb::GetPgGridRespo
     })
 }
 
+/// Each PG's usage level (D155) and the fullest PG's bytes: 0 for a PG
+/// not reported yet, else 1 + 254 x log2(1 + bytes) / log2(1 + max),
+/// rounded. A log scale: a PG with a thousandth of the fullest's bytes
+/// still shows.
+fn usage_levels(bytes: &[Option<u64>]) -> (Vec<u8>, u64) {
+    let max = bytes.iter().flatten().copied().max().unwrap_or(0);
+    let top = (max as f64).ln_1p();
+    let levels = bytes
+        .iter()
+        .map(|b| match b {
+            None => 0,
+            Some(_) if max == 0 => 1,
+            Some(b) => 1 + (254.0 * (*b as f64).ln_1p() / top).round() as u8,
+        })
+        .collect();
+    (levels, max)
+}
+
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
 #[allow(refining_impl_trait)]
 impl ClusterService for Api {
@@ -676,7 +694,28 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::GetPgGridResponse> {
         self.authorize(&ctx, "GetPgGrid", &format!("pool {}", req.pool), false)?;
         let (map, ..) = self.published().await?;
-        Ok(pg_grid(&map, req.pool, req.since_epoch)?.into())
+        let mut r = pg_grid(&map, req.pool, req.since_epoch)?;
+        if let Some(since) = req.since_usage {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::PgUsage {
+                    pool: req.pool,
+                    since,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            let (version, bytes) = rx
+                .recv()
+                .await
+                .ok_or_else(|| ConnectError::unavailable("map service stopped"))?
+                .map_err(|e| meta_error(e, ConnectError::not_found, "not_found"))?;
+            r.usage_version = version;
+            match bytes {
+                None => r.usage_unchanged = true,
+                Some(b) => (r.usage, r.max_bytes) = usage_levels(&b),
+            }
+        }
+        Ok(r.into())
     }
 
     async fn set_device_in(
@@ -1382,6 +1421,21 @@ async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::Co
 mod tests {
     /// A byte per PG in PG order, sent again only when the map's epoch
     /// moves (D154), and in agreement with the counts.
+    #[test]
+    fn usage_levels_are_a_log_scale() {
+        let (l, max) =
+            super::usage_levels(&[None, Some(0), Some(1 << 30), Some(1 << 20), Some(4096)]);
+        assert_eq!(max, 1 << 30);
+        assert_eq!(l[..3], [0, 1, 255]);
+        // 2^20 is two thirds of the way to 2^30 on a log scale, 2^12 two fifths.
+        assert!(
+            (169..=171).contains(&l[3]) && (102..=104).contains(&l[4]),
+            "{l:?}"
+        );
+        // Nothing written anywhere: every reported PG at the lowest level.
+        assert_eq!(super::usage_levels(&[Some(0), None]).0, [1, 0]);
+    }
+
     #[test]
     fn pg_grid_follows_the_epoch() {
         let mut m = crate::parse_cluster(

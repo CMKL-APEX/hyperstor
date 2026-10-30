@@ -99,6 +99,14 @@ pub enum Admin {
     /// Whether this member leads: `Ok`, or why not (with the leader's
     /// map service address when known).
     Leads(hyperstor_reactor::chan::OneSender<Result<(), String>>),
+    /// The bytes on each of the pool's PGs' primaries (D155), unless the
+    /// reports are still at version `since` (`None`); only the leader has
+    /// them.
+    PgUsage {
+        pool: u32,
+        since: u64,
+        reply: hyperstor_reactor::chan::OneSender<Result<PoolUsage, String>>,
+    },
     /// How long the leader has failed to commit map changes, if it has.
     Uncommitted(hyperstor_reactor::chan::OneSender<Option<Duration>>),
     /// This member's role, and the client instance its volume work uses
@@ -388,10 +396,26 @@ pub struct Meta {
     /// PGs whose last scrub left objects it couldn't repair, with how many
     /// (their primaries' `ScrubReport`s, kept by the leader).
     pub inconsistent: RefCell<Inconsistent>,
+    /// The bytes on each PG's primary, with the device that reported
+    /// them (D155): the leader's, in memory only.
+    usage: RefCell<BTreeMap<(u32, u32), (u32, u64)>>,
+    /// Bumped with every change to `usage`, from the wall clock's
+    /// nanoseconds, so a new leader's versions don't repeat an old one's.
+    usage_version: Cell<u64>,
 }
 
 /// PGs whose last scrub left objects unresolved, with how many.
 pub type Inconsistent = BTreeMap<(u32, u32), u32>;
+
+/// A pool's usage as [`Admin::PgUsage`] answers it: the reports' version
+/// and, unless unchanged, the bytes of PG n at n (`None`: not reported).
+pub type PoolUsage = (u64, Option<Vec<Option<u64>>>);
+
+fn wall_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_nanos() as u64)
+}
 
 /// How long the leader waits for the group to commit a map.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -518,7 +542,55 @@ impl Meta {
             down_since: RefCell::new(HashMap::new()),
             damping: RefCell::new(HashMap::new()),
             inconsistent: RefCell::new(BTreeMap::new()),
+            usage: RefCell::new(BTreeMap::new()),
+            usage_version: Cell::new(wall_nanos()),
         })
+    }
+
+    fn bump_usage(&self) {
+        self.usage_version
+            .set(wall_nanos().max(self.usage_version.get() + 1));
+    }
+
+    /// Takes a primary's usage report (D155) and returns how many PGs it
+    /// now has from `device`. A full report drops the device's PGs it
+    /// leaves out: the device is no longer their primary.
+    pub fn note_usage(&self, device: u32, full: bool, pgs: &[(u32, u32, u64)]) -> u32 {
+        let mut u = self.usage.borrow_mut();
+        let n = u.len();
+        if full {
+            let named: std::collections::HashSet<_> = pgs.iter().map(|&(p, g, _)| (p, g)).collect();
+            u.retain(|k, (d, _)| *d != device || named.contains(k));
+        }
+        let mut changed = u.len() != n;
+        for &(pool, pg, bytes) in pgs {
+            changed |= u.insert((pool, pg), (device, bytes)) != Some((device, bytes));
+        }
+        let known = u.values().filter(|(d, _)| *d == device).count() as u32;
+        drop(u);
+        if changed {
+            self.bump_usage();
+        }
+        known
+    }
+
+    /// [`Admin::PgUsage`]'s answer.
+    pub fn pool_usage(&self, pool: u32, since: u64) -> Result<PoolUsage, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let version = self.usage_version.get();
+        if since == version {
+            return Ok((version, None));
+        }
+        let Some(n) = self.published.borrow().pools.get(&pool).map(|p| p.pg_count) else {
+            return Err(format!("no pool {pool}"));
+        };
+        let u = self.usage.borrow();
+        let bytes = (0..n)
+            .map(|pg| u.get(&(pool, pg)).map(|&(_, b)| b))
+            .collect();
+        Ok((version, Some(bytes)))
     }
 
     /// Sets how long a node stays down before its devices are marked out.
@@ -601,6 +673,8 @@ impl Meta {
                     self.down_since.borrow_mut().clear();
                     self.damping.borrow_mut().clear();
                     self.inconsistent.borrow_mut().clear();
+                    self.usage.borrow_mut().clear();
+                    self.bump_usage();
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
                     if !self.persisted.get() {
@@ -911,6 +985,9 @@ impl Meta {
                 Admin::Uncommitted(reply) => {
                     let since = self.uncommitted.get().filter(|_| self.leads());
                     let _ = reply.send(since.map(|t| t.elapsed()));
+                }
+                Admin::PgUsage { pool, since, reply } => {
+                    let _ = reply.send(self.pool_usage(pool, since));
                 }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
@@ -1366,7 +1443,8 @@ impl Meta {
                     | Msg::BackfillDone { .. }
                     | Msg::DeviceFailed { .. }
                     | Msg::MemberSlow { .. }
-                    | Msg::ScrubReport { .. })
+                    | Msg::ScrubReport { .. }
+                    | Msg::PgUsage { .. })
             )
         {
             return Msg::Error {
@@ -1439,6 +1517,9 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            Ok(Msg::PgUsage { device, full, pgs }) => Msg::PgUsageOk {
+                known: self.note_usage(device, full, &pgs),
+            },
             // A device the engine can no longer write: out at once, without
             // waiting for the down-out interval (09-replication.md §15).
             Ok(Msg::DeviceFailed { device }) => {
@@ -1680,6 +1761,45 @@ mod tests {
         // Survivors keep their positions and primacy: nothing else is fenced.
         assert!(losers.keys().all(|d| m.devices[d].node == 1));
         assert!(Meta::losers(&m, &m).is_empty());
+    }
+
+    /// D155: primaries' reports, a full one dropping what its sender no
+    /// longer leads, and a version that moves only with a change.
+    #[test]
+    fn usage_reports_follow_the_primaries() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        let pool = *m.published.borrow().pools.keys().next().unwrap();
+        let n = m.published.borrow().pools[&pool].pg_count as usize;
+        let (v0, Some(none)) = m.pool_usage(pool, 0).unwrap() else {
+            panic!("bytes")
+        };
+        assert!(none.len() == n && none.iter().all(Option::is_none));
+        let report = |device, full, pgs: Vec<(u32, u32, u64)>| match m.handle(Ok(Msg::PgUsage {
+            device,
+            full,
+            pgs,
+        })) {
+            Msg::PgUsageOk { known } => known,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(report(7, true, vec![(pool, 0, 4096), (pool, 1, 0)]), 2);
+        assert_eq!(report(8, false, vec![(pool, 2, 8192)]), 1);
+        let (v1, Some(b)) = m.pool_usage(pool, v0).unwrap() else {
+            panic!("bytes")
+        };
+        assert!(v1 > v0);
+        assert_eq!(b[..3], [Some(4096), Some(0), Some(8192)]);
+        // The same numbers again change nothing.
+        assert_eq!(report(8, false, vec![(pool, 2, 8192)]), 1);
+        assert_eq!(m.pool_usage(pool, v1).unwrap(), (v1, None));
+        // Device 7 is no longer PG 0's primary.
+        assert_eq!(report(7, true, vec![(pool, 1, 0)]), 1);
+        let (_, Some(b)) = m.pool_usage(pool, v1).unwrap() else {
+            panic!("bytes")
+        };
+        assert_eq!(b[..3], [None, Some(0), Some(8192)]);
+        assert!(m.pool_usage(pool + 100, 0).is_err());
     }
 
     #[test]
