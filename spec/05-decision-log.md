@@ -791,7 +791,7 @@ performance, durability and security. Hosts already serve several
 devices, one reactor and port each (D39), and placement keeps copies on
 different hosts. Two parts need the owner's choices: what a device's
 weight is, and encryption at rest (03-overview.md §1 lists it as later;
-15-operations.md §19). None of these points is settled.
+15-operations.md §19).
 
 **Weights.** Placement scores each device by `-ln(u) / weight`
 (07-placement.md §5.2), and D156 counts a pool's space over devices with
@@ -825,3 +825,7 @@ in. Measured on dev-2 (02-benchmarks.md, 2026-10-31), one core encrypts
 | 111 | **Which key a block uses.** A volume and every clone made from its snapshots share a lineage (D21); each is a branch, a clone reads its parent's blocks, and a chunk version is keyed by lineage, chunk, branch and epoch (D4) | (a) a key per lineage, shared by a volume and its clones: erasing one needs all of them gone; (b) a key per branch, a block's key being that of the branch whose version holds it: no extra bytes, and a clone's own writes use its own key; (c) a key per tenant per pool | (b). A branch's key is deleted only when no clone reads through it, the rule its data already follows, so erasure stays per volume |
 | 112 | **Where keys are kept.** Each branch's data key is stored wrapped by a key-encryption key (KEK), in the volume's header in `.meta` | (a) a cluster KEK held by the map service members as an encrypted systemd credential, TPM-sealed where the host has one (as the intermediate CA's key, I87 and G18), backed up with the root key (D84), and sent over mTLS to the primaries of a volume's PGs while it is attached; (b) an external KMS (KMIP, or Vault's transit engine) per cluster or tenant; (c) (a) by default, (b) per tenant as an option | (c), building (a) first. A cluster with no KMS still gets encryption, and a tenant whose policy names a KMS can use its own |
 | 113 | **What is encrypted, and how it starts** | (a) chosen per pool when it is made: every volume in it; (b) per volume when it is made; (c) the whole cluster | (a), then (b) where a pool allows it. Existing pools stay as they are. `.meta` (headers, audit, people's state) is encrypted with the cluster key once (a) is built. A device that holds encrypted data sets an incompatible flag (D157), so a build without encryption refuses it rather than serving ciphertext as data |
+
+Settled on 2026-10-31, every point as recommended: points 104, 105 and
+107 as D158; 106 as D159, revising D156's count; 108, 109 and 113 as
+D160; 110 as D161; 111 and 112 as D162.
