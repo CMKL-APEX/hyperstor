@@ -20,7 +20,7 @@ fn record_pb(line: &str) -> pb::AuditRecord {
     let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
     let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
     pb::AuditRecord {
-        time_ms: (v["time"].as_f64().unwrap_or(0.0) * 1000.0) as u64,
+        time_ms: (crate::audit_log::time_of(&v).unwrap_or(0.0) * 1000.0).round() as u64,
         principal: s("principal"),
         op: s("op"),
         target: s("target"),

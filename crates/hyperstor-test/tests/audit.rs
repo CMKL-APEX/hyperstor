@@ -40,6 +40,16 @@ fn every_change_lands_in_the_audit_log() {
         (r.has("Claim") && r.has("People.SetRoles")).then_some(r)
     });
     assert!(mgmt.has("ok, pam"), "{}", mgmt.out);
+    // With a time like any other: kept by --since, not dated 1970.
+    let recent = c
+        .ctl(&["audit", "list", "--since", "1h", "--principal", "user:ann"])
+        .ok();
+    assert!(
+        recent.has("Claim") && recent.has("People.SetRoles"),
+        "{}",
+        recent.out
+    );
+    assert!(!recent.has("1970-"), "{}", recent.out);
     // Refused calls too.
     let refused = c.ctl(&["audit", "list", "--op", "DeleteVolume"]).ok();
     assert!(refused.has("failed"), "{}", refused.out);

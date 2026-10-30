@@ -411,8 +411,9 @@ fn audit(principal: &str, op: &str, target: &str, result: &str) {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
+    // The time as a number of seconds, as the map service writes it.
     let line = serde_json::json!({
-        "audit": 1, "time": format!("{}.{:03}", t.as_secs(), t.subsec_millis()),
+        "audit": 1, "time": t.as_millis() as f64 / 1000.0,
         "principal": principal, "op": op, "target": target, "result": result,
     })
     .to_string();

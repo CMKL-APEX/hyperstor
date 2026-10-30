@@ -363,6 +363,9 @@ admin error; a day's grace costs only space, and the space is visible.
     recorded ten a minute; the rest are counted into one `Refused`
     record when the minute ends ("refused N more … calls"); journald
     has every one.
+  - a record is one line of JSON whose `time` is a number of Unix
+    seconds with milliseconds; one whose `time` is a string holding
+    that number, as hyperstor-mgmt wrote until I189, reads the same.
 
 Why: a client retrying refused calls once grew a day's single object
 past the 64 MiB frame and stalled its PG's backfill (I177). Parts bound

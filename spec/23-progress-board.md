@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 1 | 0 | 1 | 0 |
+| 1 | 0 | 2 | 0 |
 
 ## In progress
 
@@ -28,6 +28,7 @@ None.
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
 | **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | Spec files renamed NN-topic.md in order of creation, every reference updated; scripts/board.py and spec/board/ added | Review and merge | 2026-10-30 |
+| **Audit records from mgmt listed with their time** (`audit-list-times`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `fix/audit-string-time` | Fix and tests ready (I189): string times read as numbers; mgmt writes numbers | Review, merge, deploy to the pilot and check audit list --since shows mgmt's records | 2026-10-30 |
 
 ## Done
 
