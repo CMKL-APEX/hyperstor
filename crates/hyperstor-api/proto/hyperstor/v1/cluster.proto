@@ -12,8 +12,12 @@ service ClusterService {
   // Health with its reasons, nodes, devices and pools. Read.
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
-  // Acting and up sets of one pool's PGs. Read.
+  // Acting and up sets of one pool's PGs, or of one PG. Read.
   rpc ListPgs(ListPgsRequest) returns (ListPgsResponse);
+
+  // One pool's PG states, a byte each, for a grid (04-decisions.md D154):
+  // nothing but the epoch while the map is still at `since_epoch`. Read.
+  rpc GetPgGrid(GetPgGridRequest) returns (GetPgGridResponse);
 
   // Takes a device out of placement, so its PGs move elsewhere, or brings
   // it back in. Write.
@@ -244,6 +248,8 @@ message PgCounts {
 
 message ListPgsRequest {
   uint32 pool = 1;
+  // Only this PG.
+  optional uint32 pg = 2;
 }
 
 message ListPgsResponse {
@@ -259,6 +265,30 @@ message Pg {
   repeated uint32 acting = 4;
   // Where placement wants the PG; members not in acting are backfilling.
   repeated uint32 up = 5;
+}
+
+// A PG's worst state, as PgCounts counts it.
+enum PgState {
+  PG_STATE_UNSPECIFIED = 0;
+  PG_STATE_CLEAN = 1;
+  PG_STATE_DEGRADED = 2;
+  PG_STATE_BACKFILLING = 3;
+  PG_STATE_INACTIVE = 4;
+}
+
+message GetPgGridRequest {
+  uint32 pool = 1;
+  // The epoch of the states the caller has; 0 for none.
+  uint64 since_epoch = 2 [json_name = "since_epoch"];
+}
+
+message GetPgGridResponse {
+  // The map epoch the states are from. PG states change only with it.
+  uint64 epoch = 1;
+  // The map is still at since_epoch: states is empty.
+  bool unchanged = 2;
+  // A PgState per PG, PG n at byte n.
+  bytes states = 3;
 }
 
 message SetDeviceInRequest {

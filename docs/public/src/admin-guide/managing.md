@@ -10,7 +10,7 @@ The installer runs the management service (`hyperstor-mgmt`) on the map
 service's host, at <http://127.0.0.1:8852/>. Installed with `--ui` (see
 [hyperstor-install](../reference/hyperstor-install.md)), it serves the web
 UI: an overview, nodes and devices (take out, bring in, drain), pools and
-PGs, volumes with their snapshots and clones, operations, the map
+a grid of their PGs, volumes with their snapshots and clones, operations, the map
 service's members, and security (people and roles, API tokens, join
 tokens, certificates); each action shows its `hyperstorctl` command.
 Without it, a built-in dashboard shows health with its reasons, I/O rates, space,
@@ -146,7 +146,19 @@ monitoring checks; `--json` gives the whole answer. `hyperstorctl status
 --wait 60` waits up to a minute for health to become `ok`, for example
 right after an install or bringing a device back in.
 
-`hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details.
+`hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details;
+`pgs --pool 1 --pg 17` shows one PG. `hyperstorctl pg-grid --pool 1`
+prints a character per PG, 64 to a line (`.` clean, `d` degraded, `b`
+backfilling, `X` inactive), as the web UI's grid shows them in colour:
+
+```
+pool 1, map epoch 412: . clean  d degraded  b backfilling  X inactive
+     0  ................................................................
+```
+
+The grid costs little to watch: the UI asks every two seconds, and gets
+the states again (a byte per PG) only when the cluster map has changed.
+Click a cell to see that PG's acting and up sets.
 
 A node that goes down is kept down for a while before it can come back:
 2 s, doubled each time it goes down again within 10 minutes, up to a

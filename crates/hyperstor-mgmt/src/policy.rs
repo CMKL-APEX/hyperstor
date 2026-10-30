@@ -41,6 +41,7 @@ pub enum Group {
 pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.GetStatus", Group::Read, false),
     ("ClusterService.ListPgs", Group::Read, false),
+    ("ClusterService.GetPgGrid", Group::Read, false),
     ("ClusterService.ListVolumes", Group::Read, false),
     ("ClusterService.ListSnapshots", Group::Read, false),
     ("TrashService.ListTrash", Group::Read, false),

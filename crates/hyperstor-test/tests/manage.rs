@@ -34,6 +34,21 @@ fn status_and_tables() {
     let g = c.ctl(&["pgs", "--pool", "1"]).ok();
     assert_eq!(g.out.lines().count(), 65, "64 PGs and a header: {}", g.out);
     c.ctl(&["pgs", "--pool", "9"]).expect(1);
+    let g = c.ctl(&["pgs", "--pool", "1", "--pg", "5"]).ok();
+    assert!(
+        g.out.lines().count() == 2 && g.has("\n1.5 "),
+        "one PG: {}",
+        g.out
+    );
+    c.ctl(&["pgs", "--pool", "1", "--pg", "64"]).expect(1);
+    // The grid: a character per PG, 64 to a line (D154).
+    let g = c.ctl(&["pg-grid", "--pool", "1"]).ok();
+    assert!(
+        g.has(&format!("\n     0  {}\n", ".".repeat(64))),
+        "{}",
+        g.out
+    );
+    c.ctl(&["pg-grid", "--pool", "9"]).expect(1);
 }
 
 #[test]
@@ -60,6 +75,9 @@ fn out_and_in_settle() {
         "{}",
         s.out
     );
+    // Every PG of three copies on three hosts lost one.
+    let g = c.ctl(&["pg-grid", "--pool", "1"]).ok();
+    assert!(g.has(&"d".repeat(64)), "{}", g.out);
     c.ctl(&["io-test", "--mib", "4"]).ok();
     assert!(
         c.ctl(&["in", "--node", "2", "--wait", "30"])

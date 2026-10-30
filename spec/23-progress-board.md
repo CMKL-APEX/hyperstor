@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 0 | 0 | 0 | 2 |
+| 0 | 0 | 0 | 3 |
 
 ## In progress
 
@@ -29,6 +29,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
 | **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | 2026-10-30 |
 | **Returning nodes rejoin the pilot without flapping** (`pilot-rejoin-flapping`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/rejoin-flaps`, [#72](https://github.com/CMKL-APEX/hyperstor/pull/72), [#73](https://github.com/CMKL-APEX/hyperstor/pull/73) | 2026-10-30 |
 
@@ -63,5 +64,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 6 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 4 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 5 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |
