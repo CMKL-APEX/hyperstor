@@ -845,11 +845,9 @@ what = "A grid of each pool's PGs in the web UI and hyperstorctl pg-grid, sent a
 spec = ["19-administration.md §23.7", "D154", "I189"]
 status = "done"
 tests = [
+    # Also shown by manage::status_and_tables, manage::out_and_in_settle
+    # and browser::the_pages_show_the_cluster, tracked under earlier items.
     "hyperstor_meta::api::tests::pg_grid_follows_the_epoch",
-    "hyperstor_ctl::tests::tables_list_every_device_and_pool",
-    "manage::status_and_tables",
-    "manage::out_and_in_settle",
-    "browser::the_pages_show_the_cluster",
 ]
 
 [[milestone]]
