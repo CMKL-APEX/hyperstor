@@ -162,7 +162,7 @@ pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
     if !r.usage.is_empty() {
         let _ = writeln!(
             o,
-            "usage on a log scale, the fullest PG {} bytes: 0 least to 9 most  ? not reported",
+            "usage as a share of the fullest PG, {} bytes: 0 least to 9 most  ? not reported",
             r.max_bytes
         );
         for (i, row) in r.usage.chunks(64).enumerate() {
@@ -782,7 +782,7 @@ mod tests {
             },
         );
         let lines: Vec<&str> = g.lines().collect();
-        assert!(lines[2].contains("the fullest PG 4096 bytes"), "{g}");
+        assert!(lines[2].contains("the fullest PG, 4096 bytes"), "{g}");
         assert_eq!(lines[3], "     0  ?049");
     }
 }

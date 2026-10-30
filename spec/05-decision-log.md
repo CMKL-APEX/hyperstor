@@ -732,3 +732,4 @@ with a recommendation for each of three choices:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 93 | Where usage comes from: primaries report changes every 30 s to the leader, kept in memory (recommended), or the map service asks every host on demand; what it measures: bytes allocated (recommended) or objects; how it is drawn: the state's colour shaded on a log scale up to the pool's fullest PG (recommended), a toggle between states and a usage heatmap, or an absolute scale | The three recommendations | D155, I191 |
+| 94 | Deployed, the log scale showed the pilot's PGs (19 to 82 MiB) at levels 235 to 255, one shade. Replace it with linear from the emptiest to the fullest PG (recommended), linear from zero to the fullest, or log from the emptiest | Linear from zero to the fullest | D155 revised |

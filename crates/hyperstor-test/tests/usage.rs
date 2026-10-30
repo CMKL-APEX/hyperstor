@@ -49,7 +49,7 @@ fn the_grid_shows_where_data_is() {
     let held = g.chars().filter(|&d| d != '0').count();
     assert!((1..=16).contains(&held), "{g}");
     let r = c.ctl(&["pg-grid", "--pool", "1", "--usage"]).ok();
-    assert!(r.has("the fullest PG "), "{}", r.out);
+    assert!(r.has("the fullest PG, "), "{}", r.out);
     // Without --usage, the states alone.
     assert!(!c.ctl(&["pg-grid", "--pool", "1"]).ok().has("usage"));
 }
