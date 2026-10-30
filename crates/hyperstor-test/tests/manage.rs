@@ -21,7 +21,7 @@ fn status_and_tables() {
         "every node heard from: {}",
         s.out
     );
-    // A device reports its space just before its first heartbeat (D155).
+    // A device reports its space just before its first heartbeat (D156).
     assert_eq!(
         s.out.matches("\"free_bytes\"").count(),
         s.out.matches("\"pg_count\"").count(),

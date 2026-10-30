@@ -128,7 +128,7 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 | map changes | Raft | follows hardware changes and failures; one entry per event |
 | blocklist entries | Raft | forced takeovers only |
 | heartbeats | leader memory | ten per node per second |
-| device space (D155) | leader memory | one per device every 5 s |
+| device space (D156) | leader memory | one per device every 5 s |
 | volume operations, lease renewals | `.meta` PG primaries | one renewal message per second per holder and primary (D75), spread over 256 PGs on every storage node |
 | block metadata | engines | follows I/O, always local |
 

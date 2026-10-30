@@ -1,10 +1,8 @@
 title = "Audit records from mgmt listed with their time"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-10-30
 updated = 2026-10-30
 milestone = "AD3"
 branch = "fix/audit-string-time"
 prs = [77]
-now = "Fix and tests ready (I190): string times read as numbers; mgmt writes numbers"
-next = "Review, merge, deploy to the pilot and check audit list --since shows mgmt's records"

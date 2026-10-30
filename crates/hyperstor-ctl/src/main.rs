@@ -13,7 +13,9 @@
 //!   is ok or SECS have passed (for scripts, after an install or a
 //!   change);
 //! - `nodes`, `pools`, `pgs [--pool P] [--pg N]`: tables; `pg-grid [--pool
-//!   P]`: a character per PG, 64 to a line (D154);
+//!   P] [--usage]`: a character per PG, 64 to a line (D154), and with
+//!   `--usage` a digit per PG for the bytes on its primary (D155; the
+//!   leader's to answer);
 //! - `out` and `in` (`--device D`, or every device of `--node N`): take a
 //!   device out of placement, so its PGs move elsewhere and it can be
 //!   serviced, and bring it back; with `--wait SECS`, until no PG is
@@ -116,7 +118,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -194,6 +196,8 @@ struct Args {
     /// `write-volume`, `read-volume`: where in the volume; skip zero blocks.
     offset: u64,
     sparse: bool,
+    /// `pg-grid`: each PG's usage too.
+    usage: bool,
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
@@ -253,6 +257,7 @@ fn main() {
         retention_days: None,
         offset: 0,
         sparse: false,
+        usage: false,
         poll: false,
     };
     let mut cmd = None;
@@ -279,6 +284,7 @@ fn main() {
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
             "--dry-run" => a.dry_run = true,
+            "--usage" => a.usage = true,
             "--serial" => a.serial = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--file" => a.file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--out" => a.out = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -819,6 +825,7 @@ where
             let r = client
                 .get_pg_grid(pb::GetPgGridRequest {
                     pool,
+                    since_usage: a.usage.then_some(0),
                     ..Default::default()
                 })
                 .await?
