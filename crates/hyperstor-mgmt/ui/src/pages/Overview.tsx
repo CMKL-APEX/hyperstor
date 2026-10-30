@@ -5,7 +5,7 @@ import { useRef } from "react";
 import { cluster, metrics, type NodeMetrics } from "../api";
 import { Health } from "../gen/hyperstor/v1/cluster_pb";
 import { PgGrid } from "../PgGrid";
-import { Card, ErrorText, Pill, fmtBytes, usePoll } from "../ui";
+import { Card, ErrorText, Pill, Space, fmtBytes, usePoll } from "../ui";
 
 export const healthTone = (h: Health) =>
   h === Health.OK ? "ok" : h === Health.WARN ? "warn" : h === Health.ERROR ? "error" : "muted";
@@ -141,6 +141,9 @@ export default function Overview() {
                 {p.id} {p.name}
               </div>
               <PgGrid pool={p.id} width={320} max={8} />
+              <div className="mt-2 w-80">
+                <Space total={p.totalBytes} free={p.freeBytes} />
+              </div>
             </div>
           ))}
         </div>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { cluster } from "../api";
 import { PgGrid } from "../PgGrid";
-import { Button, Card, Cli, ErrorText, Table, td, usePoll } from "../ui";
+import { Button, Card, Cli, ErrorText, Space, Table, td, usePoll } from "../ui";
 
 const STATES = [
   ["clean", "bg-emerald-500"],
@@ -38,7 +38,7 @@ export default function Pools() {
     <>
       <Card title="Pools">
         <ErrorText error={status.error} />
-        <Table head={["Pool", "Kind", "Copies", "Domain", "Chunk", "PGs", "States", "Clean", "Degraded", "Backfilling", "Inactive", ""]}>
+        <Table head={["Pool", "Kind", "Copies", "Domain", "Chunk", "PGs", "Space", "States", "Clean", "Degraded", "Backfilling", "Inactive", ""]}>
           {(status.data?.pools ?? []).map((p) => {
             const c = p.pgs;
             const total = p.pgCount || 1;
@@ -54,6 +54,9 @@ export default function Pools() {
                 <td className={td}>{p.domain}</td>
                 <td className={td}>{p.chunkSize ? `${p.chunkSize / 1024}K` : "–"}</td>
                 <td className={td}>{p.pgCount}</td>
+                <td className={td}>
+                  <Space total={p.totalBytes} free={p.freeBytes} testId={`pool-${p.id}-space`} />
+                </td>
                 <td className={td}>
                   <div className="flex h-2.5 w-40 rounded overflow-hidden bg-slate-200 dark:bg-slate-700">
                     {STATES.map(([k, color]) => {

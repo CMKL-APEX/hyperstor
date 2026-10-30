@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 1 | 0 | 0 | 5 |
+| 2 | 0 | 0 | 5 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity` | Built and tested (I193): devices' own space in GetStatus and hyperstorctl nodes; bars on the Pools, Nodes and Overview pages | Pull request, merge, deploy to the pilot | 2026-10-30 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked

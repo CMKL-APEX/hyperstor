@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cluster, nodes as nodeApi } from "../api";
 import type { PgMove } from "../gen/hyperstor/v1/admin_pb";
-import { ActionDialog, Button, Card, ErrorText, Pill, Table, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, ErrorText, Pill, Space, Table, td, useCan, usePoll } from "../ui";
 
 type Pending =
   | { kind: "device"; device: number; upIn: boolean }
@@ -30,7 +30,7 @@ export default function Nodes() {
     <Card title="Nodes and devices">
       <ErrorText error={status.error ?? error} />
       {result && <p className="text-sm text-emerald-700 mb-2">{result}</p>}
-      <Table head={["Node", "Rack", "State", "Heard", "Device", "Address", "Class", "Weight", "Placement", ""]}>
+      <Table head={["Node", "Rack", "State", "Heard", "Device", "Address", "Class", "Weight", "Space", "Placement", ""]}>
         {(status.data?.nodes ?? []).flatMap((n) =>
           n.devices.map((d, i) => (
             <tr key={`${n.id}-${d.id}`} data-testid={`device-${d.id}`}>
@@ -44,6 +44,9 @@ export default function Nodes() {
               <td className={td}>{d.addr}</td>
               <td className={td}>{d.class || "–"}</td>
               <td className={td}>{d.weight.toFixed(2)}</td>
+              <td className={td}>
+                <Space total={d.totalBytes} free={d.freeBytes} testId={`device-${d.id}-space`} />
+              </td>
               <td className={td}>
                 <Pill tone={d.upIn ? "ok" : "warn"}>{d.upIn ? "in" : "out"}</Pill>
               </td>
