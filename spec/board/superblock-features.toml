@@ -1,9 +1,9 @@
 title = "Feature flags in the device superblock (D157)"
-status = "active"
+status = "review"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-10-30
-updated = 2026-10-30
+updated = 2026-10-31
 milestone = "HS0"
 branch = "feat/superblock-features"
-now = "Built and tested: compatible, read-only-compatible and incompatible flags, version 1 written while none is set; hyperstord formats only blank devices (I196)"
-next = "The pull request; then the checks before it (clippy, release build and tests, spec and board)"
+now = "Built and tested: compatible, read-only-compatible and incompatible flags, version 1 written while none is set; hyperstord formats only blank devices (I196); checks pass (one host-specific end-to-end test aside), in review"
+next = "Review and merge; a conversion tool when the first flag is defined"
