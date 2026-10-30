@@ -5,5 +5,6 @@ started = 2026-10-30
 updated = 2026-10-30
 milestone = "AD3"
 branch = "fix/audit-string-time"
+prs = [77]
 now = "Fix and tests ready (I189): string times read as numbers; mgmt writes numbers"
 next = "Review, merge, deploy to the pilot and check audit list --since shows mgmt's records"
