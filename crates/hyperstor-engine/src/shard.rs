@@ -359,9 +359,13 @@ impl Shard {
         };
         let buf = s.encode();
         let zero = AlignedBuf::zeroed(BLOCK);
+        // In the slot its number names, as every later superblock is, so
+        // the first checkpoint's goes beside it instead of over it.
+        let slot = region.start + s.seq % 2;
+        let other = region.start + (s.seq + 1) % 2;
         dev.write_batch(&[
-            (region.start * BLOCK as u64, &buf),
-            ((region.start + 1) * BLOCK as u64, &zero),
+            (slot * BLOCK as u64, &buf),
+            (other * BLOCK as u64, &zero),
             (region.log_start() * BLOCK as u64, &zero),
         ])?;
         dev.flush()?;
@@ -387,7 +391,9 @@ impl Shard {
             .flatten()
             .filter(|s| s.device_id == device_id && s.shard == shard)
             .max_by_key(|s| s.seq)
-            .ok_or(EngineError::NotFormatted)?;
+            // Formatting writes every shard before the device superblock,
+            // so a shard without one is damaged, not blank.
+            .ok_or_else(|| EngineError::Corrupt(format!("shard {shard}: no valid superblock")))?;
 
         let mut sh = Shard {
             dev,

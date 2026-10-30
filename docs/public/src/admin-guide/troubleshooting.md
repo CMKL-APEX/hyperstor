@@ -17,3 +17,5 @@
 | A storage node never serves after start | Its addresses don't match the cluster file, or it can't reach the map service | Check `--node`, `--shard` addresses and `--meta` |
 | `Disk quota exceeded` or `No space left on device` | A device file can't grow to its size | Free space or give a smaller size |
 | `hyperstord` fails to open a block device | A size other than `0` was given for a block device | Use `/dev/...:0` |
+| `hyperstord` exits with `the device has format version N, newer than this build reads` or `the device uses features this build doesn't have` | The device was formatted or upgraded by a newer `hyperstord`; this build refuses it rather than misread it | Run the newer build again (rolling back below a format change isn't possible) |
+| `hyperstord` exits with `corrupt metadata: device superblock: no copy passes its checksum` or `shard N: no valid superblock` | The device's superblocks are damaged. `hyperstord` formats only blank devices, so it leaves this one as it is | Take the device out (`hyperstorctl out`) and let its PGs recover from the other copies; then wipe it and add it back |

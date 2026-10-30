@@ -13,6 +13,7 @@ fn cfg(shards: u32, log: Option<u64>) -> DeviceConfig {
         cluster_id: 9,
         shards,
         log_blocks: log,
+        ..Default::default()
     }
 }
 
@@ -434,6 +435,142 @@ fn bad_devices_are_refused() {
         format(&small, &cfg(1, None)),
         Err(EngineError::TooSmall)
     ));
+}
+
+/// Reads block `b`, lets `f` change it, and writes it back.
+fn patch(d: &Arc<dyn BlockDev>, b: u64, f: impl FnOnce(&mut [u8])) {
+    let mut buf = AlignedBuf::zeroed(BLOCK);
+    d.read_batch(&mut [(b * BLOCK as u64, &mut buf)]).unwrap();
+    f(&mut buf);
+    d.write_batch(&[(b * BLOCK as u64, &buf)]).unwrap();
+}
+
+#[test]
+fn features_this_build_does_not_know_are_refused_unless_compatible() {
+    // A newer build's flags, as this one sees them (D157).
+    let with = |features: Features| {
+        let d = dev(4096);
+        format(
+            &d,
+            &DeviceConfig {
+                features,
+                ..cfg(1, None)
+            },
+        )
+        .unwrap();
+        d
+    };
+    let d = with(Features {
+        incompat: 1 << 3,
+        ..Default::default()
+    });
+    assert!(matches!(
+        open(&d),
+        Err(EngineError::UnsupportedFeatures {
+            incompat: 8,
+            ro_compat: 0
+        })
+    ));
+    // No build opens read-only yet, so these are refused too.
+    let d = with(Features {
+        ro_compat: 1,
+        ..Default::default()
+    });
+    assert!(matches!(
+        open(&d),
+        Err(EngineError::UnsupportedFeatures {
+            incompat: 0,
+            ro_compat: 1
+        })
+    ));
+    // Compatible ones are ignored, and kept.
+    let d = with(Features {
+        compat: 1 << 40,
+        ..Default::default()
+    });
+    let (info, mut shards) = open(&d).unwrap();
+    assert_eq!(info.features.compat, 1 << 40);
+    assert_eq!(info.features.ignored(), 1 << 40);
+    one(
+        &mut shards[0],
+        key("a"),
+        vec![Op::Write {
+            off: 0,
+            data: block(5, 1),
+        }],
+    )
+    .unwrap();
+    drop(shards);
+    assert_eq!(device::info(&d).unwrap().features.compat, 1 << 40);
+    assert_eq!(
+        &reopen(&d).read(&key("a"), 0, BLOCK as u64).unwrap()[..],
+        &block(5, 1)[..]
+    );
+}
+
+#[test]
+fn only_a_blank_device_reads_as_not_formatted() {
+    // hyperstord formats a device that is NotFormatted, so a newer format
+    // or a damaged superblock must never read as one.
+    assert!(matches!(open(&dev(4096)), Err(EngineError::NotFormatted)));
+
+    let newer = dev(4096);
+    format(&newer, &cfg(1, None)).unwrap();
+    for b in 0..2 {
+        patch(&newer, b, |buf| {
+            buf[8..12].copy_from_slice(&3u32.to_le_bytes())
+        });
+    }
+    assert!(matches!(open(&newer), Err(EngineError::NewerFormat(3))));
+
+    let damaged = dev(4096);
+    format(&damaged, &cfg(1, None)).unwrap();
+    for b in 0..2 {
+        patch(&damaged, b, |buf| buf[30] ^= 0xff);
+    }
+    assert!(matches!(open(&damaged), Err(EngineError::Corrupt(_))));
+
+    // One good copy is enough.
+    let one_copy = dev(4096);
+    format(&one_copy, &cfg(1, None)).unwrap();
+    patch(&one_copy, 0, |buf| buf[30] ^= 0xff);
+    assert!(open(&one_copy).is_ok());
+
+    // A shard without a superblock is damaged too: formatting writes the
+    // shards before the device superblock.
+    let no_shard = dev(4096);
+    let info = format(&no_shard, &cfg(1, None)).unwrap();
+    for b in 0..2 {
+        patch(&no_shard, info.regions[0].start + b, |buf| buf.fill(0));
+    }
+    assert!(matches!(open(&no_shard), Err(EngineError::Corrupt(_))));
+}
+
+#[test]
+fn a_torn_first_checkpoint_falls_back_to_the_formatted_superblock() {
+    // The first open writes a checkpoint, and its superblock (number 2)
+    // goes to slot A; format's (number 1) must be in slot B, or a torn
+    // write leaves the shard with neither.
+    let d = dev(4096);
+    let info = format(&d, &cfg(1, None)).unwrap();
+    drop(open(&d).unwrap());
+    let a = info.regions[0].start;
+    patch(&d, a, |buf| buf[8] ^= 0xff);
+    let mut sh = reopen(&d);
+    one(
+        &mut sh,
+        key("a"),
+        vec![Op::Write {
+            off: 0,
+            data: block(3, 1),
+        }],
+    )
+    .unwrap();
+    drop(sh);
+    assert_eq!(
+        &reopen(&d).read(&key("a"), 0, BLOCK as u64).unwrap()[..],
+        &block(3, 1)[..]
+    );
 }
 
 #[test]

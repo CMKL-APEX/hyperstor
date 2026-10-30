@@ -697,6 +697,7 @@ impl ShardState {
                         cluster_id: 0,
                         shards: 1,
                         log_blocks: None,
+                        ..Default::default()
                     },
                 )
                 .map_err(|e| e.to_string())?;

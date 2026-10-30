@@ -108,6 +108,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
             cluster_id: 1,
             shards: 1,
             log_blocks: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -661,6 +662,7 @@ fn index_suite(path: &Path) {
             cluster_id: 1,
             shards: 1,
             log_blocks: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -740,6 +742,7 @@ fn scratch_shard(path: &Path, gib: u64, dense: bool) -> Shard {
             cluster_id: 1,
             shards: 1,
             log_blocks: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -812,6 +815,7 @@ fn log_size_sweep() {
                 cluster_id: 1,
                 shards: 1,
                 log_blocks: Some(log_blocks),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -910,6 +914,7 @@ fn paged_sweep() {
                     cluster_id: 1,
                     shards: 1,
                     log_blocks: Some((log_mib << 20) / BLOCK as u64),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -1066,6 +1071,7 @@ fn decisions_suite(dir: &Path, secs: f64) {
                 cluster_id: 1,
                 shards: 1,
                 log_blocks: Some(4096),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1553,6 +1559,7 @@ fn digest_suite() {
                 cluster_id: 1,
                 shards: 1,
                 log_blocks: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1602,6 +1609,7 @@ fn replay_suite() {
                 cluster_id: 1,
                 shards: 1,
                 log_blocks: Some(262_144),
+                ..Default::default()
             },
         )
         .unwrap();

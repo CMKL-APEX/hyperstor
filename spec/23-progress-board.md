@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 1 | 5 |
+| 2 | 0 | 1 | 6 |
 
 ## In progress
 
@@ -28,12 +28,13 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | Points 96–103 in 05-decision-log.md (layout against 2025–26 research; milestone order, KV-cache offload and a filesystem path for AI workloads), with host checks G39–G41 | The owner's answers, recorded as decisions in 04-decisions.md | 2026-10-30 |
+| **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | Built and tested: compatible, read-only-compatible and incompatible flags, version 1 written while none is set; hyperstord formats only blank devices (I196); checks pass (one host-specific end-to-end test aside), in review | Review and merge; a conversion tool when the first flag is defined | 2026-10-31 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | 2026-10-31 |
 | **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
 | **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | 2026-10-30 |
@@ -47,7 +48,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 5 | 1 | 1 |
+| HS0 | Local storage engine and reactor | 6 | 1 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 15 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |

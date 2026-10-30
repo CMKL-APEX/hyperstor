@@ -73,6 +73,19 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Feature flags in the device superblock; only a blank device is formatted"
+spec = ["08-engine.md §7.1", "D157", "I196"]
+status = "done"
+tests = [
+    "hyperstor_engine::device::tests::without_flags_the_superblock_is_version_1_as_before",
+    "hyperstor_engine::device::tests::flags_make_it_version_2_and_survive_a_round_trip",
+    "hyperstor_engine::device::tests::unread_superblocks_say_why",
+    "engine::features_this_build_does_not_know_are_refused_unless_compatible",
+    "engine::only_a_blank_device_reads_as_not_formatted",
+    "engine::a_torn_first_checkpoint_falls_back_to_the_formatted_superblock",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
