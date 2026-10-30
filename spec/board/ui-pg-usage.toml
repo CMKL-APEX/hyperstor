@@ -5,6 +5,6 @@ started = 2026-10-30
 updated = 2026-10-30
 milestone = "AD3"
 branch = "ui/pg-usage-linear"
-prs = [79]
+prs = [79, 82]
 now = "#79 merged and deployed (9141f06); its log scale showed every pilot PG as full, so the levels become a share of the fullest PG (point 94)"
 next = "Merge the linear scale once CI passes, then deploy to the pilot"
