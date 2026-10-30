@@ -158,6 +158,23 @@ pool 1, map epoch 412: . clean  d degraded  b backfilling  X inactive
 
 The grid costs little to watch: the UI asks every two seconds, and gets
 the states again (a byte per PG) only when the cluster map has changed.
+
+The UI also shades each cell by how much data the PG holds: the more,
+the more solid its colour. Each PG's primary reports the bytes its copy
+holds every 30 seconds, and the shading is on a log scale up to the
+pool's fullest PG, so pale cells next to solid ones show an uneven
+pool. Hover over a cell for its state and approximate size. `hyperstorctl
+pg-grid --usage` adds a digit per PG, `0` for the least data to `9` for
+the most (`?` before the PG's primary has reported):
+
+```
+usage on a log scale, the fullest PG 8388608 bytes: 0 least to 9 most  ? not reported
+     0  0090000000900000000000990000000000000000900000000000000000000000
+```
+
+Only the map service's leader has the reports. `--usage` asked of
+another member exits with status 3 and names the leader; the web UI
+finds the leader by itself.
 Click a cell to see that PG's acting and up sets.
 
 A node that goes down is kept down for a while before it can come back:
