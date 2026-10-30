@@ -733,3 +733,14 @@ with a recommendation for each of three choices:
 |---|---|---|---|
 | 93 | Where usage comes from: primaries report changes every 30 s to the leader, kept in memory (recommended), or the map service asks every host on demand; what it measures: bytes allocated (recommended) or objects; how it is drawn: the state's colour shaded on a log scale up to the pool's fullest PG (recommended), a toggle between states and a usage heatmap, or an absolute scale | The three recommendations | D155, I191 |
 | 94 | Deployed, the log scale showed the pilot's PGs (19 to 82 MiB) at levels 235 to 255, one shade. Replace it with linear from the emptiest to the fullest PG (recommended), linear from zero to the fullest, or log from the emptiest | Linear from zero to the fullest | D155 revised |
+
+## Pool capacity for glidex (2026-10-30)
+
+glidex's datastores page showed 0 B free for hyperstor datastores:
+storage devices knew their free space but only exported it to
+Prometheus, so the map service and the API had none (16-glidex.md §17).
+Asked how to report it, each with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 95 | How devices send their space: a message of their own every 5 s, which an older map service refuses harmlessly (recommended); fields in `Heartbeat`, protocol version 3. How a pool's usable space is counted: its devices' bytes divided by redundancy (recommended); Ceph-style, limited by the device that fills first; raw bytes only | A message of their own; divided by redundancy | D156, I192 |

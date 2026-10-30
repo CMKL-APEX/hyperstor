@@ -1,0 +1,10 @@
+title = "Pool capacity for glidex's datastores page"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ"
+started = 2026-10-30
+updated = 2026-10-30
+milestone = "AD3"
+branch = "feat/pool-capacity"
+prs = [81]
+now = "Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them"
+next = "Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page"

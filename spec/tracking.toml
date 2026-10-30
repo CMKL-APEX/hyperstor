@@ -863,6 +863,16 @@ tests = [
     "usage::the_grid_shows_where_data_is",
 ]
 
+[[milestone.item]]
+what = "Each pool's usable space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy; hyperstorctl pools shows FREE and TOTAL"
+spec = ["16-glidex.md §17", "D156", "I192"]
+status = "done"
+tests = [
+    "hyperstor_meta::api::tests::pool_space_from_device_reports",
+    # Also shown by manage::status_and_tables, tracked earlier.
+    "hyperstor_meta::tests::device_space_is_kept_out_of_the_map",
+]
+
 [[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

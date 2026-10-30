@@ -232,6 +232,14 @@ message Pool {
   // "device", "host" or "rack".
   string domain = 8;
   PgCounts pgs = 9;
+  // Usable bytes: the data regions of the devices placement may use for
+  // the pool (its class, in, with weight), divided by size for replicated
+  // and cache pools, times k/(k+m) for EC (04-decisions.md D156). Pools that
+  // share devices count the same free bytes. Absent until every such
+  // device has reported its space to this member, which only the leader
+  // hears.
+  optional uint64 total_bytes = 10 [json_name = "total_bytes"];
+  optional uint64 free_bytes = 11 [json_name = "free_bytes"];
 }
 
 // Each PG is counted once, under its worst state.

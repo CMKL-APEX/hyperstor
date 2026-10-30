@@ -14,7 +14,7 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
 | `capabilities` | block, linked clones, expand, shared, snapshots (new). No shrink. |
 | `probe` | the node runs `hyperstor-vhost` and reaches the metadata service: the node reaches the datastore. |
 | `create_volume` | blank: create. From an image copy: clone of the image's golden snapshot. From a volume: snapshot, clone, then flatten in the background. |
-| `delete_volume`, `expand_volume`, `capacity` | delete (to the trash), `ExpandVolume`; capacity: not reported yet (glidex shows 0 and refuses no-overcommit) |
+| `delete_volume`, `expand_volume`, `capacity` | delete (to the trash), `ExpandVolume`; capacity: the pool's `total_bytes` and `free_bytes` in `GetStatus` (D156), usable bytes after redundancy, from a server with glidex's identity |
 | `stage` / `unstage` | `attach` through the node's `hyperstor-vhost` control socket (D117), `preempt` only for a VM re-placed from a fenced node (D119, D124); its socket is `VolumeBinding::VhostUserBlk{socket}` (new). Stopping the VM detaches. |
 | image copies (S9) | one per datastore: a volume holding the image (converted to raw, written with `hyperstorctl write-volume --sparse`, D123), plus its snapshot `golden`, named `glidex image <image> on <datastore>`. A deleted disk's clone in the trash still needs it, so glidex's leader deletes it once the clone is purged (glidex storage.md S24). |
 | linked clones (S8) | clones of `golden` (D21), instant |
