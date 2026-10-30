@@ -27,7 +27,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files` | Spec files renamed NN-topic.md in order of creation, every reference updated; scripts/board.py and spec/board/ added | Review and merge | 2026-10-30 |
+| **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | Spec files renamed NN-topic.md in order of creation, every reference updated; scripts/board.py and spec/board/ added | Review and merge | 2026-10-30 |
 
 ## Done
 

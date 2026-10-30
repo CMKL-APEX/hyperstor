@@ -4,5 +4,6 @@ owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb
 started = 2026-10-30
 updated = 2026-10-30
 branch = "spec/numbered-files"
+prs = [74]
 now = "Spec files renamed NN-topic.md in order of creation, every reference updated; scripts/board.py and spec/board/ added"
 next = "Review and merge"
