@@ -448,8 +448,14 @@ pub fn status_for(
 
 /// Each pool's usable total and free bytes (D156), from what its devices
 /// reported: the devices placement may use for it, divided by its
-/// redundancy. A pool with a device not heard from is left without.
+/// redundancy. A pool with a device not heard from is left without. Each
+/// device gets its own report, raw.
 pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate::DeviceSpace) {
+    for d in s.nodes.iter_mut().flat_map(|n| n.devices.iter_mut()) {
+        if let Some(&(total, free)) = space.get(&d.id) {
+            (d.total_bytes, d.free_bytes) = (Some(total), Some(free));
+        }
+    }
     for p in &mut s.pools {
         let Some(info) = map.pools.get(&p.id) else {
             continue;
@@ -1539,9 +1545,23 @@ mod tests {
         assert_eq!(pool(&s, 2), (Some(2400), Some(1200)));
         // No hdd devices: nothing to report.
         assert_eq!(pool(&s, 3), (None, None));
+        // Each device with its own report, raw.
+        let device = |s: &super::pb::GetStatusResponse, id: u32| {
+            let d = s
+                .nodes
+                .iter()
+                .flat_map(|n| &n.devices)
+                .find(|d| d.id == id)
+                .unwrap();
+            (d.total_bytes, d.free_bytes)
+        };
+        assert_eq!(device(&s, devices[2]), (Some(1200), Some(600)));
         // A device not heard from leaves its pools without.
         space.remove(&devices[2]);
-        assert_eq!(pool(&status(&m, &space), 1), (None, None));
+        let s = status(&m, &space);
+        assert_eq!(pool(&s, 1), (None, None));
+        assert_eq!(device(&s, devices[2]), (None, None));
+        assert_eq!(device(&s, devices[0]), (Some(1200), Some(600)));
         // Out of placement, it no longer counts.
         m.devices.get_mut(&devices[2]).unwrap().up_in = false;
         assert_eq!(pool(&status(&m, &space), 1), (Some(1200), Some(600)));

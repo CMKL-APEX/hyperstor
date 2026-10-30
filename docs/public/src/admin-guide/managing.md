@@ -146,6 +146,13 @@ monitoring checks; `--json` gives the whole answer. `hyperstorctl status
 --wait 60` waits up to a minute for health to become `ok`, for example
 right after an install or bringing a device back in.
 
+Space: `hyperstorctl pools` shows each pool's usable free and total
+space, after its copies or erasure coding, and `hyperstorctl nodes` each
+device's raw free and total space. The web UI shows the same as bars on
+the Pools and Nodes pages and under each pool on the Overview, amber
+from 85 % used and red from 95 %. Devices report their space to the map
+service's leader every 5 seconds; until each has, its figures show `-`.
+
 `hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details;
 `pgs --pool 1 --pg 17` shows one PG. `hyperstorctl pg-grid --pool 1`
 prints a character per PG, 64 to a line (`.` clean, `d` degraded, `b`

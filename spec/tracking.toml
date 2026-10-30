@@ -163,7 +163,7 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "I62", "I193"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "I62", "I194"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
@@ -865,13 +865,15 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each pool's usable space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy; hyperstorctl pools shows FREE and TOTAL"
-spec = ["16-glidex.md §17", "D156", "I192"]
+what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages"
+spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193"]
 status = "done"
 tests = [
     "hyperstor_meta::api::tests::pool_space_from_device_reports",
     # Also shown by manage::status_and_tables, tracked earlier.
     "hyperstor_meta::tests::device_space_is_kept_out_of_the_map",
+    # The columns and bars: ctl's tables_list_every_device_and_pool and
+    # browser::the_pages_show_the_cluster, tracked earlier.
 ]
 
 [[milestone]]

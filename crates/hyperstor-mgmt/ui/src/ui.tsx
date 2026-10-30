@@ -233,6 +233,25 @@ export function fmtTime(unix: number | bigint): string {
   return n ? new Date(n * 1000).toLocaleString() : "–";
 }
 
+/** Space used of `total` as a bar, with what is free (D156): amber from
+ * 85 % used, red from 95 %, as the Overview warns; a dash before the
+ * devices have reported. */
+export function Space({ total, free, testId }: { total?: bigint; free?: bigint; testId?: string }) {
+  if (total == null || free == null) return <span className="text-slate-500">–</span>;
+  const used = total > 0n ? 1 - Number(free) / Number(total) : 0;
+  const color = used >= 0.95 ? "bg-red-500" : used >= 0.85 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div className="min-w-32" data-testid={testId} title={`${(100 * used).toFixed(1)} % used`}>
+      <div className="flex h-2 w-full rounded overflow-hidden bg-slate-200 dark:bg-slate-700">
+        <span className={color} style={{ width: `${Math.min(100, 100 * used)}%` }} />
+      </div>
+      <div className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 whitespace-nowrap">
+        {fmtBytes(free)} free of {fmtBytes(total)}
+      </div>
+    </div>
+  );
+}
+
 export function Pill({ tone, children }: { tone: "ok" | "warn" | "error" | "muted"; children: ReactNode }) {
   const c = {
     ok: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",

@@ -592,7 +592,7 @@ impl Tcp {
             // Out of the slot while in use, back once its answer is read:
             // Raft drops a call that times out, and a connection kept with
             // that answer unread would hand it to the next call, and every
-            // later call the one before's (I193).
+            // later call the one before's (I194).
             let mut s = match conn.take() {
                 Some(s) => s,
                 None => self.connect(addr).await.map_err(TransportError)?,
@@ -834,7 +834,7 @@ mod tests {
 
     /// A call dropped before its answer arrives (Raft's timeout) leaves no
     /// connection behind holding that answer: the next call gets its own
-    /// (I193).
+    /// (I194).
     #[test]
     fn a_dropped_call_leaves_no_answer_behind() {
         let dir = tempfile::tempdir().unwrap();

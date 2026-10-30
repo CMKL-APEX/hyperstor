@@ -218,6 +218,10 @@ message Device {
   bool up_in = 3 [json_name = "up_in"];
   double weight = 4;
   string class = 5;
+  // The device's data area and what of it is free (D156), from its last
+  // report to the leader; empty on another member or before a report.
+  optional uint64 total_bytes = 6 [json_name = "total_bytes"];
+  optional uint64 free_bytes = 7 [json_name = "free_bytes"];
 }
 
 message Pool {

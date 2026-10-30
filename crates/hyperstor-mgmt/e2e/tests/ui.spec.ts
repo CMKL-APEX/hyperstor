@@ -49,6 +49,8 @@ test("the pages show the cluster", async ({ page }) => {
   await page.getByRole("link", { name: "Nodes" }).click();
   // Devices are numbered by node: 0, 1000, 2000.
   for (const d of [0, 1000, 2000]) await expect(page.getByTestId(`device-${d}`)).toContainText("in");
+  // Each device's space once it has reported (D156).
+  await expect(page.getByTestId("device-0-space")).toContainText(/free of \d/, { timeout: 20_000 });
   // Out and back in, with the command shown.
   const dev = page.getByTestId("device-2000");
   await dev.getByRole("button", { name: "Take out" }).click();
@@ -59,6 +61,7 @@ test("the pages show the cluster", async ({ page }) => {
   await page.getByRole("dialog").getByRole("button", { name: "Bring in" }).click();
   await expect(dev.getByText("in", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Pools" }).click();
+  await expect(page.getByTestId("pool-1-space")).toContainText(/free of \d/, { timeout: 20_000 });
   await expect(page.getByTestId("pool-1")).toBeVisible();
   await page.getByTestId("pool-1").getByRole("button", { name: "PGs" }).click();
   // The first cell is PG 1.0; picking it shows its sets, and only it.
