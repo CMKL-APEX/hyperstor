@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 0 | 5 |
+| 2 | 0 | 1 | 5 |
 
 ## In progress
 
@@ -26,7 +26,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | Points 96–103 in 05-decision-log.md (layout against 2025–26 research; milestone order, KV-cache offload and a filesystem path for AI workloads), with host checks G39–G41 | The owner's answers, recorded as decisions in 04-decisions.md | 2026-10-30 |
 
 ## Done
 

@@ -1,0 +1,9 @@
+title = "The engine's layout and the AI workloads: points for the owner"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-10-30
+updated = 2026-10-30
+branch = "spec/ai-workload-review"
+prs = [86]
+now = "Points 96–103 in 05-decision-log.md (layout against 2025–26 research; milestone order, KV-cache offload and a filesystem path for AI workloads), with host checks G39–G41"
+next = "The owner's answers, recorded as decisions in 04-decisions.md"

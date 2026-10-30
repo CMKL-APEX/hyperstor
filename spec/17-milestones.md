@@ -158,3 +158,23 @@ and pNFS front end, are in 22-nfs.md §26.11.
   same host keeps its grant (the installer refuses, changing nothing);
   and a certificate near its end is renewed in place (glidex measured the
   first issuance at about 40 s). The tests use glidex's fake `tailscaled`.
+- **G39. The allocator's write amplification on flash** (05-decision-log.md
+  points 97 and 98). On NVMe drives that report physical writes (OCP or
+  vendor log pages), fill a device to 50, 80 and 90 % and run a VM-like
+  random overwrite load until it has written about four times its
+  capacity: today's best-fit allocator against regions sized to the
+  drive's erase unit, grouped by death time and cleaned by the host; and,
+  on an FDP drive, with a placement handle each for the log, checkpoint
+  pages and data. Measure the drive's write amplification, throughput and
+  p99 latency.
+- **G40. Checksums in NVMe protection information** (point 99). Which of
+  the drives sites buy can be formatted with per-block metadata, with
+  which guard sizes (16 or 64 bits); whether writes and reads through
+  `uring_cmd` passthrough carry it and the drive checks it; and what it
+  costs in throughput against CRCs kept by the engine.
+- **G41. Connectors for KV-cache offload** (point 102). For the inference
+  engines glidex users run (vLLM with its KV connector, LMCache, Mooncake,
+  NVIDIA Dynamo's KV block manager), at the versions current then: the
+  back-end interface each expects (calls, key and block sizes, whether it
+  needs RDMA or GPU memory registration), and whether one hyperstor
+  connector can serve more than one.
