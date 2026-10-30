@@ -4,5 +4,6 @@ owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb
 started = 2026-10-31
 updated = 2026-10-31
 branch = "spec/weights-encryption"
+prs = [89]
 now = "Decision points 104–113 and host check G42 drafted for the owner"
 next = "Owner's answers become D numbers; then a workstream to build them"
