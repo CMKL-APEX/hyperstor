@@ -178,3 +178,9 @@ and pNFS front end, are in 22-nfs.md §26.11.
   back-end interface each expects (calls, key and block sizes, whether it
   needs RDMA or GPU memory registration), and whether one hyperstor
   connector can serve more than one.
+- **G42. Self-encrypting drives** (05-decision-log.md point 109). On the
+  data-center NVMe and SAS drives of the first storage hosts: whether
+  they support TCG Opal 2 or Ruby, whether `sedutil-cli` or the kernel's
+  `sed-opal` interface (`IOC_OPAL_*`, on the hosts' Linux 6.8) can lock and unlock a
+  range at boot without a person, and how long a cryptographic erase
+  takes.

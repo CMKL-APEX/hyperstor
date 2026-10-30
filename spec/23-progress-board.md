@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 1 | 6 |
+| 2 | 0 | 2 | 6 |
 
 ## In progress
 
@@ -28,6 +28,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Device weights and encryption at rest: decision points** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption` | Decision points 104–113 and host check G42 drafted for the owner | Owner's answers become D numbers; then a workstream to build them | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | Built and tested: compatible, read-only-compatible and incompatible flags, version 1 written while none is set; hyperstord formats only blank devices (I196); checks pass (one host-specific end-to-end test aside), in review | Review and merge; a conversion tool when the first flag is defined | 2026-10-31 |
 
 ## Done

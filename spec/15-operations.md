@@ -114,5 +114,6 @@ management service and UI (§23.7), and people's access (§23.9).
   the GPU VM path (D18) it does, through its RDMA VF. That VF is put on a
   storage network or IB partition per tenant with host-topology §10's VF
   settings (VLAN, MAC, spoof check), and the host identity is per VM.
-- Encryption at rest is later. The engine format reserves a key-id field
-  per lineage so it can be added without reformatting.
+- Encryption at rest is later; its design points are open
+  (05-decision-log.md points 108–113). D157's feature flags let the
+  format change reach devices one at a time.

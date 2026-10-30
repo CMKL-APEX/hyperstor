@@ -783,3 +783,45 @@ Settled on 2026-10-30: point 96 as recommended (D157). Building it found
 that `hyperstord` formatted any device the engine reported as not
 formatted, which included a newer format version and damaged
 superblocks; D157 narrows that to blank devices (I196).
+
+## Device weights and encryption at rest (2026-10-31)
+
+Asked by the owner: the best way to give a host several devices, for
+performance, durability and security. Hosts already serve several
+devices, one reactor and port each (D39), and placement keeps copies on
+different hosts. Two parts need the owner's choices: what a device's
+weight is, and encryption at rest (03-overview.md §1 lists it as later;
+15-operations.md §19). None of these points is settled.
+
+**Weights.** Placement scores each device by `-ln(u) / weight`
+(07-placement.md §5.2), and D156 counts a pool's space over devices with
+a weight. But every device joins with weight 1 (I84), and neither the
+cluster file nor the API can change it, so a 4 TB and a 30 TB device get
+the same share of PGs and the smaller fills first.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 104 | **What a device's weight is** | (a) its capacity, set by the map service from the device's data region when its first `DeviceSpace` report (D156) reaches the leader, in TiB, with an override the operator sets and the map keeps (`hyperstorctl device weight D W\|auto`); (b) set by the operator only, 1 until then; (c) capacity only, no override | (a). Mixed sizes fill evenly without a step to forget, and the override covers a slower drive or a slow drain. The leader commits a new weight through Raft only when the reported size differs from the weight by more than 1 %, and never over an override, so reports every 5 s don't churn the map |
+| 105 | **How a weight change moves data.** Rendezvous hashing moves only the PGs whose best device changes, about the share of weight that changed. A host joining is the largest change; on 2026-10-29 an empty node's refill flapped the pilot until I187 put a budget on backfill per target | (a) at once, under I187's budget and D149's flap damping; (b) stepped: the map service raises a new device's weight in steps as each step's backfill finishes; (c) at once, with a cap on PGs backfilling in the cluster | (a), then (c) if a host joining a loaded cluster slows client I/O more than the operator accepts. Measure with a fourth pilot host before building more |
+| 106 | **A pool's usable space with unequal hosts.** D156 divides the devices' sum by the copies. With domain `host` and as many hosts as copies (the pilot: 3 and 3), every host holds a copy of every PG, so the smallest host bounds the pool and the sum overstates it | (a) keep the sum, as `df` does for filesystems on one disk; (b) the most the pool can hold under its domain rule: no domain counts for more than `total / size` of it (water-filling over domains, then the same within each), computed by the leader with D156's reports; (c) Ceph's `MAX AVAIL`, limited by the device that fills first | (b), revising D156. glidex's no-overcommit rule needs a number that isn't too high; (b) is exact for the domain rule and, unlike (c), doesn't jump when one device runs ahead |
+| 107 | **Uneven fill within a class.** With about 100 PGs per device (07-placement.md §5.1), each device's PG count varies by about 10 % (one standard deviation), and PGs differ in size (D155's grid shows the pilot's from 19 to 82 MiB) | (a) weights only; watch each device's space (I193) and the PG grid; (b) a balancer that sets a second, hidden weight per device from how full it is (Ceph's `crush-compat` mode), keeping placement a function of the map; (c) explicit PG overrides in the map (Ceph's `upmap`) | (a) until a device reaches D27's `nearfull` while its class has room, then (b). (c) makes the map grow with the overrides and placement no longer a pure function |
+
+**Encryption at rest.** The network is encrypted per D25. 15-operations.md
+§19 said the engine format reserves a key-id per lineage; it doesn't (no
+such field is written), but D157's incompatible flags now let a format
+change reach devices one at a time. Two facts constrain the choice:
+peering, delta recovery and scrub compare content digests between copies
+(D90), so every copy must hold the same bytes; and the GPU-direct path
+(D18) reads blocks into GPU memory over RDMA, with no host step to decrypt
+in. Measured on dev-2 (02-benchmarks.md, 2026-10-31), one core encrypts
+4 KiB blocks at 5.6 GB/s with AES-256-XTS, 3.5 GB/s with AES-256-GCM and
+1.8 GB/s with ChaCha20-Poly1305: a small share of a reactor's time.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 108 | **What it protects against** | (a) drives lost, stolen or retired without wiping; (b) also a storage host's root reading data at rest, which needs storage nodes never to see plaintext; (c) (a), and erasing a volume or a tenant by deleting its key | (a) and (c). (b) means encrypting in the client (point 109's (a)), which costs the GPU-direct path and any later work on the storage side (EC partial updates, compression). Erasure by key also makes trash purges (D115) and tenant removal final without overwriting |
+| 109 | **Where data is encrypted** | (a) in the client library, before a write leaves its host; (b) on the PG's primary, before it replicates: every copy holds the same ciphertext, backfill and scrub move it unchanged, and only nodes serving reads hold keys; (c) per device: self-encrypting drives (TCG Opal), dm-crypt under each device, or a key per device in the engine | (b) for volumes' data. (c) with dm-crypt loses the passthrough path (D29), and a key per device in the engine gives copies different bytes, against D90; Opal has no CPU cost but trusts drive firmware and erases only whole drives, so offer it as an install option for disposal where drives support it (G42) |
+| 110 | **Cipher, and what is kept per block** | (a) AES-256-XTS, with the tweak from (lineage, branch, chunk, block): the same size, nothing stored per block, integrity left to the CRC; (b) AES-256-GCM, a nonce from the write's revision and a 16-byte tag per 4 KiB block: detects tampering, but adds 16 bytes or more per block beside D43's 8-byte entries; (c) (a) now, (b) as a later per-pool option once point 99 decides where per-block checksums live | (c). Disk encryption's usual choice; it fits point 108's threats. XTS shows when a block is rewritten with the same contents, which those threats don't cover |
+| 111 | **Which key a block uses.** A volume and every clone made from its snapshots share a lineage (D21); each is a branch, a clone reads its parent's blocks, and a chunk version is keyed by lineage, chunk, branch and epoch (D4) | (a) a key per lineage, shared by a volume and its clones: erasing one needs all of them gone; (b) a key per branch, a block's key being that of the branch whose version holds it: no extra bytes, and a clone's own writes use its own key; (c) a key per tenant per pool | (b). A branch's key is deleted only when no clone reads through it, the rule its data already follows, so erasure stays per volume |
+| 112 | **Where keys are kept.** Each branch's data key is stored wrapped by a key-encryption key (KEK), in the volume's header in `.meta` | (a) a cluster KEK held by the map service members as an encrypted systemd credential, TPM-sealed where the host has one (as the intermediate CA's key, I87 and G18), backed up with the root key (D84), and sent over mTLS to the primaries of a volume's PGs while it is attached; (b) an external KMS (KMIP, or Vault's transit engine) per cluster or tenant; (c) (a) by default, (b) per tenant as an option | (c), building (a) first. A cluster with no KMS still gets encryption, and a tenant whose policy names a KMS can use its own |
+| 113 | **What is encrypted, and how it starts** | (a) chosen per pool when it is made: every volume in it; (b) per volume when it is made; (c) the whole cluster | (a), then (b) where a pool allows it. Existing pools stay as they are. `.meta` (headers, audit, people's state) is encrypted with the cluster key once (a) is built. A device that holds encrypted data sets an incompatible flag (D157), so a build without encryption refuses it rather than serving ciphertext as data |

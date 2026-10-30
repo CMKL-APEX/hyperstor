@@ -1,0 +1,8 @@
+title = "Device weights and encryption at rest: decision points"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-10-31
+updated = 2026-10-31
+branch = "spec/weights-encryption"
+now = "Decision points 104–113 and host check G42 drafted for the owner"
+next = "Owner's answers become D numbers; then a workstream to build them"
