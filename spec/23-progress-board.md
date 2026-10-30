@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 0 | 0 | 1 | 3 |
+| 0 | 0 | 0 | 4 |
 
 ## In progress
 
@@ -23,9 +23,7 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Audit records from mgmt listed with their time** (`audit-list-times`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `fix/audit-string-time`, [#77](https://github.com/CMKL-APEX/hyperstor/pull/77) | Fix and tests ready (I190): string times read as numbers; mgmt writes numbers | Review, merge, deploy to the pilot and check audit list --since shows mgmt's records | 2026-10-30 |
+None.
 
 ## Done
 
@@ -34,6 +32,7 @@ None.
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
 | **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | 2026-10-30 |
 | **Returning nodes rejoin the pilot without flapping** (`pilot-rejoin-flapping`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/rejoin-flaps`, [#72](https://github.com/CMKL-APEX/hyperstor/pull/72), [#73](https://github.com/CMKL-APEX/hyperstor/pull/73) | 2026-10-30 |
+| **Audit records from mgmt listed with their time** (`audit-list-times`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `fix/audit-string-time`, [#77](https://github.com/CMKL-APEX/hyperstor/pull/77) | 2026-10-30 |
 
 ## Milestones
 
