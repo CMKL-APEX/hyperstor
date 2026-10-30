@@ -11,13 +11,12 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 0 | 4 |
+| 1 | 0 | 0 | 5 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | #79 merged and deployed (9141f06); its log scale showed every pilot PG as full, so the levels become a share of the fullest PG (point 94) | Merge the linear scale once CI passes, then deploy to the pilot | 2026-10-30 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked
@@ -32,6 +31,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
 | **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | 2026-10-30 |
 | **Returning nodes rejoin the pilot without flapping** (`pilot-rejoin-flapping`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/rejoin-flaps`, [#72](https://github.com/CMKL-APEX/hyperstor/pull/72), [#73](https://github.com/CMKL-APEX/hyperstor/pull/73) | 2026-10-30 |
