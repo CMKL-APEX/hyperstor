@@ -11,13 +11,11 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 1 | 0 | 1 | 0 |
+| 0 | 0 | 0 | 2 |
 
 ## In progress
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Returning nodes rejoin the pilot without flapping** (`pilot-rejoin-flapping`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/rejoin-flaps`, [#72](https://github.com/CMKL-APEX/hyperstor/pull/72), [#73](https://github.com/CMKL-APEX/hyperstor/pull/73) | #72 and #73 merged (I187, I188); the pilot runs a diagnostic build of hyperstord until #73 is deployed | Deploy #73 to the pilot and restart one node to confirm it comes back without flapping; the owner drops the 2026-10-24 audit day through the retention setting | 2026-10-30 |
+None.
 
 ## Blocked
 
@@ -25,13 +23,14 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | Spec files renamed NN-topic.md in order of creation, every reference updated; scripts/board.py and spec/board/ added | Review and merge | 2026-10-30 |
+None.
 
 ## Done
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Updated |
+|---|---|---|---|---|
+| **Numbered spec files and this progress board** (`spec-numbering-and-board`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/numbered-files`, [#74](https://github.com/CMKL-APEX/hyperstor/pull/74) | 2026-10-30 |
+| **Returning nodes rejoin the pilot without flapping** (`pilot-rejoin-flapping`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/rejoin-flaps`, [#72](https://github.com/CMKL-APEX/hyperstor/pull/72), [#73](https://github.com/CMKL-APEX/hyperstor/pull/73) | 2026-10-30 |
 
 ## Milestones
 
