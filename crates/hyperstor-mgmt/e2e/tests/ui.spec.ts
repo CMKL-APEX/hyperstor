@@ -44,6 +44,8 @@ test("the pages show the cluster", async ({ page }) => {
   // A grid per pool, every PG clean (D154).
   await expect(page.getByTestId("pg-grid-1-clean")).toContainText(/[1-9]\d* clean/);
   await expect(page.getByTestId("pg-grid-1-inactive")).toContainText("0 inactive");
+  // Shaded by usage once the primaries have reported (D155).
+  await expect(page.getByTestId("pg-grid-1-usage")).toContainText("the fullest PG", { timeout: 20_000 });
   await page.getByRole("link", { name: "Nodes" }).click();
   // Devices are numbered by node: 0, 1000, 2000.
   for (const d of [0, 1000, 2000]) await expect(page.getByTestId(`device-${d}`)).toContainText("in");

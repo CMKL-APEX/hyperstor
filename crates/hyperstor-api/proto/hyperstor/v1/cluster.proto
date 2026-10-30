@@ -280,6 +280,9 @@ message GetPgGridRequest {
   uint32 pool = 1;
   // The epoch of the states the caller has; 0 for none.
   uint64 since_epoch = 2 [json_name = "since_epoch"];
+  // Also each PG's usage (D155), unless still at this version; 0 for
+  // none. Only the leader has usage: another member answers unavailable.
+  optional uint64 since_usage = 3 [json_name = "since_usage"];
 }
 
 message GetPgGridResponse {
@@ -289,6 +292,15 @@ message GetPgGridResponse {
   bool unchanged = 2;
   // A PgState per PG, PG n at byte n.
   bytes states = 3;
+  // The version of the usage reports, if usage was asked for.
+  uint64 usage_version = 4 [json_name = "usage_version"];
+  // The reports are still at since_usage: usage is empty.
+  bool usage_unchanged = 5 [json_name = "usage_unchanged"];
+  // A level per PG, PG n at byte n: 0 not reported yet, else 1 + 254 x
+  // log2(1 + bytes) / log2(1 + max_bytes), rounded; 255 is the fullest.
+  bytes usage = 6;
+  // The bytes on the fullest PG's primary.
+  uint64 max_bytes = 7 [json_name = "max_bytes"];
 }
 
 message SetDeviceInRequest {

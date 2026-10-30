@@ -444,6 +444,19 @@ pub enum Msg {
         pg: u32,
         unresolved: u32,
     },
+    /// Primary `device` to map service: the bytes its copy of each PG
+    /// holds (D155), for the PGs whose bytes changed since its last
+    /// report, or for all it is primary of if `full`.
+    PgUsage {
+        device: u32,
+        full: bool,
+        pgs: Vec<(u32, u32, u64)>,
+    },
+    /// Answer to `PgUsage`: how many PGs the map service now holds from
+    /// `device`. Another number than the sender's asks for a full report.
+    PgUsageOk {
+        known: u32,
+    },
     /// Answer to `DeviceFailed`, `MemberSlow` and `ScrubReport`: the
     /// map epoch that has the change (or the current one).
     Noted {
@@ -652,6 +665,8 @@ mod kind {
     pub const FETCH_PART: u16 = 68;
     pub const FETCH_PART_OK: u16 = 69;
     pub const LEASE_DELEGATES: u16 = 70;
+    pub const PG_USAGE: u16 = 71;
+    pub const PG_USAGE_OK: u16 = 72;
     pub const ERROR: u16 = 99;
 }
 
@@ -736,6 +751,8 @@ impl Msg {
             Msg::MemberSlow { .. } => MEMBER_SLOW,
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::Noted { .. } => NOTED,
+            Msg::PgUsage { .. } => PG_USAGE,
+            Msg::PgUsageOk { .. } => PG_USAGE_OK,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
             Msg::FetchPart { .. } => FETCH_PART,
@@ -781,6 +798,7 @@ impl Msg {
                 | Msg::LeaseRenewOk { .. }
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
+                | Msg::PgUsageOk { .. }
                 | Msg::FetchOk { .. }
                 | Msg::FetchPartOk { .. }
                 | Msg::VersionsOk { .. }
@@ -1008,6 +1026,14 @@ impl Msg {
                 unresolved,
             } => {
                 e.u32(*pool).u32(*pg).u32(*unresolved);
+            }
+            Msg::PgUsage { device, full, pgs } => {
+                e.u32(*device).bool(*full).seq(pgs, |e, (p, g, b)| {
+                    e.u32(*p).u32(*g).u64(*b);
+                });
+            }
+            Msg::PgUsageOk { known } => {
+                e.u32(*known);
             }
             Msg::Fetch { to, key } => {
                 to.enc(e);
@@ -1286,6 +1312,12 @@ impl Msg {
             NOTED => Msg::Noted {
                 map_epoch: d.u64()?,
             },
+            PG_USAGE => Msg::PgUsage {
+                device: d.u32()?,
+                full: d.bool()?,
+                pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
+            },
+            PG_USAGE_OK => Msg::PgUsageOk { known: d.u32()? },
             FETCH => Msg::Fetch {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
@@ -1926,6 +1958,12 @@ mod tests {
                 pg: 2,
                 unresolved: 4,
             },
+            Msg::PgUsage {
+                device: 2000,
+                full: true,
+                pgs: vec![(1, 2, 4096), (1, 3, 0)],
+            },
+            Msg::PgUsageOk { known: 2 },
             Msg::Noted { map_epoch: 9 },
             Msg::Fetch {
                 to,

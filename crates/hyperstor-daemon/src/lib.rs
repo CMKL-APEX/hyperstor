@@ -318,6 +318,12 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         }
                         spawn(st.clone().accept(l));
                         spawn(st.clone().gauges());
+                        // Every 30 s (HS_PG_USAGE_MS for tests).
+                        let every = std::env::var("HS_PG_USAGE_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .map_or(Duration::from_secs(30), Duration::from_millis);
+                        spawn(st.clone().usage(every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -3141,6 +3147,69 @@ impl ShardState {
                 }
             }
             sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Reports to the map service, every `every`, the bytes this device's
+    /// copy of each PG it is primary of holds (D155): the PGs whose bytes
+    /// changed, or all of them when the map service holds another number
+    /// of them from this device (a new leader, a PG gone to another
+    /// primary) or the last report failed.
+    async fn usage(self: Rc<Self>, every: Duration) {
+        let mut sent: HashMap<(u32, u32), u64> = HashMap::new();
+        let mut full = true;
+        loop {
+            sleep(every).await;
+            if self.cut_off() {
+                continue;
+            }
+            let mine: Vec<(u32, u32)> = self
+                .map()
+                .pgs
+                .iter()
+                .filter(|(_, i)| i.primary() == Some(self.me))
+                .map(|(k, _)| *k)
+                .collect();
+            let mut now = HashMap::with_capacity(mine.len());
+            for (pool, pg) in mine {
+                now.insert((pool, pg), self.pg_bytes(pool, pg).await);
+            }
+            let pgs = now
+                .iter()
+                .filter(|(k, b)| full || sent.get(k) != Some(b))
+                .map(|(&(pool, pg), &b)| (pool, pg, b))
+                .collect();
+            let r = self
+                .client
+                .call_meta(&Msg::PgUsage {
+                    device: self.me,
+                    full,
+                    pgs,
+                })
+                .await;
+            full = match r {
+                Ok((Msg::PgUsageOk { known }, _)) => known as usize != now.len(),
+                _ => true,
+            };
+            sent = now;
+        }
+    }
+
+    /// The bytes this device's copy of a PG holds, summed a slice of the
+    /// index at a time so that I/O waits behind none of it for long.
+    async fn pg_bytes(&self, pool: u32, pg: u32) -> u64 {
+        let (mut blocks, mut after) = (0, None);
+        loop {
+            let (b, next) = self
+                .shard
+                .borrow()
+                .pg_blocks(pool, pg, after.as_ref(), 4096);
+            blocks += b;
+            match next {
+                Some(k) => after = Some(k),
+                None => return blocks * hyperstor_engine::BLOCK as u64,
+            }
+            hyperstor_reactor::yield_now().await;
         }
     }
 
