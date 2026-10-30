@@ -148,9 +148,19 @@ fn a_returning_node_goes_down_once() {
         "{changes:#?}"
     );
     // Its peers notice a dead node first (600 ms here, NODE_ARGS; before the 800 ms
-    // heartbeat timeout); it is held down at least 2 s (D149).
+    // heartbeat timeout); it is held down at least 2 s (D149). A peer whose
+    // reactor was held counts silence afresh (I188), so on a slow host the
+    // heartbeat timeout may come first (CI).
+    let held = [0, 1].iter().any(|n| {
+        std::fs::read_to_string(c.scratch.path(&format!("node-{n}.log")))
+            .unwrap_or_default()
+            .contains("reactor held")
+    });
     assert!(
-        changes[0].contains("down (reported silent by nodes [0, 1]; held down 2 s)"),
+        changes[0].contains("down (reported silent by nodes [0, 1]; held down 2 s)")
+            || held
+                && changes[0].contains("down (no heartbeat for ")
+                && changes[0].ends_with("held down 2 s)"),
         "{changes:#?}"
     );
     assert!(

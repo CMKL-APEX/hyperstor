@@ -152,6 +152,9 @@ impl Runner {
         created_by: String,
     ) -> Result<Op, TokenError> {
         self.fence().await?;
+        let started_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
         let op = Op {
             id: super::admin::random_hex(8),
             work,
@@ -160,7 +163,8 @@ impl Runner {
             done: 0,
             total,
             message,
-            started_unix: now_unix(),
+            started_unix: started_ms / 1000,
+            started_ms,
             finished_unix: 0,
             created_by,
         };

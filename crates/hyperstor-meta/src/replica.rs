@@ -589,18 +589,21 @@ impl Tcp {
         // A connection kept from before may have been closed by the peer
         // (a restart): one fresh try.
         for attempt in 0..2 {
-            if conn.is_none() {
-                *conn = Some(self.connect(addr).await.map_err(TransportError)?);
-            }
-            let s = conn.as_mut().expect("connected");
-            match exchange(s, kind, body).await {
-                Ok(r) => return Ok(r),
-                Err(e) => {
-                    *conn = None;
-                    if attempt == 1 {
-                        return Err(TransportError(format!("{addr}: {e}")));
-                    }
+            // Out of the slot while in use, back once its answer is read:
+            // Raft drops a call that times out, and a connection kept with
+            // that answer unread would hand it to the next call, and every
+            // later call the one before's (I194).
+            let mut s = match conn.take() {
+                Some(s) => s,
+                None => self.connect(addr).await.map_err(TransportError)?,
+            };
+            match exchange(&mut s, kind, body).await {
+                Ok(r) => {
+                    *conn = Some(s);
+                    return Ok(r);
                 }
+                Err(e) if attempt == 1 => return Err(TransportError(format!("{addr}: {e}"))),
+                Err(_) => {}
             }
         }
         unreachable!()
@@ -827,5 +830,60 @@ mod tests {
             .unwrap();
         let e = check_peer(Some(std::slice::from_ref(&d)), "5", &db).unwrap_err();
         assert!(e.contains("revoked"));
+    }
+
+    /// A call dropped before its answer arrives (Raft's timeout) leaves no
+    /// connection behind holding that answer: the next call gets its own
+    /// (I194).
+    #[test]
+    fn a_dropped_call_leaves_no_answer_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("map.redb")).unwrap());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // A member that echoes each request, the first after 200 ms.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                loop {
+                    let (mut s, _) = listener.accept().await.unwrap();
+                    tokio::spawn(async move {
+                        while let Ok(_kind) = s.read_u8().await {
+                            let len = s.read_u32_le().await.unwrap();
+                            let mut body = vec![0; len as usize];
+                            s.read_exact(&mut body).await.unwrap();
+                            if body == b"slow" {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            }
+                            let mut frame = vec![1u8];
+                            frame.extend_from_slice(&len.to_le_bytes());
+                            frame.extend_from_slice(&body);
+                            if s.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            let tcp = Tcp {
+                tls: None,
+                conns: tokio::sync::Mutex::new(HashMap::new()),
+                db,
+            };
+            assert_eq!(tcp.request(&addr, VOTE, b"a").await.unwrap(), b"a");
+            let dropped = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                tcp.request(&addr, VOTE, b"slow"),
+            )
+            .await;
+            assert!(dropped.is_err());
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            for b in [&b"b"[..], b"c", b"d"] {
+                assert_eq!(tcp.request(&addr, APPEND, b).await.unwrap(), b);
+            }
+        });
     }
 }
