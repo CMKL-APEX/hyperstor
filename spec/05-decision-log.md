@@ -778,3 +778,8 @@ Also read, with nothing that changes the layout: Alibaba Cloud's "Here,
 There and Everywhere" (FAST '26), Tidehunter (arXiv 2602.01873, preprint),
 Zhou and Feng on erasure-coded updates (ACM TOS 2026), and Bf-Tree
 (PVLDB 17) as a candidate for D44's metadata tree.
+
+Settled on 2026-10-30: point 96 as recommended (D157). Building it found
+that `hyperstord` formatted any device the engine reported as not
+formatted, which included a newer format version and damaged
+superblocks; D157 narrows that to blank devices (I196).

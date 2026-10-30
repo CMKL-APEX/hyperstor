@@ -167,8 +167,16 @@ pub enum EngineError {
     Corrupt(String),
     #[error("shard failed earlier and must be reopened")]
     Poisoned,
-    #[error("not a hyperstor device, or an unsupported format")]
+    /// No hyperstor superblock: the only error a caller may answer by
+    /// formatting the device.
+    #[error("not a hyperstor device")]
     NotFormatted,
+    #[error("the device has format version {0}, newer than this build reads: upgrade hyperstord")]
+    NewerFormat(u32),
+    #[error(
+        "the device uses features this build doesn't have (incompatible {incompat:#x}, read-only-compatible {ro_compat:#x}): upgrade hyperstord"
+    )]
+    UnsupportedFeatures { ro_compat: u64, incompat: u64 },
     #[error("device too small for the requested layout")]
     TooSmall,
     #[error("object not found")]

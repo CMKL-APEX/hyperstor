@@ -67,13 +67,24 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 | Region | Contents |
 |---|---|
-| Superblock (two copies) | device id, node id, cluster id, format version, region offsets; for a hard disk, the log device's id and partition |
+| Superblock (two copies) | device id, node id, cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
 | Log | circular. Operation records (§7.3), deferred small writes, checkpoint markers |
 | Index | an on-device copy-on-write B+tree of objects and their extents |
 | Data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks) |
 
 On a hard disk, the log and index regions are on its partition of the
 log device, which has its own superblock naming the data device (§6.2).
+
+**Feature flags** (D157). The device superblock holds three 64-bit words:
+*compatible* flags, which a build that doesn't know them ignores;
+*read-only-compatible* ones, which such a build could only read past,
+and refuses while no build opens a device read-only; and *incompatible*
+ones, which it refuses. Each change to the format from now on takes a
+flag. With every flag clear the superblock is written as version 1, as
+before D157; with any set, as version 2. A build formats a device only
+when neither copy holds a hyperstor superblock: a newer version, a
+damaged superblock or a shard without one is refused, never formatted
+over.
 
 ### 7.2 Objects
 

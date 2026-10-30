@@ -274,6 +274,7 @@ fn run(seed: u64) -> usize {
             cluster_id: 2,
             shards: 1,
             log_blocks: Some(64),
+            ..Default::default()
         },
     )
     .unwrap();
