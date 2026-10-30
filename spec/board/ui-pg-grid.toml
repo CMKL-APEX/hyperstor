@@ -5,6 +5,6 @@ started = 2026-10-30
 updated = 2026-10-30
 milestone = "AD3"
 branch = "ui/pg-grid"
-prs = []
+prs = [76]
 now = "GetPgGrid (a byte per PG, nothing while the map's epoch is unchanged), the grid on Overview and Pools, hyperstorctl pg-grid and pgs --pg (D154, I189)"
 next = "Merge when CI passes; deploy to the pilot's mgmt"
