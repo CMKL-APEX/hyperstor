@@ -3,7 +3,7 @@
 //! `ok` otherwise, each with its reasons. Computed from one map, so the
 //! cluster API reports what clients and storage nodes see.
 
-use crate::{ClusterMap, PoolKind};
+use crate::{ClusterMap, PoolInfo, PoolKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Health {
@@ -35,6 +35,40 @@ pub struct PoolPgs {
     pub backfilling: u32,
     /// Fewer than `min_size` copies: writes stop (no primary, or too few).
     pub inactive: u32,
+}
+
+/// A PG's worst state, as [`PoolPgs`] counts it; the values are the
+/// cluster API's `PgState` (19-administration.md §23.7, D154).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PgState {
+    Clean = 1,
+    Degraded = 2,
+    Backfilling = 3,
+    Inactive = 4,
+}
+
+/// The states of `pool`'s PGs in PG order. A function of the map alone, so
+/// they change only with its epoch.
+pub fn pg_states<'a>(
+    map: &'a ClusterMap,
+    pool: &'a PoolInfo,
+) -> impl Iterator<Item = PgState> + 'a {
+    // An EC PG needs k shards to read; min_size is what writes need.
+    map.pgs
+        .range((pool.id, 0)..=(pool.id, u32::MAX))
+        .map(move |(_, pg)| {
+            let have = pg.acting_count();
+            if pg.primary().is_none() || have < pool.min_size as usize {
+                PgState::Inactive
+            } else if !map.filling(pg).is_empty() {
+                PgState::Backfilling
+            } else if have < pool.size as usize {
+                PgState::Degraded
+            } else {
+                PgState::Clean
+            }
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,19 +109,13 @@ pub fn report(map: &ClusterMap) -> Report {
             pool: p.id,
             ..Default::default()
         };
-        // An EC PG needs k shards to read; min_size is what writes need.
-        for ((pool, _), pg) in map.pgs.range((p.id, 0)..=(p.id, u32::MAX)) {
-            debug_assert_eq!(*pool, p.id);
+        for state in pg_states(map, p) {
             s.total += 1;
-            let have = pg.acting_count();
-            if pg.primary().is_none() || have < p.min_size as usize {
-                s.inactive += 1;
-            } else if !map.filling(pg).is_empty() {
-                s.backfilling += 1;
-            } else if have < p.size as usize {
-                s.degraded += 1;
-            } else {
-                s.clean += 1;
+            match state {
+                PgState::Inactive => s.inactive += 1,
+                PgState::Backfilling => s.backfilling += 1,
+                PgState::Degraded => s.degraded += 1,
+                PgState::Clean => s.clean += 1,
             }
         }
         if s.inactive > 0 {

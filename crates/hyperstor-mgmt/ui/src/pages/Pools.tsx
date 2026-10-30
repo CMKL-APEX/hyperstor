@@ -1,8 +1,9 @@
-// Pools with their PG states, and one pool's PGs with their acting and up
-// sets.
-import { useState } from "react";
+// Pools with their PG states, and one pool's PGs as a grid (D154): a
+// PG's acting and up sets when it is picked, the whole table on request.
+import { useEffect, useState } from "react";
 import { cluster } from "../api";
-import { Card, Cli, ErrorText, Table, td, usePoll } from "../ui";
+import { PgGrid } from "../PgGrid";
+import { Button, Card, Cli, ErrorText, Table, td, usePoll } from "../ui";
 
 const STATES = [
   ["clean", "bg-emerald-500"],
@@ -17,7 +18,22 @@ const set = (v: number[]) => `[${v.map((d) => (d === NONE ? "-" : d)).join(",")}
 export default function Pools() {
   const status = usePoll(() => cluster.getStatus({}), 2000);
   const [pool, setPool] = useState<number | null>(null);
-  const pgs = usePoll(async () => (pool == null ? null : (await cluster.listPgs({ pool })).pgs), pool == null ? 0 : 5000);
+  const [pg, setPg] = useState<number | null>(null);
+  const [all, setAll] = useState(false);
+  // Loaded when asked for, not polled: a pool may have many PGs.
+  const pgs = usePoll(
+    async () => (pool == null || (pg == null && !all) ? null : (await cluster.listPgs({ pool, pg: all ? undefined : pg! })).pgs),
+    0,
+  );
+  const { reload } = pgs;
+  useEffect(() => {
+    reload();
+  }, [reload, pool, pg, all]);
+  const open = (p: number) => {
+    setPool(p);
+    setPg(null);
+    setAll(false);
+  };
   return (
     <>
       <Card title="Pools">
@@ -51,7 +67,7 @@ export default function Pools() {
                 <td className={td}>{c?.backfilling ?? 0}</td>
                 <td className={td}>{c?.inactive ?? 0}</td>
                 <td className={td}>
-                  <button className="text-sky-700 dark:text-sky-300 hover:underline" onClick={() => setPool(p.id)}>
+                  <button className="text-sky-700 dark:text-sky-300 hover:underline" onClick={() => open(p.id)}>
                     PGs
                   </button>
                 </td>
@@ -62,21 +78,27 @@ export default function Pools() {
         <Cli cmd="pools" />
       </Card>
       {pool != null && (
-        <Card title={`Pool ${pool}'s PGs`}>
+        <Card
+          title={`Pool ${pool}'s PGs`}
+          actions={!all && <Button onClick={() => setAll(true)}>List all</Button>}
+        >
+          <PgGrid key={pool} pool={pool} max={16} picked={all ? null : pg} onPick={(i) => (setAll(false), setPg(i))} />
           <ErrorText error={pgs.error} />
-          <Table head={["PG", "Epoch", "Acting", "Up"]}>
-            {(pgs.data ?? []).map((g) => (
-              <tr key={g.pg}>
-                <td className={td}>
-                  {pool}.{g.pg}
-                </td>
-                <td className={td}>{String(g.epoch)}</td>
-                <td className={`${td} font-mono`}>{set(g.acting)}</td>
-                <td className={`${td} font-mono`}>{set(g.up)}</td>
-              </tr>
-            ))}
-          </Table>
-          <Cli cmd={`pgs --pool ${pool}`} />
+          {(pg != null || all) && (
+            <Table head={["PG", "Epoch", "Acting", "Up"]}>
+              {(pgs.data ?? []).map((g) => (
+                <tr key={g.pg}>
+                  <td className={td}>
+                    {pool}.{g.pg}
+                  </td>
+                  <td className={td}>{String(g.epoch)}</td>
+                  <td className={`${td} font-mono`}>{set(g.acting)}</td>
+                  <td className={`${td} font-mono`}>{set(g.up)}</td>
+                </tr>
+              ))}
+            </Table>
+          )}
+          <Cli cmd={pg != null && !all ? `pgs --pool ${pool} --pg ${pg}` : `pg-grid --pool ${pool}`} />
         </Card>
       )}
     </>

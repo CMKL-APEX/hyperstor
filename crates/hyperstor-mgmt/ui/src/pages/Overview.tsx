@@ -4,6 +4,7 @@
 import { useRef } from "react";
 import { cluster, metrics, type NodeMetrics } from "../api";
 import { Health } from "../gen/hyperstor/v1/cluster_pb";
+import { PgGrid } from "../PgGrid";
 import { Card, ErrorText, Pill, fmtBytes, usePoll } from "../ui";
 
 export const healthTone = (h: Health) =>
@@ -130,6 +131,18 @@ export default function Overview() {
             label="PGs degraded, backfilling or inactive"
             tone={pgs && pgs.inactive ? "error" : pgs && pgs.degraded + pgs.backfilling ? "warn" : undefined}
           />
+        </div>
+      </Card>
+      <Card title="PGs">
+        <div className="flex flex-wrap gap-6">
+          {(s?.pools ?? []).map((p) => (
+            <div key={p.id}>
+              <div className="text-sm font-semibold mb-1">
+                {p.id} {p.name}
+              </div>
+              <PgGrid pool={p.id} width={320} max={8} />
+            </div>
+          ))}
         </div>
       </Card>
       <Card title="I/O and space">
