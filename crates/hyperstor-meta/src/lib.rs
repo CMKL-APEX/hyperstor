@@ -43,6 +43,8 @@ pub enum Admin {
             Flapping,
         )>,
     ),
+    /// Each device's last `DeviceSpace` report: total and free bytes.
+    Space(hyperstor_reactor::chan::OneSender<DeviceSpace>),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -364,6 +366,7 @@ pub struct Meta {
     /// Whether the store holds a map yet.
     persisted: Cell<bool>,
     beats: RefCell<HashMap<u32, Instant>>,
+    space: RefCell<DeviceSpace>,
     /// When each node was last granted a non-zero lease.
     granted: RefCell<HashMap<u32, Instant>>,
     /// Nodes that didn't answer a fence: no leases until it resolves.
@@ -392,6 +395,10 @@ pub struct Meta {
 
 /// PGs whose last scrub left objects unresolved, with how many.
 pub type Inconsistent = BTreeMap<(u32, u32), u32>;
+
+/// Each device's data region and free bytes, as it last reported them
+/// (D155): kept by the leader only, like heartbeats, and not in the map.
+pub type DeviceSpace = BTreeMap<u32, (u64, u64)>;
 
 /// How long the leader waits for the group to commit a map.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -506,6 +513,7 @@ impl Meta {
             seed: None,
             persisted: Cell::new(true),
             beats: RefCell::new(HashMap::new()),
+            space: RefCell::new(BTreeMap::new()),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
             conns: RefCell::new(HashMap::new()),
@@ -594,6 +602,7 @@ impl Meta {
                     // timeout's grace from now.
                     self.started.set(now);
                     self.beats.borrow_mut().clear();
+                    self.space.borrow_mut().clear();
                     self.granted.borrow_mut().clear();
                     self.reports.borrow_mut().clear();
                     self.suspect.borrow_mut().clear();
@@ -825,6 +834,9 @@ impl Meta {
                         self.inconsistent.borrow().clone(),
                         self.flapping(now),
                     ));
+                }
+                Admin::Space(reply) => {
+                    let _ = reply.send(self.space.borrow().clone());
                 }
                 Admin::SetDeviceIn {
                     device,
@@ -1365,6 +1377,7 @@ impl Meta {
                     | Msg::PeerDown { .. }
                     | Msg::BackfillDone { .. }
                     | Msg::DeviceFailed { .. }
+                    | Msg::DeviceSpace { .. }
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. })
             )
@@ -1449,6 +1462,18 @@ impl Meta {
                 }
                 Msg::Noted {
                     map_epoch: map.epoch,
+                }
+            }
+            Ok(Msg::DeviceSpace {
+                device,
+                total_bytes,
+                free_bytes,
+            }) => {
+                self.space
+                    .borrow_mut()
+                    .insert(device, (total_bytes, free_bytes));
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
                 }
             }
             // D91: only the PG's primary, at the PG's current epoch.
@@ -1846,6 +1871,25 @@ mod tests {
         assert!(map.pgs.values().all(|p| !p.up.contains(&second)));
     }
 
+    /// D155: the leader keeps each device's last space report, out of the
+    /// map, so it changes no epoch.
+    #[test]
+    fn device_space_is_kept_out_of_the_map() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let epoch = m.map.borrow().epoch;
+        for free in [600, 500] {
+            let r = m.handle(Ok(Msg::DeviceSpace {
+                device: 7,
+                total_bytes: 1000,
+                free_bytes: free,
+            }));
+            assert!(matches!(r, Msg::Noted { map_epoch } if map_epoch == epoch));
+        }
+        assert_eq!(m.space.borrow().get(&7), Some(&(1000, 500)));
+        assert_eq!(m.map.borrow().epoch, epoch);
+    }
+
     /// A replicated member (D72, D73): a follower serves the map and
     /// redirects the leader's requests; a new leader grants leases at
     /// once but changes no role until 1.25 leases have passed; a member
@@ -1867,6 +1911,19 @@ mod tests {
             assert!(
                 matches!(beat(), Msg::Error { code: Code::NotLeader, ref detail, .. } if detail.is_empty())
             );
+            let space = Msg::DeviceSpace {
+                device: 0,
+                total_bytes: 1 << 30,
+                free_bytes: 1 << 29,
+            };
+            assert!(matches!(
+                m.handle(Ok(space)),
+                Msg::Error {
+                    code: Code::NotLeader,
+                    ..
+                }
+            ));
+            assert!(m.space.borrow().is_empty());
             assert!(matches!(
                 m.handle(Ok(Msg::GetMap { have_epoch: 0 })),
                 Msg::Map { .. }

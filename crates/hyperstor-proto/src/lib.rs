@@ -444,8 +444,17 @@ pub enum Msg {
         pg: u32,
         unresolved: u32,
     },
-    /// Answer to `DeviceFailed`, `MemberSlow` and `ScrubReport`: the
-    /// map epoch that has the change (or the current one).
+    /// Storage node to map service: `device`'s data region, and how much
+    /// of it is free, every few seconds (04-decisions.md D155). Not kept
+    /// in the map.
+    DeviceSpace {
+        device: u32,
+        total_bytes: u64,
+        free_bytes: u64,
+    },
+    /// Answer to `DeviceFailed`, `MemberSlow`, `ScrubReport` and
+    /// `DeviceSpace`: the map epoch that has the change (or the current
+    /// one).
     Noted {
         map_epoch: u64,
     },
@@ -652,6 +661,7 @@ mod kind {
     pub const FETCH_PART: u16 = 68;
     pub const FETCH_PART_OK: u16 = 69;
     pub const LEASE_DELEGATES: u16 = 70;
+    pub const DEVICE_SPACE: u16 = 71;
     pub const ERROR: u16 = 99;
 }
 
@@ -733,6 +743,7 @@ impl Msg {
             Msg::Blocklist { .. } => BLOCKLIST,
             Msg::BlocklistOk { .. } => BLOCKLIST_OK,
             Msg::DeviceFailed { .. } => DEVICE_FAILED,
+            Msg::DeviceSpace { .. } => DEVICE_SPACE,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::Noted { .. } => NOTED,
@@ -988,6 +999,13 @@ impl Msg {
             }
             Msg::DeviceFailed { device } => {
                 e.u32(*device);
+            }
+            Msg::DeviceSpace {
+                device,
+                total_bytes,
+                free_bytes,
+            } => {
+                e.u32(*device).u64(*total_bytes).u64(*free_bytes);
             }
             Msg::MemberSlow {
                 reporter,
@@ -1271,6 +1289,11 @@ impl Msg {
                 map_epoch: d.u64()?,
             },
             DEVICE_FAILED => Msg::DeviceFailed { device: d.u32()? },
+            DEVICE_SPACE => Msg::DeviceSpace {
+                device: d.u32()?,
+                total_bytes: d.u64()?,
+                free_bytes: d.u64()?,
+            },
             MEMBER_SLOW => Msg::MemberSlow {
                 reporter: d.u32()?,
                 pool: d.u32()?,
@@ -1914,6 +1937,11 @@ mod tests {
             Msg::Blocklist { ids: vec![77, 78] },
             Msg::BlocklistOk { map_epoch: 8 },
             Msg::DeviceFailed { device: 2001 },
+            Msg::DeviceSpace {
+                device: 2001,
+                total_bytes: 1 << 40,
+                free_bytes: 1 << 39,
+            },
             Msg::MemberSlow {
                 reporter: 1000,
                 pool: 1,

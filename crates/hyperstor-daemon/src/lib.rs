@@ -3101,12 +3101,27 @@ impl ShardState {
     /// the node is open (`opening` at 0, I188): the map service marks a
     /// node up on its first heartbeat, and a device still opening answers
     /// no pings, so its peers would report the node silent at once. A
-    /// device with a large index takes seconds to open.
+    /// device with a large index takes seconds to open. Every 5 s it
+    /// also reports its space (D155); a map service older than that
+    /// answers with an error, which changes nothing.
     async fn heartbeat(self: Rc<Self>, node: u32, opening: Arc<std::sync::atomic::AtomicUsize>) {
         while opening.load(std::sync::atomic::Ordering::Acquire) > 0 {
             sleep(Duration::from_millis(10)).await;
         }
+        let mut beat = 0u64;
         loop {
+            if beat.is_multiple_of(50) && !self.cut_off() {
+                let block = hyperstor_engine::BLOCK as u64;
+                let st = self.shard.borrow().stats();
+                let _ = self
+                    .client
+                    .call_meta(&Msg::DeviceSpace {
+                        device: self.me,
+                        total_bytes: st.data_blocks * block,
+                        free_bytes: st.free_blocks * block,
+                    })
+                    .await;
+            }
             if self.failed.get() && !self.failure_reported.get() && !self.cut_off() {
                 let r = self
                     .client
@@ -3140,6 +3155,7 @@ impl ShardState {
                     }
                 }
             }
+            beat += 1;
             sleep(Duration::from_millis(100)).await;
         }
     }

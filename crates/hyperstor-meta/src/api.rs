@@ -446,6 +446,38 @@ pub fn status_for(
     }
 }
 
+/// Each pool's usable total and free bytes (D155), from what its devices
+/// reported: the devices placement may use for it, divided by its
+/// redundancy. A pool with a device not heard from is left without.
+pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate::DeviceSpace) {
+    for p in &mut s.pools {
+        let Some(info) = map.pools.get(&p.id) else {
+            continue;
+        };
+        // As placement chooses them (hyperstor-placement's `Topology`).
+        let reports: Option<Vec<(u64, u64)>> = map
+            .devices
+            .values()
+            .filter(|d| {
+                d.up_in && d.weight > 0.0 && info.class.as_ref().is_none_or(|c| *c == d.class)
+            })
+            .map(|d| space.get(&d.id).copied())
+            .collect();
+        let Some(reports) = reports.filter(|r| !r.is_empty()) else {
+            continue;
+        };
+        let total: u128 = reports.iter().map(|(t, _)| *t as u128).sum();
+        let free: u128 = reports.iter().map(|(_, f)| *f as u128).sum();
+        // Data shards over all shards: 1/size for copies, k/(k+m) for EC.
+        let (num, den) = match info.kind {
+            PoolKind::Ec { k, m } => (k as u128, (k + m) as u128),
+            PoolKind::Replicated | PoolKind::Cache => (1, (info.size as u128).max(1)),
+        };
+        p.total_bytes = Some((total * num / den) as u64);
+        p.free_bytes = Some((free * num / den) as u64);
+    }
+}
+
 /// The status of `map`, as the API answers it. `heard` is how long ago
 /// each node was last heard from, when the map service knows (I43): a
 /// node it hasn't heard from since it started is reported, since the map
@@ -627,6 +659,13 @@ impl ClusterService for Api {
         );
         if let Some(d) = uncommitted {
             stalled(&mut s, d);
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Space(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        if let Some(space) = rx.recv().await {
+            pool_space(&mut s, &map, &space);
         }
         Ok(s.into())
     }
@@ -1409,6 +1448,50 @@ mod tests {
         let pool = s.pools.iter().find(|p| p.id == 1).unwrap();
         assert_eq!((pool.pgs.clean, pool.pgs.inactive), (3, 1));
         assert!(super::pg_grid(&m, 7, 0).is_err());
+    }
+
+    /// Pools' usable space from their devices' reports (D155): divided by
+    /// redundancy, only the devices placement may use, and none until
+    /// each of those has reported.
+    #[test]
+    fn pool_space_from_device_reports() {
+        let mut m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
+             node 2 rack 0 127.0.0.1:9102\n\
+             pool 1 vol replicated size 2 min 1 pgs 4 domain host\n\
+             pool 2 wide ec2+1 pgs 4 domain host\n\
+             pool 3 slow replicated size 2 min 1 pgs 4 domain host class hdd\n",
+        )
+        .unwrap();
+        let devices: Vec<u32> = m.devices.keys().copied().collect();
+        assert_eq!(devices.len(), 3);
+        let status = |m: &crate::ClusterMap, space: &crate::DeviceSpace| {
+            let mut s = super::status(
+                m,
+                None,
+                &Default::default(),
+                &Default::default(),
+                "127.0.0.1:8849",
+            );
+            super::pool_space(&mut s, m, space);
+            s
+        };
+        let pool = |s: &super::pb::GetStatusResponse, id: u32| {
+            let p = s.pools.iter().find(|p| p.id == id).unwrap();
+            (p.total_bytes, p.free_bytes)
+        };
+        let mut space: crate::DeviceSpace = devices.iter().map(|d| (*d, (1200, 600))).collect();
+        let s = status(&m, &space);
+        assert_eq!(pool(&s, 1), (Some(1800), Some(900)));
+        assert_eq!(pool(&s, 2), (Some(2400), Some(1200)));
+        // No hdd devices: nothing to report.
+        assert_eq!(pool(&s, 3), (None, None));
+        // A device not heard from leaves its pools without.
+        space.remove(&devices[2]);
+        assert_eq!(pool(&status(&m, &space), 1), (None, None));
+        // Out of placement, it no longer counts.
+        m.devices.get_mut(&devices[2]).unwrap().up_in = false;
+        assert_eq!(pool(&status(&m, &space), 1), (Some(1200), Some(600)));
     }
 
     #[test]

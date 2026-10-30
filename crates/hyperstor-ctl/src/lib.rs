@@ -49,7 +49,7 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8}",
+        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
         "POOL",
         "NAME",
         "KIND",
@@ -60,12 +60,20 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         "CLEAN",
         "DEGRADED",
         "BACKFILL",
-        "INACTIVE"
+        "INACTIVE",
+        "FREE",
+        "TOTAL"
     );
+    // Usable space (D155): `-` until every device has reported.
+    let gib = |b: Option<u64>| {
+        b.map_or("-".into(), |b| {
+            format!("{:.1}G", b as f64 / (1u64 << 30) as f64)
+        })
+    };
     for p in &s.pools {
         let _ = writeln!(
             o,
-            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8}",
+            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
             p.id,
             p.name,
             p.kind,
@@ -76,7 +84,9 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
             p.pgs.clean,
             p.pgs.degraded,
             p.pgs.backfilling,
-            p.pgs.inactive
+            p.pgs.inactive,
+            gib(p.free_bytes),
+            gib(p.total_bytes)
         );
     }
     o

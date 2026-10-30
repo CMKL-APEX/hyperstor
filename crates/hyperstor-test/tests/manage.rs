@@ -21,6 +21,13 @@ fn status_and_tables() {
         "every node heard from: {}",
         s.out
     );
+    // A device reports its space just before its first heartbeat (D155).
+    assert_eq!(
+        s.out.matches("\"free_bytes\"").count(),
+        s.out.matches("\"pg_count\"").count(),
+        "every pool's space: {}",
+        s.out
+    );
     let t = c.ctl(&["status"]).ok();
     assert!(
         t.has("health  ok") && t.has("nodes   3 up of 3; devices 3 in of 3"),
