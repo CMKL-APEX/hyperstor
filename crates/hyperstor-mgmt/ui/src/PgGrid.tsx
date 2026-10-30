@@ -69,10 +69,9 @@ function shade(level: number | undefined) {
   return !level ? 1 : 0.3 + (0.7 * (level - 1)) / 254;
 }
 
-/** About the bytes a level stands for: the inverse of the API's log
- * scale. */
+/** About the bytes a level stands for: its share of the fullest PG. */
 function approx(level: number, max: bigint) {
-  return Math.round(Math.expm1(((level - 1) / 254) * Math.log1p(Number(max))));
+  return Math.round(((level - 1) / 254) * Number(max));
 }
 
 /** Cells in a rectangle about three times as wide as tall, as large as

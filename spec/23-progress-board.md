@@ -17,7 +17,7 @@ updated for a while may have been left behind.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79) | Built and tested (D155, I191): primaries report each PG's bytes, the grid shades cells, pg-grid --usage | Merge once CI passes, then deploy to the pilot | 2026-10-30 |
+| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | #79 merged and deployed (9141f06); its log scale showed every pilot PG as full, so the levels become a share of the fullest PG (point 94) | Merge the linear scale once CI passes, then deploy to the pilot | 2026-10-30 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked

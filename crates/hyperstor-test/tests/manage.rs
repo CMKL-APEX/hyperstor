@@ -21,13 +21,13 @@ fn status_and_tables() {
         "every node heard from: {}",
         s.out
     );
-    // A device reports its space just before its first heartbeat (D156).
-    assert_eq!(
-        s.out.matches("\"free_bytes\"").count(),
-        s.out.matches("\"pg_count\"").count(),
-        "every pool's space: {}",
-        s.out
-    );
+    // Every device reports its space within a period (D156): then every
+    // pool has it.
+    wait_for("every pool's space", 10, || {
+        let s = c.ctl(&["status", "--json"]).ok();
+        (s.out.matches("\"free_bytes\"").count() == s.out.matches("\"pg_count\"").count())
+            .then_some(())
+    });
     let t = c.ctl(&["status"]).ok();
     assert!(
         t.has("health  ok") && t.has("nodes   3 up of 3; devices 3 in of 3"),

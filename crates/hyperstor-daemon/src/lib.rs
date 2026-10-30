@@ -172,6 +172,9 @@ const BACKFILL_WINDOW: usize = 16;
 /// a node reported silent is always in the log.
 pub const STALL: Duration = Duration::from_millis(100);
 
+/// How often a device reports its space to the map service (D156).
+const SPACE_EVERY: Duration = Duration::from_secs(5);
+
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
 struct Held<'a> {
@@ -309,6 +312,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.deadlines.clone().ticker());
                         spawn(st.clone().follow_map());
                         spawn(st.clone().heartbeat(node, all_open));
+                        spawn(st.clone().space());
                         if !peer_timeout.is_zero() {
                             spawn(st.clone().peer_watch(node, peer_timeout));
                         }
@@ -3107,27 +3111,12 @@ impl ShardState {
     /// the node is open (`opening` at 0, I188): the map service marks a
     /// node up on its first heartbeat, and a device still opening answers
     /// no pings, so its peers would report the node silent at once. A
-    /// device with a large index takes seconds to open. Every 5 s it
-    /// also reports its space (D156); a map service older than that
-    /// answers with an error, which changes nothing.
+    /// device with a large index takes seconds to open.
     async fn heartbeat(self: Rc<Self>, node: u32, opening: Arc<std::sync::atomic::AtomicUsize>) {
         while opening.load(std::sync::atomic::Ordering::Acquire) > 0 {
             sleep(Duration::from_millis(10)).await;
         }
-        let mut beat = 0u64;
         loop {
-            if beat.is_multiple_of(50) && !self.cut_off() {
-                let block = hyperstor_engine::BLOCK as u64;
-                let st = self.shard.borrow().stats();
-                let _ = self
-                    .client
-                    .call_meta(&Msg::DeviceSpace {
-                        device: self.me,
-                        total_bytes: st.data_blocks * block,
-                        free_bytes: st.free_blocks * block,
-                    })
-                    .await;
-            }
             if self.failed.get() && !self.failure_reported.get() && !self.cut_off() {
                 let r = self
                     .client
@@ -3161,8 +3150,45 @@ impl ShardState {
                     }
                 }
             }
-            beat += 1;
             sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Reports this device's data region and free bytes to the map
+    /// service every 5 s (D156), in a task of its own so that a slow
+    /// answer never delays a heartbeat. A report not taken (no leader
+    /// yet, a member that isn't it) is sent again after 500 ms; an older
+    /// map service refuses it as invalid, and is asked again only at the
+    /// next period.
+    async fn space(self: Rc<Self>) {
+        let block = hyperstor_engine::BLOCK as u64;
+        loop {
+            let mut wait = SPACE_EVERY;
+            if !self.cut_off() {
+                let st = self.shard.borrow().stats();
+                let r = self
+                    .client
+                    .call_meta(&Msg::DeviceSpace {
+                        device: self.me,
+                        total_bytes: st.data_blocks * block,
+                        free_bytes: st.free_blocks * block,
+                    })
+                    .await;
+                if !matches!(
+                    r,
+                    Ok((Msg::Noted { .. }, _))
+                        | Ok((
+                            Msg::Error {
+                                code: hyperstor_proto::Code::Invalid,
+                                ..
+                            },
+                            _
+                        ))
+                ) {
+                    wait = Duration::from_millis(500);
+                }
+            }
+            sleep(wait).await;
         }
     }
 
