@@ -22,12 +22,19 @@ fn status_and_tables() {
         s.out
     );
     // Every device reports its space within a period (D156): then every
-    // pool has it.
+    // device and every pool has it.
     wait_for("every pool's space", 10, || {
         let s = c.ctl(&["status", "--json"]).ok();
-        (s.out.matches("\"free_bytes\"").count() == s.out.matches("\"pg_count\"").count())
-            .then_some(())
+        (s.out.matches("\"free_bytes\"").count()
+            == s.out.matches("\"pg_count\"").count() + s.out.matches("\"up_in\"").count())
+        .then_some(())
     });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(
+        n.has("FREE") && n.out.lines().skip(1).all(|l| !l.contains(" - ")),
+        "{}",
+        n.out
+    );
     let t = c.ctl(&["status"]).ok();
     assert!(
         t.has("health  ok") && t.has("nodes   3 up of 3; devices 3 in of 3"),

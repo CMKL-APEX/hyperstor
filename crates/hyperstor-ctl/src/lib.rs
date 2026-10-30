@@ -45,6 +45,13 @@ pub fn status_text(s: &pb::GetStatusResponse) -> String {
 }
 
 /// `hyperstorctl pools`.
+/// Bytes in GiB with a decimal, or `-` when not reported (D156).
+fn gib(b: Option<u64>) -> String {
+    b.map_or("-".into(), |b| {
+        format!("{:.1}G", b as f64 / (1u64 << 30) as f64)
+    })
+}
+
 pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -65,11 +72,6 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         "TOTAL"
     );
     // Usable space (D156): `-` until every device has reported.
-    let gib = |b: Option<u64>| {
-        b.map_or("-".into(), |b| {
-            format!("{:.1}G", b as f64 / (1u64 << 30) as f64)
-        })
-    };
     for p in &s.pools {
         let _ = writeln!(
             o,
@@ -97,20 +99,22 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6} STATE",
-        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT"
+        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6} {:>10} {:>10} STATE",
+        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "FREE", "TOTAL"
     );
     for n in &s.nodes {
         for d in &n.devices {
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6.2} {}",
+                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6.2} {:>10} {:>10} {}",
                 n.id,
                 n.rack,
                 if n.up { "yes" } else { "no" },
                 d.id,
                 d.addr,
                 d.weight,
+                gib(d.free_bytes),
+                gib(d.total_bytes),
                 if d.up_in { "in" } else { "out" }
             );
         }
@@ -750,6 +754,15 @@ mod tests {
         let n = nodes_text(&s);
         assert_eq!(n.lines().count(), 4, "{n}");
         assert!(n.contains("127.0.0.1:9102"));
+        assert!(
+            n.lines().nth(1).unwrap().contains(" - "),
+            "no space reported: {n}"
+        );
+        let mut with = s.clone();
+        with.nodes[0].devices[0].total_bytes = Some(4 << 30);
+        with.nodes[0].devices[0].free_bytes = Some(1 << 29);
+        let n = nodes_text(&with);
+        assert!(n.contains("0.5G       4.0G in"), "{n}");
         let p = pools_text(&s);
         assert!(p.contains("replicated"), "{p}");
         let pgs = pgs_text(&pb::ListPgsResponse {

@@ -1,0 +1,10 @@
+title = "Pool and device space in the web UI"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M"
+started = 2026-10-30
+updated = 2026-10-30
+milestone = "AD3"
+branch = "ui/capacity"
+prs = [84]
+now = "Built and tested (I193): devices' own space in GetStatus and hyperstorctl nodes; bars on the Pools, Nodes and Overview pages"
+next = "Merge once CI passes, then deploy to the pilot"

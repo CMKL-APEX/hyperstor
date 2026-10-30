@@ -10,8 +10,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | Command | Does |
 |---|---|
 | `status` | Health (`ok`, `warn` or `error`) with its reasons, nodes and devices up, and PG states per pool |
-| `nodes` | Each node and its devices: address, weight, in or out |
-| `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive |
+| `nodes` | Each node and its devices: address, weight, free and total space (GiB; `-` until the device has reported to the leader), in or out |
+| `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive, and its usable free and total space (GiB, after copies or erasure coding) |
 | `pgs` | One pool's PGs with their acting and up sets; `--pg N` for one PG |
 | `pg-grid` | One pool's PG states, a character per PG, 64 to a line: `.` clean, `d` degraded, `b` backfilling, `X` inactive; with `--usage`, also a digit per PG for the data on its primary, `0` least to `9` most |
 | `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
