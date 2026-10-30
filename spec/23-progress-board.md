@@ -17,7 +17,7 @@ updated for a while may have been left behind.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79) | Built and tested (D155, I191): primaries report each PG's bytes, the grid shades cells, pg-grid --usage | Merge once CI passes, then deploy to the pilot | 2026-10-30 |
+| **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79) | #79 merged and deployed (9141f06); its log scale showed every pilot PG as full, so the levels become a share of the fullest PG (point 94) | Merge the linear scale once CI passes, then deploy to the pilot | 2026-10-30 |
 
 ## Blocked
 

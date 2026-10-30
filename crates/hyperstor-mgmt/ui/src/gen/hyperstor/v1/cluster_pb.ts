@@ -1301,7 +1301,7 @@ export type GetPgGridResponse = Message<"hyperstor.v1.GetPgGridResponse"> & {
 
   /**
    * A level per PG, PG n at byte n: 0 not reported yet, else 1 + 254 x
-   * log2(1 + bytes) / log2(1 + max_bytes), rounded; 255 is the fullest.
+   * bytes / max_bytes, rounded; 255 is the fullest.
    *
    * @generated from field: bytes usage = 6;
    */
@@ -1356,7 +1356,7 @@ export type GetPgGridResponseJson = {
 
   /**
    * A level per PG, PG n at byte n: 0 not reported yet, else 1 + 254 x
-   * log2(1 + bytes) / log2(1 + max_bytes), rounded; 255 is the fullest.
+   * bytes / max_bytes, rounded; 255 is the fullest.
    *
    * @generated from field: bytes usage = 6;
    */

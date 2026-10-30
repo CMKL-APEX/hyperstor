@@ -297,7 +297,7 @@ message GetPgGridResponse {
   // The reports are still at since_usage: usage is empty.
   bool usage_unchanged = 5 [json_name = "usage_unchanged"];
   // A level per PG, PG n at byte n: 0 not reported yet, else 1 + 254 x
-  // log2(1 + bytes) / log2(1 + max_bytes), rounded; 255 is the fullest.
+  // bytes / max_bytes, rounded; 255 is the fullest.
   bytes usage = 6;
   // The bytes on the fullest PG's primary.
   uint64 max_bytes = 7 [json_name = "max_bytes"];

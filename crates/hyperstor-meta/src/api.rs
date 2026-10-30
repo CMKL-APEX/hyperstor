@@ -595,18 +595,16 @@ fn pg_grid(map: &ClusterMap, pool: u32, since: u64) -> Result<pb::GetPgGridRespo
 }
 
 /// Each PG's usage level (D155) and the fullest PG's bytes: 0 for a PG
-/// not reported yet, else 1 + 254 x log2(1 + bytes) / log2(1 + max),
-/// rounded. A log scale: a PG with a thousandth of the fullest's bytes
-/// still shows.
+/// not reported yet, else 1 + 254 x bytes / max, rounded: a share of the
+/// fullest PG.
 fn usage_levels(bytes: &[Option<u64>]) -> (Vec<u8>, u64) {
     let max = bytes.iter().flatten().copied().max().unwrap_or(0);
-    let top = (max as f64).ln_1p();
     let levels = bytes
         .iter()
         .map(|b| match b {
             None => 0,
             Some(_) if max == 0 => 1,
-            Some(b) => 1 + (254.0 * (*b as f64).ln_1p() / top).round() as u8,
+            Some(b) => 1 + (254.0 * *b as f64 / max as f64).round() as u8,
         })
         .collect();
     (levels, max)
@@ -1422,16 +1420,17 @@ mod tests {
     /// A byte per PG in PG order, sent again only when the map's epoch
     /// moves (D154), and in agreement with the counts.
     #[test]
-    fn usage_levels_are_a_log_scale() {
-        let (l, max) =
-            super::usage_levels(&[None, Some(0), Some(1 << 30), Some(1 << 20), Some(4096)]);
-        assert_eq!(max, 1 << 30);
-        assert_eq!(l[..3], [0, 1, 255]);
-        // 2^20 is two thirds of the way to 2^30 on a log scale, 2^12 two fifths.
-        assert!(
-            (169..=171).contains(&l[3]) && (102..=104).contains(&l[4]),
-            "{l:?}"
-        );
+    fn usage_levels_are_a_share_of_the_fullest() {
+        // The pilot's spread (19 to 82 MiB) uses most of the range.
+        let (l, max) = super::usage_levels(&[
+            None,
+            Some(0),
+            Some(82 << 20),
+            Some(41 << 20),
+            Some(19 << 20),
+        ]);
+        assert_eq!(max, 82 << 20);
+        assert_eq!(l, [0, 1, 255, 128, 60]);
         // Nothing written anywhere: every reported PG at the lowest level.
         assert_eq!(super::usage_levels(&[Some(0), None]).0, [1, 0]);
     }
