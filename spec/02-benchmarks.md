@@ -1092,4 +1092,11 @@ and `Shard::digest`:
    again, with 64 GiB devices and the 300 ms peer timeout did not flap:
    its tables are small. The in-process tests reproduce each cause with
    a slow device instead (I188).
+5. **Deployed** (main at `2eb859a`, I188), after the audit day was
+   pruned, with a rolling install on all three hosts: each node went down
+   once for its restart and came up once. Node 2's slower device opened
+   in 3.3 s and the node came up 0.1 s after it; no other node was
+   reported, `hyperstor_reactor_stalls_total` stayed 0 on every device,
+   and a 32 MiB I/O test passed from every host (25–28 MiB/s writes,
+   86–102 MiB/s reads).
 

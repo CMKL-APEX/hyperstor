@@ -456,14 +456,24 @@ fn a_leader_without_a_majority_says_so() {
             .unwrap(),
     );
     g.ctl(l, &["status", "--wait", "30"]).ok();
+    // The leader again: on a busy runner an election during the join
+    // moved it once, and a follower left alone never says the map is
+    // stuck (only a leader commits).
+    let l = g.leader(&[0, 1, 2]);
     // The other two stop; a change follows that can't be committed.
     for i in (0..3).filter(|i| *i != l) {
         g.m[i].stop();
     }
     let _ = g.ctl(l, &["out", "--node", "0"]);
-    let r = wait_for("status to report the stall", 40, || {
-        let r = g.ctl(l, &["status"]);
-        r.has("hasn't committed a map change").then_some(r)
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for("status to report the stall", 40, || {
+            let r = g.ctl(l, &["status"]);
+            r.has("hasn't committed a map change").then_some(r)
+        })
+    }))
+    .unwrap_or_else(|e| {
+        eprintln!("--- member {} (left running):\n{}", l + 1, g.m[l].log());
+        std::panic::resume_unwind(e)
     });
     assert!(r.code != 0 && r.has("health  error"), "{}", r.out);
     let log = g.m[l].log();
