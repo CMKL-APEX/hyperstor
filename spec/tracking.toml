@@ -841,6 +841,16 @@ tests = [
     "hyperstor_meta::operations::tests::operations_are_kept_listed_and_pruned",
 ]
 
+[[milestone.item]]
+what = "A grid of each pool's PGs in the web UI and hyperstorctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request"
+spec = ["19-administration.md §23.7", "D154", "I189"]
+status = "done"
+tests = [
+    # Also shown by manage::status_and_tables, manage::out_and_in_settle
+    # and browser::the_pages_show_the_cluster, tracked under earlier items.
+    "hyperstor_meta::api::tests::pg_grid_follows_the_epoch",
+]
+
 [[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

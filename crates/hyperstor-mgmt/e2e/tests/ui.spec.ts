@@ -41,6 +41,9 @@ test("the first security administrator claims the cluster", async ({ page }) => 
 test("the pages show the cluster", async ({ page }) => {
   await logIn(page, "ann");
   await expect(page.getByTestId("health")).toContainText("ok", { timeout: 20_000 });
+  // A grid per pool, every PG clean (D154).
+  await expect(page.getByTestId("pg-grid-1-clean")).toContainText(/[1-9]\d* clean/);
+  await expect(page.getByTestId("pg-grid-1-inactive")).toContainText("0 inactive");
   await page.getByRole("link", { name: "Nodes" }).click();
   // Devices are numbered by node: 0, 1000, 2000.
   for (const d of [0, 1000, 2000]) await expect(page.getByTestId(`device-${d}`)).toContainText("in");
@@ -56,7 +59,13 @@ test("the pages show the cluster", async ({ page }) => {
   await page.getByRole("link", { name: "Pools" }).click();
   await expect(page.getByTestId("pool-1")).toBeVisible();
   await page.getByTestId("pool-1").getByRole("button", { name: "PGs" }).click();
+  // The first cell is PG 1.0; picking it shows its sets, and only it.
+  await page.getByRole("img", { name: /Pool 1's \d+ PGs/ }).click({ position: { x: 1, y: 1 } });
   await expect(page.getByText("1.0", { exact: true })).toBeVisible();
+  await expect(page.getByText("1.1", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("hyperstorctl pgs --pool 1 --pg 0")).toBeVisible();
+  await page.getByRole("button", { name: "List all" }).click();
+  await expect(page.getByText("1.1", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Members" }).click();
   await expect(page.getByText("leader")).toBeVisible();
 });

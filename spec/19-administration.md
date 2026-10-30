@@ -225,7 +225,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Overview | health with reasons (§16), capacity, IOPS and latency | — |
 | Nodes and devices | role, reactors, NUMA, device wear and capacity, peer reports (D40) | drain, out, in, add device |
 | Pools | kind (replicated, EC, cache, D45), fullness against D27's thresholds, PG states | create, thresholds, delete when empty |
-| PGs | a state map by pool and failure domain | — |
+| PGs | a state map by pool (D154: a cell per PG, sent again only when the map changes; by failure domain later) | pick a PG for its acting and up sets |
 | Volumes | size, allocated, lease holder, QoS and class (D46), snapshots and clones | create, expand, snapshot, clone, flatten, QoS, delete to trash |
 | Hosts and exports | bare-metal identities, NVMe-oF exports, allowlists | export, revoke, rotate CHAP |
 | S3 (later) | buckets, access keys | create, revoke |
@@ -365,7 +365,7 @@ admin error; a day's grace costs only space, and the space is visible.
     has every one.
   - a record is one line of JSON whose `time` is a number of Unix
     seconds with milliseconds; one whose `time` is a string holding
-    that number, as hyperstor-mgmt wrote until I189, reads the same.
+    that number, as hyperstor-mgmt wrote until I190, reads the same.
 
 Why: a client retrying refused calls once grew a day's single object
 past the 64 MiB frame and stalled its PG's backfill (I177). Parts bound

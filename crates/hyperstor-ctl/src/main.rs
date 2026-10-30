@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -12,7 +12,8 @@
 //!   pool; with `--wait SECS`, asks again every half second until health
 //!   is ok or SECS have passed (for scripts, after an install or a
 //!   change);
-//! - `nodes`, `pools`, `pgs [--pool P]`: tables;
+//! - `nodes`, `pools`, `pgs [--pool P] [--pg N]`: tables; `pg-grid [--pool
+//!   P]`: a character per PG, 64 to a line (D154);
 //! - `out` and `in` (`--device D`, or every device of `--node N`): take a
 //!   device out of placement, so its PGs move elsewhere and it can be
 //!   serviced, and bring it back; with `--wait SECS`, until no PG is
@@ -115,7 +116,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -167,6 +168,7 @@ struct Args {
     raft: Option<String>,
     map: Option<String>,
     pool: Option<u32>,
+    pg: Option<u32>,
     mib: u64,
     wait: Option<u32>,
     device: Option<u32>,
@@ -229,6 +231,7 @@ fn main() {
         raft: None,
         map: None,
         pool: None,
+        pg: None,
         mib: 16,
         wait: None,
         device: None,
@@ -282,6 +285,7 @@ fn main() {
             "--raft" => a.raft = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--map" => a.map = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--pool" => a.pool = Some(num(it.next())),
+            "--pg" => a.pg = Some(num(it.next())),
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
@@ -343,7 +347,7 @@ fn main() {
                 Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
                 _ => usage(),
             },
-            "status" | "nodes" | "pools" | "pgs" | "volumes" | "create-volume"
+            "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "drain" | "clone-volume"
             | "rollback-volume" | "flatten-volume" | "expand-volume" | "write-volume"
             | "read-volume" | "enroll"
@@ -798,11 +802,28 @@ where
             let r = client
                 .list_pgs(pb::ListPgsRequest {
                     pool,
+                    pg: a.pg,
                     ..Default::default()
                 })
                 .await?
                 .into_owned();
             show(a, &r, || pgs_text(&r));
+            Next::Exit(0)
+        }
+        "pg-grid" => {
+            let s = status().await?;
+            let Some(pool) = first_pool(&s) else {
+                eprintln!("hyperstorctl: the cluster has no pools");
+                return Ok(Next::Exit(1));
+            };
+            let r = client
+                .get_pg_grid(pb::GetPgGridRequest {
+                    pool,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || pg_grid_text(pool, &r));
             Next::Exit(0)
         }
         "volumes" => {
