@@ -1,10 +1,10 @@
 title = "PG usage shading in the PG grid"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M"
 started = 2026-10-30
 updated = 2026-10-30
 milestone = "AD3"
 branch = "ui/pg-usage-linear"
 prs = [79, 82]
-now = "#79 merged and deployed (9141f06); its log scale showed every pilot PG as full, so the levels become a share of the fullest PG (point 94)"
-next = "Merge the linear scale once CI passes, then deploy to the pilot"
+now = "Merged (#79, #82) and deployed to the pilot on 2026-10-30 (main c91abb9); the pilot's PGs span levels 2 to 9"
+next = "Group cells by host or rack (§23.7) when asked"
