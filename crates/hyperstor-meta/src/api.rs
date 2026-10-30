@@ -575,6 +575,25 @@ pub fn status(
     }
 }
 
+/// `pool`'s PG states, a byte each (D154); none while `map` is still at
+/// `since`, since they change only with the map.
+fn pg_grid(map: &ClusterMap, pool: u32, since: u64) -> Result<pb::GetPgGridResponse, ConnectError> {
+    let Some(p) = map.pools.get(&pool) else {
+        return Err(ConnectError::not_found(format!("no pool {pool}")));
+    };
+    let unchanged = since == map.epoch;
+    Ok(pb::GetPgGridResponse {
+        epoch: map.epoch,
+        unchanged,
+        states: if unchanged {
+            Vec::new()
+        } else {
+            crate::health::pg_states(map, p).map(|s| s as u8).collect()
+        },
+        ..Default::default()
+    })
+}
+
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
 #[allow(refining_impl_trait)]
 impl ClusterService for Api {
@@ -623,9 +642,13 @@ impl ClusterService for Api {
         if !map.pools.contains_key(&pool) {
             return Err(ConnectError::not_found(format!("no pool {pool}")));
         }
-        let pgs = map
+        let range = match req.pg {
+            Some(pg) => (pool, pg)..=(pool, pg),
+            None => (pool, 0)..=(pool, u32::MAX),
+        };
+        let pgs: Vec<_> = map
             .pgs
-            .range((pool, 0)..=(pool, u32::MAX))
+            .range(range)
             .map(|((pool, pg), info)| pb::Pg {
                 pool: *pool,
                 pg: *pg,
@@ -635,12 +658,25 @@ impl ClusterService for Api {
                 ..Default::default()
             })
             .collect();
+        if let (Some(pg), true) = (req.pg, pgs.is_empty()) {
+            return Err(ConnectError::not_found(format!("no PG {pool}.{pg}")));
+        }
         debug_assert_ne!(NO_DEVICE, 0);
         Ok(pb::ListPgsResponse {
             pgs,
             ..Default::default()
         }
         .into())
+    }
+
+    async fn get_pg_grid(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetPgGridRequest>,
+    ) -> ServiceResult<pb::GetPgGridResponse> {
+        self.authorize(&ctx, "GetPgGrid", &format!("pool {}", req.pool), false)?;
+        let (map, ..) = self.published().await?;
+        Ok(pg_grid(&map, req.pool, req.since_epoch)?.into())
     }
 
     async fn set_device_in(
@@ -1344,6 +1380,37 @@ async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::Co
 
 #[cfg(test)]
 mod tests {
+    /// A byte per PG in PG order, sent again only when the map's epoch
+    /// moves (D154), and in agreement with the counts.
+    #[test]
+    fn pg_grid_follows_the_epoch() {
+        let mut m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
+             pool 1 vol replicated size 2 min 2 pgs 4 domain host\n",
+        )
+        .unwrap();
+        let g = super::pg_grid(&m, 1, 0).unwrap();
+        assert!(!g.unchanged);
+        assert_eq!((g.epoch, g.states), (m.epoch, vec![1; 4]));
+        let g = super::pg_grid(&m, 1, m.epoch).unwrap();
+        assert!(g.unchanged && g.states.is_empty());
+        let pg = m.pgs.get_mut(&(1, 2)).unwrap();
+        pg.acting.truncate(1);
+        m.epoch += 1;
+        let g = super::pg_grid(&m, 1, m.epoch - 1).unwrap();
+        assert_eq!(g.states, [1, 1, 4, 1]);
+        let s = super::status(
+            &m,
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        let pool = s.pools.iter().find(|p| p.id == 1).unwrap();
+        assert_eq!((pool.pgs.clean, pool.pgs.inactive), (3, 1));
+        assert!(super::pg_grid(&m, 7, 0).is_err());
+    }
+
     #[test]
     fn status_carries_health_and_pools() {
         let m = crate::parse_cluster(

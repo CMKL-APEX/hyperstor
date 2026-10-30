@@ -138,6 +138,29 @@ pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
     o
 }
 
+/// `hyperstorctl pg-grid`: a character per PG, 64 to a line, each line
+/// led by its first PG (D154).
+pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
+    let mut o = format!(
+        "pool {pool}, map epoch {}: . clean  d degraded  b backfilling  X inactive\n",
+        r.epoch
+    );
+    for (i, row) in r.states.chunks(64).enumerate() {
+        let cells: String = row
+            .iter()
+            .map(|s| match *s {
+                1 => '.',
+                2 => 'd',
+                3 => 'b',
+                4 => 'X',
+                _ => '?',
+            })
+            .collect();
+        let _ = writeln!(o, "{:>6}  {cells}", i * 64);
+    }
+    o
+}
+
 /// A pool's volumes: id, name, size and state.
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
@@ -184,6 +207,7 @@ pub use hyperstor_api::reason_of;
 pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.GetStatus", "status, nodes, pools"),
     ("ClusterService.ListPgs", "pgs"),
+    ("ClusterService.GetPgGrid", "pg-grid"),
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
@@ -715,5 +739,19 @@ mod tests {
             pgs.contains("1.2") && pgs.contains("[3,-]") && pgs.contains("[3,4]"),
             "{pgs}"
         );
+        let mut states = vec![1; 70];
+        states[65] = 4;
+        let g = pg_grid_text(
+            1,
+            &pb::GetPgGridResponse {
+                epoch: 9,
+                states,
+                ..Default::default()
+            },
+        );
+        let lines: Vec<&str> = g.lines().collect();
+        assert!(lines[0].starts_with("pool 1, map epoch 9"), "{g}");
+        assert_eq!(lines[1], format!("     0  {}", ".".repeat(64)));
+        assert_eq!(lines[2], "    64  .X....");
     }
 }

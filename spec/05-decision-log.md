@@ -712,3 +712,14 @@ fence one volume, each with a recommendation:
 | 89 | glidex: hyperstor only, with a glidex issue to relax its rule (recommended); a glidex pull request in the same round | The glidex pull request too | D153 |
 | 90 | When glidex preempts: a stale hold found when it starts a VM recorded as running nowhere, after asking the last node to detach (recommended); only on an operator's request; no change, the rationale only | A stale hold on start | D153 |
 | 91 | Found while building 90: glidex tracks a disk operation only on the node running it, so preempting every hold could cut a tool off mid-operation. Label each lease with its holder and preempt only another node's `hyperstor-vhost`, each node letting go of holds for VMs placed elsewhere (recommended); that cleanup only, no preemption beyond S23; preempt after a hold lasts 2 minutes | Label holds | D153 |
+
+## The PG grid in the web UI (2026-10-30)
+
+The UI showed PG states only as counts, and a pool's PGs as a table that
+reloaded every 5 s: about 80 bytes of JSON per PG, 330 KB for 4,096 PGs.
+Asked how to show a grid of every PG without that cost, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 92 | A call that sends a byte per PG and nothing while the map's epoch hasn't moved, polled (recommended); a stream of changed PGs; the existing list, compressed | Polled by epoch | D154, I189 |
