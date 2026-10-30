@@ -85,7 +85,17 @@ fn a_lost_store_comes_back_from_a_backup() {
     // Everything is back: the map, the token, the revocation; the volume
     // and the data were on the storage nodes all along.
     let after = c.ctl(&["status", "--json"]).ok();
-    let pools = |s: &str| s.split("\"pools\":").nth(1).map(String::from);
+    // Pools' space (D156) comes from the devices' reports, which a
+    // restored leader has yet to hear: not part of the map.
+    let pools = |s: &str| {
+        let mut v: serde_json::Value = serde_json::from_str(s).ok()?;
+        for p in v.get_mut("pools")?.as_array_mut()? {
+            let p = p.as_object_mut()?;
+            p.remove("total_bytes");
+            p.remove("free_bytes");
+        }
+        Some(v["pools"].to_string())
+    };
     assert_eq!(
         pools(&before.out).map(|p| p.len()),
         pools(&after.out).map(|p| p.len())
