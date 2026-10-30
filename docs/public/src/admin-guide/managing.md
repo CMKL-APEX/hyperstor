@@ -153,7 +153,16 @@ A node that goes down is kept down for a while before it can come back:
 minute. A node that keeps going down and up shows as `warn  node 2
 flapping (3 transitions in 10 min)`: look at that node's logs and load
 (`journalctl -u hyperstord@2`), since something stalls it for longer than
-its peers wait.
+its peers wait. Each storage node logs:
+
+- `device D open in N ms` when it starts. A node is marked up only once
+  every device of it is open, so a slow open delays the node but doesn't
+  make it flap.
+- `device D: reactor held N ms` when the thread serving a device is held
+  100 ms or more, and `device D: a commit of N list(s) took N ms` when a
+  commit is the cause. These count in `hyperstor_reactor_stalls_total`.
+- `device D: node P silent for N ms; reporting it` once each time it
+  reports a peer to the map service.
 
 ## Taking a device out for service
 
@@ -270,6 +279,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_request_bytes_total{kind}` | Data bytes in those requests |
 | `hyperstor_request_duration_seconds{kind}` | Histogram of client writes (until every replica has answered) and reads, from arrival to answer |
 | `hyperstor_write_errors_total` | Client writes answered with an error |
+| `hyperstor_reactor_stalls_total` | Times a device's reactor was held 100 ms or more (each is logged with its length, and a slow commit with what it committed). Pings wait meanwhile, so stalls near the peer timeout (300 ms) can get a node reported silent |
 | `hyperstor_scrub_objects_total{kind}` | Scrub on the PGs a device leads: objects `compared`, those whose copies differed (`inconsistent`), then `repaired` or `unresolved` (no majority: look at the log). `damaged`: objects of this device whose deep scrub found a bad checksum. `peering`: objects a new primary pushed before it served (see [Failures and recovery](failures.md#scrub)) |
 | `hyperstor_device_objects` | Objects on the device |
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |

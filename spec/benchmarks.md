@@ -1044,3 +1044,52 @@ cargo test --release -p hyperstor-test --test manage an_empty_node_is_refilled_w
 3. Not measured: a 1 GbE link, where 16 MiB of pushes is about 140 ms
    ahead of each replicated write; nor a client's write latency while
    a node is refilled.
+
+## 2026-10-30: a returning node and a large table (pilot, dev-2)
+
+The three-host pilot (nodes 0 and 1 on two dual-socket hosts, node 0 on
+dev-2; node 2 on dev-1; 2 devices of 64 GiB per node, files on the root
+filesystem, peer timeout 300 ms, 1 GbE between dev-1 and the others)
+ran I187. Node 2 came back after about 7 hours down, its devices out,
+and the cluster still flapped (I188):
+
+| Time | Event (map service) |
+|---|---|
+| +0.4 s, +2.8 s, +7.2 s | node 2 up, reported silent by nodes 0 and 1 0.4 s later, held down 2, 4 and 8 s |
+| +15.6 s | node 2 up for good; node 1, then node 0, reported silent and held down 2 s, for 0.5 s at once |
+
+Only 67 pushes (280 MB) reached node 2: the refill was small. A build
+logging device open times and reactor holds, installed on every node
+and each restarted once:
+
+| Node | Device open times | Reactor held after open |
+|---|---|---|
+| 0 | 80 ms, 2,036 ms | 270 ms |
+| 1 | 77 ms, 1,986 ms | 270 ms |
+| 2 | 56 ms, 4,366 ms | 457 ms |
+
+Each slow device holds the PG of a `.meta` audit day written before
+I185's parts: 660,234 key–value entries, 215 MB. On a copy of node 0's
+slow device, on dev-2, with a test program around `hyperstor_engine::open`
+and `Shard::digest`:
+
+| Measure | Before | After |
+|---|---|---|
+| Open, page cache warm (3 runs) | 1.36–1.56 s (4.0 s cold) | 0.66–0.69 s |
+| The table's digest, the reactor held | 289–290 ms at once | 216 parts of 1 MiB, longest 1.4–1.5 ms, 293 ms in all |
+
+### Findings
+
+1. **The time is CPU in the index, not I/O**: 9 io_uring submissions
+   and 10 ms in system calls per open. A third of it was two copies of
+   the checkpoint's index made for replay when there was no log to
+   replay; the rest is decoding and inserting 660,234 entries.
+2. A node came up on its fast device's heartbeat while its slow device
+   was still opening; peers pinged the slow one.
+3. A reactor held by the digest missed its peers' answers, and reported
+   them: two held at once marked a healthy node down.
+4. In the end-to-end harness, a stale node coming back, out and in
+   again, with 64 GiB devices and the 300 ms peer timeout did not flap:
+   its tables are small. The in-process tests reproduce each cause with
+   a slow device instead (I188).
+

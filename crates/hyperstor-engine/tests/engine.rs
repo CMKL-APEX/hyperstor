@@ -636,6 +636,81 @@ fn large_objects_keep_their_digest_until_they_change() {
     assert_eq!(digest(&sh, "y"), now, "the same after a reopen");
 }
 
+/// A large object's digest taken a part at a time (I188) is the digest
+/// taken at once, whatever the size of the parts, across attributes and
+/// key–value table; it is cached like one; a change between parts makes
+/// the caller begin again; a small object's comes at once.
+#[test]
+fn a_large_digest_comes_in_parts_and_agrees() {
+    use hyperstor_engine::DIGEST_CACHE_MIN;
+    let (d, mut sh) = fresh(8192, None);
+    let mut ops: Vec<Op> = (0..DIGEST_CACHE_MIN + 10)
+        .map(|i| Op::KvPut(format!("k{i:06}").into_bytes(), vec![i as u8; 64]))
+        .collect();
+    ops.extend((0..20).map(|i| Op::SetAttr(format!("a{i}").into_bytes(), vec![i; 8])));
+    ops.push(Op::Write {
+        off: 0,
+        data: block(3, 2),
+    });
+    for k in ["x", "y"] {
+        for part in ops.chunks(300) {
+            one(&mut sh, key(k), part.to_vec()).unwrap();
+        }
+    }
+    let whole = sh.digest(&key("y")).unwrap();
+    let parts = |sh: &Shard, budget: usize| -> (u64, usize) {
+        let mut n = 0;
+        let mut step = sh.digest_begin(&key("x")).unwrap();
+        loop {
+            match step {
+                DigestPart::Done(v) => return (v, n),
+                DigestPart::More(g) => {
+                    n += 1;
+                    step = sh.digest_part(g, budget).unwrap();
+                }
+            }
+        }
+    };
+    for budget in [1, 100, 5000, 1 << 20] {
+        drop(sh);
+        sh = reopen(&d);
+        let (v, n) = parts(&sh, budget);
+        assert_eq!(v, whole, "in parts of {budget} bytes");
+        assert!(n >= 1);
+        if budget == 1 {
+            assert!(n > DIGEST_CACHE_MIN, "a part per entry: {n}");
+        }
+        assert!(
+            matches!(sh.digest_begin(&key("x")), Some(DigestPart::Done(c)) if c == whole),
+            "cached once done"
+        );
+    }
+    // A change between parts: begin again.
+    drop(sh);
+    let mut sh = reopen(&d);
+    let Some(DigestPart::More(g)) = sh.digest_begin(&key("x")) else {
+        panic!("a large object is digested in parts");
+    };
+    let Some(DigestPart::More(g)) = sh.digest_part(g, 100) else {
+        panic!("more to do");
+    };
+    one(&mut sh, key("x"), vec![Op::KvDel(b"k000005".to_vec())]).unwrap();
+    assert!(sh.digest_part(g, 100).is_none(), "changed meanwhile");
+    one(&mut sh, key("y"), vec![Op::KvDel(b"k000005".to_vec())]).unwrap();
+    assert_eq!(parts(&sh, 100).0, sh.digest(&key("y")).unwrap());
+    one(
+        &mut sh,
+        key("small"),
+        vec![Op::KvPut(b"k".to_vec(), b"v".to_vec())],
+    )
+    .unwrap();
+    assert!(matches!(
+        sh.digest_begin(&key("small")),
+        Some(DigestPart::Done(v)) if Some(v) == sh.digest(&key("small"))
+    ));
+    assert!(sh.digest_begin(&key("none")).is_none());
+}
+
 /// Snapshot versions (engine.md §7.2, D104): a read through layers takes
 /// each block from the first version that holds it; absorbing an older
 /// version moves the blocks the newer one lacks without copying, frees

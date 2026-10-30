@@ -427,13 +427,22 @@ impl Shard {
             sh.load_checkpoint(c)?;
         }
         let mut records = sh.scan_log()?;
-        let (base_index, base_rev, base_group) =
-            (sh.index.clone(), sh.next_revision, sh.next_group);
+        let (mut base_index, base_rev, base_group) = (
+            std::mem::take(&mut sh.index),
+            sh.next_revision,
+            sh.next_group,
+        );
         // Replay, then check the last group's new data; if some didn't reach
         // the media, drop that record and everything after it, and replay
-        // again from the checkpoint.
+        // again from the checkpoint. The checkpoint's index is copied only
+        // for a replay, which may need it again: a copy of a large index
+        // takes seconds (I188).
         let mut fx = loop {
-            sh.index = base_index.clone();
+            sh.index = if records.is_empty() {
+                std::mem::take(&mut base_index)
+            } else {
+                base_index.clone()
+            };
             sh.next_revision = base_rev;
             sh.next_group = base_group;
             sh.tail_lsn = sh.head_lsn;
@@ -1706,6 +1715,18 @@ impl Shard {
     }
 
     fn digest_of(o: &Object) -> u64 {
+        let mut h = Self::digest_head(o);
+        for table in [&o.attrs, &o.kv] {
+            h.u64(table.len() as u64);
+            for (k, v) in table {
+                h.bytes(k).bytes(v);
+            }
+        }
+        h.0
+    }
+
+    /// The digest of an object's size and blocks, which come first.
+    fn digest_head(o: &Object) -> Fnv {
         let mut h = Fnv::new();
         h.u64(o.size.div_ceil(BLOCK as u64));
         for (lb, _, crcs) in o.blocks.runs() {
@@ -1715,13 +1736,74 @@ impl Shard {
                 }
             }
         }
-        for table in [&o.attrs, &o.kv] {
-            h.u64(table.len() as u64);
-            for (k, v) in table {
-                h.bytes(k).bytes(v);
-            }
+        h
+    }
+
+    /// Begins [`Shard::digest`] of an object that may take a while: the
+    /// same digest, a part at a time ([`Shard::digest_part`]), so that the
+    /// caller can serve other requests in between (I188). A table of
+    /// 200 MB takes the better part of a second to hash, longer than a
+    /// peer waits for a ping. A cached digest, or one of an object with
+    /// few entries, or of one from before revisions, is done at once.
+    pub fn digest_begin(&self, key: &ObjKey) -> Option<DigestPart> {
+        let o = self.index.objects.get(key)?;
+        if o.revision == 0 || o.kv.len() + o.attrs.len() < DIGEST_CACHE_MIN {
+            return self.digest(key).map(DigestPart::Done);
         }
-        h.0
+        if let Some((rev, d)) = self.digests.borrow().get(key)
+            && *rev == o.revision
+        {
+            return Some(DigestPart::Done(*d));
+        }
+        let mut h = Self::digest_head(o);
+        h.u64(o.attrs.len() as u64);
+        Some(DigestPart::More(Digesting {
+            key: key.clone(),
+            revision: o.revision,
+            h,
+            kv: false,
+            after: None,
+        }))
+    }
+
+    /// Hashes about `budget` more bytes of a digest begun with
+    /// [`Shard::digest_begin`]; `None` if the object changed or went
+    /// meanwhile (begin again). The finished digest is cached as
+    /// [`Shard::digest`] caches it.
+    pub fn digest_part(&self, mut d: Digesting, budget: usize) -> Option<DigestPart> {
+        use std::ops::Bound;
+        let o = self.index.objects.get(&d.key)?;
+        if o.revision != d.revision {
+            return None;
+        }
+        let mut spent = 0;
+        loop {
+            let table = if d.kv { &o.kv } else { &o.attrs };
+            let from = match &d.after {
+                Some(k) => Bound::Excluded(k.clone()),
+                None => Bound::Unbounded,
+            };
+            for (k, v) in table.range((from, Bound::Unbounded)) {
+                d.h.bytes(k).bytes(v);
+                spent += k.len() + v.len() + 16;
+                if spent >= budget {
+                    d.after = Some(k.clone());
+                    return Some(DigestPart::More(d));
+                }
+            }
+            if d.kv {
+                break;
+            }
+            d.kv = true;
+            d.after = None;
+            d.h.u64(o.kv.len() as u64);
+        }
+        let mut c = self.digests.borrow_mut();
+        if c.len() >= DIGEST_CACHE_MAX {
+            c.clear();
+        }
+        c.insert(d.key, (d.revision, d.h.0));
+        Some(DigestPart::Done(d.h.0))
     }
 
     pub fn attrs(&self, key: &ObjKey) -> Option<&BTreeMap<Vec<u8>, Vec<u8>>> {
@@ -1955,7 +2037,29 @@ fn zero_block_crc() -> u32 {
 }
 
 /// FNV-1a, 64 bits: a fixed hash for [`Shard::digest`].
+#[derive(Debug, Clone)]
 struct Fnv(u64);
+
+/// A digest under way ([`Shard::digest_begin`]).
+#[derive(Debug, Clone)]
+pub struct Digesting {
+    key: ObjKey,
+    /// The object's revision when it began: any change to the object
+    /// gives it a new one.
+    revision: u64,
+    h: Fnv,
+    /// Into the key–value table yet (else still in the attributes).
+    kv: bool,
+    /// The last key hashed in the current table.
+    after: Option<Vec<u8>>,
+}
+
+/// A digest done, or a part of one done ([`Shard::digest_part`]).
+#[derive(Debug, Clone)]
+pub enum DigestPart {
+    Done(u64),
+    More(Digesting),
+}
 
 impl Fnv {
     fn new() -> Self {
