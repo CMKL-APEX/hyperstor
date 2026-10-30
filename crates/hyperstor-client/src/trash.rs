@@ -1,4 +1,4 @@
-//! The trash (administration.md §23.9.3, decisions.md D54): a deleted
+//! The trash (19-administration.md §23.9.3, 04-decisions.md D54): a deleted
 //! volume or snapshot keeps its data until it is purged, after a pool's
 //! grace period or at once, or restored.
 //!

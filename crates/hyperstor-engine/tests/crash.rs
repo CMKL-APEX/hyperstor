@@ -1,4 +1,4 @@
-//! Crash consistency (spec/decisions.md D22): random operation lists against a
+//! Crash consistency (spec/04-decisions.md D22): random operation lists against a
 //! reference model, with power lost at random device operations, unflushed
 //! blocks kept or lost at random (reordered and torn writes), and power
 //! lost again during recovery.

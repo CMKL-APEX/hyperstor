@@ -15,7 +15,7 @@ On dev-1, the engine runs on a 2 GiB file on the root filesystem, opened
 `O_DIRECT` and driven through io_uring (the block back end of D29). The
 file is preallocated and then written once in full, so that no read is
 served from an unwritten extent and no write converts one. NVMe
-passthrough can't be measured there (implementation-notes.md I11).
+passthrough can't be measured there (01-implementation-notes.md I11).
 
 Caveats for dev-1:
 - Flushes are expensive (no power-loss protection): a 4 KiB write plus
@@ -113,7 +113,7 @@ less data and are comparable.
 3. **Deferred small writes cost throughput on flash.** Each one is written
    twice (in the log, then in place), and at batch 128 the engine reaches
    85k ops/s against 160k raw. Redirecting every write reaches 133k.
-   See I14 in implementation-notes.md: deferral may be worth keeping only
+   See I14 in 01-implementation-notes.md: deferral may be worth keeping only
    for hard disks (D29), where it turns random writes into sequential
    ones.
 4. **CPU per deferred 4 KiB write is about 5 µs** (190k ops/s on one core
@@ -249,7 +249,7 @@ for the sequential case is mostly write buffers the allocator keeps.
 3. **A whole-index checkpoint takes 2–25 ms per GiB**, so today's format
    pauses for seconds per TiB. The capacity each checkpoint approach
    allows, and the dense block map that bounds fragmentation, are in
-   decision-log.md, point 5.
+   05-decision-log.md, point 5.
 
 ## 2026-10-21: dense maps, fuzzy checkpoints, decision data (dev-1)
 
@@ -355,7 +355,7 @@ After peer reports were built (a second run, `hyperstor-bench failover`):
 With peer reports the stall sits at about 1.25 leases, as predicted: the
 map service still waits out the dead node's lease before it republishes.
 
-The recommended 1 s target (decision-log.md point 13), measured with
+The recommended 1 s target (05-decision-log.md point 13), measured with
 `scripts/collect-decision-data.sh failover` twice, back to back, at the
 commit after peer reports and cache pools. Both runs, three stops each:
 
@@ -472,7 +472,7 @@ replay benchmark above).
    writes per second would rewrite its 8 GiB index about every 10 s
    (checkpoints start every 64 MiB of log at 128 bytes per write), about
    800 MB/s of background writes. Paged checkpoints, or a much larger log,
-   are needed before shards get that big (decision-log.md).
+   are needed before shards get that big (05-decision-log.md).
 
 
 ## 2026-10-21: cluster-API load against I/O latency, G17 first part (dev-2)
@@ -967,7 +967,7 @@ open times are within run-to-run variation.
 3. **The directory stays small** (0.4% of the index at 16 KiB, about
    8 MiB per TiB of shard) but is written every time: at 16 KiB it is 14%
    of what a checkpoint writes when 1% of the chunks change.
-4. **128 KiB stays the default** (implementation-notes.md I150). The
+4. **128 KiB stays the default** (01-implementation-notes.md I150). The
    gain from smaller pages is small until 16 KiB, which costs a quarter
    more for VM disks written all over, the common case with dense maps
    (benchmarks above). What the hot-volume case needs is fewer pages per

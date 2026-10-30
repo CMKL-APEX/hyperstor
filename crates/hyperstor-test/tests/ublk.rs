@@ -1,4 +1,4 @@
-//! ublk devices (decisions.md D94, D95): a volume served as /dev/ublkbN by
+//! ublk devices (04-decisions.md D94, D95): a volume served as /dev/ublkbN by
 //! `hyperstor-ublk`, used as a raw device and as a filesystem, detached and
 //! served again with its data. Needs root (through `sudo -n`) and the
 //! `ublk_drv` module, so it runs only with `HS_UBLK=1`.

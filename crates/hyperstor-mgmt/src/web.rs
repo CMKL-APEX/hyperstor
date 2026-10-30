@@ -1,4 +1,4 @@
-//! HTTPS for people (decisions.md D108–D110): the certificate in
+//! HTTPS for people (04-decisions.md D108–D110): the certificate in
 //! `--web-tls DIR` (`web.crt`, `web.key`: the installer's from the cluster
 //! CA, or the operator's own), re-read when the files change so an ACME
 //! client can keep them current (D109); and with `--tailscale SOCKET` the

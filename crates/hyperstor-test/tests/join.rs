@@ -1,4 +1,4 @@
-//! Joining hosts with tokens (administration.md §23.4.2, decisions.md
+//! Joining hosts with tokens (19-administration.md §23.4.2, 04-decisions.md
 //! D57): a map service on one "host", storage hosts that join it and are
 //! added to the map at run time, a group of map service members that join
 //! the first, tokens that are single-use, expire and can be revoked, and

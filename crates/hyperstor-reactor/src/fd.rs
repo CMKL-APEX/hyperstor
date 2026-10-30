@@ -1,5 +1,5 @@
 //! Waiting on and reading descriptors the reactor doesn't wrap: eventfds
-//! (vhost-user's kick and call, frontends.md §11.1) and Unix sockets whose
+//! (vhost-user's kick and call, 11-frontends.md §11.1) and Unix sockets whose
 //! messages another library reads once they are ready.
 
 use crate::{Resource, check, current};

@@ -1,8 +1,8 @@
-//! The cluster map (spec/metadata.md §4.1): nodes, devices (one per engine
+//! The cluster map (spec/06-metadata.md §4.1): nodes, devices (one per engine
 //! shard), pools and each PG's acting set; the first member of an acting
 //! set is the PG's primary. [`ClusterMap::recompute`] places every PG with
 //! `hyperstor-placement`; EC pools keep shard positions across changes
-//! (implementation-notes.md I16). Each device records the address its
+//! (01-implementation-notes.md I16). Each device records the address its
 //! reactor listens on.
 //!
 //! Its own crate so that clients (`hyperstor-client`) and the map service
@@ -42,7 +42,7 @@ pub enum PoolKind {
         k: u8,
         m: u8,
     },
-    /// Recomputable data (decisions.md D45, replication.md §8.7): `size`
+    /// Recomputable data (04-decisions.md D45, 09-replication.md §8.7): `size`
     /// copies, lost without recovery.
     Cache,
 }
@@ -66,7 +66,7 @@ pub struct PgInfo {
     /// Map epoch of the last change to this PG's `up` or `acting` set.
     pub epoch: u64,
     /// Devices that hold every acknowledged write and serve the PG,
-    /// primary first (placement.md §5.3). For EC pools the position is the shard
+    /// primary first (07-placement.md §5.3). For EC pools the position is the shard
     /// index, and a missing shard is `NO_DEVICE`.
     pub acting: Vec<u32>,
     /// Where placement wants the PG. Members of `up` not in `acting` are
@@ -102,14 +102,14 @@ pub struct ClusterMap {
     pub devices: BTreeMap<u32, DeviceInfo>,
     pub pools: BTreeMap<u32, PoolInfo>,
     pub pgs: BTreeMap<(u32, u32), PgInfo>,
-    /// Client instances storage nodes refuse (metadata.md §4.1, §9): the
+    /// Client instances storage nodes refuse (06-metadata.md §4.1, §9): the
     /// map epoch each was added at, and when it expires (Unix seconds).
     pub blocklist: BTreeMap<u64, Blocked>,
     /// Devices marked out because their node stayed down past the
-    /// down-out interval (placement.md §5.3); marked in again when it
+    /// down-out interval (07-placement.md §5.3); marked in again when it
     /// returns. Devices an operator marked out are not here.
     pub auto_out: BTreeSet<u32>,
-    /// Devices that failed (replication.md §15): out until an operator
+    /// Devices that failed (09-replication.md §15): out until an operator
     /// marks them in.
     pub failed: BTreeSet<u32>,
 }
@@ -120,7 +120,7 @@ pub struct Blocked {
     pub expires: u64,
 }
 
-/// How long a blocklist entry lasts (metadata.md §4.1). A blocklisted
+/// How long a blocklist entry lasts (06-metadata.md §4.1). A blocklisted
 /// client has long stopped writing by then: its lease renewals are refused.
 pub const BLOCKLIST_FOR: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -167,7 +167,7 @@ impl ClusterMap {
             .collect()
     }
 
-    /// Adds the `.meta` pool (metadata.md §4.2) if the map lacks it:
+    /// Adds the `.meta` pool (06-metadata.md §4.2) if the map lacks it:
     /// replicated, three copies (fewer on smaller clusters), 256 PGs.
     /// Whether it was added; the caller recomputes.
     pub fn ensure_meta_pool(&mut self) -> bool {
@@ -246,7 +246,7 @@ impl ClusterMap {
     }
 
     /// Places every PG for the current devices and bumps the epoch
-    /// (placement.md §5.3):
+    /// (07-placement.md §5.3):
     /// - `up` is where placement wants the PG: every device in placement,
     ///   down or not, so a short reboot moves no data (down and out);
     ///   for cache pools, only live devices, since nothing is copied;
@@ -354,7 +354,7 @@ impl ClusterMap {
         }
     }
 
-    /// Records that `device` has a full copy of a PG (replication.md §8.5). It
+    /// Records that `device` has a full copy of a PG (09-replication.md §8.5). It
     /// joins `acting`; once every member of `up` has, `acting` becomes
     /// `up`, dropping members placement no longer wants. Refused (false)
     /// if the PG changed since the backfill started.
@@ -475,7 +475,7 @@ impl ClusterMap {
         Some(changed)
     }
 
-    /// Takes `device` out of a PG's acting set (replication.md §15, D91: a
+    /// Takes `device` out of a PG's acting set (09-replication.md §15, D91: a
     /// replica too slow to answer), if the PG is still at `pg_epoch` and
     /// keeps `min_size` copies; it stays in `up`, so it is backfilled back.
     /// Bumps the epoch; whether it was taken out.
@@ -702,7 +702,7 @@ impl ClusterMap {
 }
 
 /// A replicated pool with defaults for tests and small clusters.
-/// The `.meta` pool's id (metadata.md §4.2): volume headers and
+/// The `.meta` pool's id (06-metadata.md §4.2): volume headers and
 /// directories. Reserved; added by [`ClusterMap::ensure_meta_pool`].
 pub const META_POOL: u32 = 0;
 

@@ -1,5 +1,5 @@
-//! Who may do what (spec/administration.md §23.9.2): Cedar, evaluated
-//! here, deny by default, through `glidex-auth`'s engine (decisions.md
+//! Who may do what (spec/19-administration.md §23.9.2): Cedar, evaluated
+//! here, deny by default, through `glidex-auth`'s engine (04-decisions.md
 //! D96).
 //!
 //! - Every call a person makes is an action: the cluster API's RPCs, as

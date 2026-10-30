@@ -1,4 +1,4 @@
-//! Who may do what (administration.md §23.8, §23.9): roles by
+//! Who may do what (19-administration.md §23.8, §23.9): roles by
 //! certificate, strangers and plain HTTP refused, the break-glass local
 //! socket, and the audit of changes and refusals.
 

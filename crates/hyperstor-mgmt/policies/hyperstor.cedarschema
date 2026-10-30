@@ -1,4 +1,4 @@
-// The management service's schema (spec/administration.md §23.9.2):
+// The management service's schema (spec/19-administration.md §23.9.2):
 // people, the cluster, and one action per call a person may make,
 // each in the group of the role that allows it. Written by hand; a test
 // checks it against the protos and mgmt's table of actions.

@@ -1,6 +1,6 @@
 //! `hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]`
 //!
-//! The management service (spec/administration.md §23.7): the web
+//! The management service (spec/19-administration.md §23.7): the web
 //! dashboard, and with `--authd`, people's logins and the cluster API on
 //! their behalf.
 //!

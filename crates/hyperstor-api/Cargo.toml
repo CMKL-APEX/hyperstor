@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Pinned with glidex's (spec/decisions.md D51, glidex grpc.md G-D10).
+# Pinned with glidex's (spec/04-decisions.md D51, glidex grpc.md G-D10).
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json"] }
 buffa = { version = "=0.9.2", features = ["json"] }
 buffa-types = { version = "=0.9.2", features = ["json"] }

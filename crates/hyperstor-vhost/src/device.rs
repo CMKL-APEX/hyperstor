@@ -1,7 +1,7 @@
 //! One vhost-user-blk connection: the frontend (Cloud Hypervisor or QEMU)
 //! sets up guest memory and the virtqueues through `vhost`'s request
 //! handler, and each enabled queue is served by a task on this reactor
-//! (decisions.md D116): it waits on the queue's kick eventfd, takes the
+//! (04-decisions.md D116): it waits on the queue's kick eventfd, takes the
 //! chains the guest made available, does each request against the
 //! attached volume, and signals the call eventfd when the guest wants it
 //! (`EVENT_IDX`). Requests are tracked in the frontend's in-flight buffer
@@ -43,7 +43,7 @@ pub const QUEUE_MAX: u16 = 1024;
 /// A volume as a disk: what every connection to its socket serves.
 pub struct Disk {
     pub volume: Rc<Attached>,
-    /// What `GET_ID` returns (frontends.md §11.1: the glidex disk id).
+    /// What `GET_ID` returns (11-frontends.md §11.1: the glidex disk id).
     pub serial: String,
     /// Queues offered.
     pub queues: u16,
@@ -52,7 +52,7 @@ pub struct Disk {
 
 /// The volume blocks writes in flight cover. A write waits for those
 /// overlapping its own, so the read-modify-write of a partial block
-/// (512e, decisions.md D126) never puts back data another write replaced
+/// (512e, 04-decisions.md D126) never puts back data another write replaced
 /// in between. Guests may reorder overlapping writes anyway; this only
 /// keeps each one whole.
 #[derive(Default)]
@@ -572,7 +572,7 @@ async fn run_request(
                 Err(_) => (blk::S_IOERR, 1),
             }
         }
-        // Writes are acknowledged once every copy has them (volumes.md
+        // Writes are acknowledged once every copy has them (10-volumes.md
         // §10.1): nothing to flush.
         Request::Flush => (blk::S_OK, 1),
         Request::GetId => match write_stream(mem, &segs.writable, 0, &blk::id(&disk.serial)) {

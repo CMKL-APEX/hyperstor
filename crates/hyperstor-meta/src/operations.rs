@@ -1,4 +1,4 @@
-//! Long operations (administration.md §23.5, decisions.md D120, D121):
+//! Long operations (19-administration.md §23.5, 04-decisions.md D120, D121):
 //! drains, flattens and purges, as rows of the replicated store, so every
 //! member answers for them, they survive restarts, and a new leader
 //! resumes those still running. Without a store (a map service of one,

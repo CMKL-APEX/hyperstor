@@ -1,5 +1,5 @@
 //! Logins to `hyperstor-mgmt` with an identity provider (OIDC,
-//! administration.md §23.9.1, D96), against a made-up provider: the
+//! 19-administration.md §23.9.1, D96), against a made-up provider: the
 //! first administrator's claim, accounts named by verified email, the
 //! login bound to its browser and used once, and step-up.
 

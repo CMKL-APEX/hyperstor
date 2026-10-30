@@ -1,4 +1,4 @@
-//! Running long operations (decisions.md D120, D121): each kind in a task
+//! Running long operations (04-decisions.md D120, D121): each kind in a task
 //! on the API's thread, its row in the replicated store updated as it goes
 //! (`crate::operations`). The leader resumes running operations it isn't
 //! following (after a restart or a change of leader), prunes finished ones

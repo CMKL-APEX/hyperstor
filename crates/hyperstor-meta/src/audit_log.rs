@@ -1,4 +1,4 @@
-//! The audit log (administration.md §23.9.4, decisions.md D112, D113,
+//! The audit log (19-administration.md §23.9.4, 04-decisions.md D112, D113,
 //! D147, D148): every record goes to standard error (journald) at once,
 //! and to append-only objects in `.meta` soon after.
 //!

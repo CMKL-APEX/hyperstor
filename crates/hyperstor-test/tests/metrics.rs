@@ -1,4 +1,4 @@
-//! Storage nodes' metrics (implementation-notes.md I49): what arrives is
+//! Storage nodes' metrics (01-implementation-notes.md I49): what arrives is
 //! counted, and every write is answered once, timed or counted as an
 //! error.
 

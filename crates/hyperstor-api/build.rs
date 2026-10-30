@@ -1,6 +1,6 @@
 //! Compiles the protos with protox (no protoc or buf needed) and generates
 //! messages, services and clients with connectrpc-build, as glidex-api does
-//! (spec/administration.md §23.5).
+//! (spec/19-administration.md §23.5).
 
 use std::path::PathBuf;
 

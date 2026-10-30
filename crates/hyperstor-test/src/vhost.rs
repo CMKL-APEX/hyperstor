@@ -1,4 +1,4 @@
-//! Driving `hyperstor-vhost` (frontends.md §11.1) as a hypervisor would:
+//! Driving `hyperstor-vhost` (11-frontends.md §11.1) as a hypervisor would:
 //! the service as a child process, its control socket, and [`Guest`], the
 //! hypervisor's side of one disk: guest memory in a memfd, a split
 //! virtqueue laid out in it by hand, requests as descriptor chains, kicks

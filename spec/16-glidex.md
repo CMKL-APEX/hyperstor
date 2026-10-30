@@ -25,7 +25,7 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
 
 - **Hypervisor arguments.** `VhostUserBlk` gives Cloud Hypervisor
   `--disk vhost_user=true,socket=…` and QEMU a `vhost-user-blk-pci`
-  device, with the VM's memory backend shared (frontends.md §11.1). Command-line pin
+  device, with the VM's memory backend shared (11-frontends.md §11.1). Command-line pin
   tests cover both; glidex's ignored boot tests boot a cloud image from
   a linked disk under each (glidex storage.md §11.2), which needed
   512-byte sectors in `hyperstor-vhost` (D126).
@@ -33,7 +33,7 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
   spec change. storage.md lists disk snapshots as out of scope today, and
   hyperstor is the first datastore that can do them.
 - **Bare-metal GPU hosts** aren't glidex nodes. An operator exports a
-  volume or snapshot to a host identity (operations.md §16) through `gxctl datastore`
+  volume or snapshot to a host identity (15-operations.md §16) through `gxctl datastore`
   sub-commands that call the management API.
 
 ## 20. Edits to other documents (when implemented)
@@ -41,22 +41,22 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
 - **storage.md §11:** the `hyperstor` driver, `VolumeBinding::VhostUserBlk`,
   and the snapshot capability.
 - **host-topology.md:** hyperstor's reserved cores, namespaces and NICs
-  (operations.md §18.3).
+  (15-operations.md §18.3).
 - **clustering.md §18:** the `--fenced` question for VMs whose disks are
-  all on hyperstor (metadata.md §9).
+  all on hyperstor (06-metadata.md §9).
 - **security.md:** hyperstor's identities and networks.
 - **architecture.md:** hyperstor's processes.
 - **New crate `glidex-auth`:** sessions, tokens, PAM through
   `glidex-authd`, and Cedar, extracted for hyperstor-mgmt (D52); and the
   UI's shared components.
 - **web-ui.md, security.md §7.3:** a Storage section and a
-  `storage-admin` role (administration.md §23.7, AD4).
+  `storage-admin` role (19-administration.md §23.7, AD4).
 - **tenancy.md:** the project-to-tenant-id mapping and tenant weights
-  (D61, D62, tenants.md §24); sites or regions of a glidex deployment
-  as the federation (D68, federation.md §25.6).
+  (D61, D62, 20-tenants.md §24); sites or regions of a glidex deployment
+  as the federation (D68, 21-federation.md §25.6).
 - **tenancy.md, credentials.md:** S3 access keys per project, and
-  Cedar actions for buckets and objects (s3.md §14.2).
+  Cedar actions for buckets and objects (14-s3.md §14.2).
 - **hypervisors.md:** a vhost-user-fs device for VMs mounting the
-  hyperstor filesystem (filesystem.md); a virtio-vsock device for VMs with GPU-direct
+  hyperstor filesystem (00-filesystem.md); a virtio-vsock device for VMs with GPU-direct
   storage (D33); vhost-user-blk hot-plug, for the later CSI driver
-  (frontends.md §11.4).
+  (11-frontends.md §11.4).

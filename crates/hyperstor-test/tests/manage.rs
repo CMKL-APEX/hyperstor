@@ -1,4 +1,4 @@
-//! Managing a running cluster with `hyperstorctl` (administration.md
+//! Managing a running cluster with `hyperstorctl` (19-administration.md
 //! §23.6): status and tables, I/O on every pool, taking devices out and
 //! in, and a node failing and coming back.
 
@@ -242,7 +242,7 @@ fn volumes_through_hyperstorctl() {
         .expect(1);
 }
 
-/// Snapshots through `hyperstorctl` (volumes.md §10.3, §10.4): taken,
+/// Snapshots through `hyperstorctl` (10-volumes.md §10.3, §10.4): taken,
 /// listed, cloned, refused deletion while the clone depends on them,
 /// flattened, rolled back and deleted; a consistency group taken and
 /// deleted.

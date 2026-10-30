@@ -1,5 +1,5 @@
 //! People reach hyperstor-mgmt on the host's addresses over HTTPS
-//! (decisions.md D108–D110): the cluster CA's certificate, re-read when
+//! (04-decisions.md D108–D110): the cluster CA's certificate, re-read when
 //! its files change (an ACME client's renewals, D109), the node's
 //! Tailscale certificate for its ts.net names with HSTS, and plain HTTP
 //! sent to HTTPS.

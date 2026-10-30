@@ -1,5 +1,5 @@
-//! A chunk version's map from logical to physical blocks (spec/engine.md
-//! §7.2, decisions.md D43).
+//! A chunk version's map from logical to physical blocks (spec/08-engine.md
+//! §7.2, 04-decisions.md D43).
 //!
 //! Two representations, chosen by memory cost:
 //! - **runs**: contiguous logical ranges mapped to contiguous physical
@@ -47,7 +47,7 @@ pub enum Loc {
 const HOLE: u32 = u32::MAX;
 /// Approximate memory per run in the runs representation: the map entry,
 /// the run, and the checksum vector's allocation. Measured at about 128
-/// bytes (benchmarks.md, index aging: process growth per run).
+/// bytes (02-benchmarks.md, index aging: process growth per run).
 pub const RUN_OVERHEAD: u64 = 128;
 /// Largest object a dense map is used for, in blocks (4 GiB).
 const MAX_DENSE_SPAN: u64 = 1 << 20;

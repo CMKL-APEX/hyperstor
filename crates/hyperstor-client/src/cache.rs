@@ -1,4 +1,4 @@
-//! The host read cache (decisions.md D32, D102): blocks of chunk versions
+//! The host read cache (04-decisions.md D32, D102): blocks of chunk versions
 //! that can't change, shared by every volume a client serves, so the VMs
 //! of a host that boot clones of one golden image read it once.
 //!

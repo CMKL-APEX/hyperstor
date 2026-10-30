@@ -2,12 +2,12 @@
 
 Status: **investigation; nothing built.** D127 (our own Rust server),
 D129 (data servers inside `hyperstord`) and D130 (stripe groups) are
-settled with the owner (decision-log.md point 74), as are D138–D141 and
+settled with the owner (05-decision-log.md point 74), as are D138–D141 and
 the revisions of D128, D131–D134 and D137 (points 75–82, after a review
 against RFC 8881, RFC 8434, RFC 8435 and the Linux client). D128 and
 D131–D137 as written are open for review, and G25–G38 are the host
 checks they rest on. It extends the filesystem
-([filesystem.md](filesystem.md)) with a third way in, beside virtio-fs
+([00-filesystem.md](00-filesystem.md)) with a third way in, beside virtio-fs
 and FUSE (F8): unmodified NFS clients.
 
 ## 26. NFS and pNFS front end (D127–D141)
@@ -108,7 +108,7 @@ decides which layout an export offers by default (D128).
 
 | Component | Runs | Does |
 |---|---|---|
-| `hyperstor-nfs` | on map service or gateway hosts, several instances | The MDS: an NFSv4.1/4.2 server over the filesystem's metadata (filesystem.md F1–F3), keeping NFS state in `hyperstor-kv` (D134). Holds the addresses of the exports it serves (D138). Serves I/O itself, through the client library, for clients without pNFS |
+| `hyperstor-nfs` | on map service or gateway hosts, several instances | The MDS: an NFSv4.1/4.2 server over the filesystem's metadata (00-filesystem.md F1–F3), keeping NFS state in `hyperstor-kv` (D134). Holds the addresses of the exports it serves (D138). Serves I/O itself, through the client library, for clients without pNFS |
 | NFS DS | inside `hyperstord`, on each reactor | Serves `PUTFH`, `READ`, `WRITE` and `COMMIT` on the chunks of the PGs that reactor leads (D129), with a session layer of its own (§26.6) |
 | `hyperstor-kv` | storage nodes (HS11) | Inodes, directories, exports, and the MDS's client, session, open, lock and layout records |
 
@@ -124,7 +124,7 @@ squash (on by default), `all_squash` or an allowed uid range, the
 `user@domain` mapping, and the layout
 policy (`files`, `flexfiles` or `auto`; D128). It is created and
 changed through the cluster API and `hyperstorctl nfs export …`, by the
-`storage-admin` role that manages NVMe-oF exports (administration.md
+`storage-admin` role that manages NVMe-oF exports (19-administration.md
 §23), and audited like them. Every MDS instance reads the same records,
 so there is no `exports(5)` file to keep in step between instances.
 
@@ -241,7 +241,7 @@ on that PG, so a client resolves each PG once. When a primary changes:
 **DSs live in `hyperstord` (D129).** Each reactor serves NFS on a port
 of its own, like its data port (D39), and its DS answers only for the
 PGs it leads. A pNFS write then lands on the primary's own reactor,
-which replicates it as any client write (replication.md §8.1): one
+which replicates it as any client write (09-replication.md §8.1): one
 network hop, as for the native client. A DS is an NFSv4.1 server with
 only the operations of RFC 8881 section 13.6, so each reactor keeps a
 small session layer: client IDs (from `EXCHANGE_ID` with
@@ -261,7 +261,7 @@ path needs kernel TLS where the network isn't trusted (D25).
 
 **Reads go to the primary by default (D140).** A READ layout names the
 same DSs as an RW layout: the primaries. The native client reads from
-the primary too (replication.md §8.1), so NFS sees the same consistency,
+the primary too (09-replication.md §8.1), so NFS sees the same consistency,
 EC pools need nothing special, and forwarding (D131) has one target.
 
 Reading from replicas adds no capacity in aggregate: every node is
@@ -278,7 +278,7 @@ chunks:
 
 It is safe without new leases. D89 made map leases the read leases, and
 replicas hold them too: an acknowledged write is on every in-sync
-member's stable storage before the primary answers (replication.md
+member's stable storage before the primary answers (09-replication.md
 §8.1), so an in-sync replica under a valid map lease that has peered in
 the current `pg_epoch` has every acknowledged byte. What changes is that
 a chunk being overwritten may read new on one replica and old on
@@ -326,10 +326,10 @@ resurrects data past the new size, or is lost under it. Reads need no
 recall: a READ layout on a deleted chunk reads zeros.
 
 **Partial blocks.** NFS writes need not be 4 KiB aligned; the engine is
-(implementation-notes.md I8). The DS reads, merges and writes back a
+(01-implementation-notes.md I8). The DS reads, merges and writes back a
 block it covers in part, holding the block's key on the primary for the
 duration, as `hyperstor-vhost` does for 512-byte sectors (D126). Any
-pool may back an export (decision-log.md point 82): on an EC pool an
+pool may back an export (05-decision-log.md point 82): on an EC pool an
 unaligned write costs a stripe read-modify-write, which G36 measures
 before the default pool policy for NFS trees is final.
 
@@ -484,16 +484,16 @@ permission changes to reach the DSs; hyperstor does not do that yet.
 | Operation | Hyperstor |
 |---|---|
 | `SEEK`, `READ_PLUS` | Holes are chunks that don't exist and blocks no chunk maps; the DS asks the engine for a chunk's extents |
-| `ALLOCATE` | Reserves space in the tenant's quota (tenants.md §24.4); blocks aren't written |
+| `ALLOCATE` | Reserves space in the tenant's quota (20-tenants.md §24.4); blocks aren't written |
 | `DEALLOCATE` | Recalls RW layouts on the range (§26.6), then deletes whole chunks and zeroes partial ones (`Zero`) |
-| `CLONE` | Needs files that share chunk versions, as volume clones do (volumes.md §10.3). With a lineage per file it is the same mechanism; until then, refused (`NFS4ERR_NOTSUPP`) |
+| `CLONE` | Needs files that share chunk versions, as volume clones do (10-volumes.md §10.3). With a lineage per file it is the same mechanism; until then, refused (`NFS4ERR_NOTSUPP`) |
 | `COPY` | Server-side: the MDS recalls RW layouts on the target range, then has the primaries copy chunk by chunk, so data never reaches the client; asynchronous for large files (`CB_OFFLOAD`) |
 | `LAYOUTERROR`, `LAYOUTSTATS` | Flexible files only: DS errors and latencies, kept as metrics and used to recall stale layouts (D131) |
 
 ### 26.9 Security and identity (D135)
 
 - **Transport:** RPC-with-TLS (RFC 9289) with mutual TLS. A client host
-  presents a hyperstor host certificate (administration.md §23.8),
+  presents a hyperstor host certificate (19-administration.md §23.8),
   which says which tenant and exports it may mount, as F12 does for FUSE
   hosts. Linux has it from 6.5 with `tlshd` (`mount -o xprtsec=mtls`).
   Whether the Linux client also uses TLS for DS connections, with either
@@ -510,12 +510,12 @@ permission changes to reach the DSs; hyperstor does not do that yet.
 - **Kerberos** (RPCSEC_GSS) comes later. Tight coupling allows it (RFC
   8435 section 15.1.2); it would need keys on every storage node.
 - **Ports:** the MDS on 2049 on the client network; a DS port per
-  reactor on storage networks (protocol.md §13.2). NFS clients must
+  reactor on storage networks (13-protocol.md §13.2). NFS clients must
   therefore reach the storage networks' DS port range through any
   firewall between them, as native clients do; a client that can't
   still works through the MDS, slowly. Neither port carries
   administration.
-- **ACLs:** mode bits first; NFSv4 ACLs with POSIX ACLs (filesystem.md
+- **ACLs:** mode bits first; NFSv4 ACLs with POSIX ACLs (00-filesystem.md
   §1, later).
 
 ### 26.10 Alternatives considered and phasing (D127, D137)
@@ -586,7 +586,7 @@ would be thrown away at N1.
   `EXCHGID4_FLAG_BIND_PRINC_STATEID` (I/O under a different user on an
   open file goes through a new `OPEN`), and what it does when the DS
   answers `NFS4ERR_BAD_STATEID` to a write on a read-only open.
-- **G36. Unaligned writes on EC pools** (D132, decision-log.md point
+- **G36. Unaligned writes on EC pools** (D132, 05-decision-log.md point
   82). Throughput and latency of 4 KiB-unaligned pNFS writes on a
   replicated and an EC pool, against aligned ones, to set the default
   pool policy for NFS directory trees.

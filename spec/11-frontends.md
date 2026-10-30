@@ -13,7 +13,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   host-topology §8a, as vhost-user networking already does.
 - **Virtio features:** multiqueue (one queue per vCPU, up to the reactors
   on the VM's NUMA node), packed virtqueues, `EVENT_IDX`, discard,
-  write-zeroes, flush (volumes.md §10.1), and the config-change event for expand.
+  write-zeroes, flush (10-volumes.md §10.1), and the config-change event for expand.
 - **The disk's serial number** is the first 20 characters of the glidex
   disk id without dashes, unique within the VM. Tools in the guest, and
   the guest library (D33), find the volume behind a disk by it.
@@ -42,7 +42,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   sockets: QEMU with `reconnect`, Cloud Hypervisor on its own (G6). The
   requests in flight run again from the frontend's in-flight buffer
   (D143, D145).
-- **As built** (HS3, D116, D117; implementation-notes.md I158–I161):
+- **As built** (HS3, D116, D117; 01-implementation-notes.md I158–I161):
   one reactor, the control socket, write-through 512e disks (512-byte
   sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
   under Cloud Hypervisor and QEMU; restarts that keep the volumes (the
@@ -63,7 +63,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   - a host allowlist of host NQNs, from the volume's attachments;
   - DH-HMAC-CHAP with keys from the credential store (credentials.md);
   - NVMe reservations, held for the host by the gateway: acquire takes
-    the volume's `rw` lease, and preempt is a forced takeover (metadata.md §9).
+    the volume's `rw` lease, and preempt is a forced takeover (06-metadata.md §9).
 - **Discovery** service on port 8009, listing only the subsystems the
   connecting host may see.
 - **Stopgap (D19):** until the target is ready, each exported volume is
@@ -91,7 +91,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   large sequential read doesn't flush the cache.
 - **Deleted snapshots** are dropped from the cache when the map delta
   (or the header notification) reports them.
-- The GPU library (gpu.md §12) can use a host's cache through
+- The GPU library (12-gpu.md §12) can use a host's cache through
   `hyperstor-vhost` on glidex nodes; on bare metal it reads directly.
 
 ### 11.4 Later
@@ -101,7 +101,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   hyperstor disk and hot-plug it into the VM as vhost-user-blk. The
   guest never reaches the storage network. `ReadOnlyMany` volumes are
   read-only snapshot attachments, served by the host read cache. It
-  needs vhost-user-blk hot-plug in glidex (glidex.md §20).
+  needs vhost-user-blk hot-plug in glidex (16-glidex.md §20).
 - **NVMe emulation over vfio-user**, for guests that need a real NVMe
   device (some Windows and appliance images). For Linux guests,
   virtio-blk performs as well.

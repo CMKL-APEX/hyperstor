@@ -30,7 +30,7 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
 
 - **Versions.** `Hello` agrees on the highest version both sides speak.
   Each release speaks its own version and the one before, so rolling
-  upgrades work node by node (operations.md §18.4). The exception is
+  upgrades work node by node (15-operations.md §18.4). The exception is
   version 2 (lease identities), which replaced 1 at once (D152).
 - **Security** per D25.
 
@@ -58,7 +58,7 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   reach every peer, which removes per-peer queue pairs altogether.
 - **No reliance on order.** Every message carries what its receiver
   needs to place it: request ids for replies, PG sequence numbers for
-  `Repl` (replication.md §8.1). A reply that covers an RDMA write is sent only after
+  `Repl` (09-replication.md §8.1). A reply that covers an RDMA write is sent only after
   that write has completed at the target (on libfabric, with
   delivery-complete semantics). The protocol then also runs on
   transports that deliver out of order, such as UET's unordered mode

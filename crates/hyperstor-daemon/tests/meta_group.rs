@@ -1,4 +1,4 @@
-//! A replicated map service (decisions.md D20, D71–D74): three members over
+//! A replicated map service (04-decisions.md D20, D71–D74): three members over
 //! Raft on loopback, four storage nodes that know all three, and clients
 //! that follow the leader's redirects.
 

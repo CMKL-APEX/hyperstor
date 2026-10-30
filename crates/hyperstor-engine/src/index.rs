@@ -67,7 +67,7 @@ pub enum ROp {
         crcs: Vec<u32>,
     },
     /// Overwrites mapped blocks in place; the data is in the log until
-    /// applied (spec/engine.md §7.3). Boxed: rare, and the largest.
+    /// applied (spec/08-engine.md §7.3). Boxed: rare, and the largest.
     Deferred(Box<DeferredWrite>),
     Unmap {
         lb: u64,
@@ -695,7 +695,7 @@ mod tests {
     }
 
     /// Replaying over a fuzzy checkpoint written after an absorb moved a
-    /// block (implementation-notes.md I149): the source no longer maps it,
+    /// block (01-implementation-notes.md I149): the source no longer maps it,
     /// so the deferred write waits; the block's new owner maps it with the
     /// write's checksum, so it is kept.
     #[test]

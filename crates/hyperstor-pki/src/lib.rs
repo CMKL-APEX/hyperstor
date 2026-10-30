@@ -1,4 +1,4 @@
-//! Hyperstor's certificates (spec/administration.md §23.8, decisions.md
+//! Hyperstor's certificates (spec/19-administration.md §23.8, 04-decisions.md
 //! D53 and D56).
 //!
 //! - A **root** CA (10 years) signs only intermediates; everyone trusts
@@ -391,7 +391,7 @@ pub fn api_server_config(
 
 /// A server for browsers: presents `chain`, asks no client certificate
 /// (people log in instead), HTTP/1.1 only: the management service's web
-/// side (spec/administration.md §23.7).
+/// side (spec/19-administration.md §23.7).
 pub fn web_server_config(chain: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
     let mut c = rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
@@ -636,7 +636,7 @@ fn backup_key(passphrase: &str, salt: &[u8]) -> Result<ring::aead::LessSafeKey, 
 }
 
 /// The root CA, certificate and key, encrypted with `passphrase`, as the
-/// text of a backup file (spec/administration.md §23.8, D84): AES-256-GCM
+/// text of a backup file (spec/19-administration.md §23.8, D84): AES-256-GCM
 /// with a key derived by PBKDF2-HMAC-SHA256 from the passphrase and a
 /// random salt. The cluster and the root's fingerprint are in the clear,
 /// to tell backups apart, and authenticated with the rest.

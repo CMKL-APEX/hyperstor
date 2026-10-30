@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-meta"
-description = "Hyperstor's cluster map and map service (spec/metadata.md §4)"
+description = "Hyperstor's cluster map and map service (spec/06-metadata.md §4)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 hyperstor-rpc = { path = "../hyperstor-rpc" }
-# The cluster API (spec/administration.md §23.5), on its own thread.
+# The cluster API (spec/19-administration.md §23.5), on its own thread.
 hyperstor-api = { path = "../hyperstor-api", features = ["server"] }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "server", "server-tls"] }
 hyperstor-pki = { path = "../hyperstor-pki" }
@@ -27,7 +27,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 http = "1"
 tower = "0.5"
 libc.workspace = true
-# The replicated map (decisions.md D20, D71): glidex's store and Raft stack,
+# The replicated map (04-decisions.md D20, D71): glidex's store and Raft stack,
 # pinned to a revision of glidex (PRs #141, #143).
 glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex", rev = "a57ed85bafb6f2380b45c39642949480d894a9a5" }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }

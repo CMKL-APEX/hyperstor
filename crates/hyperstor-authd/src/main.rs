@@ -1,7 +1,7 @@
 //! `hyperstor-authd --config FILE`
 //!
 //! The root helper that checks people's passwords with PAM for
-//! `hyperstor-mgmt` (spec/administration.md §23.9.1, decisions.md D99):
+//! `hyperstor-mgmt` (spec/19-administration.md §23.9.1, 04-decisions.md D99):
 //! `glidex-authd`'s server (glidex security.md §5.3) with hyperstor's
 //! defaults. It answers only the `hyperstor` service user, on
 //! `/run/hyperstor-authd/auth.sock` (socket-activated by systemd, or bound

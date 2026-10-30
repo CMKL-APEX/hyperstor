@@ -1,5 +1,5 @@
-//! Logins with an identity provider (spec/administration.md §23.9.1,
-//! decisions.md D96): OIDC's Authorization Code flow with PKCE and a
+//! Logins with an identity provider (spec/19-administration.md §23.9.1,
+//! 04-decisions.md D96): OIDC's Authorization Code flow with PKCE and a
 //! nonce, through `glidex-auth`'s client, configured by `--oidc FILE`.
 //!
 //! `FILE` is JSON:

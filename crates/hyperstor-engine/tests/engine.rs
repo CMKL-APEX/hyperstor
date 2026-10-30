@@ -1,4 +1,4 @@
-//! Behaviour of the engine's operations (spec/engine.md §7).
+//! Behaviour of the engine's operations (spec/08-engine.md §7).
 
 use hyperstor_engine::*;
 use std::sync::Arc;
@@ -495,7 +495,7 @@ fn io_error_poisons_until_reopen() {
     ));
 }
 
-/// Digests (replication.md §8.5) depend on what an object reads as, not
+/// Digests (09-replication.md §8.5) depend on what an object reads as, not
 /// on how it got there: written whole or in pieces, holes or zero blocks,
 /// before or after a reopen. Any change to a block, an attribute, a key
 /// or the size changes the digest.
@@ -711,7 +711,7 @@ fn a_large_digest_comes_in_parts_and_agrees() {
     assert!(sh.digest_begin(&key("none")).is_none());
 }
 
-/// Snapshot versions (engine.md §7.2, D104): a read through layers takes
+/// Snapshot versions (08-engine.md §7.2, D104): a read through layers takes
 /// each block from the first version that holds it; absorbing an older
 /// version moves the blocks the newer one lacks without copying, frees
 /// the ones it overrides, and survives a reopen.

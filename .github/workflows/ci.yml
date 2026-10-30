@@ -48,7 +48,7 @@ jobs:
     - name: Clippy, every target, warnings denied
       run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The protos (spec/administration.md §23.5): buf's lint, and on pull
+  # The protos (spec/19-administration.md §23.5): buf's lint, and on pull
   # requests no breaking change against the branch merged into. buf is a
   # pinned release, checked against its published SHA-256.
   buf:
@@ -107,6 +107,8 @@ jobs:
     - uses: actions/checkout@v7
     - name: Check the spec and citations of it
       run: python3 scripts/spec-check.py
+    - name: Check the progress board
+      run: python3 scripts/board.py check
 
   test:
 
@@ -119,7 +121,7 @@ jobs:
     - uses: actions/checkout@v7
     - name: Build
       run: cargo build --workspace --release --verbose
-    # The crash test's seed count (spec/implementation-notes.md): the
+    # The crash test's seed count (spec/01-implementation-notes.md): the
     # default 300 on pushes and pull requests (empty means the default),
     # 5,000 nightly.
     - name: Run tests

@@ -1,11 +1,11 @@
-// Joining hosts, certificates and long operations (spec/administration.md
+// Joining hosts, certificates and long operations (spec/19-administration.md
 // §23.4.2, §23.5, §23.8), served beside ClusterService by every
 // hyperstor-meta member.
 syntax = "proto3";
 
 package hyperstor.v1;
 
-// Join tokens (decisions.md D57).
+// Join tokens (04-decisions.md D57).
 service TokenService {
   // Makes a single-use join token for one role. Write: admin or mgmt.
   rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse);
@@ -21,7 +21,7 @@ service TokenService {
   rpc Join(JoinRequest) returns (JoinResponse);
 }
 
-// Certificates (decisions.md D53, D56).
+// Certificates (04-decisions.md D53, D56).
 service CaService {
   // A new certificate for the caller's own identity and addresses, for
   // the key in the request: renewal over the existing mutual TLS session.
@@ -32,11 +32,11 @@ service CaService {
   rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesResponse);
 
   // Refuses a certificate, by serial, on every map service member from
-  // now until it would have expired (decisions.md D56, D93). Write.
+  // now until it would have expired (04-decisions.md D56, D93). Write.
   rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
 }
 
-// Backups of the map service's store (decisions.md D86).
+// Backups of the map service's store (04-decisions.md D86).
 service MapService {
   // A backup of the store now: the map, join tokens, issued certificates
   // and revocations, as `hyperstor-meta --restore` reads it. Write: admin
@@ -44,7 +44,7 @@ service MapService {
   rpc GetMapBackup(GetMapBackupRequest) returns (GetMapBackupResponse);
 }
 
-// The map service's members (decisions.md D87).
+// The map service's members (04-decisions.md D87).
 service MemberService {
   // Voters and learners, with their addresses, and who leads. Read.
   rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
@@ -59,7 +59,7 @@ service MemberService {
 }
 
 // hyperstor-mgmt's rows in the map service's store: people's accounts,
-// sessions, tokens and roles (decisions.md D98). Only the mgmt identity
+// sessions, tokens and roles (04-decisions.md D98). Only the mgmt identity
 // may call these; keys and values are mgmt's own.
 service MgmtStoreService {
   rpc GetRow(GetRowRequest) returns (GetRowResponse);
@@ -79,7 +79,7 @@ service NodeService {
 }
 
 // Long operations (§23.6): drains for now.
-// The audit log (spec/administration.md §23.9.4, decisions.md D112,
+// The audit log (spec/19-administration.md §23.9.4, 04-decisions.md D112,
 // D113): every change and refused call, kept in .meta a day per object.
 service AuditService {
   // Records, newest first, filtered. Security administrators (through
@@ -161,7 +161,7 @@ service OperationService {
   rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
 
   // An operation as it is now, then each change, until it finishes
-  // (decisions.md D121). Read.
+  // (04-decisions.md D121). Read.
   rpc WatchOperation(WatchOperationRequest) returns (stream WatchOperationResponse);
 
   // Stops an operation and undoes what it can (a drain brings the
@@ -171,7 +171,7 @@ service OperationService {
 
 message CreateTokenRequest {
   // "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-  // management client such as glidex's control plane, decisions.md D122).
+  // management client such as glidex's control plane, 04-decisions.md D122).
   string role = 1;
   // How long the token is valid; 0 means an hour. At most a week.
   uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];
@@ -225,7 +225,7 @@ message JoinRequest {
   // A storage host's rack (failure domain).
   uint32 rack = 4;
   // A map service member: its member number and its addresses, which its
-  // certificate names (members are listed at install; decisions.md D74).
+  // certificate names (members are listed at install; 04-decisions.md D74).
   uint32 member_id = 5 [json_name = "member_id"];
   repeated string member_ips = 6 [json_name = "member_ips"];
 }

@@ -11,7 +11,7 @@ that no single node sees every change (D28):
 |---|---|---|---|
 | Cluster map | nodes, devices, pools, the PG table and epochs, host exports, the blocklist | the `hyperstor-meta` Raft leader | hardware changes and failures |
 | Volume metadata (the `.meta` pool) | volume headers, lineage trees, pool directories, snapshot groups | the primary of the PG that holds each object | volume operations, lease renewals |
-| Block metadata (engines, engine.md §7) | extent maps, versions, checksums, allocation | the primary of each data PG | I/O |
+| Block metadata (engines, 08-engine.md §7) | extent maps, versions, checksums, allocation | the primary of each data PG | I/O |
 
 ### 4.1 The cluster map (Raft)
 
@@ -23,14 +23,14 @@ that no single node sees every change (D28):
 
 | Table | Key | Holds |
 |---|---|---|
-| `nodes` | node id | networks (protocol.md §13.2: for each, its address, its transports and their parameters), role, failure domain path (`rack/host`), reactor count, state |
+| `nodes` | node id | networks (13-protocol.md §13.2: for each, its address, its transports and their parameters), role, failure domain path (`rack/host`), reactor count, state |
 | `devices` | device id | node, kind (`nvme`, `ssd`, `hdd`), identity (NVMe EUI-64/NGUID, or WWN and serial), log device (for `hdd`), capacity, class, weight, state (`in`, `out`, `failed`) |
 | `pools` | pool id | kind (`replicated{size, min_size}`, `ec{k, m}` or `cache{copies, default_ttl}`, D45), chunk size, PG count, failure domain level, device class filter, thresholds, priority class (D46) |
 | `pgs` | (pool, pg) | `pg_epoch`, `up` set (computed placement), `acting` set (who serves now), primary, in-sync set, state |
 | `hosts` | host identity | bare-metal and non-glidex hosts: NQN, CHAP key reference, the volumes and snapshots exported to it |
 | `blocklist` | client instance id | map epoch added, expiry |
 
-- **As built** (HS1, implementation-notes.md I62–I67): one table, `map`,
+- **As built** (HS1, 01-implementation-notes.md I62–I67): one table, `map`,
   with a `head` row (epoch, nodes, devices, pools) and one row per PG;
   `hosts` and `blocklist` come with their features. The leader publishes
   a change as one write set of the head and the PG rows that changed.
@@ -91,12 +91,12 @@ that no single node sees every change (D28):
 - `.meta` is created at cluster init: replicated, `size 3`,
   `min_size 2`, failure domain `host`, 256 PGs by default, on the
   fastest device class. It is a pool like any other: the same
-  placement, peering, recovery and scrub (placement.md §5, replication.md §8).
+  placement, peering, recovery and scrub (07-placement.md §5, 09-replication.md §8).
 - **Objects** in it are small (a few KiB) and versioned. A change is a
   compare-and-set on the object's version, ordered by its PG primary and
-  replicated like any write (replication.md §8.1), so it is durable on every in-sync
+  replicated like any write (09-replication.md §8.1), so it is durable on every in-sync
   copy before it is acknowledged. Reads come from the primary under its
-  read lease (replication.md §8.4), so they are linearizable.
+  read lease (09-replication.md §8.4), so they are linearizable.
 
 | Object | Key | Holds |
 |---|---|---|
@@ -114,7 +114,7 @@ that no single node sees every change (D28):
   rollback cleanup) are run by the header's primary, which sends work to
   the data PGs and records progress in the header. A new primary after
   failover reads the header and resumes.
-- **The management API** (operations.md §16) is served by every `hyperstor-meta`
+- **The management API** (15-operations.md §16) is served by every `hyperstor-meta`
   member, not only the leader. Volume operations are performed as a
   client of `.meta`; only map changes are forwarded to the leader.
 
@@ -133,7 +133,7 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 
 ## 9. Volume leases and fencing (D11, D23, D24)
 
-- **As built** (implementation-notes.md I74–I78, I186): the holder is
+- **As built** (01-implementation-notes.md I74–I78, I186): the holder is
   the header's `lease` attribute (the lease's identity, the holder's
   instance and the mode); the expiry lives in the primary's memory, so a
   renewal writes nothing, and a new primary gives the holder a full
@@ -166,13 +166,13 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
      delegates' (D150): one Raft write, map epoch `N`;
   3. the metadata service pushes the map and reports when every storage
      node has acknowledged epoch `N` or has lost its map lease (and so
-     refuses all writes, replication.md §8.4);
+     refuses all writes, 09-replication.md §8.4);
   4. the header primary, holding a map of epoch ≥ `N`, breaks the old
      lease and grants the new one.
 - **The metadata service being down doesn't stop I/O**, and doesn't stop
   releases, hand-offs or renewals either, because none of them touch
   Raft. A forced takeover waits for it.
-- **NVMe reservations** at the gateway (frontends.md §11.2) map onto this: acquire is
+- **NVMe reservations** at the gateway (11-frontends.md §11.2) map onto this: acquire is
   an acquire, preempt is a forced takeover.
 - **Effect on glidex.** storage.md S10 needs `node forget --fenced`
   before a `Lost` VM is re-placed, because the partitioned node may still
@@ -187,7 +187,7 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
 - **Fencing one volume of a shared client** (D150, D151; built
   2026-10-29). A `hyperstor-vhost` serves every VM of its node through
   one client; fencing that client would cut off every disk it serves
-  (implementation-notes.md I160). So:
+  (01-implementation-notes.md I160). So:
   - **A lease identity per attached volume**, chosen by the client at
     attach and recorded in the header with the lease, alongside the
     instance it belongs to. It travels on every request under the lease,
@@ -200,7 +200,7 @@ namespaces, pools of up to 65,536 PGs and a million volumes.
   - **D33's delegates are the same thing seen from the guest**: an
     identity that acts under a holder, renews nothing, and is fenced with
     it (D151). A snapshot's quiesce waits for each.
-  - **Costs:** 8 bytes on every request, not measurable (benchmarks.md,
+  - **Costs:** 8 bytes on every request, not measurable (02-benchmarks.md,
     2026-10-29), and a second lookup per request while the blocklist
     isn't empty (not measured); the blocklist grows by one entry per
     preempted lease and delegate, for an hour.

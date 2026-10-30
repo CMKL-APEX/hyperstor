@@ -1,4 +1,4 @@
-//! The map service's replicated store (decisions.md D20, D71): the
+//! The map service's replicated store (04-decisions.md D20, D71): the
 //! published map in `glidex-raftstore`'s write-set store.
 //!
 //! The map is rows of the `map` table: `head` (epoch, nodes, devices,
@@ -98,7 +98,7 @@ impl rs::Schema for MapSchema {
     const SNAPSHOT_MAGIC: &'static [u8; 8] = b"HSMAP01\n";
     const CHECK_ENV: &'static str = "HS_CHECK_WRITE_SETS";
     /// The first map of a large cluster is written whole: 65,536 PGs
-    /// (metadata.md §4.3) are about 10 MB as a write set.
+    /// (06-metadata.md §4.3) are about 10 MB as a write set.
     const MAX_WRITE_SET_BYTES: usize = 64 << 20;
 
     fn table_name(t: Table) -> &'static str {
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    /// The largest map of the scale envelope (metadata.md §4.3: 65,536 PGs)
+    /// The largest map of the scale envelope (06-metadata.md §4.3: 65,536 PGs)
     /// is written whole as one write set when it is first stored.
     #[test]
     fn a_large_map_fits_one_write_set() {

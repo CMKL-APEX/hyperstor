@@ -1,6 +1,6 @@
 ---
 name: collect-decision-data
-description: Collect benchmarks and measurements that the project owner needs for open hyperstor design decisions, and record them in spec/benchmarks.md and spec/decision-log.md. Use when asked to measure something, to gather data for a decision, before proposing a design change that rests on performance or size, or at the end of an implementation session.
+description: Collect benchmarks and measurements that the project owner needs for open hyperstor design decisions, and record them in spec/02-benchmarks.md and spec/05-decision-log.md. Use when asked to measure something, to gather data for a decision, before proposing a design change that rests on performance or size, or at the end of an implementation session.
 ---
 
 # Collecting data for decisions
@@ -11,11 +11,11 @@ decision will be made, honestly and reproducibly.
 
 ## 1. Find what needs data
 
-- `spec/decision-log.md`: the **Open points**, and each point's
+- `spec/05-decision-log.md`: the **Open points**, and each point's
   recommendation; what number would change it?
-- `spec/implementation-notes.md`: the "To discuss" column and the
+- `spec/01-implementation-notes.md`: the "To discuss" column and the
   **Review** section.
-- `spec/milestones.md` §22: host checks (`G…`) that can run on the host at
+- `spec/17-milestones.md` §22: host checks (`G…`) that can run on the host at
   hand. Skip those that need hardware it lacks (a spare NVMe namespace,
   an RDMA NIC, drives with power-loss protection) and say so.
 
@@ -55,15 +55,15 @@ answer it either way.
 
 ## 4. Record
 
-- `spec/benchmarks.md`: a dated section per run: host (or a reference to
+- `spec/02-benchmarks.md`: a dated section per run: host (or a reference to
   the host table), the exact commands, the raw tables, caveats, and
   numbered **Findings** stating what the numbers mean, including the ones
   that go against the current plan.
-- `spec/decision-log.md`: under **Data for pending decisions**, one entry
+- `spec/05-decision-log.md`: under **Data for pending decisions**, one entry
   per open point: the question, the key numbers, what they imply, and a
   link to the benchmarks section. Don't decide; recommend, and say how
   confident the data makes you.
-- `spec/implementation-notes.md`: decisions made while measuring
+- `spec/01-implementation-notes.md`: decisions made while measuring
   (defaults chosen from the data, thresholds calibrated) as `I…` rows.
 - In the final message to the owner, lead with the numbers that bear on
   each open decision.

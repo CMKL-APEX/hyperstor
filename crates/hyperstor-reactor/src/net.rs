@@ -27,7 +27,7 @@ pub fn bind_retrying(addr: SocketAddr) -> io::Result<StdListener> {
     }
 }
 
-/// TCP keepalive on every connection (implementation-notes.md I184):
+/// TCP keepalive on every connection (01-implementation-notes.md I184):
 /// probes start after this long idle, every [`KEEPALIVE_INTERVAL`], and
 /// [`KEEPALIVE_COUNT`] unanswered probes close it. A peer that vanished
 /// without a FIN or RST (a host gone, a network cut) is noticed in about

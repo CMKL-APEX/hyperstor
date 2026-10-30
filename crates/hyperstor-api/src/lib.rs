@@ -1,9 +1,9 @@
-//! The `hyperstor.v1` cluster API (spec/administration.md §23.5): messages,
+//! The `hyperstor.v1` cluster API (spec/19-administration.md §23.5): messages,
 //! service traits and clients generated from `proto/`.
 //!
 //! Messages are `buffa` types; their JSON is the proto3 JSON mapping with
 //! the proto field names, so `curl` and `hyperstorctl --json` see the same
-//! shapes (decisions.md D51).
+//! shapes (04-decisions.md D51).
 
 #[allow(clippy::all, unused_imports, dead_code, non_camel_case_types)]
 pub mod proto {
@@ -15,7 +15,7 @@ pub use proto::hyperstor::v1::*;
 /// The header in which `hyperstor-mgmt` names the person a call is for
 /// (`user:NAME`). The map service believes it only from mgmt's
 /// certificate, and then audits and rate-limits the call as
-/// `<mgmt's identity> for user:NAME` (implementation-notes.md I135).
+/// `<mgmt's identity> for user:NAME` (01-implementation-notes.md I135).
 pub const ON_BEHALF_HEADER: &str = "x-hyperstor-on-behalf-of";
 
 /// Whether `p` is a person as mgmt names them: `user:` and a user name

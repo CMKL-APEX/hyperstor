@@ -14,7 +14,7 @@
   When a design ships, write its user-facing part there and link from the
   spec to it. The developer guide explains the design for outside
   readers: keep it self-contained (no links into `spec/`, no decision
-  numbers), and update its figures when `spec/benchmarks.md` changes.
+  numbers), and update its figures when `spec/02-benchmarks.md` changes.
 - **Generated or checked against the code:**
   - `docs/public/src/status.md` is generated from `spec/tracking.toml`
     (`scripts/tracking.py status > docs/public/src/status.md`); CI fails

@@ -1,9 +1,9 @@
-//! Object keys, operations and errors (spec/engine.md §7.2, D34).
+//! Object keys, operations and errors (spec/08-engine.md §7.2, D34).
 
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use thiserror::Error;
 
-/// Object namespaces (spec/engine.md §7.2).
+/// Object namespaces (spec/08-engine.md §7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Namespace {
@@ -84,7 +84,7 @@ impl ObjKey {
     }
 }
 
-/// One operation of an atomic list (spec/engine.md §7.2).
+/// One operation of an atomic list (spec/08-engine.md §7.2).
 ///
 /// Data offsets and lengths are multiples of [`crate::BLOCK`]. Assertions
 /// are checked against the object as it was before the list; the other
@@ -121,7 +121,7 @@ pub enum Op {
     /// without copying data, then deletes `src` (whose other blocks, which
     /// this object overrides, are freed). The size becomes the larger of
     /// the two. Merges a deleted snapshot's chunk version into the next
-    /// newer one (decisions.md D104). `src` must be another object.
+    /// newer one (04-decisions.md D104). `src` must be another object.
     Absorb(ObjKey),
 }
 

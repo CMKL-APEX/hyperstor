@@ -1,5 +1,5 @@
 //! Serves a hyperstor volume as a ublk block device, `/dev/ublkbN`
-//! (decisions.md D94, D95; frontends.md §11.2's stopgap; milestones.md
+//! (04-decisions.md D94, D95; 11-frontends.md §11.2's stopgap; 17-milestones.md
 //! HS1's test devices).
 //!
 //! [`serve`] attaches the volume (its `rw` lease) on a reactor thread,
@@ -24,7 +24,7 @@ use std::time::Duration;
 /// Requests are at most this long (`max_io_buf_bytes`).
 pub const BUF_BYTES: u32 = 512 << 10;
 
-/// How to take the volume's lease (metadata.md §9).
+/// How to take the volume's lease (06-metadata.md §9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Take {
     /// Refused while another instance holds it.

@@ -1,5 +1,5 @@
-//! A shard: one reactor's part of a device (spec/engine.md §7,
-//! spec/implementation-notes.md I1).
+//! A shard: one reactor's part of a device (spec/08-engine.md §7,
+//! spec/01-implementation-notes.md I1).
 //!
 //! Layout of a shard's region, in blocks:
 //!
@@ -46,13 +46,13 @@ const PAGE_MAGIC: u64 = 0x4853_434b_5047_3031; // "HSCKPG01"
 /// (about 100 bytes a page).
 const PAGE_BYTES: usize = 128 * 1024;
 /// Checkpoint bytes written per commit round while a fuzzy checkpoint runs
-/// (64 KiB had the best tail latency, benchmarks.md); eight times that once
+/// (64 KiB had the best tail latency, 02-benchmarks.md); eight times that once
 /// half the log is used, so the checkpoint finishes before it is forced.
 const SLICE_BYTES: usize = 64 * 1024;
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
 /// Writes smaller than this to blocks the object already holds go through
-/// the log and are applied in place later (spec/decisions.md D22).
+/// the log and are applied in place later (spec/04-decisions.md D22).
 pub const DEFER_MAX: usize = 64 * 1024;
 /// Objects with at least this many key–value entries and attributes keep
 /// their digest until they change ([`Shard::digest`]).
@@ -173,7 +173,7 @@ struct PageLoc {
     crc: u32,
 }
 
-/// A fuzzy checkpoint being written (implementation-notes.md I33): only
+/// A fuzzy checkpoint being written (01-implementation-notes.md I33): only
 /// the pages changed since the last one began (D105).
 struct Fuzzy {
     /// Log position replay will start from once this checkpoint is named.
@@ -795,7 +795,7 @@ impl Shard {
     }
 
     /// Sets the size below which overwrites of held blocks are deferred
-    /// (spec/decisions.md D22; spec/implementation-notes.md I14). 0 redirects
+    /// (spec/04-decisions.md D22; spec/01-implementation-notes.md I14). 0 redirects
     /// every write to new extents.
     pub fn set_defer_max(&mut self, bytes: usize) {
         self.defer_max = bytes;
@@ -1688,7 +1688,7 @@ impl Shard {
     /// read): its size in blocks, each mapped block's number and CRC, its
     /// attributes and its key–value table. Two copies with equal digests
     /// read the same, so delta recovery and scrub compare digests
-    /// (replication.md §8.5). A block of zeros counts as a hole, since a
+    /// (09-replication.md §8.5). A block of zeros counts as a hole, since a
     /// hole reads as zeros; FNV-1a keeps the digest the same on every node
     /// and version.
     pub fn digest(&self, key: &ObjKey) -> Option<u64> {
@@ -1966,7 +1966,7 @@ impl Shard {
     /// Reads `[off, off + len)` through `layers`, the first first: each
     /// block comes from the first object that holds it, and reads as zeros
     /// if none does (a volume chunk read at an epoch through its versions
-    /// and its clone's parents, engine.md §7.2). `NotFound` if no layer
+    /// and its clone's parents, 08-engine.md §7.2). `NotFound` if no layer
     /// exists.
     pub fn read_layered(
         &self,

@@ -1,4 +1,4 @@
-//! What `hyperstorctl` prints (spec/administration.md §23.6): tables for
+//! What `hyperstorctl` prints (spec/19-administration.md §23.6): tables for
 //! people, made from the cluster API's answers. `--json` prints the
 //! answers themselves, in the proto JSON form `curl` also gets.
 
@@ -179,7 +179,7 @@ pub fn snapshots_text(r: &pb::ListSnapshotsResponse) -> String {
 pub use hyperstor_api::reason_of;
 
 /// Every RPC of `hyperstor.v1` and the `hyperstorctl` command that calls
-/// it (decisions.md D55): a test fails when the protos have an RPC this
+/// it (04-decisions.md D55): a test fails when the protos have an RPC this
 /// table lacks, so the CLI never falls behind the API.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.GetStatus", "status, nodes, pools"),

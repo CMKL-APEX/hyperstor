@@ -1,5 +1,5 @@
 //! `hyperstor-vhost` serves the volumes attached on this node to its VMs
-//! over vhost-user-blk (frontends.md §11.1, decisions.md D1, D26, D116).
+//! over vhost-user-blk (11-frontends.md §11.1, 04-decisions.md D1, D26, D116).
 //!
 //! One reactor thread runs everything: a client of the cluster, a control
 //! socket (D117) through which glidex attaches and detaches volumes, and
@@ -8,7 +8,7 @@
 //! restarts). Each queue of a connected disk is a task on the same
 //! reactor; more reactors, pinned per NUMA node, come later.
 //!
-//! Stopping the service leaves its volumes attached (decisions.md D143):
+//! Stopping the service leaves its volumes attached (04-decisions.md D143):
 //! `<dir>/state.json` names them and the instance that held them, and the
 //! next start takes them back from that instance, which the hypervisors
 //! then reconnect to. A volume another client took meanwhile is dropped.

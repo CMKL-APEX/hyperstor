@@ -6,7 +6,7 @@
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
 //!
 //! Manages a cluster through the cluster API, `hyperstor.v1`
-//! (spec/administration.md §23.5, §23.6):
+//! (spec/19-administration.md §23.5, §23.6):
 //!
 //! - `status`: health with its reasons, nodes, devices and PG states per
 //!   pool; with `--wait SECS`, asks again every half second until health
@@ -19,10 +19,10 @@
 //!   backfilling or inactive;
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
-//!   and `delete-volume --id ID [--force]` (decisions.md D77, D80);
+//!   and `delete-volume --id ID [--force]` (04-decisions.md D77, D80);
 //! - `snapshot list --id ID`, `snapshot create --id ID [--name N]`,
 //!   `snapshot delete --id ID --epoch E`: a volume's snapshots
-//!   (volumes.md §10.3); `snapshot group --ids ID,ID... [--name N]` takes
+//!   (10-volumes.md §10.3); `snapshot group --ids ID,ID... [--name N]` takes
 //!   them at one moment (a consistency group), `snapshot group-delete
 //!   --group G` deletes a group's; `clone-volume --id ID --epoch E [--name
 //!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
@@ -1082,7 +1082,7 @@ where
 }
 
 /// `snapshot list|create|delete|group|group-delete`, `clone-volume`,
-/// `rollback-volume`, `flatten-volume` (volumes.md §10.3, §10.4).
+/// `rollback-volume`, `flatten-volume` (10-volumes.md §10.3, §10.4).
 /// The audit log (D112, D113): records newest first, and how long it's kept.
 async fn audit<T>(
     client: AuditServiceClient<T>,

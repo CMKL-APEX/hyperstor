@@ -1,4 +1,4 @@
-//! A formatted device: its superblock and its shards (spec/engine.md §7.1).
+//! A formatted device: its superblock and its shards (spec/08-engine.md §7.1).
 //!
 //! Block 0 holds the device superblock, block 1 a copy. The rest is split
 //! evenly into one region per shard (see [`crate::shard`]).
@@ -13,7 +13,7 @@ use std::sync::Arc;
 const DEV_MAGIC: u64 = 0x4853_4445_5643_3031; // "HSDEVC01"
 const FORMAT_VERSION: u32 = 1;
 /// Smallest and largest default log ring, in blocks (1 MiB and 1 GiB,
-/// decisions.md D47).
+/// 04-decisions.md D47).
 const MIN_LOG: u64 = 256;
 const MAX_LOG: u64 = 262_144;
 

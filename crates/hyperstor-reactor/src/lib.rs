@@ -1,4 +1,4 @@
-//! The per-core reactor (spec/engine.md §6.1, D3).
+//! The per-core reactor (spec/08-engine.md §6.1, D3).
 //!
 //! One thread, one io_uring, one executor. [`block_on`] runs a future and
 //! everything it [`spawn`]s on the current thread until it completes.
@@ -114,7 +114,7 @@ thread_local! {
     static SPIN: Cell<std::time::Duration> = const { Cell::new(std::time::Duration::ZERO) };
 }
 
-/// Adaptive polling (decisions.md D41): after any activity, the reactor on
+/// Adaptive polling (04-decisions.md D41): after any activity, the reactor on
 /// this thread keeps polling for completions for `spin` before it sleeps
 /// in the kernel, so a request arriving soon after the last one doesn't
 /// pay a thread wake-up. Polling still enters the kernel (without waiting)

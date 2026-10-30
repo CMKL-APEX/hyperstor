@@ -1,5 +1,5 @@
 //! vhost-user's in-flight I/O tracking for split rings (the vhost-user
-//! specification's "Inflight I/O tracking", `INFLIGHT_SHMFD`; decisions.md
+//! specification's "Inflight I/O tracking", `INFLIGHT_SHMFD`; 04-decisions.md
 //! D130): a buffer the frontend keeps across this service's restarts.
 //! Each request taken from a ring is marked in it until its completion is
 //! on the used ring, so a restarted service finds the requests the last

@@ -1,4 +1,4 @@
-//! Fault injection for tests (decisions.md D92): partitions between nodes
+//! Fault injection for tests (04-decisions.md D92): partitions between nodes
 //! and devices that are slow or fail. The cluster tests drive them; nothing
 //! here is used unless a test configures it.
 

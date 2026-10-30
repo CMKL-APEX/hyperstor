@@ -1,4 +1,4 @@
-//! `TrashService` (administration.md §23.9.3, decisions.md D54, D115):
+//! `TrashService` (19-administration.md §23.9.3, 04-decisions.md D54, D115):
 //! what's in the trash, restoring, purging at once, and each pool's grace
 //! period. Volume work runs on the map service's reactor as a client of
 //! `.meta` ([`crate::TrashOp`]); settings are rows of the replicated store.

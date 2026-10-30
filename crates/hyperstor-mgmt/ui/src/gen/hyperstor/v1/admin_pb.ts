@@ -1,4 +1,4 @@
-// Joining hosts, certificates and long operations (spec/administration.md
+// Joining hosts, certificates and long operations (spec/19-administration.md
 // §23.4.2, §23.5, §23.8), served beside ClusterService by every
 // hyperstor-meta member.
 
@@ -412,7 +412,7 @@ export const SetAuditSettingsResponseSchema: GenMessage<SetAuditSettingsResponse
 export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   /**
    * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, decisions.md D122).
+   * management client such as glidex's control plane, 04-decisions.md D122).
    *
    * @generated from field: string role = 1;
    */
@@ -440,7 +440,7 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
 export type CreateTokenRequestJson = {
   /**
    * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, decisions.md D122).
+   * management client such as glidex's control plane, 04-decisions.md D122).
    *
    * @generated from field: string role = 1;
    */
@@ -757,7 +757,7 @@ export type JoinRequest = Message<"hyperstor.v1.JoinRequest"> & {
 
   /**
    * A map service member: its member number and its addresses, which its
-   * certificate names (members are listed at install; decisions.md D74).
+   * certificate names (members are listed at install; 04-decisions.md D74).
    *
    * @generated from field: uint32 member_id = 5 [json_name = "member_id"];
    */
@@ -801,7 +801,7 @@ export type JoinRequestJson = {
 
   /**
    * A map service member: its member number and its addresses, which its
-   * certificate names (members are listed at install; decisions.md D74).
+   * certificate names (members are listed at install; 04-decisions.md D74).
    *
    * @generated from field: uint32 member_id = 5 [json_name = "member_id"];
    */
@@ -2454,7 +2454,7 @@ export const OperationStateSchema: GenEnum<OperationState, OperationStateJson> =
   enumDesc(file_hyperstor_v1_admin, 0);
 
 /**
- * Join tokens (decisions.md D57).
+ * Join tokens (04-decisions.md D57).
  *
  * @generated from service hyperstor.v1.TokenService
  */
@@ -2504,7 +2504,7 @@ export const TokenService: GenService<{
   serviceDesc(file_hyperstor_v1_admin, 0);
 
 /**
- * Certificates (decisions.md D53, D56).
+ * Certificates (04-decisions.md D53, D56).
  *
  * @generated from service hyperstor.v1.CaService
  */
@@ -2533,7 +2533,7 @@ export const CaService: GenService<{
   },
   /**
    * Refuses a certificate, by serial, on every map service member from
-   * now until it would have expired (decisions.md D56, D93). Write.
+   * now until it would have expired (04-decisions.md D56, D93). Write.
    *
    * @generated from rpc hyperstor.v1.CaService.RevokeCertificate
    */
@@ -2546,7 +2546,7 @@ export const CaService: GenService<{
   serviceDesc(file_hyperstor_v1_admin, 1);
 
 /**
- * Backups of the map service's store (decisions.md D86).
+ * Backups of the map service's store (04-decisions.md D86).
  *
  * @generated from service hyperstor.v1.MapService
  */
@@ -2567,7 +2567,7 @@ export const MapService: GenService<{
   serviceDesc(file_hyperstor_v1_admin, 2);
 
 /**
- * The map service's members (decisions.md D87).
+ * The map service's members (04-decisions.md D87).
  *
  * @generated from service hyperstor.v1.MemberService
  */
@@ -2609,7 +2609,7 @@ export const MemberService: GenService<{
 
 /**
  * hyperstor-mgmt's rows in the map service's store: people's accounts,
- * sessions, tokens and roles (decisions.md D98). Only the mgmt identity
+ * sessions, tokens and roles (04-decisions.md D98). Only the mgmt identity
  * may call these; keys and values are mgmt's own.
  *
  * @generated from service hyperstor.v1.MgmtStoreService
@@ -2677,7 +2677,7 @@ export const NodeService: GenService<{
 
 /**
  * Long operations (§23.6): drains for now.
- * The audit log (spec/administration.md §23.9.4, decisions.md D112,
+ * The audit log (spec/19-administration.md §23.9.4, 04-decisions.md D112,
  * D113): every change and refused call, kept in .meta a day per object.
  *
  * @generated from service hyperstor.v1.AuditService
@@ -2755,7 +2755,7 @@ export const OperationService: GenService<{
   },
   /**
    * An operation as it is now, then each change, until it finishes
-   * (decisions.md D121). Read.
+   * (04-decisions.md D121). Read.
    *
    * @generated from rpc hyperstor.v1.OperationService.WatchOperation
    */

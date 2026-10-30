@@ -10,7 +10,7 @@
 //! - **Binaries** come from the workspace's build directory (`target/release`
 //!   beside the test executable), or `HS_BIN_DIR`. [`bin_dir`] refuses a
 //!   binary older than any source cargo built it from, so a stale build can't
-//!   pass for the current code (implementation-notes.md I47): run
+//!   pass for the current code (01-implementation-notes.md I47): run
 //!   `cargo build --release --workspace` (or `cargo test --workspace`).
 //! - **Ports** are taken from a range per process and per call
 //!   ([`free_ports`]), so tests in one binary run in parallel.

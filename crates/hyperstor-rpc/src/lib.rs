@@ -8,7 +8,7 @@
 //! Connecting gives up after [`CONNECT_TIMEOUT`]. A call made with a
 //! deadline ([`Conn::call_within`]) that passes it takes the connection
 //! as broken: it is shut down, its other calls fail, and the next caller
-//! connects afresh (implementation-notes.md I184).
+//! connects afresh (01-implementation-notes.md I184).
 
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame};
 use hyperstor_reactor::chan::{OneSender, Receiver, Sender, channel, oneshot};
@@ -183,7 +183,7 @@ impl Conn {
 
     /// Queues a request now and returns the future of its response. The
     /// request is on the wire in the order `start` was called, which
-    /// replication relies on (spec/replication.md §8.1).
+    /// replication relies on (spec/09-replication.md §8.1).
     pub fn start(
         &self,
         msg: &Msg,
