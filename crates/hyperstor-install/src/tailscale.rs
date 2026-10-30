@@ -1,4 +1,4 @@
-//! The node's Tailscale certificate for hyperstor-mgmt (decisions.md D109),
+//! The node's Tailscale certificate for hyperstor-mgmt (04-decisions.md D109),
 //! as glidex's installer grants it to glidex-ui (glidex's
 //! tailscale-tls.md §4.6).
 //!
@@ -21,7 +21,7 @@ pub const USER: &str = "hyperstor";
 
 pub fn dropin() -> String {
     format!(
-        "{MARKER}: lets hyperstor-mgmt fetch this node's Tailscale certificate (decisions.md D109).\n\
+        "{MARKER}: lets hyperstor-mgmt fetch this node's Tailscale certificate (04-decisions.md D109).\n\
          # Remove with hyperstor-install install --no-tailscale-cert.\n\
          [Service]\nEnvironment={PERMIT}={USER}\n"
     )

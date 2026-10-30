@@ -1,5 +1,5 @@
-//! The cluster API, `hyperstor.v1.ClusterService` (spec/administration.md
-//! §23.5, decisions.md D51), served with connectrpc on its own thread so
+//! The cluster API, `hyperstor.v1.ClusterService` (spec/19-administration.md
+//! §23.5, 04-decisions.md D51), served with connectrpc on its own thread so
 //! the control path never runs on the map service's reactor (D58).
 //!
 //! The map service's state is `Rc` on its reactor; every call is a
@@ -471,7 +471,7 @@ pub fn status(
         r.health = r.health.max(Health::Warn);
     }
     // Scrub found copies that differ with no majority to decide
-    // (replication.md §8.5): someone must look.
+    // (09-replication.md §8.5): someone must look.
     if !inconsistent.is_empty() {
         let objects: u32 = inconsistent.values().sum();
         let pgs: Vec<String> = inconsistent
@@ -1051,7 +1051,7 @@ fn snapshot_pb(s: &crate::Snapshot) -> pb::Snapshot {
 }
 
 impl Api {
-    /// A snapshot operation (volumes.md §10.3, §10.4): authorized, run on
+    /// A snapshot operation (10-volumes.md §10.3, §10.4): authorized, run on
     /// the map service's reactor as a client of `.meta`, and audited if
     /// it changes anything.
     /// Volume `id`'s header, whatever its state.

@@ -1,5 +1,5 @@
 //! Settings the map service keeps for the cluster, in the replicated store
-//! (`Table::Settings`): each pool's trash (decisions.md D54, D115) and how
+//! (`Table::Settings`): each pool's trash (04-decisions.md D54, D115) and how
 //! long the audit log is kept (D113). Not in the map: only the map service needs them. Writes go
 //! through the leader; reads come from the member's applied copy.
 

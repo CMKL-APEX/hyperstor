@@ -1,4 +1,4 @@
-//! `hyperstor-bench`: measurements for spec/benchmarks.md.
+//! `hyperstor-bench`: measurements for spec/02-benchmarks.md.
 //!
 //! ```text
 //! hyperstor-bench engine <file> [size_gib]   engine on an O_DIRECT file (io_uring)
@@ -473,7 +473,7 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
     });
 }
 
-/// Host check G17 (administration.md §23.3, D58), first part: does load on
+/// Host check G17 (19-administration.md §23.3, D58), first part: does load on
 /// the cluster API move client I/O latency? A map service with its API and
 /// three storage nodes on memory devices run in this process; the client
 /// workload runs idle, then while threads call `GetStatus` at
@@ -786,11 +786,11 @@ fn overwrite(sh: &mut Shard, rng: &mut SmallRng, objects: u64, n: u64) {
     }
 }
 
-/// Measurements for decisions still open (decision-log.md): index RAM as
+/// Measurements for decisions still open (05-decision-log.md): index RAM as
 /// a volume ages under random writes, with and without dense block maps;
 /// checkpoint pause against data size; read cost of each representation.
 /// Checkpoint bandwidth and recovery time against the log ring's size, on
-/// an aged index (decision-log.md, point 11).
+/// an aged index (05-decision-log.md, point 11).
 fn log_size_sweep() {
     println!("### Checkpoint traffic and recovery against log size (memory device)\n");
     println!(
@@ -1371,7 +1371,7 @@ fn failover_suite() {
     }
 }
 
-/// Refilling a node that returns after a short absence (replication.md
+/// Refilling a node that returns after a short absence (09-replication.md
 /// §8.5, delta recovery): 4 nodes, 3 copies, a 256 MiB volume in 1 MiB
 /// chunks. Node 3 is stopped, a share of the chunks is overwritten, and
 /// node 3 is started again with its old devices. Reported: what node 3 was
@@ -1534,7 +1534,7 @@ fn rejoin_suite() {
     }
 }
 
-/// What a digest list costs (implementation-notes.md I57): the time to
+/// What a digest list costs (01-implementation-notes.md I57): the time to
 /// list one PG and digest every object in it, from the index alone, by
 /// object count and size. Delta recovery and scrub pay this on each
 /// member, where a PG log would pay per missed write.
@@ -1587,7 +1587,7 @@ fn digest_suite() {
 /// Recovery time against log length: a 1 GiB log on a memory device is
 /// filled with redirect-on-write records (checkpoints held off), then the
 /// shard is dropped without a clean stop and opened again. Data for the
-/// log-size side of decision-log.md point 11.
+/// log-size side of 05-decision-log.md point 11.
 fn replay_suite() {
     println!(
         "| Log replayed | records | writes replayed | open (recovery) ms | writes per second of replay |"

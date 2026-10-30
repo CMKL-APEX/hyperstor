@@ -1,4 +1,4 @@
-//! Calls to the cluster API on a person's behalf (spec/administration.md
+//! Calls to the cluster API on a person's behalf (spec/19-administration.md
 //! §23.7): once [`crate::policy`] allows the action, the request goes to a
 //! map service member as it came (Connect, gRPC-Web or gRPC, JSON or
 //! protobuf), over mutual TLS as mgmt's own identity, and the answer comes

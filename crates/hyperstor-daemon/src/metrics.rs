@@ -1,5 +1,5 @@
-//! Storage node metrics on the admin port (spec/operations.md §16,
-//! administration.md §23.3, D58, D59).
+//! Storage node metrics on the admin port (spec/15-operations.md §16,
+//! 19-administration.md §23.3, D58, D59).
 //!
 //! Each reactor counts into its own [`ShardMetrics`] with relaxed atomic
 //! adds, which cost no system call or lock on the I/O path, and copies its
@@ -52,7 +52,7 @@ pub struct ShardMetrics {
     pub push_bytes: AtomicU64,
     /// Client writes answered with an error.
     pub write_errors: AtomicU64,
-    /// Light scrub (replication.md §8.5): objects compared, objects whose
+    /// Light scrub (09-replication.md §8.5): objects compared, objects whose
     /// copies differed, repaired, and left unresolved.
     pub scrub_objects: AtomicU64,
     pub scrub_inconsistent: AtomicU64,

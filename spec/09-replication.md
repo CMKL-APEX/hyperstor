@@ -12,7 +12,7 @@ Write and read paths, the PG log, primaries and epochs, recovery, backfill and s
    instance id.
 2. The primary checks that:
    - it is primary for that `pg_epoch`;
-   - the client instance isn't blocklisted (metadata.md §9);
+   - the client instance isn't blocklisted (06-metadata.md §9);
    - the CRCs match the data.
 3. It assigns the next PG sequence number and sends `Repl` to every
    other member of the in-sync set, in parallel, while writing locally.
@@ -36,7 +36,7 @@ members, as long as there are at least `min_size` of them. Below
 - **Snapshots and read-only attachments** (D18) may read from any member
   of the in-sync set. A snapshot's versions never change, so any copy is
   current. The client picks the closest member, then the least loaded.
-- **As built** (HS2, implementation-notes.md I104): the read lease is the
+- **As built** (HS2, 01-implementation-notes.md I104): the read lease is the
   map lease (D89). A primary whose copy fails its checksums fetches a
   member's copy, replaces its own with it, and serves the read from it.
 
@@ -47,7 +47,7 @@ members, as long as there are at least `min_size` of them. Below
   10,000 operations or the last 30 minutes, whichever is more.
 - A member that missed operations still covered by the log catches up by
   replaying them (delta recovery). Otherwise it is backfilled (§8.5).
-- **As built** (HS2, implementation-notes.md I57): no PG log yet. Delta
+- **As built** (HS2, 01-implementation-notes.md I57): no PG log yet. Delta
   recovery compares content digests instead: the returning member lists
   each object of the PG with a digest the engine computes from its index
   (size, each block's CRC, attributes, key–value table), and the primary
@@ -60,7 +60,7 @@ members, as long as there are at least `min_size` of them. Below
 
 - Every change to a PG's `acting` set or primary is a new `pg_epoch`.
   Members accept operations only for the `pg_epoch` they have peered in.
-- **Map lease** (D42, metadata.md §4.1). A storage node serves a PG's
+- **Map lease** (D42, 06-metadata.md §4.1). A storage node serves a PG's
   reads and writes only while it holds a valid map lease and the PG isn't
   fenced. The map service publishes a change that takes a role away from
   a device only after fencing that device, by its acknowledgment or its
@@ -90,11 +90,11 @@ members, as long as there are at least `min_size` of them. Below
   If no member of the last in-sync set can be reached, the PG stays
   `down` and serves nothing, because a reachable member outside that set
   may lack acknowledged writes.
-- **As built** (HS2, implementation-notes.md I61): peering by digests,
+- **As built** (HS2, 01-implementation-notes.md I61): peering by digests,
   without a log. The new primary's first request for a PG at a new epoch
   compares every acting member's digests with its own and pushes its
   copy where they differ, before it serves.
-- A storage node whose map lease (metadata.md §4.1) has run out stops accepting
+- A storage node whose map lease (06-metadata.md §4.1) has run out stops accepting
   writes for its PGs until it renews, because it may have missed a new
   `pg_epoch` or a fence.
 
@@ -105,7 +105,7 @@ members, as long as there are at least `min_size` of them. Below
   1,000 operations), and in the background otherwise.
 - **Backfill** brings a new or long-absent member up by copying objects
   in key order, while new writes for already-copied keys are sent to it
-  too. It is rate-limited (placement.md §5.3). The member joins the in-sync set when
+  too. It is rate-limited (07-placement.md §5.3). The member joins the in-sync set when
   the scan finishes.
 - **Scrub:**
   - *light*, daily: compare each member's object list and versions for
@@ -115,13 +115,13 @@ members, as long as there are at least `min_size` of them. Below
 
   Damaged copies are repaired from a copy whose CRCs match, and an
   inconsistency that can't be decided is reported, not guessed at.
-- **As built** (HS2, implementation-notes.md I58): light scrub by the
+- **As built** (HS2, 01-implementation-notes.md I58): light scrub by the
   same digests, every `hyperstord --scrub-hours` (default 24) for each
   clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
   the copies agree with it, and otherwise reported. The first pass after
   a start and every seventh are **deep** (I60): each member first reads
-  every block of the PG, checking its CRC (engine.md §7.2), at most
+  every block of the PG, checking its CRC (08-engine.md §7.2), at most
   64 MiB/s per device, and reports an object that fails as damaged,
   which never counts toward a majority; the majority's copy replaces it.
   When the majority outvotes the primary's own copy, the primary fetches
@@ -171,7 +171,7 @@ members, as long as there are at least `min_size` of them. Below
 
 ### 8.7 Cache pools (D45)
 
-As built (implementation-notes.md I40): the pool kind, copies, loss
+As built (01-implementation-notes.md I40): the pool kind, copies, loss
 without backfill, and "not found" on a miss. A node that serves a cache
 PG at a new epoch first empties what it holds of it, so a node that
 returns never serves a copy older than a write made while it was away.
@@ -191,7 +191,7 @@ Expiry and eviction are not built yet.
   don't apply.
 - **Source.** A cache pool can name a source cluster; a miss then
   fetches the immutable version from it instead of answering "not
-  found" (D67, federation.md §25.5).
+  found" (D67, 21-federation.md §25.5).
 - **Everything else is shared:** placement, map leases (D42), the engine,
   and every front end (S3 and S3 over RDMA, the native GPU library).
 
@@ -200,13 +200,13 @@ Expiry and eviction are not built yet.
 | Failure | What happens |
 |---|---|
 | A storage daemon crashes | Its PGs go to new primaries in a new `pg_epoch` after 10 s. When it restarts it replays its engine log, rejoins, and catches up by recovery. |
-| A node is down for good | After `down_out_interval` its PGs are re-placed and backfilled (placement.md §5.3). |
+| A node is down for good | After `down_out_interval` its PGs are re-placed and backfilled (07-placement.md §5.3). |
 | A device fails | It is marked `failed`; its PGs are re-placed at once, without waiting for `down_out_interval` (I102). |
 | A replica is slow, or its primary can't reach it | Its primary reports it after the operation timeout (2 s) and it is dropped from that PG's acting set, then backfilled back (D91, I103). |
 | A peer stops answering, or its host vanishes | A call to it gives up after 10 s (a ping after 200 ms) and its connection is dropped; TCP keepalive (10 s idle, then every 5 s, 3 probes) and a 30 s send timeout close a connection to a host that is gone, and a connect gives up after 3 s. Each daemon and client keeps one connection per peer, so concurrent callers share it (I184); a daemon pings its peers on a second connection, so a ping doesn't wait behind data (I187). Replication keeps its own timeouts (D91). |
 | The primary is cut off from its replicas | Its peers report it and it is marked down; its map lease runs out, so it stops serving, and a new primary takes over (§8.4, D40). |
 | The metadata service loses quorum | I/O, lease renewals, releases and ordinary volume operations continue on the current map. PG failover, rebalancing, blocklisting and so forced lease takeovers wait (D23). A PG that loses a member meanwhile can't shrink its in-sync set, so its writes stall until quorum is back. |
-| The client's host dies | Its volume leases expire; the next attachment is a forced takeover with a blocklist round (metadata.md §9). |
+| The client's host dies | Its volume leases expire; the next attachment is a forced takeover with a blocklist round (06-metadata.md §9). |
 | A `.meta` PG is unavailable | The volumes whose headers it holds can't be attached, snapshotted or renewed; I/O on already-attached ones continues, and their holders keep writing past lease expiry until the PG is back, since nobody else can be granted the lease meanwhile. |
-| `hyperstor-vhost` crashes | VM I/O pauses until the service restarts and the hypervisor reconnects (frontends.md §11.1). |
+| `hyperstor-vhost` crashes | VM I/O pauses until the service restarts and the hypervisor reconnects (11-frontends.md §11.1). |
 | A checksum mismatch | The read is served from another copy and the bad copy is repaired (§8.2). |

@@ -17,13 +17,13 @@ hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
-# People's logins (spec/administration.md §23.9, decisions.md D96, D99):
+# People's logins (spec/19-administration.md §23.9, 04-decisions.md D96, D99):
 # glidex's session and token rules, Cedar engine and PAM client, pinned to
 # a revision of glidex.
 glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164ad6de38916b1fe53541711713823" }
 glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164ad6de38916b1fe53541711713823" }
 cedar-policy = "4.13"
-# HTTPS for people (decisions.md D108-D110): listeners, certificate files
+# HTTPS for people (04-decisions.md D108-D110): listeners, certificate files
 # re-read when they change, the node's Tailscale certificates; pinned to a
 # revision of glidex, as glidex-auth.
 glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164ad6de38916b1fe53541711713823" }

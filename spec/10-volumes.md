@@ -17,7 +17,7 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   pattern breaks. Dataset streaming and model loading are long
   sequential reads; readahead keeps every reactor that holds the next
   chunks busy. Pools for such data can use a larger chunk size (e.g.
-  16 MiB, placement.md §5.1), which the client's readahead follows.
+  16 MiB, 07-placement.md §5.1), which the client's readahead follows.
 - **Flush** is a no-op that returns at once: a write is acknowledged only
   when every in-sync copy has persisted it, so there is nothing to flush.
   The device is advertised as write-through.
@@ -71,7 +71,7 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   instant, and needs the volume detached.
 - **Limits:** 255 snapshots per volume. Clone chains of more than 16
   levels are refused; flatten first.
-- **As built** (HS4, implementation-notes.md I115, I122, I123): snapshots,
+- **As built** (HS4, 01-implementation-notes.md I115, I122, I123): snapshots,
   rollback, clones and flatten in the client library, quiesce through
   the holder's watch of its header (D103), deletion by merging versions
   in the engine (D104), resets to the newest snapshot in place (D106,
@@ -102,7 +102,7 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   - each reactor queues requests per volume with weighted fair queuing,
     so a client that ignores its limits can only take its fair share of
     the devices. The queues have a tenant level above the volume
-    level (D62, tenants.md §24.5).
+    level (D62, 20-tenants.md §24.5).
 
   Provisioned IOPS for metering (metering.md §16) build on these
   limits.
@@ -114,4 +114,4 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
     default 5% of a reactor's device time) so it can't starve.
 
   Backfill and recovery run as `bulk`; scrub below it. The class also
-  sets the network traffic class (D31, protocol.md §13.2).
+  sets the network traffic class (D31, 13-protocol.md §13.2).

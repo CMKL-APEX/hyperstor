@@ -19,7 +19,7 @@ const CHUNK: u32 = 1 << 20;
 /// Short leases and detection, to keep the tests quick.
 const LEASE: std::time::Duration = std::time::Duration::from_millis(400);
 const DOWN_AFTER: std::time::Duration = std::time::Duration::from_millis(700);
-/// The down-out interval (placement.md §5.3): short, so a stopped node's
+/// The down-out interval (07-placement.md §5.3): short, so a stopped node's
 /// PGs are placed elsewhere soon; tests of the interval set their own.
 const DOWN_OUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -605,7 +605,7 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Delta recovery (replication.md §8.5): a node that returns after a short
+/// Delta recovery (09-replication.md §8.5): a node that returns after a short
 /// absence is sent only the objects that changed while it was away, not
 /// every object of its PGs, and its copies end up the same as the others.
 #[test]
@@ -767,7 +767,7 @@ fn a_returning_node_without_digests_is_refilled_whole() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Light scrub (replication.md §8.5): a replica whose copy diverged (here,
+/// Light scrub (09-replication.md §8.5): a replica whose copy diverged (here,
 /// overwritten behind the primary's back) is found by comparing digests
 /// and repaired from the primary, which the third copy agrees with.
 #[test]
@@ -850,7 +850,7 @@ fn scrub_repairs_a_copy_the_others_outvote() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Deep scrub (replication.md §8.5): a block damaged on a replica's
+/// Deep scrub (09-replication.md §8.5): a block damaged on a replica's
 /// device, under the engine (its index, and so its digest, still look
 /// right), is found by reading every block, and the primary replaces the
 /// damaged copy from its own, which the third copy agrees with.
@@ -933,7 +933,7 @@ fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Peering (replication.md §8.4, I61): when a primary fails, a write it
+/// Peering (09-replication.md §8.4, I61): when a primary fails, a write it
 /// had sent to only one replica (never acknowledged) leaves that replica's
 /// copy different. The new primary makes the members' copies the same as
 /// its own before it serves, so the PG's copies agree at once, not only
@@ -1103,7 +1103,7 @@ fn random_failures(seed: u64) {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Object operations (metadata.md §4.2): an operation list on a named
+/// Object operations (06-metadata.md §4.2): an operation list on a named
 /// object applies atomically when its assertions hold, on every copy; a
 /// compare-and-set on a version attribute lets exactly one of several
 /// racing writers win; a replica that missed a change is refilled with the
@@ -1474,7 +1474,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
     );
 }
 
-/// Volumes (metadata.md §4.2, D77): created with a header and a directory
+/// Volumes (06-metadata.md §4.2, D77): created with a header and a directory
 /// entry in `.meta`, listed per pool, grown but not shrunk, and deleted
 /// with their data.
 #[test]
@@ -1562,7 +1562,7 @@ fn volumes_are_created_listed_grown_and_deleted() {
     }
 }
 
-/// The case map leases exist for (decisions.md D42): a primary cut off from
+/// The case map leases exist for (04-decisions.md D42): a primary cut off from
 /// the map service but still reachable by clients and peers. Once its lease
 /// runs out it must refuse everything, so no write it acknowledges can be
 /// missing from the acting set that replaces it.
@@ -1953,7 +1953,7 @@ fn a_cache_pool_loses_data_cleanly() {
     c.stop();
 }
 
-/// Volume leases (metadata.md §9, D75): one `rw` holder at a time, kept
+/// Volume leases (06-metadata.md §9, D75): one `rw` holder at a time, kept
 /// by renewals; a planned hand-off is a detach then an attach, with no
 /// blocklist; an attached volume can't be deleted; a holder hears of a
 /// change to its header (grown) on a renewal.
@@ -2033,7 +2033,7 @@ fn a_volume_has_one_writer_and_is_handed_off() {
     c.stop();
 }
 
-/// A forced takeover (metadata.md §9, D24, D76): the holder stops renewing
+/// A forced takeover (06-metadata.md §9, D24, D76): the holder stops renewing
 /// but is still running and still writing. The new holder waits out its
 /// lease, blocklists it, and takes the lease; from then on every storage
 /// node refuses requests under the old lease (D150), so none of its writes
@@ -2382,7 +2382,7 @@ async fn wait_map(cl: &std::rc::Rc<Client>, what: &str, ok: impl Fn(&ClusterMap)
     }
 }
 
-/// Down and out (placement.md §5.3): a node down for less than the
+/// Down and out (07-placement.md §5.3): a node down for less than the
 /// down-out interval keeps its place, so a short reboot moves no data;
 /// one down for longer has its devices marked out and its PGs placed
 /// elsewhere, and is marked in again when it returns.
@@ -2470,7 +2470,7 @@ fn a_node_down_past_the_interval_is_marked_out_and_back_in() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// A device that fails (replication.md §15) is marked failed and its PGs
+/// A device that fails (09-replication.md §15) is marked failed and its PGs
 /// are placed elsewhere at once, without waiting for the down-out
 /// interval; its node stays up, and writes go on.
 #[test]
@@ -2605,7 +2605,7 @@ fn a_partition_between_two_nodes_is_worked_around() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// The primary's own copy fails its checksums (replication.md §8.2): the
+/// The primary's own copy fails its checksums (09-replication.md §8.2): the
 /// read is served from a member's copy, which replaces the primary's.
 #[test]
 fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
@@ -2666,7 +2666,7 @@ fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Scrub when the primary's copy is the one outvoted (replication.md
+/// Scrub when the primary's copy is the one outvoted (09-replication.md
 /// §8.5): it pulls the copy the other two agree on. When all three
 /// differ, nothing decides: the PG is reported inconsistent to the map
 /// service, for cluster health, until a scrub finds it consistent.
@@ -2883,7 +2883,7 @@ fn random_faults(seed: u64) {
     copies_agree(&map, devs, &chunks);
 }
 
-/// Snapshots, clones, flatten, rollback and their deletion (volumes.md
+/// Snapshots, clones, flatten, rollback and their deletion (10-volumes.md
 /// §10.3, §10.4; D101–D104): every snapshot, clone and head reads what it
 /// should at every step, a snapshot a clone depends on can't be deleted
 /// until the clone is flattened, and deleting snapshots merges their
@@ -3024,7 +3024,7 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
 
 /// A snapshot of a volume whose holder doesn't answer (it stopped
 /// renewing and watching, but its lease stands) is abandoned after 2 s,
-/// and changes nothing (volumes.md §10.3).
+/// and changes nothing (10-volumes.md §10.3).
 #[test]
 fn a_snapshot_whose_holder_doesnt_quiesce_is_abandoned() {
     use hyperstor_client::ClientError;
@@ -3195,7 +3195,7 @@ fn random_snapshot_ops(seed: u64) {
     c.stop();
 }
 
-/// Quiesce (D103, volumes.md §10.3): snapshots taken while the volume is
+/// Quiesce (D103, 10-volumes.md §10.3): snapshots taken while the volume is
 /// written without pause never change afterwards, and each holds a value
 /// the writer had written.
 #[test]
@@ -3262,7 +3262,7 @@ fn a_snapshot_never_changes_while_its_volume_is_written() {
 }
 
 /// Deleting a snapshot merges its versions into the next newer version
-/// only when nothing between reads them (implementation-notes.md I115):
+/// only when nothing between reads them (01-implementation-notes.md I115):
 /// here a later snapshot, taken with no write between, reads exactly
 /// what the deleted one did.
 #[test]
@@ -3343,7 +3343,7 @@ fn resets_to_the_newest_snapshot_stay_in_place() {
     }
 }
 
-/// A consistency group (volumes.md §10.3): two disks of one VM written in
+/// A consistency group (10-volumes.md §10.3): two disks of one VM written in
 /// order (A then B, with the same counter) are snapshot at one moment, so
 /// every group's B is A's or the one before; a group whose member doesn't
 /// quiesce is abandoned and leaves no snapshot or group behind.
@@ -3422,7 +3422,7 @@ fn a_group_snapshot_is_one_moment_across_its_volumes() {
     c.stop();
 }
 
-/// The hold a consistency group takes (volumes.md §10.3): after `Quiesce`
+/// The hold a consistency group takes (10-volumes.md §10.3): after `Quiesce`
 /// the volume's holder writes nothing until `Release` (or the hold's
 /// 5 s), so holding every member before cutting any gives one moment.
 #[test]

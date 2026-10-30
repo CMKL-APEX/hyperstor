@@ -1,6 +1,6 @@
 //! People: accounts, sessions, API tokens and the first-boot claim
-//! (spec/administration.md §23.7, §23.9.1), kept as rows in the map
-//! service's store through the cluster API (decisions.md D98), with
+//! (spec/19-administration.md §23.7, §23.9.1), kept as rows in the map
+//! service's store through the cluster API (04-decisions.md D98), with
 //! glidex's rules (`glidex-auth`, D96).
 //!
 //! | Row | Holds |

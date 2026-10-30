@@ -1,4 +1,4 @@
-//! Placement (spec/placement.md §5, D9, D21).
+//! Placement (spec/07-placement.md §5, D9, D21).
 //!
 //! - A chunk maps to a PG by a stable hash of its lineage and index
 //!   ([`pg_of`]).
@@ -40,7 +40,7 @@ pub fn hash_bytes(b: &[u8]) -> u64 {
 }
 
 /// The PG of chunk `chunk` of a lineage (D21). `pg_count` must be a power
-/// of two, so that doubling it later splits each PG in two (placement.md §5.1).
+/// of two, so that doubling it later splits each PG in two (07-placement.md §5.1).
 pub fn pg_of(lineage: u128, chunk: u64, pg_count: u32) -> u32 {
     assert!(
         pg_count.is_power_of_two(),
@@ -248,7 +248,7 @@ impl Topology {
     }
 }
 
-/// Assigns shard positions for an erasure-coded PG (placement.md §5.2, §5.3).
+/// Assigns shard positions for an erasure-coded PG (07-placement.md §5.2, §5.3).
 ///
 /// [`place`] decides which devices hold the PG; this decides which shard
 /// each one holds. Every member of `prev` (the PG's current acting set,

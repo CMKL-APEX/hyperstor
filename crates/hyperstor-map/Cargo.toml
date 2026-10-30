@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-map"
-description = "Hyperstor's cluster map: nodes, devices, pools and PG placement (spec/metadata.md §4.1)"
+description = "Hyperstor's cluster map: nodes, devices, pools and PG placement (spec/06-metadata.md §4.1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

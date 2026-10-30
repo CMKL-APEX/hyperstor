@@ -1,4 +1,4 @@
-//! `hyperstor-vhost` (frontends.md §11.1, decisions.md D116, D117): volumes
+//! `hyperstor-vhost` (11-frontends.md §11.1, 04-decisions.md D116, D117): volumes
 //! attached through its control socket and served over vhost-user-blk,
 //! with the test playing the hypervisor (`hyperstor_test::vhost`). No VM
 //! or root needed.
@@ -202,7 +202,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     other.stop();
 }
 
-/// A restart keeps the volumes attached (decisions.md D143): the service
+/// A restart keeps the volumes attached (04-decisions.md D143): the service
 /// names them in its state file, takes them back from the instance it was
 /// before, and serves them on the same sockets, where the hypervisor
 /// reconnects. One that another client took while it was down is left to

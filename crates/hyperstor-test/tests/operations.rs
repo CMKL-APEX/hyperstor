@@ -1,4 +1,4 @@
-//! Drains as operations (administration.md §23.6): a dry run that
+//! Drains as operations (19-administration.md §23.6): a dry run that
 //! changes nothing, a drain followed to the end, a cancelled one that
 //! brings the devices back in; output as YAML, and the API's error
 //! reasons and exit codes.

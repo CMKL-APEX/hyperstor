@@ -1,9 +1,9 @@
 //! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N]`
 //! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID`
 //!
-//! `serve` runs the service (frontends.md §11.1) until SIGINT or SIGTERM,
+//! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
-//! service's control socket and prints the reply (decisions.md D117).
+//! service's control socket and prints the reply (04-decisions.md D117).
 
 use hyperstor_vhost::{Options, control_path, serve};
 use serde_json::json;

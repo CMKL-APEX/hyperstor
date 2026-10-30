@@ -1,4 +1,4 @@
-//! Join tokens (spec/administration.md §23.4.2, decisions.md D57, D81):
+//! Join tokens (spec/19-administration.md §23.4.2, 04-decisions.md D57, D81):
 //! the records the cluster API checks a joining host's token against.
 //!
 //! - **Replicated** (a map service with `--data`): one row per token in the

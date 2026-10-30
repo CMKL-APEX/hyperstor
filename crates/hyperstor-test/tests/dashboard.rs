@@ -1,4 +1,4 @@
-//! The management service (`hyperstor-mgmt`, administration.md §23.7,
+//! The management service (`hyperstor-mgmt`, 19-administration.md §23.7,
 //! §23.9): people's logins, the first administrator's claim, roles, API
 //! tokens and step-up, the cluster API on people's behalf, the dashboard's
 //! data, and the browser protections.

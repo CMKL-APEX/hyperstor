@@ -1,4 +1,4 @@
-//! Block devices under the engine (spec/engine.md §6.2, D29).
+//! Block devices under the engine (spec/08-engine.md §6.2, D29).
 //!
 //! Every I/O is block-aligned in offset and length. Implementations:
 //! - [`MemDev`]: memory, for tests;
@@ -11,7 +11,7 @@
 //!
 //! The NVMe passthrough back end (`uring_cmd` on `/dev/ngXnY`) needs a
 //! dedicated namespace to test on and comes later (see
-//! spec/implementation-notes.md).
+//! spec/01-implementation-notes.md).
 
 use crate::align::BLOCK;
 use std::fs::{File, OpenOptions};

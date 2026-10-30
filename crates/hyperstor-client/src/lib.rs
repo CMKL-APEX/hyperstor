@@ -1,4 +1,4 @@
-//! The client library (spec/volumes.md §10.1).
+//! The client library (spec/10-volumes.md §10.1).
 //!
 //! A [`Client`] holds the cluster map and connections to storage reactors.
 //! Volume I/O is split at chunk boundaries; each piece goes to its PG's
@@ -27,7 +27,7 @@ use thiserror::Error;
 
 /// Namespace of volume chunks (matches `hyperstor_engine::Namespace::Vol`).
 pub const NS_VOL: u8 = 1;
-/// `.meta` objects: headers, lineages, directories, groups (metadata.md §4.2).
+/// `.meta` objects: headers, lineages, directories, groups (06-metadata.md §4.2).
 pub const NS_META: u8 = 3;
 pub(crate) const BLOCK: u64 = 4096;
 const RETRIES: usize = 20;
@@ -85,7 +85,7 @@ pub fn chunk_name(lineage: u128, chunk: u64) -> Vec<u8> {
     n
 }
 
-/// The name of a chunk's versions in `branch` (engine.md §7.2): the chunk
+/// The name of a chunk's versions in `branch` (08-engine.md §7.2): the chunk
 /// name, then the branch (big-endian), except for branch 0, which keeps
 /// the chunk name alone, as volumes had before branches.
 pub fn branch_name(chunk: &[u8], branch: u32) -> Vec<u8> {
@@ -124,7 +124,7 @@ pub fn object_pg(name: &[u8], pg_count: u32) -> u32 {
 
 /// A connection to the cluster.
 pub struct Client {
-    /// The map service's members (decisions.md D72).
+    /// The map service's members (04-decisions.md D72).
     members: RefCell<Vec<SocketAddr>>,
     /// The member believed to lead, an index into `members`.
     leader: std::cell::Cell<usize>,
@@ -170,7 +170,7 @@ impl Client {
 
     /// Connects to a map service of several members and fetches the map
     /// from any of them. Requests only the leader answers follow its
-    /// redirects (decisions.md D72).
+    /// redirects (04-decisions.md D72).
     pub async fn connect_members(
         members: Vec<SocketAddr>,
         id: u64,
@@ -464,7 +464,7 @@ impl Client {
     }
 
     /// Writes `data` at `off` of volume `lineage` in `pool`. Returns once
-    /// every copy of every chunk has it (spec/replication.md §8.1).
+    /// every copy of every chunk has it (spec/09-replication.md §8.1).
     pub async fn write(
         self: &Rc<Self>,
         pool: u32,
@@ -476,7 +476,7 @@ impl Client {
     }
 
     /// [`Self::write`] into `branch` of lineage `lineage`, at its head epoch
-    /// `epoch` (engine.md §7.2): each chunk's version `epoch`.
+    /// `epoch` (08-engine.md §7.2): each chunk's version `epoch`.
     pub async fn write_at(
         self: &Rc<Self>,
         pool: u32,
@@ -592,7 +592,7 @@ impl Client {
 
     /// Reads `len` bytes at `off` of a volume in lineage `lineage` through
     /// `layers`: (branch, oldest epoch, newest epoch), the volume's own
-    /// first, then its clone parents' (engine.md §7.2).
+    /// first, then its clone parents' (08-engine.md §7.2).
     pub async fn read_at(
         self: &Rc<Self>,
         pool: u32,
@@ -736,7 +736,7 @@ impl Client {
     }
 
     /// Applies `ops` to the object `name` of namespace `ns` in `pool`,
-    /// atomically, if its assertions hold (metadata.md §4.2): an assertion
+    /// atomically, if its assertions hold (06-metadata.md §4.2): an assertion
     /// that fails is `ClientError::Server { code: Conflict, .. }`, and
     /// nothing is changed. Assertions apply to the object as it was before
     /// the list. An error after the primary accepted the list (a replica

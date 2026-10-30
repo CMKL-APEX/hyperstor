@@ -2,12 +2,12 @@
 
 Status: **working record.** Decision points raised during implementation,
 the owner's answers, and the points still open with their trade-offs.
-Settled points become numbered decisions in [decisions.md](decisions.md);
-the measurements behind them are in [benchmarks.md](benchmarks.md).
+Settled points become numbered decisions in [04-decisions.md](04-decisions.md);
+the measurements behind them are in [02-benchmarks.md](02-benchmarks.md).
 
 ## Review of 2026-10-20
 
-Raised in [implementation-notes.md](implementation-notes.md) after HS0,
+Raised in [01-implementation-notes.md](01-implementation-notes.md) after HS0,
 HS1 and the first part of HS2.
 
 | # | Point | Answer | Result |
@@ -22,7 +22,7 @@ HS1 and the first part of HS2.
 
 ### Benchmark summary behind the review
 
-From [benchmarks.md](benchmarks.md), dev-1 (one consumer NVMe SSD without
+From [02-benchmarks.md](02-benchmarks.md), dev-1 (one consumer NVMe SSD without
 power-loss protection):
 
 | Measurement | Result |
@@ -68,7 +68,7 @@ old acting set; the new one never sees them, so they are lost when the
 partition heals and backfill copies the new set's state.
 
 **Option A: map leases and read leases now, before HS3** (design
-replication.md §8.4, metadata.md §4.1).
+09-replication.md §8.4, 06-metadata.md §4.1).
 
 - How: every heartbeat reply renews a node's *map lease*. A node whose
   lease has run out stops accepting writes and reads for its PGs. The map
@@ -117,7 +117,7 @@ pushes for the common case, and the lease for safety.
 
 ### 5. Checkpoints without the spike
 
-**Today** (implementation-notes.md I3): the index lives in memory; a
+**Today** (01-implementation-notes.md I3): the index lives in memory; a
 checkpoint serializes all of it into new extents, then writes the
 superblock. The shard pauses for the whole write (12.5 ms p99 on a small
 test index; it grows with the index).
@@ -165,7 +165,7 @@ incremental approach).
   superseded pages only after the superblock that drops them is durable);
   the whole index still lives in memory.
 
-**Option C: the on-device copy-on-write B+tree** (engine.md §7.1, the
+**Option C: the on-device copy-on-write B+tree** (08-engine.md §7.1, the
 original design).
 
 - Pros: the index no longer needs to fit in memory; checkpoints write only
@@ -186,7 +186,7 @@ use. C stays the long-term format. D isn't worth its compaction cost here.
 
 #### Expected data size for each approach
 
-Measured with `hyperstor-bench index` on dev-1 (benchmarks.md): 1 GiB of
+Measured with `hyperstor-bench index` on dev-1 (02-benchmarks.md): 1 GiB of
 4 MiB objects written sequentially, then every block overwritten in
 random order with redirect-on-write (D38), the worst case for the index.
 
@@ -316,7 +316,7 @@ state absolutely, which hyperstor's do (option A above).
 ## Workload review (2026-10-20)
 
 The target workloads and their implications are in
-[workloads.md](workloads.md). Points raised, and the answers:
+[18-workloads.md](18-workloads.md). Points raised, and the answers:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
@@ -327,11 +327,11 @@ The target workloads and their implications are in
 ## Data for pending decisions (2026-10-21)
 
 Collected with the `collect-decision-data` skill; full tables and method
-in [benchmarks.md](benchmarks.md) (2026-10-21).
+in [02-benchmarks.md](02-benchmarks.md) (2026-10-21).
 
 | # | Open question | Data | What it implies | Recommendation |
 |---|---|---|---|---|
-| 11 | **When to build paged checkpoints** (point 5, option B) | Dense maps: 2 GiB of checkpoint per TiB. A 4 KiB write costs about 128 bytes of log; fuzzy checkpoints start every quarter of the log. Measured (benchmarks.md, log size): per TiB of shard at 50k writes/s, 826 MB/s of checkpoint writes with a 64 MiB log, 207 with 256 MiB, 52 with 1 GiB; reopening after a crash took 0.38, 0.61 and 1.5 s | A 4 TiB shard at 50k writes/s rewrites its 8 GiB index every ~10 s (about 800 MB/s) with today's 256 MiB maximum log. A 4 GiB log brings that to ~50 MB/s; paged checkpoints to whatever changed | Before shards pass about 1 TiB. A larger log trades checkpoint bandwidth for recovery time: replay runs at about 270 MiB of log per second, so a 1 GiB log means up to ~3 s of recovery per shard and a 4 GiB log ~11 s (benchmarks.md, recovery time). I'd raise the ceiling to 1 GiB now (bandwidth ÷4 at ≤3 s recovery) and build paged checkpoints (B) next, which fix bandwidth without lengthening recovery. |
+| 11 | **When to build paged checkpoints** (point 5, option B) | Dense maps: 2 GiB of checkpoint per TiB. A 4 KiB write costs about 128 bytes of log; fuzzy checkpoints start every quarter of the log. Measured (02-benchmarks.md, log size): per TiB of shard at 50k writes/s, 826 MB/s of checkpoint writes with a 64 MiB log, 207 with 256 MiB, 52 with 1 GiB; reopening after a crash took 0.38, 0.61 and 1.5 s | A 4 TiB shard at 50k writes/s rewrites its 8 GiB index every ~10 s (about 800 MB/s) with today's 256 MiB maximum log. A 4 GiB log brings that to ~50 MB/s; paged checkpoints to whatever changed | Before shards pass about 1 TiB. A larger log trades checkpoint bandwidth for recovery time: replay runs at about 270 MiB of log per second, so a 1 GiB log means up to ~3 s of recovery per shard and a 4 GiB log ~11 s (02-benchmarks.md, recovery time). I'd raise the ceiling to 1 GiB now (bandwidth ÷4 at ≤3 s recovery) and build paged checkpoints (B) next, which fix bandwidth without lengthening recovery. |
 | 12 | **The B+tree's commit model** (D43, G13) | redb, committing per transaction, writes 7.8–25 KB of metadata per update; log plus checkpoint writes 128–258 bytes | Committing the tree per transaction would multiply metadata writes by 30–100 | The tree keeps the log as its write-ahead log and commits only at checkpoints (as D43 intends); redb as-is is not a candidate for the index, but stays a reference implementation |
 | 13 | **Map lease and liveness defaults** (D40, D42) | Failover stall ≈ liveness timeout + 0.1 s: 3.1 s at 2 s / 3 s, 0.78 s at 0.5 s / 0.7 s. With peer reports (now built): 2.46 s at the defaults, 0.55 s with a 0.5 s lease, as predicted (about 1.25 leases). The recommended setting, lease 0.6 s and timeout 0.8 s, measured 0.91 s without peer reports and 0.66 s with them (two runs, within 2 ms of each other) | Peer reports alone save at most the gap between the timeout and 1.25 leases (0.6 s at defaults); the lease length decides failover time | Pick a target failover time first. For agent VMs and inference, 1 s seems reasonable: lease 0.6 s, timeout 0.8 s, heartbeats every 100 ms, then peer reports. Shorter leases mean more heartbeat traffic and more risk of false detection under load; measure on real networks (G-check) |
 | 14 | **Dense threshold** (I34) | Every chunk was dense after 5% random overwrites | The threshold barely matters for VM disks; sequential and immutable data (images, weights) stays in runs and costs half as much | Keep the adaptive switch; no further tuning needed |
@@ -343,13 +343,13 @@ point 13 with a target of about 1 s (D48), and point 16 as recommended
 (D49).
 
 Not measurable yet: G14 (sandbox clones and rollback need snapshots and
-clones, volumes.md §10.3) and G15 (needs the Bε-tree).
+clones, 10-volumes.md §10.3) and G15 (needs the Bε-tree).
 
 
 ## Data for pending decisions: administration (2026-10-21)
 
 Collected with the `collect-decision-data` skill; tables and method in
-[benchmarks.md](benchmarks.md) (2026-10-21, cluster-API load).
+[02-benchmarks.md](02-benchmarks.md) (2026-10-21, cluster-API load).
 
 | # | Open question | Data | What it implies | Recommendation |
 |---|---|---|---|---|
@@ -357,12 +357,12 @@ Collected with the `collect-decision-data` skill; tables and method in
 
 ## Points from building administration (2026-10-21)
 
-Raised while building AD0 and AD1 (implementation-notes.md I41–I52); not
+Raised while building AD0 and AD1 (01-implementation-notes.md I41–I52); not
 settled.
 
 | # | Point | Options | Recommendation |
 |---|---|---|---|
-| 31 | **One port or two for the map service** (I41) — *settled 2026-10-21: two ports are fine (D69)*: the map protocol (D5) on 8849 and the cluster API on 8850, against overview.md §3's single 8850 | (a) keep two; (b) detect the protocol on a connection's first bytes; (c) move the map watch into `hyperstor.v1` as a server stream | (a) until Raft (I18) reworks the map service, then (c): one protocol family, and the API is already HTTP/2 |
+| 31 | **One port or two for the map service** (I41) — *settled 2026-10-21: two ports are fine (D69)*: the map protocol (D5) on 8849 and the cluster API on 8850, against 03-overview.md §3's single 8850 | (a) keep two; (b) detect the protocol on a connection's first bytes; (c) move the map watch into `hyperstor.v1` as a server stream | (a) until Raft (I18) reworks the map service, then (c): one protocol family, and the API is already HTTP/2 |
 | 32 | **The root CA's key on a single host** (I48) — *settled 2026-10-21: keep it on a trusted host for now; offline is allowed, not required (D70)*: the all-in-one keeps it in `/etc/hyperstor/pki`, readable by root only; D53 wants it offline | (a) keep it for trial clusters; (b) export it encrypted at install and delete it | (a) for `--all-in-one`, (b) for multi-host installs, once `cluster init` exists |
 | 33 | **What `out` means** (I45): today it marks a device out and returns; with as many failure domains as copies, its PGs run degraded | (a) keep it as "service"; (b) add a "drain" that refuses when PGs would end up degraded and runs as an `Operation` until backfill ends | (b), as §23.3 asks; keep (a) as the service mode |
 | 34 | **Join tokens need a map that changes at run time** (I50): D57 needs the map service to add nodes and issue certificates, and the map isn't persisted (I18) | (a) persist the working map in a file first; (b) wait for Raft | (b) if Raft is next anyway; the shared-cluster-file install covers multi-host testing until then |
@@ -371,7 +371,7 @@ settled.
 ## Administration (2026-10-21)
 
 The installer, API, CLI, UI and security of the control plane
-(administration.md §23). Proposed in conversation with options and a
+(19-administration.md §23). Proposed in conversation with options and a
 recommendation each; the owner's answers:
 
 | # | Point | Answer | Result |
@@ -425,7 +425,7 @@ The extraction merged in glidex as PR #141 (`fb59b71`). What it moved (glidex `c
 
 ## Volume headers, leases and the blocklist (2026-10-21)
 
-The rest of HS1 (`.meta` header objects and volume leases, metadata.md
+The rest of HS1 (`.meta` header objects and volume leases, 06-metadata.md
 §4.2, §9) and HS2's blocklist and forced takeovers. Asked with options
 and a recommendation each; the owner's answers:
 
@@ -441,7 +441,7 @@ and a recommendation each; the owner's answers:
 
 ## Join tokens, the root key and recovering the map service (2026-10-22)
 
-After AD1's joins (implementation-notes.md I80–I93), the owner settled
+After AD1's joins (01-implementation-notes.md I80–I93), the owner settled
 the open notes and asked how the cluster recovers when the first map
 service member, or every member, is lost.
 
@@ -617,7 +617,7 @@ long operations and where operations live, with a recommendation each:
 ## glidex's hyperstor driver (2026-10-23)
 
 Before writing glidex's `hyperstor` datastore driver, three choices the
-spec's table (glidex.md §17) didn't settle, each with options and a
+spec's table (16-glidex.md §17) didn't settle, each with options and a
 recommendation:
 
 | # | Point | Answer | Result |
@@ -647,7 +647,7 @@ H9). Asked how disks should look to VMs, with a recommendation:
 ## NFS and pNFS for unmodified clients (2026-10-24)
 
 An investigation of how unmodified NFS clients could use the filesystem
-in parallel (nfs.md §26), with options and a recommendation for each
+in parallel (22-nfs.md §26), with options and a recommendation for each
 choice. The owner took three; the rest of D128–D137 stay open.
 
 A review of the proposals against RFC 8881, RFC 8434, RFC 8435 and the

@@ -1,4 +1,4 @@
-//! Cluster health (spec/operations.md §16): `error` when some PG can't
+//! Cluster health (spec/15-operations.md §16): `error` when some PG can't
 //! take writes, `warn` while anything is down, degraded or backfilling,
 //! `ok` otherwise, each with its reasons. Computed from one map, so the
 //! cluster API reports what clients and storage nodes see.

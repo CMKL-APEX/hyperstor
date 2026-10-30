@@ -1,5 +1,5 @@
-//! `hyperstor-mgmt`'s rows in the replicated store (decisions.md D98,
-//! administration.md §23.7): users, identities, sessions, tokens and role
+//! `hyperstor-mgmt`'s rows in the replicated store (04-decisions.md D98,
+//! 19-administration.md §23.7): users, identities, sessions, tokens and role
 //! links, as opaque values under keys mgmt chooses. Only the `mgmt`
 //! identity reaches them, through `MgmtStoreService`; writes go through
 //! the leader, reads come from the member's applied copy.

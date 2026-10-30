@@ -1,4 +1,4 @@
-//! Map backups and restore (decisions.md D86): the leader writes backups
+//! Map backups and restore (04-decisions.md D86): the leader writes backups
 //! by itself, `hyperstorctl map backup` fetches one, and a map service
 //! whose store is gone comes back from it, with its map, join tokens and
 //! revocations, as the storage nodes keep the data.

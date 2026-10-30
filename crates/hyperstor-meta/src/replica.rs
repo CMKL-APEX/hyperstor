@@ -1,4 +1,4 @@
-//! The map service's Raft member (decisions.md D20, D71): `glidex-raftstore`
+//! The map service's Raft member (04-decisions.md D20, D71): `glidex-raftstore`
 //! on a tokio runtime of its own, off the map service's reactor.
 //!
 //! The reactor keeps the map service's state ([`crate::Meta`]); this side
@@ -7,7 +7,7 @@
 //! reactor publishes ([`Commit`]).
 //!
 //! Members talk to each other over TCP, with mutual TLS when certificates
-//! are given (port 8851, overview.md §3): a request is `kind (u8), length
+//! are given (port 8851, 03-overview.md §3): a request is `kind (u8), length
 //! (u32), body`, an answer `ok (u8), length (u32), body`.
 
 use crate::ClusterMap;

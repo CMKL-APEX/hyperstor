@@ -23,8 +23,8 @@ cluster API over mutual TLS, `hyperstorctl` with drains as operations,
 `hyperstor-install`, which joins hosts with single-use tokens, certificate
 revocation, map backups with restore, and people's logins with roles in
 `hyperstor-mgmt`. The design is in [`spec/`](spec/README.md); what was built, how it deviates, and what
-to review is in [`spec/implementation-notes.md`](spec/implementation-notes.md),
-with measurements in [`spec/benchmarks.md`](spec/benchmarks.md).
+to review is in [`spec/01-implementation-notes.md`](spec/01-implementation-notes.md),
+with measurements in [`spec/02-benchmarks.md`](spec/02-benchmarks.md).
 
 ## Trying it (development)
 
@@ -86,7 +86,7 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 | `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
 | `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
 | `.github/workflows/` | CI and documentation publishing |
-| `crates/` | Rust crates (`spec/operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt, authd (`hyperstor-authd`); and test (end-to-end suite) |
+| `crates/` | Rust crates (`spec/15-operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt, authd (`hyperstor-authd`); and test (end-to-end suite) |
 | `LICENSES/` | License texts and copyright notice |
 
 ## License

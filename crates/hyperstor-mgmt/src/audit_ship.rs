@@ -1,6 +1,6 @@
 //! hyperstor-mgmt's audit records (people's logins, roles, tokens; and
 //! what they asked of the cluster API) into the cluster's audit log in
-//! `.meta` (decisions.md D112): each also goes to standard error at once,
+//! `.meta` (04-decisions.md D112): each also goes to standard error at once,
 //! and waits here until a map service member takes it
 //! (`AuditService.AppendAudit`), sent every second. Up to [`QUEUE_MAX`]
 //! wait; past that the oldest are dropped (journald has them all).

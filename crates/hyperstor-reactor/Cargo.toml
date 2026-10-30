@@ -1,6 +1,6 @@
 [package]
 name = "hyperstor-reactor"
-description = "Hyperstor's per-core io_uring reactor and executor (spec/engine.md §6, D3)"
+description = "Hyperstor's per-core io_uring reactor and executor (spec/08-engine.md §6, D3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

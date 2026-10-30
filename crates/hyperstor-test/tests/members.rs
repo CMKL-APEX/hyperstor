@@ -1,4 +1,4 @@
-//! The map service's members (decisions.md D85, D87): adding and
+//! The map service's members (04-decisions.md D85, D87): adding and
 //! removing members at run time, and recovering a group that lost its
 //! majority by forcing one survivor alone.
 

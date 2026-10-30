@@ -1,4 +1,4 @@
-//! The trash through `hyperstorctl` (administration.md §23.9.3, D54,
+//! The trash through `hyperstorctl` (19-administration.md §23.9.3, D54,
 //! D115): deletes go to it and leave the lists, restore brings them back,
 //! purge removes them at once (as an operation, D121), and the map
 //! service's purger empties it once a pool's grace period has passed.

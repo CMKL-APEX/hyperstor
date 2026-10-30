@@ -1,6 +1,6 @@
-//! `hyperstord`: a storage node (spec/engine.md §6, §8).
+//! `hyperstord`: a storage node (spec/08-engine.md §6, §8).
 //!
-//! A node runs one reactor thread per engine shard (implementation-notes.md
+//! A node runs one reactor thread per engine shard (01-implementation-notes.md
 //! I1). Each reactor listens on its own address, follows the cluster map,
 //! and serves:
 //!
@@ -114,19 +114,19 @@ pub struct ShardSpec {
 
 pub struct NodeConfig {
     pub node_id: u32,
-    /// The map service's members (decisions.md D72): any one will do.
+    /// The map service's members (04-decisions.md D72): any one will do.
     pub meta: Vec<SocketAddr>,
     pub shards: Vec<ShardSpec>,
     /// Pin reactor `i` to CPU `cpus[i]`, if given.
     pub cpus: Vec<usize>,
-    /// Adaptive polling window for this node's reactors (decisions.md D41);
+    /// Adaptive polling window for this node's reactors (04-decisions.md D41);
     /// zero turns it off.
     pub spin: Duration,
     /// Report a peer to the map service after this long without an answer
-    /// to pings (decisions.md D40); zero turns peer reports off.
+    /// to pings (04-decisions.md D40); zero turns peer reports off.
     pub peer_timeout: Duration,
     /// How often each primary scrubs its PGs, comparing every member's
-    /// digests (replication.md §8.5); zero turns scrub off.
+    /// digests (09-replication.md §8.5); zero turns scrub off.
     pub scrub_interval: Duration,
     /// Test hook: answer `Digests` as a node from before digests does
     /// ("unsupported request"), as in a rolling upgrade.
@@ -136,10 +136,10 @@ pub struct NodeConfig {
     /// cut off from it while clients and peers can still reach it.
     pub meta_blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Engine deferral threshold: `None` for flash, which redirects every
-    /// write (decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
+    /// write (04-decisions.md D38); `Some(hyperstor_engine::DEFER_MAX)` for
     /// hard disks.
     pub defer_max: Option<usize>,
-    /// Test hook: node pairs that can't reach each other (decisions.md
+    /// Test hook: node pairs that can't reach each other (04-decisions.md
     /// D92); this node's reactors send nothing to a node it is cut from.
     pub partitions: Option<Arc<faults::Partitions>>,
     /// The most bytes of an object's key–value table one push carries
@@ -378,7 +378,7 @@ struct ShardState {
     /// write must reach them from now on, because the map service may make
     /// them acting members at any moment.
     required: RefCell<std::collections::HashSet<(u32, u32, u32)>>,
-    /// Until when this reactor may serve PG I/O (its map lease, decisions.md
+    /// Until when this reactor may serve PG I/O (its map lease, 04-decisions.md
     /// D42); none before the first heartbeat answer.
     lease_until: Cell<Option<std::time::Instant>>,
     /// PGs fenced by the map service, with the map epoch that lifts each.
@@ -396,7 +396,7 @@ struct ShardState {
     damaged: RefCell<HashSet<ObjKey>>,
     /// Objects an operation list is being decided for (`exec`).
     exec_locks: RefCell<HashSet<ObjKey>>,
-    /// Volume leases of the headers this device is primary of (metadata.md
+    /// Volume leases of the headers this device is primary of (06-metadata.md
     /// §9, D75): the holder, until when it holds the lease, and the PG
     /// epoch that was decided at. The holder is in the header too; the
     /// expiry is kept only here, so a renewal writes nothing.
@@ -508,7 +508,7 @@ pub const HOLD_AT_MOST: Duration = Duration::from_secs(5);
 const CHUNK_NAME_LEN: usize = 24;
 
 /// How long a snapshot waits for an attached volume's holder to quiesce
-/// before it is abandoned (volumes.md §10.3).
+/// before it is abandoned (10-volumes.md §10.3).
 pub const QUIESCE_WITHIN: Duration = Duration::from_secs(2);
 
 /// A holder's pending watch: answered with an event and a token.
@@ -525,7 +525,7 @@ struct Quiesce {
 }
 
 /// How long a primary waits for a replica to answer a replicated change
-/// before reporting it too slow for the PG (decisions.md D91).
+/// before reporting it too slow for the PG (04-decisions.md D91).
 pub const REPL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The code a failed commit is answered with: a shard out of space is
@@ -625,7 +625,7 @@ fn row(table: &[HashMap<ObjKey, u64>], key: &ObjKey) -> Vec<Option<u64>> {
         .collect()
 }
 
-/// Every this-many scrub passes, the first included, is deep (replication.md
+/// Every this-many scrub passes, the first included, is deep (09-replication.md
 /// §8.5: light daily, deep weekly).
 const DEEP_SCRUB_EVERY: u64 = 7;
 
@@ -882,7 +882,7 @@ impl ShardState {
             return Err(err(Code::Unavailable, &map, "device failed"));
         }
         // No valid map lease: this node may have been replaced without
-        // knowing it, so it serves nothing (replication.md §8.4).
+        // knowing it, so it serves nothing (09-replication.md §8.4).
         if self
             .lease_until
             .get()
@@ -942,7 +942,7 @@ impl ShardState {
         Ok(pg.clone())
     }
 
-    /// Peering (replication.md §8.4, I61): before a primary serves a PG at
+    /// Peering (09-replication.md §8.4, I61): before a primary serves a PG at
     /// a new epoch, its members' copies are made the same as its own, so
     /// a write that reached only some members when the previous primary
     /// failed (and so was never acknowledged) can't be read from one copy
@@ -1095,7 +1095,7 @@ impl ShardState {
             if let Msg::Hello { instance: i, .. } = msg {
                 instance = i;
             }
-            // A blocklisted instance gets nothing more (metadata.md §4.1),
+            // A blocklisted instance gets nothing more (06-metadata.md §4.1),
             // nor does a request under a blocklisted lease identity (D150).
             if !matches!(msg, Msg::Ping)
                 && let Some(m) = fenced(&self.map(), instance, msg.target().map_or(0, |t| t.lease))
@@ -1633,7 +1633,7 @@ impl ShardState {
         Ok((conns, fills))
     }
 
-    /// An atomic operation list on one object (metadata.md §4.2). The
+    /// An atomic operation list on one object (06-metadata.md §4.2). The
     /// primary decides the assertions against the object as it is once
     /// every queued commit is done, holding the key so no other list on it
     /// is decided meanwhile; then it queues the effects here and sends them
@@ -1672,7 +1672,7 @@ impl ShardState {
         });
     }
 
-    /// Changes one object as its primary (metadata.md §4.2): holding the
+    /// Changes one object as its primary (06-metadata.md §4.2): holding the
     /// key, once every queued commit is done, `decide` looks at the object
     /// as it is and returns the effects to apply (or the answer, if
     /// none); then they are queued here and sent to every replica with no
@@ -1809,7 +1809,7 @@ impl ShardState {
 
     /// The keys of a chunk's versions to read through, first first: for
     /// each layer (branch, oldest and newest epoch), that branch's versions
-    /// in the range, newest first (engine.md §7.2).
+    /// in the range, newest first (08-engine.md §7.2).
     fn layer_keys(
         &self,
         to: &Target,
@@ -1940,7 +1940,7 @@ impl ShardState {
 
     /// Copies into a clone's chunk (`key`, at its head epoch) every block
     /// no version of its own branch holds, read through `layers`, its
-    /// parents (volumes.md §10.4). Decided and replicated as writes.
+    /// parents (10-volumes.md §10.4). Decided and replicated as writes.
     async fn flatten(
         self: &Rc<Self>,
         instance: u64,
@@ -2099,7 +2099,7 @@ impl ShardState {
         Msg::ExecOk
     }
 
-    /// A snapshot (volumes.md §10.3): with the volume's holder, if any,
+    /// A snapshot (10-volumes.md §10.3): with the volume's holder, if any,
     /// quiesced first (abandoned if it doesn't within 2 s), the header's
     /// change is applied as an operation list; then the holder resumes.
     async fn snapshot(
@@ -2253,7 +2253,7 @@ impl ShardState {
     }
 
     /// Takes a volume's lease for the identity `to.lease` of `instance` as
-    /// its header's primary (metadata.md §9, D75, D150). Granted if nobody
+    /// its header's primary (06-metadata.md §9, D75, D150). Granted if nobody
     /// holds it, or that identity does. Another holder's lease lasts
     /// [`LEASE_EXPIRES`] past its last renewal here, or past when this
     /// device first saw it (a new primary gives it a full lease); once it
@@ -2645,7 +2645,7 @@ impl ShardState {
     }
 
     /// Replaces an object with a primary's whole copy: refill, repair and
-    /// peering (replication.md §8.5).
+    /// peering (09-replication.md §8.5).
     async fn push_object(
         self: &Rc<Self>,
         req: u64,
@@ -2837,7 +2837,7 @@ impl ShardState {
 
     /// What this node holds of a PG, as `(key, digest)` in key order, once
     /// every commit queued so far is done: everything that reached this
-    /// node before the request is in it (replication.md §8.5).
+    /// node before the request is in it (09-replication.md §8.5).
     async fn digests(&self, to: Target, deep: bool) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, false).await {
             return (m, Vec::new());
@@ -2911,7 +2911,7 @@ impl ShardState {
     }
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
-    /// checks every block's CRC (engine.md §7.2), and marks the objects
+    /// checks every block's CRC (08-engine.md §7.2), and marks the objects
     /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second, yielding
     /// between objects so I/O goes on.
     async fn verify_pg(&self, pool: u32, pg: u32) {
@@ -2938,7 +2938,7 @@ impl ShardState {
         }
     }
 
-    /// Replaces an object with a primary's copy (backfill, replication.md §8.5).
+    /// Replaces an object with a primary's copy (backfill, 09-replication.md §8.5).
     /// Namespace 0 means: delete every object of the PG first.
     async fn push(
         self: &Rc<Self>,
@@ -3132,7 +3132,7 @@ impl ShardState {
                     }
                     // A lease is taken only with a map at least as new as
                     // the one published when it was granted, which may
-                    // blocklist a client (metadata.md §9): the map service
+                    // blocklist a client (06-metadata.md §9): the map service
                     // counts on it. A revocation applies at once.
                     if lease_ms == 0 || self.map().epoch >= map_epoch {
                         self.lease_until
@@ -3285,7 +3285,7 @@ impl ShardState {
                     return false;
                 }
             },
-            // A node from before digests (a rolling upgrade, operations.md
+            // A node from before digests (a rolling upgrade, 15-operations.md
             // §18.4): reset its copy and send everything, as backfill did.
             Ok((
                 Msg::Error {
@@ -3518,7 +3518,7 @@ impl ShardState {
     }
 
     /// Scrubs every PG this device is primary of, once per `every`
-    /// (replication.md §8.5), spread evenly over the interval rather than
+    /// (09-replication.md §8.5), spread evenly over the interval rather than
     /// back to back. Only clean PGs are scrubbed: backfill already
     /// compares a filling member's copy.
     async fn scrubber(self: Rc<Self>, every: Duration) {
@@ -3753,7 +3753,7 @@ impl ShardState {
 
     /// Replaces this primary's copy of `key` with member `from`'s (a
     /// copy that failed its checksums, or that scrub's majority outvoted;
-    /// replication.md §8.2, §8.5). Holds the key, so no write or operation
+    /// 09-replication.md §8.2, §8.5). Holds the key, so no write or operation
     /// list reaches it meanwhile, and first waits until every write
     /// accepted for the PG has been answered, so `from` has them all.
     /// Whether it was replaced.
@@ -4026,7 +4026,7 @@ impl ShardState {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
         let mut r = self.shard.borrow().read(&okey, off, len);
-        // A block that fails its checksum (replication.md §8.2): this copy
+        // A block that fails its checksum (09-replication.md §8.2): this copy
         // is replaced by a member's, and the read served from it.
         if matches!(r, Err(EngineError::Checksum { .. })) {
             self.damaged.borrow_mut().insert(okey.clone());

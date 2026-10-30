@@ -2,7 +2,7 @@
 //!                   [--size-gib G] [--data-dir DIR] [--api-port P]
 //!                   [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]`
 //!
-//! The installer of spec/administration.md §23.4: one linear file,
+//! The installer of spec/19-administration.md §23.4: one linear file,
 //! non-interactive and convergent. Every run compares what is installed
 //! with what should be and changes only the difference, so the same
 //! command installs and later repairs or updates.
@@ -33,7 +33,7 @@
 //!   `/etc/hyperstor/install.conf` and reused by later runs.
 //!   It also installs itself and a daily timer that runs `install` again,
 //!   which renews certificates (D56) and repairs drift.
-//! - `--vhost` adds `hyperstor-vhost` (frontends.md §11.1, D142) to
+//! - `--vhost` adds `hyperstor-vhost` (11-frontends.md §11.1, D142) to
 //!   whatever the host runs: VM disks over vhost-user-blk, for glidex.
 //!   `install --role vhost --map ADDR[,ADDR...]` sets up a host that only
 //!   runs VMs. `--vhost-user NAME` (repeatable) lets that user use its
@@ -104,7 +104,7 @@ struct Settings {
     /// The map service's address, `IP:PORT`, for a cluster file install.
     map: String,
     /// The map service's members, `N=RAFT_ADDR/MAP_ADDR` separated by
-    /// commas, when it runs as a group (decisions.md D72–D74); empty: one.
+    /// commas, when it runs as a group (04-decisions.md D72–D74); empty: one.
     members: String,
     /// This host's member number, for a `meta` role in a group.
     member_id: Option<u32>,
@@ -710,7 +710,7 @@ EnvironmentFile=/etc/hyperstor/meta.env
 EnvironmentFile=-/etc/hyperstor/meta-once.env
 ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS $HS_ONCE
 # The intermediate CA's key, readable by root only on disk, handed to the
-# service alone (spec/administration.md §23.8).
+# service alone (spec/19-administration.md §23.8).
 LoadCredential=intermediate.key:/etc/hyperstor/pki/intermediate.key
 # The local socket, /run/hyperstor-meta/api.sock (break-glass).
 RuntimeDirectory=hyperstor-meta
@@ -871,7 +871,7 @@ WantedBy=multi-user.target
 ";
 
 const VHOST_UNIT: &str = "\
-# Written by hyperstor-install. VM disks over vhost-user-blk (frontends.md §11.1).
+# Written by hyperstor-install. VM disks over vhost-user-blk (11-frontends.md §11.1).
 [Unit]
 Description=Hyperstor vhost-user-blk service (VM disks)
 Documentation=https://github.com/CMKL-APEX/hyperstor
@@ -1102,7 +1102,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     if !s.join.is_empty() && s.role == "storage" {
         return joined_storage_plan(s);
     }
-    // Interim, until joining with tokens (D57, implementation-notes.md
+    // Interim, until joining with tokens (D57, 01-implementation-notes.md
     // I50): every host gets the same cluster file.
     let cluster = cluster_file
         .or_else(|| fs::read_to_string(root.join("etc/hyperstor/cluster.txt")).ok())

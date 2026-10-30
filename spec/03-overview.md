@@ -2,14 +2,14 @@
 
 Status: **draft, implementation started.** The design is split by topic
 (see [README.md](README.md)). Decisions are in
-[decisions.md](decisions.md): D1–D19, D38–D55, D61–D68, D69–D92, D94–D97 and D101–D106 were settled
+[04-decisions.md](04-decisions.md): D1–D19, D38–D55, D61–D68, D69–D92, D94–D97 and D101–D106 were settled
 with the owner; D20–D37, D56–D60 and D66's merge rule were made while
-drafting and are open to review. For NFS and pNFS (nfs.md), D127, D129,
-D130 and D138–D141 are settled; D128 and D131–D137 are proposed and open. Host checks G1–G24 (milestones.md
-§22) and G25–G38 (nfs.md §26.11) are still open. What is built, and the
+drafting and are open to review. For NFS and pNFS (22-nfs.md), D127, D129,
+D130 and D138–D141 are settled; D128 and D131–D137 are proposed and open. Host checks G1–G24 (17-milestones.md
+§22) and G25–G38 (22-nfs.md §26.11) are still open. What is built, and the
 decision points still open, are in
-[implementation-notes.md](implementation-notes.md) and
-[decision-log.md](decision-log.md).
+[01-implementation-notes.md](01-implementation-notes.md) and
+[05-decision-log.md](05-decision-log.md).
 
 Hyperstor is a sharded, distributed block store for glidex nodes. It
 exports volumes over NVMe-oF (TCP, RoCEv2, InfiniBand), protects them by
@@ -25,12 +25,12 @@ Hyperstor also runs without glidex (D2).
 Below the block layer, hyperstor is a general object layer with a
 transactional key–value store on top (D34, D35). Block volumes are its
 first client; an S3 gateway (D36) and a distributed filesystem (D37,
-specified in [filesystem.md](filesystem.md)) come later on the same
+specified in [00-filesystem.md](00-filesystem.md)) come later on the same
 layers.
 
 **References to glidex.** Hyperstor is developed for
 [glidex](https://github.com/CMKL-APEX/glidex) and integrates with it
-(glidex.md §17). Names of documents that aren't hyperstor's
+(16-glidex.md §17). Names of documents that aren't hyperstor's
 (`storage.md`, `clustering.md`, `host-topology.md`, `networking.md`,
 `metering.md`, `security.md`, `tenancy.md`, `credentials.md`,
 `hypervisors.md`, `architecture.md`, `images.md`) are glidex's, in its
@@ -66,27 +66,27 @@ D7`) refer to those documents.
     (D34, D35). Their engine format is part of the first milestone, even
     though their first users come later.
 - **Later, designed in:**
-  - an S3 gateway, with S3-over-RDMA to GPU memory (D36, s3.md §14);
+  - an S3 gateway, with S3-over-RDMA to GPU memory (D36, 14-s3.md §14);
   - a distributed filesystem with POSIX metadata, mounted by VMs through
-    virtio-fs and elsewhere through FUSE (D37, filesystem.md);
+    virtio-fs and elsewhere through FUSE (D37, 00-filesystem.md);
   - incremental snapshot diff export (backup);
-  - PG splitting (doubling a pool's PG count, placement.md §5.1);
+  - PG splitting (doubling a pool's PG count, 07-placement.md §5.1);
   - a libfabric transport, for Ultra Ethernet (UET) and other fabrics
     without RDMA verbs (D30);
-  - Mellanox dynamically connected (DC) queue pairs (protocol.md §13.2), required by
+  - Mellanox dynamically connected (DC) queue pairs (13-protocol.md §13.2), required by
     the S3-over-RDMA milestone (D36);
   - a CSI driver for Kubernetes clusters running on glidex VMs, with
-    disks hot-plugged as vhost-user-blk (frontends.md §11.4);
-  - NVMe emulation for guests over vfio-user (frontends.md §11.4);
-  - the vhost client on a DPU (frontends.md §11.4);
-  - lease hand-over during live migration (frontends.md §11.4);
+    disks hot-plugged as vhost-user-blk (11-frontends.md §11.4);
+  - NVMe emulation for guests over vfio-user (11-frontends.md §11.4);
+  - the vhost client on a DPU (11-frontends.md §11.4);
+  - lease hand-over during live migration (11-frontends.md §11.4);
   - NVMe/TCP TLS;
   - encryption at rest;
   - tenancy: tenant ids on containers, quotas, two-level fair share
-    (D61, D62, tenants.md §24);
+    (D61, D62, 20-tenants.md §24);
   - sites as a failure domain, asynchronous replication between
     clusters, a global namespace with range homes, cache sources and
-    the federation view (D63–D68, federation.md §25).
+    the federation view (D63–D68, 21-federation.md §25).
 - **Out:**
   - zoned devices (SMR hard disks, ZNS SSDs);
   - PGs stretched over a wide-area link (D63): sites in one cluster
@@ -121,25 +121,25 @@ D7`) refer to those documents.
  │   management API (every member; volume ops as a client)       │
  └───────────────────────────────────────────────────────────────┘
                  ▲ management API (gRPC, mTLS)
-          glidex control plane (datastore driver, glidex.md §17) · hyperstorctl
-          · hyperstor-mgmt (standalone UI and people, administration.md §23)
+          glidex control plane (datastore driver, 16-glidex.md §17) · hyperstorctl
+          · hyperstor-mgmt (standalone UI and people, 19-administration.md §23)
 ```
 
 | Process | Runs on | Role |
 |---|---|---|
-| `hyperstor-meta` | 3 or 5 nodes; glidex server hosts by default | Cluster map, PG table, blocklist (metadata.md §4.1); the cluster API (operations.md §16, administration.md §23.5) |
-| `hyperstor-mgmt` | standalone only; any nodes | Web UI, people's authentication and authorization, audit (administration.md §23.7, D50) |
-| `hyperstord` | storage nodes | PG primary and replica roles; local engines (engine.md §6–replication.md §8) |
-| `hyperstor-vhost` | compute nodes | vhost-user-blk for local VMs (frontends.md §11.1) |
-| `hyperstor-gw` | storage nodes, or nodes chosen as gateways | NVMe-oF target (frontends.md §11.2) |
-| `libhyperstor-gpu` | inside applications | Native GPU-direct client (gpu.md §12) |
-| `hyperstor-s3` (later) | any nodes, behind a load balancer | S3 gateway (s3.md §14) |
-| filesystem metadata servers and clients (later) | see filesystem.md | distributed filesystem (D37) |
+| `hyperstor-meta` | 3 or 5 nodes; glidex server hosts by default | Cluster map, PG table, blocklist (06-metadata.md §4.1); the cluster API (15-operations.md §16, 19-administration.md §23.5) |
+| `hyperstor-mgmt` | standalone only; any nodes | Web UI, people's authentication and authorization, audit (19-administration.md §23.7, D50) |
+| `hyperstord` | storage nodes | PG primary and replica roles; local engines (08-engine.md §6–09-replication.md §8) |
+| `hyperstor-vhost` | compute nodes | vhost-user-blk for local VMs (11-frontends.md §11.1) |
+| `hyperstor-gw` | storage nodes, or nodes chosen as gateways | NVMe-oF target (11-frontends.md §11.2) |
+| `libhyperstor-gpu` | inside applications | Native GPU-direct client (12-gpu.md §12) |
+| `hyperstor-s3` (later) | any nodes, behind a load balancer | S3 gateway (14-s3.md §14) |
+| filesystem metadata servers and clients (later) | see 00-filesystem.md | distributed filesystem (D37) |
 
 The client library (`hyperstor-client`) is one crate used by
 `hyperstor-vhost`, `hyperstor-gw` and `libhyperstor-gpu`. It holds a
 cached cluster map, a volume lease, connections to storage reactors, and
-the request splitting and retry logic (volumes.md §10.1).
+the request splitting and retry logic (10-volumes.md §10.1).
 
 **Ports:**
 

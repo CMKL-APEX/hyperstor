@@ -8,7 +8,7 @@
 
 `check` fails if a tracked test didn't run or didn't pass, if an item's
 tests don't fit its status, or if the milestones don't match
-spec/milestones.md §21. Tests that ran but aren't tracked are listed, not
+spec/17-milestones.md §21. Tests that ran but aren't tracked are listed, not
 errors: new tests land before the file catches up.
 """
 
@@ -69,16 +69,16 @@ def check(paths):
     if not results:
         errors.append("no test results found in the logs")
 
-    table = (ROOT / "spec" / "milestones.md").read_text(encoding="utf-8")
+    table = (ROOT / "spec" / "17-milestones.md").read_text(encoding="utf-8")
     in_spec = re.findall(r"^\| ([A-Z]{2}\d+[a-z]?\+?) \|", table, re.M)
     in_spec = [i.rstrip("+") for i in in_spec]
     ids = [m["id"] for m in milestones]
     for i in in_spec:
         if i not in ids:
-            errors.append(f"milestone {i} (milestones.md §21) is not tracked")
+            errors.append(f"milestone {i} (17-milestones.md §21) is not tracked")
     for i in ids:
         if i not in in_spec:
-            errors.append(f"milestone {i} is not in milestones.md §21")
+            errors.append(f"milestone {i} is not in 17-milestones.md §21")
 
     tracked = set()
     for m in milestones:

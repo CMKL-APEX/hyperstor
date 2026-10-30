@@ -1,4 +1,4 @@
-# Implementation tracking: what each milestone (milestones.md §21)
+# Implementation tracking: what each milestone (17-milestones.md §21)
 # delivers, how far it is built, and the tests that show it works.
 #
 # CI (scripts/tracking.py, run by .github/workflows/ci.yml) checks this
@@ -26,7 +26,7 @@ title = "Local storage engine and reactor"
 
 [[milestone.item]]
 what = "Per-core I/O reactor on io_uring: tasks, TCP, timers, cross-thread wake-ups"
-spec = ["engine.md §6.1", "D3"]
+spec = ["08-engine.md §6.1", "D3"]
 status = "done"
 tests = [
     "hyperstor_reactor::tests::spawn_and_join",
@@ -41,7 +41,7 @@ tests = [
 
 [[milestone.item]]
 what = "General objects: sparse data with checksums, attributes, key-value tables, atomic operation lists"
-spec = ["engine.md §7", "D34"]
+spec = ["08-engine.md §7", "D34"]
 status = "done"
 tests = [
     "engine::write_read_stat_and_holes",
@@ -55,7 +55,7 @@ tests = [
 
 [[milestone.item]]
 what = "Group commit, small-write deferral, checkpoints and recovery"
-spec = ["engine.md §7.2", "engine.md §7.4", "D22", "D38", "I2", "I3", "I4", "I162"]
+spec = ["08-engine.md §7.2", "08-engine.md §7.4", "D22", "D38", "I2", "I3", "I4", "I162"]
 status = "done"
 tests = [
     "engine::small_overwrites_are_deferred_and_survive_reopen",
@@ -85,7 +85,7 @@ tests = [
 
 [[milestone.item]]
 what = "Device back ends: memory, files and block devices through io_uring with O_DIRECT"
-spec = ["engine.md §6.2"]
+spec = ["08-engine.md §6.2"]
 status = "done"
 tests = [
     "hyperstor_engine::dev::tests::mem_dev",
@@ -95,7 +95,7 @@ tests = [
 
 [[milestone.item]]
 what = "NVMe passthrough back end"
-spec = ["engine.md §6.2", "I11"]
+spec = ["08-engine.md §6.2", "I11"]
 status = "planned"
 
 [[milestone.item]]
@@ -109,7 +109,7 @@ title = "Replicated pools over TCP"
 
 [[milestone.item]]
 what = "Placement of data across failure domains"
-spec = ["placement.md §5", "D9", "D21"]
+spec = ["07-placement.md §5", "D9", "D21"]
 status = "done"
 tests = [
     "hyperstor_placement::tests::hashes_are_stable",
@@ -126,7 +126,7 @@ tests = [
 
 [[milestone.item]]
 what = "Wire protocol and encoding, with checksums on every block"
-spec = ["protocol.md §13.1", "D5"]
+spec = ["13-protocol.md §13.1", "D5"]
 status = "done"
 tests = [
     "hyperstor_codec::tests::round_trip",
@@ -141,7 +141,7 @@ tests = [
 
 [[milestone.item]]
 what = "Cluster map and map service, configured from a cluster file"
-spec = ["metadata.md §4.1"]
+spec = ["06-metadata.md §4.1"]
 status = "done"
 tests = [
     "hyperstor_map::parse_tests::cluster_file",
@@ -151,13 +151,13 @@ tests = [
 
 [[milestone.item]]
 what = "Storage daemon: replicated writes and reads, group commit"
-spec = ["replication.md §8.1", "D39"]
+spec = ["09-replication.md §8.1", "D39"]
 status = "done"
 tests = ["cluster::writes_reach_every_copy_and_read_back"]
 
 [[milestone.item]]
 what = "Client library: request splitting, map refresh and retries"
-spec = ["volumes.md §10.1"]
+spec = ["10-volumes.md §10.1"]
 status = "done"
 tests = ["cluster::clients_follow_map_changes"]
 
@@ -196,7 +196,7 @@ tests = [
 
 [[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
-spec = ["metadata.md §4.2", "metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
+spec = ["06-metadata.md §4.2", "06-metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
 status = "done"
 tests = [
     "cluster::objects_change_atomically_and_every_copy_follows",
@@ -210,7 +210,7 @@ tests = [
 
 [[milestone.item]]
 what = "Test block devices through ublk"
-spec = ["frontends.md §11.2", "D94", "D95", "I112", "I113"]
+spec = ["11-frontends.md §11.2", "D94", "D95", "I112", "I113"]
 status = "done"
 tests = [
     "ublk::a_volume_is_a_block_device_and_keeps_its_data",
@@ -225,7 +225,7 @@ title = "Failure handling"
 
 [[milestone.item]]
 what = "Failure detection by heartbeats, and writes that continue with fewer copies"
-spec = ["replication.md §15"]
+spec = ["09-replication.md §15"]
 status = "done"
 tests = [
     "hyperstor_map::tests::node_down_changes_only_its_pgs_and_bumps_epochs",
@@ -235,7 +235,7 @@ tests = [
 
 [[milestone.item]]
 what = "Backfill: returning or replacement nodes are refilled"
-spec = ["replication.md §8.5", "I187"]
+spec = ["09-replication.md §8.5", "I187"]
 status = "done"
 tests = [
     "cluster::a_node_returns_with_stale_data_and_is_refilled",
@@ -245,7 +245,7 @@ tests = [
 
 [[milestone.item]]
 what = "Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair)"
-spec = ["replication.md §8.5", "D146", "I177", "I179", "I188"]
+spec = ["09-replication.md §8.5", "D146", "I177", "I179", "I188"]
 status = "done"
 tests = [
     "cluster::a_large_key_value_table_is_refilled_in_parts",
@@ -255,13 +255,13 @@ tests = [
 
 [[milestone.item]]
 what = "A primary fetches a member's copy of a large object in parts (repair of its own copy)"
-spec = ["replication.md §8.5", "I182"]
+spec = ["09-replication.md §8.5", "I182"]
 status = "done"
 tests = ["cluster::an_outvoted_primary_fetches_a_large_table_in_parts"]
 
 [[milestone.item]]
 what = "Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts"
-spec = ["replication.md §15", "I184"]
+spec = ["09-replication.md §15", "I184"]
 status = "done"
 tests = [
     "hyperstor_rpc::tests::a_call_past_its_deadline_fails_and_takes_the_connection_down",
@@ -272,7 +272,7 @@ tests = [
 
 [[milestone.item]]
 what = "Map leases with fencing and pushes: a cut-off primary stops serving"
-spec = ["replication.md §8.4", "D42"]
+spec = ["09-replication.md §8.4", "D42"]
 status = "done"
 tests = [
     "cluster::a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write",
@@ -293,7 +293,7 @@ tests = [
 
 [[milestone.item]]
 what = "Flap damping: a node that goes down is held down, longer each time; health warns"
-spec = ["metadata.md", "D149", "I183"]
+spec = ["06-metadata.md", "D149", "I183"]
 status = "done"
 tests = [
     "hyperstor_meta::tests::a_flapping_node_is_held_down_longer_each_time",
@@ -301,7 +301,7 @@ tests = [
 
 [[milestone.item]]
 what = "Peering and delta recovery, by content digests instead of a PG log"
-spec = ["replication.md §8.3", "replication.md §8.4", "D90", "I57", "I61"]
+spec = ["09-replication.md §8.3", "09-replication.md §8.4", "D90", "I57", "I61"]
 status = "done"
 tests = [
     "cluster::a_returning_node_gets_only_what_changed",
@@ -313,7 +313,7 @@ tests = [
 
 [[milestone.item]]
 what = "Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums"
-spec = ["replication.md §8.2", "replication.md §8.4", "D89", "I104"]
+spec = ["09-replication.md §8.2", "09-replication.md §8.4", "D89", "I104"]
 status = "done"
 tests = [
     "cluster::a_read_of_a_damaged_primary_copy_is_served_and_repaired",
@@ -321,7 +321,7 @@ tests = [
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["replication.md §8.5", "I58", "I60", "I104", "I105"]
+spec = ["09-replication.md §8.5", "I58", "I60", "I104", "I105"]
 status = "done"
 tests = [
     "cluster::scrub_repairs_a_copy_the_others_outvote",
@@ -332,7 +332,7 @@ tests = [
 
 [[milestone.item]]
 what = "Blocklist and forced takeovers"
-spec = ["metadata.md §4.1", "metadata.md §9", "D24", "D76", "I75", "I76", "I77"]
+spec = ["06-metadata.md §4.1", "06-metadata.md §9", "D24", "D76", "I75", "I76", "I77"]
 status = "done"
 tests = [
     "cluster::a_forced_takeover_blocklists_the_old_holder",
@@ -340,7 +340,7 @@ tests = [
 
 [[milestone.item]]
 what = "Down and out, and failed devices"
-spec = ["placement.md §5.3", "replication.md §15", "I101", "I102"]
+spec = ["07-placement.md §5.3", "09-replication.md §15", "I101", "I102"]
 status = "done"
 tests = [
     "cluster::a_node_down_past_the_interval_is_marked_out_and_back_in",
@@ -350,7 +350,7 @@ tests = [
 
 [[milestone.item]]
 what = "Slow and unreachable replicas leave a PG"
-spec = ["replication.md §15", "D91", "I103"]
+spec = ["09-replication.md §15", "D91", "I103"]
 status = "done"
 tests = [
     "cluster::a_hung_replica_is_dropped_from_its_pg_and_comes_back",
@@ -374,7 +374,7 @@ title = "Virtual machine disks (vhost-user-blk) and the glidex driver"
 
 [[milestone.item]]
 what = "hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks"
-spec = ["frontends.md §11.1", "D26", "D116", "D117", "D126", "I158", "I159", "I160", "I161", "I169"]
+spec = ["11-frontends.md §11.1", "D26", "D116", "D117", "D126", "I158", "I159", "I160", "I161", "I169"]
 status = "partial"
 tests = [
     "vhost::a_volume_is_served_over_vhost_user_blk",
@@ -386,18 +386,18 @@ tests = [
 
 [[milestone.item]]
 what = "VMs boot from volumes under Cloud Hypervisor and QEMU"
-spec = ["frontends.md §11.1", "glidex.md §17", "D118", "I158"]
+spec = ["11-frontends.md §11.1", "16-glidex.md §17", "D118", "I158"]
 status = "done"
 tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
 [[milestone.item]]
 what = "Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory"
-spec = ["frontends.md §11.1", "D26", "G8"]
+spec = ["11-frontends.md §11.1", "D26", "G8"]
 status = "planned"
 
 [[milestone.item]]
 what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
-spec = ["frontends.md §11.1", "G6", "D143", "D145", "I173", "I174"]
+spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174"]
 status = "done"
 tests = [
     "vhost::a_restarted_service_takes_its_volumes_back",
@@ -407,7 +407,7 @@ tests = [
 
 [[milestone.item]]
 what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
-spec = ["administration.md §23.4", "D142", "D144", "I175"]
+spec = ["19-administration.md §23.4", "D142", "D144", "I175"]
 status = "done"
 tests = [
     "install::hyperstor_vhost_is_installed_for_its_users",
@@ -417,12 +417,12 @@ tests = [
 
 [[milestone.item]]
 what = "Discard and write-zeroes without allocating; expand signalled to the guest"
-spec = ["frontends.md §11.1", "I159"]
+spec = ["11-frontends.md §11.1", "I159"]
 status = "planned"
 
 [[milestone.item]]
 what = "Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates"
-spec = ["metadata.md §9", "D33", "D150", "D151", "D152", "I186"]
+spec = ["06-metadata.md §9", "D33", "D150", "D151", "D152", "I186"]
 status = "done"
 tests = [
     "cluster::preempting_one_volume_leaves_the_clients_others",
@@ -431,18 +431,18 @@ tests = [
 
 [[milestone.item]]
 what = "Client readahead"
-spec = ["volumes.md §10.1"]
+spec = ["10-volumes.md §10.1"]
 status = "planned"
 
 [[milestone.item]]
 what = "hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
-spec = ["glidex.md §17", "D122", "D123", "I167"]
+spec = ["16-glidex.md §17", "D122", "D123", "I167"]
 status = "done"
 tests = ["enroll::a_management_client_enrolls_and_manages_volumes"]
 
 [[milestone.item]]
 what = "The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering"
-spec = ["glidex.md §17", "D79", "D118"]
+spec = ["16-glidex.md §17", "D79", "D118"]
 status = "planned"
 
 [[milestone]]
@@ -451,7 +451,7 @@ title = "Snapshots, clones and the host read cache"
 
 [[milestone.item]]
 what = "Engine: chunk versions read through layers, and merged without copying"
-spec = ["engine.md §7.2", "D101", "D104", "I114"]
+spec = ["08-engine.md §7.2", "D101", "D104", "I114"]
 status = "done"
 tests = [
     "engine::versions_read_through_layers_and_merge_without_copying",
@@ -459,7 +459,7 @@ tests = [
 
 [[milestone.item]]
 what = "Snapshots, clones, rollback, flatten and snapshot deletion"
-spec = ["volumes.md §10.3", "volumes.md §10.4", "D10", "D21", "D101", "D103", "D106", "I115", "I122", "I123", "I124", "I126"]
+spec = ["10-volumes.md §10.3", "10-volumes.md §10.4", "D10", "D21", "D101", "D103", "D106", "I115", "I122", "I123", "I124", "I126"]
 status = "done"
 tests = [
     "cluster::snapshots_clones_and_rollback_read_what_they_should",
@@ -474,7 +474,7 @@ tests = [
 
 [[milestone.item]]
 what = "Consistency groups"
-spec = ["volumes.md §10.3", "I125"]
+spec = ["10-volumes.md §10.3", "I125"]
 status = "done"
 tests = [
     "cluster::a_group_snapshot_is_one_moment_across_its_volumes",
@@ -483,7 +483,7 @@ tests = [
 
 [[milestone.item]]
 what = "Paged checkpoints: only the pages changed since the last (D105)"
-spec = ["engine.md §7.3", "D47", "D105", "I148", "I149"]
+spec = ["08-engine.md §7.3", "D47", "D105", "I148", "I149"]
 status = "done"
 tests = [
     "engine::checkpoints_write_only_the_pages_that_changed",
@@ -496,7 +496,7 @@ tests = [
 
 [[milestone.item]]
 what = "The host read cache, in the client library"
-spec = ["frontends.md §11.3", "D32", "D102", "I134"]
+spec = ["11-frontends.md §11.3", "D32", "D102", "I134"]
 status = "partial"
 tests = [
     "cluster::clones_of_a_golden_image_share_the_read_cache",
@@ -573,7 +573,7 @@ title = "Administration API, identities and CLI"
 
 [[milestone.item]]
 what = "Cluster health with its reasons, from what clients see"
-spec = ["operations.md §16", "administration.md §23.5"]
+spec = ["15-operations.md §16", "19-administration.md §23.5"]
 status = "done"
 tests = [
     "hyperstor_meta::health::tests::healthy_cluster_is_ok",
@@ -583,7 +583,7 @@ tests = [
 
 [[milestone.item]]
 what = "Cluster API (status, placement groups, taking devices out and in), callable with curl"
-spec = ["administration.md §23.5", "D51"]
+spec = ["19-administration.md §23.5", "D51"]
 status = "partial"
 tests = [
     "hyperstor_meta::api::tests::status_carries_health_and_pools",
@@ -596,7 +596,7 @@ tests = [
 
 [[milestone.item]]
 what = "Command-line tool: status, nodes, pools, placement groups, devices out and in, I/O test"
-spec = ["administration.md §23.6", "D55"]
+spec = ["19-administration.md §23.6", "D55"]
 status = "partial"
 tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
@@ -612,7 +612,7 @@ tests = [
 
 [[milestone.item]]
 what = "Metrics on each storage node's admin port"
-spec = ["operations.md §16", "administration.md §23.3", "D58", "D59"]
+spec = ["15-operations.md §16", "19-administration.md §23.3", "D58", "D59"]
 status = "partial"
 tests = [
     "hyperstor_daemon::metrics::tests::render_labels_every_shard_and_kind",
@@ -621,7 +621,7 @@ tests = [
 
 [[milestone.item]]
 what = "Certificates, identities and roles for the API"
-spec = ["administration.md §23.8", "D53", "D56"]
+spec = ["19-administration.md §23.8", "D53", "D56"]
 status = "partial"
 tests = [
     "hyperstor_pki::tests::identity_uri_round_trip_and_rejects",
@@ -634,7 +634,7 @@ tests = [
 
 [[milestone.item]]
 what = "Revoking certificates by serial, refused by the API and between map service members"
-spec = ["administration.md §23.8", "D56", "D93"]
+spec = ["19-administration.md §23.8", "D56", "D93"]
 status = "done"
 tests = [
     "security::revoked_certificates_are_refused",
@@ -648,13 +648,13 @@ title = "Installer and cluster join"
 
 [[milestone.item]]
 what = "Host checks before installing"
-spec = ["administration.md §23.4"]
+spec = ["19-administration.md §23.4"]
 status = "done"
 tests = ["install::check_reports_every_item"]
 
 [[milestone.item]]
 what = "One-command trial cluster on one host, with system services, updated in place on later runs"
-spec = ["administration.md §23.4"]
+spec = ["19-administration.md §23.4"]
 status = "done"
 tests = [
     "hyperstor_install::tests::settings_round_trip_and_flags_override",
@@ -665,7 +665,7 @@ tests = [
 
 [[milestone.item]]
 what = "Installing a cluster across hosts from a shared cluster file"
-spec = ["administration.md §23.4"]
+spec = ["19-administration.md §23.4"]
 status = "done"
 tests = [
     "hyperstor_install::tests::cluster_file_roles_install_their_part",
@@ -677,7 +677,7 @@ tests = [
 
 [[milestone.item]]
 what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates"
-spec = ["administration.md §23.4.2", "D57"]
+spec = ["19-administration.md §23.4.2", "D57"]
 status = "done"
 tests = [
     "join::storage_hosts_join_with_tokens",
@@ -693,7 +693,7 @@ tests = [
 
 [[milestone.item]]
 what = "Backing up the root CA's key, encrypted, and restoring it"
-spec = ["administration.md §23.8", "D70", "D84"]
+spec = ["19-administration.md §23.8", "D70", "D84"]
 status = "done"
 tests = [
     "install::root_key_backup_and_restore",
@@ -702,7 +702,7 @@ tests = [
 
 [[milestone.item]]
 what = "Installing storage hosts on whole devices"
-spec = ["administration.md §23.4", "D29"]
+spec = ["19-administration.md §23.4", "D29"]
 status = "planned"
 
 [[milestone]]
@@ -711,7 +711,7 @@ title = "Management service and read-only web UI"
 
 [[milestone.item]]
 what = "Read-only dashboard on loopback: health, I/O, space, pools, placement groups, nodes"
-spec = ["administration.md §23.7"]
+spec = ["19-administration.md §23.7"]
 status = "partial"
 tests = [
     "hyperstor_mgmt::tests::only_loopback_names_on_our_port",
@@ -721,13 +721,13 @@ tests = [
 
 [[milestone.item]]
 what = "Grafana dashboard and Prometheus scrape configuration for the storage nodes' metrics"
-spec = ["administration.md §23.7"]
+spec = ["19-administration.md §23.7"]
 status = "done"
 tests = ["metrics::grafana_dashboard_and_prometheus_targets_match_the_daemon"]
 
 [[milestone.item]]
 what = "The PAM helper, and the management service's rows in the map service's store"
-spec = ["administration.md §23.7", "D98", "D99"]
+spec = ["19-administration.md §23.7", "D98", "D99"]
 status = "done"
 tests = [
     "security::only_mgmt_reaches_its_rows",
@@ -738,7 +738,7 @@ tests = [
 
 [[milestone.item]]
 what = "People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf)"
-spec = ["administration.md §23.9", "D50", "D52", "D96", "D98", "D99"]
+spec = ["19-administration.md §23.9", "D50", "D52", "D96", "D98", "D99"]
 status = "done"
 tests = [
     "dashboard::people_log_in_and_do_what_their_roles_allow",
@@ -753,7 +753,7 @@ tests = [
 
 [[milestone.item]]
 what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
-spec = ["administration.md §23.9", "D96", "D107"]
+spec = ["19-administration.md §23.9", "D96", "D107"]
 status = "done"
 tests = [
     "oidc::people_log_in_with_an_identity_provider",
@@ -767,7 +767,7 @@ tests = [
 
 [[milestone.item]]
 what = "People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate"
-spec = ["administration.md §23.7", "D108", "D109", "D110"]
+spec = ["19-administration.md §23.7", "D108", "D109", "D110"]
 status = "done"
 tests = [
     "web::people_reach_mgmt_on_the_hosts_addresses",
@@ -780,7 +780,7 @@ tests = [
 
 [[milestone.item]]
 what = "The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui"
-spec = ["administration.md §23.7", "D97", "D100"]
+spec = ["19-administration.md §23.7", "D97", "D100"]
 status = "done"
 tests = [
     "browser::the_first_security_administrator_claims_the_cluster",
@@ -798,7 +798,7 @@ title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
 what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI"
-spec = ["administration.md §23.9.3", "D54", "D114", "D115"]
+spec = ["19-administration.md §23.9.3", "D54", "D114", "D115"]
 status = "done"
 tests = [
     "cluster::the_trash_keeps_what_it_holds_until_purged",
@@ -809,7 +809,7 @@ tests = [
 
 [[milestone.item]]
 what = "Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI"
-spec = ["administration.md §23.9.4", "D112", "D113"]
+spec = ["19-administration.md §23.9.4", "D112", "D113"]
 status = "done"
 tests = [
     "hyperstor_meta::api::tests::audit_lines_are_json_with_escapes",
@@ -821,7 +821,7 @@ tests = [
 
 [[milestone.item]]
 what = "The audit log bounded after a retry storm: repeated refusals summarised a minute at a time, and a day written as numbered parts per member of at most 16 MiB, merged on read and pruned whole"
-spec = ["administration.md §23.9.4", "D147", "D148"]
+spec = ["19-administration.md §23.9.4", "D147", "D148"]
 status = "done"
 tests = [
     "hyperstor_meta::audit_log::tests::repeated_refusals_are_summarised",
@@ -831,7 +831,7 @@ tests = [
 
 [[milestone.item]]
 what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI"
-spec = ["administration.md §23.6", "D120", "D121", "D125"]
+spec = ["19-administration.md §23.6", "D120", "D121", "D125"]
 status = "done"
 tests = [
     "operations::drains_run_as_operations",

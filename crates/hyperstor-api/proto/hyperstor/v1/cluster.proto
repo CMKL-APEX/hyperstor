@@ -1,7 +1,7 @@
-// The cluster API (spec/administration.md §23.5), served by every
+// The cluster API (spec/19-administration.md §23.5), served by every
 // hyperstor-meta member. Reads come from the member's published map;
 // writes change the working map, which is published after fencing
-// (decisions.md D42).
+// (04-decisions.md D42).
 syntax = "proto3";
 
 package hyperstor.v1;
@@ -19,22 +19,22 @@ service ClusterService {
   // it back in. Write.
   rpc SetDeviceIn(SetDeviceInRequest) returns (SetDeviceInResponse);
 
-  // A pool's volumes, from their headers in .meta (metadata.md §4.2).
+  // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
 
-  // Creates a volume (decisions.md D77). Write.
+  // Creates a volume (04-decisions.md D77). Write.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
-  // Moves a volume to the trash (decisions.md D54): purged after its
+  // Moves a volume to the trash (04-decisions.md D54): purged after its
   // pool's grace period, or restored. Write.
   rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
 
-  // Grows a volume (volumes.md §10.2); never shrinks it. An attached
+  // Grows a volume (10-volumes.md §10.2); never shrinks it. An attached
   // holder sees the new size after its next attach. Write.
   rpc ExpandVolume(ExpandVolumeRequest) returns (ExpandVolumeResponse);
 
-  // A volume's snapshots (volumes.md §10.3). Read.
+  // A volume's snapshots (10-volumes.md §10.3). Read.
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
 
   // Takes a snapshot; an attached volume's holder is quiesced first.
@@ -44,7 +44,7 @@ service ClusterService {
   // Moves a snapshot nothing depends on to the trash. Write.
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 
-  // Creates a volume from a snapshot, sharing its data (volumes.md
+  // Creates a volume from a snapshot, sharing its data (10-volumes.md
   // §10.4). Write.
   rpc CloneVolume(CloneVolumeRequest) returns (CloneVolumeResponse);
 
@@ -64,7 +64,7 @@ service ClusterService {
   rpc DeleteGroupSnapshot(DeleteGroupSnapshotRequest) returns (DeleteGroupSnapshotResponse);
 }
 
-// The trash (administration.md §23.9.3, decisions.md D54, D115):
+// The trash (19-administration.md §23.9.3, 04-decisions.md D54, D115):
 // deleted volumes and snapshots, kept for their pool's grace period.
 service TrashService {
   // What's in the trash, in a pool or every data pool. Read.
@@ -134,7 +134,7 @@ message PurgeFromTrashRequest {
 }
 
 message PurgeFromTrashResponse {
-  // The purge, which runs in the background (decisions.md D120).
+  // The purge, which runs in the background (04-decisions.md D120).
   Operation operation = 1;
 }
 
@@ -198,7 +198,7 @@ message Reason {
 message Node {
   uint32 id = 1;
   uint32 rack = 2;
-  // Heard from within the liveness timeout (decisions.md D48).
+  // Heard from within the liveness timeout (04-decisions.md D48).
   bool up = 3;
   repeated Device devices = 4;
   // Milliseconds since its last heartbeat reached this map service;
@@ -313,7 +313,7 @@ message CreateVolumeResponse {
 message DeleteVolumeRequest {
   string id = 1;
   // Delete it even if a client has it attached: the holder is
-  // blocklisted first (decisions.md D80).
+  // blocklisted first (04-decisions.md D80).
   bool force = 2;
 }
 
@@ -400,7 +400,7 @@ message FlattenVolumeRequest {
 message FlattenVolumeResponse {
   // The volume as it is when the flatten starts.
   Volume volume = 1;
-  // The flatten, which runs in the background (decisions.md D120).
+  // The flatten, which runs in the background (04-decisions.md D120).
   Operation operation = 2;
 }
 

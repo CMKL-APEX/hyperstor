@@ -1,4 +1,4 @@
-//! The audit log (administration.md §23.9.4, D112, D113): the map
+//! The audit log (19-administration.md §23.9.4, D112, D113): the map
 //! service's records and hyperstor-mgmt's (people's logins and roles) land
 //! in `.meta`; `hyperstorctl audit list` reads them newest first, filtered
 //! and paged; retention is set; through mgmt only security administrators

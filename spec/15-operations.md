@@ -4,11 +4,11 @@ The management API and CLI, crates and units, roles and resources, upgrades, and
 
 ## 16. Management API and CLI
 
-administration.md §23 details the API (§23.5), the CLI (§23.6), the
+19-administration.md §23 details the API (§23.5), the CLI (§23.6), the
 management service and UI (§23.7), and people's access (§23.9).
 
 - **gRPC** `hyperstor.v1` on port 8850, served by every
-  `hyperstor-meta` member (metadata.md §4.2):
+  `hyperstor-meta` member (06-metadata.md §4.2):
   - `ClusterService`: status, nodes, devices, health;
   - `PoolService`: create, update thresholds, delete when empty;
   - `VolumeService`: create, get, list, expand, delete, attach and detach
@@ -23,10 +23,10 @@ management service and UI (§23.7), and people's access (§23.9).
     the volumes exported to it.
 
   Tenants never reach the management API. In glidex, everything goes
-  through glidex's own API and Cedar policies (glidex.md §17).
+  through glidex's own API and Cedar policies (16-glidex.md §17).
 - **CLI:** `hyperstorctl` for standalone use and for operators (`cluster
   init`, `node add`, `device add`, `pool create`, `volume …`,
-  `status`). In glidex, the usual path is `gxctl datastore` (glidex.md §17).
+  `status`). In glidex, the usual path is `gxctl datastore` (16-glidex.md §17).
 - **Health** is `ok`, `warn` (degraded PGs recovering, nearfull, a
   device slow) or `error` (PGs below `min_size`, full, scrub found
   damage that wasn't repaired), with the reasons listed.
@@ -44,7 +44,7 @@ management service and UI (§23.7), and people's access (§23.9).
 |---|---|
 | `hyperstor-proto` | wire types for D5 and the gRPC API |
 | `hyperstor-reactor` | the io_uring reactor, executor, RDMA and buffer pools |
-| `hyperstor-engine` | the local engine (engine.md §7) |
+| `hyperstor-engine` | the local engine (08-engine.md §7) |
 | `hyperstor-map` | the cluster map: pools, devices, placement |
 | `hyperstor-meta` | the metadata service binary |
 | `hyperstor-daemon` | `hyperstord` |
@@ -54,15 +54,15 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-gpu` | `libhyperstor-gpu` and the two interposers (`cdylib`) |
 | `hyperstor-ctl` | `hyperstorctl` |
 | `hyperstor-ublk` | `hyperstor-ublk`: a volume as a ublk block device (D95) |
-| `hyperstor-kv` | the transactional key–value store (engine.md §7.5) |
-| `hyperstor-s3` | the S3 gateway (s3.md §14) |
+| `hyperstor-kv` | the transactional key–value store (08-engine.md §7.5) |
+| `hyperstor-s3` | the S3 gateway (14-s3.md §14) |
 | `glidex-raftstore` (in the glidex repository) | the Raft store shared with glidex's control plane (D20), a pinned git dependency |
 
 ### 18.2 Units and privileges
 
 - Units: `hyperstor-meta.service`, `hyperstord.service`,
   `hyperstor-vhost.service`, `hyperstor-gw.service`, and
-  `hyperstor-mgmt.service` when standalone (administration.md §23.4). All run as the
+  `hyperstor-mgmt.service` when standalone (19-administration.md §23.4). All run as the
   `hyperstor` user.
 - `glidex-stord` (root) hands over devices, as on the netd pattern:
   - sets ownership of the NVMe generic character devices, the block
@@ -86,7 +86,7 @@ management service and UI (§23.7), and people's access (§23.9).
   - the storage NIC and its RDMA device are recorded as hyperstor's.
 - **Networks.** Each node has a client network address and, optionally, a
   separate cluster network for replication and recovery. Each network
-  is marked `trusted` or not (D25) and lists its transports (protocol.md §13.2). On
+  is marked `trusted` or not (D25) and lists its transports (13-protocol.md §13.2). On
   InfiniBand, a partition key per network.
 
 ### 18.4 Upgrades
@@ -103,12 +103,12 @@ management service and UI (§23.7), and people's access (§23.9).
 
 - mTLS everywhere on TCP, against hyperstor's own two-level CA, created
   by `hyperstorctl cluster init` in both modes (D53, D60;
-  administration.md §23.8). Encryption on
+  19-administration.md §23.8). Encryption on
   untrusted networks per D25.
 - RDMA queue pairs are reliable-connected and are set up only over an
   authenticated TCP session. Only storage nodes start RDMA reads and
   writes, into buffers their clients named (D13).
-- NVMe-oF hosts: allowlists and DH-HMAC-CHAP (frontends.md §11.2). NVMe/TCP TLS is
+- NVMe-oF hosts: allowlists and DH-HMAC-CHAP (11-frontends.md §11.2). NVMe/TCP TLS is
   later.
 - A tenant's VM never reaches the storage network in the vhost path. In
   the GPU VM path (D18) it does, through its RDMA VF. That VF is put on a

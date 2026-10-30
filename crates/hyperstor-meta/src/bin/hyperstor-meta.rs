@@ -3,20 +3,20 @@
 //! Serves the cluster map described by FILE (see
 //! `hyperstor_meta::parse_cluster`), grants map leases of L ms (default
 //! 600), marks nodes down after N ms without a heartbeat (default 800,
-//! at least 1.25 × L; decisions.md D48), and moves their PGs, fencing the
-//! nodes that lose a role before publishing (decisions.md D42). A node
+//! at least 1.25 × L; 04-decisions.md D48), and moves their PGs, fencing the
+//! nodes that lose a role before publishing (04-decisions.md D42). A node
 //! down for S seconds (default 600) has its devices marked out, so its
 //! PGs are placed elsewhere; they are marked in when it returns
-//! (placement.md §5.3). With
+//! (07-placement.md §5.3). With
 //! `--api ADDR`, also serves the cluster API (`hyperstor.v1`;
-//! spec/administration.md §23.5) there: over mutual TLS with
+//! spec/19-administration.md §23.5) there: over mutual TLS with
 //! `--api-tls DIR` (`api.crt`, `api.key`, `root.crt`; §23.8), else plain
 //! HTTP for loopback and tests. `--api-socket PATH` also serves it on a
 //! local Unix socket, for root, the service's user and the
 //! `hyperstor-admin` group, without certificates (break-glass, §23.6).
 //!
 //! With `--data DIR` the published map is kept in a replicated store in DIR
-//! (decisions.md D20, D71): the cluster file only seeds it, and later adds
+//! (04-decisions.md D20, D71): the cluster file only seeds it, and later adds
 //! the hosts and pools it gains. Without `--member` this is a group of one.
 //! With `--member N=RAFT_ADDR/MAP_ADDR` for every member (this one, `--id
 //! N`, included) the members elect a leader that keeps liveness, leases and
@@ -26,12 +26,12 @@
 //!
 //! With `--backup-dir DIR`, the leader writes a backup of the store there
 //! when it has changed, at most every `--backup-every` seconds (default
-//! 300), keeping the last `--backup-keep` (default 24) (decisions.md D86).
+//! 300), keeping the last `--backup-keep` (default 24) (04-decisions.md D86).
 //! `--restore FILE` starts a group of one from a backup, into an empty
 //! `--data` directory; the cluster file must be the same cluster's.
 //!
 //! `--force-alone CLUSTER_ID` recovers a group that lost its majority for
-//! good (decisions.md D85), on one survivor, stopped: it refuses while
+//! good (04-decisions.md D85), on one survivor, stopped: it refuses while
 //! another member answers; it revokes every other member's recorded
 //! certificate, so none rejoins with its old log; it keeps its store
 //! aside (`DATA.forced-<time>`) and starts from it as a group of one.
@@ -40,7 +40,7 @@
 //! With `--ca DIR` (`intermediate.crt`, `intermediate.key`; the key is
 //! read from `$CREDENTIALS_DIRECTORY` first, where systemd's
 //! `LoadCredential=` puts it), this member signs certificates for hosts
-//! that join with a token and renews them (spec/administration.md
+//! that join with a token and renews them (spec/19-administration.md
 //! §23.4.2, §23.8).
 
 use std::time::Duration;

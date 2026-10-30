@@ -1,12 +1,12 @@
-//! Volumes (metadata.md §4.2, decisions.md D77): a header object per volume
+//! Volumes (06-metadata.md §4.2, 04-decisions.md D77): a header object per volume
 //! and directory objects per pool, in the `.meta` pool, changed by
-//! compare-and-set on the header's version (implementation-notes.md I68).
+//! compare-and-set on the header's version (01-implementation-notes.md I68).
 //!
 //! - **Header** `h/{id}` (32 hex digits): attributes `v` (the version, a
 //!   decimal number), `hdr` (the encoded [`Volume`]), `by` (who created
 //!   it: a token that recognises a retried create) and, while the volume
 //!   is attached, `lease` (its holder, kept by the header's primary:
-//!   metadata.md §9).
+//!   06-metadata.md §9).
 //! - **Directory** `d/{pool}/{shard}`: the pool's volumes in 64 shards by
 //!   id, one key–value entry per volume (its id, big-endian).
 //!
@@ -39,7 +39,7 @@ pub const LEASE_ATTR: &[u8] = b"lease";
 /// holder can assert it holds the lease whatever its delegates.
 pub const DELEGATES_ATTR: &[u8] = b"lease.delegates";
 
-/// A volume's lease holder, as its header records it (metadata.md §9).
+/// A volume's lease holder, as its header records it (06-metadata.md §9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
     /// The lease's identity (D150), which every request under the lease
@@ -127,7 +127,7 @@ pub enum VolumeState {
     Active,
     /// Being deleted: its data is going, and it can't be attached.
     Deleting,
-    /// In the trash (decisions.md D54): its data stays until it is purged
+    /// In the trash (04-decisions.md D54): its data stays until it is purged
     /// or restored; it isn't listed and can't be attached (storage nodes
     /// grant no lease on a header that isn't active).
     Trashed,
@@ -139,7 +139,7 @@ pub struct Volume {
     /// The data pool.
     pub pool: u32,
     pub size: u64,
-    /// Where its chunks are placed (decisions.md D21): its own id, or its
+    /// Where its chunks are placed (04-decisions.md D21): its own id, or its
     /// parent's lineage for a clone.
     pub lineage: u128,
     pub state: VolumeState,
@@ -160,7 +160,7 @@ pub struct Volume {
     /// new one for a clone or after a rollback.
     pub branch: u32,
     /// The branches it reads through, parent first: each (branch, epoch)
-    /// a clone or rollback was cut from (engine.md §7.2).
+    /// a clone or rollback was cut from (08-engine.md §7.2).
     pub chain: Vec<(u32, u64)>,
     pub snapshots: Vec<Snapshot>,
     /// Epochs of its own branch a reset in place dropped (D106), both ends
@@ -174,7 +174,7 @@ pub struct Volume {
     pub trashed_unix: u64,
 }
 
-/// A snapshot of a volume (volumes.md §10.3): the volume as it was at
+/// A snapshot of a volume (10-volumes.md §10.3): the volume as it was at
 /// `epoch` of `branch` (its branch when taken).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -514,7 +514,7 @@ impl Client {
     }
 
     /// Grows a volume to `size` bytes (whole blocks). Shrinking is refused
-    /// (overview.md §1); the same size changes nothing.
+    /// (03-overview.md §1); the same size changes nothing.
     pub async fn expand_volume(&self, id: u128, size: u64) -> Result<Volume, ClientError> {
         if !size.is_multiple_of(4096) {
             return Err(ClientError::BadVolume(
@@ -564,7 +564,7 @@ impl Client {
         self.delete_held(v, None).await
     }
 
-    /// Deletes a volume even if attached (decisions.md D80): preempts the
+    /// Deletes a volume even if attached (04-decisions.md D80): preempts the
     /// holder first, which blocklists it, and deletes the volume holding
     /// its lease, so no write of the old holder's lands meanwhile.
     pub async fn force_delete_volume(self: &Rc<Self>, id: u128) -> Result<(), ClientError> {
@@ -689,7 +689,7 @@ impl Client {
 }
 
 /// A volume attached through a [`Client`]: it holds the volume's `rw`
-/// lease (metadata.md §9), which the client renews every second (D75),
+/// lease (06-metadata.md §9), which the client renews every second (D75),
 /// and does I/O within the volume. Once the lease is lost (taken over,
 /// its identity fenced, or this client blocklisted), I/O fails with
 /// [`ClientError::LeaseLost`]. Dropped without [`Attached::detach`], its
@@ -1123,7 +1123,7 @@ impl Client {
     }
 
     /// Attaches volume `id` whose holder has died or is cut off
-    /// (metadata.md §9, a forced takeover): waits until the holder's lease
+    /// (06-metadata.md §9, a forced takeover): waits until the holder's lease
     /// has expired (up to 4 s after its last renewal, D75), blocklists it,
     /// then takes the lease. The old holder's requests are refused from
     /// then on. A holder that keeps renewing is left alone:
@@ -1212,7 +1212,7 @@ impl Client {
         }
     }
 
-    /// Blocklists client instances or lease identities (metadata.md §9,
+    /// Blocklists client instances or lease identities (06-metadata.md §9,
     /// D150): returns once every storage node refuses them, and this
     /// client's map has the entries.
     pub async fn blocklist(&self, ids: &[u64]) -> Result<(), ClientError> {

@@ -1,5 +1,5 @@
 //! Joining hosts, renewing certificates and long operations
-//! (spec/administration.md §23.4.2, §23.5, §23.6, §23.8): `TokenService`,
+//! (spec/19-administration.md §23.4.2, §23.5, §23.6, §23.8): `TokenService`,
 //! `CaService`, `NodeService` and `OperationService`.
 //!
 //! - **Join tokens** (D57) are `hsj1-<root fingerprint>-<secret>`. Only

@@ -7,7 +7,7 @@ sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
 Status: **draft.** D63–D65, D67 and D68 were settled with the owner on
-2026-10-21 ([decision-log.md](decision-log.md)); D66's queueing was the
+2026-10-21 ([05-decision-log.md](05-decision-log.md)); D66's queueing was the
 owner's choice and its merge rule is open to review. Host checks G19
 and G20 are open.
 
@@ -25,7 +25,7 @@ Why: the data path is tuned for one-second failover (D48) and
 sub-millisecond writes; a lease fence over a 50 ms link would either
 lengthen every lease or produce false detections, and a synchronous
 copy across sites would make every write pay the WAN. The target
-workloads (workloads.md) share *immutable* data across sites (weights,
+workloads (18-workloads.md) share *immutable* data across sites (weights,
 datasets, checkpoints, images) and need *local* latency for the rest.
 Active-active writes to one file or volume from two sites are not a
 target and are not designed in.
@@ -48,19 +48,19 @@ target and are not designed in.
 
 ### 25.2 Sites inside a cluster (D63)
 
-- `site` is a failure-domain level above `rack` (placement.md §5.2). A
+- `site` is a failure-domain level above `rack` (07-placement.md §5.2). A
   pool whose level is `site` places each copy or EC shard in a
   different site.
 - **Limits.** A cluster's sites must be within **1 ms round-trip** of
   each other and share one management network. The installer's
-  preflight (administration.md §23.4.1) measures the round-trip to the
+  preflight (19-administration.md §23.4.1) measures the round-trip to the
   existing meta members and refuses a join beyond the limit; G19 sets
   the limit from measurement.
 - The meta members (D2) are spread over the sites, so a site loss keeps
   a majority where there are three or more sites; with two sites, the
   operator places the third member where the split should win.
 - Clients prefer the copy in their own site for reads when the pool
-  allows any-replica reads (D18, replication.md §8.2); writes go to the
+  allows any-replica reads (D18, 09-replication.md §8.2); writes go to the
   primary wherever it is.
 
 Why 1 ms: at that distance a write to a remote copy adds about what a
@@ -76,7 +76,7 @@ another:
 
 | What | Unit | Incremental by |
 |---|---|---|
-| Volume snapshots | a lineage's snapshot versions | the chunk versions between two snapshot epochs (volumes.md §10.3's diff) |
+| Volume snapshots | a lineage's snapshot versions | the chunk versions between two snapshot epochs (10-volumes.md §10.3's diff) |
 | S3 objects | an object version | the bucket index's version keys |
 | Images (golden snapshots) | a lineage | as snapshots |
 | Filesystem snapshots (later) | a filesystem snapshot | as the filesystem's diff |
@@ -84,7 +84,7 @@ another:
 - **Pull-based.** The receiving cluster's sync daemon asks the source
   for versions newer than what it holds; a transfer is resumable at
   chunk granularity because every chunk carries its checksums
-  (engine.md §7.2) and the copy is verified on arrival.
+  (08-engine.md §7.2) and the copy is verified on arrival.
 - **Policies** are per lineage or bucket: which cluster(s) receive it,
   how far behind they may be (a target lag, reported as health), and
   whether the copy is a full replica or a cache source (§25.5).
@@ -95,7 +95,7 @@ another:
 - **Traffic** runs as `bulk` (D46) on the storage network's WAN side,
   over the D5 protocol's TCP transport with TLS (D25), between sync
   daemons only; storage reactors are not exposed across clusters.
-- **Trust** between clusters is an exchange of roots (administration.md
+- **Trust** between clusters is an exchange of roots (19-administration.md
   §23.8): each cluster's root is pinned in the other through the
   federation (§25.6), and sync daemons present their cluster's node
   certificate.
@@ -108,15 +108,15 @@ copy serves as a cache source for free.
 ### 25.4 The global namespace (D65, D66)
 
 The federated namespace is **`hyperstor-kv` with a home per range**
-(engine.md §7.5), which gives the filesystem (filesystem.md) and S3's
-bucket indexes (s3.md §14.1) one namespace across clusters without
+(08-engine.md §7.5), which gives the filesystem (00-filesystem.md) and S3's
+bucket indexes (14-s3.md §14.1) one namespace across clusters without
 stretching any PG:
 
 - **Home.** A range is homed in the cluster where it was created
   (D65). The home holds the authoritative copy and runs the range's
   transactions with its own timestamp oracle. An operator (or the
   federation's policy) can **move** a range's home: an `Operation`
-  (administration.md §23.3) that copies the range, drains writes at the
+  (19-administration.md §23.3) that copies the range, drains writes at the
   old home, and switches, with a short unavailability of that range.
 - **Replicas.** Other clusters hold **read-through replicas** of ranges
   they use, tagged with the home's version: a read is served locally
@@ -147,7 +147,7 @@ stretching any PG:
   enough for S3 and for files with one writer per site, and the
   per-front-end allowlist is what keeps the invariants; a finer rule
   (per-key merge functions) can come later without changing the queue.
-- **Locks** (filesystem.md F7) are home-site only: a lock on a range
+- **Locks** (00-filesystem.md F7) are home-site only: a lock on a range
   whose home is unreachable can't be taken.
 
 Why a home per range rather than Raft across sites: metadata
@@ -158,7 +158,7 @@ freshness.
 
 ### 25.5 Caches with a source (D67)
 
-A cache pool (D45, replication.md §8.7) can name a **source**: a
+A cache pool (D45, 09-replication.md §8.7) can name a **source**: a
 cluster that holds the data as a replica (§25.3). A miss on a sourced
 cache pool fetches the object from the source through the local sync
 daemon, stores it, and answers; a miss on an unsourced pool answers
@@ -186,10 +186,10 @@ API:
 
 | Mode | Where | What it does |
 |---|---|---|
-| Standalone | `hyperstor-mgmt` (administration.md §23.7), one instance or several that share the same `hyperstor-kv` records | registers clusters and pins their roots; holds sync policies and range-home policies; shows the federated view (capacity, health, lag per policy); forwards each action to the right cluster's API |
+| Standalone | `hyperstor-mgmt` (19-administration.md §23.7), one instance or several that share the same `hyperstor-kv` records | registers clusters and pins their roots; holds sync policies and range-home policies; shows the federated view (capacity, health, lag per policy); forwards each action to the right cluster's API |
 | Under glidex | glidex's control plane, as regions or sites of one glidex deployment | the same, with glidex's tenancy and Cedar deciding who may do it |
 
-- Each cluster's API (administration.md §23.5) stays single-cluster; it
+- Each cluster's API (19-administration.md §23.5) stays single-cluster; it
   gains the resources the federation drives: `Peer` (a trusted cluster),
   `SyncPolicy`, `RangeHome`, and their operations.
 - A cluster works without the federation: policies already applied

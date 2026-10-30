@@ -1,4 +1,4 @@
-// The shipped roles (spec/administration.md §23.9.2). Deny by default;
+// The shipped roles (spec/19-administration.md §23.9.2). Deny by default;
 // each role allows its group, and the roles below a storage
 // administrator are cumulative. Security is apart, so no one administers
 // data and covers their own tracks by default.

@@ -1,0 +1,10 @@
+title = "Returning nodes rejoin the pilot without flapping"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-10-29
+updated = 2026-10-30
+milestone = "HS2"
+branch = "fix/rejoin-flaps"
+prs = [72, 73]
+now = "#72 and #73 merged (I187, I188); the pilot runs a diagnostic build of hyperstord until #73 is deployed"
+next = "Deploy #73 to the pilot and restart one node to confirm it comes back without flapping; the owner drops the 2026-10-24 audit day through the retention setting"

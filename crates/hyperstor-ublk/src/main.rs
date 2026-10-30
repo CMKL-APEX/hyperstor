@@ -4,7 +4,7 @@
 //! `attach` takes volume ID's `rw` lease (refused while another client
 //! holds it; `--take-over` waits out a dead holder's lease and blocklists
 //! it, `--preempt` blocklists a live one first) and serves the volume as
-//! `/dev/ublkbN` until SIGINT or SIGTERM, then detaches (decisions.md D95).
+//! `/dev/ublkbN` until SIGINT or SIGTERM, then detaches (04-decisions.md D95).
 //! `delete` removes device N left behind by a server that died. Both need
 //! root and the `ublk_drv` module.
 

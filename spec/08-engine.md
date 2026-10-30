@@ -90,14 +90,14 @@ log device, which has its own superblock naming the data device (§6.2).
 | Namespace | Name | Used by |
 |---|---|---|
 | `vol` | `(lineage, chunk_index, branch)` | volume chunk versions (below) |
-| `ec` | the above plus the shard index | EC fragments (replication.md §8.6) |
-| `meta` | object kind and id | `.meta` headers, lineages, directories, groups (metadata.md §4.2) |
+| `ec` | the above plus the shard index | EC fragments (09-replication.md §8.6) |
+| `meta` | object kind and id | `.meta` headers, lineages, directories, groups (06-metadata.md §4.2) |
 | `kv` | range id | `hyperstor-kv` ranges (§7.5) |
-| `s3` | `(bucket id, object id, part, chunk_index)` | S3 object data (s3.md §14) |
-| `fs` | `(inode, chunk_index)` | file data (filesystem.md) |
+| `s3` | `(bucket id, object id, part, chunk_index)` | S3 object data (14-s3.md §14) |
+| `fs` | `(inode, chunk_index)` | file data (00-filesystem.md) |
 
   The tenant is not part of the key: it is a property of the lineage,
-  bucket, filesystem or range the object belongs to (D61, tenants.md
+  bucket, filesystem or range the object belongs to (D61, 20-tenants.md
   §24.2).
 
 - **Operations** on one object come as a list applied atomically
@@ -109,7 +109,7 @@ log device, which has its own superblock naming the data device (§6.2).
   blocks as extent runs while it has few, and as a dense array of
   (physical block, checksum), 8 bytes per block, once a run list would
   cost more; a rewrite that makes it contiguous switches it back. Holes in
-  a dense map hold a reserved block number. *Built* (implementation-notes.md
+  a dense map hold a reserved block number. *Built* (01-implementation-notes.md
   I34).
 - **Volume chunk versions.** For `vol`, the version is the volume's
   snapshot epoch (as built, I115: the branch is appended to the chunk's
@@ -123,7 +123,7 @@ log device, which has its own superblock naming the data device (§6.2).
   `b`; if none does, continue in the parent branch at the epoch the clone
   was made from, and so on up the chain. A block nothing holds reads as
   zeros.
-- EC fragments are objects too, with the shard index in the key (replication.md §8.6).
+- EC fragments are objects too, with the shard index in the key (09-replication.md §8.6).
 - The index is cached in memory per PG. The CRC arrays stay on disk in
   the index's leaf pages and are cached by use.
 

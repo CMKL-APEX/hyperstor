@@ -8,17 +8,17 @@
 //! io_uring unless `--buffered`. Formats unformatted devices. Stops on
 //! SIGINT or SIGTERM by exiting; the engine recovers on the next start.
 //! `--spin-us N` sets the reactors' adaptive polling window (default 200;
-//! 0 sleeps in the kernel whenever idle, decisions.md D41 and D49).
+//! 0 sleeps in the kernel whenever idle, 04-decisions.md D41 and D49).
 //! `--peer-timeout-ms N` reports a peer that doesn't answer pings for N ms
-//! to the map service (default 300; 0 turns it off, decisions.md D40 and
+//! to the map service (default 300; 0 turns it off, 04-decisions.md D40 and
 //! D48).
 //! `--admin ADDR` serves metrics in Prometheus format (`GET /metrics`) and
 //! a liveness answer (`GET /health`) there, from a thread of its own
-//! (administration.md §23.3).
+//! (19-administration.md §23.3).
 //! `--scrub-hours N` compares the copies of each PG this node is primary
-//! of every N hours (default 24; 0 turns scrub off; replication.md §8.5).
+//! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
-//! through the log (decisions.md D38); flash redirects every write.
+//! through the log (04-decisions.md D38); flash redirects every write.
 
 use hyperstor_daemon::*;
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-//! The control socket (decisions.md D117): how glidex, on this node,
+//! The control socket (04-decisions.md D117): how glidex, on this node,
 //! attaches a volume and gets the socket its hypervisor connects to.
 //!
 //! One JSON object per line, as glidex's netd and stord take theirs:
@@ -24,7 +24,7 @@ pub use serde_json::Value;
 /// The protocol's version, which `hello` returns.
 pub const PROTOCOL: u64 = 1;
 
-/// How to take a volume's lease (metadata.md §9; D79 for glidex's use of
+/// How to take a volume's lease (06-metadata.md §9; D79 for glidex's use of
 /// `preempt`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Take {

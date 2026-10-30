@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The copy of glidex's @glidex/ui-kit in crates/hyperstor-mgmt/ui-kit
-# (implementation-notes.md I140).
+# (01-implementation-notes.md I140).
 #
 #   scripts/ui-kit-sync.sh REV      replace it with glidex's at commit REV
 #   scripts/ui-kit-sync.sh --check  fail if it differs from its UPSTREAM rev

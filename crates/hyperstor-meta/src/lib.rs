@@ -1,9 +1,9 @@
-//! The map service (spec/metadata.md §4.1), and the cluster map, which
+//! The map service (spec/06-metadata.md §4.1), and the cluster map, which
 //! lives in `hyperstor-map` and is re-exported here.
 //!
 //! [`serve`] answers the map service's requests. A map service is one
 //! member, or a group of 3 or 5 that replicate the published map with Raft
-//! ([`replica`], [`store`]; decisions.md D2, D20, D71–D74): one leader
+//! ([`replica`], [`store`]; 04-decisions.md D2, D20, D71–D74): one leader
 //! keeps liveness, leases and fencing and publishes; every member serves
 //! the map. Each device records the address its reactor listens on.
 
@@ -48,8 +48,8 @@ pub enum Admin {
         up_in: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
-    /// Volume operations (decisions.md D77), run on this reactor as a
-    /// client of `.meta` (metadata.md §4.2).
+    /// Volume operations (04-decisions.md D77), run on this reactor as a
+    /// client of `.meta` (06-metadata.md §4.2).
     ListVolumes {
         pool: u32,
         reply: VolumeReply<Vec<Volume>>,
@@ -78,18 +78,18 @@ pub enum Admin {
         query: audit_log::Query,
         reply: VolumeReply<(Vec<String>, Option<String>)>,
     },
-    /// The trash: what's in it, restore, purge (administration.md §23.9.3).
+    /// The trash: what's in it, restore, purge (19-administration.md §23.9.3).
     Trash {
         op: TrashOp,
         reply: VolumeReply<TrashDone>,
     },
-    /// Snapshots, clones, rollback, flatten and groups (volumes.md §10.3,
+    /// Snapshots, clones, rollback, flatten and groups (10-volumes.md §10.3,
     /// §10.4), as a client of `.meta`.
     Snapshots {
         op: SnapOp,
         reply: VolumeReply<SnapDone>,
     },
-    /// Adds a storage host that joined with a token (administration.md
+    /// Adds a storage host that joined with a token (19-administration.md
     /// §23.4.2): one device per address. Replies with its node number.
     AddNode {
         rack: u32,
@@ -333,7 +333,7 @@ fn volume_fault(e: hyperstor_client::ClientError) -> (VolumeFault, String) {
     (kind, e.to_string())
 }
 
-/// The map service's state (metadata.md §4.1, decisions.md D42).
+/// The map service's state (06-metadata.md §4.1, 04-decisions.md D42).
 ///
 /// - `map` is the working map: liveness and backfill change it.
 /// - `published` is what nodes and clients see. A change is published only
@@ -380,7 +380,7 @@ pub struct Meta {
     /// The newest map epoch each device acknowledged a push of.
     acked: RefCell<HashMap<u32, u64>>,
     /// How long a node stays down before its devices are marked out
-    /// (placement.md §5.3), and since when each down node has been.
+    /// (07-placement.md §5.3), and since when each down node has been.
     down_out: Cell<Duration>,
     down_since: RefCell<HashMap<u32, Instant>>,
     /// Flap damping (D149): each node's recent downs and hold.
@@ -396,7 +396,7 @@ pub type Inconsistent = BTreeMap<(u32, u32), u32>;
 /// How long the leader waits for the group to commit a map.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default down-out interval (placement.md §5.3).
+/// Default down-out interval (07-placement.md §5.3).
 pub const DOWN_OUT: Duration = Duration::from_secs(600);
 
 /// What a member that doesn't lead says while it knows no leader: nothing
@@ -416,7 +416,7 @@ pub enum Lead {
     Follower,
 }
 
-/// What a map service member does (decisions.md D72, D73).
+/// What a map service member does (04-decisions.md D72, D73).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// The only member, without Raft: everything, at once.
@@ -428,10 +428,10 @@ pub enum Role {
     Follower { leader: Option<SocketAddr> },
 }
 
-/// Default map lease (decisions.md D48).
+/// Default map lease (04-decisions.md D48).
 pub const LEASE: Duration = Duration::from_millis(600);
 
-/// Flap damping (decisions.md D149): a node marked down stays down at
+/// Flap damping (04-decisions.md D149): a node marked down stays down at
 /// least this long, doubled for each further down within
 /// [`FLAP_WINDOW`], up to [`FLAP_HOLD_MAX`].
 pub const FLAP_HOLD_MIN: Duration = Duration::from_secs(2);
@@ -672,7 +672,7 @@ impl Meta {
         false
     }
 
-    /// Marks a device in or out of placement (administration.md §23.6) and
+    /// Marks a device in or out of placement (19-administration.md §23.6) and
     /// recomputes the working map if that changed it; the publisher
     /// fences and publishes. Returns the working map's epoch.
     pub fn set_device_in(&self, device: u32, up_in: bool) -> Result<u64, String> {
@@ -1076,7 +1076,7 @@ impl Meta {
                     );
                 }
             }
-            // Down and out (placement.md §5.3): a node down for the
+            // Down and out (07-placement.md §5.3): a node down for the
             // interval has its devices marked out, so its PGs are placed
             // elsewhere; they come back in when it returns.
             let mut since = self.down_since.borrow_mut();
@@ -1225,7 +1225,7 @@ impl Meta {
         true
     }
 
-    /// Blocklists client instances or lease identities (metadata.md §9, a
+    /// Blocklists client instances or lease identities (06-metadata.md §9, a
     /// forced takeover; D150) in one published map, answered once every
     /// storage node holds a map that has them, or has lost its map lease. A node renews its lease only
     /// with a map at least as new as the one the leader has published
@@ -1440,7 +1440,7 @@ impl Meta {
             }
             Ok(Msg::Ping) => Msg::Pong,
             // A device the engine can no longer write: out at once, without
-            // waiting for the down-out interval (replication.md §15).
+            // waiting for the down-out interval (09-replication.md §15).
             Ok(Msg::DeviceFailed { device }) => {
                 let mut map = self.map.borrow_mut();
                 if map.fail_device(device) {
@@ -1564,7 +1564,7 @@ mod tests {
     use super::*;
     use hyperstor_placement::Domain;
 
-    /// Hosts that join (administration.md §23.4.2) are added down, get the
+    /// Hosts that join (19-administration.md §23.4.2) are added down, get the
     /// next node number, grow `.meta`, and get their node back when they
     /// join again with the same addresses.
     #[test]

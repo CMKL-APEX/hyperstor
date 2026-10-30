@@ -1,8 +1,8 @@
-//! Snapshots, clones, rollback and flatten (volumes.md §10.3, §10.4;
-//! decisions.md D10, D21, D101, D103, D104).
+//! Snapshots, clones, rollback and flatten (10-volumes.md §10.3, §10.4;
+//! 04-decisions.md D10, D21, D101, D103, D104).
 //!
 //! A chunk's data in a branch is a set of versions, one per head epoch it
-//! was written in (engine.md §7.2). A snapshot is a compare-and-set on the
+//! was written in (08-engine.md §7.2). A snapshot is a compare-and-set on the
 //! header: it records the head epoch, and the head moves on; nothing is
 //! copied. A clone or a rollback is a new branch of the lineage, cut from
 //! a snapshot; its reads go through its chain of parents.
@@ -12,7 +12,7 @@
 //! with, and the epoch it was flattened at, if it was. A snapshot is in
 //! use while a branch that still reads its chain has it in its chain; a
 //! flattened branch still does while its volume has snapshots from before
-//! the flatten (implementation-notes.md I115). Clone and delete race
+//! the flatten (01-implementation-notes.md I115). Clone and delete race
 //! safely: a delete marks the snapshot deleting before it looks for
 //! dependents, and a clone records itself before it checks the snapshot
 //! is still live.
@@ -24,7 +24,7 @@ use hyperstor_map::META_POOL;
 use hyperstor_proto::{Msg, Target, WireKey, WireOp, encode_ops};
 use std::rc::Rc;
 
-/// At most this many snapshots per volume (volumes.md §10.3).
+/// At most this many snapshots per volume (10-volumes.md §10.3).
 pub const MAX_SNAPSHOTS: usize = 255;
 /// Clone chains longer than this are refused: flatten first.
 pub const MAX_CHAIN: usize = 16;
@@ -251,7 +251,7 @@ impl Client {
         )))
     }
 
-    /// Takes a snapshot of volume `id` (volumes.md §10.3): its head epoch is
+    /// Takes a snapshot of volume `id` (10-volumes.md §10.3): its head epoch is
     /// recorded and moves on. If the volume is attached, its holder is
     /// quiesced first by the header's primary (D103); if it doesn't within
     /// 2 s the snapshot is abandoned (`Busy`).
@@ -319,7 +319,7 @@ impl Client {
     }
 
     /// Takes a snapshot of every volume in `ids` at one moment (a
-    /// consistency group, volumes.md §10.3): the group is recorded as
+    /// consistency group, 10-volumes.md §10.3): the group is recorded as
     /// preparing; every member's holder is quiesced and held, so no member
     /// writes after any is cut; each member's snapshot is taken, tagged
     /// with the group; the group is marked complete. If any step fails, the
@@ -560,7 +560,7 @@ impl Client {
         }
     }
 
-    /// Deletes the snapshot at `epoch` (volumes.md §10.3). Refused while a
+    /// Deletes the snapshot at `epoch` (10-volumes.md §10.3). Refused while a
     /// clone or rollback depends on it. Its versions are merged into the
     /// next newer version of each chunk without copying (D104), unless a
     /// later cut point (a snapshot, a clone's or rollback's parent, the
@@ -676,7 +676,7 @@ impl Client {
     }
 
     /// Creates volume `new_id` (or a random id) as a clone of the snapshot
-    /// at `epoch` of volume `id` (volumes.md §10.4): a new branch of the
+    /// at `epoch` of volume `id` (10-volumes.md §10.4): a new branch of the
     /// same lineage (D21), allocating nothing.
     pub async fn clone_snapshot(
         &self,
@@ -746,7 +746,7 @@ impl Client {
         Ok(c)
     }
 
-    /// Rolls volume `id` back to its snapshot at `epoch` (volumes.md
+    /// Rolls volume `id` back to its snapshot at `epoch` (10-volumes.md
     /// §10.3): its head becomes a new branch cut from the snapshot, at
     /// once; then the old head's versions newer than anything still reading
     /// them are deleted. The volume must be detached.
@@ -868,7 +868,7 @@ impl Client {
     }
 
     /// Copies into clone `id`'s own branch every block it still reads from
-    /// its parents, then clears its chain (volumes.md §10.4): it then
+    /// its parents, then clears its chain (10-volumes.md §10.4): it then
     /// depends on nothing, and its parents' snapshots can be deleted.
     /// Refused while it has snapshots taken before a rollback, which read
     /// through the chain.

@@ -59,7 +59,7 @@ The native GPU path behind cuFile and hipFile, VMs, scale-up fabrics, NCCL and R
 
 NVLink (with NVSwitch) and UALink connect the GPUs of one pod with
 memory semantics. They have no storage endpoints and are not a transport
-for hyperstor: storage stays on the scale-out fabric (protocol.md §13.2).
+for hyperstor: storage stays on the scale-out fabric (13-protocol.md §13.2).
 
 - **Loading the same data on many GPUs.** Inside an NVLink or UALink
   domain, a framework can read each part of a file on one GPU and share
@@ -80,7 +80,7 @@ Training jobs load `libhyperstor-gpu` into processes that also run NCCL
 or RCCL, which use the same NICs' queue pairs and memory registrations.
 The library therefore:
 - caps its own queue pairs (one per storage reactor it talks to, closed
-  when idle, engine.md §6.1), its registration cache (by default 16 GiB of GPU
+  when idle, 08-engine.md §6.1), its registration cache (by default 16 GiB of GPU
   memory) and its own locked host memory, all configurable;
 - registers GPU buffers through dma-buf independently of NCCL's own
   registrations of the same memory, which the drivers allow;

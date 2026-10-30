@@ -1,5 +1,5 @@
 //! Certificates the cluster API issued, and the revocation list
-//! (spec/administration.md §23.8, decisions.md D56, D93).
+//! (spec/19-administration.md §23.8, 04-decisions.md D56, D93).
 //!
 //! - **Issued**: every certificate signed through the API (joins and
 //!   renewals), by serial: its identity, expiry and who asked. Recorded

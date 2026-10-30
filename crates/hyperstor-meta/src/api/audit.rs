@@ -1,4 +1,4 @@
-//! `AuditService` (administration.md §23.9.4, decisions.md D112, D113):
+//! `AuditService` (19-administration.md §23.9.4, 04-decisions.md D112, D113):
 //! reading the audit log in `.meta`, hyperstor-mgmt's records joining it,
 //! and how long it is kept.
 

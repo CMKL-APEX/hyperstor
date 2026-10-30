@@ -1,4 +1,4 @@
-# buf lint and buf breaking for the cluster API (spec/administration.md
+# buf lint and buf breaking for the cluster API (spec/19-administration.md
 # §23.5; glidex grpc.md G-D3, G-D9). CI runs both; `breaking` compares
 # with main.
 version: v2

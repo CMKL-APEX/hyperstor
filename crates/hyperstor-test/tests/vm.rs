@@ -1,5 +1,5 @@
 //! Virtual machines boot with a hyperstor volume as their disk, through
-//! `hyperstor-vhost` (frontends.md §11.1, decisions.md D118): Cloud
+//! `hyperstor-vhost` (11-frontends.md §11.1, 04-decisions.md D118): Cloud
 //! Hypervisor writes it from a guest, then QEMU reads it back. The guest
 //! is the host's kernel with a busybox initramfs built here, whose init
 //! checks the disk and prints `HS` lines on the serial console. Then each

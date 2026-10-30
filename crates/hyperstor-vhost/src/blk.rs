@@ -1,4 +1,4 @@
-//! virtio-blk as `hyperstor-vhost` serves it (frontends.md §11.1): the
+//! virtio-blk as `hyperstor-vhost` serves it (11-frontends.md §11.1): the
 //! feature bits, the configuration space, and requests decoded from a
 //! descriptor chain's bytes. Nothing here touches guest memory or a
 //! volume; [`crate::device`] does.
@@ -15,7 +15,7 @@ use virtio_bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRE
 /// The volume's block size, which the guest sees as the disk's physical
 /// block size: requests in whole blocks go to the volume as they are.
 pub const BLOCK: u64 = 4096;
-/// The disk's logical block size (512e, decisions.md D126): what cloud
+/// The disk's logical block size (512e, 04-decisions.md D126): what cloud
 /// images' partition tables and firmware assume. A request is in whole
 /// sectors; a partial block at either end is read, merged and written.
 pub const SECTOR: u64 = 512;
@@ -25,7 +25,7 @@ pub const ZEROES_MAX_SECTORS: u32 = (16 << 20) / 512;
 /// Write-zeroes are written in pieces of this many bytes.
 pub const ZERO_PIECE: u64 = 1 << 20;
 
-/// Virtio features offered. Not offered yet (implementation-notes.md):
+/// Virtio features offered. Not offered yet (01-implementation-notes.md):
 /// discard, which needs a way to drop the head's blocks without
 /// uncovering a snapshot's; packed rings, which `virtio-queue` lacks.
 pub fn features() -> u64 {
@@ -59,7 +59,7 @@ pub fn config(size: u64, queues: u16) -> Vec<u8> {
     c.push(0);
     c.extend(((BLOCK / SECTOR) as u16).to_le_bytes());
     c.extend(0u32.to_le_bytes()); // opt_io_size: none
-    c.push(0); // writeback: write-through (volumes.md §10.1)
+    c.push(0); // writeback: write-through (10-volumes.md §10.1)
     c.push(0);
     c.extend(queues.to_le_bytes()); // num_queues
     c.extend([0u8; 12]); // discard: not offered

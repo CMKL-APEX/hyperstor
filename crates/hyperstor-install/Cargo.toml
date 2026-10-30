@@ -11,7 +11,7 @@ repository.workspace = true
 glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164ad6de38916b1fe53541711713823" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-pki = { path = "../hyperstor-pki" }
-# Joining and renewing over the cluster API (spec/administration.md §23.4.2).
+# Joining and renewing over the cluster API (spec/19-administration.md §23.4.2).
 hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
 http = "1"

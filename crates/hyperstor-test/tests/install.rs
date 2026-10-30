@@ -1,4 +1,4 @@
-//! Installing (administration.md §23.4): host checks, the all-in-one
+//! Installing (19-administration.md §23.4): host checks, the all-in-one
 //! install and its convergence, uninstall, and a cluster across hosts
 //! from one cluster file.
 

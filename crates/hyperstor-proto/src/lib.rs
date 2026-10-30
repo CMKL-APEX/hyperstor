@@ -1,4 +1,4 @@
-//! The framed wire protocol (spec/protocol.md §13.1, D5).
+//! The framed wire protocol (spec/13-protocol.md §13.1, D5).
 //!
 //! A frame is a fixed 32-byte header, a typed body and an optional payload
 //! (block data, never interpreted by the framing):
@@ -113,7 +113,7 @@ pub enum Code {
     /// held is gone.
     Blocklisted = 10,
     /// The map service member isn't the leader; `detail` is the leader's
-    /// map-service address when known, else empty (decisions.md D72).
+    /// map-service address when known, else empty (04-decisions.md D72).
     NotLeader = 11,
     /// Not now: retrying at once won't help (a snapshot whose volume's
     /// holder didn't quiesce in time).
@@ -207,7 +207,7 @@ pub enum Msg {
         max_version: u16,
         /// Client id, or node id for storage nodes.
         id: u64,
-        /// Random per process (metadata.md §4.1, blocklist).
+        /// Random per process (06-metadata.md §4.1, blocklist).
         instance: u64,
     },
     HelloOk {
@@ -245,7 +245,7 @@ pub enum Msg {
     },
     /// Client to primary: apply the operation list in the payload
     /// ([`encode_ops`]) to one object atomically, if its assertions hold
-    /// (metadata.md §4.2: compare-and-set on `.meta` objects).
+    /// (06-metadata.md §4.2: compare-and-set on `.meta` objects).
     Exec {
         to: Target,
         key: WireKey,
@@ -283,12 +283,12 @@ pub enum Msg {
     /// ([`encode_pairs`]) to the object the last [`Msg::PushObject`] on
     /// this connection replaced. An object whose table doesn't fit one
     /// frame ([`MAX_PAYLOAD`]) is pushed as a `PushObject` with the first
-    /// part, then `PushKv` for the rest, in order (replication.md §8.3).
+    /// part, then `PushKv` for the rest, in order (09-replication.md §8.3).
     PushKv {
         to: Target,
         key: WireKey,
     },
-    /// Primary to replica: apply this write (replication.md §8.1).
+    /// Primary to replica: apply this write (09-replication.md §8.1).
     Repl {
         to: Target,
         seq: u64,
@@ -299,11 +299,11 @@ pub enum Msg {
     ReplOk {
         revision: u64,
     },
-    /// Storage node to map service: still alive (metadata.md §4.1).
+    /// Storage node to map service: still alive (06-metadata.md §4.1).
     Heartbeat {
         node: u32,
     },
-    /// Renews the sender's map lease (replication.md §8.4, decisions.md
+    /// Renews the sender's map lease (09-replication.md §8.4, 04-decisions.md
     /// D42): it may serve PG I/O for `lease_ms` from when it sent the
     /// heartbeat. 0 revokes the lease.
     HeartbeatOk {
@@ -325,14 +325,14 @@ pub enum Msg {
     },
     MapPushOk,
     /// Storage node to map service: `peer` hasn't answered `reporter`'s
-    /// pings for the peer timeout (decisions.md D40).
+    /// pings for the peer timeout (04-decisions.md D40).
     PeerDown {
         reporter: u32,
         peer: u32,
     },
     PeerDownOk,
     /// Primary to backfill target: replace the object with the payload
-    /// (empty: delete it) (replication.md §8.5).
+    /// (empty: delete it) (09-replication.md §8.5).
     Push {
         to: Target,
         key: WireKey,
@@ -340,7 +340,7 @@ pub enum Msg {
     },
     PushOk,
     /// Primary to a member or backfill target: list what you hold of the
-    /// PG, as digests of each object's content (replication.md §8.5).
+    /// PG, as digests of each object's content (09-replication.md §8.5).
     /// With `deep`, first read every block of the PG and check its CRC: a
     /// damaged object's digest is [`DAMAGED`].
     Digests {
@@ -362,7 +362,7 @@ pub enum Msg {
     },
     /// Client to the primary of a volume's header: take the volume's lease
     /// for the identity `to.lease` (D150) of the instance named at `Hello`
-    /// (metadata.md §9, D75), in mode [`LEASE_RW`] or [`LEASE_RO`]. With
+    /// (06-metadata.md §9, D75), in mode [`LEASE_RW`] or [`LEASE_RO`]. With
     /// `takeover`, an expired lease whose holder and delegates are all
     /// blocklisted is broken (a forced takeover). `label` says who holds
     /// it, for whoever finds it held (D153; up to [`LABEL_MAX`] bytes).
@@ -414,7 +414,7 @@ pub enum Msg {
         results: Vec<(u8, u64)>,
     },
     /// Client to map service: blocklist `ids`, client instances or lease
-    /// identities (metadata.md §9, a forced takeover; D150). Answered once
+    /// identities (06-metadata.md §9, a forced takeover; D150). Answered once
     /// every storage node holds the map that has them, or has lost its
     /// map lease.
     Blocklist {
@@ -424,7 +424,7 @@ pub enum Msg {
         map_epoch: u64,
     },
     /// Storage node to map service: `device` failed (its engine can no
-    /// longer write it); take it out of placement (replication.md §15).
+    /// longer write it); take it out of placement (09-replication.md §15).
     DeviceFailed {
         device: u32,
     },
@@ -450,7 +450,7 @@ pub enum Msg {
         map_epoch: u64,
     },
     /// Primary to a member: send me your copy of the object (to repair
-    /// the primary's own, replication.md §8.2, §8.5), once every write
+    /// the primary's own, 09-replication.md §8.2, §8.5), once every write
     /// queued before this request is applied.
     Fetch {
         to: Target,
@@ -461,7 +461,7 @@ pub enum Msg {
         found: bool,
     },
     /// [`Msg::Fetch`] in parts, for an object whose key–value table
-    /// doesn't fit one frame (implementation-notes.md I182): with `first`,
+    /// doesn't fit one frame (01-implementation-notes.md I182): with `first`,
     /// the object with the first part of its table; otherwise the table's
     /// next part from `kv_from` on.
     FetchPart {
@@ -477,7 +477,7 @@ pub enum Msg {
         found: bool,
         next: Option<Vec<u8>>,
     },
-    /// Client to primary: read a volume chunk at an epoch (engine.md
+    /// Client to primary: read a volume chunk at an epoch (08-engine.md
     /// §7.2). `key.name` is the chunk without a branch; each layer is a
     /// branch and the range of epochs read from it (both ends included),
     /// the volume's own first, then its clone parents'. Each block comes
@@ -493,7 +493,7 @@ pub enum Msg {
     /// Client to primary: where each block a [`Msg::ReadAt`] would read
     /// comes from, without the data. Answered with a [`Msg::ReadAtOk`]
     /// with no CRCs or payload. A client asks it when its read cache may
-    /// hold the blocks (decisions.md D102).
+    /// hold the blocks (04-decisions.md D102).
     Sources {
         to: Target,
         key: WireKey,
@@ -504,7 +504,7 @@ pub enum Msg {
     /// The answer to [`Msg::ReadAt`]: the data in the payload, with each
     /// block's CRC and the version it came from, as (branch, epoch);
     /// `(u32::MAX, 0)` for a block no version holds. A client caches the
-    /// blocks that came from versions that can't change (decisions.md
+    /// blocks that came from versions that can't change (04-decisions.md
     /// D102).
     ReadAtOk {
         crcs: Vec<u32>,
@@ -530,14 +530,14 @@ pub enum Msg {
     /// Client to primary: copy into `key` (a clone's chunk at its head
     /// epoch) every block no version of its own branch holds, read
     /// through `layers` (its parents), so the clone stops depending on
-    /// them (volumes.md §10.4).
+    /// them (10-volumes.md §10.4).
     Flatten {
         to: Target,
         key: WireKey,
         layers: Vec<(u32, u64, u64)>,
     },
     /// Lease holder to a header's primary: answer when there is news for
-    /// this volume past header version `version` (decisions.md D103).
+    /// this volume past header version `version` (04-decisions.md D103).
     Watch {
         to: Target,
         key: WireKey,
@@ -559,7 +559,7 @@ pub enum Msg {
     },
     /// Client to a header's primary: take a snapshot, an operation list in
     /// the payload ([`encode_ops`]) applied with the volume's holder, if
-    /// any, quiesced (volumes.md §10.3); abandoned after 2 s without. With
+    /// any, quiesced (10-volumes.md §10.3); abandoned after 2 s without. With
     /// a `token`, under the hold of [`Msg::Quiesce`] with that token (a
     /// consistency group), which it ends.
     Snapshot {
@@ -568,7 +568,7 @@ pub enum Msg {
         token: u64,
     },
     /// Client to a header's primary: quiesce the volume's holder, if any,
-    /// and hold it (a consistency group's first step, volumes.md §10.3);
+    /// and hold it (a consistency group's first step, 10-volumes.md §10.3);
     /// answered once it has drained. The hold ends with a [`Msg::Snapshot`]
     /// or [`Msg::Release`] with the same token, or after 5 s.
     Quiesce {
@@ -1396,7 +1396,7 @@ fn layers_dec(d: &mut Dec<'_>) -> Result<Vec<(u32, u64, u64)>, DecodeError> {
 pub const WATCH_CHANGED: u8 = 0;
 pub const WATCH_QUIESCE: u8 = 1;
 
-/// Lease modes (metadata.md §9): `rw` is exclusive; `ro` is shared, and
+/// Lease modes (06-metadata.md §9): `rw` is exclusive; `ro` is shared, and
 /// only for snapshots (D18).
 pub const LEASE_RW: u8 = 0;
 /// The longest lease label ([`Msg::Lease`]).
@@ -1409,7 +1409,7 @@ pub const LEASE_LOST: u8 = 1;
 /// Not decided here (map changed, not primary): renew again.
 pub const LEASE_RETRY: u8 = 2;
 /// How often a holder renews its leases, and how long after the last
-/// renewal its header's primary keeps the lease (decisions.md D75).
+/// renewal its header's primary keeps the lease (04-decisions.md D75).
 pub const LEASE_RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 pub const LEASE_EXPIRES: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -1437,7 +1437,7 @@ pub fn decode_digests(payload: &[u8]) -> Result<Vec<(WireKey, u64)>, DecodeError
 }
 
 /// One operation of an atomic list on an object ([`Msg::Exec`]): the
-/// engine's operations (engine.md §7.2), with assertions on attributes in
+/// engine's operations (08-engine.md §7.2), with assertions on attributes in
 /// place of revisions, which differ between an object's copies (I6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireOp {
@@ -1468,7 +1468,7 @@ pub enum WireOp {
     KvDelRange(Vec<u8>, Vec<u8>),
     Delete,
     /// Takes the blocks that version `.0` of this object's name holds and
-    /// this one lacks, then deletes that version (decisions.md D104).
+    /// this one lacks, then deletes that version (04-decisions.md D104).
     Absorb(u64),
 }
 

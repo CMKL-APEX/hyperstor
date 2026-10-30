@@ -1,4 +1,4 @@
-//! Backups of the map service's replicated store (decisions.md D86): the
+//! Backups of the map service's replicated store (04-decisions.md D86): the
 //! map, join tokens, issued certificates and revocations; not Raft's own
 //! bookkeeping.
 //!

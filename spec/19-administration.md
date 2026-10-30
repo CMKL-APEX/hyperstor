@@ -3,9 +3,9 @@
 How hyperstor is installed, administered and secured: the installer, the cluster API, `hyperstorctl`, the management service and web UI, and the identities and checks behind them. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
 
 Status: **draft, partly built.** D50–D55 were settled with the owner on 2026-10-21
-([decision-log.md](decision-log.md)); D56–D60 were made while drafting
+([05-decision-log.md](05-decision-log.md)); D56–D60 were made while drafting
 and are open for review. Host checks G17 and G18 are open. Built so far
-(implementation-notes.md I41–I56): the cluster API on the map service,
+(01-implementation-notes.md I41–I56): the cluster API on the map service,
 over mutual TLS with identities and roles, audited and rate-limited, with a break-glass local socket; the root and intermediate
 CAs and leaf certificates; `hyperstorctl` (status, nodes, pools, PGs,
 devices out and in, an I/O test); metrics on storage nodes' admin
@@ -13,7 +13,7 @@ ports; and `hyperstor-install` with host checks, the all-in-one trial
 cluster, multi-host installs from a shared cluster file (before join
 tokens) and a daily renewal timer; an interim read-only dashboard on
 loopback, and Grafana and Prometheus files. This
-section refines operations.md §16, §18 and §19, which point here.
+section refines 15-operations.md §16, §18 and §19, which point here.
 
 ## 23. Administration
 
@@ -192,7 +192,7 @@ join (clustering.md §5.2), so operators learn one model.
   `--dry-run`, which prints what would move or be removed.
 - Shell completion and `--help` come from the proto comments.
 - **Under glidex**, the everyday path is `gxctl datastore …`
-  (glidex.md §17), so Cedar applies once. When glidex manages the
+  (16-glidex.md §17), so Cedar applies once. When glidex manages the
   cluster, `hyperstorctl` on a glidex node reaches only the local
   socket (break-glass) and read-only status; other admin calls are
   refused with a reason pointing to `gxctl`.
@@ -240,7 +240,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   Grafana dashboards ship as JSON for longer history.
 - **Under glidex**, there is no hyperstor UI. glidex's UI gets a
   Storage section (pools, health, nodes) for a new `storage-admin`
-  role; tenants see their volumes as glidex disks (glidex.md §17, §20).
+  role; tenants see their volumes as glidex disks (16-glidex.md §17, §20).
 
 ### 23.8 Identities and certificates
 
@@ -267,7 +267,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   cluster CA. glidex rotates its CA whenever a server leaves; chaining
   under it would make every such rotation re-sign hyperstor's
   intermediate. glidex's control plane holds an admin certificate
-  issued by hyperstor, stored as a glidex credential (glidex.md §17).
+  issued by hyperstor, stored as a glidex credential (16-glidex.md §17).
 
 **Leaf certificates** (D56):
 
@@ -400,6 +400,6 @@ evidence.
 
 ## Decisions and host checks
 
-D50–D60 are in [decisions.md](decisions.md); host checks G17 (admin
+D50–D60 are in [04-decisions.md](04-decisions.md); host checks G17 (admin
 load against I/O latency) and G18 (sealing the intermediate key) are in
-milestones.md §22.
+17-milestones.md §22.
