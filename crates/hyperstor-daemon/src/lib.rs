@@ -35,8 +35,8 @@ use hyperstor_client::volume::{
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
-    BlockDev, Committed, DeviceConfig, EngineError, FileDev, MemDev, Namespace, ObjKey, Op,
-    OpError, OpList, Shard, UringDev,
+    BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev, Namespace, ObjKey,
+    Op, OpError, OpList, Shard, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
@@ -153,6 +153,10 @@ pub struct NodeConfig {
 /// peers' pings.
 const DIGEST_BATCH: usize = 64;
 
+/// Bytes of a large key–value table hashed between yields (I188): at
+/// most 1.5 ms of the reactor on the pilot's hosts.
+const DIGEST_PART: usize = 1 << 20;
+
 /// Bytes of pushes a reactor's backfills, together, have on the wire to
 /// one target before they wait for answers (I187); one object may go
 /// past it. Every PG backfill shares the connection to its target with
@@ -162,6 +166,11 @@ const BACKFILL_BUDGET: usize = 16 << 20;
 
 /// Pushes one PG backfill has on the wire before it waits for answers.
 const BACKFILL_WINDOW: usize = 16;
+
+/// How long a reactor's thread may be held before it is logged (I188):
+/// a third of the production peer timeout (300 ms), so a stall that gets
+/// a node reported silent is always in the log.
+pub const STALL: Duration = Duration::from_millis(100);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -242,6 +251,8 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
     let mut stops = Vec::new();
     let mut threads = Vec::new();
     let mut all_metrics = Vec::new();
+    // Devices still opening: the node heartbeats once none is (I188).
+    let opening = Arc::new(std::sync::atomic::AtomicUsize::new(cfg.shards.len()));
     for (i, sh) in cfg.shards.into_iter().enumerate() {
         let m = Arc::new(metrics::ShardMetrics::default());
         all_metrics.push((sh.device_id, m.clone()));
@@ -259,6 +270,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             n => n,
         };
         let partitions = cfg.partitions.clone();
+        let opened = Opening(Some(opening.clone()));
         threads.push(
             std::thread::Builder::new()
                 .name(format!("hs-reactor-{node}-{i}"))
@@ -270,6 +282,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
+                        let began = std::time::Instant::now();
                         let st = ShardState::open(
                             node,
                             sh.device_id,
@@ -284,10 +297,18 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         let l = TcpListener::from_std(sh.listener);
+                        eprintln!(
+                            "hyperstord: device {} open in {} ms",
+                            sh.device_id,
+                            began.elapsed().as_millis()
+                        );
+                        let all_open = opened.0.clone().unwrap();
+                        drop(opened);
+                        spawn(st.clone().stall_watch());
                         spawn(st.clone().committer());
                         spawn(st.deadlines.clone().ticker());
                         spawn(st.clone().follow_map());
-                        spawn(st.clone().heartbeat(node));
+                        spawn(st.clone().heartbeat(node, all_open));
                         if !peer_timeout.is_zero() {
                             spawn(st.clone().peer_watch(node, peer_timeout));
                         }
@@ -309,6 +330,18 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         metrics: all_metrics,
         stops,
         threads,
+    }
+}
+
+/// Counts a device out of those still opening when dropped: once open,
+/// or when it couldn't be (its reactor's thread then ends).
+struct Opening(Option<Arc<std::sync::atomic::AtomicUsize>>);
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        if let Some(n) = self.0.take() {
+            n.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
@@ -735,7 +768,10 @@ impl ShardState {
             return;
         }
         let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+        let n = lists.len();
+        let t = std::time::Instant::now();
         let res = self.shard.borrow_mut().commit(lists);
+        self.note_slow(t, || format!("a commit of {n} list(s)"));
         self.batches.set(self.batches.get() + 1);
         match res {
             Ok(rs) => {
@@ -755,6 +791,40 @@ impl ShardState {
         }
     }
 
+    /// Logs an engine call begun at `t` that held the reactor for
+    /// [`STALL`] or more (I188).
+    fn note_slow(&self, t: std::time::Instant, what: impl FnOnce() -> String) {
+        let took = t.elapsed();
+        if took >= STALL {
+            eprintln!(
+                "hyperstord: device {}: {} took {} ms",
+                self.me,
+                what(),
+                took.as_millis()
+            );
+        }
+    }
+
+    /// Logs and counts each time this reactor's thread is held for
+    /// [`STALL`] or more (I188): a 10 ms timer that fires late. Whatever
+    /// held it also delayed every ping it should have answered.
+    async fn stall_watch(self: Rc<Self>) {
+        const TICK: Duration = Duration::from_millis(10);
+        loop {
+            let t = std::time::Instant::now();
+            sleep(TICK).await;
+            let late = t.elapsed().saturating_sub(TICK);
+            if late >= STALL {
+                metrics::ShardMetrics::add(&self.metrics.stalls, 1);
+                eprintln!(
+                    "hyperstord: device {}: reactor held {} ms",
+                    self.me,
+                    late.as_millis()
+                );
+            }
+        }
+    }
+
     /// Commits whatever is queued, as one batch, whenever anything is.
     async fn committer(self: Rc<Self>) {
         loop {
@@ -770,7 +840,9 @@ impl ShardState {
             self.commit_queued();
             let pending = self.shard.borrow().pending_blocks();
             if pending > 4096 {
+                let t = std::time::Instant::now();
                 let _ = self.shard.borrow_mut().apply_deferred();
+                self.note_slow(t, || format!("applying {pending} deferred block(s)"));
             }
             // Let request handlers queue the next batch.
             hyperstor_reactor::yield_now().await;
@@ -2785,8 +2857,8 @@ impl ShardState {
 
     /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
     /// found damaged. In batches of [`DIGEST_BATCH`] objects with a yield
-    /// between (I183): a large object's digest can take the reactor for
-    /// most of a second, and pings and heartbeats must get through. An
+    /// between (I183), and a large object's digest in parts (I188), so
+    /// that pings and heartbeats get through. An
     /// object written meanwhile is digested as its batch finds it: scrub
     /// looks twice before it repairs, and backfill sends what differs,
     /// with live writes covering the rest.
@@ -2794,21 +2866,48 @@ impl ShardState {
         let keys = self.shard.borrow().list_pg(pool, pg);
         let mut out = Vec::with_capacity(keys.len());
         for batch in keys.chunks(DIGEST_BATCH) {
-            {
-                let sh = self.shard.borrow();
-                let damaged = self.damaged.borrow();
-                out.extend(batch.iter().filter_map(|k| {
-                    let d = match sh.digest(k)? {
-                        _ if damaged.contains(k) => DAMAGED,
-                        DAMAGED => DAMAGED + 1,
-                        d => d,
-                    };
-                    Some((k.clone(), d))
-                }));
+            for k in batch {
+                let Some(d) = self.digest(k).await else {
+                    continue;
+                };
+                let d = match d {
+                    _ if self.damaged.borrow().contains(k) => DAMAGED,
+                    DAMAGED => DAMAGED + 1,
+                    d => d,
+                };
+                out.push((k.clone(), d));
             }
             hyperstor_reactor::yield_now().await;
         }
         out
+    }
+
+    /// An object's digest ([`Shard::digest`]); a large one a part of
+    /// [`DIGEST_PART`] bytes at a time with a yield between (I188), so that
+    /// pings get through: at once, a table of 215 MB held the reactor for
+    /// 290 ms, near the peer timeout. If the object changes between parts,
+    /// the digest begins again; after two such restarts it is taken at
+    /// once.
+    async fn digest(&self, key: &ObjKey) -> Option<u64> {
+        let mut restarts = 0;
+        let mut step = self.shard.borrow().digest_begin(key)?;
+        loop {
+            match step {
+                DigestPart::Done(d) => return Some(d),
+                DigestPart::More(g) => {
+                    hyperstor_reactor::yield_now().await;
+                    let sh = self.shard.borrow();
+                    step = match sh.digest_part(g, DIGEST_PART) {
+                        Some(s) => s,
+                        None if restarts < 2 => {
+                            restarts += 1;
+                            sh.digest_begin(key)?
+                        }
+                        None => return sh.digest(key),
+                    };
+                }
+            }
+        }
     }
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
@@ -2918,8 +3017,24 @@ impl ShardState {
     /// from two distinct nodes.
     async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
         let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
+        // Peers reported since they last answered: logged once each.
+        let reported: Rc<RefCell<HashSet<u32>>> = Rc::default();
+        const TICK: Duration = Duration::from_millis(100);
+        let mut ticked = std::time::Instant::now();
         loop {
-            sleep(Duration::from_millis(100)).await;
+            sleep(TICK).await;
+            // A tick this late means this reactor was held (I188): the
+            // pings it sent meanwhile timed out or their answers wait
+            // unread. That says nothing about the peers, so their silence
+            // is counted afresh. Otherwise two nodes held at once report
+            // every other node, as a primary digesting a large table did.
+            let late = ticked.elapsed() >= TICK + STALL;
+            ticked = std::time::Instant::now();
+            if late {
+                for t in last_ok.borrow_mut().values_mut() {
+                    *t = ticked;
+                }
+            }
             let map = self.map();
             let mut peers: HashMap<u32, SocketAddr> = HashMap::new();
             for pg in map.pgs.values() {
@@ -2939,9 +3054,17 @@ impl ShardState {
             // A peer that left (down, or no longer sharing a PG) starts
             // afresh when it comes back: its old silence isn't news.
             last_ok.borrow_mut().retain(|p, _| peers.contains_key(p));
+            reported.borrow_mut().retain(|p| peers.contains_key(p));
             for (peer, addr) in peers {
                 let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
                 if now.duration_since(first) > peer_timeout && !self.cut_off() {
+                    if reported.borrow_mut().insert(peer) {
+                        eprintln!(
+                            "hyperstord: device {}: node {peer} silent for {} ms; reporting it",
+                            self.me,
+                            now.duration_since(first).as_millis()
+                        );
+                    }
                     let _ = self
                         .client
                         .call_meta(&Msg::PeerDown {
@@ -2952,6 +3075,7 @@ impl ShardState {
                 }
                 let me = self.clone();
                 let last_ok = last_ok.clone();
+                let reported = reported.clone();
                 spawn(async move {
                     // The ping gives up on its own (its pending entry
                     // with it); its connection, which carries nothing
@@ -2966,13 +3090,22 @@ impl ShardState {
                         hyperstor_reactor::time::timeout(Duration::from_millis(200), ping).await
                     {
                         last_ok.borrow_mut().insert(peer, std::time::Instant::now());
+                        reported.borrow_mut().remove(&peer);
                     }
                 });
             }
         }
     }
 
-    async fn heartbeat(self: Rc<Self>, node: u32) {
+    /// Heartbeats to the map service every 100 ms, once every device of
+    /// the node is open (`opening` at 0, I188): the map service marks a
+    /// node up on its first heartbeat, and a device still opening answers
+    /// no pings, so its peers would report the node silent at once. A
+    /// device with a large index takes seconds to open.
+    async fn heartbeat(self: Rc<Self>, node: u32, opening: Arc<std::sync::atomic::AtomicUsize>) {
+        while opening.load(std::sync::atomic::Ordering::Acquire) > 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
         loop {
             if self.failed.get() && !self.failure_reported.get() && !self.cut_off() {
                 let r = self
@@ -3207,14 +3340,10 @@ impl ShardState {
                 .collect()
         };
         for batch in ours.chunks(DIGEST_BATCH) {
-            {
-                let sh = self.shard.borrow();
-                keys.extend(
-                    batch
-                        .iter()
-                        .filter(|k| theirs.get(*k).copied() != sh.digest(k))
-                        .cloned(),
-                );
+            for k in batch {
+                if theirs.get(k).copied() != self.digest(k).await {
+                    keys.insert(k.clone());
+                }
             }
             hyperstor_reactor::yield_now().await;
         }

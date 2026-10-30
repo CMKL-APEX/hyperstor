@@ -60,7 +60,12 @@ that no single node sees every change (D28):
   60 s. Health warns about a node that went down twice or more in that
   window. As built (I183), long work on a storage node's reactor
   (digests and backfill's comparison) also yields in batches, so it
-  misses fewer pings in the first place.
+  misses fewer pings in the first place. As built (I188), a large
+  key–value table's digest is taken in parts with yields between; a
+  storage node heartbeats only once every device of it is open, since a
+  device still opening answers no pings; and a node whose own reactor
+  was held counts its peers' silence afresh instead of reporting them,
+  since the answers it missed were waiting for it.
 - **Map lease** (D42). Each heartbeat answer renews the node's *map
   lease* (0.6 s by default, D48), which runs from when the node sent the
   heartbeat. A node without a valid lease serves no PG I/O (reads

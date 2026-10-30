@@ -245,11 +245,12 @@ tests = [
 
 [[milestone.item]]
 what = "Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair)"
-spec = ["replication.md §8.5", "D146", "I177", "I179"]
+spec = ["replication.md §8.5", "D146", "I177", "I179", "I188"]
 status = "done"
 tests = [
     "cluster::a_large_key_value_table_is_refilled_in_parts",
     "engine::large_objects_keep_their_digest_until_they_change",
+    "engine::a_large_digest_comes_in_parts_and_agrees",
 ]
 
 [[milestone.item]]
@@ -280,10 +281,12 @@ tests = [
 
 [[milestone.item]]
 what = "Failure reports from peers"
-spec = ["D40"]
+spec = ["D40", "I188"]
 status = "done"
 tests = [
     "cluster::peers_report_a_dead_node_before_the_map_service_notices",
+    "cluster::a_node_is_up_only_once_every_device_is_open",
+    "cluster::held_nodes_report_no_healthy_peer",
     "hyperstor_meta::tests::two_peer_reports_mark_a_node_down_and_stop_its_lease",
     "manage::a_returning_node_goes_down_once",
 ]

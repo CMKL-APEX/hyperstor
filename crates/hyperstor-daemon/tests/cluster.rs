@@ -1748,6 +1748,107 @@ fn peers_report_a_dead_node_before_the_map_service_notices() {
     assert!(!map.nodes[&2].up);
 }
 
+/// A node is marked up only once every device of it is open (I188): a
+/// device with a large index takes seconds to open and answers no pings
+/// meanwhile, and on the pilot its peers reported the node silent each
+/// time a faster device's heartbeat brought it up. Here one device of
+/// the restarted node opens slowly (a slow disk); the node stays down
+/// until it is open, then comes up and stays up.
+#[test]
+fn a_node_is_up_only_once_every_device_is_open() {
+    let peer = std::time::Duration::from_millis(300);
+    let mut c = Cluster::start_full(
+        3,
+        2,
+        LEASE,
+        DOWN_AFTER,
+        peer,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.kill(2);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    c.faulty[&2001].set_delay(std::time::Duration::from_millis(400));
+    c.restart(2);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let up = with_client(meta, 7, |cl| async move {
+        cl.refresh_map().await.unwrap();
+        cl.map().nodes[&2].up
+    });
+    assert!(!up, "node 2 is up while device 2001 is still opening");
+    c.faulty[&2001].set_delay(std::time::Duration::ZERO);
+    with_client(meta, 8, |cl| async move {
+        wait_map(&cl, "node 2 up", |m| m.nodes[&2].up).await;
+        // A node reported silent is held down for 2 s at least (D149),
+        // so a report in this time leaves it down at the end.
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(1500)).await;
+        cl.refresh_map().await.unwrap();
+        assert!(cl.map().nodes[&2].up, "node 2 stays up");
+    });
+    c.stop();
+}
+
+/// A node whose reactor is held reports no one for it (I188): the pings
+/// it sent meanwhile went unanswered because it couldn't read the
+/// answers. On the pilot, when a node came back, two primaries digesting
+/// a large table for its backfill each reported the others, and a
+/// healthy node was marked down. Here the devices of nodes 0 and 1 are
+/// slow (every read and write holds their reactors 600 ms, twice the
+/// peer timeout) when node 2 comes back to be refilled, so both start
+/// pinging it while held; node 2 is never marked down again.
+#[test]
+fn held_nodes_report_no_healthy_peer() {
+    let peer = std::time::Duration::from_millis(300);
+    let mut c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        // Liveness by heartbeats only after 3 s: peer reports decide.
+        std::time::Duration::from_millis(3000),
+        peer,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.kill(2);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+        // Something to refill.
+        for v in 1..=4 {
+            cl.write(POOL, v, 0, pattern(v as u64, 4096)).await.unwrap();
+        }
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    for d in [0, 1000] {
+        c.faulty[&d].set_delay(std::time::Duration::from_millis(600));
+    }
+    c.restart(2);
+    let downs = with_client(meta, 7, |cl| async move {
+        wait_map(&cl, "node 2 up", |m| m.nodes[&2].up).await;
+        let t = std::time::Instant::now();
+        let mut downs = 0;
+        while t.elapsed() < std::time::Duration::from_secs(3) {
+            cl.refresh_map().await.unwrap();
+            downs += usize::from(!cl.map().nodes[&2].up);
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        downs
+    });
+    for d in [0, 1000] {
+        c.faulty[&d].set_delay(std::time::Duration::ZERO);
+    }
+    assert_eq!(downs, 0, "node 2 was marked down after it came back");
+    c.stop();
+}
+
 /// Cache pools (D45): one copy; when its node dies the copy is gone, reads
 /// answer "not found" (no stale data, no zeros), and writes go on to the
 /// replacement at once, with no backfill.
