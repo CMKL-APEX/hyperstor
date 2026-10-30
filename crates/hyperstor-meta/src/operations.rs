@@ -88,6 +88,10 @@ pub struct Op {
     pub total: u32,
     pub message: String,
     pub started_unix: u64,
+    /// The start in milliseconds, which orders operations started in the
+    /// same second; 0 in records written before it was kept.
+    #[serde(default)]
+    pub started_ms: u64,
     pub finished_unix: u64,
     pub created_by: String,
 }
@@ -95,6 +99,14 @@ pub struct Op {
 impl Op {
     pub fn running(&self) -> bool {
         self.state == State::Running
+    }
+
+    fn started(&self) -> u64 {
+        if self.started_ms > 0 {
+            self.started_ms
+        } else {
+            self.started_unix * 1000
+        }
     }
 }
 
@@ -164,7 +176,7 @@ impl Ops {
                 v
             }
         };
-        out.sort_by(|a, b| b.started_unix.cmp(&a.started_unix).then(b.id.cmp(&a.id)));
+        out.sort_by(|a, b| b.started().cmp(&a.started()).then(b.id.cmp(&a.id)));
         Ok(out)
     }
 
@@ -254,9 +266,27 @@ mod tests {
             total: 1,
             message: String::new(),
             started_unix: started,
+            started_ms: 0,
             finished_unix: finished,
             created_by: "t".into(),
         }
+    }
+
+    /// Operations started in the same second list by their milliseconds,
+    /// not by their random ids; older records by their seconds.
+    #[test]
+    fn the_same_second_lists_newest_first() {
+        let ops = Ops::in_memory();
+        let at = |id: &str, ms: u64| Op {
+            started_unix: ms / 1000,
+            started_ms: ms,
+            ..op(id, 0, State::Done, 0)
+        };
+        ops.put(&at("f0", 1_000_100)).unwrap();
+        ops.put(&at("0f", 1_000_900)).unwrap();
+        ops.put(&op("old", 999, State::Done, 0)).unwrap();
+        let ids: Vec<String> = ops.list().unwrap().into_iter().map(|o| o.id).collect();
+        assert_eq!(ids, ["0f", "f0", "old"]);
     }
 
     fn rows_behave(ops: Ops) {
