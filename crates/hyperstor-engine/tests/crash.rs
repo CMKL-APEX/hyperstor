@@ -183,11 +183,13 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
                 let i = keys.iter().position(|k| *k == key).unwrap();
                 Op::Absorb(keys[(i + rng.random_range(1..keys.len())) % keys.len()].clone())
             }
-            90..=92 => {
+            // Rare: a list with a `Take` finishes the checkpoint in
+            // progress, and crashes during one must stay common.
+            90 => {
                 let i = keys.iter().position(|k| *k == key).unwrap();
                 Op::Take(keys[(i + rng.random_range(1..keys.len())) % keys.len()].clone())
             }
-            93..=96 => Op::AssertExists,
+            91..=96 => Op::AssertExists,
             _ => Op::AssertAbsent,
         };
         ops.push(op);
