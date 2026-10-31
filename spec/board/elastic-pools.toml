@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS18"
 branch = "feature/elastic-pools"
-prs = [96, 101, 102, 104]
+prs = [96, 101, 102, 104, 106]
 now = "Stages 1a–1c merged (#101, #102, #104); 1d built (I207): hyperstor-install install --node N --device PATH registers, formats and keeps a device"
 next = "1e: nvme6n1 on prism1 (needs the owner's go-ahead); then stage 2, classes and class sets"
