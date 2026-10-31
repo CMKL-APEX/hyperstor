@@ -140,6 +140,11 @@ pub struct ClusterMap {
     /// Devices whose class an operator set (`SetDeviceClass`, or a class
     /// given to `AddDevice`); the others take their kind as class (D178).
     pub fixed_classes: BTreeSet<u32>,
+    /// The ids of deleted pools (24-pools-and-devices.md §27.3.4, D181):
+    /// never given again, and a device deletes what it still holds of
+    /// them. Why: clients, the host read cache and copies on devices that
+    /// were down name data by pool id.
+    pub deleted_pools: BTreeSet<u32>,
 }
 
 /// What a device is (24-pools-and-devices.md §27.2.4), as its node
@@ -392,8 +397,23 @@ impl ClusterMap {
 
     /// The id a new pool gets: after every pool's (24-pools-and-devices.md
     /// §27.3.1; ids of deleted pools are never reused once they are kept).
+    /// The id for a new pool: after every pool's, deleted ones' too.
     pub fn next_pool_id(&self) -> u32 {
-        self.pools.keys().next_back().map_or(1, |p| p + 1).max(1)
+        let pools = self.pools.keys().next_back().map_or(1, |p| p + 1);
+        let deleted = self.deleted_pools.last().map_or(1, |p| p + 1);
+        pools.max(deleted).max(1)
+    }
+
+    /// Removes pool `id` and its PGs, keeping its id as deleted (D181);
+    /// the epoch moves. Whether it was there.
+    pub fn delete_pool(&mut self, id: u32) -> bool {
+        if self.pools.remove(&id).is_none() {
+            return false;
+        }
+        self.pgs.retain(|(pool, _), _| *pool != id);
+        self.deleted_pools.insert(id);
+        self.recompute();
+        true
     }
 
     pub fn add_pool(&mut self, pool: PoolInfo) {
@@ -739,9 +759,13 @@ impl ClusterMap {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
         // interval and the failed ones, 4 the weights an operator set, 5
-        // devices' kinds and the classes an operator set; a map without
-        // them keeps the older format, which nodes from before them read.
-        let format = if self
+        // devices' kinds and the classes an operator set, 6 class sets, 7
+        // a pool's devices added and removed, 8 deleted pools' ids; a map
+        // without them keeps the older format, which nodes from before
+        // them read.
+        let format = if !self.deleted_pools.is_empty() {
+            8
+        } else if self
             .pools
             .values()
             .any(|p| !p.added.is_empty() || !p.removed.is_empty())
@@ -865,13 +889,19 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 8 {
+            e.u32(self.deleted_pools.len() as u32);
+            for p in &self.deleted_pools {
+                e.u32(*p);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=7).contains(&v) {
+        if !(1..=8).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1009,6 +1039,9 @@ impl ClusterMap {
                     p.removed = removed;
                 }
             }
+        }
+        if v >= 8 {
+            m.deleted_pools = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -1327,6 +1360,25 @@ mod tests {
         m.pools.get_mut(&1).unwrap().classes.truncate(1);
         assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "one class: as before");
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    /// D181: a deleted pool leaves the map with its PGs; its id is kept,
+    /// in format 8 only once there is one, and never given again.
+    #[test]
+    fn a_deleted_pools_id_is_kept_and_not_given_again() {
+        let mut m = map();
+        assert_ne!(m.encode()[..4], 8u32.to_le_bytes());
+        let top = *m.pools.keys().next_back().unwrap();
+        let epoch = m.epoch;
+        assert!(m.delete_pool(top));
+        assert!(!m.delete_pool(top), "only once");
+        assert!(m.epoch > epoch);
+        assert!(!m.pools.contains_key(&top) && !m.pgs.keys().any(|(p, _)| *p == top));
+        assert_eq!(m.next_pool_id(), top + 1);
+        assert_eq!(m.encode()[..4], 8u32.to_le_bytes());
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.next_pool_id(), top + 1);
     }
 
     /// D180: a pool's devices added and removed are kept in format 7,

@@ -345,6 +345,22 @@ give more if many devices are to come. Volumes go to it with
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
 
+## Deleting a pool
+
+A pool is deleted once it holds nothing: no volume, no snapshot, and
+nothing in the trash (D176). List what it holds, delete and purge
+that, then delete it:
+
+```sh
+hyperstorctl pool delete --pool 3 --dry-run
+hyperstorctl pool delete --pool 3
+```
+
+It leaves the map at once, and clients using it get `not_found`. Its
+id is never given to another pool. Each device deletes the pool's data
+about a minute later; a device that was down does when it returns
+(D181). Through `hyperstor-mgmt` it needs a fresh login (step-up).
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

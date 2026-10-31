@@ -181,6 +181,7 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         fixed_weights: map.fixed_weights.clone(),
         kinds: map.kinds.clone(),
         fixed_classes: map.fixed_classes.clone(),
+        deleted_pools: map.deleted_pools.clone(),
     }
     .encode()
 }
