@@ -65,6 +65,102 @@ fn status_and_tables() {
     c.ctl(&["pg-grid", "--pool", "9"]).expect(1);
 }
 
+/// D167: a device appended to a running node waits at weight 0, so
+/// nothing moves; once the node is restarted with one more `--shard`, the
+/// device reports its capacity, is weighted, and PGs move onto it, while
+/// the data written before reads back. An address in use and a node that
+/// isn't there are refused, and the change is audited.
+#[test]
+fn a_device_is_added_to_a_running_node() {
+    let mut c = Cluster::all_in_one("adddev", 3);
+    let made = c
+        .ctl(&["create-volume", "--size", "16M", "--name", "before"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let data: Vec<u8> = (0..(8u32 << 20)).map(|i| (i % 251) as u8).collect();
+    let src = c.scratch.path("before.raw");
+    std::fs::write(&src, &data).unwrap();
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    // Each device's (id, weight), and the PGs that list device 1.
+    let devices = |c: &Cluster| -> Vec<(u64, f64)> {
+        // Exit status 1 while health is warn (backfilling): read it anyway.
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["weight"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect()
+    };
+    let on_device_1 = |c: &Cluster| -> usize {
+        let s = c.ctl(&["pgs", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["acting"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(1)))
+            })
+            .count()
+    };
+    let addr = format!("127.0.0.1:{}", free_ports(1));
+    let add = c
+        .ctl(&["device", "add", "--node", "0", "--address", &addr])
+        .ok();
+    assert!(add.has("device 1 added to node 0"), "{}", add.out);
+    // Published once fenced, as other map changes are.
+    wait_for("device 1 in the map at weight 0", 10, || {
+        devices(&c).contains(&(1, 0.0)).then_some(())
+    });
+    assert_eq!(on_device_1(&c), 0, "nothing placed on it yet");
+    c.ctl(&["device", "add", "--node", "1", "--address", &addr])
+        .expect(1);
+    c.ctl(&["device", "add", "--node", "9", "--address", "127.0.0.1:1"])
+        .expect(1);
+    c.ctl(&["device", "add", "--node", "0"]).expect(2);
+    // The node runs it once restarted with one more --shard.
+    c.kill_node(0);
+    let img = c.data_dir().join("node-0-1.img");
+    let shard = format!("{addr}={}:1", img.display());
+    c.start_node_with(0, &["--shard", &shard]);
+    wait_for("device 1 weighted by its capacity", 30, || {
+        devices(&c)
+            .iter()
+            .any(|(d, w)| *d == 1 && *w > 0.0)
+            .then_some(())
+    });
+    wait_for("PGs on device 1, and health ok", 120, || {
+        (on_device_1(&c) > 0 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+    let out = c.scratch.path("after.raw");
+    c.ctl(&[
+        "read-volume",
+        "--id",
+        &id,
+        "--size",
+        &data.len().to_string(),
+        "--out",
+        out.to_str().unwrap(),
+    ])
+    .ok();
+    assert!(std::fs::read(&out).unwrap() == data, "the data reads back");
+    wait_for("the change in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "AddDevice"]).ok();
+        a.has(&format!("node 0 address {addr}")).then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

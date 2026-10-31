@@ -251,6 +251,25 @@ A pool's usable space (`hyperstorctl pools`) counts what it can hold
 with each copy on a different host (or rack): with as many hosts as
 copies, the smallest host bounds it.
 
+## Adding a device to a node
+
+A node can take more devices while the cluster runs (D167). Register
+the device with the map service, then restart the node with one more
+`--shard`, at the address you registered:
+
+```sh
+hyperstorctl device add --node 1 --address 192.0.2.21:9102
+# then add --shard 192.0.2.21:9102=PATH:SIZE_GIB to node 1's options,
+# after its other --shard options, and restart it
+```
+
+The device is the node's next one, `node × 1000 + i`, and starts at
+weight 0: nothing moves until the node runs it. Once it has reported
+its capacity, within a second of starting, it gets its weight and PGs
+move onto it, as after a weight change. The installer doesn't yet add
+a device to an installed node by itself: edit the node's options as
+above (a later installer run rewrites them, so for now keep a copy).
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

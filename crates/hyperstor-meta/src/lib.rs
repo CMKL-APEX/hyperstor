@@ -101,6 +101,14 @@ pub enum Admin {
         op: SnapOp,
         reply: VolumeReply<SnapDone>,
     },
+    /// Appends a device to a node (D167). Replies with the device's id
+    /// and the working map's epoch.
+    AddDevice {
+        node: u32,
+        addr: SocketAddr,
+        class: Option<String>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u32, u64), String>>,
+    },
     /// Adds a storage host that joined with a token (19-administration.md
     /// §23.4.2): one device per address. Replies with its node number.
     AddNode {
@@ -974,14 +982,38 @@ impl Meta {
         owners.dedup();
         match owners.as_slice() {
             [] => {}
-            [n] if map.devices.values().filter(|d| d.node == *n).count() == addrs.len()
-                && map
+            // Installed again: the node's addresses, in order, then any
+            // new ones, which are appended as its next devices (D167).
+            [n] if {
+                let mut have: Vec<(u32, SocketAddr)> = map
                     .devices
                     .values()
                     .filter(|d| d.node == *n)
-                    .all(|d| addrs.get(d.shard as usize) == Some(&d.addr)) =>
+                    .map(|d| (d.shard, d.addr))
+                    .collect();
+                have.sort();
+                have.len() <= addrs.len()
+                    && have
+                        .iter()
+                        .map(|h| h.1)
+                        .eq(addrs[..have.len()].iter().copied())
+            } =>
             {
-                return Ok(*n);
+                let n = *n;
+                let known = map.devices.values().filter(|d| d.node == n).count();
+                if known < addrs.len() {
+                    let class = map
+                        .devices
+                        .values()
+                        .find(|d| d.node == n)
+                        .map_or_else(|| "nvme".to_string(), |d| d.class.clone());
+                    for a in &addrs[known..] {
+                        map.add_device(n, *a, &class)
+                            .ok_or("the node has 1000 devices")?;
+                    }
+                    map.recompute();
+                }
+                return Ok(n);
             }
             _ => {
                 return Err(format!(
@@ -1003,6 +1035,44 @@ impl Meta {
         map.grow_meta_pool();
         map.recompute();
         Ok(id)
+    }
+
+    /// Appends a device at `addr` to `node` (24-pools-and-devices.md
+    /// §27.2.1, D167), at weight 0 until it reports its capacity (D158).
+    /// `class` defaults to that of the node's other devices. Returns the
+    /// device's id and the working map's epoch.
+    pub fn add_device(
+        &self,
+        node: u32,
+        addr: SocketAddr,
+        class: Option<&str>,
+    ) -> Result<(u32, u64), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if let Some(c) = class.filter(|c| !valid_class(c)) {
+            return Err(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            ));
+        }
+        let mut map = self.map.borrow_mut();
+        if !map.nodes.contains_key(&node) {
+            return Err(format!("no node {node}"));
+        }
+        if let Some(d) = map.devices.values().find(|d| d.addr == addr) {
+            return Err(format!("{addr} is already device {}'s address", d.id));
+        }
+        let class = class.map(str::to_string).unwrap_or_else(|| {
+            map.devices
+                .values()
+                .find(|d| d.node == node)
+                .map_or_else(|| "nvme".to_string(), |d| d.class.clone())
+        });
+        let id = map
+            .add_device(node, addr, &class)
+            .ok_or_else(|| format!("node {node} has 1000 devices"))?;
+        map.recompute();
+        Ok((id, map.epoch))
     }
 
     /// Takes every device of `node` out of placement, as `set_device_in`
@@ -1203,6 +1273,14 @@ impl Meta {
                 }
                 Admin::AddNode { rack, addrs, reply } => {
                     let _ = reply.send(self.add_node(rack, &addrs));
+                }
+                Admin::AddDevice {
+                    node,
+                    addr,
+                    class,
+                    reply,
+                } => {
+                    let _ = reply.send(self.add_device(node, addr, class.as_deref()));
                 }
                 Admin::Drain {
                     node,
@@ -1885,6 +1963,14 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
     }
 }
 
+/// A device class: 1 to 32 lowercase letters, digits and dashes
+/// (`nvme`, `nvme-qlc`), as labels are (24-pools-and-devices.md §27.2.4).
+pub fn valid_class(c: &str) -> bool {
+    (1..=32).contains(&c.len())
+        && c.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1914,11 +2000,63 @@ mod tests {
         assert_eq!(map.pools[&META_POOL].min_size, 2);
         // Installed again: the same node; other addresses: refused.
         assert_eq!(meta.add_node(0, &[addr(9100)]), Ok(1));
-        assert!(meta.add_node(0, &[addr(9100), addr(9300)]).is_err());
+        assert!(meta.add_node(0, &[addr(9300), addr(9100)]).is_err());
+        assert!(meta.add_node(0, &[addr(9100), addr(9000)]).is_err());
         assert!(meta.add_node(0, &[]).is_err());
         let epoch = meta.map.borrow().epoch;
         assert_eq!(meta.add_node(0, &[addr(9100)]), Ok(1));
         assert_eq!(meta.map.borrow().epoch, epoch, "nothing changed");
+        // Installed again with a device more (D167): appended, at weight 0.
+        assert_eq!(meta.add_node(0, &[addr(9100), addr(9300)]), Ok(1));
+        let map = meta.map.borrow().clone();
+        let d = &map.devices[&1001];
+        assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
+        assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// A device appended to a running node (D167) starts at weight 0, so
+    /// nothing moves until it reports; addresses in use, unknown nodes and
+    /// bad classes are refused.
+    #[test]
+    fn a_device_is_added_to_a_node_and_weighted_once_it_reports() {
+        let meta = Meta::new(map());
+        let addr: SocketAddr = "127.0.0.1:7901".parse().unwrap();
+        let before = meta.map.borrow().clone();
+        let (id, epoch) = meta.add_device(1, addr, None).unwrap();
+        let map = meta.map.borrow().clone();
+        assert_eq!(epoch, map.epoch);
+        let d = &map.devices[&id];
+        assert_eq!(
+            (d.node, d.addr, d.weight, d.class.as_str()),
+            (1, addr, 0.0, "nvme")
+        );
+        assert!(
+            map.pgs.iter().all(|(k, p)| p.up == before.pgs[k].up),
+            "nothing moves before it reports"
+        );
+        assert!(
+            meta.add_device(1, addr, None)
+                .unwrap_err()
+                .contains("already device")
+        );
+        assert!(
+            meta.add_device(99, "127.0.0.1:7902".parse().unwrap(), None)
+                .unwrap_err()
+                .contains("no node 99")
+        );
+        assert!(
+            meta.add_device(1, "127.0.0.1:7902".parse().unwrap(), Some("NVMe!"))
+                .is_err()
+        );
+        // Its first report weights it by capacity; PGs move onto it.
+        meta.handle(Ok(hyperstor_proto::Msg::DeviceSpace {
+            device: id,
+            total_bytes: 1 << 40,
+            free_bytes: 1 << 40,
+        }));
+        let map = meta.map.borrow().clone();
+        assert_eq!(map.devices[&id].weight, 1.0);
+        assert!(map.pgs.values().any(|p| p.up.contains(&id)));
     }
 
     /// A drain's dry run changes nothing and says what a drain moves; the

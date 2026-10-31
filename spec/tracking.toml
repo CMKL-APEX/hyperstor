@@ -605,6 +605,20 @@ id = "HS17"
 title = "Global namespace and federation"
 
 [[milestone]]
+id = "HS18"
+title = "Pools and devices at run time"
+
+[[milestone.item]]
+what = "A device added to a running node: registered, weighted once it runs, then given PGs"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "I204"]
+status = "partial"
+tests = [
+    "hyperstor_map::tests::a_device_is_appended_to_its_node_at_weight_0",
+    "hyperstor_meta::tests::a_device_is_added_to_a_node_and_weighted_once_it_reports",
+    "manage::a_device_is_added_to_a_running_node",
+]
+
+[[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
 

@@ -252,6 +252,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.GetPgGrid", "pg-grid"),
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.SetDeviceWeight", "weight"),
+    ("ClusterService.AddDevice", "device add"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
