@@ -46,6 +46,13 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - queue depth per reactor is capped from the device's
     `queue/nr_requests`, so one reactor can't starve the others on a SATA
     device's single queue.
+- **Completion-driven** (D165): the engine plans an operation in
+  memory, submits its I/O on the reactor's io_uring and finishes on the
+  completions, so no device wait holds a reactor's thread. As built:
+  commits only, one in flight per shard (01-implementation-notes.md
+  I199); reads, checkpoint slices and deferred writes still wait in the
+  device's calls. A commit that takes longer than the I/O timeout (30 s,
+  `hyperstord --io-timeout-secs`) fails its device (D166).
 - **Hard disks** (D29):
   - the log and the index go on a partition of a flash **log device**;
     one log device serves up to eight hard disks, each with its own
@@ -67,7 +74,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 | Region | Contents |
 |---|---|
-| Superblock (two copies) | device id, node id, cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
+| Superblock (two copies) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
 | Log | circular. Operation records (§7.3), deferred small writes, checkpoint markers |
 | Index | an on-device copy-on-write B+tree of objects and their extents |
 | Data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks) |
@@ -85,6 +92,14 @@ before D157; with any set, as version 2. A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
 over.
+
+**Whose device it is** (I203). The superblock names the device (its id
+in the map, `node × 1000 + shard`) and the cluster. Before opening a
+device, `hyperstord` checks both against its own and the map's: a device
+of another device or cluster (a drive moved from elsewhere, two paths
+swapped) is refused, with what it holds, and never written. A blank
+device is formatted with the cluster's id; a superblock without one
+(written before I203) gets it recorded once, copy 1 then copy 0.
 
 ### 7.2 Objects
 

@@ -61,8 +61,8 @@ request for it with `Unavailable` (clients retry) and reports it to the
 map service, which marks it failed and out and places its PGs elsewhere
 at once, without waiting for `--down-out-secs`. The node's other devices
 go on serving. One I/O error is enough: there is no error-rate threshold
-yet. A device that takes more than 30 s to write and flush a commit is
-failed the same way, and its node's log says why (`the device took over
+yet. A device that takes more than 30 s (`hyperstord --io-timeout-secs`)
+to write and flush a commit is failed the same way, and its node's log says why (`the device took over
 30000 ms to write a commit`); before, a hung device held its node's
 thread, and the whole node went down.
 

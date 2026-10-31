@@ -7,7 +7,7 @@ documents, so `§N` in one document is the same section everywhere (see
 [README.md](README.md)).
 
 Status: **draft for review** (2026-10-31). D163 and D164 are settled;
-points 118–127 of [05-decision-log.md](05-decision-log.md) are open, with
+the identity check of §27.2.2 is built (I203); points 118–127 of [05-decision-log.md](05-decision-log.md) are open, with
 recommendations, and this document follows the recommendations. Nothing
 here is built.
 
@@ -20,7 +20,7 @@ What is fixed today, and where:
 | What | Today | Where |
 |---|---|---|
 | A node's devices | Set when the node joins: the map service adds a host with all its addresses at once and refuses the same host with another set | `hyperstor-meta` `add_node` |
-| A device's id | `node × 1000 + i`, `i` its position in the node's addresses and in `hyperstord`'s `--shard` order; nothing on the device is checked against it | `hyperstor-map` `add_node`, `hyperstord` |
+| A device's id | `node × 1000 + i`, `i` its position in the node's addresses and in `hyperstord`'s `--shard` order; since I203 the device's superblock must name that id and the map's cluster, or the node refuses it | `hyperstor-map` `add_node`, `hyperstord` |
 | Formatting | `hyperstord` formats any device without hyperstor's superblock magic, without asking (D157 refuses newer or damaged hyperstor devices, not foreign ones) | `hyperstor-daemon` `ShardState::open` |
 | The installer's devices | Files under `--data-dir`, rewritten on every run (the daily renewal too) | `hyperstor-install` |
 | Device classes | Every device is `nvme`; nothing sets another class | `hyperstor-map` |
@@ -82,16 +82,17 @@ device weights from capacity (D158).
   device. Why: a renumbered `/dev/nvmeXnY`, or a typo, would otherwise
   format a disk in use; the pilot host has four Ceph disks beside the
   free one.
-- **A device names itself.** Formatting writes the device's id and the
-  cluster's id in the device superblock (it writes 0 for the cluster
-  today). On open, `hyperstord` refuses a device whose ids aren't the
-  ones its `--shard` expects. Why: two hyperstor devices whose names
-  swap at boot would otherwise serve each other's data, under the other
-  device's id, which scrub reports only after the fact.
-- The ids are fields the superblock has; checking them needs no format
-  change. A device formatted with cluster id 0 is taken as belonging to
-  the cluster that opens it, and written with its id on its next
-  superblock write.
+- **A device names itself** (built, I203). Formatting writes the
+  device's id and the map's cluster id in the device superblock; before
+  opening a device, `hyperstord` reads its superblock alone and refuses
+  one whose ids aren't the ones its `--shard` expects
+  (`EngineError::NotThisDevice`), writing nothing. A device from builds
+  before it, with cluster 0, has the cluster recorded once. Why: two
+  hyperstor devices whose names swap at boot would otherwise serve each
+  other's data, under the other device's id, which scrub reports only
+  after the fact.
+- With explicit ids (§27.2.3), the expected id is the one `--shard`
+  names instead of the position's; the check stays the same.
 
 #### 27.2.3 Device ids
 

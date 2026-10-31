@@ -134,9 +134,56 @@ fn weights_follow_capacity_or_are_set() {
     c.ctl(&["weight", "--device", &id]).expect(2);
     c.ctl(&["weight", "--device", "999", "--weight", "1"])
         .expect(1);
-    // Audited, as every change.
-    let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
-    assert!(a.has("weight=0.5") && a.has("weight=auto"), "{}", a.out);
+    // Audited, as every change; the log's writer reaches .meta every
+    // second.
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
+        (a.has("weight=0.5") && a.has("weight=auto")).then_some(())
+    });
+}
+
+/// I203: each device's superblock names its device and cluster. A node
+/// given another node's device (swapped paths) refuses it and says whose
+/// it is, writing nothing; with the paths put right it serves again.
+#[test]
+fn a_swapped_device_is_refused() {
+    let mut c = Cluster::all_in_one("swap", 3);
+    c.kill_node(1);
+    c.kill_node(2);
+    let (one, two, tmp) = (
+        c.data_dir().join("node-1.img"),
+        c.data_dir().join("node-2.img"),
+        c.data_dir().join("swap.img"),
+    );
+    let swap = || {
+        std::fs::rename(&one, &tmp).unwrap();
+        std::fs::rename(&two, &one).unwrap();
+        std::fs::rename(&tmp, &two).unwrap();
+    };
+    swap();
+    // A rename keeps the time it was last written.
+    let written = || std::fs::metadata(&one).unwrap().modified().unwrap();
+    let before = written();
+    c.start_node(1);
+    let want = format!(
+        "device 1000: the device holds device 2000 of cluster {}, not device 1000 of cluster {}",
+        c.cluster_id, c.cluster_id
+    );
+    wait_for("node 1 to refuse node 2's device", 20, || {
+        c.node_log(1).contains(&want).then_some(())
+    });
+    assert!(
+        c.node_log(1).contains("reactor failed"),
+        "{}",
+        c.node_log(1)
+    );
+    assert_eq!(written(), before, "the refused device was written");
+    c.kill_node(1);
+    swap();
+    c.start_node(1);
+    c.start_node(2);
+    let s = c.ctl(&["status", "--wait", "60"]).ok();
+    assert!(s.has("health  ok"), "{}", s.out);
 }
 
 #[test]

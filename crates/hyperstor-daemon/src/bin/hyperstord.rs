@@ -1,6 +1,6 @@
 //! `hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...]
 //!            [--cpus 2,3] [--buffered] [--hdd] [--spin-us N] [--peer-timeout-ms N]
-//!            [--admin ADDR]`
+//!            [--admin ADDR] [--io-timeout-secs N]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
 //! the cluster file) and storing on PATH (a file, created and extended to
@@ -17,6 +17,8 @@
 //! (19-administration.md §23.3).
 //! `--scrub-hours N` compares the copies of each PG this node is primary
 //! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
+//! `--io-timeout-secs N` fails a device whose commit (its writes and
+//! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
 //! through the log (04-decisions.md D38); flash redirects every write.
 
@@ -33,7 +35,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N]"
+            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]"
         );
         std::process::exit(2)
     };
@@ -83,6 +85,18 @@ fn main() {
     if shards.is_empty() {
         usage();
     }
+    // D166: how long a commit's writes and flush may take before the
+    // device is failed.
+    let io_timeout = std::time::Duration::from_secs(
+        get("--io-timeout-secs")
+            .map(|s| {
+                s.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .unwrap_or_else(|| usage())
+            })
+            .unwrap_or(hyperstor_daemon::IO_TIMEOUT.as_secs()),
+    );
     let admin = get("--admin").map(|a| {
         std::net::TcpListener::bind(&a).unwrap_or_else(|e| {
             eprintln!("bind {a}: {e}");
@@ -99,7 +113,7 @@ fn main() {
     );
     let h = start(NodeConfig {
         push_part_bytes: 0,
-        io_timeout: std::time::Duration::ZERO,
+        io_timeout,
         commit_delays: None,
         partitions: None,
         node_id: node,

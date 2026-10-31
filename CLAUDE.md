@@ -39,19 +39,19 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/02-benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144, D147–D149, D150–D153 and D154–D162 and D163–D164 in 04-decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144, D147–D149, D150–D153 and D154–D166 in 04-decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I202, the NFS and pNFS proposals
+  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I203, the NFS and pNFS proposals
   D128 and D131–D137 (`spec/22-nfs.md`), every host check (G1–G45,
-  FG1–FG2), and points 97–103 (the engine's layout and AI workloads),
-  114–115 (device waits off the reactor; stage 1 prototyped, I199) and
+  FG1–FG2), and points 97–103 (the engine's layout and AI workloads) and
   118–137 (pools and devices at run time, `spec/24-pools-and-devices.md`,
-  a draft; S3 sooner) of
-  `spec/05-decision-log.md`.
+  a draft; S3 sooner) of `spec/05-decision-log.md`.
 - **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
   `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
   then the rest of
+  D165 (reads, checkpoint slices and deferred writes off the reactor's
+  thread, after G43's measurements), the rest of
   §11.1 (adaptive polling, reactors per NUMA node); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).

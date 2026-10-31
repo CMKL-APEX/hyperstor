@@ -177,6 +177,17 @@ pub enum EngineError {
         "the device uses features this build doesn't have (incompatible {incompat:#x}, read-only-compatible {ro_compat:#x}): upgrade hyperstord"
     )]
     UnsupportedFeatures { ro_compat: u64, incompat: u64 },
+    /// The superblock names another device or cluster: a drive moved from
+    /// elsewhere, or a wrong path. Never served or formatted.
+    #[error(
+        "the device holds device {found_device} of cluster {found_cluster}, not device {device} of cluster {cluster}: check the path, or wipe the device if it is meant to join"
+    )]
+    NotThisDevice {
+        found_device: u128,
+        found_cluster: u128,
+        device: u128,
+        cluster: u128,
+    },
     #[error("device too small for the requested layout")]
     TooSmall,
     #[error("object not found")]

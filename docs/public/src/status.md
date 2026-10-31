@@ -44,6 +44,7 @@ covered by tests that run on every change.
 | General objects: sparse data with checksums, attributes, key-value tables, atomic operation lists | Done |
 | Group commit, small-write deferral, checkpoints and recovery | Done |
 | Feature flags in the device superblock; only a blank device is formatted | Done |
+| Each device's superblock names its device and cluster: a device of another device or cluster (a drive moved, swapped paths) is refused before it is opened, and one formatted without a cluster gets it recorded | Done |
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
 | Crash safety: randomized crash tests against a model | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
