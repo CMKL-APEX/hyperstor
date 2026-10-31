@@ -52,6 +52,14 @@ pub enum Admin {
         up_in: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Sets a device's weight, or (`None`) lets it follow the device's
+    /// capacity again (D158). Replies with the working map's epoch and the
+    /// weight now.
+    SetDeviceWeight {
+        device: u32,
+        weight: Option<f64>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, f64), String>>,
+    },
     /// Volume operations (04-decisions.md D77), run on this reactor as a
     /// client of `.meta` (06-metadata.md §4.2).
     ListVolumes {
@@ -427,6 +435,9 @@ fn wall_nanos() -> u64 {
 /// Each device's data region and free bytes, as it last reported them
 /// (D156): kept by the leader only, like heartbeats, and not in the map.
 pub type DeviceSpace = BTreeMap<u32, (u64, u64)>;
+
+/// Bytes in a TiB: a device's weight is its capacity in TiB (D158).
+const TIB: f64 = (1u64 << 40) as f64;
 
 /// What only the leader knows, for `GetStatus` (I197): how long ago each
 /// node was last heard from, scrub's unrepaired PGs, flapping nodes and
@@ -851,6 +862,92 @@ impl Meta {
         Ok(map.epoch)
     }
 
+    /// Sets a device's weight (04-decisions.md D158): `Some(w)` fixes it as
+    /// the operator chose; `None` lets it follow the device's capacity
+    /// again, from its last report if there is one, else from its next.
+    /// Returns the working map's epoch and the weight now.
+    pub fn set_device_weight(
+        &self,
+        device: u32,
+        weight: Option<f64>,
+    ) -> Result<(u64, f64), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if let Some(w) = weight.filter(|w| !w.is_finite() || *w < 0.0) {
+            return Err(format!("a weight is a number of 0 or more, not {w}"));
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(was) = map.devices.get(&device).map(|d| d.weight) else {
+            return Err(format!("no device {device}"));
+        };
+        let reported = self
+            .space
+            .borrow()
+            .get(&device)
+            .map(|(t, _)| *t as f64 / TIB);
+        let now = weight.or(reported).unwrap_or(was);
+        let set = if weight.is_some() {
+            map.fixed_weights.insert(device)
+        } else {
+            map.fixed_weights.remove(&device)
+        };
+        if set || now != was {
+            if let Some(d) = map.devices.get_mut(&device) {
+                d.weight = now;
+            }
+            map.recompute();
+        }
+        Ok((map.epoch, now))
+    }
+
+    /// Gives devices the weight of their capacity (04-decisions.md D158),
+    /// from their space reports, except those an operator set. A device
+    /// still at weight 0 (on a host that just joined) gets it at once; the
+    /// others change together, once every live device in placement has
+    /// reported, so devices of one size move no data on the way. A weight
+    /// within 1 % of the capacity is left as it is.
+    fn auto_weights(&self) {
+        let space = self.space.borrow();
+        let mut map = self.map.borrow_mut();
+        let mut waiting = false;
+        let mut changes: Vec<(u32, f64, bool)> = Vec::new();
+        for d in map.devices.values() {
+            let live = d.up_in && map.nodes.get(&d.node).is_some_and(|n| n.up);
+            match space.get(&d.id) {
+                None => waiting |= live,
+                Some(&(total, _)) if total > 0 && !map.fixed_weights.contains(&d.id) => {
+                    let want = total as f64 / TIB;
+                    if (d.weight - want).abs() > want / 100.0 {
+                        changes.push((d.id, want, d.weight == 0.0));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        if waiting {
+            changes.retain(|c| c.2);
+        }
+        if changes.is_empty() {
+            return;
+        }
+        for (id, w, _) in &changes {
+            if let Some(d) = map.devices.get_mut(id) {
+                d.weight = *w;
+            }
+        }
+        map.recompute();
+        let list: Vec<String> = changes
+            .iter()
+            .map(|(id, w, _)| format!("{id}: {w:.4}"))
+            .collect();
+        eprintln!(
+            "hyperstor-meta: device weights from their capacity in TiB (D158), map epoch {}: {}",
+            map.epoch,
+            list.join(", ")
+        );
+    }
+
     fn not_leader(&self) -> String {
         match self.leader_hint().as_str() {
             "" => NO_LEADER.into(),
@@ -893,7 +990,13 @@ impl Meta {
             }
         }
         let id = map.nodes.keys().next_back().map_or(0, |n| n + 1);
-        map.add_node(id, addrs, rack);
+        // Weight 0 until each device reports its capacity (D158), so
+        // nothing is placed by a guess.
+        for d in map.add_node(id, addrs, rack) {
+            if let Some(d) = map.devices.get_mut(&d) {
+                d.weight = 0.0;
+            }
+        }
         if let Some(n) = map.nodes.get_mut(&id) {
             n.up = false;
         }
@@ -1001,6 +1104,13 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_in(device, up_in));
+                }
+                Admin::SetDeviceWeight {
+                    device,
+                    weight,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_device_weight(device, weight));
                 }
                 // Each in a task of its own: a delete runs through every
                 // chunk of the volume.
@@ -1662,6 +1772,7 @@ impl Meta {
                 self.space
                     .borrow_mut()
                     .insert(device, (total_bytes, free_bytes));
+                self.auto_weights();
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }
@@ -2142,6 +2253,58 @@ mod tests {
         }
         assert_eq!(m.space.borrow().get(&7), Some(&(1000, 500)));
         assert_eq!(m.map.borrow().epoch, epoch);
+    }
+
+    /// D158: weights follow each device's capacity in TiB, all at once
+    /// when every live device has reported; an operator's weight stays
+    /// until set back to auto; a joining host's devices start at 0.
+    #[test]
+    fn device_weights_follow_capacity() {
+        use hyperstor_proto::Msg;
+        const TIB: u64 = 1 << 40;
+        let m = Meta::new(map());
+        let report = |device: u32, total: u64| {
+            m.handle(Ok(Msg::DeviceSpace {
+                device,
+                total_bytes: total,
+                free_bytes: total / 2,
+            }))
+        };
+        let weight = |d: u32| m.map.borrow().devices[&d].weight;
+        let devices: Vec<u32> = m.map.borrow().devices.keys().copied().collect();
+        let epoch = m.map.borrow().epoch;
+        // Half a TiB each, device 1 two TiB: nothing until the last report.
+        for (i, d) in devices.iter().enumerate() {
+            assert_eq!(m.map.borrow().epoch, epoch, "changed before every report");
+            report(*d, if *d == 1 { 2 * TIB } else { TIB / 2 });
+            assert_eq!(weight(*d), if i + 1 < devices.len() { 1.0 } else { 0.5 });
+        }
+        assert_eq!(m.map.borrow().epoch, epoch + 1, "one change for all");
+        assert!(
+            devices
+                .iter()
+                .all(|d| weight(*d) == if *d == 1 { 2.0 } else { 0.5 })
+        );
+        // Within 1 %: left as it is.
+        report(0, TIB / 2 + TIB / 400);
+        assert_eq!((weight(0), m.map.borrow().epoch), (0.5, epoch + 1));
+        // An operator's weight stays, and shows in the map until auto.
+        assert_eq!(m.set_device_weight(0, Some(0.25)), Ok((epoch + 2, 0.25)));
+        report(0, TIB);
+        assert_eq!(weight(0), 0.25);
+        assert!(m.map.borrow().fixed_weights.contains(&0));
+        assert_eq!(m.set_device_weight(0, None), Ok((epoch + 3, 1.0)));
+        assert!(m.map.borrow().fixed_weights.is_empty());
+        assert!(m.set_device_weight(0, Some(-1.0)).is_err());
+        assert!(m.set_device_weight(0, Some(f64::NAN)).is_err());
+        assert!(m.set_device_weight(99, Some(1.0)).is_err());
+        // A host joining: weight 0, nothing placed on it, until it reports.
+        let node = m.add_node(0, &["127.0.0.1:7900".parse().unwrap()]).unwrap();
+        let new = node * 1000;
+        assert_eq!(weight(new), 0.0);
+        assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
+        report(new, TIB);
+        assert_eq!(weight(new), 1.0);
     }
 
     /// A replicated member (D72, D73): a follower serves the map and

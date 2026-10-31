@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -20,6 +20,9 @@
 //!   device out of placement, so its PGs move elsewhere and it can be
 //!   serviced, and bring it back; with `--wait SECS`, until no PG is
 //!   backfilling or inactive;
+//! - `weight --device D --weight W|auto`: keep a device's placement weight
+//!   at W, or let it follow the device's capacity in TiB again (D158);
+//!   its PGs move as the weight changes;
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
 //!   and `delete-volume --id ID [--force]` (04-decisions.md D77, D80);
@@ -118,7 +121,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -198,6 +201,8 @@ struct Args {
     sparse: bool,
     /// `pg-grid`: each PG's usage too.
     usage: bool,
+    /// `weight`: the weight to set, or `None` for `auto` (D158).
+    weight: Option<Option<f64>>,
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
@@ -258,6 +263,7 @@ fn main() {
         offset: 0,
         sparse: false,
         usage: false,
+        weight: None,
         poll: false,
     };
     let mut cmd = None;
@@ -295,6 +301,18 @@ fn main() {
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
+            "--weight" => {
+                a.weight = match it.next().map(String::as_str) {
+                    Some("auto") => Some(None),
+                    Some(w) => Some(Some(
+                        w.parse::<f64>()
+                            .ok()
+                            .filter(|w| w.is_finite() && *w >= 0.0)
+                            .unwrap_or_else(|| usage()),
+                    )),
+                    None => usage(),
+                }
+            }
             "--node" => a.node = Some(num(it.next())),
             "--size" => {
                 a.size = Some(
@@ -354,7 +372,7 @@ fn main() {
                 _ => usage(),
             },
             "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in" | "drain" | "clone-volume"
+            | "delete-volume" | "io-test" | "out" | "in" | "weight" | "drain" | "clone-volume"
             | "rollback-volume" | "flatten-volume" | "expand-volume" | "write-volume"
             | "read-volume" | "enroll"
                 if cmd.is_none() =>
@@ -388,10 +406,13 @@ fn main() {
         }
     }
     let Some(cmd) = cmd else { usage() };
-    if (cmd == "out" || cmd == "in" || cmd == "drain") == (a.device.is_none() && a.node.is_none())
+    if (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
+        == (a.device.is_none() && a.node.is_none())
         || (cmd == "drain" && a.node.is_none())
+        || (cmd == "weight") != (a.weight.is_some() && a.device.is_some() && a.node.is_none())
     {
-        // out, in and drain need a target; nothing else takes one.
+        // out, in, weight and drain need a target; nothing else takes one.
+        // weight takes one device and its weight.
         usage();
     }
     let needs_id = matches!(
@@ -903,6 +924,41 @@ where
                     Next::Exit(0)
                 }
                 // Its reason and exit status as every other refusal's.
+                Err(e) => return Err(e),
+            }
+        }
+        "weight" => {
+            let (Some(device), Some(weight)) = (a.device, a.weight) else {
+                unreachable!("checked with the arguments")
+            };
+            let r = client
+                .set_device_weight(pb::SetDeviceWeightRequest {
+                    device,
+                    weight,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    let how = if weight.is_some() {
+                        "kept as set"
+                    } else {
+                        "following its capacity"
+                    };
+                    println!(
+                        "device {device} weight {:.4}, {how} (map epoch {}); hyperstorctl status shows the PGs moving",
+                        r.weight, r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e) if e.code == connectrpc::ErrorCode::NotFound => {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("not found")
+                    );
+                    return Ok(Next::Exit(1));
+                }
                 Err(e) => return Err(e),
             }
         }

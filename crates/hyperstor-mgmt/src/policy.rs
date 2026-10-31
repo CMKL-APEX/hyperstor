@@ -52,6 +52,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("MemberService.ListMembers", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
+    ("ClusterService.SetDeviceWeight", Group::Operate, false),
     ("NodeService.DrainNode", Group::Operate, false),
     ("OperationService.CancelOperation", Group::Operate, false),
     // Operators protect data before maintenance and undo a mistaken
