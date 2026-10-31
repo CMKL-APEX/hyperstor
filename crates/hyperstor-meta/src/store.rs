@@ -178,6 +178,7 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         blocklist: map.blocklist.clone(),
         auto_out: map.auto_out.clone(),
         failed: map.failed.clone(),
+        fixed_weights: map.fixed_weights.clone(),
     }
     .encode()
 }
