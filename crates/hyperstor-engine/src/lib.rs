@@ -17,7 +17,9 @@ pub mod types;
 pub use align::{AlignedBuf, BLOCK};
 pub use blockmap::DensePolicy;
 pub use dev::{BlockDev, FaultDev, FileDev, MemDev, UringDev};
-pub use device::{DeviceConfig, DeviceInfo, Features, format, open};
+pub use device::{
+    DeviceConfig, DeviceInfo, Features, format, info as device_info, open, record_cluster,
+};
 pub use shard::{
     DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, Region, Round, Shard,
     ShardStats,

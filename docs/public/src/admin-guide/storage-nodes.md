@@ -24,6 +24,9 @@ A device is a file or a block device:
 - A device without Hyperstor's format is **formatted on first start**,
   without asking. Check the paths before starting a node: a typo can
   format the wrong device.
+- A device that holds another device's data, or another cluster's, is
+  **refused**: the node stops and says whose it is (swapped paths, a
+  drive from another host). Nothing is written to it.
 
 Devices are opened with `O_DIRECT` and driven through io_uring.
 `--buffered` goes through the page cache instead, for filesystems that

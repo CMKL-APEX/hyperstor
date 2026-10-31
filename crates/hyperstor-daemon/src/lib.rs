@@ -713,29 +713,9 @@ impl ShardState {
         blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
         metrics: Arc<metrics::ShardMetrics>,
     ) -> Result<Rc<Self>, String> {
-        let mut shard = match hyperstor_engine::open(&dev) {
-            Ok((_, mut v)) => v.pop().ok_or("device has no shard")?,
-            Err(EngineError::NotFormatted) => {
-                hyperstor_engine::format(
-                    &dev,
-                    &DeviceConfig {
-                        device_id: me as u128,
-                        cluster_id: 0,
-                        shards: 1,
-                        log_blocks: None,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-                hyperstor_engine::open(&dev)
-                    .map_err(|e| e.to_string())?
-                    .1
-                    .pop()
-                    .ok_or("device has no shard")?
-            }
-            Err(e) => return Err(e.to_string()),
-        };
-        shard.set_defer_max(defer.unwrap_or(0));
+        // The map first: its cluster is written into a new device's
+        // superblock, and a device of another device or cluster (a drive
+        // moved here, a wrong path) is refused, never served (I203).
         let mut client = None;
         for _ in 0..100 {
             match Client::connect_members(meta.clone(), node as u64).await {
@@ -747,6 +727,41 @@ impl ShardState {
             }
         }
         let client = client.ok_or("map service unreachable")?;
+        let cluster = client.map().cluster_id;
+        let refused = |e: EngineError| format!("device {me}: {e}");
+        // Checked from the superblock alone, before the shard is opened
+        // and its log replayed: a refused device is never written.
+        match hyperstor_engine::device_info(&dev) {
+            Ok(info) => {
+                info.belongs_to(me as u128, cluster).map_err(refused)?;
+                if info.cluster_id == 0 && cluster != 0 {
+                    hyperstor_engine::record_cluster(&dev, cluster).map_err(refused)?;
+                    eprintln!(
+                        "hyperstord: device {me}: recorded cluster {cluster} in its superblock"
+                    );
+                }
+            }
+            Err(EngineError::NotFormatted) => {
+                hyperstor_engine::format(
+                    &dev,
+                    &DeviceConfig {
+                        device_id: me as u128,
+                        cluster_id: cluster,
+                        shards: 1,
+                        log_blocks: None,
+                        ..Default::default()
+                    },
+                )
+                .map_err(refused)?;
+            }
+            Err(e) => return Err(refused(e)),
+        }
+        let mut shard = hyperstor_engine::open(&dev)
+            .map_err(refused)?
+            .1
+            .pop()
+            .ok_or("device has no shard")?;
+        shard.set_defer_max(defer.unwrap_or(0));
         Ok(Rc::new(ShardState {
             me,
             shard: shard_cell::ShardCell::new(shard),

@@ -97,6 +97,22 @@ enum Unread {
 }
 
 impl DeviceInfo {
+    /// Whether the superblock is device `device`'s of cluster `cluster`.
+    /// A cluster of 0 on either side (formatted before clusters were
+    /// recorded; a map without one) matches any.
+    pub fn belongs_to(&self, device: u128, cluster: u128) -> Result<(), EngineError> {
+        let other_cluster = self.cluster_id != 0 && cluster != 0 && self.cluster_id != cluster;
+        if self.device_id != device || other_cluster {
+            return Err(EngineError::NotThisDevice {
+                found_device: self.device_id,
+                found_cluster: self.cluster_id,
+                device,
+                cluster,
+            });
+        }
+        Ok(())
+    }
+
     fn encode(&self) -> AlignedBuf {
         let mut e = Enc::with_capacity(BLOCK);
         e.u64(DEV_MAGIC);
@@ -218,6 +234,26 @@ pub fn info(dev: &Arc<dyn BlockDev>) -> Result<DeviceInfo, EngineError> {
     }
 }
 
+/// Records `cluster` in a superblock written without one (cluster 0, by
+/// builds before it was recorded): copy 1 first, then copy 0, each flushed,
+/// so a crash at any point leaves a valid copy that reads as before or as
+/// after. A superblock of another cluster is refused. The shards are
+/// untouched: they never use the superblock's blocks.
+pub fn record_cluster(dev: &Arc<dyn BlockDev>, cluster: u128) -> Result<DeviceInfo, EngineError> {
+    let mut sb = info(dev)?;
+    sb.belongs_to(sb.device_id, cluster)?;
+    if sb.cluster_id == cluster {
+        return Ok(sb);
+    }
+    sb.cluster_id = cluster;
+    let buf = sb.encode();
+    for at in [BLOCK as u64, 0] {
+        dev.write_batch(&[(at, &buf)])?;
+        dev.flush()?;
+    }
+    Ok(sb)
+}
+
 /// Opens every shard of a formatted device, recovering each. A device with
 /// a feature this build can't use is refused before anything is read
 /// further (D157).
@@ -285,6 +321,47 @@ mod tests {
         assert_eq!(u32::from_le_bytes(buf[8..12].try_into().unwrap()), 2);
         assert_eq!(DeviceInfo::decode(&buf), Ok(info(f)));
         assert_eq!(f.refused(), Features { compat: 0, ..f });
+    }
+
+    /// I203: a superblock names its device and cluster; another's is
+    /// refused, and one written without a cluster gets it recorded once.
+    #[test]
+    fn a_device_belongs_to_its_device_and_cluster() {
+        let i = info(Features::default());
+        assert!(i.belongs_to(7, 9).is_ok());
+        assert!(i.belongs_to(7, 0).is_ok(), "a map without a cluster");
+        assert!(matches!(
+            i.belongs_to(8, 9),
+            Err(EngineError::NotThisDevice {
+                found_device: 7,
+                device: 8,
+                ..
+            })
+        ));
+        assert!(i.belongs_to(7, 10).is_err());
+        let dev: Arc<dyn BlockDev> = Arc::new(crate::MemDev::new(64 << 20));
+        let made = format(
+            &dev,
+            &DeviceConfig {
+                device_id: 7,
+                cluster_id: 0,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(made.belongs_to(7, 42).is_ok(), "no cluster yet: any");
+        assert_eq!(record_cluster(&dev, 42).unwrap().cluster_id, 42);
+        let (read, shards) = open(&dev).unwrap();
+        assert_eq!((read.cluster_id, shards.len()), (42, 1));
+        assert!(read.belongs_to(7, 43).is_err());
+        assert!(record_cluster(&dev, 43).is_err());
+        assert_eq!(record_cluster(&dev, 42).unwrap(), read);
+        // Each copy alone reads the same: a crash between the two writes
+        // leaves either.
+        let mut b = AlignedBuf::zeroed(BLOCK);
+        dev.read_batch(&mut [(BLOCK as u64, &mut b)]).unwrap();
+        assert_eq!(DeviceInfo::decode(&b), Ok(read));
     }
 
     #[test]
