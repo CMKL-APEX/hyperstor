@@ -29,7 +29,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights` | D158 and D159 built (I199, I200); PR in review | Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving | 2026-10-31 |
+| **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95) | D158 and D159 built (I199, I200); PR in review | Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving | 2026-10-31 |
 
 ## Done
 
