@@ -1,9 +1,10 @@
 title = "Device identity checked before a device is opened"
-status = "active"
+status = "review"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS2"
 branch = "feat/device-identity"
-now = "Built (I203): superblock's device and cluster checked; checks running"
+prs = [99]
+now = "Built (I203) and in review: superblock device and cluster checked before a device is opened"
 next = "PR; on deploy, each pilot device records the cluster id once"
