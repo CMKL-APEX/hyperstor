@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 0 | 12 |
+| 4 | 0 | 1 | 12 |
 
 ## In progress
 
@@ -28,7 +28,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Copies a device no longer serves are deleted (D177)** (`stray-copies`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/stray-copies` | Built (I208): a device deletes its copy of a PG it is in neither up nor acting of, once the PG is clean for 60 s | Review and merge; then install on the pilot, where node 1's old copies (about 8.8 GiB) should go within a minute | 2026-10-31 |
 
 ## Done
 
@@ -56,7 +58,7 @@ against the tests.
 |---|---|---|---|---|
 | HS0 | Local storage engine and reactor | 7 | 2 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
-| HS2 | Failure handling | 15 | 0 | 0 |
+| HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |
 | HS4 | Snapshots, clones and the host read cache | 4 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |

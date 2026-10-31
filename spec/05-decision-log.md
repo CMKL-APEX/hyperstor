@@ -854,3 +854,15 @@ point 114's first stage is built (I199), with tests; it is not settled.
 Settled on 2026-10-31, both as recommended: point 114 as D165, point
 115 as D166. Host check G43 (17-milestones.md §22) measures stage 1 on
 the pilot.
+
+## Copies a device no longer serves (2026-10-31)
+
+Adding a 3.5 TB drive to the pilot's node 1 (02-benchmarks.md,
+2026-10-31) moved node 1's copy of nearly every PG to it, but the old
+copies stayed on the node's other two devices: no code removed a PG's
+copy from a device that left the PG, after any rebalance, out, drain or
+weight change. Asked how to remove them, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 138 | When a device deletes its copy of a PG it has left: (a) once it is in neither `up` nor `acting` and the PG is clean (acting is up, every member live) for a grace of a minute (recommended); (b) the same, but keeping copies of devices that are only out, for a faster return | (a) | D177 |

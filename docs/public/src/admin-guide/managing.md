@@ -219,6 +219,11 @@ as copies, there is nowhere to move them, so the PGs run with one copy
 fewer (`degraded`) until the device is back **in**. Writes go on while
 each PG keeps at least the pool's `min` copies.
 
+A device deletes its copy of a PG it no longer serves a minute after
+the PG is clean on its other devices (D177), so space comes back after
+any move: out, drain, a weight change, or a device added. Its log says
+`deleted its copy of PG P.G`. A device brought back in is backfilled.
+
 > **Without `--data`, out doesn't survive a map service restart.** A
 > map service without a store reads the cluster file when it starts and
 > doesn't keep changes made since, so after a restart every device is in

@@ -113,6 +113,7 @@ fn main() {
     );
     let h = start(NodeConfig {
         push_part_bytes: 0,
+        stray_grace: std::time::Duration::ZERO,
         io_timeout,
         commit_delays: None,
         partitions: None,

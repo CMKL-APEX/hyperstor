@@ -1942,6 +1942,32 @@ impl Shard {
             .collect()
     }
 
+    /// The PGs this shard holds objects of, in order: one step through
+    /// the index per PG, as keys sort by pool and PG first (D177's
+    /// sweep of copies no longer served).
+    pub fn held_pgs(&self) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        let mut next = self.index.objects.keys().next().map(|k| (k.pool, k.pg));
+        while let Some((pool, pg)) = next {
+            out.push((pool, pg));
+            let (pool, pg) = match pg.checked_add(1) {
+                Some(pg) => (pool, pg),
+                None => match pool.checked_add(1) {
+                    Some(pool) => (pool, 0),
+                    None => break,
+                },
+            };
+            let from = ObjKey::new(pool, pg, crate::types::Namespace::Vol, Vec::new(), 0);
+            next = self
+                .index
+                .objects
+                .range(from..)
+                .next()
+                .map(|(k, _)| (k.pool, k.pg));
+        }
+        out
+    }
+
     /// Every object key in one PG, in order.
     pub fn list_pg(&self, pool: u32, pg: u32) -> Vec<ObjKey> {
         self.index
@@ -2264,6 +2290,48 @@ mod tests {
         assert_eq!(sum(100), (15, 1));
         assert_eq!(sum(2), (15, 3));
         assert_eq!(sh.pg_blocks(1, 4, None, 2), (0, None));
+    }
+
+    /// D177: the PGs a shard holds, each once, across pools and
+    /// namespaces, and none once its objects are deleted.
+    #[test]
+    fn held_pgs_are_listed_once_each() {
+        let region = Region {
+            start: 0,
+            blocks: 2048,
+            log_blocks: 64,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(2048 * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        let mut sh = Shard::open(dev, region, 7, 0).unwrap();
+        assert!(sh.held_pgs().is_empty());
+        let keys = [
+            ObjKey::new(0, 5, Namespace::Meta, b"h".to_vec(), 0),
+            ObjKey::new(1, 2, Namespace::Vol, b"a".to_vec(), 0),
+            ObjKey::new(1, 2, Namespace::Vol, b"b".to_vec(), 3),
+            ObjKey::new(1, 2, Namespace::Kv, b"c".to_vec(), 0),
+            ObjKey::new(1, u32::MAX, Namespace::Vol, b"d".to_vec(), 0),
+            ObjKey::new(2, 0, Namespace::Vol, b"e".to_vec(), 0),
+        ];
+        let lists = keys
+            .iter()
+            .map(|k| OpList {
+                key: k.clone(),
+                ops: vec![Op::SetAttr(b"x".to_vec(), b"1".to_vec())],
+            })
+            .collect();
+        assert!(sh.commit(lists).unwrap().iter().all(|r| r.is_ok()));
+        assert_eq!(sh.held_pgs(), [(0, 5), (1, 2), (1, u32::MAX), (2, 0)]);
+        let deletes = sh
+            .list_pg(1, 2)
+            .into_iter()
+            .map(|key| OpList {
+                key,
+                ops: vec![Op::Delete],
+            })
+            .collect();
+        sh.commit(deletes).unwrap();
+        assert_eq!(sh.held_pgs(), [(0, 5), (1, u32::MAX), (2, 0)]);
     }
 
     /// A checkpoint with no room is abandoned, not fatal (implementation-
