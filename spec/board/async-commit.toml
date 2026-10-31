@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS0"
 branch = "spec/reactor-decisions"
-prs = [94]
+prs = [94, 97]
 now = "Stage 1 merged (#94); points 114 and 115 settled as D165 and D166; `hyperstord --io-timeout-secs`"
 next = "Install on the pilot and measure (G43); read CI's split commit logs; then stage 2 or 3, whichever G43 points to"
