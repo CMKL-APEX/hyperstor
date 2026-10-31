@@ -728,10 +728,12 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D182", "I216"]
-status = "partial"
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D182", "I216", "I217"]
+status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",
+    "hyperstor_install::tests::removed_devices_get_no_shard",
+    "manage::the_installer_drops_a_removed_device",
     "hyperstor_meta::tests::devices_are_removed_once_no_pg_lists_them",
     "manage::a_device_is_removed_once_its_pgs_have_moved",
 ]

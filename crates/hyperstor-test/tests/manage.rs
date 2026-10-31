@@ -474,6 +474,100 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
+/// D182: `hyperstor-install install --remove-device ID` drops a device
+/// removed from the map from its node: refused while the map still has
+/// it; then kept in install.conf, so the node's options lose its
+/// `--shard` on this run and every later one, and the node runs without
+/// it. A node's last device is refused.
+#[test]
+fn the_installer_drops_a_removed_device() {
+    let mut c = Cluster::all_in_one("instrm", 3);
+    let addr = format!("127.0.0.1:{}", free_ports(1));
+    let disk = c.scratch.path("extra.img");
+    std::fs::File::create(&disk)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let d = disk.to_str().unwrap();
+    install(
+        &c.root,
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            d,
+            "--device-address",
+            &addr,
+        ],
+    );
+    c.kill_node(0);
+    c.start_node(0);
+    wait_for("device 1 running, and health ok", 120, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let weighted = v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(1) && d["weight"].as_f64().unwrap_or(0.0) > 0.0);
+        (weighted && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+    let drop = |c: &Cluster, id: &str| {
+        install_cmd(
+            &c.root,
+            "install",
+            &["--no-start", "--node", "0", "--remove-device", id],
+        )
+    };
+    let early = drop(&c, "1");
+    assert!(
+        early.code != 0 && early.has("device 1 is still in the map"),
+        "{}",
+        early.out
+    );
+    let kept = drop(&c, "0");
+    assert!(
+        kept.code != 0 && kept.has("device 0 is still in the map"),
+        "{}",
+        kept.out
+    );
+    let other = drop(&c, "2000");
+    // The trial's nodes are all this host's: node 2's only device.
+    assert!(
+        other.code != 0 && other.has("device 2000 is node 2's last"),
+        "{}",
+        other.out
+    );
+    c.ctl(&["device", "remove", "--device", "1", "--wait", "120"])
+        .ok();
+    let done = drop(&c, "1").ok();
+    assert!(done.has("dropped device 1 from node 0"), "{}", done.out);
+    let conf = std::fs::read_to_string(c.root.join("etc/hyperstor/install.conf")).unwrap();
+    assert!(
+        conf.contains("removed_devices = 1") && !conf.contains(d),
+        "{conf}"
+    );
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert!(!env.contains(&addr) && !env.contains(d), "{env}");
+    let last = drop(&c, "0");
+    assert!(
+        last.code != 0 && last.has("device 0 is node 0's last"),
+        "{}",
+        last.out
+    );
+    // A later run keeps it out.
+    install(&c.root, &["--no-start"]);
+    let env2 = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert_eq!(env, env2);
+    c.kill_node(0);
+    c.start_node(0);
+    wait_for("node 0 runs without device 1, and health ok", 60, || {
+        c.ctl(&["status"]).has("health  ok").then_some(())
+    });
+    assert!(c.node_exited(0).is_none(), "node 0 runs");
+}
+
 /// D178, D179: each node reports its device's kind; once every node has,
 /// a device whose class no operator set takes its kind ("nvme" until
 /// then, for every device), so these files become "file". An operator's

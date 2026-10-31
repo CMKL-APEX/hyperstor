@@ -308,11 +308,19 @@ when a device taking the data would pass 95% full. `--dry-run` shows
 the PGs that move, the pools left short and each receiving device's
 space after. Through `hyperstor-mgmt` it needs a fresh login (step-up).
 
-Then remove the device's `--shard` from the node's options and
-restart the node: a node started with a removed device's `--shard`
-stops, saying so. `hyperstor-install` doesn't drop it yet: on a host
-it installed, a later run puts the `--shard` back. The device's data
-is left as it was; wipe it separately.
+Then drop the device from its node, on the node's host:
+
+```sh
+sudo hyperstor-install install --node 1 --remove-device 1001
+```
+
+The installer checks that the map no longer has the device (on a host
+with the administrator's certificate), records it in `install.conf`
+so later runs leave its `--shard` out too, and restarts the node
+without it. A node started by hand with a removed device's `--shard`
+stops, saying so. The device's data is left as it was; wipe it
+separately. A node's last device leaves the map with the node:
+uninstall the storage role there instead.
 
 ## Device classes
 
