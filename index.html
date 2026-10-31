@@ -1,0 +1,102 @@
+<!doctype html>
+<!-- Landing page of the public docs site (gh-pages). The Docs workflow
+     puts it at the root, the public book under docs/ and the client API
+     reference under api/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperstor</title>
+<meta name="description" content="Hyperstor: a sharded, distributed block, object and file store in Rust, built for glidex nodes.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5a6475; --card: #f5f7fa;
+    --border: #e1e5ec; --accent: #2b6cb0; --accent-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --fg: #e6e9ef; --muted: #a0a8b6; --card: #1b2029;
+      --border: #2a313d; --accent: #63a4e8; --accent-fg: #0d1117;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem 3rem; }
+  header h1 { font-size: 2.75rem; margin: 0 0 .5rem; letter-spacing: -.02em; }
+  header p { font-size: 1.2rem; color: var(--muted); margin: 0 0 2rem; max-width: 42rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 3rem; }
+  .button {
+    display: inline-block; padding: .65rem 1.2rem; border-radius: 6px;
+    border: 1px solid var(--border); color: var(--fg); text-decoration: none;
+    font-weight: 600;
+  }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .button:hover { filter: brightness(1.08); }
+  pre {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 3rem;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h2 { font-size: 1.3rem; margin: 0 0 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 3rem; }
+  .card {
+    display: block; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.1rem 1.25rem; color: var(--fg); text-decoration: none;
+  }
+  a.card:hover { border-color: var(--accent); }
+  .card h3 { margin: 0 0 .35rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  footer { color: var(--muted); font-size: .9rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+  footer a { color: var(--accent); }
+</style>
+<body>
+<main>
+  <header>
+    <h1>Hyperstor</h1>
+    <p>A sharded, distributed storage system in Rust, built for
+    <a href="https://github.com/CMKL-APEX/glidex">glidex</a> nodes and
+    usable without them. Replicated pools on its own io_uring engine, with
+    block volumes, GPU-direct storage, S3 and a filesystem to come on the
+    same object layer.</p>
+  </header>
+
+  <div class="actions">
+    <a class="button primary" href="docs/quick-start.html">Quick start</a>
+    <a class="button" href="docs/">Documentation</a>
+    <a class="button" href="docs/status.html">Status</a>
+    <a class="button" href="https://github.com/CMKL-APEX/hyperstor">GitHub</a>
+  </div>
+
+  <pre><code>git clone https://github.com/CMKL-APEX/hyperstor.git &amp;&amp; cd hyperstor
+cargo build --release</code></pre>
+
+  <h2>Today</h2>
+  <div class="grid">
+    <div class="card"><h3>Replicated pools</h3><p>Two or three copies of every chunk, placed across devices, hosts or racks. A write returns once every copy has it.</p></div>
+    <div class="card"><h3>Its own engine</h3><p>Pure Rust on io_uring, one thread per device, checksums on every 4 KiB block, crash recovery tested against a model.</p></div>
+    <div class="card"><h3>Snapshots and clones</h3><p>Crash-consistent snapshots of a volume or a group at one instant, instant clones and rollbacks, snapshot deletion that moves no data.</p></div>
+    <div class="card"><h3>Failure handling</h3><p>Failed nodes detected by heartbeats, writes that go on with fewer copies, no data moved for a short reboot, recovery of only what a returning node missed, failed devices and slow replicas replaced at once, scrub that repairs damaged copies, and leases that fence cut-off nodes.</p></div>
+  </div>
+
+  <h2>Documentation</h2>
+  <div class="grid">
+    <a class="card" href="docs/quick-start.html"><h3>Quick start</h3><p>A three-node cluster on one machine, and a node failure.</p></a>
+    <a class="card" href="docs/user-guide/index.html"><h3>User guide</h3><p>The client library, what a write guarantees, and its errors.</p></a>
+    <a class="card" href="docs/admin-guide/index.html"><h3>Administrator guide</h3><p>Installation, planning, the map service, storage nodes and failures.</p></a>
+    <a class="card" href="docs/developer-guide/index.html"><h3>Developer guide</h3><p>Architecture, algorithms, design trade-offs, benchmarks and how Hyperstor compares.</p></a>
+    <a class="card" href="docs/reference/index.html"><h3>Reference</h3><p>The cluster file and every command-line option.</p></a>
+    <a class="card" href="api/hyperstor_client/index.html"><h3>Client API</h3><p>The Rust client library, generated from its source.</p></a>
+    <a class="card" href="docs/status.html"><h3>Status</h3><p>What each milestone delivers and what is built today.</p></a>
+  </div>
+
+  <footer>
+    Hyperstor is dual-licensed under MIT or Apache-2.0.
+    Copyright &copy; 2026 CMKL University and The Hyperstor Project Contributors.
+    <a href="https://github.com/CMKL-APEX/hyperstor">Source on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>

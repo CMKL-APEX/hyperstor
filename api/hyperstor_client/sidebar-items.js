@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["NS_META","NS_VOL"],"enum":["ClientError"],"fn":["branch_name","chunk_name","cut_label","object_pg","random_u64"],"mod":["cache","snapshot","trash","volume"],"struct":["Client"]};
