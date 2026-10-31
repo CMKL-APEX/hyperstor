@@ -86,6 +86,19 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A slow device no longer holds its reactor: commits wait for the device in the background (first stage)"
+spec = ["08-engine.md §6.2", "I199"]
+status = "partial"
+tests = [
+    "cluster::a_slow_commit_holds_no_reactor",
+    "cluster::a_hung_device_fails_after_the_io_timeout",
+    "hyperstor_daemon::shard_cell::tests::readers_wait_for_a_commit_in_flight",
+    "hyperstor_daemon::shard_cell::tests::using_the_shard_without_waiting_panics_during_a_commit",
+    "hyperstor_reactor::file::tests::writes_land_at_their_offsets",
+    "hyperstor_reactor::file::tests::errors_are_returned",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
@@ -895,7 +908,7 @@ tests = [
 
 [[milestone.item]]
 what = "Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto"
-spec = ["07-placement.md §5.2", "D158", "I199"]
+spec = ["07-placement.md §5.2", "D158", "I201"]
 status = "done"
 tests = [
     "hyperstor_meta::tests::device_weights_follow_capacity",
@@ -906,7 +919,7 @@ tests = [
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"
-spec = ["16-glidex.md §17", "D159", "I200"]
+spec = ["16-glidex.md §17", "D159", "I202"]
 status = "done"
 tests = [
     "hyperstor_meta::api::tests::pool_space_under_the_domain_rule",

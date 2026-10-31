@@ -42,9 +42,11 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144, D147–D149, D150–D153 and D154–D162 in 04-decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I200, the NFS and pNFS proposals
-  D128 and D131–D137 (`spec/22-nfs.md`), every host check (G1–G42, FG1–FG2), and points 97–103 of
-  `spec/05-decision-log.md` (the engine's layout and AI workloads).
+  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I202, the NFS and pNFS proposals
+  D128 and D131–D137 (`spec/22-nfs.md`), every host check (G1–G43,
+  FG1–FG2), and points 97–103 (the engine's layout and AI workloads) and
+  114–115 (device waits off the reactor; stage 1 prototyped, I199) of
+  `spec/05-decision-log.md`.
 - **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
   `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
   then the rest of

@@ -271,6 +271,20 @@ fn an_empty_node_is_refilled_without_flapping() {
     drop(data);
     c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
         .ok();
+    // Writing the filler on a loaded runner can hold a reactor past the
+    // peer timeout, so a node may go down and come back before the kill;
+    // D149 then warns "flapping" for 10 minutes (I200). What is checked is
+    // the refill, so that is allowed, once every node is up again.
+    let settled = |s: &str| {
+        s.contains("health  ok")
+            || s.contains("health  warn")
+                && s.lines()
+                    .filter(|l| l.starts_with("  "))
+                    .all(|l| l.contains(" flapping ("))
+    };
+    wait_for("every node up before the kill", 90, || {
+        settled(&c.ctl(&["status"]).out).then_some(())
+    });
     c.kill_node(2);
     wait_for("node 2 down", 20, || {
         c.ctl(&["status"]).has("node(s) down: 2").then_some(())
@@ -288,7 +302,7 @@ fn an_empty_node_is_refilled_without_flapping() {
     let mut status = String::new();
     while t.elapsed().as_secs() < 180 {
         status = c.ctl(&["status"]).out;
-        if status.contains("health  ok") {
+        if settled(&status) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -304,7 +318,8 @@ fn an_empty_node_is_refilled_without_flapping() {
         ["hyperstor-meta: node 2 up (heartbeats again)"],
         "only node 2 comes back; no one flaps"
     );
-    assert!(status.contains("health  ok"), "{status}");
+    // So any flapping warning left is from before the kill.
+    assert!(settled(&status), "{status}");
 }
 
 /// Volumes through the cluster API (D77): `hyperstorctl` creates, lists

@@ -6,5 +6,5 @@ updated = 2026-10-31
 milestone = "AD3"
 branch = "feat/device-weights"
 prs = [95]
-now = "D158 and D159 built (I199, I200); PR in review"
+now = "D158 and D159 built (I201, I202); PR in review"
 next = "Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving"

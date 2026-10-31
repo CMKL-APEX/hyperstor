@@ -99,6 +99,8 @@ fn main() {
     );
     let h = start(NodeConfig {
         push_part_bytes: 0,
+        io_timeout: std::time::Duration::ZERO,
+        commit_delays: None,
         partitions: None,
         node_id: node,
         meta,

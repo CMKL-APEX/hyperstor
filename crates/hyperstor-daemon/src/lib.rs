@@ -27,6 +27,7 @@
 pub mod diag;
 pub mod faults;
 pub mod metrics;
+mod shard_cell;
 
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
 use hyperstor_client::volume::{
@@ -36,7 +37,7 @@ use hyperstor_client::volume::{
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
     BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev, Namespace, ObjKey,
-    Op, OpError, OpList, Shard, UringDev,
+    Op, OpError, OpList, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
@@ -146,6 +147,12 @@ pub struct NodeConfig {
     /// before the rest follows in parts ([`Msg::PushKv`]); zero: a quarter
     /// of the frame limit ([`PUSH_PART_BYTES`]). Tests set it small.
     pub push_part_bytes: usize,
+    /// How long a commit round's writes and flush may take before the
+    /// device is failed (I199); zero: [`IO_TIMEOUT`].
+    pub io_timeout: Duration,
+    /// Test hook: devices whose commits take longer without holding their
+    /// reactor (04-decisions.md D92, I199).
+    pub commit_delays: Option<Arc<faults::CommitDelays>>,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
@@ -171,6 +178,12 @@ const BACKFILL_WINDOW: usize = 16;
 /// a third of the production peer timeout (300 ms), so a stall that gets
 /// a node reported silent is always in the log.
 pub const STALL: Duration = Duration::from_millis(100);
+
+/// How long a commit round's writes and flush may take before the device
+/// is failed (I199). Before, a hung device held its reactor, so the node
+/// went down; now the reactor goes on, and this ends the wait. Linux gives
+/// an NVMe command 30 s before it aborts and retries it.
+pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
@@ -273,6 +286,11 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             n => n,
         };
         let partitions = cfg.partitions.clone();
+        let commit_delays = cfg.commit_delays.clone();
+        let io_timeout = match cfg.io_timeout {
+            Duration::ZERO => IO_TIMEOUT,
+            t => t,
+        };
         let opened = Opening(Some(opening.clone()));
         threads.push(
             std::thread::Builder::new()
@@ -299,6 +317,8 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.no_digests.set(no_digests);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
+                        *st.commit_delays.borrow_mut() = commit_delays;
+                        st.io_timeout.set(io_timeout);
                         let l = TcpListener::from_std(sh.listener);
                         eprintln!(
                             "hyperstord: device {} open in {} ms",
@@ -360,7 +380,13 @@ type CommitResult = Result<Committed, String>;
 /// One reactor's state.
 struct ShardState {
     me: u32,
-    shard: RefCell<Shard>,
+    shard: shard_cell::ShardCell,
+    /// The shard's device, which commits write through (I199).
+    dev: Arc<dyn BlockDev>,
+    /// `NodeConfig::io_timeout`, resolved.
+    io_timeout: Cell<Duration>,
+    /// The test hook of `NodeConfig::commit_delays`.
+    commit_delays: RefCell<Option<Arc<faults::CommitDelays>>>,
     client: Rc<Client>,
     queue: RefCell<Vec<(OpList, OneSender<CommitResult>)>>,
     committer: RefCell<Option<Waker>>,
@@ -723,7 +749,10 @@ impl ShardState {
         let client = client.ok_or("map service unreachable")?;
         Ok(Rc::new(ShardState {
             me,
-            shard: RefCell::new(shard),
+            shard: shard_cell::ShardCell::new(shard),
+            dev,
+            io_timeout: Cell::new(IO_TIMEOUT),
+            commit_delays: RefCell::new(None),
             client,
             queue: RefCell::new(Vec::new()),
             committer: RefCell::new(None),
@@ -772,21 +801,62 @@ impl ShardState {
         async move { rx.recv().await.unwrap_or(Err("commit dropped".into())) }
     }
 
-    /// Commits everything queued now, as one batch, in queue order.
-    fn commit_queued(&self) {
+    /// Commits everything queued now, as one batch, in queue order. Each
+    /// round's writes and flush go through the reactor's ring where the
+    /// device allows (I199), so the reactor answers pings and serves other
+    /// work while the device works; nothing uses the shard until the
+    /// commit ends.
+    async fn commit_queued(&self) {
+        let c = self.shard.commit().await;
         let batch = std::mem::take(&mut *self.queue.borrow_mut());
         if batch.is_empty() {
             return;
         }
         let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
         let n = lists.len();
+        let mut rest: std::collections::VecDeque<OpList> = lists.into();
+        let mut results = Vec::with_capacity(n);
         let t = std::time::Instant::now();
-        let res = self.shard.borrow_mut().commit(lists);
-        self.note_slow(t, || format!("a commit of {n} list(s)"));
+        let mut waited = Duration::ZERO;
+        let res = loop {
+            if rest.is_empty() {
+                c.shard().commit_done();
+                break Ok(());
+            }
+            let begun = c.shard().commit_begin(&mut rest);
+            let mut round = match begun {
+                Ok(r) => r,
+                Err(e) => break Err(e),
+            };
+            let w = std::time::Instant::now();
+            let io = self.write_round(round.take_writes()).await;
+            waited += w.elapsed();
+            let ended = c.shard().commit_end(round, io);
+            match ended {
+                Ok(mut v) => results.append(&mut v),
+                Err(e) => break Err(e),
+            }
+        };
+        drop(c);
+        let held = t.elapsed().saturating_sub(waited);
+        if held >= STALL {
+            eprintln!(
+                "hyperstord: device {}: a commit of {n} list(s) took {} ms",
+                self.me,
+                held.as_millis()
+            );
+        }
+        if waited >= STALL {
+            eprintln!(
+                "hyperstord: device {}: a commit of {n} list(s) waited {} ms for the device",
+                self.me,
+                waited.as_millis()
+            );
+        }
         self.batches.set(self.batches.get() + 1);
         match res {
-            Ok(rs) => {
-                for (tx, r) in txs.into_iter().zip(rs) {
+            Ok(()) => {
+                for (tx, r) in txs.into_iter().zip(results) {
                     let _ = tx.send(r.map_err(|e: OpError| e.to_string()));
                 }
             }
@@ -799,6 +869,52 @@ impl ShardState {
                     let _ = tx.send(Err(e.to_string()));
                 }
             }
+        }
+    }
+
+    /// Writes one commit round and flushes (I199): on the reactor's ring
+    /// when the device has a descriptor, else in the device's own calls
+    /// (memory and test devices), which hold the reactor as before. A
+    /// device that takes longer than the I/O timeout fails the round.
+    async fn write_round(
+        &self,
+        writes: Vec<(u64, hyperstor_engine::AlignedBuf)>,
+    ) -> std::io::Result<()> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let delay = self
+            .commit_delays
+            .borrow()
+            .as_ref()
+            .map_or(Duration::ZERO, |d| d.get(self.me));
+        let io = async {
+            if !delay.is_zero() {
+                sleep(delay).await;
+            }
+            match self.dev.raw_fd() {
+                // SAFETY: the descriptor is the device's, which `self.dev`
+                // keeps open for as long as this reactor runs; the kernel
+                // holds its own reference to the file once an operation
+                // starts, so even a write abandoned on the timeout below
+                // never reaches another file.
+                Some(fd) => unsafe { hyperstor_reactor::file::write_then_sync(fd, writes) }.await,
+                None => {
+                    let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
+                    self.dev.write_batch(&io).and_then(|()| self.dev.flush())
+                }
+            }
+        };
+        let limit = self.io_timeout.get();
+        match hyperstor_reactor::time::timeout(limit, io).await {
+            Ok(r) => r,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "the device took over {} ms to write a commit",
+                    limit.as_millis()
+                ),
+            )),
         }
     }
 
@@ -848,11 +964,11 @@ impl ShardState {
                 }
             })
             .await;
-            self.commit_queued();
-            let pending = self.shard.borrow().pending_blocks();
+            self.commit_queued().await;
+            let pending = self.shard.get().await.pending_blocks();
             if pending > 4096 {
                 let t = std::time::Instant::now();
-                let _ = self.shard.borrow_mut().apply_deferred();
+                let _ = self.shard.get_mut().await.apply_deferred();
                 self.note_slow(t, || format!("applying {pending} deferred block(s)"));
             }
             // Let request handlers queue the next batch.
@@ -915,7 +1031,7 @@ impl ShardState {
                 .insert((to.pool, to.pg), pg.epoch);
             // Committed here, after anything already queued and before this
             // request goes on: reads don't pass through the queue.
-            let keys = self.shard.borrow().list_pg(to.pool, to.pg);
+            let keys = self.shard.get().await.list_pg(to.pool, to.pg);
             self.queue.borrow_mut().extend(keys.into_iter().map(|k| {
                 let list = OpList {
                     key: k,
@@ -923,7 +1039,7 @@ impl ShardState {
                 };
                 (list, oneshot().0)
             }));
-            self.commit_queued();
+            self.commit_queued().await;
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             return Err(err(Code::Invalid, &map, "no such PG"));
@@ -1073,7 +1189,7 @@ impl ShardState {
         let block = hyperstor_engine::BLOCK as u64;
         loop {
             {
-                let st = self.shard.borrow().stats();
+                let st = self.shard.get().await.stats();
                 let m = &self.metrics;
                 m.objects.store(st.objects, Relaxed);
                 m.free_bytes.store(st.free_blocks * block, Relaxed);
@@ -1266,7 +1382,7 @@ impl ShardState {
                         Err(m) => m,
                         Ok(_) => match engine_key(&to, &key) {
                             Ok(k) => Msg::VersionsOk {
-                                versions: self.shard.borrow().versions(&k),
+                                versions: self.shard.get().await.versions(&k),
                             },
                             Err(()) => err(Code::Invalid, &self.map(), "bad namespace"),
                         },
@@ -1864,6 +1980,7 @@ impl ShardState {
         if let Err(m) = self.check(&to, true).await {
             return (m, Vec::new());
         }
+        self.shard.idle().await;
         let Ok(keyed) = self.layer_keys(&to, &key, &layers) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
@@ -1871,7 +1988,8 @@ impl ShardState {
         // Where each block comes from, for the client's cache (D102).
         let sources = self
             .shard
-            .borrow()
+            .get()
+            .await
             .layer_sources(&keys, off, len)
             .into_iter()
             .map(|i| i.map_or((u32::MAX, 0), |i| (keyed[i].1, keyed[i].0.version)))
@@ -1885,7 +2003,7 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        let r = self.shard.borrow().read_layered(&keys, off, len);
+        let r = self.shard.get().await.read_layered(&keys, off, len);
         let data = match r {
             Ok(b) => b.to_vec(),
             Err(EngineError::NotFound) => vec![0; len as usize],
@@ -1929,7 +2047,8 @@ impl ShardState {
         };
         let versions: Vec<u64> = self
             .shard
-            .borrow()
+            .get()
+            .await
             .versions(&okey)
             .into_iter()
             .filter(|v| *v >= from && *v <= upto)
@@ -2065,7 +2184,12 @@ impl ShardState {
                 token: q.token,
             };
         }
-        let now = self.shard.borrow().attrs(&okey).map_or(0, header_version);
+        let now = self
+            .shard
+            .get()
+            .await
+            .attrs(&okey)
+            .map_or(0, header_version);
         if now > version {
             return Msg::WatchOk {
                 event: WATCH_CHANGED,
@@ -2148,7 +2272,8 @@ impl ShardState {
                 .is_some_and(|q| q.token == token);
             let leased = self
                 .shard
-                .borrow()
+                .get()
+                .await
                 .attrs(&okey)
                 .is_some_and(|a| a.contains_key(LEASE_ATTR));
             if leased && !mine {
@@ -2192,17 +2317,22 @@ impl ShardState {
             return Err(err(Code::Invalid, &self.map(), "bad namespace"));
         };
         // Who must drain: the holder, and every delegate under its lease.
-        let pending: Vec<u64> = self.shard.borrow().attrs(&okey).map_or_else(Vec::new, |a| {
-            a.get(LEASE_ATTR)
-                .and_then(|h| decode_holder(h))
-                .map(|h| h.lease)
-                .into_iter()
-                .chain(
-                    a.get(DELEGATES_ATTR)
-                        .map_or_else(Vec::new, |b| decode_delegates(b)),
-                )
-                .collect()
-        });
+        let pending: Vec<u64> = self
+            .shard
+            .get()
+            .await
+            .attrs(&okey)
+            .map_or_else(Vec::new, |a| {
+                a.get(LEASE_ATTR)
+                    .and_then(|h| decode_holder(h))
+                    .map(|h| h.lease)
+                    .into_iter()
+                    .chain(
+                        a.get(DELEGATES_ATTR)
+                            .map_or_else(Vec::new, |b| decode_delegates(b)),
+                    )
+                    .collect()
+            });
         let held = !pending.is_empty();
         if held {
             if self.quiesce.borrow().contains_key(&okey) {
@@ -2537,7 +2667,7 @@ impl ShardState {
                 results.push((LEASE_RETRY, 0));
                 continue;
             };
-            let sh = self.shard.borrow();
+            let sh = self.shard.get().await;
             let attrs = sh.attrs(&okey).filter(|_| sh.stat(&okey).is_some());
             let version = attrs.map_or(0, header_version);
             let holder = attrs
@@ -2640,7 +2770,7 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let sh = self.shard.borrow();
+        let sh = self.shard.get().await;
         let Some(st) = sh.stat(&okey) else {
             return (Msg::LookupOk { found: false }, Vec::new());
         };
@@ -2681,6 +2811,7 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return send(err(Code::Invalid, &self.map(), "bad namespace"));
         };
+        self.shard.idle().await;
         let lists = self.object_lists(&okey, obj);
         let done: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
         let me = self.clone();
@@ -2728,6 +2859,7 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return send(err(Code::Invalid, &self.map(), "bad namespace"));
         };
+        self.shard.idle().await;
         let done: Vec<_> = self
             .kv_lists(&okey, kv)
             .into_iter()
@@ -2874,7 +3006,7 @@ impl ShardState {
     /// looks twice before it repairs, and backfill sends what differs,
     /// with live writes covering the rest.
     async fn local_digests(&self, pool: u32, pg: u32) -> Vec<(ObjKey, u64)> {
-        let keys = self.shard.borrow().list_pg(pool, pg);
+        let keys = self.shard.get().await.list_pg(pool, pg);
         let mut out = Vec::with_capacity(keys.len());
         for batch in keys.chunks(DIGEST_BATCH) {
             for k in batch {
@@ -2893,7 +3025,7 @@ impl ShardState {
         out
     }
 
-    /// An object's digest ([`Shard::digest`]); a large one a part of
+    /// An object's digest ([`Shard::digest`](hyperstor_engine::Shard::digest)); a large one a part of
     /// [`DIGEST_PART`] bytes at a time with a yield between (I188), so that
     /// pings get through: at once, a table of 215 MB held the reactor for
     /// 290 ms, near the peer timeout. If the object changes between parts,
@@ -2901,13 +3033,13 @@ impl ShardState {
     /// once.
     async fn digest(&self, key: &ObjKey) -> Option<u64> {
         let mut restarts = 0;
-        let mut step = self.shard.borrow().digest_begin(key)?;
+        let mut step = self.shard.get().await.digest_begin(key)?;
         loop {
             match step {
                 DigestPart::Done(d) => return Some(d),
                 DigestPart::More(g) => {
                     hyperstor_reactor::yield_now().await;
-                    let sh = self.shard.borrow();
+                    let sh = self.shard.get().await;
                     step = match sh.digest_part(g, DIGEST_PART) {
                         Some(s) => s,
                         None if restarts < 2 => {
@@ -2926,10 +3058,10 @@ impl ShardState {
     /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second, yielding
     /// between objects so I/O goes on.
     async fn verify_pg(&self, pool: u32, pg: u32) {
-        let keys = self.shard.borrow().list_pg(pool, pg);
+        let keys = self.shard.get().await.list_pg(pool, pg);
         for key in keys {
             let read = {
-                let sh = self.shard.borrow();
+                let sh = self.shard.get().await;
                 sh.stat(&key).map(|st| {
                     sh.read(&key, 0, st.size.div_ceil(4096) * 4096)
                         .map(|b| b.len())
@@ -3166,7 +3298,7 @@ impl ShardState {
         loop {
             let mut wait = SPACE_EVERY;
             if !self.cut_off() {
-                let st = self.shard.borrow().stats();
+                let st = self.shard.get().await.stats();
                 let r = self
                     .client
                     .call_meta(&Msg::DeviceSpace {
@@ -3245,7 +3377,8 @@ impl ShardState {
         loop {
             let (b, next) = self
                 .shard
-                .borrow()
+                .get()
+                .await
                 .pg_blocks(pool, pg, after.as_ref(), 4096);
             blocks += b;
             match next {
@@ -3285,13 +3418,21 @@ impl ShardState {
     }
 
     /// Waits until every queued commit is done, so the engine holds every
-    /// write queued so far.
+    /// write queued so far. A commit leaves the queue when it begins and
+    /// ends later (I199), so this also waits for the one in flight; the
+    /// shard may then be used until the caller's next `.await`.
     async fn drained(&self) {
         #[cfg(hs_diag)]
         let t = std::time::Instant::now();
-        while !self.queue.borrow().is_empty() {
-            crate::diag!("drain {}", self.me; "device {}: waiting {:?} for {} queued commits to drain", self.me, t.elapsed(), self.queue.borrow().len());
-            hyperstor_reactor::yield_now().await;
+        loop {
+            while !self.queue.borrow().is_empty() {
+                crate::diag!("drain {}", self.me; "device {}: waiting {:?} for {} queued commits to drain", self.me, t.elapsed(), self.queue.borrow().len());
+                hyperstor_reactor::yield_now().await;
+            }
+            self.shard.idle().await;
+            if self.queue.borrow().is_empty() {
+                return;
+            }
         }
     }
 
@@ -3442,9 +3583,9 @@ impl ShardState {
         // Compared in batches with a yield between, as `local_digests`
         // digests (I183). A key that changes meanwhile is compared as its
         // batch finds it; live writes reach this target anyway.
-        let ours = self.shard.borrow().list_pg(pool, pg);
+        let ours = self.shard.get().await.list_pg(pool, pg);
         let mut keys: BTreeSet<ObjKey> = {
-            let sh = self.shard.borrow();
+            let sh = self.shard.get().await;
             theirs
                 .keys()
                 .filter(|k| sh.stat(k).is_none())
@@ -3952,6 +4093,7 @@ impl ShardState {
                 let Ok(obj) = decode_object(&payload) else {
                     return false;
                 };
+                self.shard.idle().await;
                 let mut done: Vec<_> = self
                     .object_lists(key, obj)
                     .into_iter()
@@ -3972,6 +4114,7 @@ impl ShardState {
                                 ok = false;
                                 break;
                             };
+                            self.shard.idle().await;
                             done.extend(
                                 self.kv_lists(key, kv).into_iter().map(|l| self.enqueue(l)),
                             );
@@ -4008,7 +4151,10 @@ impl ShardState {
             .await
         {
             Ok((Msg::FetchOk { found: true }, payload)) => match decode_object(&payload) {
-                Ok(obj) => self.object_lists(key, obj),
+                Ok(obj) => {
+                    self.shard.idle().await;
+                    self.object_lists(key, obj)
+                }
                 Err(_) => return false,
             },
             Ok((Msg::FetchOk { found: false }, _)) => vec![OpList {
@@ -4050,7 +4196,7 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        if self.shard.borrow().stat(&okey).is_none() {
+        if self.shard.get().await.stat(&okey).is_none() {
             return (Msg::FetchOk { found: false }, Vec::new());
         }
         match self.push_of(to, &okey, false) {
@@ -4090,7 +4236,7 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        let sh = self.shard.borrow();
+        let sh = self.shard.get().await;
         let Some(st) = sh.stat(&okey) else {
             return (
                 Msg::FetchPartOk {
@@ -4137,7 +4283,7 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let mut r = self.shard.borrow().read(&okey, off, len);
+        let mut r = self.shard.get().await.read(&okey, off, len);
         // A block that fails its checksum (09-replication.md §8.2): this copy
         // is replaced by a member's, and the read served from it.
         if matches!(r, Err(EngineError::Checksum { .. })) {
@@ -4150,7 +4296,7 @@ impl ShardState {
                 .collect();
             for m in members {
                 if self.repair_own(to, &okey, m).await {
-                    r = self.shard.borrow().read(&okey, off, len);
+                    r = self.shard.get().await.read(&okey, off, len);
                     break;
                 }
             }
