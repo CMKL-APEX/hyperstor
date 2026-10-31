@@ -118,6 +118,7 @@ covered by tests that run on every change.
 |---|---|
 | A device added to a running node: registered, weighted once it runs, then given PGs | In progress |
 | Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address | Done |
+| Block devices are formatted by the installer after a check for other systems' signatures; the node formats only files | Done |
 
 ## AD0: Administration API, identities and CLI
 

@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]...
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--path P] [--device D] [--force-format]
 ```
 
 | Command | Does |
@@ -14,6 +14,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
 | `root-backup` | Writes the root CA's certificate and key to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the key from this host |
 | `root-restore` | Puts the root CA from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster |
+| `format-device` | Formats the block device `--path` (by its `/dev/disk/by-id/` name) as device `--device` for `hyperstord`, which formats only files (D168). It refuses a device that holds anything it recognises (a partition table, LVM, Ceph BlueStore, md RAID, LUKS, a filesystem, swap, or a hyperstor device already), naming it; `--force-format` zeroes the device's first and last 128 KiB and formats it anyway. The cluster's id comes from the installed cluster file, or the node records it at its first start |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -52,6 +53,9 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all
 | `--vhost` | off | Also run [`hyperstor-vhost`](hyperstor-vhost.md) here, for VMs on this host (glidex's `hyperstor` datastores): the unit `hyperstor-vhost.service`, its sockets in `/run/hyperstor/vhost`. Restarting it keeps the VMs' disks. Saved |
 | `--no-vhost` | | Remove it again: its volumes are detached first |
 | `--vhost-user NAME` | | A user who may use `hyperstor-vhost` (glidex's, say): its control socket, and, for the first one named, the sockets go to the user's primary group. Repeat for more; given at all, it replaces the saved list. Saved |
+| `--path P` | | `format-device`: the device to format |
+| `--device D` | | `format-device`: its device id (`N × 1000 + i`, as `hyperstorctl device add` gave it) |
+| `--force-format` | off | `format-device`: format over another system's signature |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
 runs, so `sudo hyperstor-install install` alone updates an existing

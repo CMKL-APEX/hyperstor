@@ -21,9 +21,13 @@ A device is a file or a block device:
   written; keep that much space free on its filesystem.
 - **A block device** is used whole. Give its size as `0`
   (`/dev/nvme1n1:0`).
-- A device without Hyperstor's format is **formatted on first start**,
-  without asking. Check the paths before starting a node: a typo can
-  format the wrong device.
+- A **file** without Hyperstor's format is **formatted on first start**.
+  A **block device** never is: format it first with `sudo hyperstor-install
+  format-device --path /dev/disk/by-id/NAME --device D`, which refuses a
+  device that holds anything else (a partition table, LVM, a Ceph OSD,
+  a filesystem...) unless `--force-format`. A node given a blank block
+  device stops, saying so. Name block devices by `/dev/disk/by-id/`:
+  `/dev/nvmeXnY` numbers can change at boot.
 - A device that holds another device's data, or another cluster's, is
   **refused**: the node stops and says whose it is (swapped paths, a
   drive from another host). Nothing is written to it.

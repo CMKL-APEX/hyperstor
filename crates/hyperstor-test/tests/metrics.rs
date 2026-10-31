@@ -25,19 +25,27 @@ fn requests_are_counted_and_timed() {
     wait_for("gauges", 5, || {
         (c.metric_sum("hyperstor_device_objects", "") > 0).then_some(())
     });
-    let epochs: Vec<String> = (0..3)
-        .map(|n| {
-            c.metrics(n)
-                .lines()
-                .find(|l| l.starts_with("hyperstor_map_epoch{"))
-                .unwrap()
-                .rsplit(' ')
-                .next()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-    assert!(epochs.windows(2).all(|w| w[0] == w[1]), "{epochs:?}");
+    // Nodes follow the map every 200 ms, and the map service may have
+    // just changed it (D158 weights the devices once they report), so
+    // they agree within moments, not at every instant.
+    let epochs = || -> Vec<String> {
+        (0..3)
+            .map(|n| {
+                c.metrics(n)
+                    .lines()
+                    .find(|l| l.starts_with("hyperstor_map_epoch{"))
+                    .unwrap()
+                    .rsplit(' ')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    wait_for("every node at the same map epoch", 5, || {
+        let e = epochs();
+        e.windows(2).all(|w| w[0] == w[1]).then_some(())
+    });
 }
 
 /// Every metric the shipped Grafana dashboard queries is one the storage
