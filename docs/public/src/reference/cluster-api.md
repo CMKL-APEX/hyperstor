@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `AddDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -79,6 +79,7 @@ values are left out of answers.
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 | `SetDeviceWeight` | `{"device": 2, "weight": 0.5}`, or `{"device": 2}` to follow the device's capacity again | `map_epoch` after the change, and `weight` now; `invalid_argument` for a weight below 0 |
 | `AddDevice` | `{"node": 0, "address": "192.0.2.20:9102"}`, and `"class"` if not the node's others' | `device`, its id, and `map_epoch`; `not_found` without the node, `failed_precondition` (`device_conflict`) for an address in use, `invalid_argument` for an address a node can't listen on or a bad class |
+| `RemoveDevice` | `{"device": 2}`; `"dry_run": true` changes nothing; `"force": true` lets pools keep fewer copies than their size. Needs step-up through hyperstor-mgmt | `moves` (each PG's `before` and `after`), `short_pools` (`pool`, the `copies` it keeps, its `size`), `fill` (each device taking data: `device`, `used_bytes` after, `total_bytes`) and, unless a dry run, the `operation` that removes the device from the map once no PG lists it, with its node if it was the last (D175, D182); `not_found` without the device, `failed_precondition` (`device_conflict`) when a pool would keep fewer copies than its `min` (or, unforced, its size) or a device would pass 95% full |
 | `SetDeviceClass` | `{"device": 2, "class": "fast"}`, or `{"device": 2}` to follow its kind again | `map_epoch` and `class` now; `not_found` without the device, `failed_precondition` (`class_conflict`) for a device whose kind isn't known or a class of another kind, `invalid_argument` for a bad class |
 | `CreatePool` | `{"name": "fast", "kind": "replicated", "size": 3, "classes": ["nvme"]}`; optional `min_size`, `pg_count`, `chunk_size`, `domain`, `force` | `pool` (its id, never one a pool had), `pg_count`, `map_epoch`, `mixed_kinds`; `failed_precondition` (`pool_conflict`) for a name in use, too few failure domains or an unforced mix; `invalid_argument` for no classes, a bad name, kind, domain, copies, chunk or PG count |
 | `SetPool` | `{"pool": 1, "classes": ["nvme", "ssd"]}`, `"every_device": true` for every device, `"domain": "rack"`, `"name": "fast"`; what isn't given stays; `"force": true` to allow hard disks with flash | `map_epoch`, and `mixed_kinds` when the pool's devices mix them; `not_found` without the pool, `failed_precondition` (`pool_conflict`) for `.meta`, a name in use, too few failure domains, or an unforced mix; `invalid_argument` for a bad class, name or domain, classes with `every_device`, or nothing to change. Each pool in `GetStatus` gives its `classes` and `mixed_kinds` |
@@ -133,9 +134,9 @@ values are left out of answers.
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
-| `ListOperations` | `{}` | `operations`, newest first: drains, flattens and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
+| `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |
-| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain brings the node's devices back in. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
+| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain or device removal brings the devices back in. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
 
 ```sh
 cd /etc/hyperstor/pki

@@ -284,6 +284,36 @@ PATH --id D` on the node's host, then one more `--shard
 192.0.2.21:9102=PATH:0` in the node's options (which a later installer
 run rewrites).
 
+## Removing a device
+
+A device leaves once its data has moved (D175, D182):
+
+```sh
+hyperstorctl device remove --device 1001 --dry-run   # what would move; nothing changes
+hyperstorctl device remove --device 1001 --wait 3600
+```
+
+The device is taken out at once, and its PGs move to the other devices
+of their pools, under the backfill budget. An operation follows them;
+once no PG lists the device, the map service removes it from the map,
+and the node with it if it was the node's last device. Neither id is
+given again. `hyperstorctl op cancel --id ID` before then brings the
+device back in.
+
+It is refused when a pool using the device would be left with fewer
+failure domains (hosts, by default) than its copies. `--force` allows
+it: the pool keeps fewer copies until a device in another domain is
+added, but never fewer than its `min`. It is refused, forced or not,
+when a device taking the data would pass 95% full. `--dry-run` shows
+the PGs that move, the pools left short and each receiving device's
+space after. Through `hyperstor-mgmt` it needs a fresh login (step-up).
+
+Then remove the device's `--shard` from the node's options and
+restart the node: a node started with a removed device's `--shard`
+stops, saying so. `hyperstor-install` doesn't drop it yet: on a host
+it installed, a later run puts the `--shard` back. The device's data
+is left as it was; wipe it separately.
+
 ## Device classes
 
 Each node reports what its devices are: `nvme`, `ssd`, `hdd`, or `file`

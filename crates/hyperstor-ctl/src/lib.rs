@@ -52,6 +52,16 @@ fn gib(b: Option<u64>) -> String {
     })
 }
 
+/// A device's space after a removal: used of total, and the share.
+pub fn fill_text(used: u64, total: u64) -> String {
+    format!(
+        "{} of {} used ({:.0}%)",
+        gib(Some(used)),
+        gib(Some(total)),
+        used as f64 * 100.0 / total.max(1) as f64
+    )
+}
+
 pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -290,6 +300,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.AddDevice", "device add"),
+    ("ClusterService.RemoveDevice", "device remove"),
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),

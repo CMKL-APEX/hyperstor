@@ -1223,16 +1223,34 @@ impl OperationService for Api {
         let target = format!("operation {}", req.id);
         let who = self.authorize(&ctx, "CancelOperation", &target, true)?;
         let op = self.op(req.id).await?;
-        // Only a drain stops part way: a flatten or a purge runs to its end
-        // (D121).
-        let Work::Drain { node, .. } = op.work else {
-            return Err(with_reason(
-                ConnectError::failed_precondition(format!(
-                    "a {} can't be cancelled",
-                    op.work.kind()
-                )),
-                "not_cancellable",
-            ));
+        // Only a drain or a removal stops part way: a flatten or a purge
+        // runs to its end (D121).
+        let devices = |map: &hyperstor_map::ClusterMap| -> Vec<u32> {
+            match &op.work {
+                Work::Drain { node, .. } => map
+                    .devices
+                    .values()
+                    .filter(|d| d.node == *node)
+                    .map(|d| d.id)
+                    .collect(),
+                Work::RemoveDevice { device, .. } => {
+                    map.devices.get(device).map(|d| d.id).into_iter().collect()
+                }
+                _ => Vec::new(),
+            }
+        };
+        let what = match &op.work {
+            Work::Drain { node, .. } => format!("node {node}'s devices are"),
+            Work::RemoveDevice { device, .. } => format!("device {device} is"),
+            _ => {
+                return Err(with_reason(
+                    ConnectError::failed_precondition(format!(
+                        "a {} can't be cancelled",
+                        op.work.kind()
+                    )),
+                    "not_cancellable",
+                ));
+            }
         };
         if !op.running() {
             return Err(with_reason(
@@ -1264,17 +1282,16 @@ impl OperationService for Api {
             }
             Err(e) => return Err(self.token_error(e).await),
         }
-        // A cancelled drain brings the node's devices back in.
+        // A cancelled drain or removal brings the devices back in; a
+        // device already removed from the map stays removed.
         let mut message = String::new();
         let (map, ..) = self.published().await?;
-        let devices: Vec<u32> = map
-            .devices
-            .values()
-            .filter(|d| d.node == node)
-            .map(|d| d.id)
-            .collect();
         let mut epoch = 0;
-        for device in devices {
+        let back = devices(&map);
+        if back.is_empty() {
+            message = format!("cancelled; {} had left the map already", op.target);
+        }
+        for device in back {
             let r = self
                 .ask(|reply| Admin::SetDeviceIn {
                     device,
@@ -1297,7 +1314,7 @@ impl OperationService for Api {
             while self.published().await?.0.epoch < epoch && t.elapsed() < Duration::from_secs(5) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            message = format!("cancelled; node {node}'s devices are back in");
+            message = format!("cancelled; {what} back in");
         }
         audit(&who, "CancelOperation", &target, &format!("ok, {message}"));
         let id = op.id.clone();

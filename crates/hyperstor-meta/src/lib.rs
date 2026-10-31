@@ -139,6 +139,21 @@ pub enum Admin {
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
+    /// Takes a device out to remove it (24-pools-and-devices.md §27.2.5,
+    /// D175), or with `dry_run` only works out what that would do.
+    RemoveDevice {
+        device: u32,
+        force: bool,
+        dry_run: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Removal, String>>,
+    },
+    /// Removes a device that no PG lists from the map, its node with it if
+    /// it was the last (D182). Replies with whether the node went, and the
+    /// working map's epoch; `None` if the map hasn't the device.
+    FinishRemoval {
+        device: u32,
+        reply: hyperstor_reactor::chan::OneSender<Result<Option<(bool, u64)>, String>>,
+    },
     /// Deletes a pool from the map (D176, D181), once the caller has seen
     /// it hold nothing. Replies with the working map's epoch.
     DeletePool {
@@ -214,6 +229,21 @@ pub enum Admin {
         reply: hyperstor_reactor::chan::OneSender<Result<Vec<PgMove>, String>>,
     },
 }
+
+/// What removing a device does, or would (24-pools-and-devices.md
+/// §27.2.5): the PGs that move, the pools left with fewer failure domains
+/// than copies (pool, domains, copies), and the devices that take data,
+/// with their bytes used after and their size.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Removal {
+    pub moves: Vec<PgMove>,
+    pub short: Vec<(u32, u32, u8)>,
+    pub space: Vec<(u32, u64, u64)>,
+}
+
+/// A device may be filled to this share of its size by a removal: a pool's
+/// `full` threshold (D27).
+pub const FULL: f64 = 0.95;
 
 /// A PG a drain moves: its acting set before, where it goes after.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1094,7 +1124,7 @@ impl Meta {
                 ));
             }
         }
-        let id = map.nodes.keys().next_back().map_or(0, |n| n + 1);
+        let id = map.next_node_id();
         // Weight 0 until each device reports its capacity (D158), so
         // nothing is placed by a guess.
         for d in map.add_node(id, addrs, rack) {
@@ -1448,6 +1478,134 @@ impl Meta {
         Ok(moves)
     }
 
+    /// Takes `device` out so its PGs move off it, to remove it
+    /// (24-pools-and-devices.md §27.2.5, D175); with `dry_run` changes
+    /// nothing. Refused when a pool using it would keep fewer copies than
+    /// its `min`, or (unless `force`) fewer than its `size`, for want of
+    /// failure domains, and when a device that takes its data would pass
+    /// [`FULL`], by the primaries' PG usage (D155) and the devices' space
+    /// reports.
+    pub fn remove_device(
+        &self,
+        device: u32,
+        force: bool,
+        dry_run: bool,
+    ) -> Result<Removal, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(dev) = map.devices.get(&device).cloned() else {
+            return Err(format!("no device {device}"));
+        };
+        let mut after = map.clone();
+        if after.set_in(device, false) == Some(true) {
+            after.recompute();
+        }
+        let mut short = Vec::new();
+        for p in map.pools.values().filter(|p| p.uses(&dev)) {
+            let (before, left) = (domains(&map, p), domains(&after, p));
+            if left >= before || left >= p.size as usize {
+                continue;
+            }
+            if left < p.min_size as usize {
+                return Err(format!(
+                    "without device {device}, pool {} would keep {left} copies, fewer than its min of {}",
+                    p.id, p.min_size
+                ));
+            }
+            if !force {
+                return Err(format!(
+                    "without device {device}, pool {} would keep {left} of its {} copies; --force allows it",
+                    p.id, p.size
+                ));
+            }
+            short.push((p.id, left as u32, p.size));
+        }
+        let mut moves = Vec::new();
+        let mut gains: BTreeMap<u32, u64> = BTreeMap::new();
+        let usage = self.usage.borrow();
+        for (k, was) in &map.pgs {
+            let Some(now) = after.pgs.get(k) else {
+                continue;
+            };
+            if now.up != was.acting {
+                moves.push(PgMove {
+                    pool: k.0,
+                    pg: k.1,
+                    before: was.acting.clone(),
+                    after: now.up.clone(),
+                });
+            }
+            // A copy's bytes: an EC shard holds 1/k of them.
+            let bytes = usage
+                .get(k)
+                .map_or(0, |&(_, b)| match map.pools[&k.0].kind {
+                    PoolKind::Ec { k, .. } => b / k.max(1) as u64,
+                    _ => b,
+                });
+            for d in now.up.iter().filter(|d| !was.acting.contains(d)) {
+                *gains.entry(*d).or_default() += bytes;
+            }
+        }
+        drop(usage);
+        let reports = self.space.borrow();
+        let mut space = Vec::new();
+        for (&d, &gain) in &gains {
+            let Some(&(total, free)) = reports.get(&d) else {
+                continue;
+            };
+            let used = total.saturating_sub(free) + gain;
+            if used as f64 > total as f64 * FULL {
+                return Err(format!(
+                    "device {d} would be {:.0}% full with device {device}'s data, past {:.0}%: it has nowhere to go",
+                    used as f64 * 100.0 / total.max(1) as f64,
+                    FULL * 100.0
+                ));
+            }
+            space.push((d, used, total));
+        }
+        if !dry_run {
+            if map.set_in(device, false) == Some(true) {
+                map.recompute();
+            }
+            map.release(device);
+        }
+        Ok(Removal {
+            moves,
+            short,
+            space,
+        })
+    }
+
+    /// Removes `device` from the map once it is out and no PG lists it in
+    /// `up` or `acting`, and its node with it if it was the last; both ids
+    /// are kept (D182). `None` if the map hasn't the device (removed
+    /// already).
+    pub fn finish_removal(&self, device: u32) -> Result<Option<(bool, u64)>, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(d) = map.devices.get(&device) else {
+            return Ok(None);
+        };
+        if d.up_in {
+            return Err(format!("device {device} was brought back in"));
+        }
+        if let Some((k, _)) = map
+            .pgs
+            .iter()
+            .find(|(_, p)| p.up.contains(&device) || p.acting.contains(&device))
+        {
+            return Err(format!("PG {}.{} still lists device {device}", k.0, k.1));
+        }
+        let gone = map.remove_device(device).unwrap_or(false);
+        self.space.borrow_mut().remove(&device);
+        self.kind_reports.borrow_mut().remove(&device);
+        Ok(Some((gone, map.epoch)))
+    }
+
     /// Answers the cluster API's requests (`api`), which arrive from its
     /// own thread: the map service's state lives on this reactor.
     pub async fn admin(
@@ -1619,6 +1777,17 @@ impl Meta {
                 }
                 Admin::DeletePool { pool, reply } => {
                     let _ = reply.send(self.delete_pool(pool));
+                }
+                Admin::RemoveDevice {
+                    device,
+                    force,
+                    dry_run,
+                    reply,
+                } => {
+                    let _ = reply.send(self.remove_device(device, force, dry_run));
+                }
+                Admin::FinishRemoval { device, reply } => {
+                    let _ = reply.send(self.finish_removal(device));
                 }
                 Admin::CreatePool { new, reply } => {
                     let _ = reply.send(self.create_pool(new));
@@ -2385,21 +2554,12 @@ fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<boo
             what()
         ));
     }
-    let domains: BTreeSet<u32> = map
-        .devices
-        .values()
-        .filter(|d| d.up_in && pool.uses(d))
-        .map(|d| match pool.domain {
-            Domain::Device => d.id,
-            Domain::Host => d.node,
-            Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
-        })
-        .collect();
-    if domains.len() < pool.size as usize {
+    let domains = domains(map, pool);
+    if domains < pool.size as usize {
         return Err(format!(
             "the devices of classes {} span {} {}(s); pool {} keeps {} copies",
             what(),
-            domains.len(),
+            domains,
             match pool.domain {
                 Domain::Device => "device",
                 Domain::Host => "host",
@@ -2410,6 +2570,22 @@ fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<boo
         ));
     }
     Ok(mixed)
+}
+
+/// How many failure domains, at `pool`'s level, its devices in placement
+/// span: at most this many copies of a PG can be placed.
+fn domains(map: &ClusterMap, pool: &PoolInfo) -> usize {
+    use hyperstor_placement::Domain;
+    map.devices
+        .values()
+        .filter(|d| d.up_in && pool.uses(d))
+        .map(|d| match pool.domain {
+            Domain::Device => d.id,
+            Domain::Host => d.node,
+            Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
+        })
+        .collect::<BTreeSet<u32>>()
+        .len()
 }
 
 /// The PG count a new pool gets when none is given (24-pools-and-devices.md
@@ -2906,6 +3082,101 @@ mod tests {
 
     /// A drain's dry run changes nothing and says what a drain moves; the
     /// drain takes every device of the node out.
+    /// §27.2.5, D175, D182: a device is taken out to be removed unless a
+    /// device taking its data would pass [`FULL`], or a pool would keep
+    /// fewer copies than its `min` (or, unforced, its `size`); it leaves
+    /// the map once no PG lists it, its node with its last device, and
+    /// neither id is given again.
+    #[test]
+    fn devices_are_removed_once_no_pg_lists_them() {
+        let mut m = map();
+        m.pools.get_mut(&2).unwrap().min_size = 2;
+        let meta = Meta::new(m);
+        assert!(
+            meta.remove_device(9, false, true)
+                .unwrap_err()
+                .contains("no device 9")
+        );
+        // Every device 94% full, and every PG of pool 1 holding 20 bytes:
+        // the devices that take device 3001's PGs would pass 95%.
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (1000, 60));
+        }
+        let pgs: Vec<(u32, u32, u64)> = (0..64).map(|pg| (1, pg, 20)).collect();
+        meta.note_usage(0, false, &pgs);
+        let before = meta.map.borrow().clone();
+        let e = meta.remove_device(3001, true, false).unwrap_err();
+        assert!(e.contains("% full with device 3001's data"), "{e}");
+        assert_eq!(*meta.map.borrow(), before, "refused, even forced");
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (1000, 500));
+        }
+        let dry = meta.remove_device(3001, false, true).unwrap();
+        assert_eq!(*meta.map.borrow(), before, "a dry run changes nothing");
+        assert!(dry.short.is_empty() && !dry.moves.is_empty());
+        assert!(
+            dry.space
+                .iter()
+                .all(|&(_, used, total)| used >= 520 && total == 1000)
+        );
+        assert_eq!(meta.remove_device(3001, false, false).unwrap(), dry);
+        let after = meta.map.borrow().clone();
+        assert!(!after.devices[&3001].up_in);
+        assert!(after.pgs.values().all(|pg| !pg.up.contains(&3001)));
+        // Not while a PG still lists it, nor once it is back in.
+        if after.pgs.values().any(|pg| pg.acting.contains(&3001)) {
+            assert!(
+                meta.finish_removal(3001)
+                    .unwrap_err()
+                    .contains("still lists")
+            );
+        }
+        let settle = || {
+            for pg in meta.map.borrow_mut().pgs.values_mut() {
+                pg.acting = pg.up.clone();
+            }
+        };
+        settle();
+        meta.set_device_in(3001, true).unwrap();
+        assert!(meta.finish_removal(3001).unwrap_err().contains("back in"));
+        meta.set_device_in(3001, false).unwrap();
+        settle();
+        assert_eq!(meta.finish_removal(3001).unwrap().map(|r| r.0), Some(false));
+        assert_eq!(meta.finish_removal(3001).unwrap(), None, "removed already");
+        assert!(meta.map.borrow().removed_devices.contains(&3001));
+        // With node 2 out, node 3's last device spans the third host of
+        // pools that keep 3 copies.
+        meta.drain(2, false).unwrap();
+        settle();
+        let e = meta.remove_device(3000, false, true).unwrap_err();
+        assert!(e.contains("would keep 2 of its 3 copies; --force"), "{e}");
+        let forced = meta.remove_device(3000, true, false).unwrap();
+        assert_eq!(forced.short, vec![(1, 2, 3), (2, 2, 3)]);
+        // Nothing is backfilled to a PG left short: device 3000 leaves its
+        // acting set at once, or it never would.
+        assert!(
+            meta.map
+                .borrow()
+                .pgs
+                .values()
+                .all(|p| !p.acting.contains(&3000))
+        );
+        assert_eq!(meta.finish_removal(3000).unwrap().map(|r| r.0), Some(true));
+        let m = meta.map.borrow().clone();
+        assert!(!m.nodes.contains_key(&3) && m.removed_nodes.contains(&3));
+        // Below a pool's min, not even forced: with device 1001 out, node
+        // 1 goes with device 1000.
+        meta.set_device_in(1001, false).unwrap();
+        let e = meta.remove_device(1000, true, true).unwrap_err();
+        assert!(e.contains("fewer than its min of 2"), "{e}");
+        let a: SocketAddr = "127.0.0.1:7999".parse().unwrap();
+        assert_eq!(
+            meta.add_node(0, &[a]).unwrap(),
+            4,
+            "node 3's id isn't given again"
+        );
+    }
+
     #[test]
     fn drains_move_every_pg_off_the_node() {
         let meta = Meta::new(map());

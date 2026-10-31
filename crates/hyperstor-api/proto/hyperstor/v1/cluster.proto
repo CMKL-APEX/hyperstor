@@ -33,6 +33,17 @@ service ClusterService {
   // until the node runs it (restarted with one more --shard). Write.
   rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
 
+  // Removes a device (24-pools-and-devices.md §27.2.5, 04-decisions.md
+  // D175, D182): it is taken out, and an operation follows its PGs off it,
+  // then removes it from the map, with its node if it was the node's last;
+  // neither id is given again, and the device's data is left as it is.
+  // Refused when a pool using it would keep fewer copies than its min, or,
+  // unless forced, than its size, for want of failure domains, and when a
+  // device that takes its data would pass 95% full. dry_run changes
+  // nothing. Cancelling the operation brings the device back in. Write,
+  // with step-up.
+  rpc RemoveDevice(RemoveDeviceRequest) returns (RemoveDeviceResponse);
+
   // Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
   // follow the device's kind again (04-decisions.md D178). A class holds
   // devices of one kind, and a class named after a kind only that kind.
@@ -503,6 +514,41 @@ message SetDeviceClassResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   string class = 2;
+}
+
+message RemoveDeviceRequest {
+  uint32 device = 1;
+  // Work out what would move and change nothing.
+  bool dry_run = 2 [json_name = "dry_run"];
+  // Let pools keep fewer copies than their size, never fewer than their
+  // min.
+  bool force = 3;
+}
+
+message RemoveDeviceResponse {
+  // Absent for a dry run.
+  Operation operation = 1;
+  // The PGs that move (or would), with their acting sets before and after.
+  repeated PgMove moves = 2;
+  // Pools left with fewer failure domains than copies (forced).
+  repeated ShortPool short_pools = 3 [json_name = "short_pools"];
+  // The devices that take data, with their space after.
+  repeated DeviceFill fill = 4;
+}
+
+message ShortPool {
+  uint32 pool = 1;
+  // The copies it keeps.
+  uint32 copies = 2;
+  // The copies it should keep.
+  uint32 size = 3;
+}
+
+message DeviceFill {
+  uint32 device = 1;
+  // Bytes used once the moved PGs are on it.
+  uint64 used_bytes = 2 [json_name = "used_bytes"];
+  uint64 total_bytes = 3 [json_name = "total_bytes"];
 }
 
 message AddDeviceResponse {

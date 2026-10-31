@@ -164,8 +164,8 @@ service OperationService {
   // (04-decisions.md D121). Read.
   rpc WatchOperation(WatchOperationRequest) returns (stream WatchOperationResponse);
 
-  // Stops an operation and undoes what it can (a drain brings the
-  // devices back in). Write.
+  // Stops an operation and undoes what it can (a drain or a device's
+  // removal brings the devices back in). Write.
   rpc CancelOperation(CancelOperationRequest) returns (Operation);
 }
 
@@ -413,7 +413,7 @@ enum OperationState {
 
 message Operation {
   string id = 1;
-  // "drain", "flatten", "purge" or "delete-pool".
+  // "drain", "flatten", "purge", "delete-pool" or "remove-device".
   string kind = 2;
   // What it acts on, as "node 3".
   string target = 3;
