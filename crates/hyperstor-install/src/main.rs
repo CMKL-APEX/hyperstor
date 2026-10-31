@@ -68,7 +68,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 6] = [
     "hyperstor-meta",
@@ -141,6 +141,10 @@ struct Settings {
     /// Block devices added to this host's nodes (D167, D168), as
     /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
     devices: String,
+    /// Devices removed from this host's nodes (D182), comma-separated
+    /// ids: no `--shard` for them, whether the cluster file or `devices`
+    /// names them.
+    removed_devices: String,
 }
 
 impl Settings {
@@ -170,7 +174,16 @@ impl Settings {
             vhost: false,
             vhost_users: String::new(),
             devices: String::new(),
+            removed_devices: String::new(),
         }
+    }
+
+    /// The devices removed (`removed_devices`).
+    fn removed(&self) -> Vec<u32> {
+        self.removed_devices
+            .split(',')
+            .filter_map(|d| d.trim().parse().ok())
+            .collect()
     }
 
     /// The devices added (`devices`): id, address and path.
@@ -229,6 +242,7 @@ impl Settings {
                 "vhost" => self.vhost = v == "true",
                 "vhost_users" => self.vhost_users = v.to_string(),
                 "devices" => self.devices = v.to_string(),
+                "removed_devices" => self.removed_devices = v.to_string(),
                 _ => {}
             }
         }
@@ -267,6 +281,10 @@ impl Settings {
             String::new()
         } else {
             format!("devices = {}\n", self.devices)
+        } + &if self.removed_devices.is_empty() {
+            String::new()
+        } else {
+            format!("removed_devices = {}\n", self.removed_devices)
         }
     }
 }
@@ -302,6 +320,8 @@ fn main() {
     let mut new_devices: Vec<String> = Vec::new();
     let mut device_address: Option<String> = None;
     let mut force_format = false;
+    // Devices removed from the map to drop from this host's node (D182).
+    let mut removed: Vec<u32> = Vec::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| usage());
@@ -387,6 +407,15 @@ fn main() {
                 device_address = Some(val());
                 continue;
             }
+            "--remove-device" => {
+                let d = val();
+                let Ok(id) = d.parse() else {
+                    eprintln!("hyperstor-install: bad value for --remove-device: {d}");
+                    usage();
+                };
+                removed.push(id);
+                continue;
+            }
             "--force-format" => {
                 force_format = true;
                 continue;
@@ -464,8 +493,12 @@ fn main() {
             .collect::<String>(),
     );
 
-    // --device and its options belong to install only.
-    if cmd != "install" && (!new_devices.is_empty() || device_address.is_some() || force_format)
+    // --device, its options and --remove-device belong to install only.
+    if cmd != "install"
+        && (!new_devices.is_empty()
+            || device_address.is_some()
+            || force_format
+            || !removed.is_empty())
         || new_devices.is_empty() && (device_address.is_some() || force_format)
     {
         usage();
@@ -517,6 +550,13 @@ fn main() {
                     device_address,
                     force_format,
                 );
+            }
+            if !removed.is_empty() {
+                // SAFETY: geteuid has no preconditions.
+                if real && unsafe { libc::geteuid() } != 0 {
+                    fail("removing a device needs root: run it with sudo");
+                }
+                remove_devices(&root, &mut s, cluster_file.clone(), &removed);
             }
             install(&root, real, no_start, &s, cluster_file, ui_from)
         }
@@ -1062,6 +1102,21 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             n.ids.push(id);
             n.paths.push(Some(path));
         }
+    }
+    // Devices removed (D182): no --shard, whoever named them.
+    let removed = s.removed();
+    for n in &mut p.nodes {
+        let kept: Vec<_> = n
+            .ids
+            .iter()
+            .zip(&n.shards)
+            .zip(&n.paths)
+            .filter(|((id, _), _)| !removed.contains(id))
+            .map(|((id, a), path)| (*id, *a, path.clone()))
+            .collect();
+        n.ids = kept.iter().map(|k| k.0).collect();
+        n.shards = kept.iter().map(|k| k.1).collect();
+        n.paths = kept.into_iter().map(|k| k.2).collect();
     }
     p.vhost = s.runs_vhost().then(|| vhost_plan(s));
     if p.vhost.is_some() && p.map.is_empty() {
@@ -2558,6 +2613,91 @@ fn add_devices(
     }
 }
 
+/// Drops devices removed from the map from this host's node
+/// (24-pools-and-devices.md §27.2.5, D182): recorded in
+/// `s.removed_devices` (and out of `s.devices`), so this run and every
+/// later one leave out their `--shard`. With the administrator's
+/// certificate, a device the map still has is refused: `hyperstorctl
+/// device remove` comes first. A node's last device is refused: the node
+/// left the map with it.
+fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, ids: &[u32]) {
+    let p = plan(root, s, cluster_file);
+    let pki = under(root, "/etc/hyperstor/pki");
+    let checked = pki.join("admin.key").exists();
+    let in_map: Vec<u32> = if checked {
+        let ctl = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
+            .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
+        let out = Command::new(&ctl)
+            .args(["--api", &p.api, "--tls"])
+            .arg(&pki)
+            .args(["nodes", "--json"])
+            .output()
+            .unwrap_or_else(|e| fail(&format!("{}: {e}", ctl.display())));
+        if !out.status.success() {
+            fail(&format!(
+                "can't read the map to check the device has left it: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| fail(&format!("hyperstorctl nodes: {e}")));
+        v["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            // JSON leaves out a 0: device 0.
+            .map(|d| d["id"].as_u64().unwrap_or(0) as u32)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for &id in ids {
+        if s.removed().contains(&id) {
+            continue;
+        }
+        let Some(node) = p.nodes.iter().find(|n| n.ids.contains(&id)) else {
+            fail(&format!(
+                "device {id} isn't one of this host's nodes' devices"
+            ));
+        };
+        if node.ids.iter().all(|d| *d == id || ids.contains(d)) {
+            fail(&format!(
+                "device {id} is node {}'s last: the node left the map with it; uninstall the storage role instead",
+                node.n
+            ));
+        }
+        if in_map.contains(&id) {
+            fail(&format!(
+                "device {id} is still in the map: remove it first (hyperstorctl device remove --device {id}) and wait for it to leave"
+            ));
+        }
+        if !checked {
+            println!(
+                "no administrator's certificate here to check the map: device {id} is taken to have left it"
+            );
+        }
+        s.devices = s
+            .devices()
+            .iter()
+            .filter(|d| d.0 != id)
+            .map(|(d, a, path)| format!("{d}@{a}={path}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        s.removed_devices = if s.removed_devices.is_empty() {
+            id.to_string()
+        } else {
+            format!("{},{id}", s.removed_devices)
+        };
+        println!(
+            "dropped device {id} from node {}; its data is left as it is",
+            node.n
+        );
+    }
+}
+
 /// Registers a device at `addr` on node `n` (`hyperstorctl device add`)
 /// and returns its id: through `api`, else through the leader it names;
 /// an address already registered (a run that stopped before saving)
@@ -2990,6 +3130,44 @@ mod tests {
             "{rules}"
         );
         assert!(!rules.contains("extra.img"), "files need no rule");
+    }
+
+    /// D182: a removed device has no `--shard`, whether the cluster file
+    /// or `devices` named it; the devices after it keep their ids, and
+    /// install.conf keeps the list.
+    #[test]
+    fn removed_devices_get_no_shard() {
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100 10.0.0.1:9101 10.0.0.1:9102\n\
+                       pool 1 vol replicated size 1 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        s.devices = "3@10.0.0.1:9103=/srv/a.img,4@10.0.0.1:9104=/srv/b.img".into();
+        assert!(
+            !s.save().contains("removed_devices"),
+            "no line until there is one"
+        );
+        s.removed_devices = "1,3".into();
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert_eq!(t.removed(), [1, 3], "kept across runs");
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        assert_eq!(p.nodes[0].ids, [0, 2, 4]);
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        for want in [
+            "--shard 10.0.0.1:9100=",
+            "--shard 2@10.0.0.1:9102=",
+            "--shard 4@10.0.0.1:9104=/srv/b.img:0",
+        ] {
+            assert!(env.contains(want), "{want}: {env}");
+        }
+        assert!(!env.contains(":9101") && !env.contains(":9103"), "{env}");
     }
 
     /// D169: a device id the cluster file names is passed to `--shard`

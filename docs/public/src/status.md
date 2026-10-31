@@ -128,7 +128,7 @@ covered by tests that run on every change.
 | A pool deleted with its volumes, snapshots and trash when forced, as an operation | Done |
 | A pool renamed, or its failure domain changed, with its PGs following | Done |
 | A pool's devices added beyond its classes, and removed from them | Done |
-| A device removed once its PGs have moved, its node with its last device, ids never given again | In progress |
+| A device removed once its PGs have moved, its node with its last device, ids never given again | Done |
 
 ## AD0: Administration API, identities and CLI
 

@@ -134,7 +134,7 @@ running node has reported, so older nodes can still read it.
 
 #### 27.2.5 Removing a device
 
-Built but for the installer (I216, D182); the installer is stage 4b.
+Built (I216, I217, D182).
 
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
