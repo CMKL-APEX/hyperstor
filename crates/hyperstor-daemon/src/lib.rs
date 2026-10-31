@@ -3025,7 +3025,7 @@ impl ShardState {
         out
     }
 
-    /// An object's digest ([`Shard::digest`]); a large one a part of
+    /// An object's digest ([`Shard::digest`](hyperstor_engine::Shard::digest)); a large one a part of
     /// [`DIGEST_PART`] bytes at a time with a yield between (I188), so that
     /// pings get through: at once, a table of 215 MB held the reactor for
     /// 290 ms, near the peer timeout. If the object changes between parts,
