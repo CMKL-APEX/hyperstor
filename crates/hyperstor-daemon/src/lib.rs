@@ -731,7 +731,7 @@ fn format_blank(
 ) -> Result<(), String> {
     if !may_format {
         return Err(format!(
-            "device {me}: a blank block device; hyperstord formats files only: format it with hyperstor-install format-device --path PATH --device {me}"
+            "device {me}: a blank block device; hyperstord formats files only: format it with hyperstor-install format-device --path PATH --id {me}"
         ));
     }
     hyperstor_engine::format(

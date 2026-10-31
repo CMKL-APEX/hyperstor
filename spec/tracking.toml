@@ -639,6 +639,15 @@ tests = [
     "hyperstor_install::tests::format_device_refuses_foreign_signatures_unless_forced",
 ]
 
+[[milestone.item]]
+what = "The installer adds a block device to an installed node and keeps it across runs"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "I207"]
+status = "partial"
+tests = [
+    "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
+    "manage::the_installer_adds_a_device_to_a_node",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
