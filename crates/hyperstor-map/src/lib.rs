@@ -58,7 +58,26 @@ pub struct PoolInfo {
     pub pg_count: u32,
     pub domain: Domain,
     pub chunk_size: u32,
-    pub class: Option<String>,
+    /// The device classes the pool places on (D164); empty: every device,
+    /// as pools made before class sets do (D171).
+    pub classes: Vec<String>,
+    /// Devices added to the pool beyond its classes, and devices removed
+    /// from it (D180).
+    pub added: BTreeSet<u32>,
+    pub removed: BTreeSet<u32>,
+}
+
+impl PoolInfo {
+    /// Whether the pool may place on `device` (D164, D180): of one of its
+    /// classes (any, without classes) or added to it, and not removed.
+    /// Whether the device is in, weighted and not a hard disk for `.meta`
+    /// is placement's to check.
+    pub fn uses(&self, device: &DeviceInfo) -> bool {
+        !self.removed.contains(&device.id)
+            && (self.classes.is_empty()
+                || self.classes.contains(&device.class)
+                || self.added.contains(&device.id))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +134,62 @@ pub struct ClusterMap {
     /// Devices whose weight an operator set (04-decisions.md D158): the map
     /// service keeps it as set instead of following the device's capacity.
     pub fixed_weights: BTreeSet<u32>,
+    /// Each device's kind, as its node reports it (24-pools-and-devices.md
+    /// §27.2.4, D178).
+    pub kinds: BTreeMap<u32, DeviceKind>,
+    /// Devices whose class an operator set (`SetDeviceClass`, or a class
+    /// given to `AddDevice`); the others take their kind as class (D178).
+    pub fixed_classes: BTreeSet<u32>,
+    /// The ids of deleted pools (24-pools-and-devices.md §27.3.4, D181):
+    /// never given again, and a device deletes what it still holds of
+    /// them. Why: clients, the host read cache and copies on devices that
+    /// were down name data by pool id.
+    pub deleted_pools: BTreeSet<u32>,
+}
+
+/// What a device is (24-pools-and-devices.md §27.2.4), as its node
+/// reports it: the default for its class, and what a class may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeviceKind {
+    /// An NVMe namespace.
+    Nvme,
+    /// Other flash: SATA or SAS SSDs.
+    Ssd,
+    /// A rotational disk.
+    Hdd,
+    /// A file on a filesystem: trials and tests. It mixes with any kind
+    /// (D179).
+    File,
+}
+
+impl DeviceKind {
+    pub const ALL: [DeviceKind; 4] = [Self::Nvme, Self::Ssd, Self::Hdd, Self::File];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Nvme => "nvme",
+            Self::Ssd => "ssd",
+            Self::Hdd => "hdd",
+            Self::File => "file",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == s)
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Nvme => 1,
+            Self::Ssd => 2,
+            Self::Hdd => 3,
+            Self::File => 4,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.code() == c)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +290,82 @@ impl ClusterMap {
         Some(id)
     }
 
+    /// The kind of the devices of `class`, if one has reported its kind
+    /// (all a class's devices are of one kind), leaving out `except`.
+    pub fn class_kind(&self, class: &str, except: Option<u32>) -> Option<DeviceKind> {
+        self.devices
+            .values()
+            .filter(|d| d.class == class && Some(d.id) != except)
+            .find_map(|d| self.kinds.get(&d.id).copied())
+    }
+
+    /// Whether `device`, of `kind`, may have class `class`
+    /// (24-pools-and-devices.md §27.2.4): a class named after a kind holds
+    /// only that kind, and any other holds one kind, that of its first
+    /// device.
+    pub fn class_fits(&self, device: u32, class: &str, kind: DeviceKind) -> Result<(), String> {
+        if let Some(named) = DeviceKind::from_name(class)
+            && named != kind
+        {
+            return Err(format!(
+                "class {class} is for {class} devices; device {device} is {}",
+                kind.name()
+            ));
+        }
+        match self.class_kind(class, Some(device)) {
+            Some(k) if k != kind => Err(format!(
+                "class {class} holds {} devices; device {device} is {}",
+                k.name(),
+                kind.name()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records `device`'s kind (D178): a device whose class no operator
+    /// set takes the kind as its class. Whether the map changed; the
+    /// caller recomputes.
+    pub fn set_kind(&mut self, device: u32, kind: DeviceKind) -> bool {
+        let Some(d) = self.devices.get(&device) else {
+            return false;
+        };
+        let mut changed = self.kinds.insert(device, kind) != Some(kind);
+        if !self.fixed_classes.contains(&device) && d.class != kind.name() {
+            if let Some(d) = self.devices.get_mut(&device) {
+                d.class = kind.name().into();
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Sets `device`'s class as an operator chose it, or (`None`) lets it
+    /// follow the device's kind again (D178). The device's kind must be
+    /// known, and the class must fit it ([`Self::class_fits`]). Whether the
+    /// map changed; the caller recomputes.
+    pub fn set_class(&mut self, device: u32, class: Option<&str>) -> Result<bool, String> {
+        if !self.devices.contains_key(&device) {
+            return Err(format!("no device {device}"));
+        }
+        let Some(kind) = self.kinds.get(&device).copied() else {
+            return Err(format!(
+                "device {device} hasn't reported its kind yet: start its node first"
+            ));
+        };
+        let fixed = class.is_some();
+        let class = class.unwrap_or(kind.name());
+        self.class_fits(device, class, kind)?;
+        let d = self.devices.get_mut(&device).expect("checked");
+        let changed = d.class != class;
+        d.class = class.into();
+        let was = if fixed {
+            !self.fixed_classes.insert(device)
+        } else {
+            self.fixed_classes.remove(&device)
+        };
+        Ok(changed || was != fixed)
+    }
+
     /// Adds the `.meta` pool (06-metadata.md §4.2) if the map lacks it:
     /// replicated, three copies (fewer on smaller clusters), 256 PGs.
     /// Whether it was added; the caller recomputes.
@@ -242,6 +393,27 @@ impl ClusterMap {
             }
             _ => false,
         }
+    }
+
+    /// The id a new pool gets: after every pool's (24-pools-and-devices.md
+    /// §27.3.1; ids of deleted pools are never reused once they are kept).
+    /// The id for a new pool: after every pool's, deleted ones' too.
+    pub fn next_pool_id(&self) -> u32 {
+        let pools = self.pools.keys().next_back().map_or(1, |p| p + 1);
+        let deleted = self.deleted_pools.last().map_or(1, |p| p + 1);
+        pools.max(deleted).max(1)
+    }
+
+    /// Removes pool `id` and its PGs, keeping its id as deleted (D181);
+    /// the epoch moves. Whether it was there.
+    pub fn delete_pool(&mut self, id: u32) -> bool {
+        if self.pools.remove(&id).is_none() {
+            return false;
+        }
+        self.pgs.retain(|(pool, _), _| *pool != id);
+        self.deleted_pools.insert(id);
+        self.recompute();
+        true
     }
 
     pub fn add_pool(&mut self, pool: PoolInfo) {
@@ -327,6 +499,7 @@ impl ClusterMap {
                         weight: d.weight,
                         class: d.class.clone(),
                         up_in: d.up_in && (node.up || !live_only),
+                        hdd: self.kinds.get(&d.id) == Some(&DeviceKind::Hdd),
                     }
                 })
                 .collect()
@@ -338,7 +511,10 @@ impl ClusterMap {
                 pool: p.id,
                 size: p.size as usize,
                 domain: p.domain,
-                class: p.class.clone(),
+                classes: p.classes.clone(),
+                no_hdd: p.id == META_POOL,
+                added: p.added.iter().copied().collect(),
+                removed: p.removed.iter().copied().collect(),
             };
             let devs = if p.kind == PoolKind::Cache {
                 &devs_live
@@ -582,10 +758,24 @@ impl ClusterMap {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
-        // interval and the failed ones, 4 the weights an operator set; a
-        // map without them keeps the older format, which nodes from before
+        // interval and the failed ones, 4 the weights an operator set, 5
+        // devices' kinds and the classes an operator set, 6 class sets, 7
+        // a pool's devices added and removed, 8 deleted pools' ids; a map
+        // without them keeps the older format, which nodes from before
         // them read.
-        let format = if !self.fixed_weights.is_empty() {
+        let format = if !self.deleted_pools.is_empty() {
+            8
+        } else if self
+            .pools
+            .values()
+            .any(|p| !p.added.is_empty() || !p.removed.is_empty())
+        {
+            7
+        } else if self.pools.values().any(|p| p.classes.len() > 1) {
+            6
+        } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
+            5
+        } else if !self.fixed_weights.is_empty() {
             4
         } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
             3
@@ -624,7 +814,9 @@ impl ClusterMap {
                 Domain::Rack => 2,
             });
             e.u32(p.chunk_size);
-            match &p.class {
+            // One class where formats before 6 keep it; more are in format
+            // 6's own section, below.
+            match p.classes.first() {
                 Some(c) => e.bool(true).str(c),
                 None => e.bool(false),
             };
@@ -657,13 +849,59 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 5 {
+            e.u32(self.kinds.len() as u32);
+            for (d, k) in &self.kinds {
+                e.u32(*d).u8(k.code());
+            }
+            e.u32(self.fixed_classes.len() as u32);
+            for d in &self.fixed_classes {
+                e.u32(*d);
+            }
+        }
+        if format >= 6 {
+            let sets: Vec<&PoolInfo> = self
+                .pools
+                .values()
+                .filter(|p| p.classes.len() > 1)
+                .collect();
+            e.u32(sets.len() as u32);
+            for p in sets {
+                e.u32(p.id).seq(&p.classes, |e, c| {
+                    e.str(c);
+                });
+            }
+        }
+        if format >= 7 {
+            let edited: Vec<&PoolInfo> = self
+                .pools
+                .values()
+                .filter(|p| !p.added.is_empty() || !p.removed.is_empty())
+                .collect();
+            e.u32(edited.len() as u32);
+            for p in edited {
+                e.u32(p.id);
+                for set in [&p.added, &p.removed] {
+                    e.u32(set.len() as u32);
+                    for d in set {
+                        e.u32(*d);
+                    }
+                }
+            }
+        }
+        if format >= 8 {
+            e.u32(self.deleted_pools.len() as u32);
+            for p in &self.deleted_pools {
+                e.u32(*p);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=4).contains(&v) {
+        if !(1..=8).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -718,10 +956,10 @@ impl ClusterMap {
                 _ => Domain::Rack,
             };
             let chunk_size = d.u32()?;
-            let class = if d.bool()? {
-                Some(d.str()?.to_string())
+            let classes = if d.bool()? {
+                vec![d.str()?.to_string()]
             } else {
-                None
+                Vec::new()
             };
             m.pools.insert(
                 id,
@@ -734,7 +972,9 @@ impl ClusterMap {
                     pg_count,
                     domain,
                     chunk_size,
-                    class,
+                    classes,
+                    added: BTreeSet::new(),
+                    removed: BTreeSet::new(),
                 },
             );
         }
@@ -765,6 +1005,44 @@ impl ClusterMap {
         if v >= 4 {
             m.fixed_weights = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
+        if v >= 5 {
+            m.kinds = d
+                .seq(5, |d| {
+                    let id = d.u32()?;
+                    let c = d.u8()?;
+                    let k = DeviceKind::from_code(c).ok_or(DecodeError::Invalid {
+                        field: "device kind",
+                        value: c as u64,
+                    })?;
+                    Ok((id, k))
+                })?
+                .into_iter()
+                .collect();
+            m.fixed_classes = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 6 {
+            for _ in 0..d.u32()? {
+                let id = d.u32()?;
+                let classes = d.seq(1, |d| Ok(d.str()?.to_string()))?;
+                if let Some(p) = m.pools.get_mut(&id) {
+                    p.classes = classes;
+                }
+            }
+        }
+        if v >= 7 {
+            for _ in 0..d.u32()? {
+                let id = d.u32()?;
+                let added = d.seq(4, |d| d.u32())?.into_iter().collect();
+                let removed = d.seq(4, |d| d.u32())?.into_iter().collect();
+                if let Some(p) = m.pools.get_mut(&id) {
+                    p.added = added;
+                    p.removed = removed;
+                }
+            }
+        }
+        if v >= 8 {
+            m.deleted_pools = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
         d.finish()?;
         Ok(m)
     }
@@ -785,7 +1063,9 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         pg_count,
         domain: Domain::Host,
         chunk_size: 4 << 20,
-        class: None,
+        classes: Vec::new(),
+        added: BTreeSet::new(),
+        removed: BTreeSet::new(),
     }
 }
 
@@ -891,7 +1171,13 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                         "min" => p.min_size = num(w[i + 1])? as u8,
                         "pgs" => p.pg_count = num(w[i + 1])? as u32,
                         "chunk" => p.chunk_size = num(w[i + 1])? as u32,
-                        "class" => p.class = Some(w[i + 1].to_string()),
+                        "class" => {
+                            p.classes = w[i + 1]
+                                .split(',')
+                                .filter(|c| !c.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        }
                         "domain" => {
                             p.domain = match w[i + 1] {
                                 "device" => Domain::Device,
@@ -997,10 +1283,125 @@ mod tests {
             pg_count: 32,
             domain: Domain::Host,
             chunk_size: 4 << 20,
-            class: None,
+            classes: Vec::new(),
+            added: BTreeSet::new(),
+            removed: BTreeSet::new(),
         });
         m.recompute();
         m
+    }
+
+    /// D178, D179: a reported kind becomes a device's class unless an
+    /// operator set it; a class holds one kind, and a class named after a
+    /// kind only that kind; kinds and set classes need format 5, written
+    /// only once there is one.
+    #[test]
+    fn kinds_become_classes_unless_an_operator_set_one() {
+        let mut m = map();
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "no kinds: format 1");
+        assert!(m.set_kind(0, DeviceKind::Nvme));
+        assert!(m.set_kind(1, DeviceKind::File));
+        assert!(
+            !m.set_kind(1, DeviceKind::File),
+            "reported again: no change"
+        );
+        assert_eq!(
+            (m.devices[&0].class.as_str(), m.devices[&1].class.as_str()),
+            ("nvme", "file")
+        );
+        assert_eq!(m.encode()[..4], 5u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // Not before the kind is known; not a class of another kind.
+        assert!(
+            m.set_class(1000, Some("fast"))
+                .unwrap_err()
+                .contains("hasn't reported")
+        );
+        assert!(
+            m.set_class(1, Some("nvme"))
+                .unwrap_err()
+                .contains("class nvme is for nvme")
+        );
+        assert_eq!(m.set_class(0, Some("fast")), Ok(true));
+        assert!(m.fixed_classes.contains(&0));
+        assert!(
+            m.set_class(1, Some("fast"))
+                .unwrap_err()
+                .contains("holds nvme devices")
+        );
+        // An operator's class stays when the kind is reported again.
+        assert!(!m.set_kind(0, DeviceKind::Nvme));
+        assert_eq!(m.devices[&0].class, "fast");
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // Back to its kind.
+        assert_eq!(m.set_class(0, None), Ok(true));
+        assert_eq!(m.devices[&0].class, "nvme");
+        assert!(m.fixed_classes.is_empty());
+        assert_eq!(m.set_class(0, None), Ok(false));
+        // A file may share a label with another file.
+        assert_eq!(m.set_class(1, Some("scratch")), Ok(true));
+        assert!(m.set_kind(1001, DeviceKind::File));
+        assert_eq!(m.set_class(1001, Some("scratch")), Ok(true));
+    }
+
+    /// D164: a pool's class set: one class in the field formats before 6
+    /// read, more in format 6, written only then; the cluster file takes
+    /// `class a,b`.
+    #[test]
+    fn class_sets_round_trip_and_need_format_6_only_when_several() {
+        let mut m = parse_cluster(
+            "node 0 rack 0 127.0.0.1:1\npool 1 vol replicated size 1 min 1 pgs 8 class nvme,ssd\n\
+             pool 2 one replicated size 1 min 1 pgs 8 class nvme\n",
+        )
+        .unwrap();
+        assert_eq!(m.pools[&1].classes, ["nvme", "ssd"]);
+        assert_eq!(m.encode()[..4], 6u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.pools.get_mut(&1).unwrap().classes.truncate(1);
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "one class: as before");
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    /// D181: a deleted pool leaves the map with its PGs; its id is kept,
+    /// in format 8 only once there is one, and never given again.
+    #[test]
+    fn a_deleted_pools_id_is_kept_and_not_given_again() {
+        let mut m = map();
+        assert_ne!(m.encode()[..4], 8u32.to_le_bytes());
+        let top = *m.pools.keys().next_back().unwrap();
+        let epoch = m.epoch;
+        assert!(m.delete_pool(top));
+        assert!(!m.delete_pool(top), "only once");
+        assert!(m.epoch > epoch);
+        assert!(!m.pools.contains_key(&top) && !m.pgs.keys().any(|(p, _)| *p == top));
+        assert_eq!(m.next_pool_id(), top + 1);
+        assert_eq!(m.encode()[..4], 8u32.to_le_bytes());
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.next_pool_id(), top + 1);
+    }
+
+    /// D180: a pool's devices added and removed are kept in format 7,
+    /// written only while one pool has some; placement follows them.
+    #[test]
+    fn devices_added_and_removed_change_placement_and_need_format_7() {
+        let mut m = map();
+        m.pools.get_mut(&1).unwrap().classes = vec!["fast".into()];
+        for d in [0, 1000, 2000] {
+            m.devices.get_mut(&d).unwrap().class = "fast".into();
+        }
+        m.recompute();
+        assert_ne!(m.encode()[..4], 7u32.to_le_bytes());
+        let uses =
+            |m: &ClusterMap, d: u32| m.pgs.iter().any(|(k, p)| k.0 == 1 && p.up.contains(&d));
+        assert!(!uses(&m, 3000) && uses(&m, 0));
+        let p = m.pools.get_mut(&1).unwrap();
+        p.added.insert(3000);
+        p.removed.insert(0);
+        m.recompute();
+        assert!(uses(&m, 3000) && !uses(&m, 0));
+        assert_eq!(m.encode()[..4], 7u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
     }
 
     #[test]
@@ -1260,7 +1661,9 @@ mod tests {
             pg_count: 32,
             domain: Domain::Host,
             chunk_size: 4 << 20,
-            class: None,
+            classes: Vec::new(),
+            added: BTreeSet::new(),
+            removed: BTreeSet::new(),
         });
         m.recompute();
         let before = m.clone();

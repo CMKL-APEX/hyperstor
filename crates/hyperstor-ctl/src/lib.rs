@@ -56,7 +56,7 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
+        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} CLASSES",
         "POOL",
         "NAME",
         "KIND",
@@ -72,10 +72,29 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         "TOTAL"
     );
     // Usable space (D156): `-` until every device has reported.
+    let mut mixed = false;
     for p in &s.pools {
+        // Every device, or the pool's classes (D164), then the devices
+        // added and removed (`+D`, `-D`, D180); `!` when they mix hard
+        // disks and flash (D172).
+        mixed |= p.mixed_kinds;
+        let mut classes = if p.classes.is_empty() {
+            "any".to_string()
+        } else {
+            p.classes.join(",")
+        };
+        for d in &p.added_devices {
+            let _ = write!(classes, "+{d}");
+        }
+        for d in &p.removed_devices {
+            let _ = write!(classes, "-{d}");
+        }
+        if p.mixed_kinds {
+            classes.push('!');
+        }
         let _ = writeln!(
             o,
-            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
+            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} {}",
             p.id,
             p.name,
             p.kind,
@@ -88,7 +107,14 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
             p.pgs.backfilling,
             p.pgs.inactive,
             gib(p.free_bytes),
-            gib(p.total_bytes)
+            gib(p.total_bytes),
+            classes
+        );
+    }
+    if mixed {
+        let _ = writeln!(
+            o,
+            "! classes hold hard disks and flash (set with --force): writes wait for the slowest copy"
         );
     }
     o
@@ -99,24 +125,29 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} STATE",
-        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "FREE", "TOTAL"
+        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} STATE",
+        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "CLASS", "FREE", "TOTAL"
     );
     let mut fixed = false;
+    let mut class_set = false;
     for n in &s.nodes {
         for d in &n.devices {
             // In TiB from the device's capacity, unless set (D158).
             fixed |= d.weight_fixed;
             let weight = format!("{:.4}{}", d.weight, if d.weight_fixed { "*" } else { "" });
+            // The device's kind, unless set (D178).
+            class_set |= d.class_fixed;
+            let class = format!("{}{}", d.class, if d.class_fixed { "+" } else { "" });
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} {}",
+                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {}",
                 n.id,
                 n.rack,
                 if n.up { "yes" } else { "no" },
                 d.id,
                 d.addr,
                 weight,
+                class,
                 gib(d.free_bytes),
                 gib(d.total_bytes),
                 if d.up_in { "in" } else { "out" }
@@ -127,6 +158,12 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
         let _ = writeln!(
             o,
             "* weight set with hyperstorctl weight; the others follow capacity"
+        );
+    }
+    if class_set {
+        let _ = writeln!(
+            o,
+            "+ class set with hyperstorctl device class; the others are their kind"
         );
     }
     o
@@ -253,6 +290,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.AddDevice", "device add"),
+    ("ClusterService.SetDeviceClass", "device class"),
+    ("ClusterService.CreatePool", "pool create"),
+    ("ClusterService.SetPool", "pool set"),
+    (
+        "ClusterService.SetPoolDevice",
+        "pool add-device, pool remove-device",
+    ),
+    ("ClusterService.DeletePool", "pool delete"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
@@ -782,6 +827,14 @@ mod tests {
         assert!(n.contains(" 0.2500* ") && n.lines().count() == 5, "{n}");
         let p = pools_text(&s);
         assert!(p.contains("replicated"), "{p}");
+        // A pool's classes, then its devices added and removed (D180).
+        let mut edited = s.clone();
+        edited.pools[0].classes = vec!["nvme".into()];
+        edited.pools[0].added_devices = vec![7];
+        edited.pools[0].removed_devices = vec![2, 3];
+        edited.pools[0].mixed_kinds = true;
+        let p = pools_text(&edited);
+        assert!(p.contains(" nvme+7-2-3!\n"), "{p}");
         let pgs = pgs_text(&pb::ListPgsResponse {
             pgs: vec![pb::Pg {
                 pool: 1,

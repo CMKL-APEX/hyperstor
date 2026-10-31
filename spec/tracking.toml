@@ -658,6 +658,74 @@ tests = [
     "manage::the_installer_adds_a_device_to_a_node",
 ]
 
+[[milestone.item]]
+what = "Each device's kind reported; classes follow it unless an operator sets one"
+spec = ["24-pools-and-devices.md §27.2.4", "D178", "D179", "I209"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::kinds_become_classes_unless_an_operator_set_one",
+    "hyperstor_meta::tests::kinds_are_applied_once_every_live_device_has_reported",
+    "manage::devices_report_their_kind_and_classes_follow_it",
+]
+
+[[milestone.item]]
+what = "Pools place on a set of device classes; hard disks and flash mix only when forced"
+spec = ["24-pools-and-devices.md §27.4", "D164", "D172", "I210"]
+status = "done"
+tests = [
+    "hyperstor_placement::tests::class_sets_and_no_hdd",
+    "hyperstor_map::tests::class_sets_round_trip_and_need_format_6_only_when_several",
+    "hyperstor_meta::tests::pool_class_sets_are_checked_and_placed_on",
+    "manage::a_pool_places_on_its_classes_only",
+]
+
+[[milestone.item]]
+what = "Pools made at run time on the device classes they name"
+spec = ["24-pools-and-devices.md §27.3.1", "D171", "I211"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::pools_are_made_with_their_classes",
+    "manage::a_pool_is_made_on_its_classes",
+]
+
+[[milestone.item]]
+what = "A pool deleted once it holds nothing: out of the map at once, its id kept, its data deleted by each device"
+spec = ["24-pools-and-devices.md §27.3.4", "D176", "D181", "I214"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::a_deleted_pools_id_is_kept_and_not_given_again",
+    "hyperstor_meta::tests::a_pool_is_deleted_and_its_id_not_given_again",
+    "cluster::devices_delete_a_deleted_pools_data",
+    "manage::a_pool_is_deleted_once_it_holds_nothing",
+]
+
+[[milestone.item]]
+what = "A pool deleted with its volumes, snapshots and trash when forced, as an operation"
+spec = ["24-pools-and-devices.md §27.3.4", "D176", "I215"]
+status = "done"
+tests = [
+    "manage::a_forced_pool_delete_takes_its_volumes_with_it",
+]
+
+[[milestone.item]]
+what = "A pool renamed, or its failure domain changed, with its PGs following"
+spec = ["24-pools-and-devices.md §27.3.2", "I213"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::a_pool_is_renamed_and_its_domain_changed",
+    "manage::a_pool_is_renamed_and_its_domain_changed",
+]
+
+[[milestone.item]]
+what = "A pool's devices added beyond its classes, and removed from them"
+spec = ["24-pools-and-devices.md §27.4", "D180", "I212"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::devices_added_and_removed_change_placement_and_need_format_7",
+    "hyperstor_meta::tests::devices_are_added_to_and_removed_from_a_pool",
+    "manage::devices_are_added_to_and_removed_from_a_pool",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

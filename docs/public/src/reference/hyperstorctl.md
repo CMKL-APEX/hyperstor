@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
 ```
 
 | Command | Does |
@@ -39,6 +39,12 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `in` | Brings a device back into placement |
 | `weight` | Keeps `--device`'s placement weight at `--weight W`, or with `--weight auto` lets it follow the device's capacity in TiB again. Its PGs move as the weight changes. Needs every storage node and map service member on a build that has it |
 | `device add` | Appends a device to `--node N`, served at `--address A` (D167), of class `--class C` (default: that of the node's other devices). It is device `N × 1000 + i`, at weight 0, so nothing moves until the node is restarted with one more `--shard A=PATH:SIZE` and the device reports its capacity. An address in use or a node that isn't there exits 1 |
+| `device class` | Keeps `--device`'s class at `--class C`, or with `--class auto` lets it follow the device's kind (`nvme`, `ssd`, `hdd`, `file`) again (D178). A class holds devices of one kind, and a class named after a kind only that kind; a device whose kind isn't known yet (its node hasn't run) is refused, exit 1. Pools limited to classes move its PGs |
+| `pool create` | Makes pool `--name N` on devices of `--classes C,C...` (required, D171): `--kind replicated` (default) or `cache`, `--copies N` (3; 1 for cache), `--min N` (half the copies, rounded up; 1 for cache), `--pgs N` (a power of two; default about 100 per device of its classes per copy), `--chunk BYTES` (4M), `--domain device\|host\|rack` (host). Refused (exit 1) for a name in use, classes whose devices span fewer domains than the copies, and hard disks with flash unless `--force` |
+| `pool set` | Changes pool `--pool P`: places its PGs on devices of `--classes C,C...` only, or with `--classes any` on every device (D164); keeps a copy per `--domain device\|host\|rack`; renames it `--name N`. What isn't given stays; PGs move as for a weight change. Refused (exit 1) for `.meta`, for a name another pool has, when the pool's devices would span fewer failure domains than its copies, and when the classes hold hard disks and flash both, unless `--force`, which warns (D172). `pools` lists each pool's classes, `!` marking a forced mix |
+| `pool add-device` | Lets pool `--pool P` use device `--device D` too, though it is not of the pool's classes, or takes back a device removed from it (D180); PGs move as for `pool set`, and it is refused as `pool set` is (exit 1), `--force` allowing hard disks with flash. A device serves every pool that uses it, sharing its space |
+| `pool remove-device` | Stops pool `--pool P` using device `--device D` (D180), whether one of its classes or added; its PGs there move to the pool's other devices. Refused (exit 1) when the pool's devices would span fewer failure domains than its copies. `pools` lists a pool's classes, then `+D` for each device added and `-D` for each removed |
+| `pool delete` | Deletes pool `--pool P` (D176, D181): it leaves the map at once, its id is never given again, and each device deletes its data within a minute or so. Refused (exit 1) for `.meta` and while the pool holds a volume, a snapshot or anything in the trash: delete and purge them first. `--dry-run` lists what it holds, deletes nothing, and exits 1 if it holds anything. `--force` deletes that first, as an operation: each volume, even attached (its holder is preempted), goes to the trash and is purged with its snapshots, clones before what they were cloned from, each audited; then the pool. Prints the volumes and the operation's id; with `--wait`, follows it |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
 | `drain` | Takes every device of `--node` out and follows its PGs as an operation, until none lives on the node; prints each PG that moves. With `--dry-run`, only prints what would move |
 | `token create` | Makes a single-use join token for `--role node` (a storage host), `--role meta` (a map service member) or `--role mgmt --name N` (a management client such as glidex, named N: 1–32 of a–z, 0–9 and -), valid `--ttl` seconds. Prints the token alone on standard output, and how to use it on standard error. Storage tokens are made on the map service's leader |
@@ -64,7 +70,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
 | `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
-| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `flatten-volume`, `trash purge`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
+| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `flatten-volume`, `trash purge`, `pool delete --force`: follow the operation until it finishes. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
 | `--sparse` | off | `write-volume`: skip blocks of zeros |
@@ -72,13 +78,20 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--pool P` | the first data pool | The pool for `pgs`, `pg-grid`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
 | `--pg N` | every PG | `pgs`: only this PG of the pool |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
-| `--device D` | | The device for `out`, `in` and `weight` |
+| `--device D` | | The device for `out`, `in`, `weight`, `pool add-device` and `pool remove-device` |
 | `--weight W\|auto` | | `weight`: the weight to keep (0 or more; 0 places nothing on the device), or `auto` |
 | `--node N` | | Every device of node N, for `out` and `in`; the node for `device add` |
 | `--address A` | | `device add`: `IP:PORT` where the node's new reactor listens |
-| `--class C` | | `device add`: the device's class (1 to 32 lowercase letters, digits and dashes) |
+| `--class C` | | `device add`: the device's class; `device class`: the class to keep, or `auto` |
+| `--classes C,C...\|any` | | `pool create`: the classes (required); `pool set`: the new classes, or every device |
+| `--kind K` | replicated | `pool create`: `replicated` or `cache` |
+| `--copies N` | 3 (1 for cache) | `pool create`: copies |
+| `--min N` | half the copies | `pool create`: copies that must be reachable to write |
+| `--pgs N` | about 100 per device per copy | `pool create`: PG count, a power of two |
+| `--chunk B` | 4M | `pool create`: chunk size, a multiple of 4096 bytes |
+| `--domain D` | host | `pool create`, `pool set`: `device`, `host` or `rack` |
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
-| `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique |
+| `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique. `pool create`, `pool set`: the pool's name, unique |
 | `--id ID` | | `delete-volume` and the snapshot commands: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
 | `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`: the snapshot, by the epoch `snapshot list` shows. `trash restore`, `trash purge`: a snapshot in the trash; without it, the volume |
 | `--ids ID,ID...` | | `snapshot group`: the volumes, comma-separated |
@@ -91,7 +104,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--op OP` | | `audit list`: only records of operation `OP` (`CreateVolume`) |
 | `--limit N` | 100 | `audit list`: at most `N` records |
 | `--retention-days N` | 365 | `audit settings`: keep records `N` days; 0 keeps them forever |
-| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters |
+| `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters. `pool create`, `pool set`, `pool add-device`: allow hard disks with flash. `pool delete`: delete the pool's volumes, snapshots and trash first |
 | `--role R` | | `token create`: `node` or `meta` |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week |
 | `--serial S` | | `cert revoke`: the certificate's serial, hex, as `cert list` and `cert show` print it |
@@ -99,7 +112,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--map ADDR[,ADDR...]` | | `member add`: where the new member serves the map, one `IP:PORT`. `write-volume`, `read-volume`: the map service's members, any of which answers; the volume is reached without the API |
 | `--out FILE` | | `map backup`: the file to write (mode 0600; never over an existing file) |
 | `--file F` | | `cert show`: a certificate file (PEM) |
-| `--dry-run` | off | `drain`: change nothing; print the PGs that would move |
+| `--dry-run` | off | `drain`: change nothing; print the PGs that would move. `pool delete`: delete nothing; list what the pool holds |
 
 **Through hyperstor-mgmt.** With `--mgmt`, `hyperstorctl` is a person,
 not an administrator's certificate: make an API token on the dashboard

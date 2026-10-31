@@ -33,6 +33,38 @@ service ClusterService {
   // until the node runs it (restarted with one more --shard). Write.
   rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
 
+  // Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
+  // follow the device's kind again (04-decisions.md D178). A class holds
+  // devices of one kind, and a class named after a kind only that kind.
+  // Pools limited to classes move PGs as it changes. Write.
+  rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
+
+  // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
+  // (D164) or failure domain, and PGs move to match, or its name. Refused
+  // for .meta, when its devices would span fewer failure domains than the
+  // pool's copies, when they mix hard disks and flash unless forced
+  // (D172), and for a name another pool has. Write.
+  rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
+
+  // Adds a device to a pool beyond its classes, or removes one of them
+  // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
+  // move as for SetPool, which it is checked as. Write.
+  rpc SetPoolDevice(SetPoolDeviceRequest) returns (SetPoolDeviceResponse);
+
+  // Makes a pool (24-pools-and-devices.md §27.3.1): its device classes are
+  // required (04-decisions.md D171) and checked as SetPool checks them;
+  // its id is one no pool has had. Write.
+  rpc CreatePool(CreatePoolRequest) returns (CreatePoolResponse);
+
+  // Deletes a pool (24-pools-and-devices.md §27.3.4, 04-decisions.md
+  // D176, D181): it leaves the map at once, its id is never given again,
+  // and each device deletes what it holds of it. Refused for .meta and
+  // while the pool holds a volume, a snapshot or anything in the trash;
+  // dry_run lists those and deletes nothing. force deletes them first,
+  // each audited, as an operation that deletes the pool last (D176).
+  // Write, with step-up.
+  rpc DeletePool(DeletePoolRequest) returns (DeletePoolResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -235,6 +267,12 @@ message Device {
   // Whether an operator set the weight (SetDeviceWeight); otherwise it is
   // the device's capacity in TiB, from its reports (04-decisions.md D158).
   bool weight_fixed = 8 [json_name = "weight_fixed"];
+  // What the device is, as its node reports it: "nvme", "ssd", "hdd" or
+  // "file"; empty until the map has it (04-decisions.md D178).
+  string kind = 9;
+  // Whether an operator set the class (SetDeviceClass, or a class given
+  // to AddDevice); otherwise it is the device's kind.
+  bool class_fixed = 10 [json_name = "class_fixed"];
 }
 
 message Pool {
@@ -257,6 +295,16 @@ message Pool {
   // hears.
   optional uint64 total_bytes = 10 [json_name = "total_bytes"];
   optional uint64 free_bytes = 11 [json_name = "free_bytes"];
+  // The device classes the pool places on (04-decisions.md D164); empty:
+  // every device, as pools made before class sets do (D171).
+  repeated string classes = 12;
+  // Whether those classes hold hard disks and flash both, which only a
+  // forced SetPool allows (D172).
+  bool mixed_kinds = 13 [json_name = "mixed_kinds"];
+  // Devices the pool uses beyond its classes, and devices of its classes
+  // it does not use (04-decisions.md D180).
+  repeated uint32 added_devices = 14 [json_name = "added_devices"];
+  repeated uint32 removed_devices = 15 [json_name = "removed_devices"];
 }
 
 // Each PG is counted once, under its worst state.
@@ -360,6 +408,101 @@ message AddDeviceRequest {
   // The device's class (`nvme`, `nvme-qlc`, ...); absent: that of the
   // node's other devices.
   optional string class = 3;
+}
+
+message CreatePoolRequest {
+  string name = 1;
+  // "replicated" or "cache" (EC pools aren't served yet).
+  string kind = 2;
+  // Copies.
+  uint32 size = 3;
+  // Copies that must be reachable to write; absent: half the copies,
+  // rounded up (1 for a cache pool).
+  optional uint32 min_size = 4 [json_name = "min_size"];
+  // A power of two; absent: about 100 per device the pool may use, per
+  // copy.
+  optional uint32 pg_count = 5 [json_name = "pg_count"];
+  // Bytes, a multiple of 4096; absent: 4 MiB.
+  optional uint32 chunk_size = 6 [json_name = "chunk_size"];
+  // "device", "host" or "rack"; absent: "host".
+  optional string domain = 7;
+  repeated string classes = 8;
+  // Allow classes of hard disks and flash both (D172).
+  bool force = 9;
+}
+
+message CreatePoolResponse {
+  uint32 pool = 1;
+  uint32 pg_count = 2 [json_name = "pg_count"];
+  uint64 map_epoch = 3 [json_name = "map_epoch"];
+  bool mixed_kinds = 4 [json_name = "mixed_kinds"];
+}
+
+message DeletePoolRequest {
+  uint32 pool = 1;
+  // List what the pool holds; delete nothing.
+  bool dry_run = 2 [json_name = "dry_run"];
+  // Delete what the pool holds first: its volumes, even attached ones
+  // (their holders are preempted), with their snapshots and the trash.
+  bool force = 3;
+}
+
+message DeletePoolResponse {
+  // 0 for a dry run.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // What the pool holds (volumes, with those in the trash): what keeps it
+  // from being deleted.
+  repeated Volume volumes = 2;
+  // With force: the operation that deletes them, then the pool.
+  Operation operation = 3;
+}
+
+message SetPoolRequest {
+  uint32 pool = 1;
+  // The classes to place on; empty: unchanged, unless every_device.
+  repeated string classes = 2;
+  // Allow a set that mixes hard disks and flash (D172).
+  bool force = 3;
+  // A new name; absent: unchanged.
+  optional string name = 4;
+  // "device", "host" or "rack"; absent: unchanged.
+  optional string domain = 5;
+  // Place on every device, as pools made before class sets do (D171);
+  // classes must then be empty.
+  bool every_device = 6 [json_name = "every_device"];
+}
+
+message SetPoolResponse {
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The set mixes hard disks and flash (only when forced).
+  bool mixed_kinds = 2 [json_name = "mixed_kinds"];
+}
+
+message SetPoolDeviceRequest {
+  uint32 pool = 1;
+  uint32 device = 2;
+  // true: the pool uses the device; false: it does not.
+  bool member = 3;
+  // Allow hard disks with flash (D172).
+  bool force = 4;
+}
+
+message SetPoolDeviceResponse {
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The pool's devices mix hard disks and flash (only when forced).
+  bool mixed_kinds = 2 [json_name = "mixed_kinds"];
+}
+
+message SetDeviceClassRequest {
+  uint32 device = 1;
+  // The class to keep; absent: follow the device's kind again.
+  optional string class = 2;
+}
+
+message SetDeviceClassResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  string class = 2;
 }
 
 message AddDeviceResponse {

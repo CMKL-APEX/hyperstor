@@ -468,7 +468,11 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         let mut domains: BTreeMap<u32, (u128, u128)> = BTreeMap::new();
         let mut reported = true;
         for d in map.devices.values().filter(|d| {
-            d.up_in && d.weight > 0.0 && info.class.as_ref().is_none_or(|c| *c == d.class)
+            d.up_in
+                && d.weight > 0.0
+                && info.uses(d)
+                && !(info.id == hyperstor_map::META_POOL
+                    && map.kinds.get(&d.id) == Some(&hyperstor_map::DeviceKind::Hdd))
         }) {
             let Some(&(total, free)) = space.get(&d.id) else {
                 reported = false;
@@ -617,6 +621,8 @@ pub fn status(
                         weight: d.weight,
                         class: d.class.clone(),
                         weight_fixed: map.fixed_weights.contains(&d.id),
+                        kind: map.kinds.get(&d.id).map_or("", |k| k.name()).into(),
+                        class_fixed: map.fixed_classes.contains(&d.id),
                         ..Default::default()
                     })
                     .collect(),
@@ -636,6 +642,10 @@ pub fn status(
                 pg_count: p.pg_count,
                 chunk_size: p.chunk_size,
                 domain: domain(p.domain),
+                classes: p.classes.clone(),
+                mixed_kinds: crate::mixes_disks_and_flash(map, p),
+                added_devices: p.added.iter().copied().collect(),
+                removed_devices: p.removed.iter().copied().collect(),
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -895,6 +905,432 @@ impl ClusterService for Api {
         }
     }
 
+    async fn set_device_class(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDeviceClassRequest>,
+    ) -> ServiceResult<pb::SetDeviceClassResponse> {
+        let class = req.class.map(str::to_string);
+        let target = format!(
+            "device {} class={}",
+            req.device,
+            class.as_deref().unwrap_or("auto")
+        );
+        let who = self.authorize(&ctx, "SetDeviceClass", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetDeviceClass {
+                device: req.device,
+                class,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDeviceClass",
+            &target,
+            &match &r {
+                Some(Ok((epoch, c))) => format!("ok, class {c}, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, class))) => Ok(pb::SetDeviceClassResponse {
+                map_epoch,
+                class,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) if e.starts_with("a class is") => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "class_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn create_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CreatePoolRequest>,
+    ) -> ServiceResult<pb::CreatePoolResponse> {
+        use hyperstor_map::PoolKind;
+        use hyperstor_placement::Domain;
+        let classes: Vec<String> = req.classes.iter().map(|c| c.to_string()).collect();
+        let target = format!(
+            "pool {} {} copies={} classes={}{}",
+            req.name,
+            req.kind,
+            req.size,
+            classes.join(","),
+            if req.force { " force" } else { "" }
+        );
+        let who = self.authorize(&ctx, "CreatePool", &target, true)?;
+        let bad = |m: String| with_reason(ConnectError::invalid_argument(m), "invalid_argument");
+        let kind = match req.kind {
+            "replicated" => PoolKind::Replicated,
+            "cache" => PoolKind::Cache,
+            k => return Err(bad(format!("a pool is replicated or cache, not {k:?}"))),
+        };
+        let domain = match req.domain.unwrap_or("host") {
+            "device" => Domain::Device,
+            "host" => Domain::Host,
+            "rack" => Domain::Rack,
+            d => return Err(bad(format!("a domain is device, host or rack, not {d:?}"))),
+        };
+        if let Some(c) = classes.iter().find(|c| !crate::valid_class(c)) {
+            return Err(bad(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            )));
+        }
+        let size = u8::try_from(req.size).map_err(|_| bad(format!("{} copies", req.size)))?;
+        let min_size = match req.min_size {
+            Some(m) => u8::try_from(m).map_err(|_| bad(format!("min {m}")))?,
+            None if kind == PoolKind::Cache => 1,
+            None => size.div_ceil(2).max(1),
+        };
+        let new = crate::NewPool {
+            name: req.name.to_string(),
+            kind,
+            size,
+            min_size,
+            pg_count: req.pg_count,
+            chunk_size: req.chunk_size.unwrap_or(4 << 20),
+            domain,
+            classes,
+            force: req.force,
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::CreatePool { new, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "CreatePool",
+            &target,
+            &match &r {
+                Some(Ok((id, pgs, epoch, mixed))) => format!(
+                    "ok, pool {id}, {pgs} PGs, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((pool, pg_count, map_epoch, mixed_kinds))) => Ok(pb::CreatePoolResponse {
+                pool,
+                pg_count,
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e))
+                if e.starts_with("the devices")
+                    || e.starts_with("classes")
+                    || e.starts_with("a pool is already") =>
+            {
+                Err(meta_error(
+                    e,
+                    ConnectError::failed_precondition,
+                    "pool_conflict",
+                ))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPoolRequest>,
+    ) -> ServiceResult<pb::SetPoolResponse> {
+        let classes: Vec<String> = req.classes.iter().map(|c| c.to_string()).collect();
+        let force = req.force;
+        let mut target = format!("pool {}", req.pool);
+        if req.every_device {
+            target.push_str(" classes=any");
+        } else if !classes.is_empty() {
+            target.push_str(&format!(" classes={}", classes.join(",")));
+        }
+        if let Some(n) = req.name {
+            target.push_str(&format!(" name={n}"));
+        }
+        if let Some(d) = req.domain {
+            target.push_str(&format!(" domain={d}"));
+        }
+        if force {
+            target.push_str(" force");
+        }
+        let who = self.authorize(&ctx, "SetPool", &target, true)?;
+        let bad = |m: String| with_reason(ConnectError::invalid_argument(m), "invalid_argument");
+        if req.every_device && !classes.is_empty() {
+            return Err(bad("every_device takes no classes".into()));
+        }
+        if let Some(c) = classes.iter().find(|c| !crate::valid_class(c)) {
+            return Err(bad(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            )));
+        }
+        if let Some(n) = req.name {
+            crate::check_pool_name(n).map_err(bad)?;
+        }
+        let domain = match req.domain {
+            None => None,
+            Some("device") => Some(Domain::Device),
+            Some("host") => Some(Domain::Host),
+            Some("rack") => Some(Domain::Rack),
+            Some(d) => return Err(bad(format!("a domain is device, host or rack, not {d:?}"))),
+        };
+        let change = crate::PoolChange {
+            classes: (req.every_device || !classes.is_empty()).then_some(classes),
+            name: req.name.map(str::to_string),
+            domain,
+        };
+        if change.classes.is_none() && change.name.is_none() && change.domain.is_none() {
+            return Err(bad(
+                "nothing to change: give classes, a name or a domain".into()
+            ));
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPool {
+                pool: req.pool,
+                change,
+                force,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetPool",
+            &target,
+            &match &r {
+                Some(Ok((epoch, mixed))) => format!(
+                    "ok, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, mixed_kinds))) => Ok(pb::SetPoolResponse {
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn delete_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeletePoolRequest>,
+    ) -> ServiceResult<pb::DeletePoolResponse> {
+        let pool = req.pool;
+        let dry_run = req.dry_run;
+        let force = req.force && !dry_run;
+        let target = format!(
+            "pool {pool}{}",
+            if dry_run {
+                " dry-run"
+            } else if force {
+                " force"
+            } else {
+                ""
+            }
+        );
+        let who = self.authorize(&ctx, "DeletePool", &target, !dry_run)?;
+        let (map, ..) = self.published().await?;
+        if !map.pools.contains_key(&pool) {
+            return Err(with_reason(
+                ConnectError::not_found(format!("no pool {pool}")),
+                "not_found",
+            ));
+        }
+        if pool == hyperstor_map::META_POOL {
+            return Err(with_reason(
+                ConnectError::failed_precondition(
+                    ".meta holds every volume's header; it can't be deleted",
+                ),
+                "pool_conflict",
+            ));
+        }
+        // What the pool holds, the trash with it (D176): volumes, and so
+        // their snapshots.
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ListVolumes {
+                pool,
+                trash: true,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let held = volume_result(rx.recv().await)?;
+        let volumes: Vec<pb::Volume> = held.iter().map(volume_pb).collect();
+        if dry_run {
+            return Ok(pb::DeletePoolResponse {
+                volumes,
+                ..Default::default()
+            }
+            .into());
+        }
+        // Forced (D176): an operation deletes what it holds, then the pool.
+        if force && !held.is_empty() {
+            let op = self
+                .start_op(
+                    &who,
+                    "DeletePool",
+                    crate::operations::Work::DeletePool { pool },
+                    target,
+                    format!("{} volume(s) left", held.len()),
+                )
+                .await?;
+            return Ok(pb::DeletePoolResponse {
+                volumes,
+                operation: op.into(),
+                ..Default::default()
+            }
+            .into());
+        }
+        let r = if held.is_empty() {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::DeletePool { pool, reply })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            rx.recv().await
+        } else {
+            Some(Err(format!(
+                "pool {pool} holds {} volume(s), with their snapshots and the trash; delete and purge them first, or --force (--dry-run lists them)",
+                held.len()
+            )))
+        };
+        audit(
+            &who,
+            "DeletePool",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::DeletePoolResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_pool_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPoolDeviceRequest>,
+    ) -> ServiceResult<pb::SetPoolDeviceResponse> {
+        let target = format!(
+            "pool {} {} device {}{}",
+            req.pool,
+            if req.member { "add" } else { "remove" },
+            req.device,
+            if req.force { " force" } else { "" }
+        );
+        let who = self.authorize(&ctx, "SetPoolDevice", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPoolDevice {
+                pool: req.pool,
+                device: req.device,
+                member: req.member,
+                force: req.force,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetPoolDevice",
+            &target,
+            &match &r {
+                Some(Ok((epoch, mixed))) => format!(
+                    "ok, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, mixed_kinds))) => Ok(pb::SetPoolDeviceResponse {
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") || e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn add_device(
         &self,
         ctx: RequestContext,
@@ -981,6 +1417,7 @@ impl ClusterService for Api {
         self.tx
             .send(Admin::ListVolumes {
                 pool: req.pool,
+                trash: false,
                 reply,
             })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;

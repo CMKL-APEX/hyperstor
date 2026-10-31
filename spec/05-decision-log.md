@@ -933,3 +933,37 @@ weight change. Asked how to remove them, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 138 | When a device deletes its copy of a PG it has left: (a) once it is in neither `up` nor `acting` and the PG is clean (acting is up, every member live) for a grace of a minute (recommended); (b) the same, but keeping copies of devices that are only out, for a faster return | (a) | D177 |
+
+## Device kinds (2026-10-31)
+
+Building stage 2 of 24-pools-and-devices.md: nodes start reporting what
+their devices are, but every device was labelled `nvme`, whatever it
+was, and files have no media of their own. Asked before building, each
+with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 139 | What happens to the `nvme` every device was given: a device whose class no operator set takes its reported kind (recommended); labels kept until an operator relabels | Take the kind | D178 |
+| 140 | How a file-backed device counts for D172's rule: a kind of its own that mixes with any (recommended); the kind of the disk under its filesystem | Its own kind | D179 |
+
+## A pool's devices (2026-10-31)
+
+Pools that name the same class share every device of it, so a device
+couldn't be in one such pool and not another except by giving it a
+class of its own. Asked how a pool's devices should be chosen, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 141 | How a pool's devices are chosen: its classes, plus devices added to it, less devices removed from it (recommended); an explicit list per pool; labels only (as built); several tags per device | Classes and per-pool edits | D180 |
+
+## Deleting a pool (2026-10-31)
+
+Building `DeletePool` (stage 3c), two points where the design in
+24-pools-and-devices.md §27.3.4 could be simpler. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 142 | Whether a deleted pool leaves the map at once, its id kept and devices deleting its data as they delete stray copies (recommended), or is marked deleting until every device reports it holds nothing | At once | D181 |
+| 143 | Whether `--force` (D176: delete the pool's volumes first) comes with stage 3c or in its own pull request after it (recommended) | Its own pull request | D181 |

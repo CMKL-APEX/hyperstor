@@ -327,6 +327,415 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
+/// D178, D179: each node reports its device's kind; once every node has,
+/// a device whose class no operator set takes its kind ("nvme" until
+/// then, for every device), so these files become "file". An operator's
+/// class stays and is marked; one named after another kind is refused;
+/// `auto` goes back to the kind. Audited.
+#[test]
+fn devices_report_their_kind_and_classes_follow_it() {
+    let c = Cluster::all_in_one("kinds", 3);
+    // (id, kind, class, class_fixed) of each device.
+    let devices = |c: &Cluster| -> Vec<(u64, String, String, bool)> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["kind"].as_str().unwrap_or("").to_string(),
+                    d["class"].as_str().unwrap_or("").to_string(),
+                    d["class_fixed"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    };
+    wait_for("every device's kind, and its class from it", 20, || {
+        devices(&c)
+            .iter()
+            .all(|d| d.1 == "file" && d.2 == "file" && !d.3)
+            .then_some(())
+    });
+    let set = c
+        .ctl(&["device", "class", "--device", "1000", "--class", "scratch"])
+        .ok();
+    assert!(
+        set.has("device 1000 class scratch, kept as set"),
+        "{}",
+        set.out
+    );
+    wait_for("the class set", 10, || {
+        devices(&c)
+            .contains(&(1000, "file".into(), "scratch".into(), true))
+            .then_some(())
+    });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(
+        n.has(" scratch+ ") && n.has("+ class set with hyperstorctl device class"),
+        "{}",
+        n.out
+    );
+    let refused = c
+        .ctl(&["device", "class", "--device", "0", "--class", "nvme"])
+        .expect(1);
+    assert!(
+        refused.has("class nvme is for nvme devices"),
+        "{}",
+        refused.out
+    );
+    c.ctl(&["device", "class", "--device", "0"]).expect(2);
+    c.ctl(&["device", "class", "--device", "99", "--class", "x"])
+        .expect(1);
+    let auto = c
+        .ctl(&["device", "class", "--device", "1000", "--class", "auto"])
+        .ok();
+    assert!(auto.has("class file, following its kind"), "{}", auto.out);
+    wait_for("back to its kind", 10, || {
+        devices(&c)
+            .contains(&(1000, "file".into(), "file".into(), false))
+            .then_some(())
+    });
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetDeviceClass"]).ok();
+        (a.has("class=scratch") && a.has("class=auto")).then_some(())
+    });
+}
+
+/// D164: a pool's class set: refused when its devices span fewer hosts
+/// than the pool's copies; set, its PGs leave devices of other classes;
+/// `any` brings every device back. Audited.
+#[test]
+fn a_pool_places_on_its_classes_only() {
+    let c = Cluster::all_in_one("classsets", 4);
+    // Classes once the kinds are in (D178).
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 4).then_some(())
+    });
+    for (d, cl) in [("0", "a"), ("1000", "a"), ("2000", "b"), ("3000", "c")] {
+        c.ctl(&["device", "class", "--device", d, "--class", cl])
+            .ok();
+    }
+    let on_3000 = |c: &Cluster| -> usize {
+        let pgs: serde_json::Value =
+            serde_json::from_str(&c.ctl(&["pgs", "--pool", "1", "--json"]).out).unwrap();
+        pgs["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["up"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(3000)))
+            })
+            .count()
+    };
+    wait_for("the classes in the map, PGs on device 3000", 10, || {
+        (c.ctl(&["nodes"]).out.matches("+ ").count() >= 1 && on_3000(&c) > 0).then_some(())
+    });
+    let narrow = c
+        .ctl(&["pool", "set", "--pool", "1", "--classes", "a"])
+        .expect(1);
+    assert!(
+        narrow.has("span 2 host(s); pool 1 keeps 3 copies"),
+        "{}",
+        narrow.out
+    );
+    let set = c
+        .ctl(&["pool", "set", "--pool", "1", "--classes", "a,b"])
+        .ok();
+    assert!(set.has("pool 1 places on classes a,b"), "{}", set.out);
+    wait_for("no PG of pool 1 on device 3000", 10, || {
+        (on_3000(&c) == 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" a,b"), "{}", pools.out);
+    c.ctl(&["pool", "set", "--pool", "0", "--classes", "a,b"])
+        .expect(1);
+    c.ctl(&["pool", "set", "--pool", "1"]).expect(2);
+    c.ctl(&["pool", "set", "--pool", "1", "--classes", "any"])
+        .ok();
+    wait_for("device 3000 back in pool 1", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPool"]).ok();
+        (a.has("classes=a,b") && a.has("classes=any")).then_some(())
+    });
+}
+
+/// D180: a pool stops using one device of its classes, and its PGs
+/// leave it; a second removal would leave too few hosts; a device of
+/// another class is added to it, and PGs come to it. Audited.
+#[test]
+fn devices_are_added_to_and_removed_from_a_pool() {
+    let c = Cluster::all_in_one("pooldevs", 4);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 4).then_some(())
+    });
+    let on_3000 = |c: &Cluster| -> usize {
+        let pgs: serde_json::Value =
+            serde_json::from_str(&c.ctl(&["pgs", "--pool", "1", "--json"]).out).unwrap();
+        pgs["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["up"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(3000)))
+            })
+            .count()
+    };
+    c.ctl(&["pool", "set", "--pool", "1", "--classes", "file"])
+        .ok();
+    wait_for("PGs of pool 1 on device 3000", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    let out = c
+        .ctl(&["pool", "remove-device", "--pool", "1", "--device", "3000"])
+        .ok();
+    assert!(out.has("pool 1 no longer uses device 3000"), "{}", out.out);
+    wait_for("no PG of pool 1 on device 3000", 10, || {
+        (on_3000(&c) == 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" file-3000"), "{}", pools.out);
+    let narrow = c
+        .ctl(&["pool", "remove-device", "--pool", "1", "--device", "2000"])
+        .expect(1);
+    assert!(narrow.has("span 2 host(s)"), "{}", narrow.out);
+    c.ctl(&["pool", "remove-device", "--pool", "0", "--device", "0"])
+        .expect(1);
+    c.ctl(&["pool", "add-device", "--pool", "1", "--device", "99"])
+        .expect(1);
+    c.ctl(&["pool", "add-device", "--pool", "1"]).expect(2);
+    // Device 3000 in a class of its own: still out of pool 1 once taken
+    // back, then added beyond the pool's classes.
+    c.ctl(&["device", "class", "--device", "3000", "--class", "spare"])
+        .ok();
+    c.ctl(&["pool", "add-device", "--pool", "1", "--device", "3000"])
+        .ok();
+    wait_for("device 3000 back in pool 1", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" file+3000"), "{}", pools.out);
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPoolDevice"]).ok();
+        (a.has("pool 1 remove device 3000") && a.has("pool 1 add device 3000")).then_some(())
+    });
+}
+
+/// §27.3.2: a pool is renamed and keeps a copy per device rather than
+/// per host, its classes staying; it still takes I/O; nothing to change
+/// is a usage error; audited.
+#[test]
+fn a_pool_is_renamed_and_its_domain_changed() {
+    let c = Cluster::all_in_one("setpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .ok();
+    // §27.3.2: renamed, and a copy per device rather than per host; the
+    // classes stay. Nothing to change is a usage error.
+    let set = c
+        .ctl(&[
+            "pool", "set", "--pool", "3", "--name", "quick", "--domain", "device",
+        ])
+        .ok();
+    assert!(
+        set.has("pool 3 keeps a copy per device, is named quick"),
+        "{}",
+        set.out
+    );
+    wait_for("the new name in the map", 10, || {
+        let p = c.ctl(&["pools"]).ok();
+        (p.has("quick") && p.has(" file")).then_some(())
+    });
+    c.ctl(&["pool", "set", "--pool", "3"]).expect(2);
+    c.ctl(&["io-test", "--pool", "3", "--mib", "4"]).ok();
+    wait_for("the change in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPool"]).ok();
+        a.has("pool 3 name=quick domain=device").then_some(())
+    });
+}
+
+/// D176, D181: a pool that holds a volume, or a volume in the trash,
+/// isn't deleted, and `--dry-run` lists it; once purged, the pool is
+/// deleted and leaves the map, and a new pool doesn't get its id;
+/// `.meta` is refused; audited.
+#[test]
+fn a_pool_is_deleted_once_it_holds_nothing() {
+    let c = Cluster::all_in_one("delpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "gone", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("gone").then_some(())
+    });
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "v",
+        ])
+        .ok();
+    let v = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let dry = c
+        .ctl(&["pool", "delete", "--pool", "3", "--dry-run"])
+        .expect(1);
+    assert!(dry.has("holds these volumes") && dry.has(&v), "{}", dry.out);
+    let refused = c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    assert!(refused.has("holds 1 volume(s)"), "{}", refused.out);
+    // In the trash, it still holds the pool.
+    c.ctl(&["delete-volume", "--id", &v]).ok();
+    c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    c.ctl(&["trash", "purge", "--id", &v, "--wait", "60"]).ok();
+    let dry = c.ctl(&["pool", "delete", "--pool", "3", "--dry-run"]).ok();
+    assert!(dry.has("holds nothing"), "{}", dry.out);
+    let del = c.ctl(&["pool", "delete", "--pool", "3"]).ok();
+    assert!(del.has("pool 3 deleted"), "{}", del.out);
+    wait_for("pool 3 out of the map", 10, || {
+        (!c.ctl(&["pools"]).has("gone")).then_some(())
+    });
+    c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    c.ctl(&["pool", "delete", "--pool", "0"]).expect(1);
+    c.ctl(&["pool", "delete"]).expect(2);
+    let again = c
+        .ctl(&["pool", "create", "--name", "gone", "--classes", "file"])
+        .ok();
+    assert!(again.has("pool 4 gone made"), "{}", again.out);
+    wait_for("the delete in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+        (a.has("pool 3") && a.has("ok, map epoch")).then_some(())
+    });
+}
+
+/// D176: `pool delete --force` deletes what the pool holds first, as
+/// an operation: a volume with a snapshot, its clone, and a volume in the
+/// trash, each audited; then the pool.
+#[test]
+fn a_forced_pool_delete_takes_its_volumes_with_it() {
+    let c = Cluster::all_in_one("forcepool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "doomed", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("doomed").then_some(())
+    });
+    let id_of = |r: &Run| r.out.split_whitespace().nth(1).unwrap().to_string();
+    let v = id_of(
+        &c.ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "v",
+        ])
+        .ok(),
+    );
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "s"])
+        .ok();
+    let k = id_of(
+        &c.ctl(&["clone-volume", "--id", &v, "--epoch", "1", "--name", "k"])
+            .ok(),
+    );
+    let t = id_of(
+        &c.ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "t",
+        ])
+        .ok(),
+    );
+    c.ctl(&["delete-volume", "--id", &t]).ok();
+    let dry = c
+        .ctl(&["pool", "delete", "--pool", "3", "--dry-run"])
+        .expect(1);
+    assert!(dry.has(&v) && dry.has(&k) && dry.has(&t), "{}", dry.out);
+    let del = c
+        .ctl(&["pool", "delete", "--pool", "3", "--force", "--wait", "120"])
+        .ok();
+    assert!(
+        del.has("deleting these volumes") && del.has("pool 3 deleted"),
+        "{}",
+        del.out
+    );
+    wait_for("pool 3 out of the map", 10, || {
+        (!c.ctl(&["pools"]).has("doomed")).then_some(())
+    });
+    assert!(!c.ctl(&["trash", "list"]).ok().has(&t));
+    wait_for("each volume's delete in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "PurgeFromTrash"]).ok();
+        [&v, &k, &t]
+            .iter()
+            .all(|id| a.has(&format!("volume {id} (pool 3 deleted)")))
+            .then_some(())
+    });
+    let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+    assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
+}
+
+/// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
+/// with about 100 PGs per device per copy; volumes and I/O go to it;
+/// a pool without classes, a name in use and classes with too few hosts
+/// are refused; audited.
+#[test]
+fn a_pool_is_made_on_its_classes() {
+    let c = Cluster::all_in_one("mkpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    let made = c
+        .ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .ok();
+    // Pools 0, 1 and 2 are the trial's; 3 devices, 3 copies: 100, so 128.
+    assert!(made.has("pool 3 fast made, 128 PGs"), "{}", made.out);
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("fast").then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has("fast") && pools.has(" file"), "{}", pools.out);
+    c.ctl(&["io-test", "--pool", "3", "--mib", "4"]).ok();
+    c.ctl(&["pool", "create", "--name", "x"]).expect(2);
+    c.ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .expect(1);
+    let narrow = c
+        .ctl(&["pool", "create", "--name", "y", "--classes", "nvme"])
+        .expect(1);
+    assert!(narrow.has("span 0 host(s)"), "{}", narrow.out);
+    wait_for("the pool in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "CreatePool"]).ok();
+        a.has("pool fast replicated copies=3 classes=file")
+            .then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

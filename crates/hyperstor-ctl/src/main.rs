@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -23,6 +23,25 @@
 //! - `weight --device D --weight W|auto`: keep a device's placement weight
 //!   at W, or let it follow the device's capacity in TiB again (D158);
 //!   its PGs move as the weight changes;
+//! - `pool create --name N --classes C[,C...] [--kind replicated|cache]
+//!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
+//!   device|host|rack] [--force]`: make a pool on devices of those classes
+//!   (D171); PGs, unless given, about 100 per device per copy;
+//! - `pool set --pool P [--classes C[,C...]|any] [--name N] [--domain
+//!   device|host|rack] [--force]`: place pool P's PGs on devices of those
+//!   classes only, or on every device (D164), with a copy per device,
+//!   host or rack; or rename it; `--force` allows classes of hard disks
+//!   and flash both (D172);
+//! - `pool add-device --pool P --device D [--force]`, `pool remove-device
+//!   --pool P --device D`: let pool P use one more device, beyond its
+//!   classes, or stop using one of them (D180);
+//! - `pool delete --pool P [--dry-run] [--force [--wait SECS]]`: delete
+//!   pool P, which must hold no volume, snapshot or trash (D176); it
+//!   leaves the map at once and devices delete its data (D181);
+//!   `--dry-run` lists what it holds; `--force` deletes that first, as an
+//!   operation;
+//! - `device class --device D --class C|auto`: set a device's class, or
+//!   let it follow the device's kind again (D178);
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -124,7 +143,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -209,6 +228,15 @@ struct Args {
     /// `device add`: where the node's new reactor listens, and the class.
     address: Option<String>,
     class: Option<String>,
+    /// `pool set`: the classes, `any` for every device.
+    classes: Option<String>,
+    /// `pool create`: kind, copies, min, PG count, chunk bytes, domain.
+    kind: Option<String>,
+    copies: Option<u32>,
+    min: Option<u32>,
+    pgs: Option<u32>,
+    chunk: Option<u64>,
+    domain: Option<String>,
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
@@ -272,6 +300,13 @@ fn main() {
         weight: None,
         address: None,
         class: None,
+        classes: None,
+        kind: None,
+        copies: None,
+        min: None,
+        pgs: None,
+        chunk: None,
+        domain: None,
         poll: false,
     };
     let mut cmd = None;
@@ -324,6 +359,20 @@ fn main() {
             "--node" => a.node = Some(num(it.next())),
             "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--class" => a.class = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--classes" => a.classes = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--kind" => a.kind = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--copies" => a.copies = Some(num(it.next())),
+            "--min" => a.min = Some(num(it.next())),
+            "--pgs" => a.pgs = Some(num(it.next())),
+            "--chunk" => {
+                a.chunk = Some(
+                    it.next()
+                        .and_then(|s| parse_size(s))
+                        .filter(|c| *c <= u64::from(u32::MAX))
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--domain" => a.domain = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--size" => {
                 a.size = Some(
                     it.next()
@@ -391,7 +440,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device"
+            | "device" | "pool"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -406,7 +455,13 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "device" => matches!(sub, Some("add")),
+                    "device" => matches!(sub, Some("add" | "class")),
+                    "pool" => {
+                        matches!(
+                            sub,
+                            Some("set" | "create" | "add-device" | "remove-device" | "delete")
+                        )
+                    }
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -421,12 +476,45 @@ fn main() {
     // device add takes a node, an address and maybe a class; nothing else
     // takes the last two.
     let device_add = cmd == "device add";
+    let device_class = cmd == "device class";
+    // pool set takes a pool and what to change (classes, a name, a
+    // domain), pool create a name and classes; nothing else takes classes
+    // or a domain, and only pool create its other options.
+    let create = cmd == "pool create";
+    let set = cmd == "pool set";
+    if (set
+        && (a.pool.is_none() || (a.classes.is_none() && a.name.is_empty() && a.domain.is_none())))
+        || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
+        || (!set && !create && (a.classes.is_some() || a.domain.is_some()))
+        || (!create
+            && (a.kind.is_some()
+                || a.copies.is_some()
+                || a.min.is_some()
+                || a.pgs.is_some()
+                || a.chunk.is_some()))
+    {
+        usage();
+    }
+    // pool add-device and remove-device take a pool and one device (D180).
+    let pool_device = cmd == "pool add-device" || cmd == "pool remove-device";
+    if pool_device
+        && (a.pool.is_none()
+            || a.device.is_none()
+            || a.node.is_some()
+            || (a.force && cmd == "pool remove-device"))
+    {
+        usage();
+    }
     if device_add != (a.node.is_some() && a.address.is_some() && a.device.is_none())
-        || (!device_add && (a.address.is_some() || a.class.is_some()))
+        || device_class != (a.device.is_some() && a.class.is_some() && a.node.is_none())
+        || (!device_add && a.address.is_some())
+        || (!device_add && !device_class && a.class.is_some())
     {
         usage();
     }
     if !device_add
+        && !device_class
+        && !pool_device
         && (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
             == (a.device.is_none() && a.node.is_none())
         || (cmd == "drain" && a.node.is_none())
@@ -526,7 +614,8 @@ fn main() {
         }));
     }
     if (cmd == "token create") != a.role.is_some()
-        || (a.dry_run && cmd != "drain")
+        || (a.dry_run && cmd != "drain" && cmd != "pool delete")
+        || (cmd == "pool delete" && a.pool.is_none())
         || (a.ttl != 0 && cmd != "token create")
         || (needs_id && a.id.is_none())
     {
@@ -540,7 +629,13 @@ fn main() {
     ) != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
         || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
-        || (a.force && cmd != "delete-volume" && cmd != "member remove")
+        || (a.force
+            && cmd != "delete-volume"
+            && cmd != "member remove"
+            && cmd != "pool set"
+            && cmd != "pool create"
+            && cmd != "pool add-device"
+            && cmd != "pool delete")
     {
         usage();
     }
@@ -799,6 +894,8 @@ where
         }
         _ => {}
     }
+    // pool delete --force --wait follows its operation.
+    let ops = OperationServiceClient::new(transport.clone(), config.clone());
     let client = ClusterServiceClient::new(transport, config);
     let status = || async {
         client
@@ -977,6 +1074,288 @@ where
                     eprintln!(
                         "hyperstorctl: {}",
                         e.message.as_deref().unwrap_or("not found")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool create" => {
+            let classes: Vec<String> = a
+                .classes
+                .clone()
+                .unwrap_or_default()
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .map(str::to_string)
+                .collect();
+            let kind = a.kind.clone().unwrap_or_else(|| "replicated".into());
+            let copies = a.copies.unwrap_or(if kind == "cache" { 1 } else { 3 });
+            let r = client
+                .create_pool(pb::CreatePoolRequest {
+                    name: a.name.clone(),
+                    kind,
+                    size: copies,
+                    min_size: a.min,
+                    pg_count: a.pgs,
+                    chunk_size: a.chunk.map(|c| c as u32),
+                    domain: a.domain.clone(),
+                    classes,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "pool {} {} made, {} PGs (map epoch {})",
+                        r.pool, a.name, r.pg_count, r.map_epoch
+                    );
+                    if r.mixed_kinds {
+                        eprintln!(
+                            "hyperstorctl: warning: its classes hold hard disks and flash; a write waits for its slowest copy"
+                        );
+                    }
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::FailedPrecondition
+                            | connectrpc::ErrorCode::InvalidArgument
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool set" => {
+            let Some(pool) = a.pool else {
+                unreachable!("checked with the arguments")
+            };
+            // `any`: every device; absent: the classes stay.
+            let every_device = a.classes.as_deref() == Some("any");
+            let classes: Vec<String> = match a.classes.as_deref() {
+                Some(c) if c != "any" => c
+                    .split(',')
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let r = client
+                .set_pool(pb::SetPoolRequest {
+                    pool,
+                    classes: classes.clone(),
+                    every_device,
+                    name: (!a.name.is_empty()).then(|| a.name.clone()),
+                    domain: a.domain.clone(),
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    let mut what = Vec::new();
+                    if every_device {
+                        what.push("places on every device".to_string());
+                    } else if !classes.is_empty() {
+                        what.push(format!("places on classes {}", classes.join(",")));
+                    }
+                    if let Some(d) = &a.domain {
+                        what.push(format!("keeps a copy per {d}"));
+                    }
+                    if !a.name.is_empty() {
+                        what.push(format!("is named {}", a.name));
+                    }
+                    println!(
+                        "pool {pool} {} (map epoch {}){}",
+                        what.join(", "),
+                        r.map_epoch,
+                        if every_device || !classes.is_empty() || a.domain.is_some() {
+                            "; hyperstorctl status shows its PGs moving"
+                        } else {
+                            ""
+                        }
+                    );
+                    if r.mixed_kinds {
+                        eprintln!(
+                            "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
+                        );
+                    }
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool delete" => {
+            let Some(pool) = a.pool else {
+                unreachable!("checked with the arguments")
+            };
+            let r = client
+                .delete_pool(pb::DeletePoolRequest {
+                    pool,
+                    dry_run: a.dry_run,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    if a.dry_run {
+                        show(a, &r, || {
+                            if r.volumes.is_empty() {
+                                format!("pool {pool} holds nothing; it can be deleted\n")
+                            } else {
+                                format!(
+                                    "pool {pool} holds these volumes (with their snapshots); delete and purge them first:\n{}",
+                                    volumes_text(&pb::ListVolumesResponse {
+                                        volumes: r.volumes.clone(),
+                                        ..Default::default()
+                                    })
+                                )
+                            }
+                        });
+                        return Ok(Next::Exit(if r.volumes.is_empty() { 0 } else { 1 }));
+                    }
+                    // Forced (D176): an operation deletes what it holds first.
+                    if let Some(op) = r.operation.as_option().cloned() {
+                        show(a, &r, || {
+                            format!(
+                                "pool {pool}: deleting these volumes (with their snapshots), then the pool: operation {} (hyperstorctl op watch --id {})\n{}",
+                                op.id,
+                                op.id,
+                                volumes_text(&pb::ListVolumesResponse {
+                                    volumes: r.volumes.clone(),
+                                    ..Default::default()
+                                })
+                            )
+                        });
+                        return match a.wait {
+                            Some(_) => follow(&ops, op.id, a).await,
+                            None => Ok(Next::Exit(0)),
+                        };
+                    }
+                    println!(
+                        "pool {pool} deleted (map epoch {}); its devices delete its data",
+                        r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool add-device" | "pool remove-device" => {
+            let (Some(pool), Some(device)) = (a.pool, a.device) else {
+                unreachable!("checked with the arguments")
+            };
+            let member = cmd == "pool add-device";
+            let r = client
+                .set_pool_device(pb::SetPoolDeviceRequest {
+                    pool,
+                    device,
+                    member,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "pool {pool} {} device {device} (map epoch {}); hyperstorctl status shows its PGs moving",
+                        if member { "uses" } else { "no longer uses" },
+                        r.map_epoch
+                    );
+                    if r.mixed_kinds {
+                        eprintln!(
+                            "hyperstorctl: warning: the pool's devices hold hard disks and flash; a write waits for its slowest copy"
+                        );
+                    }
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "device class" => {
+            let (Some(device), Some(class)) = (a.device, a.class.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let class = (class != "auto").then_some(class);
+            let r = client
+                .set_device_class(pb::SetDeviceClassRequest {
+                    device,
+                    class: class.clone(),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    let how = if class.is_some() {
+                        "kept as set"
+                    } else {
+                        "following its kind"
+                    };
+                    println!(
+                        "device {device} class {}, {how} (map epoch {}); pools limited to classes move its PGs",
+                        r.class, r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
                     );
                     return Ok(Next::Exit(1));
                 }

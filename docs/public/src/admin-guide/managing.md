@@ -284,6 +284,94 @@ PATH --id D` on the node's host, then one more `--shard
 192.0.2.21:9102=PATH:0` in the node's options (which a later installer
 run rewrites).
 
+## Device classes
+
+Each node reports what its devices are: `nvme`, `ssd`, `hdd`, or `file`
+for a device file (D178). A device takes its kind as its class, which
+`hyperstorctl nodes` shows in the CLASS column, unless you set one:
+
+```sh
+hyperstorctl device class --device 2001 --class archive   # kept, marked +
+hyperstorctl device class --device 2001 --class auto      # its kind again
+```
+
+A class holds devices of one kind, and a class named after a kind
+(`nvme`, `ssd`, `hdd`, `file`) only that kind. Pools that name classes
+place their PGs on those devices; the others use every device, so
+classes change nothing for them. To limit a pool to some classes, or
+let it use every device again:
+
+```sh
+hyperstorctl pool set --pool 1 --classes nvme,ssd
+hyperstorctl pool set --pool 1 --classes any
+```
+
+The same command renames a pool or changes its failure domain, a copy
+per device, host or rack; what isn't given stays:
+
+```sh
+hyperstorctl pool set --pool 1 --name blocks --domain rack
+```
+
+The classes' devices must span at least as many failure domains (hosts,
+by default) as the pool keeps copies. A set with hard disks and flash
+both is refused unless `--force`: a write waits for its slowest copy.
+`.meta` always uses every device but hard disks.
+
+A pool can also use one device beyond its classes, or leave out one of
+them, without changing any device's class: other pools keep using it
+as before (D180).
+
+```sh
+hyperstorctl pool add-device --pool 1 --device 3001
+hyperstorctl pool remove-device --pool 1 --device 2000
+```
+
+Each is checked as `pool set` is, and its PGs move the same way;
+`hyperstorctl pools` shows the classes, then `+3001-2000`. A device's
+space is shared by every pool that uses it, so a pool has no size of
+its own: its free space is that of its devices.
+
+A pool is made on the classes it names:
+
+```sh
+hyperstorctl pool create --name fast --classes nvme --copies 3
+```
+
+It gets about 100 PGs per device of its classes per copy, as a power
+of two, unless `--pgs` says otherwise; the PG count can't grow yet, so
+give more if many devices are to come. Volumes go to it with
+`create-volume --pool P`. Kinds appear once every running node
+has a build that reports them; a node from before that starts after
+that can't read the map, so upgrade it first.
+
+## Deleting a pool
+
+A pool is deleted once it holds nothing: no volume, no snapshot, and
+nothing in the trash (D176). List what it holds, delete and purge
+that, then delete it:
+
+```sh
+hyperstorctl pool delete --pool 3 --dry-run
+hyperstorctl pool delete --pool 3
+```
+
+It leaves the map at once, and clients using it get `not_found`. Its
+id is never given to another pool. Each device deletes the pool's data
+about a minute later; a device that was down does when it returns
+(D181). Through `hyperstor-mgmt` it needs a fresh login (step-up).
+
+To delete a pool with what it holds, list it first, then force:
+
+```sh
+hyperstorctl pool delete --pool 3 --dry-run
+hyperstorctl pool delete --pool 3 --force --wait 600
+```
+
+An operation moves each volume to the trash, preempting a client that
+has it attached, and purges it with its snapshots, each audited; then
+it deletes the pool. Nothing of it can be restored.
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

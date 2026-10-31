@@ -54,6 +54,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
+    ("ClusterService.SetDeviceClass", Group::Operate, false),
     ("NodeService.DrainNode", Group::Operate, false),
     ("OperationService.CancelOperation", Group::Operate, false),
     // Operators protect data before maintenance and undo a mistaken
@@ -61,6 +62,10 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.CreateSnapshot", Group::Operate, false),
     ("ClusterService.CreateGroupSnapshot", Group::Operate, false),
     ("TrashService.RestoreFromTrash", Group::Operate, false),
+    ("ClusterService.CreatePool", Group::Store, false),
+    ("ClusterService.SetPool", Group::Store, false),
+    ("ClusterService.SetPoolDevice", Group::Store, false),
+    ("ClusterService.DeletePool", Group::Store, true),
     ("ClusterService.CreateVolume", Group::Store, false),
     ("ClusterService.ExpandVolume", Group::Store, false),
     ("ClusterService.DeleteVolume", Group::Store, true),

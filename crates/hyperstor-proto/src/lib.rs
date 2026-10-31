@@ -465,6 +465,13 @@ pub enum Msg {
         total_bytes: u64,
         free_bytes: u64,
     },
+    /// Storage node to map service: what `device` is, as
+    /// `hyperstor_map::DeviceKind::code` (24-pools-and-devices.md §27.2.4,
+    /// D178), with its space reports. Answered `Noted`.
+    DeviceKind {
+        device: u32,
+        kind: u8,
+    },
     /// Follower to the map service's leader: what only the leader knows,
     /// for a follower's `GetStatus` (I197).
     LeaderState,
@@ -692,6 +699,7 @@ mod kind {
     pub const DEVICE_SPACE: u16 = 73;
     pub const LEADER_STATE: u16 = 74;
     pub const LEADER_STATE_OK: u16 = 75;
+    pub const DEVICE_KIND: u16 = 76;
     pub const ERROR: u16 = 99;
 }
 
@@ -774,6 +782,7 @@ impl Msg {
             Msg::BlocklistOk { .. } => BLOCKLIST_OK,
             Msg::DeviceFailed { .. } => DEVICE_FAILED,
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
+            Msg::DeviceKind { .. } => DEVICE_KIND,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
@@ -1042,6 +1051,9 @@ impl Msg {
                 free_bytes,
             } => {
                 e.u32(*device).u64(*total_bytes).u64(*free_bytes);
+            }
+            Msg::DeviceKind { device, kind } => {
+                e.u32(*device).u8(*kind);
             }
             Msg::MemberSlow {
                 reporter,
@@ -1357,6 +1369,10 @@ impl Msg {
                 device: d.u32()?,
                 total_bytes: d.u64()?,
                 free_bytes: d.u64()?,
+            },
+            DEVICE_KIND => Msg::DeviceKind {
+                device: d.u32()?,
+                kind: d.u8()?,
             },
             MEMBER_SLOW => Msg::MemberSlow {
                 reporter: d.u32()?,
@@ -2018,6 +2034,10 @@ mod tests {
                 device: 2001,
                 total_bytes: 1 << 40,
                 free_bytes: 1 << 39,
+            },
+            Msg::DeviceKind {
+                device: 2001,
+                kind: 1,
             },
             Msg::MemberSlow {
                 reporter: 1000,

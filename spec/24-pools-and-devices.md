@@ -114,6 +114,11 @@ otherwise.
 
 #### 27.2.4 Classes
 
+Built (I209), with D178 (a device whose class no operator set takes its
+kind, which replaced every device's `nvme`) and D179 (`file` mixes with
+any kind). The map service writes kinds into the map only once every
+running node has reported, so older nodes can still read it.
+
 - A device's class is a label. The default comes from its kind, which
   the node reports: `nvme` (an NVMe namespace), `ssd` (other flash),
   `hdd` (rotational), `file` (a file on a filesystem).
@@ -151,6 +156,8 @@ otherwise.
 
 #### 27.3.1 Making a pool
 
+Built (I211).
+
 - **`CreatePool`**: a name; the kind (`replicated` with `size` and `min`,
   or `cache` with `copies`, D45; EC once it is served); the chunk size;
   the failure domain (`device`, `host`, `rack`); the class set; the
@@ -174,6 +181,9 @@ otherwise.
 | PG count | Only up, by doubling (§27.5, D174) |
 | Name | Only the name |
 
+Built (I213): the class set, failure domain and name, any of them in one
+call; thresholds wait for them to exist, and the PG count for stage 5.
+
 Not changed: the kind, copies, `min`, the chunk size (D9: fixed per pool;
 chunks are named by index). A pool with other copies is a new pool and a
 copy of the volumes.
@@ -189,6 +199,11 @@ copy of the volumes.
   uses, so overlap is visible.
 
 #### 27.3.4 Deleting a pool
+
+D181 amends this: the pool leaves the map at once, its id kept, and
+devices delete its data as they delete stray copies (D177); there is no
+"deleting" state and the call isn't an operation. Built (I214); `--force`
+too (I215), as an operation that runs again from what is left.
 
 - **`DeletePool`** is a long operation, with step-up and `--dry-run`
   (19-administration.md §23). It is refused while the pool holds a
@@ -206,6 +221,21 @@ copy of the volumes.
   holds of it, as it drops a cache pool's stale copy now.
 
 ### 27.4 Class sets
+
+D180 amends this: a pool uses the devices of its classes, plus devices
+added to it and less devices removed from it (`hyperstorctl pool
+add-device`, `pool remove-device`), so one pool can have a device
+another pool of the same class doesn't. A device serves every pool that
+may use it, sharing its space. Built (I212): an added device is one not
+of the pool's classes, a removed device one of them; each edit is
+checked as a class set is (failure domains, kinds), and `hyperstorctl
+pools` shows them after the classes (`nvme+3001-2000`). Why per pool:
+a class is shared by every pool that names it, so moving a device
+between classes moves it in all of them.
+
+Built (I210), with `SetPool` for classes only until stage 3. Only
+`SetPool` checks a set's domains and kinds; relabelling a device later
+isn't checked against the pools that use its class.
 
 - A pool's class set is a list of labels. A device is eligible when its
   class is in the list, and the pool's weight on it is its capacity, as
