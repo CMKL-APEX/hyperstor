@@ -689,6 +689,17 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A pool deleted once it holds nothing: out of the map at once, its id kept, its data deleted by each device"
+spec = ["24-pools-and-devices.md §27.3.4", "D176", "D181", "I214"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::a_deleted_pools_id_is_kept_and_not_given_again",
+    "hyperstor_meta::tests::a_pool_is_deleted_and_its_id_not_given_again",
+    "cluster::devices_delete_a_deleted_pools_data",
+    "manage::a_pool_is_deleted_once_it_holds_nothing",
+]
+
+[[milestone.item]]
 what = "A pool renamed, or its failure domain changed, with its PGs following"
 spec = ["24-pools-and-devices.md §27.3.2", "I213"]
 status = "done"

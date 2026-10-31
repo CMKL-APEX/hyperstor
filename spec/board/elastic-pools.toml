@@ -6,5 +6,5 @@ updated = 2026-10-31
 milestone = "HS18"
 branch = "feature/elastic-pools"
 prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118]
-now = "Stage 2 on the pilot; 3a (I211) and D180 (I212) on the feature branch; 3b built (I213): pool set renames and changes the failure domain"
-next = "3c: DeletePool (retired pool ids, step-up, a long operation, devices deleting its objects)"
+now = "Stage 2 on the pilot; 3a, D180 and 3b (I211–I213) on the feature branch; 3c built (I214, D181): pool delete"
+next = "pool delete --force (D176); then stage 4"

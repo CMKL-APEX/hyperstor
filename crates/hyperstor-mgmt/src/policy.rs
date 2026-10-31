@@ -65,6 +65,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.CreatePool", Group::Store, false),
     ("ClusterService.SetPool", Group::Store, false),
     ("ClusterService.SetPoolDevice", Group::Store, false),
+    ("ClusterService.DeletePool", Group::Store, true),
     ("ClusterService.CreateVolume", Group::Store, false),
     ("ClusterService.ExpandVolume", Group::Store, false),
     ("ClusterService.DeleteVolume", Group::Store, true),

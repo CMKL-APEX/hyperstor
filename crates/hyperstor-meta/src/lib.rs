@@ -89,8 +89,10 @@ pub enum Admin {
     },
     /// Volume operations (04-decisions.md D77), run on this reactor as a
     /// client of `.meta` (06-metadata.md §4.2).
+    /// A pool's volumes; with `trash`, those in the trash too (D54).
     ListVolumes {
         pool: u32,
+        trash: bool,
         reply: VolumeReply<Vec<Volume>>,
     },
     CreateVolume {
@@ -136,6 +138,12 @@ pub enum Admin {
         member: bool,
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
+    },
+    /// Deletes a pool from the map (D176, D181), once the caller has seen
+    /// it hold nothing. Replies with the working map's epoch.
+    DeletePool {
+        pool: u32,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
     /// Makes a pool (D163, D171). Replies with its id, PG count, the
     /// working map's epoch and whether its classes mix kinds (forced).
@@ -1171,6 +1179,25 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Deletes pool `pool` (24-pools-and-devices.md §27.3.4; D176, D181):
+    /// it leaves the map at once, its id kept so none is given again, and
+    /// each device deletes what it holds of it. The caller checks first
+    /// that it holds no volume, snapshot or trash. Refused for `.meta`.
+    /// Returns the working map's epoch.
+    pub fn delete_pool(&self, pool: u32) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if pool == META_POOL {
+            return Err(".meta holds every volume's header; it can't be deleted".into());
+        }
+        let mut map = self.map.borrow_mut();
+        if !map.delete_pool(pool) {
+            return Err(format!("no pool {pool}"));
+        }
+        Ok(map.epoch)
+    }
+
     /// Sets a pool's class set (D164): [`Meta::set_pool`] with only the
     /// classes.
     pub fn set_pool_classes(
@@ -1491,18 +1518,18 @@ impl Meta {
                 }
                 // Each in a task of its own: a delete runs through every
                 // chunk of the volume.
-                Admin::ListVolumes { pool, reply } => {
+                Admin::ListVolumes { pool, trash, reply } => {
                     let c = connect(client.clone());
                     hyperstor_reactor::spawn(async move {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            // What's in the trash isn't listed (D54).
+                            // What's in the trash is listed only if asked (D54).
                             Ok(c.list_volumes(pool)
                                 .await
                                 .map_err(volume_fault)?
                                 .into_iter()
-                                .filter(|v| v.state != VolumeState::Trashed)
+                                .filter(|v| trash || v.state != VolumeState::Trashed)
                                 .collect())
                         };
                         let _ = reply.send(r.await);
@@ -1589,6 +1616,9 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_pool_device(pool, device, member, force));
+                }
+                Admin::DeletePool { pool, reply } => {
+                    let _ = reply.send(self.delete_pool(pool));
                 }
                 Admin::CreatePool { new, reply } => {
                     let _ = reply.send(self.create_pool(new));
@@ -2469,6 +2499,21 @@ mod tests {
         let d = &map.devices[&1001];
         assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
         assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// D181: a deleted pool leaves the map; `.meta` and a pool that isn't
+    /// there are refused; a new pool doesn't get its id.
+    #[test]
+    fn a_pool_is_deleted_and_its_id_not_given_again() {
+        let meta = Meta::new(map());
+        assert!(meta.delete_pool(0).unwrap_err().contains(".meta"));
+        assert!(meta.delete_pool(9).unwrap_err().contains("no pool 9"));
+        let top = *meta.map.borrow().pools.keys().next_back().unwrap();
+        meta.delete_pool(top).unwrap();
+        assert!(meta.delete_pool(top).unwrap_err().contains("no pool"));
+        let m = meta.map.borrow().clone();
+        assert!(!m.pools.contains_key(&top) && m.deleted_pools.contains(&top));
+        assert_eq!(m.next_pool_id(), top + 1);
     }
 
     /// §27.3.2: a pool is renamed, unless another has the name or it

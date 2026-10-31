@@ -956,3 +956,14 @@ recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 141 | How a pool's devices are chosen: its classes, plus devices added to it, less devices removed from it (recommended); an explicit list per pool; labels only (as built); several tags per device | Classes and per-pool edits | D180 |
+
+## Deleting a pool (2026-10-31)
+
+Building `DeletePool` (stage 3c), two points where the design in
+24-pools-and-devices.md §27.3.4 could be simpler. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 142 | Whether a deleted pool leaves the map at once, its id kept and devices deleting its data as they delete stray copies (recommended), or is marked deleting until every device reports it holds nothing | At once | D181 |
+| 143 | Whether `--force` (D176: delete the pool's volumes first) comes with stage 3c or in its own pull request after it (recommended) | Its own pull request | D181 |

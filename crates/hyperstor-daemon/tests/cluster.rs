@@ -27,6 +27,8 @@ enum MetaCmd {
     Stop,
     /// Takes a device out of placement, or brings it in (`out`, `in`).
     SetIn(u32, bool),
+    /// Deletes a pool (D181).
+    DeletePool(u32),
     /// The PGs scrub reported inconsistent.
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
 }
@@ -108,6 +110,31 @@ impl Cluster {
         scrub: std::time::Duration,
         down_out: std::time::Duration,
     ) -> Cluster {
+        Self::start_graced(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    /// As [`Self::start_full`], every node with stray grace `grace`
+    /// (D177; zero: the default).
+    #[allow(clippy::too_many_arguments)]
+    fn start_graced(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+    ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -158,6 +185,9 @@ impl Cluster {
                         MetaCmd::SetIn(d, up_in) => {
                             meta.set_device_in(d, up_in).unwrap();
                         }
+                        MetaCmd::DeletePool(pool) => {
+                            meta.delete_pool(pool).unwrap();
+                        }
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
@@ -177,7 +207,7 @@ impl Cluster {
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
                     push_part_bytes: TEST_PART_BYTES,
-                    stray_grace: std::time::Duration::ZERO,
+                    stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
                     partitions: Some(partitions.clone()),
@@ -223,7 +253,7 @@ impl Cluster {
             faulty,
             commit_delays,
             io_timeout: std::time::Duration::ZERO,
-            stray_grace: std::time::Duration::ZERO,
+            stray_grace: grace,
         }
     }
 
@@ -277,6 +307,10 @@ impl Cluster {
     /// Takes device `d` out of placement, or brings it back in.
     fn set_in(&self, d: u32, up_in: bool) {
         assert!(self.meta_tx.send(MetaCmd::SetIn(d, up_in)).is_ok());
+    }
+
+    fn delete_pool(&self, pool: u32) {
+        assert!(self.meta_tx.send(MetaCmd::DeletePool(pool)).is_ok());
     }
 
     /// The PGs scrub has reported inconsistent to the map service.
@@ -2721,6 +2755,55 @@ fn a_device_deletes_the_copies_it_no_longer_serves() {
     assert!(left.is_empty(), "copies of PGs device 3000 left: {left:?}");
     let others: Devices = devs.into_iter().filter(|(id, _)| *id != 3000).collect();
     copies_agree(&map, others, &chunks);
+}
+
+/// D181: a deleted pool leaves the map, its PGs with it; a read of it is
+/// refused; and every device deletes what it held of it.
+#[test]
+fn devices_delete_a_deleted_pools_data() {
+    use std::time::Duration;
+    let c = Cluster::start_graced(
+        3,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::ZERO,
+        Duration::ZERO,
+        DOWN_OUT,
+        Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        for v in 1..=4u128 {
+            cl.write(POOL, v, 0, pattern(500 + v as u64, CHUNK as usize))
+                .await
+                .unwrap();
+        }
+        wait_backfilled(&cl).await;
+    });
+    c.delete_pool(POOL);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "the pool deleted", |m| {
+            !m.pools.contains_key(&POOL) && m.deleted_pools.contains(&POOL)
+        })
+        .await;
+        assert!(!cl.map().pgs.keys().any(|(p, _)| *p == POOL));
+        assert!(cl.read(POOL, 1, 0, CHUNK as u64).await.is_err());
+        // The grace, the sweep, and the deletes.
+        hyperstor_reactor::time::sleep(Duration::from_secs(3)).await;
+    });
+    let (map, devs) = c.stop();
+    assert!(map.deleted_pools.contains(&POOL), "its id is kept");
+    for (id, dev) in &devs {
+        let shard = hyperstor_engine::open(dev).unwrap().1.pop().unwrap();
+        let left: Vec<(u32, u32)> = shard
+            .held_pgs()
+            .into_iter()
+            .filter(|&(pool, _)| pool == POOL)
+            .collect();
+        assert!(left.is_empty(), "device {id} still holds {left:?}");
+    }
 }
 
 /// A replica whose disk hangs while its node stays up (D91): the primary

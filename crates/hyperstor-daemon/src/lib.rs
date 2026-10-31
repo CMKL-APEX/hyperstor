@@ -764,8 +764,13 @@ fn wire_key(k: &ObjKey) -> WireKey {
 /// Whether `me` may delete its copy of PG `pool`.`pg` under `map` (D177):
 /// the PG's epoch when the map has the PG, `me` is in neither its `up`
 /// nor its `acting` set, and the PG is clean, `acting` being `up` with
-/// every member live; `None` otherwise. A PG the map lacks is left alone.
+/// every member live; 0 for a PG of a deleted pool (D181); `None`
+/// otherwise. A PG the map lacks is left alone.
 fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
+    // A deleted pool's PGs are nobody's (D181): epoch 0, which stays.
+    if map.deleted_pools.contains(&pool) {
+        return Some(0);
+    }
     let p = map.pg(pool, pg)?;
     let member = p.up.contains(&me) || p.acting.contains(&me);
     let clean = !p.acting.is_empty() && p.acting == p.up && p.acting.iter().all(|d| map.live(*d));
@@ -1177,6 +1182,9 @@ impl ShardState {
             self.commit_queued().await;
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
+            if map.deleted_pools.contains(&to.pool) {
+                return Err(err(Code::NotFound, &map, "the pool was deleted"));
+            }
             return Err(err(Code::Invalid, &map, "no such PG"));
         };
         if pg.epoch != to.pg_epoch {
@@ -1848,7 +1856,11 @@ impl ShardState {
         pg: &PgInfo,
     ) -> Result<(Vec<(u32, Conn)>, Vec<(u32, Conn)>), Msg> {
         let map = self.map();
-        if (pg.acting_count() as u8) < map.pools[&to.pool].min_size {
+        // The pool may have been deleted since (D181).
+        let Some(pool) = map.pools.get(&to.pool) else {
+            return Err(err(Code::NotFound, &map, "no such pool"));
+        };
+        if (pg.acting_count() as u8) < pool.min_size {
             return Err(err(Code::Unavailable, &map, "too few copies"));
         }
         let mut conns = Vec::new();
@@ -4642,6 +4654,13 @@ mod tests {
         assert_eq!(is_stray(&m, a, 1, pg), Some(epoch), "off the PG, clean");
         assert_eq!(is_stray(&m, members[0], 1, pg), None, "a member");
         assert_eq!(is_stray(&m, a, 1, 999), None, "a PG the map lacks");
+        let mut gone = m.clone();
+        gone.delete_pool(1);
+        assert_eq!(
+            is_stray(&gone, members[0], 1, pg),
+            Some(0),
+            "a deleted pool's"
+        );
         // Backfilling to `a` (up isn't acting): `b` keeps its copy, as does
         // the member leaving up but still acting.
         m.pgs.get_mut(&(1, pg)).unwrap().up[0] = a;

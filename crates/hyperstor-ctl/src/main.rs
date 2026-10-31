@@ -35,6 +35,9 @@
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
 //!   --pool P --device D`: let pool P use one more device, beyond its
 //!   classes, or stop using one of them (D180);
+//! - `pool delete --pool P [--dry-run]`: delete pool P, which must hold
+//!   no volume, snapshot or trash (D176); it leaves the map at once and
+//!   devices delete its data (D181); `--dry-run` lists what it holds;
 //! - `device class --device D --class C|auto`: set a device's class, or
 //!   let it follow the device's kind again (D178);
 //! - `device add --node N --address A [--class C]`: append a device to a
@@ -138,7 +141,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|pool add-device|pool remove-device|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -452,7 +455,10 @@ fn main() {
                     "audit" => matches!(sub, Some("list" | "settings")),
                     "device" => matches!(sub, Some("add" | "class")),
                     "pool" => {
-                        matches!(sub, Some("set" | "create" | "add-device" | "remove-device"))
+                        matches!(
+                            sub,
+                            Some("set" | "create" | "add-device" | "remove-device" | "delete")
+                        )
                     }
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
@@ -606,7 +612,8 @@ fn main() {
         }));
     }
     if (cmd == "token create") != a.role.is_some()
-        || (a.dry_run && cmd != "drain")
+        || (a.dry_run && cmd != "drain" && cmd != "pool delete")
+        || (cmd == "pool delete" && a.pool.is_none())
         || (a.ttl != 0 && cmd != "token create")
         || (needs_id && a.id.is_none())
     {
@@ -1178,6 +1185,57 @@ where
                             "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
                         );
                     }
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool delete" => {
+            let Some(pool) = a.pool else {
+                unreachable!("checked with the arguments")
+            };
+            let r = client
+                .delete_pool(pb::DeletePoolRequest {
+                    pool,
+                    dry_run: a.dry_run,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    if a.dry_run {
+                        show(a, &r, || {
+                            if r.volumes.is_empty() {
+                                format!("pool {pool} holds nothing; it can be deleted\n")
+                            } else {
+                                format!(
+                                    "pool {pool} holds these volumes (with their snapshots); delete and purge them first:\n{}",
+                                    volumes_text(&pb::ListVolumesResponse {
+                                        volumes: r.volumes.clone(),
+                                        ..Default::default()
+                                    })
+                                )
+                            }
+                        });
+                        return Ok(Next::Exit(if r.volumes.is_empty() { 0 } else { 1 }));
+                    }
+                    println!(
+                        "pool {pool} deleted (map epoch {}); its devices delete its data",
+                        r.map_epoch
+                    );
                     Next::Exit(0)
                 }
                 Err(e)

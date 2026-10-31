@@ -124,6 +124,7 @@ covered by tests that run on every change.
 | Each device's kind reported; classes follow it unless an operator sets one | Done |
 | Pools place on a set of device classes; hard disks and flash mix only when forced | Done |
 | Pools made at run time on the device classes they name | Done |
+| A pool deleted once it holds nothing: out of the map at once, its id kept, its data deleted by each device | Done |
 | A pool renamed, or its failure domain changed, with its PGs following | Done |
 | A pool's devices added beyond its classes, and removed from them | Done |
 

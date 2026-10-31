@@ -1160,6 +1160,89 @@ impl ClusterService for Api {
         }
     }
 
+    async fn delete_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeletePoolRequest>,
+    ) -> ServiceResult<pb::DeletePoolResponse> {
+        let pool = req.pool;
+        let dry_run = req.dry_run;
+        let target = format!("pool {pool}{}", if dry_run { " dry-run" } else { "" });
+        let who = self.authorize(&ctx, "DeletePool", &target, !dry_run)?;
+        let (map, ..) = self.published().await?;
+        if !map.pools.contains_key(&pool) {
+            return Err(with_reason(
+                ConnectError::not_found(format!("no pool {pool}")),
+                "not_found",
+            ));
+        }
+        if pool == hyperstor_map::META_POOL {
+            return Err(with_reason(
+                ConnectError::failed_precondition(
+                    ".meta holds every volume's header; it can't be deleted",
+                ),
+                "pool_conflict",
+            ));
+        }
+        // What the pool holds, the trash with it (D176): volumes, and so
+        // their snapshots.
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ListVolumes {
+                pool,
+                trash: true,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let held = volume_result(rx.recv().await)?;
+        let volumes: Vec<pb::Volume> = held.iter().map(volume_pb).collect();
+        if dry_run {
+            return Ok(pb::DeletePoolResponse {
+                volumes,
+                ..Default::default()
+            }
+            .into());
+        }
+        let r = if held.is_empty() {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::DeletePool { pool, reply })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            rx.recv().await
+        } else {
+            Some(Err(format!(
+                "pool {pool} holds {} volume(s), with their snapshots and the trash; delete and purge them first (--dry-run lists them)",
+                held.len()
+            )))
+        };
+        audit(
+            &who,
+            "DeletePool",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::DeletePoolResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn set_pool_device(
         &self,
         ctx: RequestContext,
@@ -1306,6 +1389,7 @@ impl ClusterService for Api {
         self.tx
             .send(Admin::ListVolumes {
                 pool: req.pool,
+                trash: false,
                 reply,
             })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;

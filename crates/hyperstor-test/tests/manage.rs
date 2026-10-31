@@ -568,6 +568,64 @@ fn a_pool_is_renamed_and_its_domain_changed() {
     });
 }
 
+/// D176, D181: a pool that holds a volume, or a volume in the trash,
+/// isn't deleted, and `--dry-run` lists it; once purged, the pool is
+/// deleted and leaves the map, and a new pool doesn't get its id;
+/// `.meta` is refused; audited.
+#[test]
+fn a_pool_is_deleted_once_it_holds_nothing() {
+    let c = Cluster::all_in_one("delpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "gone", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("gone").then_some(())
+    });
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "v",
+        ])
+        .ok();
+    let v = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let dry = c
+        .ctl(&["pool", "delete", "--pool", "3", "--dry-run"])
+        .expect(1);
+    assert!(dry.has("holds these volumes") && dry.has(&v), "{}", dry.out);
+    let refused = c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    assert!(refused.has("holds 1 volume(s)"), "{}", refused.out);
+    // In the trash, it still holds the pool.
+    c.ctl(&["delete-volume", "--id", &v]).ok();
+    c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    c.ctl(&["trash", "purge", "--id", &v, "--wait", "60"]).ok();
+    let dry = c.ctl(&["pool", "delete", "--pool", "3", "--dry-run"]).ok();
+    assert!(dry.has("holds nothing"), "{}", dry.out);
+    let del = c.ctl(&["pool", "delete", "--pool", "3"]).ok();
+    assert!(del.has("pool 3 deleted"), "{}", del.out);
+    wait_for("pool 3 out of the map", 10, || {
+        (!c.ctl(&["pools"]).has("gone")).then_some(())
+    });
+    c.ctl(&["pool", "delete", "--pool", "3"]).expect(1);
+    c.ctl(&["pool", "delete", "--pool", "0"]).expect(1);
+    c.ctl(&["pool", "delete"]).expect(2);
+    let again = c
+        .ctl(&["pool", "create", "--name", "gone", "--classes", "file"])
+        .ok();
+    assert!(again.has("pool 4 gone made"), "{}", again.out);
+    wait_for("the delete in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+        (a.has("pool 3") && a.has("ok, map epoch")).then_some(())
+    });
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts
