@@ -12,6 +12,7 @@
 - [Decisions](04-decisions.md)
 - [Metadata, leases and fencing](06-metadata.md)
 - [Placement](07-placement.md)
+- [Pools and devices at run time](24-pools-and-devices.md)
 - [Storage node and local engine](08-engine.md)
 - [Replication, recovery and failures](09-replication.md)
 - [Volume operations](10-volumes.md)

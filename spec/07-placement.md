@@ -13,6 +13,7 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
 - **Later:** doubling `pg_count` splits each PG in two. Because the hash
   is reduced by `mod 2^n`, the chunks of PG `p` go to `p` or
   `p + 2^n`, and the split happens on the devices that already hold them.
+  Designed in 24-pools-and-devices.md §27.5 (draft).
 
 ### 5.2 PG to devices
 
@@ -32,6 +33,9 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
   kind (`nvme`, `ssd`, `hdd`), which the operator can override with a
   label (`nvme-qlc`, `archive`). A pool never mixes hard disks with
   flash, because the slowest copy sets a write's latency (09-replication.md §8.1).
+  A pool may name several classes (D164) and uses any device of them;
+  labels, kinds and class sets are in 24-pools-and-devices.md §27.2.4
+  and §27.4 (draft).
 - `.meta` (06-metadata.md §4.2) is always placed on flash.
 
 ### 5.3 Rebalancing

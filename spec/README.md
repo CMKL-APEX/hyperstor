@@ -37,8 +37,9 @@ documents cite them by number.
 | [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
 | [20-tenants.md](20-tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [21-federation.md](21-federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
+| [24-pools-and-devices.md](24-pools-and-devices.md) | §27 | Devices added to and removed from running nodes, device identity and formatting, classes and class sets, pools made, changed and deleted, PG splits (draft for review) |
 | [16-glidex.md](16-glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
-| [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24 and G39–G42 (G25–G38 in 22-nfs.md) |
+| [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24, G39–G42, G44 and G45 (G25–G38 in 22-nfs.md) |
 | [00-filesystem.md](00-filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
 | [05-decision-log.md](05-decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
 | [01-implementation-notes.md](01-implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
