@@ -1,10 +1,10 @@
 title = "Copies a device no longer serves are deleted (D177)"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS2"
 branch = "fix/stray-copies"
 prs = [111]
-now = "Built (I208): a device deletes its copy of a PG it is in neither up nor acting of, once the PG is clean for 60 s"
-next = "Review and merge; then install on the pilot, where node 1's old copies (about 8.8 GiB) should go within a minute"
+now = "Merged (#111) and installed on all three pilot hosts: node 1 deleted 170 copies of PGs it had left (devices 1000 and 1001 back to 63.0 and 62.9 GiB free) a minute after its restart"
+next = "Nothing"
