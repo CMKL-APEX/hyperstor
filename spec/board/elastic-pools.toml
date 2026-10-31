@@ -1,0 +1,9 @@
+title = "Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-10-31
+updated = 2026-10-31
+branch = "feature/elastic-pools"
+prs = [96]
+now = "Design settled: points 116–127 as D163, D164 and D167–D176 (with forced variants for mixed kinds, degraded removals and deleting pools with data); S3 points 128–137 open"
+next = "Merge #96 into feature/elastic-pools; then stage 1: AddDevice (1a), explicit device ids (1b), the format rule (1c), the installer's --device (1d), nvme6n1 on the pilot (1e)"

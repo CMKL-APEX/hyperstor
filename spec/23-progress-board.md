@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 1 | 11 |
+| 4 | 0 | 2 | 11 |
 
 ## In progress
 
@@ -30,6 +30,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `feature/elastic-pools`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96) | Design settled: points 116–127 as D163, D164 and D167–D176 (with forced variants for mixed kinds, degraded removals and deleting pools with data); S3 points 128–137 open | Merge #96 into feature/elastic-pools; then stage 1: AddDevice (1a), explicit device ids (1b), the format rule (1c), the installer's --device (1d), nvme6n1 on the pilot (1e) | 2026-10-31 |
 | **Device identity checked before a device is opened** (`device-identity`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-identity`, [#99](https://github.com/CMKL-APEX/hyperstor/pull/99) | Deployed to all three pilot hosts from the PR's head (1d2d08f): every device recorded the cluster id once, none refused, no PG moved | Merge once CI passes, then mark done | 2026-10-31 |
 
 ## Done

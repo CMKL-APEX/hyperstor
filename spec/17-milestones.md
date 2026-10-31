@@ -191,3 +191,15 @@ and pNFS front end, are in 22-nfs.md §26.11.
   writes at QD32; their throughput and p99 latency; and, with a device
   under `dm-delay` (a 2 s and a 60 s delay), whether its node stays up
   and the device is failed after the I/O timeout.
+- **G44. Adding a device and splitting PGs** (24-pools-and-devices.md
+  §27.2, §27.5; points 118 and 124). On the pilot, with nvme6n1 added to
+  node 1: how long backfill takes and what it costs other I/O (p99
+  latency of a VM disk meanwhile); then, doubling pool 1's PG count, how
+  long each device takes to move a split PG's objects to their new keys,
+  how much index memory the extra PGs cost, and whether writes during
+  the split see more than one `StaleMap` retry each.
+- **G45. The S3 gateway's cost** (05-decision-log.md points 133 and 134).
+  On a pilot host, with the first gateway: PUT and GET throughput per
+  gateway core for 4 KiB, 1 MiB and 64 MiB objects, with and without the
+  MD5 ETag, and the p99 latency of small PUTs (index commit included);
+  then the same through the load balancer in front of two gateways.
