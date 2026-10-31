@@ -134,9 +134,12 @@ fn weights_follow_capacity_or_are_set() {
     c.ctl(&["weight", "--device", &id]).expect(2);
     c.ctl(&["weight", "--device", "999", "--weight", "1"])
         .expect(1);
-    // Audited, as every change.
-    let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
-    assert!(a.has("weight=0.5") && a.has("weight=auto"), "{}", a.out);
+    // Audited, as every change; the log's writer reaches .meta every
+    // second.
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
+        (a.has("weight=0.5") && a.has("weight=auto")).then_some(())
+    });
 }
 
 #[test]
