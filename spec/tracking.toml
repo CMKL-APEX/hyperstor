@@ -700,6 +700,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A pool deleted with its volumes, snapshots and trash when forced, as an operation"
+spec = ["24-pools-and-devices.md §27.3.4", "D176", "I215"]
+status = "done"
+tests = [
+    "manage::a_forced_pool_delete_takes_its_volumes_with_it",
+]
+
+[[milestone.item]]
 what = "A pool renamed, or its failure domain changed, with its PGs following"
 spec = ["24-pools-and-devices.md §27.3.2", "I213"]
 status = "done"

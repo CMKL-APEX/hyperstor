@@ -202,8 +202,8 @@ copy of the volumes.
 
 D181 amends this: the pool leaves the map at once, its id kept, and
 devices delete its data as they delete stray copies (D177); there is no
-"deleting" state and the call isn't an operation. Built (I214), without
-`--force` yet, which comes in its own pull request.
+"deleting" state and the call isn't an operation. Built (I214); `--force`
+too (I215), as an operation that runs again from what is left.
 
 - **`DeletePool`** is a long operation, with step-up and `--dry-run`
   (19-administration.md §23). It is refused while the pool holds a
