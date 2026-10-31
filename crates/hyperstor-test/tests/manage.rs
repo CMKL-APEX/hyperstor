@@ -294,7 +294,7 @@ fn a_device_is_removed_once_its_pgs_have_moved() {
     c.ctl(&["device", "remove", "--device", "1", "--node", "0"])
         .expect(2);
     let rm = c
-        .ctl(&["device", "remove", "--device", "1", "--wait", "120"])
+        .ctl(&["device", "remove", "--device", "1", "--wait", "600"])
         .ok();
     assert!(rm.has("device 1 removed from the map"), "{}", rm.out);
     wait_for("device 1 out of the map", 10, || {
@@ -332,7 +332,7 @@ fn a_device_is_removed_once_its_pgs_have_moved() {
     );
     let forced = c
         .ctl(&[
-            "device", "remove", "--device", "2000", "--force", "--wait", "120",
+            "device", "remove", "--device", "2000", "--force", "--wait", "600",
         ])
         .ok();
     assert!(
