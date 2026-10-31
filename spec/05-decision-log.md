@@ -977,3 +977,13 @@ recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 144 | What happens to a node whose last device is removed: it leaves the map with it, and the map keeps removed device and node ids so none is given again (recommended); or it stays in the map, empty, until a later `node remove` | It leaves; ids kept | D182 |
+
+## Splitting PGs (2026-11-01)
+
+Starting stage 5 (24-pools-and-devices.md §27.5, D173), two points the
+design left open. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 145 | When clients start using a split PG's sibling: PG by PG, each once every member has split it, the map holding a set of split PGs per pool (recommended); or the whole pool at once, devices translating requests until every PG is split | PG by PG | D183 |
+| 146 | How stage 5 is cut: four pull requests (the engine's move and a device's split; the map's split state, protocol and `pool set --pgs`; the placement count rising; the autoscaler) (recommended), or two | Four | D183 |

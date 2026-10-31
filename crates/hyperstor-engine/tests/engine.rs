@@ -924,6 +924,76 @@ fn versions_read_through_layers_and_merge_without_copying() {
     assert!(sh.stat(&v(1)).is_none());
 }
 
+/// `Take` (24-pools-and-devices.md §27.5): an object moves to another key
+/// whole, its blocks without a copy and its attributes and key–value
+/// table with it, in a record whose size doesn't grow with them; what the
+/// target held is freed; a missing source changes nothing; across a
+/// reopen.
+#[test]
+fn take_moves_an_object_whole() {
+    let (d, mut sh) = fresh(8192, None);
+    let (src, dst) = (
+        key("parent"),
+        ObjKey::new(1, 7, Namespace::Vol, b"parent".to_vec(), 0),
+    );
+    let mut ops = vec![
+        Op::Write {
+            off: 0,
+            data: block(5, 4),
+        },
+        Op::SetAttr(b"a".to_vec(), b"1".to_vec()),
+    ];
+    // A table too big to copy op by op in one record.
+    for i in 0..2000u32 {
+        ops.push(Op::KvPut(i.to_be_bytes().to_vec(), vec![9; 200]));
+    }
+    for chunk in ops.chunks(200) {
+        one(&mut sh, src.clone(), chunk.to_vec()).unwrap();
+    }
+    one(
+        &mut sh,
+        dst.clone(),
+        vec![Op::Write {
+            off: 0,
+            data: block(1, 2),
+        }],
+    )
+    .unwrap();
+    let free = sh.stats().free_blocks;
+    assert_eq!(
+        one(&mut sh, src.clone(), vec![Op::Take(src.clone())]),
+        Err(OpError::SelfAbsorb)
+    );
+    let c = one(&mut sh, dst.clone(), vec![Op::Take(src.clone())]).unwrap();
+    assert!(c.revision > 0);
+    assert!(sh.stat(&src).is_none());
+    assert_eq!(
+        sh.stats().free_blocks,
+        free + 2,
+        "the target's 2 freed, none copied"
+    );
+    let check = |sh: &Shard| {
+        let r = sh.read(&dst, 0, 4 * BLOCK as u64).unwrap();
+        assert!(r.iter().all(|&b| b == 5));
+        assert_eq!(
+            sh.attrs(&dst).unwrap().get(&b"a"[..]).map(|v| &v[..]),
+            Some(&b"1"[..])
+        );
+        assert_eq!(
+            sh.kv_get(&dst, &1999u32.to_be_bytes()),
+            Some(&[9u8; 200][..])
+        );
+        assert!(sh.stat(&src).is_none());
+    };
+    check(&sh);
+    // Nothing to take: unchanged.
+    one(&mut sh, dst.clone(), vec![Op::Take(src.clone())]).unwrap();
+    check(&sh);
+    drop(sh);
+    let sh = reopen(&d);
+    check(&sh);
+}
+
 /// Paged checkpoints (D105): a checkpoint writes the pages changed since
 /// the last one began; pages are cut as they fill and dropped once empty,
 /// and a reopen loads every page.

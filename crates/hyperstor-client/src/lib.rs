@@ -13,7 +13,6 @@ pub mod trash;
 pub mod volume;
 
 use hyperstor_map::ClusterMap;
-use hyperstor_placement::pg_of;
 use hyperstor_proto::{Code, Msg, Target, VERSION, WireKey, block_crcs, verify_crcs};
 use hyperstor_reactor::spawn;
 use hyperstor_reactor::time::sleep;
@@ -26,7 +25,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Namespace of volume chunks (matches `hyperstor_engine::Namespace::Vol`).
-pub const NS_VOL: u8 = 1;
+pub const NS_VOL: u8 = hyperstor_placement::NS_VOL;
 /// `.meta` objects: headers, lineages, directories, groups (06-metadata.md §4.2).
 pub const NS_META: u8 = 3;
 pub(crate) const BLOCK: u64 = 4096;
@@ -113,14 +112,7 @@ pub(crate) enum Route<'a> {
 }
 
 /// The PG of a named object: by a hash of its name.
-pub fn object_pg(name: &[u8], pg_count: u32) -> u32 {
-    // FNV-1a: the same on every client and version.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name {
-        h = (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    pg_of(u128::from(h), 0, pg_count)
-}
+pub use hyperstor_placement::object_pg;
 
 /// A connection to the cluster.
 pub struct Client {
@@ -371,26 +363,6 @@ impl Client {
             }
             let map = self.map();
             let p = map.pools.get(&pool).ok_or(ClientError::NoPool(pool))?;
-            let pg = match route {
-                Route::Chunk { lineage, chunk, .. } => pg_of(lineage, chunk, p.pg_count),
-                Route::Object { name, .. } => object_pg(name, p.pg_count),
-            };
-            let info = map.pg(pool, pg).ok_or(ClientError::NoPrimary(pool, pg))?;
-            let Some(primary) = info.primary() else {
-                last = format!("PG {pool}.{pg} has no primary");
-                continue;
-            };
-            let Some(addr) = map.device_addr(primary) else {
-                last = format!("device {primary} has no address");
-                continue;
-            };
-            let to = Target {
-                pool,
-                pg,
-                map_epoch: map.epoch,
-                pg_epoch: info.epoch,
-                lease,
-            };
             let key = match route {
                 Route::Chunk {
                     lineage,
@@ -407,6 +379,24 @@ impl Client {
                     name: name.to_vec(),
                     version: 0,
                 },
+            };
+            // By the key sent: what a device splitting the PG goes by.
+            let pg = hyperstor_placement::key_pg(key.ns, &key.name, p.pg_count);
+            let info = map.pg(pool, pg).ok_or(ClientError::NoPrimary(pool, pg))?;
+            let Some(primary) = info.primary() else {
+                last = format!("PG {pool}.{pg} has no primary");
+                continue;
+            };
+            let Some(addr) = map.device_addr(primary) else {
+                last = format!("device {primary} has no address");
+                continue;
+            };
+            let to = Target {
+                pool,
+                pg,
+                map_epoch: map.epoch,
+                pg_epoch: info.epoch,
+                lease,
             };
             let conn = match self.conn(addr).await {
                 Ok(c) => c,

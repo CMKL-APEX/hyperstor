@@ -59,6 +59,35 @@ pub fn pg_of_name(name: &[u8], pg_count: u32) -> u32 {
     (hash_bytes(name) & (pg_count as u64 - 1)) as u32
 }
 
+/// The PG of a named object by an FNV-1a hash of its name: `.meta`
+/// headers, directories and the other objects clients name.
+pub fn object_pg(name: &[u8], pg_count: u32) -> u32 {
+    // FNV-1a: the same on every client and version.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    pg_of(u128::from(h), 0, pg_count)
+}
+
+/// The namespace of volume chunks (`hyperstor_engine::Namespace::Vol`).
+pub const NS_VOL: u8 = 1;
+
+/// The PG of a stored key (24-pools-and-devices.md §27.5): a volume
+/// chunk's, named by its 16-byte lineage and 8-byte chunk (big-endian,
+/// then maybe a branch), by the lineage and chunk; any other by its name.
+/// Clients route by it, and a device splitting a PG moves each object to
+/// the PG it gives under the new count, so the two never disagree.
+pub fn key_pg(ns: u8, name: &[u8], pg_count: u32) -> u32 {
+    if ns == NS_VOL && name.len() >= 24 {
+        let lineage = u128::from_be_bytes(name[..16].try_into().expect("16 bytes"));
+        let chunk = u64::from_be_bytes(name[16..24].try_into().expect("8 bytes"));
+        pg_of(lineage, chunk, pg_count)
+    } else {
+        object_pg(name, pg_count)
+    }
+}
+
 /// A device that can hold PG copies.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Device {
@@ -297,6 +326,29 @@ pub fn assign_positions(prev: &[Option<u32>], members: &[u32]) -> Vec<Option<u32
 
 #[cfg(test)]
 mod tests {
+    /// §27.5: a volume chunk's key is routed by its lineage and chunk
+    /// (whatever branch follows), any other by its name; doubling the
+    /// count sends each key to its PG or that PG plus the old count.
+    #[test]
+    fn keys_route_as_chunks_or_names_and_split_in_two() {
+        use super::{NS_VOL, key_pg, object_pg, pg_of};
+        for i in 0u64..2000 {
+            let (lineage, chunk) = (i as u128 * 0x9e37_79b9_7f4a_7c15, i * 31);
+            let mut name = lineage.to_be_bytes().to_vec();
+            name.extend_from_slice(&chunk.to_be_bytes());
+            assert_eq!(key_pg(NS_VOL, &name, 64), pg_of(lineage, chunk, 64));
+            let mut branch = name.clone();
+            branch.extend_from_slice(&7u32.to_be_bytes());
+            assert_eq!(key_pg(NS_VOL, &branch, 64), pg_of(lineage, chunk, 64));
+            assert_eq!(key_pg(3, &name, 64), object_pg(&name, 64));
+            assert_eq!(key_pg(NS_VOL, &name[..20], 64), object_pg(&name[..20], 64));
+            for k in [&name[..], b"header"] {
+                let (p, q) = (key_pg(NS_VOL, k, 64), key_pg(NS_VOL, k, 128));
+                assert!(q == p || q == p + 64, "{p} {q}");
+            }
+        }
+    }
+
     use super::*;
     use std::collections::{HashMap, HashSet};
 
