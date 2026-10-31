@@ -1207,3 +1207,40 @@ same benchmark writing (`HS_BENCH_SECS=30`):
    the host or the network; worth a look before lowering timeouts.
 6. The 1 MiB p99s of 190–275 ms are long next to their p50s; not looked
    into.
+
+## 2026-10-31: a device added to a running node (G44, first half; pilot)
+
+The pilot (prism2, prism1 and gpu-dev2; three map service members, each
+host a storage node with two 64 GiB files) on the build of
+`feature/elastic-pools` after #106 and #108 (stages 1a–1d, D167–D169),
+installed host by host, followers first: each came back healthy, and
+prism1 kept the lead. Then prism1's free NVMe drive (Samsung
+MZWLJ3T8HBLS, 3.84 TB), formatted by the owner to 4 KiB sectors (LBA
+format 2), was added to node 1:
+
+```sh
+sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-SAMSUNG_MZWLJ3T8HBLS-00007_<serial>
+```
+
+| Step | Result |
+|---|---|
+| The installer | probed the drive (nothing found), registered it as device 1002 at the node's next port, formatted it with the cluster's id, wrote its udev rule (`hyperstor:hyperstor`, 0660), recorded it in `install.conf`, restarted node 1: 2 s |
+| Node 1 | opened devices 1002, 1001 and 1000 in 3, 49 and 53 ms |
+| Weight | 3.4922 (its capacity in TiB), against 0.0615 for each file |
+| Placement | node 1's copy moved to 1002 for 242 of `.meta`'s 256 PGs and 126 of `vol`'s 128 (expected about 97 %: 3.49 / (3.49 + 2 × 0.0615)) |
+| Backfill | about 8.8 GiB onto 1002; health ok again 94 s after the install (about 95 MiB/s, under I187's budget) |
+| Meanwhile | no reactor hold logged on prism1, no node marked down or up |
+| Pool space | unchanged (`vol` 117.4 GiB free of 126.0 GiB): the smallest host bounds it (D159) |
+
+### Findings
+
+1. **Adding a whole disk works end to end on real hardware**: by-id
+   name, signature probe, registration, format, udev, restart, weight,
+   backfill, with no flapping.
+2. **A large device takes almost all of its host's copies**, as the
+   weights say. The pool doesn't grow until the other hosts do (D159).
+3. **The old copies stay**: just after the backfill, node 1's two files
+   show the same free space as before. Whether and when stray copies are
+   removed is to be checked.
+4. Not measured yet: the p99 latency of a VM disk during the backfill
+   (no load was running), and G44's second half, PG splits (stage 5).
