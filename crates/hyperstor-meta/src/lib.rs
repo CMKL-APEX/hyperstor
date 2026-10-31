@@ -150,6 +150,14 @@ pub enum Admin {
         dry_run: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<Removal, String>>,
     },
+    /// Takes a device being removed out of the acting set of each PG that
+    /// has nothing left to backfill but still lists it
+    /// ([`ClusterMap::release`]); nothing for a device that is in. Replies
+    /// with how many PGs changed.
+    Release {
+        device: u32,
+        reply: hyperstor_reactor::chan::OneSender<usize>,
+    },
     /// Removes a device that no PG lists from the map, its node with it if
     /// it was the last (D182). Replies with whether the node went, and the
     /// working map's epoch; `None` if the map hasn't the device.
@@ -1824,6 +1832,15 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.remove_device(device, force, dry_run));
+                }
+                Admin::Release { device, reply } => {
+                    let mut map = self.map.borrow_mut();
+                    let out = map.devices.get(&device).is_some_and(|d| !d.up_in);
+                    let _ = reply.send(if out && self.leads() {
+                        map.release(device)
+                    } else {
+                        0
+                    });
                 }
                 Admin::FinishRemoval { device, reply } => {
                     let _ = reply.send(self.finish_removal(device));

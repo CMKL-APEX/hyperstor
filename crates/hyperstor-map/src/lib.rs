@@ -734,6 +734,14 @@ impl ClusterMap {
                             // returns. Starting it again empty would let
                             // backfill wipe the members when they return.
                             o.acting.clone()
+                        } else if p.kind == PoolKind::Replicated
+                            && kept.len() == up.len()
+                            && up.iter().all(|d| kept.contains(d))
+                        {
+                            // The same copies in another order: nothing to
+                            // backfill, which is what would otherwise make
+                            // `acting` be `up`; placement's primary leads.
+                            up.clone()
                         } else {
                             kept
                         }
@@ -1691,6 +1699,22 @@ mod tests {
             .map(|k| hyperstor_placement::key_pg(3, k, n * 2))
             .collect();
         assert_eq!(routed(&m), full);
+    }
+
+    /// A PG whose acting set holds `up`'s devices in another order takes
+    /// `up`'s: nothing is left to backfill, which is what would otherwise
+    /// make them equal, and a removal or drain waiting for `acting` = `up`
+    /// would wait for ever.
+    #[test]
+    fn acting_takes_ups_order_when_it_holds_the_same_copies() {
+        let mut m = map();
+        let k = *m.pgs.keys().find(|k| k.0 == 1).unwrap();
+        let pg = m.pgs.get_mut(&k).unwrap();
+        pg.acting.rotate_left(1);
+        assert_ne!(pg.acting, pg.up);
+        m.recompute();
+        let pg = &m.pgs[&k];
+        assert_eq!(pg.acting, pg.up);
     }
 
     /// D182: a removed device leaves the map, its node with its last

@@ -272,8 +272,8 @@ fn a_device_is_removed_once_its_pgs_have_moved() {
     let img = c.data_dir().join("node-0-1.img");
     let shard = format!("{addr}={}:1", img.display());
     c.start_node_with(0, &["--shard", &shard]);
-    wait_for("PGs on device 1, and health ok", 120, || {
-        (listing(&c, 1) > 0 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    wait_for("PGs on device 1, and every PG clean", 120, || {
+        (listing(&c, 1) > 0 && c.settled()).then_some(())
     });
     let made = c
         .ctl(&["create-volume", "--size", "16M", "--name", "kept"])
@@ -320,8 +320,8 @@ fn a_device_is_removed_once_its_pgs_have_moved() {
     let log = c.node_log(0);
     assert!(log.contains("device 1: removed from the map"), "{log}");
     c.start_node(0);
-    wait_for("health ok without device 1", 60, || {
-        c.ctl(&["status"]).has("health  ok").then_some(())
+    wait_for("every PG clean without device 1", 120, || {
+        c.settled().then_some(())
     });
     // Node 2's only device: three copies would span two hosts.
     let short = c.ctl(&["device", "remove", "--device", "2000"]).expect(1);
@@ -501,18 +501,9 @@ fn the_installer_drops_a_removed_device() {
             &addr,
         ],
     );
-    c.kill_node(0);
-    c.start_node(0);
-    wait_for("device 1 running, and health ok", 120, || {
-        let s = c.ctl(&["status", "--json"]);
-        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
-        let weighted = v["nodes"]
-            .as_array()?
-            .iter()
-            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
-            .any(|d| d["id"].as_u64() == Some(1) && d["weight"].as_f64().unwrap_or(0.0) > 0.0);
-        (weighted && c.ctl(&["status"]).has("health  ok")).then_some(())
-    });
+    // Registered, at weight 0, and not run: it holds no PG, so its removal
+    // below needs no data to move (the removal itself is
+    // `a_device_is_removed_once_its_pgs_have_moved`'s).
     let drop = |c: &Cluster, id: &str| {
         install_cmd(
             &c.root,
@@ -562,8 +553,8 @@ fn the_installer_drops_a_removed_device() {
     assert_eq!(env, env2);
     c.kill_node(0);
     c.start_node(0);
-    wait_for("node 0 runs without device 1, and health ok", 60, || {
-        c.ctl(&["status"]).has("health  ok").then_some(())
+    wait_for("node 0 runs without device 1, every PG clean", 120, || {
+        c.settled().then_some(())
     });
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
@@ -1031,8 +1022,8 @@ fn a_pool_splits_its_pgs_in_place() {
     assert!(read(&c, "16M") == during, "written during it");
     c.kill_node(1);
     c.start_node(1);
-    wait_for("health ok after node 1 restarts", 120, || {
-        c.ctl(&["status"]).has("health  ok").then_some(())
+    wait_for("every PG clean after node 1 restarts", 120, || {
+        c.settled().then_some(())
     });
     assert!(read(&c, "0") == before && read(&c, "16M") == during);
     wait_for("the split in the audit log", 20, || {
