@@ -30,6 +30,13 @@ pub trait BlockDev: Send + Sync {
     /// Makes every completed write durable.
     fn flush(&self) -> io::Result<()>;
 
+    /// The descriptor a caller with an io_uring of its own may write and
+    /// flush through instead of waiting in these calls (I199). `None`
+    /// (memory, test devices) keeps the caller to the calls here.
+    fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
+
     /// Writes several ranges; implementations may submit them together.
     fn write_batch(&self, writes: &[(u64, &[u8])]) -> io::Result<()> {
         for (off, buf) in writes {
@@ -179,6 +186,9 @@ impl BlockDev for FileDev {
     fn flush(&self) -> io::Result<()> {
         self.file.sync_data()
     }
+    fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        Some(self.file.as_raw_fd())
+    }
 }
 
 /// A file or block device through io_uring. A batch of reads or writes is
@@ -271,6 +281,9 @@ impl BlockDev for UringDev {
             .flags(types::FsyncFlags::DATASYNC)
             .build();
         self.run(&[(sqe, 0)])
+    }
+    fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        Some(self.file.as_raw_fd())
     }
     fn write_batch(&self, writes: &[(u64, &[u8])]) -> io::Result<()> {
         use io_uring::{opcode, types};

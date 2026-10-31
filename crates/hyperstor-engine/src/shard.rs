@@ -272,6 +272,26 @@ pub struct IndexStats {
 }
 
 /// One shard of a device.
+/// One round of a commit, planned by [`Shard::commit_begin`] and waiting
+/// for its writes (I199).
+pub struct Round {
+    /// Data extents and the log record, by byte offset on the device.
+    writes: Vec<(u64, AlignedBuf)>,
+    /// Log blocks the record takes; 0 when nothing in the round changed.
+    nblocks: u64,
+    freed: Vec<(u64, u64)>,
+    results: Vec<Result<Committed, OpError>>,
+}
+
+impl Round {
+    /// The writes to make, by byte offset, which the caller then owns: an
+    /// asynchronous writer keeps them until the device is done with them.
+    /// Empty when the round changed nothing, and then nothing is flushed.
+    pub fn take_writes(&mut self) -> Vec<(u64, AlignedBuf)> {
+        std::mem::take(&mut self.writes)
+    }
+}
+
 pub struct Shard {
     dev: Arc<dyn BlockDev>,
     region: Region,
@@ -289,6 +309,8 @@ pub struct Shard {
     next_revision: u64,
     ckpt: Option<Ckpt>,
     poisoned: bool,
+    /// A round begun by [`Shard::commit_begin`] waits for its writes.
+    in_flight: bool,
     /// Physical extents allocated in the current commit round. A write is
     /// never deferred onto them: recovery checks the last round's new
     /// extents against the checksums their `Map` recorded, which an
@@ -412,6 +434,7 @@ impl Shard {
             digests: Default::default(),
             ckpt: sup.ckpt.clone(),
             poisoned: false,
+            in_flight: false,
             round_fresh: BTreeMap::new(),
             defer_max: DEFER_MAX,
             pages: BTreeMap::new(),
@@ -783,21 +806,75 @@ impl Shard {
         &mut self,
         batch: Vec<OpList>,
     ) -> Result<Vec<Result<Committed, OpError>>, EngineError> {
-        self.check()?;
         let mut results = Vec::with_capacity(batch.len());
         let mut rest: std::collections::VecDeque<OpList> = batch.into();
         while !rest.is_empty() {
-            let r = self.commit_round(&mut rest);
-            match r {
-                Ok(mut v) => results.append(&mut v),
-                Err(e) => {
-                    self.poisoned = true;
-                    return Err(e);
-                }
+            let mut round = self.commit_begin(&mut rest)?;
+            let writes = round.take_writes();
+            let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
+            let r = if io.is_empty() {
+                Ok(())
+            } else {
+                self.dev.write_batch(&io).and_then(|()| self.dev.flush())
+            };
+            results.append(&mut self.commit_end(round, r)?);
+        }
+        self.commit_done();
+        Ok(results)
+    }
+
+    /// Plans one round of a commit (I199): takes lists from the front of
+    /// `lists` up to what one log record holds, resolves them and applies
+    /// them to the index, and returns the writes that make them durable.
+    /// The caller writes them, flushes, and hands the outcome to
+    /// [`Shard::commit_end`]; nothing else may use the shard in between,
+    /// since the index already shows the round. [`Shard::commit`] does all
+    /// of it at once.
+    pub fn commit_begin(
+        &mut self,
+        lists: &mut std::collections::VecDeque<OpList>,
+    ) -> Result<Round, EngineError> {
+        self.check()?;
+        assert!(!self.in_flight, "a commit round is already in flight");
+        match self.commit_round(lists) {
+            Ok(r) => {
+                self.in_flight = !r.writes.is_empty();
+                Ok(r)
+            }
+            Err(e) => {
+                self.poisoned = true;
+                Err(e)
             }
         }
+    }
+
+    /// Ends a round begun by [`Shard::commit_begin`], given whether its
+    /// writes and the flush after them succeeded: the log advances and the
+    /// extents the round freed can be reused. A failed write poisons the
+    /// shard, as in [`Shard::commit`].
+    pub fn commit_end(
+        &mut self,
+        round: Round,
+        io: std::io::Result<()>,
+    ) -> Result<Vec<Result<Committed, OpError>>, EngineError> {
+        self.in_flight = false;
+        if let Err(e) = io {
+            self.poisoned = true;
+            return Err(e.into());
+        }
+        if round.nblocks > 0 {
+            self.tail_lsn += round.nblocks;
+            self.records += 1;
+        }
+        for (s, n) in round.freed {
+            self.alloc.free(s, n);
+        }
+        Ok(round.results)
+    }
+
+    /// Counts a commit whose rounds have all ended.
+    pub fn commit_done(&mut self) {
         self.commits += 1;
-        Ok(results)
     }
 
     /// Sets the size below which overwrites of held blocks are deferred
@@ -825,7 +902,7 @@ impl Shard {
     fn commit_round(
         &mut self,
         lists: &mut std::collections::VecDeque<OpList>,
-    ) -> Result<Vec<Result<Committed, OpError>>, EngineError> {
+    ) -> Result<Round, EngineError> {
         if self.pending.len() > PENDING_LIMIT {
             self.apply_deferred()?;
         }
@@ -911,7 +988,12 @@ impl Shard {
         }
         self.pending = fx.pending;
         if count == 0 {
-            return Ok(results);
+            return Ok(Round {
+                writes: Vec::new(),
+                nblocks: 0,
+                freed: fx.freed,
+                results,
+            });
         }
         payload.patch_u32(0, count);
         let group = self.next_group;
@@ -919,24 +1001,28 @@ impl Shard {
         let rec = self.encode_record(group, payload.as_slice());
         let nblocks = (rec.len() / BLOCK) as u64;
         let lsn = self.tail_lsn;
-        let mut io: Vec<(u64, &[u8])> = writes
-            .iter()
-            .map(|(pb, b)| (pb * BLOCK as u64, &b[..]))
+        let mut io: Vec<(u64, AlignedBuf)> = writes
+            .into_iter()
+            .map(|(pb, b)| (pb * BLOCK as u64, b))
             .collect();
         let first = (self.region.log_blocks - lsn % self.region.log_blocks).min(nblocks);
-        let (a, b) = rec.split_at(first as usize * BLOCK);
-        io.push((self.log_pos(lsn), a));
         if nblocks > first {
-            io.push((self.log_pos(lsn + first), b));
+            // The record wraps around the ring: two writes.
+            let (a, b) = rec.split_at(first as usize * BLOCK);
+            for (at, part) in [(lsn, a), (lsn + first, b)] {
+                let mut buf = AlignedBuf::zeroed(part.len());
+                buf.copy_from_slice(part);
+                io.push((self.log_pos(at), buf));
+            }
+        } else {
+            io.push((self.log_pos(lsn), rec));
         }
-        self.dev.write_batch(&io)?;
-        self.dev.flush()?;
-        self.tail_lsn += nblocks;
-        self.records += 1;
-        for (s, n) in fx.freed {
-            self.alloc.free(s, n);
-        }
-        Ok(results)
+        Ok(Round {
+            writes: io,
+            nblocks,
+            freed: fx.freed,
+            results,
+        })
     }
 
     fn encode_record(&self, group: u64, payload: &[u8]) -> AlignedBuf {

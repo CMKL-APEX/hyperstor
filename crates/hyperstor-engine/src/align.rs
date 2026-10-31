@@ -54,6 +54,12 @@ impl Deref for AlignedBuf {
     }
 }
 
+impl AsRef<[u8]> for AlignedBuf {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 impl DerefMut for AlignedBuf {
     fn deref_mut(&mut self) -> &mut [u8] {
         // SAFETY: as in deref, and &mut self gives exclusive access.

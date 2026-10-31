@@ -56,6 +56,10 @@ struct Cluster {
     partitions: Arc<hyperstor_daemon::faults::Partitions>,
     /// Every device, by id, to make it slow or fail (D92).
     faulty: std::collections::HashMap<u32, Arc<hyperstor_daemon::faults::FaultyDev>>,
+    /// Devices whose commits take longer without holding a reactor (I199).
+    commit_delays: Arc<hyperstor_daemon::faults::CommitDelays>,
+    /// I/O timeout given to restarted nodes; zero: the default.
+    io_timeout: std::time::Duration,
 }
 
 impl Cluster {
@@ -156,6 +160,7 @@ impl Cluster {
         let blocked: Vec<Arc<std::sync::atomic::AtomicBool>> =
             (0..nodes).map(|_| Arc::default()).collect();
         let partitions = Arc::new(hyperstor_daemon::faults::Partitions::default());
+        let commit_delays = Arc::new(hyperstor_daemon::faults::CommitDelays::default());
         let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
@@ -163,6 +168,8 @@ impl Cluster {
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
                     push_part_bytes: TEST_PART_BYTES,
+                    io_timeout: std::time::Duration::ZERO,
+                    commit_delays: Some(commit_delays.clone()),
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -204,6 +211,8 @@ impl Cluster {
             nodes,
             partitions,
             faulty,
+            commit_delays,
+            io_timeout: std::time::Duration::ZERO,
         }
     }
 
@@ -237,6 +246,8 @@ impl Cluster {
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
             push_part_bytes: TEST_PART_BYTES,
+            io_timeout: self.io_timeout,
+            commit_delays: Some(self.commit_delays.clone()),
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -2516,6 +2527,114 @@ fn a_failed_device_is_placed_elsewhere_at_once() {
     let chunks: Vec<(u128, u64)> = (0..8u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
     let _ = data;
+}
+
+/// A device slow to commit no longer holds its reactor (I199): a commit
+/// round waits for its writes on the reactor's ring, so the node answers
+/// pings meanwhile and stays up. Here every commit of node 0's device
+/// takes 1 s, past the 300 ms peer timeout and the map service's 700 ms
+/// one, which marked the node down while the wait held the reactor (I195);
+/// the writes complete and read back, and node 0 stays up throughout.
+#[test]
+fn a_slow_commit_holds_no_reactor() {
+    use std::time::{Duration, Instant};
+    let c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.commit_delays.set(0, Duration::from_secs(1));
+    let (took, downs) = with_client(meta, 6, |cl| async move {
+        let t = Instant::now();
+        let writer = spawn({
+            let cl = cl.clone();
+            async move {
+                for v in 1..=3 {
+                    cl.write(POOL, v, 0, pattern(200 + v as u64, 4096))
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let mut downs = 0;
+        while !writer.is_finished() {
+            cl.refresh_map().await.unwrap();
+            if !cl.map().nodes[&0].up {
+                downs += 1;
+            }
+            hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
+        }
+        writer.await;
+        (t.elapsed(), downs)
+    });
+    c.commit_delays.set(0, Duration::ZERO);
+    assert!(
+        took >= Duration::from_secs(1),
+        "the delay applied: {took:?}"
+    );
+    assert_eq!(downs, 0, "node 0 was seen down while its device committed");
+    with_client(meta, 7, |cl| async move {
+        for v in 1..=3 {
+            let got = cl.read(POOL, v, 0, 4096).await.unwrap();
+            assert!(got == pattern(200 + v as u64, 4096), "volume {v}");
+        }
+        assert!(cl.map().nodes[&0].up);
+    });
+    c.stop();
+}
+
+/// A device that stops completing writes fails after the I/O timeout
+/// (I199). While a commit held its reactor, a hung device took its whole
+/// node down; now the reactor goes on, and the timeout ends the wait: the
+/// device is marked failed and placed elsewhere, its node stays up, and
+/// writes go on.
+#[test]
+fn a_hung_device_fails_after_the_io_timeout() {
+    use std::time::Duration;
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    // Node 2 again, with a short I/O timeout.
+    c.kill(2);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(Duration::from_secs(3));
+    c.io_timeout = Duration::from_millis(800);
+    c.restart(2);
+    with_client(meta, 7, |cl| async move {
+        wait_all_up(&cl).await;
+        wait_backfilled(&cl).await;
+    });
+    c.commit_delays.set(2000, Duration::from_secs(60));
+    let d = pattern(96, 8 * CHUNK as usize);
+    with_client(meta, 8, move |cl| async move {
+        cl.write(POOL, 1, 0, d.clone()).await.unwrap();
+        wait_map(&cl, "device 2000 failed", |m| m.failed.contains(&2000)).await;
+        assert!(
+            cl.map().nodes[&2].up,
+            "the node is up; only its device failed"
+        );
+        wait_backfilled(&cl).await;
+        assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
+    });
+    c.commit_delays.set(2000, Duration::ZERO);
+    c.stop();
 }
 
 /// A replica whose disk hangs while its node stays up (D91): the primary

@@ -829,3 +829,27 @@ in. Measured on dev-2 (02-benchmarks.md, 2026-10-31), one core encrypts
 Settled on 2026-10-31, every point as recommended: points 104, 105 and
 107 as D158; 106 as D159, revising D156's count; 108, 109 and 113 as
 D160; 110 as D161; 111 and 112 as D162.
+
+## The engine's I/O and the reactor (2026-10-31)
+
+Every engine call is synchronous on its reactor's thread: a commit plans
+its lists, writes data and the log record, flushes, and returns
+(I2), and a read waits for its blocks the same way. `UringDev` submits
+to an io_uring of its own and waits on it, though 08-engine.md §6.2 puts
+device I/O on the reactor's ring. While the device works, the reactor
+answers no pings, accepts nothing and serves nothing. On NVMe with
+power-loss protection a flush takes microseconds, so the pilot rarely
+notices. Where a device is slower, peers report a healthy node silent:
+on CI one commit held a reactor for up to 1.1 s, past the 600 ms peer
+timeout, and nodes were marked down (I195, I200), the same pattern as
+the pilot's flapping (D149, I187, I188). Hard disks (D29) write their
+data extents inside the commit, at milliseconds a seek. A prototype of
+point 114's first stage is built (I199), with tests; it is not settled.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 114 | **Taking device waits off the reactor's thread** | (a) a completion-driven engine on the reactor's ring: a commit plans in memory, submits its writes and flush, returns to the reactor, and ends on their completions; reads submit and await the same way; (b) the engine on a thread of its own per device, the reactor handing it work over a channel; (c) pings and heartbeats answered by a thread of their own (point 85 chose against it); (d) leave it, relying on fast NVMe | (a), in stages, each its own pull request: (1) commits, one in flight at a time, with an I/O timeout (built as a prototype, I199); (2) reads, many in flight, with freed extents held until the reads that may use them end; (3) checkpoint slices and deferred in-place writes; (4) optionally, a commit planned while the previous one flushes. It keeps one reactor per core (D3, 08-engine.md §6.1) and is the submission path NVMe passthrough (D29) needs anyway. (b) costs a hop between threads per operation and threads outside the reactors' cores, and reads either wait behind flushes or need locks. (c) would make a stuck reactor look alive. (d) fails on any slower device |
+| 115 | **What ends a device's wait.** Today a hung device holds its reactor, so the node stops answering and goes down: crude, but nothing hangs unseen. With (a), the reactor goes on, so something must end the wait | (a) a timeout per commit round, after which the device is failed and its PGs placed elsewhere (the path of a device returning I/O errors); (b) the same, and the node also reports the device's PGs unavailable at once while waiting longer than the peer timeout; (c) no timeout of hyperstor's: rely on the kernel's (NVMe aborts and retries a command after 30 s, then fails it) | (a), 30 s by default, as Linux gives an NVMe command, configurable per node. Requests to the device's PGs wait meanwhile, as they do today, and a primary already drops a replica that doesn't answer within 2 s (D91). (c) can leave a request waiting through several kernel retries |
+
+None is settled. Host check G43 (17-milestones.md §22) measures stage 1
+on the pilot.

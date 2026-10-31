@@ -18,6 +18,7 @@
 
 pub mod chan;
 pub mod fd;
+pub mod file;
 pub mod net;
 pub mod passthrough;
 pub mod time;
@@ -47,6 +48,9 @@ pub(crate) enum Resource {
     Addr(#[allow(dead_code)] Box<(libc::sockaddr_storage, libc::socklen_t)>),
     /// Kept alive for the kernel, which reads it during the operation.
     Timespec(#[allow(dead_code)] Box<types::Timespec>),
+    /// Buffers several operations write from (`file`), shared among them
+    /// and freed with the last one's completion.
+    Keep(#[allow(dead_code)] Rc<dyn std::any::Any>),
 }
 
 struct OpSlot {

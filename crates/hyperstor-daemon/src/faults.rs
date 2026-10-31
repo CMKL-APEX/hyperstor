@@ -42,6 +42,36 @@ impl Partitions {
     }
 }
 
+/// Devices whose commits take longer without holding their reactor
+/// (I199): a slow device written through the reactor's ring, as opposed to
+/// [`FaultyDev`]'s delay, which holds it as the device's own calls do. A
+/// node's reactors consult it before each commit round's writes
+/// (`NodeConfig::commit_delays`); the wait counts toward the I/O timeout.
+#[derive(Default)]
+pub struct CommitDelays {
+    by_device: Mutex<std::collections::HashMap<u32, Duration>>,
+}
+
+impl CommitDelays {
+    pub fn set(&self, device: u32, d: Duration) {
+        let mut m = self.by_device.lock().unwrap();
+        if d.is_zero() {
+            m.remove(&device);
+        } else {
+            m.insert(device, d);
+        }
+    }
+
+    pub fn get(&self, device: u32) -> Duration {
+        self.by_device
+            .lock()
+            .unwrap()
+            .get(&device)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 /// A device that can be made slow (every read, write and flush takes
 /// `delay` more, blocking its reactor as a hung disk does) or fail (every
 /// call returns an I/O error, as a dead disk does).
