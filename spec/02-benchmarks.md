@@ -1100,3 +1100,25 @@ and `Shard::digest`:
    and a 32 MiB I/O test passed from every host (25–28 MiB/s writes,
    86–102 MiB/s reads).
 
+
+## 2026-10-31: ciphers for encryption at rest (dev-2)
+
+For 05-decision-log.md points 109 and 110: one core of dev-2 (AMD EPYC
+7742, AES-NI), OpenSSL 3.0.13, 4 KiB blocks, 3 s each:
+
+```sh
+openssl speed -seconds 3 -bytes 4096 -evp aes-256-xts   # and the others
+```
+
+| Cipher | Per core |
+|---|---|
+| AES-256-XTS | 5.6 GB/s |
+| AES-256-GCM | 3.5 GB/s |
+| ChaCha20-Poly1305 | 1.8 GB/s |
+
+### Findings
+
+1. A reactor writing 1 GB/s would spend under a fifth of its core on
+   XTS, a little more on GCM. These are OpenSSL's numbers; the Rust
+   crate the engine would use needs its own measurement when it is
+   chosen.

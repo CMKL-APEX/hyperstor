@@ -1,0 +1,9 @@
+title = "Device weights and encryption at rest: decisions D158–D162"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-10-31
+updated = 2026-10-31
+branch = "spec/weights-encryption"
+prs = [89]
+now = "Points 104–113 settled as recommended: D158–D162 recorded"
+next = "Merge; then build weights and pool space (D158, D159) before encryption"

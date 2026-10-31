@@ -18,7 +18,8 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
 
 - **Rendezvous hashing with weights.** For each candidate, the score is
   `-ln(u) / weight`, where `u` is a uniform hash of `(pool, pg, candidate)`.
-  The lowest score wins. The weight is the device's capacity.
+  The lowest score wins. The weight is the device's capacity in TiB,
+  set from its own report, unless the operator overrides it (D158).
 - **Failure domains.** A pool names a level (`host`, `rack` or `site`;
   sites stay within 1 ms of each other, D63, 21-federation.md §25.2). Placement
   first picks distinct domains at that level by the same scoring over the
