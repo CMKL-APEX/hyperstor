@@ -99,25 +99,35 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6} {:>10} {:>10} STATE",
+        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} STATE",
         "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "FREE", "TOTAL"
     );
+    let mut fixed = false;
     for n in &s.nodes {
         for d in &n.devices {
+            // In TiB from the device's capacity, unless set (D158).
+            fixed |= d.weight_fixed;
+            let weight = format!("{:.4}{}", d.weight, if d.weight_fixed { "*" } else { "" });
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<6.2} {:>10} {:>10} {}",
+                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} {}",
                 n.id,
                 n.rack,
                 if n.up { "yes" } else { "no" },
                 d.id,
                 d.addr,
-                d.weight,
+                weight,
                 gib(d.free_bytes),
                 gib(d.total_bytes),
                 if d.up_in { "in" } else { "out" }
             );
         }
+    }
+    if fixed {
+        let _ = writeln!(
+            o,
+            "* weight set with hyperstorctl weight; the others follow capacity"
+        );
     }
     o
 }
@@ -241,6 +251,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.ListPgs", "pgs"),
     ("ClusterService.GetPgGrid", "pg-grid"),
     ("ClusterService.SetDeviceIn", "out, in"),
+    ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
@@ -763,6 +774,11 @@ mod tests {
         with.nodes[0].devices[0].free_bytes = Some(1 << 29);
         let n = nodes_text(&with);
         assert!(n.contains("0.5G       4.0G in"), "{n}");
+        // A weight an operator set is marked (D158).
+        with.nodes[0].devices[0].weight = 0.25;
+        with.nodes[0].devices[0].weight_fixed = true;
+        let n = nodes_text(&with);
+        assert!(n.contains(" 0.2500* ") && n.lines().count() == 5, "{n}");
         let p = pools_text(&s);
         assert!(p.contains("replicated"), "{p}");
         let pgs = pgs_text(&pb::ListPgsResponse {

@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 3 | 0 | 2 | 9 |
+| 3 | 0 | 2 | 10 |
 
 ## In progress
 
@@ -29,13 +29,14 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | Points 104–113 settled as recommended: D158–D162 recorded | Merge; then build weights and pool space (D158, D159) before encryption | 2026-10-31 |
+| **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95) | D158 and D159 built (I201, I202); PR in review | Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving | 2026-10-31 |
 | **Device waits off the reactor (points 114–115)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/async-commit`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94) | Points 114–115 written up with G43; stage 1 prototyped (I199): commits wait for the device on the reactor's ring, one in flight, with an I/O timeout | The owner's answers to points 114 and 115; G43 on the pilot; then stages 2 (reads) and 3 (checkpoints, deferred writes) | 2026-10-31 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | 2026-10-31 |
 | **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
 | **The refill test's flapping on CI (I200)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | 2026-10-31 |
@@ -77,5 +78,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 6 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 7 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 9 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

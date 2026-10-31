@@ -31,6 +31,7 @@ use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{ClusterService, ClusterServiceExt};
 use hyperstor_placement::Domain;
 use hyperstor_reactor::chan::{Sender, oneshot};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -448,8 +449,9 @@ pub fn status_for(
 }
 
 /// Each pool's usable total and free bytes (D156), from what its devices
-/// reported: the devices placement may use for it, divided by its
-/// redundancy. A pool with a device not heard from is left without. Each
+/// reported: the devices placement may use for it, grouped by its failure
+/// domain, as much as it can hold with one shard of each PG per domain
+/// (D159). A pool with a device not heard from is left without. Each
 /// device gets its own report, raw.
 pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate::DeviceSpace) {
     for d in s.nodes.iter_mut().flat_map(|n| n.devices.iter_mut()) {
@@ -461,27 +463,62 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         let Some(info) = map.pools.get(&p.id) else {
             continue;
         };
-        // As placement chooses them (hyperstor-placement's `Topology`).
-        let reports: Option<Vec<(u64, u64)>> = map
-            .devices
-            .values()
-            .filter(|d| {
-                d.up_in && d.weight > 0.0 && info.class.as_ref().is_none_or(|c| *c == d.class)
-            })
-            .map(|d| space.get(&d.id).copied())
-            .collect();
-        let Some(reports) = reports.filter(|r| !r.is_empty()) else {
+        // As placement chooses them (hyperstor-placement's `Topology`),
+        // grouped by the pool's failure domain.
+        let mut domains: BTreeMap<u32, (u128, u128)> = BTreeMap::new();
+        let mut reported = true;
+        for d in map.devices.values().filter(|d| {
+            d.up_in && d.weight > 0.0 && info.class.as_ref().is_none_or(|c| *c == d.class)
+        }) {
+            let Some(&(total, free)) = space.get(&d.id) else {
+                reported = false;
+                break;
+            };
+            let domain = match info.domain {
+                Domain::Device => d.id,
+                Domain::Host => d.node,
+                Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
+            };
+            let e = domains.entry(domain).or_default();
+            (e.0, e.1) = (e.0 + total as u128, e.1 + free as u128);
+        }
+        if !reported || domains.is_empty() {
             continue;
+        }
+        // Each PG puts one of its shards (a copy, or an EC shard of 1/k of
+        // the data) in each of `n` domains.
+        let (n, k) = match info.kind {
+            PoolKind::Ec { k, m } => (k as usize + m as usize, k as u128),
+            PoolKind::Replicated | PoolKind::Cache => ((info.size as usize).max(1), 1),
         };
-        let total: u128 = reports.iter().map(|(t, _)| *t as u128).sum();
-        let free: u128 = reports.iter().map(|(_, f)| *f as u128).sum();
-        // Data shards over all shards: 1/size for copies, k/(k+m) for EC.
-        let (num, den) = match info.kind {
-            PoolKind::Ec { k, m } => (k as u128, (k + m) as u128),
-            PoolKind::Replicated | PoolKind::Cache => (1, (info.size as u128).max(1)),
-        };
-        p.total_bytes = Some((total * num / den) as u64);
-        p.free_bytes = Some((free * num / den) as u64);
+        let (total, free): (Vec<u128>, Vec<u128>) = domains.into_values().unzip();
+        p.total_bytes = Some((per_shard(total, n) * k).min(u64::MAX as u128) as u64);
+        p.free_bytes = Some((per_shard(free, n) * k).min(u64::MAX as u128) as u64);
+    }
+}
+
+/// How much of a pool's data fits in domains holding `bytes` each when every
+/// PG puts one shard in each of `n` distinct domains (04-decisions.md D159):
+/// the largest `y` with `sum(min(b, y)) >= n * y`. A domain larger than
+/// that can't fill, as it holds at most one shard of each PG; the largest
+/// are capped in turn. Fewer domains than `n` hold one shard each, as
+/// placement places them.
+fn per_shard(mut bytes: Vec<u128>, n: usize) -> u128 {
+    bytes.sort_unstable_by(|a, b| b.cmp(a));
+    let n = n.min(bytes.len());
+    if n == 0 {
+        return 0;
+    }
+    let mut rest: u128 = bytes.iter().sum();
+    let mut capped = 0;
+    loop {
+        let y = rest / (n - capped) as u128;
+        if capped + 1 < n && bytes[capped] > y {
+            rest -= bytes[capped];
+            capped += 1;
+        } else {
+            return y;
+        }
     }
 }
 
@@ -579,6 +616,7 @@ pub fn status(
                         up_in: d.up_in,
                         weight: d.weight,
                         class: d.class.clone(),
+                        weight_fixed: map.fixed_weights.contains(&d.id),
                         ..Default::default()
                     })
                     .collect(),
@@ -803,6 +841,52 @@ impl ClusterService for Api {
         match r {
             Some(Ok(map_epoch)) => Ok(pb::SetDeviceInResponse {
                 map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_device_weight(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDeviceWeightRequest>,
+    ) -> ServiceResult<pb::SetDeviceWeightResponse> {
+        let target = match req.weight {
+            Some(w) => format!("device {} weight={w}", req.device),
+            None => format!("device {} weight=auto", req.device),
+        };
+        let who = self.authorize(&ctx, "SetDeviceWeight", &target, true)?;
+        if let Some(w) = req.weight.filter(|w| !w.is_finite() || *w < 0.0) {
+            return Err(ConnectError::invalid_argument(format!(
+                "a weight is a number of 0 or more, not {w}"
+            )));
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetDeviceWeight {
+                device: req.device,
+                weight: req.weight,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDeviceWeight",
+            &target,
+            &match &r {
+                Some(Ok((epoch, w))) => format!("ok, weight {w}, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, weight))) => Ok(pb::SetDeviceWeightResponse {
+                map_epoch,
+                weight,
                 ..Default::default()
             }
             .into()),
@@ -1578,6 +1662,51 @@ mod tests {
         // Out of placement, it no longer counts.
         m.devices.get_mut(&devices[2]).unwrap().up_in = false;
         assert_eq!(pool(&status(&m, &space), 1), (Some(1200), Some(600)));
+    }
+
+    /// D159: no failure domain counts for more than one shard of each PG,
+    /// so the smallest of as many hosts as copies bounds the pool.
+    #[test]
+    fn pool_space_under_the_domain_rule() {
+        use super::per_shard;
+        assert_eq!(per_shard(vec![10, 10, 10], 3), 10);
+        assert_eq!(per_shard(vec![10, 10, 1], 3), 1);
+        assert_eq!(per_shard(vec![10, 10, 1], 2), 10);
+        assert_eq!(per_shard(vec![30, 10, 10, 10], 3), 15);
+        assert_eq!(per_shard(vec![12, 10, 10, 10], 3), 14);
+        // Fewer domains than shards: one shard in each.
+        assert_eq!(per_shard(vec![10, 4], 3), 4);
+        assert_eq!(per_shard(vec![], 3), 0);
+        // Two devices on host 0, one each on hosts 1 and 2; 3 copies by
+        // host: host 0's two devices hold one copy, so hosts 1 and 2
+        // bound the pool. By device, all four count.
+        let m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100 127.0.0.1:9103\n\
+             node 1 rack 1 127.0.0.1:9101\nnode 2 rack 1 127.0.0.1:9102\n\
+             pool 1 vol replicated size 3 min 2 pgs 8 domain host\n\
+             pool 2 any replicated size 3 min 2 pgs 8 domain device\n\
+             pool 3 wide ec2+1 pgs 8 domain host\n\
+             pool 4 racks replicated size 2 min 1 pgs 8 domain rack\n",
+        )
+        .unwrap();
+        let space: crate::DeviceSpace = m.devices.keys().map(|d| (*d, (1000, 400))).collect();
+        let mut s = super::status(
+            &m,
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        super::pool_space(&mut s, &m, &space);
+        let pool = |id: u32| {
+            let p = s.pools.iter().find(|p| p.id == id).unwrap();
+            (p.total_bytes, p.free_bytes)
+        };
+        assert_eq!(pool(1), (Some(1000), Some(400)));
+        assert_eq!(pool(2), (Some(1333), Some(533)));
+        assert_eq!(pool(3), (Some(2000), Some(800)));
+        // Rack 0 holds 2000, rack 1 2000: two copies, 2000.
+        assert_eq!(pool(4), (Some(2000), Some(800)));
     }
 
     #[test]

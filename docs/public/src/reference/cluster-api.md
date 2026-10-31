@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -77,6 +77,7 @@ values are left out of answers.
 | `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
+| `SetDeviceWeight` | `{"device": 2, "weight": 0.5}`, or `{"device": 2}` to follow the device's capacity again | `map_epoch` after the change, and `weight` now; `invalid_argument` for a weight below 0 |
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`; trashed volumes aren't listed), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
 | `ExpandVolume` | `{"id": "…", "size": "2147483648"}` (a multiple of 4096, not smaller than now) | `volume`; `invalid_argument` for a smaller size |
@@ -166,7 +167,7 @@ word for scripts (the message is for people, and may change):
 
 - **Reads** (`GetStatus`, `ListPgs`) come from the published map: what
   storage nodes and clients see.
-- **`SetDeviceIn`** changes the map service's working map. The change is
+- **`SetDeviceIn`** and **`SetDeviceWeight`** change the map service's working map. The change is
   published once the devices losing roles have been fenced, usually
   within a second, and `GetStatus` then shows the PGs moving.
 - **Health** is `HEALTH_ERROR` when a PG can't take writes (fewer copies

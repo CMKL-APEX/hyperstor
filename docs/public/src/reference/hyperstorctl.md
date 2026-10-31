@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
 ```
 
 | Command | Does |
@@ -37,6 +37,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted, as an operation: prints its id; with `--wait`, follows it to the end |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
+| `weight` | Keeps `--device`'s placement weight at `--weight W`, or with `--weight auto` lets it follow the device's capacity in TiB again. Its PGs move as the weight changes. Needs every storage node and map service member on a build that has it |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
 | `drain` | Takes every device of `--node` out and follows its PGs as an operation, until none lives on the node; prints each PG that moves. With `--dry-run`, only prints what would move |
 | `token create` | Makes a single-use join token for `--role node` (a storage host), `--role meta` (a map service member) or `--role mgmt --name N` (a management client such as glidex, named N: 1–32 of a–z, 0–9 and -), valid `--ttl` seconds. Prints the token alone on standard output, and how to use it on standard error. Storage tokens are made on the map service's leader |
@@ -70,7 +71,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--pool P` | the first data pool | The pool for `pgs`, `pg-grid`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
 | `--pg N` | every PG | `pgs`: only this PG of the pool |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
-| `--device D` | | The device for `out` and `in` |
+| `--device D` | | The device for `out`, `in` and `weight` |
+| `--weight W\|auto` | | `weight`: the weight to keep (0 or more; 0 places nothing on the device), or `auto` |
 | `--node N` | | Every device of node N, for `out` and `in` |
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
 | `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique |
