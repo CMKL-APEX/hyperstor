@@ -48,7 +48,7 @@ fn model_apply(m: &mut Model, l: &OpList, revision: Option<u64>) -> bool {
     }
     if l.ops
         .iter()
-        .any(|o| matches!(o, Op::Absorb(s) if *s == l.key))
+        .any(|o| matches!(o, Op::Absorb(s) | Op::Take(s) if *s == l.key))
     {
         return false;
     }
@@ -59,6 +59,13 @@ fn model_apply(m: &mut Model, l: &OpList, revision: Option<u64>) -> bool {
             Op::Delete => {
                 m.remove(&l.key);
                 alive = false;
+                continue;
+            }
+            Op::Take(src) => {
+                if let Some(s) = m.remove(src) {
+                    m.insert(l.key.clone(), s);
+                    alive = true;
+                }
                 continue;
             }
             Op::Absorb(src) => {
@@ -176,7 +183,11 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
                 let i = keys.iter().position(|k| *k == key).unwrap();
                 Op::Absorb(keys[(i + rng.random_range(1..keys.len())) % keys.len()].clone())
             }
-            90..=94 => Op::AssertExists,
+            90..=92 => {
+                let i = keys.iter().position(|k| *k == key).unwrap();
+                Op::Take(keys[(i + rng.random_range(1..keys.len())) % keys.len()].clone())
+            }
+            93..=96 => Op::AssertExists,
             _ => Op::AssertAbsent,
         };
         ops.push(op);

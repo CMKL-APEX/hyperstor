@@ -782,6 +782,28 @@ fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
     (!member && clean).then_some(p.epoch)
 }
 
+/// The lists that split PG `pool`.`pg` of a shard for a pool of
+/// `pg_count` PGs, twice the count it was split from
+/// (24-pools-and-devices.md §27.5, D173): each object of the PG that
+/// belongs to its new sibling under `pg_count` moves to that PG's key,
+/// whole and without a copy (`Op::Take`). Empty once it is split, so a
+/// split cut short by a crash is finished by asking again.
+pub fn split_lists(sh: &hyperstor_engine::Shard, pool: u32, pg: u32, pg_count: u32) -> Vec<OpList> {
+    sh.list_pg(pool, pg)
+        .into_iter()
+        .filter_map(|k| {
+            let to = hyperstor_placement::key_pg(k.ns as u8, &k.name, pg_count);
+            (to != pg).then(|| OpList {
+                key: ObjKey {
+                    pg: to,
+                    ..k.clone()
+                },
+                ops: vec![Op::Take(k)],
+            })
+        })
+        .collect()
+}
+
 fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
     let ns = Namespace::from_u8(k.ns).map_err(|_| ())?;
     Ok(ObjKey::new(to.pool, to.pg, ns, k.name.clone(), k.version))
@@ -4683,6 +4705,91 @@ mod tests {
         // A member down: a copy elsewhere may be needed back.
         m.nodes.get_mut(&(members[1] / 1000)).unwrap().up = false;
         assert_eq!(is_stray(&m, b, 1, pg), None, "a member down");
+    }
+
+    /// §27.5, D173: splitting a PG moves each object that belongs to its
+    /// new sibling (by `key_pg`, as clients route) to the sibling's key,
+    /// data, attributes and key–value table with it; the others stay;
+    /// asking again finds nothing to do.
+    #[test]
+    fn a_pg_splits_into_itself_and_its_sibling() {
+        use super::{BlockDev, DeviceConfig, MemDev, Namespace, ObjKey, Op, OpList, split_lists};
+        use hyperstor_placement::key_pg;
+        use std::sync::Arc;
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(64 << 20));
+        hyperstor_engine::format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut sh = hyperstor_engine::open(&dev).unwrap().1.pop().unwrap();
+        let (pool, old, new) = (1, 8, 16);
+        // Volume chunks (lineage, chunk, branch) and named objects, all of
+        // PG 3 under 8 PGs.
+        let mut keys = Vec::new();
+        for i in 0u64..4000 {
+            let (ns, name) = if i % 3 == 0 {
+                (Namespace::Meta, format!("header-{i}").into_bytes())
+            } else {
+                let mut n = (i as u128 * 7919).to_be_bytes().to_vec();
+                n.extend_from_slice(&(i * 13).to_be_bytes());
+                if i % 3 == 2 {
+                    n.extend_from_slice(&2u32.to_be_bytes());
+                }
+                (Namespace::Vol, n)
+            };
+            if key_pg(ns as u8, &name, old) == 3 {
+                keys.push(ObjKey::new(pool, 3, ns, name, i % 2));
+            }
+        }
+        for k in &keys {
+            let ops = vec![
+                Op::Write {
+                    off: 0,
+                    data: vec![k.name[0]; 4096],
+                },
+                Op::SetAttr(b"a".to_vec(), k.name.clone()),
+                Op::KvPut(b"k".to_vec(), k.name.clone()),
+            ];
+            sh.commit(vec![OpList {
+                key: k.clone(),
+                ops,
+            }])
+            .unwrap();
+        }
+        let lists = split_lists(&sh, pool, 3, new);
+        let moved = lists.len();
+        assert!(
+            moved > keys.len() / 4 && moved < keys.len() * 3 / 4,
+            "{moved} of {}",
+            keys.len()
+        );
+        assert!(lists.iter().all(|l| l.key.pg == 3 + old));
+        for r in sh.commit(lists).unwrap() {
+            r.unwrap();
+        }
+        assert!(split_lists(&sh, pool, 3, new).is_empty(), "split already");
+        for k in &keys {
+            let to = key_pg(k.ns as u8, &k.name, new);
+            assert!(to == 3 || to == 3 + old);
+            let at = ObjKey {
+                pg: to,
+                ..k.clone()
+            };
+            let other = ObjKey {
+                pg: 3 + old - to + 3,
+                ..k.clone()
+            };
+            assert!(sh.stat(&other).is_none(), "{k:?} in one PG only");
+            assert_eq!(sh.read(&at, 0, 4096).unwrap()[0], k.name[0]);
+            assert_eq!(sh.attrs(&at).unwrap()[&b"a"[..]], k.name);
+            assert_eq!(sh.kv_get(&at, b"k"), Some(&k.name[..]));
+        }
+        assert_eq!(sh.list_pg(pool, 3 + old).len(), moved);
     }
 
     /// D168: hyperstord formats a blank file, never a blank block device;

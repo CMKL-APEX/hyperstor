@@ -261,6 +261,9 @@ isn't checked against the pools that use its class.
 
 ### 27.5 PG count
 
+Stage 5a built (I218): the engine's move and a device's split. Clients
+switch to a split PG's sibling PG by PG (D183).
+
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting
   each copy. A pool on 6 devices with 3 copies wants about 200 PGs, so
   256; the same pool on 60 devices, 2,048.

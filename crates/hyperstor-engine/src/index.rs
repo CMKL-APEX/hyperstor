@@ -86,6 +86,9 @@ pub enum ROp {
         lb: u64,
         n: u64,
     },
+    /// Moves object `src` here whole ([`crate::Op::Take`]), freeing what
+    /// this object mapped before; nothing if `src` is gone.
+    Take(ObjKey),
 }
 
 /// One list's resolved operations.
@@ -200,12 +203,21 @@ impl Index {
                 }
                 return;
             }
+            if let ROp::Take(src) = op {
+                if let Some(o) = self.objects.remove(src) {
+                    self.touch(src);
+                    if let Some(old) = self.objects.insert(key.clone(), o) {
+                        fx.free(old.blocks.extents());
+                    }
+                }
+                return;
+            }
             let o = match self.objects.get_mut(key) {
                 Some(o) => o,
                 None => self.objects.entry(key.clone()).or_default(),
             };
             match op {
-                ROp::Delete => unreachable!(),
+                ROp::Delete | ROp::Take(_) => unreachable!(),
                 ROp::SetSize(s) => o.size = *s,
                 ROp::Map { lb, pblock, crcs } => {
                     // Replayed over a fuzzy checkpoint that already has
@@ -483,6 +495,10 @@ impl ROp {
             ROp::Forget { lb, n } => {
                 e.u8(12).u64(*lb).u64(*n);
             }
+            ROp::Take(src) => {
+                e.u8(14);
+                src.encode(e);
+            }
         }
     }
 
@@ -531,6 +547,7 @@ impl ROp {
                 lb: d.u64()?,
                 n: d.u64()?,
             },
+            14 => ROp::Take(ObjKey::decode(d)?),
             v => {
                 return Err(DecodeError::Invalid {
                     field: "resolved op",
