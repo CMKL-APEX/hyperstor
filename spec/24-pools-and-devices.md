@@ -156,6 +156,8 @@ running node has reported, so older nodes can still read it.
 
 #### 27.3.1 Making a pool
 
+Built (I211).
+
 - **`CreatePool`**: a name; the kind (`replicated` with `size` and `min`,
   or `cache` with `copies`, D45; EC once it is served); the chunk size;
   the failure domain (`device`, `host`, `rack`); the class set; the
@@ -211,6 +213,12 @@ copy of the volumes.
   holds of it, as it drops a cache pool's stale copy now.
 
 ### 27.4 Class sets
+
+D180 amends this: a pool uses the devices of its classes, plus devices
+added to it and less devices removed from it (`hyperstorctl pool
+add-device`, `pool remove-device`), so one pool can have a device
+another pool of the same class doesn't. A device serves every pool that
+may use it, sharing its space.
 
 Built (I210), with `SetPool` for classes only until stage 3. Only
 `SetPool` checks a set's domains and kinds; relabelling a device later

@@ -46,6 +46,11 @@ service ClusterService {
   // Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
+  // Makes a pool (24-pools-and-devices.md §27.3.1): its device classes are
+  // required (04-decisions.md D171) and checked as SetPool checks them;
+  // its id is one no pool has had. Write.
+  rpc CreatePool(CreatePoolRequest) returns (CreatePoolResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -385,6 +390,34 @@ message AddDeviceRequest {
   // The device's class (`nvme`, `nvme-qlc`, ...); absent: that of the
   // node's other devices.
   optional string class = 3;
+}
+
+message CreatePoolRequest {
+  string name = 1;
+  // "replicated" or "cache" (EC pools aren't served yet).
+  string kind = 2;
+  // Copies.
+  uint32 size = 3;
+  // Copies that must be reachable to write; absent: half the copies,
+  // rounded up (1 for a cache pool).
+  optional uint32 min_size = 4 [json_name = "min_size"];
+  // A power of two; absent: about 100 per device the pool may use, per
+  // copy.
+  optional uint32 pg_count = 5 [json_name = "pg_count"];
+  // Bytes, a multiple of 4096; absent: 4 MiB.
+  optional uint32 chunk_size = 6 [json_name = "chunk_size"];
+  // "device", "host" or "rack"; absent: "host".
+  optional string domain = 7;
+  repeated string classes = 8;
+  // Allow classes of hard disks and flash both (D172).
+  bool force = 9;
+}
+
+message CreatePoolResponse {
+  uint32 pool = 1;
+  uint32 pg_count = 2 [json_name = "pg_count"];
+  uint64 map_epoch = 3 [json_name = "map_epoch"];
+  bool mixed_kinds = 4 [json_name = "mixed_kinds"];
 }
 
 message SetPoolRequest {

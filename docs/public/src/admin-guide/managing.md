@@ -309,7 +309,18 @@ hyperstorctl pool set --pool 1 --classes any
 The classes' devices must span at least as many failure domains (hosts,
 by default) as the pool keeps copies. A set with hard disks and flash
 both is refused unless `--force`: a write waits for its slowest copy.
-`.meta` always uses every device but hard disks. Kinds appear once every running node
+`.meta` always uses every device but hard disks.
+
+A pool is made on the classes it names:
+
+```sh
+hyperstorctl pool create --name fast --classes nvme --copies 3
+```
+
+It gets about 100 PGs per device of its classes per copy, as a power
+of two, unless `--pgs` says otherwise; the PG count can't grow yet, so
+give more if many devices are to come. Volumes go to it with
+`create-volume --pool P`. Kinds appear once every running node
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
 

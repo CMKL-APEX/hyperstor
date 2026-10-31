@@ -373,6 +373,12 @@ impl ClusterMap {
         }
     }
 
+    /// The id a new pool gets: after every pool's (24-pools-and-devices.md
+    /// §27.3.1; ids of deleted pools are never reused once they are kept).
+    pub fn next_pool_id(&self) -> u32 {
+        self.pools.keys().next_back().map_or(1, |p| p + 1).max(1)
+    }
+
     pub fn add_pool(&mut self, pool: PoolInfo) {
         assert!(pool.pg_count.is_power_of_two());
         self.pools.insert(pool.id, pool);

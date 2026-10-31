@@ -679,6 +679,15 @@ tests = [
     "manage::a_pool_places_on_its_classes_only",
 ]
 
+[[milestone.item]]
+what = "Pools made at run time on the device classes they name"
+spec = ["24-pools-and-devices.md §27.3.1", "D171", "I211"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::pools_are_made_with_their_classes",
+    "manage::a_pool_is_made_on_its_classes",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
