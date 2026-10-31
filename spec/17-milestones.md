@@ -203,6 +203,10 @@ and pNFS front end, are in 22-nfs.md §26.11.
   long each device takes to move a split PG's objects to their new keys,
   how much index memory the extra PGs cost, and whether writes during
   the split see more than one `StaleMap` retry each.
+  **First half measured 2026-10-31** (02-benchmarks.md): nvme6n1 added
+  to prism1's node 1 by the installer; health ok again in 94 s, with no
+  reactor hold or flap; VM-disk p99 during the backfill and the split
+  still to do.
 - **G45. The S3 gateway's cost** (05-decision-log.md points 133 and 134).
   On a pilot host, with the first gateway: PUT and GET throughput per
   gateway core for 4 KiB, 1 MiB and 64 MiB objects, with and without the

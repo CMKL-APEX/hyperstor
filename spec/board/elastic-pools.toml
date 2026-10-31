@@ -6,5 +6,5 @@ updated = 2026-10-31
 milestone = "HS18"
 branch = "feature/elastic-pools"
 prs = [96, 101, 102, 104, 106]
-now = "Stages 1a–1c merged (#101, #102, #104); 1d built (I207): hyperstor-install install --node N --device PATH registers, formats and keeps a device"
-next = "1e: nvme6n1 on prism1 (needs the owner's go-ahead); then stage 2, classes and class sets"
+now = "Stage 1 done and on the pilot: all three hosts on the feature build; nvme6n1 added to prism1's node 1 as device 1002 by the installer (G44, first half: health ok in 94 s, no flap)"
+next = "Stage 2: classes and class sets (D164, D171, D172); storage-only hosts' --device by token; G44's VM-disk p99 and stray copies"
