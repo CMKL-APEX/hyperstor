@@ -44,6 +44,9 @@ namespace Hyperstor {
   action "ClusterService.SetDeviceIn" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.SetDeviceWeight" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "NodeService.DrainNode" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

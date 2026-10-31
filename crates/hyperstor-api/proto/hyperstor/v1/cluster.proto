@@ -23,6 +23,11 @@ service ClusterService {
   // it back in. Write.
   rpc SetDeviceIn(SetDeviceInRequest) returns (SetDeviceInResponse);
 
+  // Sets a device's placement weight, or lets it follow the device's
+  // capacity again (04-decisions.md D158); its PGs move as the weight
+  // changes. Write.
+  rpc SetDeviceWeight(SetDeviceWeightRequest) returns (SetDeviceWeightResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -222,6 +227,9 @@ message Device {
   // report to the leader; empty on another member or before a report.
   optional uint64 total_bytes = 6 [json_name = "total_bytes"];
   optional uint64 free_bytes = 7 [json_name = "free_bytes"];
+  // Whether an operator set the weight (SetDeviceWeight); otherwise it is
+  // the device's capacity in TiB, from its reports (04-decisions.md D158).
+  bool weight_fixed = 8 [json_name = "weight_fixed"];
 }
 
 message Pool {
@@ -236,10 +244,10 @@ message Pool {
   // "device", "host" or "rack".
   string domain = 8;
   PgCounts pgs = 9;
-  // Usable bytes: the data regions of the devices placement may use for
-  // the pool (its class, in, with weight), divided by size for replicated
-  // and cache pools, times k/(k+m) for EC (04-decisions.md D156). Pools that
-  // share devices count the same free bytes. Absent until every such
+  // Usable bytes: the most the pool can hold on the devices placement may
+  // use for it (its class, in, with weight) when each failure domain holds
+  // at most one copy, or one EC shard, of each PG (04-decisions.md D156,
+  // D159). Pools that share devices count the same free bytes. Absent until every such
   // device has reported its space to this member, which only the leader
   // hears.
   optional uint64 total_bytes = 10 [json_name = "total_bytes"];
@@ -323,6 +331,21 @@ message SetDeviceInRequest {
 message SetDeviceInResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
+}
+
+message SetDeviceWeightRequest {
+  uint32 device = 1;
+  // The weight to keep, 0 or more; absent: follow the device's capacity in
+  // TiB again.
+  optional double weight = 2;
+}
+
+message SetDeviceWeightResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The weight now: as set, or the capacity last reported (unchanged
+  // until the device reports).
+  double weight = 2;
 }
 
 message Volume {

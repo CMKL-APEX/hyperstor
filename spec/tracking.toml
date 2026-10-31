@@ -890,6 +890,25 @@ tests = [
     # browser::the_pages_show_the_cluster, tracked earlier.
 ]
 
+[[milestone.item]]
+what = "Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto"
+spec = ["07-placement.md §5.2", "D158", "I197"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::device_weights_follow_capacity",
+    # The map's format 4: hyperstor_map's encode_round_trip_and_addresses,
+    # tracked earlier.
+    "manage::weights_follow_capacity_or_are_set",
+]
+
+[[milestone.item]]
+what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"
+spec = ["16-glidex.md §17", "D159", "I198"]
+status = "done"
+tests = [
+    "hyperstor_meta::api::tests::pool_space_under_the_domain_rule",
+]
+
 [[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

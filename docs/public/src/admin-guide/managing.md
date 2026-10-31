@@ -219,6 +219,32 @@ each PG keeps at least the pool's `min` copies.
 > again. With `--data` (every install does this) the map, out devices
 > included, is kept.
 
+## Device weights
+
+Each device gets PGs in proportion to its **weight**. By default the
+weight is the device's capacity in TiB, which the map service takes
+from the device's own reports: a device twice the size gets twice the
+data, and devices of one size get the same. A newly joined host gets
+no PGs until its devices have reported, within a second of starting.
+`hyperstorctl nodes` shows each weight.
+
+To place less, or more, on a device than its size says, set its weight;
+to go back, set it to `auto`:
+
+```sh
+hyperstorctl weight --device 2001 --weight 0.5    # kept until set back
+hyperstorctl weight --device 2001 --weight auto   # follows its capacity
+```
+
+A weight you set is marked `*` in `hyperstorctl nodes`. The device's
+PGs move as soon as the weight changes, as for `out` and `in`. Setting
+a weight changes the map's format: do it only once every storage node
+and map service member runs a build that has `hyperstorctl weight`.
+
+A pool's usable space (`hyperstorctl pools`) counts what it can hold
+with each copy on a different host (or rack): with as many hosts as
+copies, the smallest host bounds it.
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

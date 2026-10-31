@@ -112,6 +112,9 @@ pub struct ClusterMap {
     /// Devices that failed (09-replication.md §15): out until an operator
     /// marks them in.
     pub failed: BTreeSet<u32>,
+    /// Devices whose weight an operator set (04-decisions.md D158): the map
+    /// service keeps it as set instead of following the device's capacity.
+    pub fixed_weights: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -524,9 +527,12 @@ impl ClusterMap {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
-        // interval and the failed ones; a map without them keeps the
-        // older format, which nodes from before them read.
-        let format = if !self.auto_out.is_empty() || !self.failed.is_empty() {
+        // interval and the failed ones, 4 the weights an operator set; a
+        // map without them keeps the older format, which nodes from before
+        // them read.
+        let format = if !self.fixed_weights.is_empty() {
+            4
+        } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
             3
         } else if !self.blocklist.is_empty() {
             2
@@ -584,7 +590,12 @@ impl ClusterMap {
             }
         }
         if format >= 3 {
-            for set in [&self.auto_out, &self.failed] {
+            let sets: &[&BTreeSet<u32>] = if format >= 4 {
+                &[&self.auto_out, &self.failed, &self.fixed_weights]
+            } else {
+                &[&self.auto_out, &self.failed]
+            };
+            for set in sets.iter().copied() {
                 e.u32(set.len() as u32);
                 for d in set {
                     e.u32(*d);
@@ -597,7 +608,7 @@ impl ClusterMap {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=3).contains(&v) {
+        if !(1..=4).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -695,6 +706,9 @@ impl ClusterMap {
         if v >= 3 {
             m.auto_out = d.seq(4, |d| d.u32())?.into_iter().collect();
             m.failed = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 4 {
+            m.fixed_weights = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -924,6 +938,16 @@ mod tests {
         assert!(!m.auto_in_node(2) && !m.devices[&2000].up_in);
         assert_eq!(m.set_in(2000, true), Some(true));
         assert!(m.failed.is_empty() && m.auto_out.is_empty());
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes());
+        // Format 4 with a weight an operator set (D158), alone or with
+        // format 3's sets; back to 1 without.
+        m.fixed_weights.insert(2001);
+        assert_eq!(m.encode()[..4], 4u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert!(m.fail_device(2000));
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert_eq!(m.set_in(2000, true), Some(true));
+        m.fixed_weights.clear();
         assert_eq!(m.encode()[..4], 1u32.to_le_bytes());
         assert_eq!(m.device_addr(2001).unwrap().port(), 7021);
         let pg = m.pg(1, 5).unwrap();

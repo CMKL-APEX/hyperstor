@@ -65,6 +65,80 @@ fn status_and_tables() {
     c.ctl(&["pg-grid", "--pool", "9"]).expect(1);
 }
 
+/// D158: each device's weight follows its capacity in TiB, from its own
+/// reports; an operator's weight stays, marked, until set back to auto.
+#[test]
+fn weights_follow_capacity_or_are_set() {
+    let c = Cluster::all_in_one("weights", 3);
+    // (id, weight, fixed, reported bytes) of each device.
+    let devices = || -> Vec<(u64, f64, bool, Option<u64>)> {
+        let s = c.ctl(&["status", "--json"]).ok();
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["weight"].as_f64().unwrap_or(0.0),
+                    d["weight_fixed"].as_bool().unwrap_or(false),
+                    // uint64 is a string in protobuf's JSON.
+                    d["total_bytes"]
+                        .as_str()
+                        .and_then(|t| t.parse().ok())
+                        .or(d["total_bytes"].as_u64()),
+                )
+            })
+            .collect()
+    };
+    let capacity = |bytes: u64| bytes as f64 / (1u64 << 40) as f64;
+    let near = |a: f64, b: f64| (a - b).abs() <= b / 100.0;
+    wait_for("weights from capacity", 20, || {
+        devices()
+            .iter()
+            .all(|(_, w, fixed, t)| !fixed && t.is_some_and(|t| near(*w, capacity(t))))
+            .then_some(())
+    });
+    let (id, _, _, total) = devices()[0];
+    let id = id.to_string();
+    let set = c.ctl(&["weight", "--device", &id, "--weight", "0.5"]).ok();
+    assert!(set.has("weight 0.5000, kept as set"), "{}", set.out);
+    // Published once fenced, as out and in are.
+    let device = || {
+        devices()
+            .into_iter()
+            .find(|d| d.0.to_string() == id)
+            .unwrap()
+    };
+    wait_for("the weight set", 10, || {
+        let d = device();
+        (d.1 == 0.5 && d.2).then_some(())
+    });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(
+        n.has(" 0.5000* ") && n.has("weight set with hyperstorctl weight"),
+        "{}",
+        n.out
+    );
+    let auto = c.ctl(&["weight", "--device", &id, "--weight", "auto"]).ok();
+    assert!(auto.has("following its capacity"), "{}", auto.out);
+    wait_for("the weight back to auto", 10, || {
+        let d = device();
+        (!d.2 && near(d.1, capacity(total.unwrap()))).then_some(())
+    });
+    assert!(!c.ctl(&["nodes"]).ok().has("*"));
+    c.ctl(&["weight", "--device", &id, "--weight", "-1"])
+        .expect(2);
+    c.ctl(&["weight", "--device", &id]).expect(2);
+    c.ctl(&["weight", "--device", "999", "--weight", "1"])
+        .expect(1);
+    // Audited, as every change.
+    let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
+    assert!(a.has("weight=0.5") && a.has("weight=auto"), "{}", a.out);
+}
+
 #[test]
 fn io_on_every_pool() {
     let c = Cluster::all_in_one("io", 3);
