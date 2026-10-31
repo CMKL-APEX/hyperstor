@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS18"
 branch = "feature/elastic-pools"
-prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123]
+prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124]
 now = "Stage 4 (devices removed, D182): 4a in #123; 4b, the installer dropping removed devices (I217), stacked on it"
 next = "Stage 5: PG splits and the autoscaler (§27.5, D173, D174)"
