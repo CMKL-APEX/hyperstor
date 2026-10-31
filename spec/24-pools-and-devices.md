@@ -114,6 +114,11 @@ otherwise.
 
 #### 27.2.4 Classes
 
+Built (I209), with D178 (a device whose class no operator set takes its
+kind, which replaced every device's `nvme`) and D179 (`file` mixes with
+any kind). The map service writes kinds into the map only once every
+running node has reported, so older nodes can still read it.
+
 - A device's class is a label. The default comes from its kind, which
   the node reports: `nvme` (an NVMe namespace), `ssd` (other flash),
   `hdd` (rotational), `file` (a file on a filesystem).

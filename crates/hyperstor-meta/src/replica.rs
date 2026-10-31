@@ -58,8 +58,9 @@ pub struct Config {
 /// What the Raft side tells the map service's reactor.
 #[derive(Debug)]
 pub enum ToReactor {
-    /// A map was applied (committed by the group), in commit order.
-    Applied(ClusterMap),
+    /// A map was applied (committed by the group), in commit order. Boxed:
+    /// the map is far larger than the other message.
+    Applied(Box<ClusterMap>),
     /// Who leads: this member, another (by its map-service address), or
     /// none known (an election).
     Leader(Leading),
@@ -291,7 +292,7 @@ async fn run(
     // Applied maps, in commit order, then whatever the store holds now.
     let mut applied = db.subscribe();
     if let Ok(Some(m)) = store::load(&db) {
-        let _ = to_reactor.send(ToReactor::Applied(m));
+        let _ = to_reactor.send(ToReactor::Applied(Box::new(m)));
     }
     let applier = {
         let (db, to) = (db.clone(), to_reactor.clone());
@@ -301,7 +302,7 @@ async fn run(
                 match applied.recv().await {
                     Ok(_) | Err(RecvError::Lagged(_)) => {
                         if let Ok(Some(m)) = store::load(&db) {
-                            let _ = to.send(ToReactor::Applied(m));
+                            let _ = to.send(ToReactor::Applied(Box::new(m)));
                         }
                     }
                     Err(RecvError::Closed) => return,

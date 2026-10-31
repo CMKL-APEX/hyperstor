@@ -89,6 +89,36 @@ impl DeviceSpec {
     /// Whether `hyperstord` may format this device when it is blank
     /// (D168): files and memory, never a block device, which the
     /// installer formats after checking it holds nothing else.
+    /// What this device is (24-pools-and-devices.md §27.2.4), reported
+    /// to the map service (D178): an NVMe namespace, another block device
+    /// by its rotational flag, else a file (memory too, for tests).
+    fn kind(&self) -> hyperstor_meta::DeviceKind {
+        use hyperstor_meta::DeviceKind;
+        use std::os::unix::fs::FileTypeExt;
+        let DeviceSpec::File { path, .. } = self else {
+            return DeviceKind::File;
+        };
+        let block = std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device());
+        if !block {
+            return DeviceKind::File;
+        }
+        let name = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        if name.starts_with("nvme") {
+            return DeviceKind::Nvme;
+        }
+        let rotational =
+            std::fs::read_to_string(format!("/sys/class/block/{name}/queue/rotational"))
+                .is_ok_and(|r| r.trim() == "1");
+        if rotational {
+            DeviceKind::Hdd
+        } else {
+            DeviceKind::Ssd
+        }
+    }
+
     fn formats_itself(&self) -> bool {
         use std::os::unix::fs::FileTypeExt;
         match self {
@@ -326,6 +356,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     }
                     hyperstor_reactor::set_spin(spin);
                     let may_format = sh.device.formats_itself();
+                    let kind = sh.device.kind();
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -347,6 +378,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.commit_delays.borrow_mut() = commit_delays;
                         st.io_timeout.set(io_timeout);
+                        st.kind.set(kind);
                         let l = TcpListener::from_std(sh.listener);
                         eprintln!(
                             "hyperstord: device {} open in {} ms",
@@ -414,6 +446,8 @@ struct ShardState {
     dev: Arc<dyn BlockDev>,
     /// `NodeConfig::io_timeout`, resolved.
     io_timeout: Cell<Duration>,
+    /// What the device is, reported with its space (D178).
+    kind: Cell<hyperstor_meta::DeviceKind>,
     /// The test hook of `NodeConfig::commit_delays`.
     commit_delays: RefCell<Option<Arc<faults::CommitDelays>>>,
     client: Rc<Client>,
@@ -852,6 +886,7 @@ impl ShardState {
             shard: shard_cell::ShardCell::new(shard),
             dev,
             io_timeout: Cell::new(IO_TIMEOUT),
+            kind: Cell::new(hyperstor_meta::DeviceKind::File),
             commit_delays: RefCell::new(None),
             client,
             queue: RefCell::new(Vec::new()),
@@ -3399,6 +3434,15 @@ impl ShardState {
             let mut wait = SPACE_EVERY;
             if !self.cut_off() {
                 let st = self.shard.get().await.stats();
+                // Its kind first (D178); a map service from before kinds
+                // answers it as unknown, which changes nothing.
+                let _ = self
+                    .client
+                    .call_meta(&Msg::DeviceKind {
+                        device: self.me,
+                        kind: self.kind.get().code(),
+                    })
+                    .await;
                 let r = self
                     .client
                     .call_meta(&Msg::DeviceSpace {
@@ -4638,6 +4682,27 @@ mod tests {
             uring: false,
         };
         assert!(file.formats_itself(), "a file not made yet is a file");
+        assert_eq!(file.kind(), hyperstor_meta::DeviceKind::File);
+        let nvme = std::fs::read_dir("/sys/class/block").ok().and_then(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| {
+                    // A namespace with a /dev node (not a hidden path of
+                    // one controller, nvmeXcYnZ).
+                    n.starts_with("nvme")
+                        && !n.contains(['p', 'c'])
+                        && std::path::Path::new(&format!("/dev/{n}")).exists()
+                })
+        });
+        if let Some(n) = nvme {
+            let dev = DeviceSpec::File {
+                path: format!("/dev/{n}").into(),
+                bytes: 0,
+                direct: false,
+                uring: false,
+            };
+            assert_eq!(dev.kind(), hyperstor_meta::DeviceKind::Nvme, "{n}");
+        }
         if std::path::Path::new("/dev/loop0").exists() {
             let block = DeviceSpec::File {
                 path: "/dev/loop0".into(),

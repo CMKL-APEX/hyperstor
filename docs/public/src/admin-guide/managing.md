@@ -284,6 +284,24 @@ PATH --id D` on the node's host, then one more `--shard
 192.0.2.21:9102=PATH:0` in the node's options (which a later installer
 run rewrites).
 
+## Device classes
+
+Each node reports what its devices are: `nvme`, `ssd`, `hdd`, or `file`
+for a device file (D178). A device takes its kind as its class, which
+`hyperstorctl nodes` shows in the CLASS column, unless you set one:
+
+```sh
+hyperstorctl device class --device 2001 --class archive   # kept, marked +
+hyperstorctl device class --device 2001 --class auto      # its kind again
+```
+
+A class holds devices of one kind, and a class named after a kind
+(`nvme`, `ssd`, `hdd`, `file`) only that kind. Pools that name classes
+place their PGs on those devices; the others use every device, so
+classes change nothing for them. Kinds appear once every running node
+has a build that reports them; a node from before that starts after
+that can't read the map, so upgrade it first.
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

@@ -1244,3 +1244,15 @@ sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-SAMSUNG_MZ
    removed is to be checked.
 4. Not measured yet: the p99 latency of a VM disk during the backfill
    (no load was running), and G44's second half, PG splits (stage 5).
+5. **The kernel refused to add the reformatted namespace again**, a
+   second after the format to 4 KiB sectors (Linux 6.8.0-138): `nvme6c6n1:
+   Inconsistent Atomic Write Size, Namespace will not be added:
+   Subsystem=512 bytes, Controller/Namespace=4096 bytes`. The subsystem
+   kept the atomic write size it had at boot, in the old 512-byte
+   sectors. The existing `nvme6n1` stayed and took the new sector size,
+   and has served device 1002 since, without an I/O error. Whether the
+   namespace comes back after a reboot or a controller reset (expected,
+   as the sizes then agree) is to be checked in a quiet window: device
+   1002 out, reset the controller, in again. If it didn't, `hyperstord`
+   would stop node 1 entirely, its file devices with it, since a device
+   it can't open fails the whole node; that deserves a fix of its own.

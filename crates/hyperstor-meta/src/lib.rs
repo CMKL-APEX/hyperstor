@@ -101,6 +101,13 @@ pub enum Admin {
         op: SnapOp,
         reply: VolumeReply<SnapDone>,
     },
+    /// Sets a device's class, or lets it follow its kind (D178). Replies
+    /// with the working map's epoch and the class now.
+    SetDeviceClass {
+        device: u32,
+        class: Option<String>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, String), String>>,
+    },
     /// Appends a device to a node (D167). Replies with the device's id
     /// and the working map's epoch.
     AddDevice {
@@ -393,6 +400,10 @@ pub struct Meta {
     persisted: Cell<bool>,
     beats: RefCell<HashMap<u32, Instant>>,
     space: RefCell<DeviceSpace>,
+    /// Kinds devices reported (D178), kept here until every device of a
+    /// node that is up has reported one: a map with kinds is format 5,
+    /// which nodes from before can't read.
+    kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
     /// A follower's last [`LeaderView`] from the leader, and when.
     leader_view: RefCell<Option<(Instant, LeaderView)>>,
     /// When each node was last granted a non-zero lease.
@@ -576,6 +587,7 @@ impl Meta {
             persisted: Cell::new(true),
             beats: RefCell::new(HashMap::new()),
             space: RefCell::new(BTreeMap::new()),
+            kind_reports: RefCell::new(BTreeMap::new()),
             leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
@@ -751,6 +763,7 @@ impl Meta {
         while let Some(ev) = rx.recv().await {
             match ev {
                 ToReactor::Applied(m) => {
+                    let m = *m;
                     self.persisted.set(true);
                     if m.epoch >= self.published.borrow().epoch {
                         *self.published.borrow_mut() = m.clone();
@@ -773,6 +786,7 @@ impl Meta {
                     self.started.set(now);
                     self.beats.borrow_mut().clear();
                     self.space.borrow_mut().clear();
+                    self.kind_reports.borrow_mut().clear();
                     self.granted.borrow_mut().clear();
                     self.reports.borrow_mut().clear();
                     self.suspect.borrow_mut().clear();
@@ -1062,6 +1076,7 @@ impl Meta {
         if let Some(d) = map.devices.values().find(|d| d.addr == addr) {
             return Err(format!("{addr} is already device {}'s address", d.id));
         }
+        let fixed = class.is_some();
         let class = class.map(str::to_string).unwrap_or_else(|| {
             map.devices
                 .values()
@@ -1071,8 +1086,61 @@ impl Meta {
         let id = map
             .add_device(node, addr, &class)
             .ok_or_else(|| format!("node {node} has 1000 devices"))?;
+        // A class given is the operator's; otherwise the device takes its
+        // kind once it reports it (D178).
+        if fixed {
+            map.fixed_classes.insert(id);
+        }
         map.recompute();
         Ok((id, map.epoch))
+    }
+
+    /// Sets a device's class as an operator chose it, or (`None`) lets it
+    /// follow the device's kind again (24-pools-and-devices.md §27.2.4,
+    /// D178). Returns the working map's epoch and the class now.
+    pub fn set_device_class(
+        &self,
+        device: u32,
+        class: Option<&str>,
+    ) -> Result<(u64, String), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if let Some(c) = class.filter(|c| !valid_class(c)) {
+            return Err(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            ));
+        }
+        self.apply_kinds();
+        let mut map = self.map.borrow_mut();
+        if map.set_class(device, class)? {
+            map.recompute();
+        }
+        let now = map.devices[&device].class.clone();
+        Ok((map.epoch, now))
+    }
+
+    /// Puts the kinds devices reported into the map once every device of
+    /// a node that is up has reported one (D178): until then a node from
+    /// before kinds may still be running, and couldn't read the map.
+    fn apply_kinds(&self) {
+        let reports = self.kind_reports.borrow();
+        let mut map = self.map.borrow_mut();
+        let waiting = map.devices.values().any(|d| {
+            map.nodes.get(&d.node).is_some_and(|n| n.up)
+                && !map.kinds.contains_key(&d.id)
+                && !reports.contains_key(&d.id)
+        });
+        if waiting || reports.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for (&d, &k) in reports.iter() {
+            changed |= map.set_kind(d, k);
+        }
+        if changed {
+            map.recompute();
+        }
     }
 
     /// Takes every device of `node` out of placement, as `set_device_in`
@@ -1273,6 +1341,13 @@ impl Meta {
                 }
                 Admin::AddNode { rack, addrs, reply } => {
                     let _ = reply.send(self.add_node(rack, &addrs));
+                }
+                Admin::SetDeviceClass {
+                    device,
+                    class,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_device_class(device, class.as_deref()));
                 }
                 Admin::AddDevice {
                     node,
@@ -1726,6 +1801,7 @@ impl Meta {
                     | Msg::BackfillDone { .. }
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
+                    | Msg::DeviceKind { .. }
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
@@ -1840,6 +1916,20 @@ impl Meta {
                         .collect(),
                     flapping: v.flapping.into_iter().collect(),
                     space: v.space.iter().map(|(&d, &(t, f))| (d, t, f)).collect(),
+                }
+            }
+            Ok(Msg::DeviceKind { device, kind }) => {
+                if let Some(k) = hyperstor_map::DeviceKind::from_code(kind)
+                    && self.map.borrow().devices.contains_key(&device)
+                {
+                    let known = self.map.borrow().kinds.get(&device) == Some(&k);
+                    if !known {
+                        self.kind_reports.borrow_mut().insert(device, k);
+                        self.apply_kinds();
+                    }
+                }
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
                 }
             }
             Ok(Msg::DeviceSpace {
@@ -2012,6 +2102,72 @@ mod tests {
         let d = &map.devices[&1001];
         assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
         assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// D178: kinds wait in memory until every device of a node that is up
+    /// has reported (a node from before kinds couldn't read the map);
+    /// then each device without an operator's class takes its kind, and
+    /// an operator can set a class that fits, or go back to the kind.
+    #[test]
+    fn kinds_are_applied_once_every_live_device_has_reported() {
+        use hyperstor_map::DeviceKind;
+        use hyperstor_proto::Msg;
+        let meta = Meta::new(map());
+        let devices: Vec<u32> = meta.map.borrow().devices.keys().copied().collect();
+        let report = |d: u32, k: DeviceKind| {
+            meta.handle(Ok(Msg::DeviceKind {
+                device: d,
+                kind: k.code(),
+            }))
+        };
+        let kind = |d: u32| {
+            if d.is_multiple_of(1000) {
+                DeviceKind::Nvme
+            } else {
+                DeviceKind::File
+            }
+        };
+        for &d in &devices[1..] {
+            report(d, kind(d));
+        }
+        assert!(meta.map.borrow().kinds.is_empty(), "one hasn't reported");
+        // A device of a node that is down doesn't hold the others back.
+        let first = devices[0];
+        meta.map
+            .borrow_mut()
+            .nodes
+            .get_mut(&(first / 1000))
+            .unwrap()
+            .up = false;
+        report(devices[1], kind(devices[1]));
+        assert_eq!(
+            meta.map.borrow().kinds.len(),
+            devices.len() - 1,
+            "applied without the down node's device"
+        );
+        meta.map
+            .borrow_mut()
+            .nodes
+            .get_mut(&(first / 1000))
+            .unwrap()
+            .up = true;
+        report(first, kind(first));
+        let m = meta.map.borrow().clone();
+        assert_eq!(m.kinds.len(), devices.len());
+        assert!(m.devices.values().all(|d| d.class == kind(d.id).name()));
+        // An operator's class, which must fit the kind.
+        assert!(meta.set_device_class(1, Some("nvme")).is_err());
+        assert_eq!(
+            meta.set_device_class(1, Some("scratch")).map(|r| r.1),
+            Ok("scratch".into())
+        );
+        report(1, DeviceKind::File);
+        assert_eq!(meta.map.borrow().devices[&1].class, "scratch", "kept");
+        assert_eq!(
+            meta.set_device_class(1, None).map(|r| r.1),
+            Ok("file".into())
+        );
+        assert!(meta.set_device_class(99, None).is_err());
     }
 
     /// A device appended to a running node (D167) starts at weight 0, so
@@ -2490,7 +2646,7 @@ mod tests {
             );
             assert!(m.set_device_in(0, false).is_err());
             // The store's map arrives; then this member is elected.
-            tx.send(ToReactor::Applied(m.published.borrow().clone()))
+            tx.send(ToReactor::Applied(Box::new(m.published.borrow().clone())))
                 .unwrap();
             tx.send(ToReactor::Leader(Leading::Me)).unwrap();
             settle().await;

@@ -23,6 +23,8 @@
 //! - `weight --device D --weight W|auto`: keep a device's placement weight
 //!   at W, or let it follow the device's capacity in TiB again (D158);
 //!   its PGs move as the weight changes;
+//! - `device class --device D --class C|auto`: set a device's class, or
+//!   let it follow the device's kind again (D178);
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -124,7 +126,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -406,7 +408,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "device" => matches!(sub, Some("add")),
+                    "device" => matches!(sub, Some("add" | "class")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -421,12 +423,16 @@ fn main() {
     // device add takes a node, an address and maybe a class; nothing else
     // takes the last two.
     let device_add = cmd == "device add";
+    let device_class = cmd == "device class";
     if device_add != (a.node.is_some() && a.address.is_some() && a.device.is_none())
-        || (!device_add && (a.address.is_some() || a.class.is_some()))
+        || device_class != (a.device.is_some() && a.class.is_some() && a.node.is_none())
+        || (!device_add && a.address.is_some())
+        || (!device_add && !device_class && a.class.is_some())
     {
         usage();
     }
     if !device_add
+        && !device_class
         && (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
             == (a.device.is_none() && a.node.is_none())
         || (cmd == "drain" && a.node.is_none())
@@ -977,6 +983,47 @@ where
                     eprintln!(
                         "hyperstorctl: {}",
                         e.message.as_deref().unwrap_or("not found")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "device class" => {
+            let (Some(device), Some(class)) = (a.device, a.class.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let class = (class != "auto").then_some(class);
+            let r = client
+                .set_device_class(pb::SetDeviceClassRequest {
+                    device,
+                    class: class.clone(),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    let how = if class.is_some() {
+                        "kept as set"
+                    } else {
+                        "following its kind"
+                    };
+                    println!(
+                        "device {device} class {}, {how} (map epoch {}); pools limited to classes move its PGs",
+                        r.class, r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
                     );
                     return Ok(Next::Exit(1));
                 }

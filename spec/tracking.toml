@@ -658,6 +658,16 @@ tests = [
     "manage::the_installer_adds_a_device_to_a_node",
 ]
 
+[[milestone.item]]
+what = "Each device's kind reported; classes follow it unless an operator sets one"
+spec = ["24-pools-and-devices.md §27.2.4", "D178", "D179", "I209"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::kinds_become_classes_unless_an_operator_set_one",
+    "hyperstor_meta::tests::kinds_are_applied_once_every_live_device_has_reported",
+    "manage::devices_report_their_kind_and_classes_follow_it",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
