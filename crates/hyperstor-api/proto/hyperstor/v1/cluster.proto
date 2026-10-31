@@ -51,10 +51,13 @@ service ClusterService {
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
-  // (D164) or failure domain, and PGs move to match, or its name. Refused
-  // for .meta, when its devices would span fewer failure domains than the
-  // pool's copies, when they mix hard disks and flash unless forced
-  // (D172), and for a name another pool has. Write.
+  // (D164) or failure domain, and PGs move to match, or its name; or
+  // doubles its PG count, splitting its PGs in place, a few at a time,
+  // each paused briefly (§27.5, D173, D183). Refused for .meta, when its
+  // devices would span fewer failure domains than the pool's copies, when
+  // they mix hard disks and flash unless forced (D172), for a name another
+  // pool has, and for a count that isn't twice the pool's or while it
+  // splits. Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
   // Adds a device to a pool beyond its classes, or removes one of them
@@ -316,6 +319,12 @@ message Pool {
   // it does not use (04-decisions.md D180).
   repeated uint32 added_devices = 14 [json_name = "added_devices"];
   repeated uint32 removed_devices = 15 [json_name = "removed_devices"];
+  // The PGs placement goes by (D173): below pg_count after a split, until
+  // the new PGs move to their own devices.
+  uint32 placement_count = 16 [json_name = "placement_count"];
+  // A split under way (D183): to twice pg_count, with this many PGs split.
+  bool splitting = 17;
+  uint32 split_done = 18 [json_name = "split_done"];
 }
 
 // Each PG is counted once, under its worst state.
@@ -481,6 +490,8 @@ message SetPoolRequest {
   // Place on every device, as pools made before class sets do (D171);
   // classes must then be empty.
   bool every_device = 6 [json_name = "every_device"];
+  // Twice the pool's PG count: the pool splits (D183).
+  optional uint32 pg_count = 7 [json_name = "pg_count"];
 }
 
 message SetPoolResponse {

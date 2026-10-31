@@ -28,10 +28,12 @@
 //!   device|host|rack] [--force]`: make a pool on devices of those classes
 //!   (D171); PGs, unless given, about 100 per device per copy;
 //! - `pool set --pool P [--classes C[,C...]|any] [--name N] [--domain
-//!   device|host|rack] [--force]`: place pool P's PGs on devices of those
-//!   classes only, or on every device (D164), with a copy per device,
-//!   host or rack; or rename it; `--force` allows classes of hard disks
-//!   and flash both (D172);
+//!   device|host|rack] [--pgs N [--wait SECS]] [--force]`: place pool P's
+//!   PGs on devices of those classes only, or on every device (D164),
+//!   with a copy per device, host or rack; or rename it; or split its PGs
+//!   to N, twice as many, PG by PG (D173, D183), with `--wait` until it
+//!   is done; `--force` allows classes of hard disks and flash both
+//!   (D172);
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
 //!   --pool P --device D`: let pool P use one more device, beyond its
 //!   classes, or stop using one of them (D180);
@@ -489,14 +491,15 @@ fn main() {
     let create = cmd == "pool create";
     let set = cmd == "pool set";
     if (set
-        && (a.pool.is_none() || (a.classes.is_none() && a.name.is_empty() && a.domain.is_none())))
+        && (a.pool.is_none()
+            || (a.classes.is_none() && a.name.is_empty() && a.domain.is_none() && a.pgs.is_none())))
         || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
         || (!set && !create && (a.classes.is_some() || a.domain.is_some()))
         || (!create
             && (a.kind.is_some()
                 || a.copies.is_some()
                 || a.min.is_some()
-                || a.pgs.is_some()
+                || (a.pgs.is_some() && !set)
                 || a.chunk.is_some()))
     {
         usage();
@@ -1169,6 +1172,7 @@ where
                     name: (!a.name.is_empty()).then(|| a.name.clone()),
                     domain: a.domain.clone(),
                     force: a.force,
+                    pg_count: a.pgs,
                     ..Default::default()
                 })
                 .await;
@@ -1176,6 +1180,9 @@ where
                 Ok(r) => {
                     let r = r.into_owned();
                     let mut what = Vec::new();
+                    if let Some(n) = a.pgs {
+                        what.push(format!("splits to {n} PGs"));
+                    }
                     if every_device {
                         what.push("places on every device".to_string());
                     } else if !classes.is_empty() {
@@ -1201,6 +1208,27 @@ where
                         eprintln!(
                             "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
                         );
+                    }
+                    // --wait: until the split is done (D183).
+                    if let (Some(n), Some(secs)) = (a.pgs, a.wait) {
+                        let deadline = Instant::now() + Duration::from_secs(secs.into());
+                        loop {
+                            let s = status().await?;
+                            let p = s.pools.iter().find(|p| p.id == pool);
+                            if let Some(p) = p {
+                                if p.splitting {
+                                    println!("{} of {} PGs split", p.split_done, p.pg_count);
+                                } else if p.pg_count >= n {
+                                    println!("pool {pool} has {} PGs", p.pg_count);
+                                    break;
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                eprintln!("hyperstorctl: pool {pool} still splitting");
+                                return Ok(Next::Exit(1));
+                            }
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
                     }
                     Next::Exit(0)
                 }

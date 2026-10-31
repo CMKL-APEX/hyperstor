@@ -165,6 +165,8 @@ impl Cluster {
             classes: Vec::new(),
             added: Default::default(),
             removed: Default::default(),
+            placement: 16,
+            split: None,
         });
         map.ensure_meta_pool();
         map.recompute();

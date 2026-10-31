@@ -646,6 +646,9 @@ pub fn status(
                 mixed_kinds: crate::mixes_disks_and_flash(map, p),
                 added_devices: p.added.iter().copied().collect(),
                 removed_devices: p.removed.iter().copied().collect(),
+                placement_count: p.placement,
+                splitting: p.split.is_some(),
+                split_done: p.split.as_ref().map_or(0, |s| s.done.len() as u32),
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -1081,6 +1084,9 @@ impl ClusterService for Api {
         if let Some(d) = req.domain {
             target.push_str(&format!(" domain={d}"));
         }
+        if let Some(n) = req.pg_count {
+            target.push_str(&format!(" pgs={n}"));
+        }
         if force {
             target.push_str(" force");
         }
@@ -1108,10 +1114,15 @@ impl ClusterService for Api {
             classes: (req.every_device || !classes.is_empty()).then_some(classes),
             name: req.name.map(str::to_string),
             domain,
+            pg_count: req.pg_count,
         };
-        if change.classes.is_none() && change.name.is_none() && change.domain.is_none() {
+        if change.classes.is_none()
+            && change.name.is_none()
+            && change.domain.is_none()
+            && change.pg_count.is_none()
+        {
             return Err(bad(
-                "nothing to change: give classes, a name or a domain".into()
+                "nothing to change: give classes, a name, a domain or a PG count".into(),
             ));
         }
         let (reply, rx) = oneshot();

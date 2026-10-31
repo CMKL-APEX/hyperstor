@@ -65,9 +65,55 @@ pub struct PoolInfo {
     /// from it (D180).
     pub added: BTreeSet<u32>,
     pub removed: BTreeSet<u32>,
+    /// The PGs placement goes by (D173): PG `p` is placed as PG
+    /// `p % placement`, so a PG a split made stays on its parent's devices
+    /// until this rises. `pg_count` but after a split.
+    pub placement: u32,
+    /// A split under way (D183): the count doubles PG by PG.
+    pub split: Option<Split>,
+}
+
+/// A pool's split under way (24-pools-and-devices.md §27.5, D183): to
+/// twice `pg_count` PGs, PG by PG. A marked PG's members move the objects
+/// of its new sibling (`pg + pg_count`) to its keys and report it; once
+/// all have, it flips: the sibling joins the map on the PG's devices,
+/// and keys go to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Split {
+    /// PGs being split now.
+    pub marked: BTreeSet<u32>,
+    /// PGs split: their siblings are in the map.
+    pub done: BTreeSet<u32>,
 }
 
 impl PoolInfo {
+    /// The pool's PGs: `0..pg_count`, and the siblings of the PGs a split
+    /// under way has flipped.
+    pub fn pgs(&self) -> impl Iterator<Item = u32> + '_ {
+        let n = self.pg_count;
+        (0..n).chain(
+            self.split
+                .iter()
+                .flat_map(move |s| s.done.iter().map(move |p| p + n)),
+        )
+    }
+
+    /// The PG of a stored key (24-pools-and-devices.md §27.5): by
+    /// [`hyperstor_placement::key_pg`], under twice the count for a key
+    /// whose PG a split under way has flipped.
+    pub fn pg_of_key(&self, ns: u8, name: &[u8]) -> u32 {
+        let Some(s) = &self.split else {
+            return hyperstor_placement::key_pg(ns, name, self.pg_count);
+        };
+        let q = hyperstor_placement::key_pg(ns, name, self.pg_count * 2);
+        let parent = q % self.pg_count;
+        if q != parent && !s.done.contains(&parent) {
+            parent
+        } else {
+            q
+        }
+    }
+
     /// Whether the pool may place on `device` (D164, D180): of one of its
     /// classes (any, without classes) or added to it, and not removed.
     /// Whether the device is in, weighted and not a hard disk for `.meta`
@@ -467,6 +513,73 @@ impl ClusterMap {
         Some(last)
     }
 
+    /// Starts doubling pool `pool`'s PG count (24-pools-and-devices.md
+    /// §27.5, D183): nothing moves until PGs are marked. The epoch moves.
+    pub fn start_split(&mut self, pool: u32) -> Result<(), String> {
+        let p = self.pools.get_mut(&pool).ok_or(format!("no pool {pool}"))?;
+        if p.split.is_some() {
+            return Err(format!("pool {pool} is splitting already"));
+        }
+        if p.pg_count >= 1 << 16 {
+            return Err(format!("pool {pool} has {} PGs, the most", p.pg_count));
+        }
+        p.split = Some(Split::default());
+        self.epoch += 1;
+        Ok(())
+    }
+
+    /// Marks PG `pg` of a splitting pool to split: its epoch moves, so its
+    /// members' reports name this marking. Whether it was marked now.
+    pub fn mark_split(&mut self, pool: u32, pg: u32) -> bool {
+        let Some(p) = self.pools.get_mut(&pool) else {
+            return false;
+        };
+        let n = p.pg_count;
+        let Some(s) = p.split.as_mut() else {
+            return false;
+        };
+        if pg >= n || s.done.contains(&pg) || !s.marked.insert(pg) {
+            return false;
+        }
+        self.epoch += 1;
+        if let Some(i) = self.pgs.get_mut(&(pool, pg)) {
+            i.epoch = self.epoch;
+        }
+        true
+    }
+
+    /// Flips a marked PG whose members have all split it: its sibling
+    /// `pg + pg_count` joins the map with the PG's `acting` and `up`, both
+    /// at a new epoch, so requests by the old routing are told to retry.
+    /// The last flip doubles `pg_count` and ends the split; the placement
+    /// count stays (D173). Whether it flipped.
+    pub fn flip_split(&mut self, pool: u32, pg: u32) -> bool {
+        let Some(p) = self.pools.get_mut(&pool) else {
+            return false;
+        };
+        let n = p.pg_count;
+        let Some(s) = p.split.as_mut() else {
+            return false;
+        };
+        if !s.marked.remove(&pg) {
+            return false;
+        }
+        s.done.insert(pg);
+        let last = s.done.len() as u32 == n;
+        if last {
+            p.pg_count = n * 2;
+            p.split = None;
+        }
+        self.epoch += 1;
+        let epoch = self.epoch;
+        if let Some(i) = self.pgs.get_mut(&(pool, pg)) {
+            i.epoch = epoch;
+            let sibling = i.clone();
+            self.pgs.insert((pool, pg + n), sibling);
+        }
+        true
+    }
+
     pub fn add_pool(&mut self, pool: PoolInfo) {
         assert!(pool.pg_count.is_power_of_two());
         self.pools.insert(pool.id, pool);
@@ -573,8 +686,9 @@ impl ClusterMap {
                 &devs_in
             };
             let topo = Topology::new(&rule, devs);
-            for pg in 0..p.pg_count {
-                let members = topo.place(pg);
+            let by = p.placement.clamp(1, p.pg_count.max(1));
+            for pg in p.pgs().collect::<Vec<_>>() {
+                let members = topo.place(pg % by);
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
                     PoolKind::Replicated | PoolKind::Cache => members,
@@ -838,7 +952,13 @@ impl ClusterMap {
         // a pool's devices added and removed, 8 deleted pools' ids, 9
         // removed devices' and nodes' ids; a map without them keeps the
         // older format, which nodes from before them read.
-        let format = if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
+        let format = if self
+            .pools
+            .values()
+            .any(|p| p.split.is_some() || p.placement != p.pg_count)
+        {
+            10
+        } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
             9
         } else if !self.deleted_pools.is_empty() {
             8
@@ -980,13 +1100,27 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 10 {
+            // Every pool, in order: its placement count and split.
+            for p in self.pools.values() {
+                e.u32(p.placement).bool(p.split.is_some());
+                if let Some(s) = &p.split {
+                    for set in [&s.marked, &s.done] {
+                        e.u32(set.len() as u32);
+                        for pg in set {
+                            e.u32(*pg);
+                        }
+                    }
+                }
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=9).contains(&v) {
+        if !(1..=10).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1060,6 +1194,8 @@ impl ClusterMap {
                     classes,
                     added: BTreeSet::new(),
                     removed: BTreeSet::new(),
+                    placement: pg_count,
+                    split: None,
                 },
             );
         }
@@ -1132,6 +1268,17 @@ impl ClusterMap {
             m.removed_devices = d.seq(4, |d| d.u32())?.into_iter().collect();
             m.removed_nodes = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
+        if v >= 10 {
+            for p in m.pools.values_mut() {
+                p.placement = d.u32()?;
+                if d.bool()? {
+                    p.split = Some(Split {
+                        marked: d.seq(4, |d| d.u32())?.into_iter().collect(),
+                        done: d.seq(4, |d| d.u32())?.into_iter().collect(),
+                    });
+                }
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -1155,6 +1302,8 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         classes: Vec::new(),
         added: BTreeSet::new(),
         removed: BTreeSet::new(),
+        placement: pg_count,
+        split: None,
     }
 }
 
@@ -1282,6 +1431,7 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 if !p.pg_count.is_power_of_two() {
                     return Err(bad("pgs must be a power of two"));
                 }
+                p.placement = p.pg_count;
                 map.add_pool(p);
             }
             _ => return Err(bad("unknown line")),
@@ -1375,6 +1525,8 @@ mod tests {
             classes: Vec::new(),
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 32,
+            split: None,
         });
         m.recompute();
         m
@@ -1468,6 +1620,77 @@ mod tests {
         let back = ClusterMap::decode(&m.encode()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.next_pool_id(), top + 1);
+    }
+
+    /// D183: a split marks PGs, then flips each: its sibling joins the
+    /// map on the PG's devices, keys go to it by the doubled count, others
+    /// stay with their parent; the last flip doubles the count, and the
+    /// placement count stays, so nothing moves. Format 10 while it runs.
+    #[test]
+    fn a_split_flips_pg_by_pg_then_doubles_the_count() {
+        let mut m = map();
+        let n = m.pools[&1].pg_count;
+        assert!(!m.mark_split(1, 0), "not splitting");
+        m.start_split(1).unwrap();
+        assert!(m.start_split(1).is_err());
+        assert_eq!(m.encode()[..4], 10u32.to_le_bytes());
+        let before = m.clone();
+        let names: Vec<Vec<u8>> = (0..500u32).map(|i| i.to_be_bytes().to_vec()).collect();
+        let routed = |m: &ClusterMap| -> Vec<u32> {
+            names.iter().map(|k| m.pools[&1].pg_of_key(3, k)).collect()
+        };
+        assert_eq!(routed(&m), routed(&before));
+        assert!(m.mark_split(1, 5) && !m.mark_split(1, 5));
+        assert!(m.pgs[&(1, 5)].epoch > before.pgs[&(1, 5)].epoch);
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert_eq!(routed(&m), routed(&before), "marked, not flipped");
+        assert!(!m.flip_split(1, 6), "not marked");
+        assert!(m.flip_split(1, 5));
+        let (pg, sib) = (&m.pgs[&(1, 5)], &m.pgs[&(1, 5 + n)]);
+        assert_eq!((pg.up.clone(), pg.epoch), (sib.up.clone(), sib.epoch));
+        assert!(m.pools[&1].pgs().any(|p| p == 5 + n));
+        for (k, (now, was)) in names
+            .iter()
+            .zip(routed(&m).into_iter().zip(routed(&before)))
+        {
+            let full = hyperstor_placement::key_pg(3, k, n * 2);
+            if was == 5 {
+                assert_eq!(now, full, "PG 5 flipped: by the doubled count");
+            } else {
+                assert_eq!(now, was, "the others by their parent");
+            }
+        }
+        m.recompute();
+        assert_eq!(
+            m.pgs[&(1, 5 + n)].up,
+            m.pgs[&(1, 5)].up,
+            "placed with its parent"
+        );
+        for pg in 0..n {
+            if pg != 5 {
+                assert!(m.mark_split(1, pg) && m.flip_split(1, pg));
+            }
+        }
+        let p = &m.pools[&1];
+        assert_eq!(
+            (p.pg_count, p.placement, p.split.is_none()),
+            (n * 2, n, true)
+        );
+        m.recompute();
+        for pg in 0..n {
+            assert_eq!(m.pgs[&(1, pg + n)].up, m.pgs[&(1, pg)].up);
+        }
+        assert_eq!(
+            m.encode()[..4],
+            10u32.to_le_bytes(),
+            "placement count below"
+        );
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        let full: Vec<u32> = names
+            .iter()
+            .map(|k| hyperstor_placement::key_pg(3, k, n * 2))
+            .collect();
+        assert_eq!(routed(&m), full);
     }
 
     /// D182: a removed device leaves the map, its node with its last
@@ -1789,6 +2012,8 @@ mod tests {
             classes: Vec::new(),
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 32,
+            split: None,
         });
         m.recompute();
         let before = m.clone();
