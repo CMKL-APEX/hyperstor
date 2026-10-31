@@ -886,6 +886,11 @@ impl Cluster {
         self.scratch.path("data")
     }
 
+    /// Storage node `n`'s log so far.
+    pub fn node_log(&self, n: u32) -> String {
+        std::fs::read_to_string(self.scratch.path(&format!("node-{n}.log"))).unwrap_or_default()
+    }
+
     /// The map service's log so far.
     pub fn meta_log(&self) -> String {
         std::fs::read_to_string(&self.meta_log).unwrap_or_default()

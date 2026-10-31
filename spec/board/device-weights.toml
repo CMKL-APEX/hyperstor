@@ -1,10 +1,8 @@
 title = "Device weights by capacity and pool space under the domain rule"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-10-31
 updated = 2026-10-31
 milestone = "AD3"
 branch = "feat/device-weights"
-prs = [95]
-now = "D158 and D159 built (I201, I202); PR in review"
-next = "Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving"
+prs = [95, 98]

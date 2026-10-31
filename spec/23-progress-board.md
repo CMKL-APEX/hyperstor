@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 1 | 10 |
+| 4 | 0 | 1 | 11 |
 
 ## In progress
 
@@ -30,7 +30,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95) | D158 and D159 built (I201, I202); PR in review | Deploy to the pilot: every weight becomes 0.0625 TiB in one change, with no PG moving | 2026-10-31 |
+| **Device identity checked before a device is opened** (`device-identity`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-identity`, [#99](https://github.com/CMKL-APEX/hyperstor/pull/99) | Deployed to all three pilot hosts from the PR's head (1d2d08f): every device recorded the cluster id once, none refused, no PG moved | Merge once CI passes, then mark done | 2026-10-31 |
 
 ## Done
 
@@ -40,6 +40,7 @@ None.
 | **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
 | **The refill test's flapping on CI (I200)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | 2026-10-31 |
+| **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95), [#98](https://github.com/CMKL-APEX/hyperstor/pull/98) | 2026-10-31 |
 | **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | 2026-10-31 |
 | **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
@@ -54,7 +55,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 6 | 2 | 1 |
+| HS0 | Local storage engine and reactor | 7 | 2 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 15 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |

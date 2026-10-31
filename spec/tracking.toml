@@ -86,6 +86,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Each device's superblock names its device and cluster: a device of another device or cluster (a drive moved, swapped paths) is refused before it is opened, and one formatted without a cluster gets it recorded"
+spec = ["08-engine.md §7.1", "I203"]
+status = "done"
+tests = [
+    "hyperstor_engine::device::tests::a_device_belongs_to_its_device_and_cluster",
+    "manage::a_swapped_device_is_refused",
+]
+
+[[milestone.item]]
 what = "A slow device no longer holds its reactor: commits wait for the device in the background (first stage)"
 spec = ["08-engine.md §6.2", "I199"]
 status = "partial"
