@@ -68,7 +68,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]...";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--path P] [--device D] [--force-format]";
 
 const BINARIES: [&str; 6] = [
     "hyperstor-meta",
@@ -253,6 +253,9 @@ fn main() {
     let Some(cmd) = args.first().cloned() else {
         usage()
     };
+    if cmd == "format-device" {
+        format_device_cmd(&args[1..]);
+    }
     if !matches!(
         cmd.as_str(),
         "check" | "install" | "uninstall" | "root-backup" | "root-restore"
@@ -2307,6 +2310,86 @@ fn pki(
 const MIN_PASSPHRASE: usize = 12;
 
 /// `root-backup`: see the top of this file.
+/// `format-device --path P --device D [--force-format] [--root DIR]`
+/// (D168): formats a block device for `hyperstord`, which formats only
+/// files. Exits.
+fn format_device_cmd(args: &[String]) -> ! {
+    let (mut path, mut device, mut force, mut root) = (None, None, false, PathBuf::from("/"));
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().unwrap_or_else(|| usage());
+        match a.as_str() {
+            "--path" => path = Some(val()),
+            "--device" => device = Some(val().parse::<u32>().unwrap_or_else(|_| usage())),
+            "--force-format" => force = true,
+            "--root" => root = PathBuf::from(val()),
+            _ => usage(),
+        }
+    }
+    let (Some(path), Some(device)) = (path, device) else {
+        usage()
+    };
+    match format_device(&root, &path, device, force) {
+        Ok(done) => {
+            println!("{done}");
+            std::process::exit(0)
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+/// Formats `path` as device `id` (D168), only when it holds no other
+/// signature (hyperstor_engine::probe), unless `force`: then its first
+/// and last 128 KiB are zeroed first, so no old signature is left for
+/// other tools to find. The cluster is the installed cluster file's, or
+/// 0, which the node replaces with the map's at its first start (I203).
+fn format_device(root: &Path, path: &str, id: u32, force: bool) -> Result<String, String> {
+    use hyperstor_engine::{AlignedBuf, BlockDev, DeviceConfig, FileDev};
+    use std::sync::Arc;
+    let p = Path::new(path);
+    // O_DIRECT, as hyperstord opens it; buffered where the filesystem
+    // refuses it (tmpfs, for tests).
+    let dev: Arc<dyn BlockDev> = match FileDev::open(p, true, None) {
+        Ok(d) => Arc::new(d),
+        Err(_) => Arc::new(FileDev::open(p, false, None).map_err(|e| format!("{path}: {e}"))?),
+    };
+    let found = hyperstor_engine::probe::signature(&dev).map_err(|e| format!("{path}: {e}"))?;
+    if let Some(sig) = &found {
+        if !force {
+            return Err(format!(
+                "{path} holds {sig}: not formatted. Check the path; --force-format overwrites it"
+            ));
+        }
+        let span = (128u64 << 10).min(dev.len());
+        let zero = AlignedBuf::zeroed(span as usize);
+        for at in [0, dev.len() - span] {
+            dev.write(at, &zero).map_err(|e| format!("{path}: {e}"))?;
+        }
+        dev.flush().map_err(|e| format!("{path}: {e}"))?;
+    }
+    let cluster: u128 = fs::read_to_string(root.join("etc/hyperstor/cluster.txt"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.trim().strip_prefix("cluster ")?.trim().parse().ok())
+        })
+        .unwrap_or(0);
+    hyperstor_engine::format(
+        &dev,
+        &DeviceConfig {
+            device_id: id as u128,
+            cluster_id: cluster,
+            shards: 1,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
+    Ok(match found {
+        Some(sig) => format!("formatted {path} as device {id} of cluster {cluster}, over {sig}"),
+        None => format!("formatted {path} as device {id} of cluster {cluster}"),
+    })
+}
+
 fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
     if passphrase.chars().count() < MIN_PASSPHRASE {
         fail(&format!(
@@ -2496,6 +2579,54 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D168: format-device formats a blank device with the installed
+    /// cluster's id, refuses one that holds another system's signature
+    /// (or hyperstor's), and overwrites it only when forced.
+    #[test]
+    fn format_device_refuses_foreign_signatures_unless_forced() {
+        let dir = std::env::temp_dir().join(format!("hs-fmtdev-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("etc/hyperstor")).unwrap();
+        fs::write(dir.join("etc/hyperstor/cluster.txt"), "cluster 42\n").unwrap();
+        let disk = dir.join("disk");
+        let f = fs::File::create(&disk).unwrap();
+        f.set_len(64 << 20).unwrap();
+        drop(f);
+        let d = disk.to_str().unwrap();
+        let done = format_device(&dir, d, 1002, false).unwrap();
+        assert_eq!(done, format!("formatted {d} as device 1002 of cluster 42"));
+        // Formatted already: refused, naming it.
+        let e = format_device(&dir, d, 1003, false).unwrap_err();
+        assert!(
+            e.contains("hyperstor device (device 1002 of cluster 42)"),
+            "{e}"
+        );
+        // An LVM physical volume: refused; forced, overwritten.
+        let mut b = vec![0u8; 8192];
+        b[512..520].copy_from_slice(b"LABELONE");
+        b[536..544].copy_from_slice(b"LVM2 001");
+        fs::write(&disk, &b).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&disk)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let e = format_device(&dir, d, 1003, false).unwrap_err();
+        assert!(
+            e.contains("an LVM physical volume") && e.contains("--force-format"),
+            "{e}"
+        );
+        let done = format_device(&dir, d, 1003, true).unwrap();
+        assert!(done.ends_with("over an LVM physical volume"), "{done}");
+        let head = fs::read(&disk).unwrap();
+        assert!(
+            !head.windows(8).any(|w| w == b"LABELONE"),
+            "the label is gone"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn settings_round_trip_and_flags_override() {

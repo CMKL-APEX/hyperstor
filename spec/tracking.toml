@@ -628,6 +628,17 @@ tests = [
     "manage::a_shard_must_be_the_maps_and_can_name_its_id",
 ]
 
+[[milestone.item]]
+what = "Block devices are formatted by the installer after a check for other systems' signatures; the node formats only files"
+spec = ["24-pools-and-devices.md §27.2.2", "D168", "I206"]
+status = "done"
+tests = [
+    "hyperstor_engine::probe::tests::foreign_signatures_are_named_and_blank_devices_pass",
+    "hyperstor_engine::probe::tests::a_hyperstor_device_is_named_with_its_ids",
+    "hyperstor_daemon::tests::only_files_are_formatted_by_the_node",
+    "hyperstor_install::tests::format_device_refuses_foreign_signatures_unless_forced",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

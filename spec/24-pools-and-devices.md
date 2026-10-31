@@ -9,8 +9,9 @@ documents, so `§N` in one document is the same section everywhere (see
 Status: **settled, not yet built** (2026-10-31): D163, D164 and
 D167–D176 (points 116–127 of [05-decision-log.md](05-decision-log.md)).
 Built so far, on `feature/elastic-pools`: the identity check of
-§27.2.2 (I203, also on `main`), adding a device (§27.2.1, I204) and
-named device ids (§27.2.3, I205). The work
+§27.2.2 (I203, also on `main`), adding a device (§27.2.1, I204),
+named device ids (§27.2.3, I205) and the format rule (§27.2.2,
+I206). The work
 lands on the branch `feature/elastic-pools`, which merges into `main`
 once the required features are in.
 

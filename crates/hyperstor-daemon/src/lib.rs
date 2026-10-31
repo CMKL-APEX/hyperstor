@@ -86,6 +86,19 @@ impl std::fmt::Debug for DeviceSpec {
 }
 
 impl DeviceSpec {
+    /// Whether `hyperstord` may format this device when it is blank
+    /// (D168): files and memory, never a block device, which the
+    /// installer formats after checking it holds nothing else.
+    fn formats_itself(&self) -> bool {
+        use std::os::unix::fs::FileTypeExt;
+        match self {
+            DeviceSpec::File { path, .. } => {
+                std::fs::metadata(path).map_or(true, |m| !m.file_type().is_block_device())
+            }
+            DeviceSpec::Mem { .. } | DeviceSpec::Existing(_) => true,
+        }
+    }
+
     fn open(&self) -> std::io::Result<Arc<dyn BlockDev>> {
         Ok(match self {
             DeviceSpec::Mem { bytes } => Arc::new(MemDev::new(*bytes)),
@@ -300,6 +313,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         let _ = hyperstor_reactor::pin_to_cpu(c);
                     }
                     hyperstor_reactor::set_spin(spin);
+                    let may_format = sh.device.formats_itself();
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -308,6 +322,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             node,
                             sh.device_id,
                             sh.listener.local_addr().ok(),
+                            may_format,
                             d2,
                             meta,
                             defer,
@@ -704,12 +719,42 @@ fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
     Ok(ObjKey::new(to.pool, to.pg, ns, k.name.clone(), k.version))
 }
 
+/// Formats a blank device as device `me` of `cluster`, if `hyperstord`
+/// may (D168): a block device is refused, to be formatted by
+/// `hyperstor-install format-device`, which checks first that it holds
+/// nothing else.
+fn format_blank(
+    dev: &Arc<dyn BlockDev>,
+    me: u32,
+    cluster: u128,
+    may_format: bool,
+) -> Result<(), String> {
+    if !may_format {
+        return Err(format!(
+            "device {me}: a blank block device; hyperstord formats files only: format it with hyperstor-install format-device --path PATH --device {me}"
+        ));
+    }
+    hyperstor_engine::format(
+        dev,
+        &DeviceConfig {
+            device_id: me as u128,
+            cluster_id: cluster,
+            shards: 1,
+            log_blocks: None,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+    .map_err(|e| format!("device {me}: {e}"))
+}
+
 impl ShardState {
     #[allow(clippy::too_many_arguments)]
     async fn open(
         node: u32,
         me: u32,
         addr: Option<SocketAddr>,
+        may_format: bool,
         dev: Arc<dyn BlockDev>,
         meta: Vec<SocketAddr>,
         defer: Option<usize>,
@@ -769,19 +814,7 @@ impl ShardState {
                     );
                 }
             }
-            Err(EngineError::NotFormatted) => {
-                hyperstor_engine::format(
-                    &dev,
-                    &DeviceConfig {
-                        device_id: me as u128,
-                        cluster_id: cluster,
-                        shards: 1,
-                        log_blocks: None,
-                        ..Default::default()
-                    },
-                )
-                .map_err(refused)?;
-            }
+            Err(EngineError::NotFormatted) => format_blank(&dev, me, cluster, may_format)?,
             Err(e) => return Err(refused(e)),
         }
         let mut shard = hyperstor_engine::open(&dev)
@@ -4437,6 +4470,45 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// D168: hyperstord formats a blank file, never a blank block device;
+    /// and a block device is what DeviceSpec says it is.
+    #[test]
+    fn only_files_are_formatted_by_the_node() {
+        use super::{BlockDev, DeviceSpec, EngineError, MemDev, format_blank};
+        use std::sync::Arc;
+        let blank = || -> Arc<dyn BlockDev> { Arc::new(MemDev::new(64 << 20)) };
+        let d = blank();
+        let e = format_blank(&d, 1002, 7, false).unwrap_err();
+        assert!(e.contains("hyperstor-install format-device"), "{e}");
+        assert!(
+            matches!(
+                hyperstor_engine::device_info(&d),
+                Err(EngineError::NotFormatted)
+            ),
+            "nothing written"
+        );
+        let d = blank();
+        format_blank(&d, 1002, 7, true).unwrap();
+        let i = hyperstor_engine::device_info(&d).unwrap();
+        assert_eq!((i.device_id, i.cluster_id), (1002, 7));
+        let file = DeviceSpec::File {
+            path: std::env::temp_dir().join("hs-no-such-file"),
+            bytes: 0,
+            direct: false,
+            uring: false,
+        };
+        assert!(file.formats_itself(), "a file not made yet is a file");
+        if std::path::Path::new("/dev/loop0").exists() {
+            let block = DeviceSpec::File {
+                path: "/dev/loop0".into(),
+                bytes: 0,
+                direct: false,
+                uring: false,
+            };
+            assert!(!block.formats_itself());
+        }
+    }
 
     #[test]
     fn a_full_shard_is_answered_no_space() {
