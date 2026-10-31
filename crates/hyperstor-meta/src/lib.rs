@@ -47,6 +47,17 @@ pub struct NewPool {
     pub force: bool,
 }
 
+/// What `SetPool` changes (24-pools-and-devices.md §27.3.2); `None`
+/// leaves a field as it is.
+#[derive(Debug, Clone, Default)]
+pub struct PoolChange {
+    /// The class set; empty: every device (D164).
+    pub classes: Option<Vec<String>>,
+    pub name: Option<String>,
+    /// PGs move, as for the classes.
+    pub domain: Option<hyperstor_placement::Domain>,
+}
+
 pub enum Admin {
     /// The published map, what clients and storage nodes see, how long
     /// ago each node was last heard from (absent: not since start), the
@@ -132,11 +143,12 @@ pub enum Admin {
         new: NewPool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u32, u32, u64, bool), String>>,
     },
-    /// Sets a pool's class set (D164). Replies with the working map's
-    /// epoch and whether the set mixes hard disks and flash (forced).
-    SetPoolClasses {
+    /// Changes a pool: its class set (D164), name or failure domain.
+    /// Replies with the working map's epoch and whether its devices mix
+    /// hard disks and flash (forced).
+    SetPool {
         pool: u32,
-        classes: Vec<String>,
+        change: PoolChange,
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
@@ -1159,39 +1171,71 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
-    /// Sets pool `pool`'s classes (24-pools-and-devices.md §27.3.2, §27.4;
-    /// D164, D172): refused for `.meta`, whose set follows the flash
-    /// classes; when the devices of the set span fewer failure domains
-    /// than the pool's copies; and when it holds hard disks and flash both,
-    /// unless `force` or a cache pool. Returns the working map's epoch and
-    /// whether the set mixes them.
+    /// Sets a pool's class set (D164): [`Meta::set_pool`] with only the
+    /// classes.
     pub fn set_pool_classes(
         &self,
         pool: u32,
-        mut classes: Vec<String>,
+        classes: Vec<String>,
+        force: bool,
+    ) -> Result<(u64, bool), String> {
+        let change = PoolChange {
+            classes: Some(classes),
+            ..Default::default()
+        };
+        self.set_pool(pool, change, force)
+    }
+
+    /// Changes a pool (24-pools-and-devices.md §27.3.2, §27.4; D164,
+    /// D172): its class set, name or failure domain. Refused for `.meta`,
+    /// whose devices follow the flash classes. The pool's devices under
+    /// the new set and domain must span as many failure domains as its
+    /// copies, and hold hard disks and flash both only when `force` or a
+    /// cache pool; a name is checked as `create_pool` checks it. Returns
+    /// the working map's epoch and whether the devices mix kinds.
+    pub fn set_pool(
+        &self,
+        pool: u32,
+        change: PoolChange,
         force: bool,
     ) -> Result<(u64, bool), String> {
         if !self.leads() {
             return Err(self.not_leader());
         }
-        classes.sort();
-        classes.dedup();
         if pool == META_POOL {
-            return Err(".meta places on every flash device; its classes can't be set".into());
+            return Err(".meta places on every flash device; it can't be changed".into());
+        }
+        let PoolChange {
+            classes,
+            name,
+            domain,
+        } = change;
+        if classes.is_none() && name.is_none() && domain.is_none() {
+            return Err("nothing to change: give classes, a name or a domain".into());
         }
         let mut map = self.map.borrow_mut();
         let Some(info) = map.pools.get(&pool).cloned() else {
             return Err(format!("no pool {pool}"));
         };
-        let wanted = PoolInfo {
-            classes: classes.clone(),
-            ..info.clone()
-        };
-        let mixed = check_class_set(&map, &wanted, force)?;
-        if info.classes != classes {
-            if let Some(p) = map.pools.get_mut(&pool) {
-                p.classes = classes;
+        let mut wanted = info.clone();
+        if let Some(mut classes) = classes {
+            classes.sort();
+            classes.dedup();
+            wanted.classes = classes;
+        }
+        if let Some(domain) = domain {
+            wanted.domain = domain;
+        }
+        if let Some(name) = name {
+            check_pool_name(&name)?;
+            if map.pools.values().any(|p| p.id != pool && p.name == name) {
+                return Err(format!("a pool is already named {name}"));
             }
+            wanted.name = name;
+        }
+        let mixed = check_class_set(&map, &wanted, force)?;
+        if wanted != info {
+            map.pools.insert(pool, wanted);
             map.recompute();
         }
         Ok((map.epoch, mixed))
@@ -1222,15 +1266,7 @@ impl Meta {
         if classes.is_empty() {
             return Err("a new pool names its device classes (D171)".into());
         }
-        if name.is_empty()
-            || name.len() > 64
-            || name.starts_with('.')
-            || name.contains(char::is_whitespace)
-        {
-            return Err(format!(
-                "{name:?}: a pool's name is 1 to 64 characters, without spaces, not starting with a dot"
-            ));
-        }
+        check_pool_name(&name)?;
         if size == 0 || min_size == 0 || min_size > size {
             return Err(format!(
                 "copies {size}, min {min_size}: min is 1 to the copies"
@@ -1557,13 +1593,13 @@ impl Meta {
                 Admin::CreatePool { new, reply } => {
                     let _ = reply.send(self.create_pool(new));
                 }
-                Admin::SetPoolClasses {
+                Admin::SetPool {
                     pool,
-                    classes,
+                    change,
                     force,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_pool_classes(pool, classes, force));
+                    let _ = reply.send(self.set_pool(pool, change, force));
                 }
                 Admin::SetDeviceClass {
                     device,
@@ -2281,6 +2317,21 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
 /// domains as `pool` keeps copies, and its classes may hold hard disks and
 /// flash both only when forced or for a cache pool. Returns whether they
 /// mix.
+/// A pool's name is 1 to 64 characters, without spaces, and doesn't
+/// start with a dot. Why: names with a dot are the system's (`.meta`).
+pub(crate) fn check_pool_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.len() > 64
+        || name.starts_with('.')
+        || name.contains(char::is_whitespace)
+    {
+        return Err(format!(
+            "{name:?}: a pool's name is 1 to 64 characters, without spaces, not starting with a dot"
+        ));
+    }
+    Ok(())
+}
+
 fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<bool, String> {
     use hyperstor_placement::Domain;
     let what = || {
@@ -2418,6 +2469,79 @@ mod tests {
         let d = &map.devices[&1001];
         assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
         assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// §27.3.2: a pool is renamed, unless another has the name or it
+    /// starts with a dot; its failure domain changes when its devices
+    /// span enough of the new one, and its PGs follow it.
+    #[test]
+    fn a_pool_is_renamed_and_its_domain_changed() {
+        use hyperstor_placement::Domain;
+        let meta = Meta::new(map());
+        let change = |name: Option<&str>, domain: Option<Domain>| {
+            meta.set_pool(
+                1,
+                PoolChange {
+                    name: name.map(str::to_string),
+                    domain,
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        assert!(
+            change(None, None)
+                .unwrap_err()
+                .contains("nothing to change")
+        );
+        assert!(
+            change(Some("ec"), None)
+                .unwrap_err()
+                .contains("already named ec")
+        );
+        assert!(
+            change(Some(".x"), None)
+                .unwrap_err()
+                .contains("not starting with a dot")
+        );
+        let before = meta.map.borrow().epoch;
+        let (epoch, _) = change(Some("blocks"), None).unwrap();
+        assert!(epoch > before);
+        assert_eq!(meta.map.borrow().pools[&1].name, "blocks");
+        // Renaming to its own name changes nothing.
+        assert_eq!(change(Some("blocks"), None).unwrap().0, epoch);
+        // Every node is in rack 0: one rack for 3 copies.
+        assert!(
+            change(None, Some(Domain::Rack))
+                .unwrap_err()
+                .contains("span 1 rack(s)")
+        );
+        change(None, Some(Domain::Device)).unwrap();
+        let host_of = |d: u32| d / 1000;
+        let shared = |m: &ClusterMap| {
+            m.pgs.iter().any(|(k, p)| {
+                k.0 == 1 && {
+                    let hosts: BTreeSet<u32> = p.up.iter().map(|&d| host_of(d)).collect();
+                    hosts.len() < p.up.len()
+                }
+            })
+        };
+        assert_eq!(meta.map.borrow().pools[&1].domain, Domain::Device);
+        // Back to a host per copy: no PG has two copies on one host.
+        change(None, Some(Domain::Host)).unwrap();
+        assert!(!shared(&meta.map.borrow()));
+        assert!(
+            meta.set_pool(
+                0,
+                PoolChange {
+                    name: Some("m".into()),
+                    ..Default::default()
+                },
+                false
+            )
+            .unwrap_err()
+            .contains(".meta")
+        );
     }
 
     /// D180: a device outside a pool's classes is added to it, one of

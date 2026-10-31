@@ -27,9 +27,11 @@
 //!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
 //!   device|host|rack] [--force]`: make a pool on devices of those classes
 //!   (D171); PGs, unless given, about 100 per device per copy;
-//! - `pool set --pool P --classes C[,C...]|any [--force]`: place pool P's
-//!   PGs on devices of those classes only, or on every device (D164);
-//!   `--force` allows classes of hard disks and flash both (D172);
+//! - `pool set --pool P [--classes C[,C...]|any] [--name N] [--domain
+//!   device|host|rack] [--force]`: place pool P's PGs on devices of those
+//!   classes only, or on every device (D164), with a copy per device,
+//!   host or rack; or rename it; `--force` allows classes of hard disks
+//!   and flash both (D172);
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
 //!   --pool P --device D`: let pool P use one more device, beyond its
 //!   classes, or stop using one of them (D180);
@@ -467,19 +469,21 @@ fn main() {
     // takes the last two.
     let device_add = cmd == "device add";
     let device_class = cmd == "device class";
-    // pool set takes a pool and classes, pool create a name and classes;
-    // nothing else takes classes, and only pool create its own options.
+    // pool set takes a pool and what to change (classes, a name, a
+    // domain), pool create a name and classes; nothing else takes classes
+    // or a domain, and only pool create its other options.
     let create = cmd == "pool create";
-    if (cmd == "pool set" && (a.pool.is_none() || a.classes.is_none()))
+    let set = cmd == "pool set";
+    if (set
+        && (a.pool.is_none() || (a.classes.is_none() && a.name.is_empty() && a.domain.is_none())))
         || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
-        || (cmd != "pool set" && !create && a.classes.is_some())
+        || (!set && !create && (a.classes.is_some() || a.domain.is_some()))
         || (!create
             && (a.kind.is_some()
                 || a.copies.is_some()
                 || a.min.is_some()
                 || a.pgs.is_some()
-                || a.chunk.is_some()
-                || a.domain.is_some()))
+                || a.chunk.is_some()))
     {
         usage();
     }
@@ -1120,22 +1124,26 @@ where
             }
         }
         "pool set" => {
-            let (Some(pool), Some(classes)) = (a.pool, a.classes.clone()) else {
+            let Some(pool) = a.pool else {
                 unreachable!("checked with the arguments")
             };
-            let classes: Vec<String> = if classes == "any" {
-                Vec::new()
-            } else {
-                classes
+            // `any`: every device; absent: the classes stay.
+            let every_device = a.classes.as_deref() == Some("any");
+            let classes: Vec<String> = match a.classes.as_deref() {
+                Some(c) if c != "any" => c
                     .split(',')
                     .filter(|c| !c.is_empty())
                     .map(str::to_string)
-                    .collect()
+                    .collect(),
+                _ => Vec::new(),
             };
             let r = client
                 .set_pool(pb::SetPoolRequest {
                     pool,
                     classes: classes.clone(),
+                    every_device,
+                    name: (!a.name.is_empty()).then(|| a.name.clone()),
+                    domain: a.domain.clone(),
                     force: a.force,
                     ..Default::default()
                 })
@@ -1143,14 +1151,27 @@ where
             match r {
                 Ok(r) => {
                     let r = r.into_owned();
-                    let on = if classes.is_empty() {
-                        "every device".to_string()
-                    } else {
-                        format!("classes {}", classes.join(","))
-                    };
+                    let mut what = Vec::new();
+                    if every_device {
+                        what.push("places on every device".to_string());
+                    } else if !classes.is_empty() {
+                        what.push(format!("places on classes {}", classes.join(",")));
+                    }
+                    if let Some(d) = &a.domain {
+                        what.push(format!("keeps a copy per {d}"));
+                    }
+                    if !a.name.is_empty() {
+                        what.push(format!("is named {}", a.name));
+                    }
                     println!(
-                        "pool {pool} places on {on} (map epoch {}); hyperstorctl status shows its PGs moving",
-                        r.map_epoch
+                        "pool {pool} {} (map epoch {}){}",
+                        what.join(", "),
+                        r.map_epoch,
+                        if every_device || !classes.is_empty() || a.domain.is_some() {
+                            "; hyperstorctl status shows its PGs moving"
+                        } else {
+                            ""
+                        }
                     );
                     if r.mixed_kinds {
                         eprintln!(

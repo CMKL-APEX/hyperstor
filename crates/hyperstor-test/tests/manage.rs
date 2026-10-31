@@ -532,6 +532,42 @@ fn devices_are_added_to_and_removed_from_a_pool() {
     });
 }
 
+/// §27.3.2: a pool is renamed and keeps a copy per device rather than
+/// per host, its classes staying; it still takes I/O; nothing to change
+/// is a usage error; audited.
+#[test]
+fn a_pool_is_renamed_and_its_domain_changed() {
+    let c = Cluster::all_in_one("setpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .ok();
+    // §27.3.2: renamed, and a copy per device rather than per host; the
+    // classes stay. Nothing to change is a usage error.
+    let set = c
+        .ctl(&[
+            "pool", "set", "--pool", "3", "--name", "quick", "--domain", "device",
+        ])
+        .ok();
+    assert!(
+        set.has("pool 3 keeps a copy per device, is named quick"),
+        "{}",
+        set.out
+    );
+    wait_for("the new name in the map", 10, || {
+        let p = c.ctl(&["pools"]).ok();
+        (p.has("quick") && p.has(" file")).then_some(())
+    });
+    c.ctl(&["pool", "set", "--pool", "3"]).expect(2);
+    c.ctl(&["io-test", "--pool", "3", "--mib", "4"]).ok();
+    wait_for("the change in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPool"]).ok();
+        a.has("pool 3 name=quick domain=device").then_some(())
+    });
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts
