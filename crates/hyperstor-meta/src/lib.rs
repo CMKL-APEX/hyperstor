@@ -21,7 +21,7 @@ pub mod tokens;
 
 use hyperstor_reactor::time::sleep;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -100,6 +100,14 @@ pub enum Admin {
     Snapshots {
         op: SnapOp,
         reply: VolumeReply<SnapDone>,
+    },
+    /// Sets a pool's class set (D164). Replies with the working map's
+    /// epoch and whether the set mixes hard disks and flash (forced).
+    SetPoolClasses {
+        pool: u32,
+        classes: Vec<String>,
+        force: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
     /// Sets a device's class, or lets it follow its kind (D178). Replies
     /// with the working map's epoch and the class now.
@@ -1120,6 +1128,73 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Sets pool `pool`'s classes (24-pools-and-devices.md §27.3.2, §27.4;
+    /// D164, D172): refused for `.meta`, whose set follows the flash
+    /// classes; when the devices of the set span fewer failure domains
+    /// than the pool's copies; and when it holds hard disks and flash both,
+    /// unless `force` or a cache pool. Returns the working map's epoch and
+    /// whether the set mixes them.
+    pub fn set_pool_classes(
+        &self,
+        pool: u32,
+        mut classes: Vec<String>,
+        force: bool,
+    ) -> Result<(u64, bool), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        classes.sort();
+        classes.dedup();
+        if pool == META_POOL {
+            return Err(".meta places on every flash device; its classes can't be set".into());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(info) = map.pools.get(&pool).cloned() else {
+            return Err(format!("no pool {pool}"));
+        };
+        let mixed = mixes_disks_and_flash(&map, &classes);
+        if mixed && !force && info.kind != PoolKind::Cache {
+            return Err(format!(
+                "classes {} hold hard disks and flash: a write would wait for the slowest copy; --force allows it",
+                classes.join(",")
+            ));
+        }
+        let domains: BTreeSet<u32> = map
+            .devices
+            .values()
+            .filter(|d| d.up_in && (classes.is_empty() || classes.contains(&d.class)))
+            .map(|d| match info.domain {
+                hyperstor_placement::Domain::Device => d.id,
+                hyperstor_placement::Domain::Host => d.node,
+                hyperstor_placement::Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
+            })
+            .collect();
+        if domains.len() < info.size as usize {
+            return Err(format!(
+                "the devices of classes {} span {} {}(s); pool {pool} keeps {} copies",
+                if classes.is_empty() {
+                    "any".to_string()
+                } else {
+                    classes.join(",")
+                },
+                domains.len(),
+                match info.domain {
+                    hyperstor_placement::Domain::Device => "device",
+                    hyperstor_placement::Domain::Host => "host",
+                    hyperstor_placement::Domain::Rack => "rack",
+                },
+                info.size
+            ));
+        }
+        if info.classes != classes {
+            if let Some(p) = map.pools.get_mut(&pool) {
+                p.classes = classes;
+            }
+            map.recompute();
+        }
+        Ok((map.epoch, mixed))
+    }
+
     /// Puts the kinds devices reported into the map once every device of
     /// a node that is up has reported one (D178): until then a node from
     /// before kinds may still be running, and couldn't read the map.
@@ -1341,6 +1416,14 @@ impl Meta {
                 }
                 Admin::AddNode { rack, addrs, reply } => {
                     let _ = reply.send(self.add_node(rack, &addrs));
+                }
+                Admin::SetPoolClasses {
+                    pool,
+                    classes,
+                    force,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_pool_classes(pool, classes, force));
                 }
                 Admin::SetDeviceClass {
                     device,
@@ -2053,6 +2136,21 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
     }
 }
 
+/// Whether `classes` hold hard disks and flash both (D172, D179): `file`
+/// mixes with any kind, and a class whose devices haven't reported a kind
+/// counts as neither.
+pub fn mixes_disks_and_flash(map: &ClusterMap, classes: &[String]) -> bool {
+    use hyperstor_map::DeviceKind;
+    let kinds: Vec<DeviceKind> = classes
+        .iter()
+        .filter_map(|c| map.class_kind(c, None).or_else(|| DeviceKind::from_name(c)))
+        .collect();
+    kinds.contains(&DeviceKind::Hdd)
+        && kinds
+            .iter()
+            .any(|k| matches!(k, DeviceKind::Nvme | DeviceKind::Ssd))
+}
+
 /// A device class: 1 to 32 lowercase letters, digits and dashes
 /// (`nvme`, `nvme-qlc`), as labels are (24-pools-and-devices.md §27.2.4).
 pub fn valid_class(c: &str) -> bool {
@@ -2102,6 +2200,57 @@ mod tests {
         let d = &map.devices[&1001];
         assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
         assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// D164, D172: a pool's class set is refused for `.meta`, when its
+    /// devices span fewer failure domains than the pool's copies, and when
+    /// it holds hard disks and flash both unless forced (or a cache pool);
+    /// PGs then place only on its classes.
+    #[test]
+    fn pool_class_sets_are_checked_and_placed_on() {
+        use hyperstor_map::DeviceKind;
+        let meta = Meta::new(map());
+        {
+            let mut m = meta.map.borrow_mut();
+            // Device 0 of each of the 4 nodes NVMe, device 1 a hard disk.
+            for n in 0..4u32 {
+                m.set_kind(n * 1000, DeviceKind::Nvme);
+                m.set_kind(n * 1000 + 1, DeviceKind::Hdd);
+            }
+            m.recompute();
+        }
+        let set = |p: u32, c: &[&str], force: bool| {
+            meta.set_pool_classes(p, c.iter().map(|c| c.to_string()).collect(), force)
+        };
+        assert!(set(0, &["nvme"], false).unwrap_err().contains(".meta"));
+        assert!(set(9, &["nvme"], false).unwrap_err().contains("no pool 9"));
+        // Only one class spans 4 hosts, enough for 3 copies.
+        let (_, mixed) = set(1, &["nvme"], false).unwrap();
+        assert!(!mixed);
+        let m = meta.map.borrow().clone();
+        assert!(
+            m.pgs
+                .iter()
+                .filter(|(k, _)| k.0 == 1)
+                .all(|(_, p)| p.up.iter().all(|d| d % 1000 == 0))
+        );
+        // A class of no device spans nothing.
+        assert!(
+            set(1, &["archive"], false)
+                .unwrap_err()
+                .contains("span 0 host(s)")
+        );
+        // Hard disks and flash: refused, forced, then marked mixed.
+        assert!(
+            set(1, &["nvme", "hdd"], false)
+                .unwrap_err()
+                .contains("--force")
+        );
+        assert_eq!(set(1, &["nvme", "hdd"], true).map(|r| r.1), Ok(true));
+        assert_eq!(meta.map.borrow().pools[&1].classes, ["hdd", "nvme"]);
+        // Every device again.
+        assert_eq!(set(1, &[], false).map(|r| r.1), Ok(false));
+        assert!(meta.map.borrow().pools[&1].classes.is_empty());
     }
 
     /// D178: kinds wait in memory until every device of a node that is up
@@ -2267,7 +2416,7 @@ mod tests {
             pg_count: 32,
             domain: Domain::Host,
             chunk_size: 4 << 20,
-            class: None,
+            classes: Vec::new(),
         });
         m.recompute();
         m

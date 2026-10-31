@@ -668,6 +668,17 @@ tests = [
     "manage::devices_report_their_kind_and_classes_follow_it",
 ]
 
+[[milestone.item]]
+what = "Pools place on a set of device classes; hard disks and flash mix only when forced"
+spec = ["24-pools-and-devices.md §27.4", "D164", "D172", "I210"]
+status = "done"
+tests = [
+    "hyperstor_placement::tests::class_sets_and_no_hdd",
+    "hyperstor_map::tests::class_sets_round_trip_and_need_format_6_only_when_several",
+    "hyperstor_meta::tests::pool_class_sets_are_checked_and_placed_on",
+    "manage::a_pool_places_on_its_classes_only",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

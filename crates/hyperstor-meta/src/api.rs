@@ -468,7 +468,11 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         let mut domains: BTreeMap<u32, (u128, u128)> = BTreeMap::new();
         let mut reported = true;
         for d in map.devices.values().filter(|d| {
-            d.up_in && d.weight > 0.0 && info.class.as_ref().is_none_or(|c| *c == d.class)
+            d.up_in
+                && d.weight > 0.0
+                && (info.classes.is_empty() || info.classes.contains(&d.class))
+                && !(info.id == hyperstor_map::META_POOL
+                    && map.kinds.get(&d.id) == Some(&hyperstor_map::DeviceKind::Hdd))
         }) {
             let Some(&(total, free)) = space.get(&d.id) else {
                 reported = false;
@@ -638,6 +642,8 @@ pub fn status(
                 pg_count: p.pg_count,
                 chunk_size: p.chunk_size,
                 domain: domain(p.domain),
+                classes: p.classes.clone(),
+                mixed_kinds: crate::mixes_disks_and_flash(map, &p.classes),
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -947,6 +953,78 @@ impl ClusterService for Api {
                 e,
                 ConnectError::failed_precondition,
                 "class_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPoolRequest>,
+    ) -> ServiceResult<pb::SetPoolResponse> {
+        let classes: Vec<String> = req.classes.iter().map(|c| c.to_string()).collect();
+        let force = req.force;
+        let target = format!(
+            "pool {} classes={}{}",
+            req.pool,
+            if classes.is_empty() {
+                "any".to_string()
+            } else {
+                classes.join(",")
+            },
+            if force { " force" } else { "" }
+        );
+        let who = self.authorize(&ctx, "SetPool", &target, true)?;
+        if let Some(c) = classes.iter().find(|c| !crate::valid_class(c)) {
+            return Err(with_reason(
+                ConnectError::invalid_argument(format!(
+                    "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+                )),
+                "invalid_argument",
+            ));
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPoolClasses {
+                pool: req.pool,
+                classes,
+                force,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetPool",
+            &target,
+            &match &r {
+                Some(Ok((epoch, mixed))) => format!(
+                    "ok, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, mixed_kinds))) => Ok(pb::SetPoolResponse {
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
             )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }

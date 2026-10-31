@@ -39,6 +39,13 @@ service ClusterService {
   // Pools limited to classes move PGs as it changes. Write.
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
+  // Changes a pool (24-pools-and-devices.md §27.3.2); for now its device
+  // classes (D164): PGs move to the devices of the new set. Refused for
+  // .meta, when the set spans fewer failure domains than the pool's
+  // copies, and when it mixes hard disks and flash unless forced (D172).
+  // Write.
+  rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -269,6 +276,12 @@ message Pool {
   // hears.
   optional uint64 total_bytes = 10 [json_name = "total_bytes"];
   optional uint64 free_bytes = 11 [json_name = "free_bytes"];
+  // The device classes the pool places on (04-decisions.md D164); empty:
+  // every device, as pools made before class sets do (D171).
+  repeated string classes = 12;
+  // Whether those classes hold hard disks and flash both, which only a
+  // forced SetPool allows (D172).
+  bool mixed_kinds = 13 [json_name = "mixed_kinds"];
 }
 
 // Each PG is counted once, under its worst state.
@@ -372,6 +385,20 @@ message AddDeviceRequest {
   // The device's class (`nvme`, `nvme-qlc`, ...); absent: that of the
   // node's other devices.
   optional string class = 3;
+}
+
+message SetPoolRequest {
+  uint32 pool = 1;
+  // The classes to place on; empty: every device.
+  repeated string classes = 2;
+  // Allow a set that mixes hard disks and flash (D172).
+  bool force = 3;
+}
+
+message SetPoolResponse {
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The set mixes hard disks and flash (only when forced).
+  bool mixed_kinds = 2 [json_name = "mixed_kinds"];
 }
 
 message SetDeviceClassRequest {

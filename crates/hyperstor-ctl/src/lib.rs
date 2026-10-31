@@ -56,7 +56,7 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
+        "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>6} {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} CLASSES",
         "POOL",
         "NAME",
         "KIND",
@@ -72,10 +72,23 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         "TOTAL"
     );
     // Usable space (D156): `-` until every device has reported.
+    let mut mixed = false;
     for p in &s.pools {
+        // Every device, or the pool's classes (D164); `!` when they mix
+        // hard disks and flash (D172).
+        mixed |= p.mixed_kinds;
+        let classes = if p.classes.is_empty() {
+            "any".to_string()
+        } else {
+            format!(
+                "{}{}",
+                p.classes.join(","),
+                if p.mixed_kinds { "!" } else { "" }
+            )
+        };
         let _ = writeln!(
             o,
-            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10}",
+            "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} {}",
             p.id,
             p.name,
             p.kind,
@@ -88,7 +101,14 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
             p.pgs.backfilling,
             p.pgs.inactive,
             gib(p.free_bytes),
-            gib(p.total_bytes)
+            gib(p.total_bytes),
+            classes
+        );
+    }
+    if mixed {
+        let _ = writeln!(
+            o,
+            "! classes hold hard disks and flash (set with --force): writes wait for the slowest copy"
         );
     }
     o
@@ -265,6 +285,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.AddDevice", "device add"),
     ("ClusterService.SetDeviceClass", "device class"),
+    ("ClusterService.SetPool", "pool set"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),

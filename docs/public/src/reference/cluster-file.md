@@ -58,7 +58,7 @@ pool ID NAME KIND [OPTION VALUE ...]
 | `pgs` | 128 | Placement groups; a power of two |
 | `chunk` | 4194304 | Chunk size in bytes; a multiple of 4096 |
 | `domain` | `host` | Failure domain: `device`, `host` or `rack` |
-| `class` | any | Only use devices of this class. Every device is of class `nvme` for now |
+| `class` | any | Only use devices of these classes, comma-separated (`nvme,ssd`; D164). A device's class is its kind (`nvme`, `ssd`, `hdd`, `file`) unless set with `hyperstorctl device class` |
 
 ## Errors
 

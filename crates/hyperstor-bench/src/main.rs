@@ -1692,6 +1692,7 @@ fn main() {
                     weight: 1.0,
                     class: "nvme".into(),
                     up_in: true,
+                    hdd: false,
                 });
             }
             for (domain, name) in [(Domain::Host, "host"), (Domain::Rack, "rack")] {
@@ -1699,7 +1700,8 @@ fn main() {
                     pool: 1,
                     size: 3,
                     domain,
-                    class: None,
+                    classes: Vec::new(),
+                    no_hdd: false,
                 };
                 let topo = Topology::new(&rule, &devs);
                 let t = Instant::now();

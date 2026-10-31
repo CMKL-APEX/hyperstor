@@ -135,7 +135,7 @@ impl Cluster {
             pg_count: 16,
             domain: hyperstor_placement::Domain::Host,
             chunk_size: CHUNK,
-            class: None,
+            classes: Vec::new(),
         });
         map.ensure_meta_pool();
         map.recompute();

@@ -405,6 +405,69 @@ fn devices_report_their_kind_and_classes_follow_it() {
     });
 }
 
+/// D164: a pool's class set: refused when its devices span fewer hosts
+/// than the pool's copies; set, its PGs leave devices of other classes;
+/// `any` brings every device back. Audited.
+#[test]
+fn a_pool_places_on_its_classes_only() {
+    let c = Cluster::all_in_one("classsets", 4);
+    // Classes once the kinds are in (D178).
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 4).then_some(())
+    });
+    for (d, cl) in [("0", "a"), ("1000", "a"), ("2000", "b"), ("3000", "c")] {
+        c.ctl(&["device", "class", "--device", d, "--class", cl])
+            .ok();
+    }
+    let on_3000 = |c: &Cluster| -> usize {
+        let pgs: serde_json::Value =
+            serde_json::from_str(&c.ctl(&["pgs", "--pool", "1", "--json"]).out).unwrap();
+        pgs["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["up"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(3000)))
+            })
+            .count()
+    };
+    wait_for("the classes in the map, PGs on device 3000", 10, || {
+        (c.ctl(&["nodes"]).out.matches("+ ").count() >= 1 && on_3000(&c) > 0).then_some(())
+    });
+    let narrow = c
+        .ctl(&["pool", "set", "--pool", "1", "--classes", "a"])
+        .expect(1);
+    assert!(
+        narrow.has("span 2 host(s); pool 1 keeps 3 copies"),
+        "{}",
+        narrow.out
+    );
+    let set = c
+        .ctl(&["pool", "set", "--pool", "1", "--classes", "a,b"])
+        .ok();
+    assert!(set.has("pool 1 places on classes a,b"), "{}", set.out);
+    wait_for("no PG of pool 1 on device 3000", 10, || {
+        (on_3000(&c) == 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" a,b"), "{}", pools.out);
+    c.ctl(&["pool", "set", "--pool", "0", "--classes", "a,b"])
+        .expect(1);
+    c.ctl(&["pool", "set", "--pool", "1"]).expect(2);
+    c.ctl(&["pool", "set", "--pool", "1", "--classes", "any"])
+        .ok();
+    wait_for("device 3000 back in pool 1", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPool"]).ok();
+        (a.has("classes=a,b") && a.has("classes=any")).then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

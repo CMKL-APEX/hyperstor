@@ -298,7 +298,18 @@ hyperstorctl device class --device 2001 --class auto      # its kind again
 A class holds devices of one kind, and a class named after a kind
 (`nvme`, `ssd`, `hdd`, `file`) only that kind. Pools that name classes
 place their PGs on those devices; the others use every device, so
-classes change nothing for them. Kinds appear once every running node
+classes change nothing for them. To limit a pool to some classes, or
+let it use every device again:
+
+```sh
+hyperstorctl pool set --pool 1 --classes nvme,ssd
+hyperstorctl pool set --pool 1 --classes any
+```
+
+The classes' devices must span at least as many failure domains (hosts,
+by default) as the pool keeps copies. A set with hard disks and flash
+both is refused unless `--force`: a write waits for its slowest copy.
+`.meta` always uses every device but hard disks. Kinds appear once every running node
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
 
