@@ -68,7 +68,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]...";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 6] = [
     "hyperstor-meta",
@@ -138,6 +138,9 @@ struct Settings {
     vhost: bool,
     /// The users who may use it (D144), comma-separated.
     vhost_users: String,
+    /// Block devices added to this host's nodes (D167, D168), as
+    /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
+    devices: String,
 }
 
 impl Settings {
@@ -166,7 +169,20 @@ impl Settings {
             tailscale_cert: false,
             vhost: false,
             vhost_users: String::new(),
+            devices: String::new(),
         }
+    }
+
+    /// The devices added (`devices`): id, address and path.
+    fn devices(&self) -> Vec<(u32, std::net::SocketAddr, String)> {
+        self.devices
+            .split(',')
+            .filter_map(|d| {
+                let (id, rest) = d.trim().split_once('@')?;
+                let (addr, path) = rest.split_once('=')?;
+                Some((id.parse().ok()?, addr.parse().ok()?, path.to_string()))
+            })
+            .collect()
     }
 
     /// Whether this host runs `hyperstor-vhost`.
@@ -212,6 +228,7 @@ impl Settings {
                 "tailscale_cert" => self.tailscale_cert = v == "true",
                 "vhost" => self.vhost = v == "true",
                 "vhost_users" => self.vhost_users = v.to_string(),
+                "devices" => self.devices = v.to_string(),
                 _ => {}
             }
         }
@@ -244,7 +261,13 @@ impl Settings {
             self.tailscale_cert,
             self.vhost,
             self.vhost_users
-        )
+        ) + &if self.devices.is_empty() {
+            // Written only once there is one, so other installs' files
+            // stay as they were.
+            String::new()
+        } else {
+            format!("devices = {}\n", self.devices)
+        }
     }
 }
 
@@ -253,6 +276,9 @@ fn main() {
     let Some(cmd) = args.first().cloned() else {
         usage()
     };
+    if cmd == "format-device" {
+        format_device_cmd(&args[1..]);
+    }
     if !matches!(
         cmd.as_str(),
         "check" | "install" | "uninstall" | "root-backup" | "root-restore"
@@ -271,6 +297,11 @@ fn main() {
     let mut given: BTreeMap<&str, String> = BTreeMap::new();
     // Repeatable: replaces the saved list when given at all.
     let mut vhost_users: Vec<String> = Vec::new();
+    // Devices to add to this host's node (D167), never saved as given:
+    // each is recorded with its id once added.
+    let mut new_devices: Vec<String> = Vec::new();
+    let mut device_address: Option<String> = None;
+    let mut force_format = false;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| usage());
@@ -341,6 +372,23 @@ fn main() {
             }
             "--remove-key" => {
                 remove_key = true;
+                continue;
+            }
+            "--device" => {
+                let d = val();
+                if !d.starts_with('/') || d.contains([',', '=']) {
+                    eprintln!("hyperstor-install: bad value for --device: {d}");
+                    usage();
+                }
+                new_devices.push(d);
+                continue;
+            }
+            "--device-address" => {
+                device_address = Some(val());
+                continue;
+            }
+            "--force-format" => {
+                force_format = true;
                 continue;
             }
             "--passphrase-file" => {
@@ -416,6 +464,12 @@ fn main() {
             .collect::<String>(),
     );
 
+    // --device and its options belong to install only.
+    if cmd != "install" && (!new_devices.is_empty() || device_address.is_some() || force_format)
+        || new_devices.is_empty() && (device_address.is_some() || force_format)
+    {
+        usage();
+    }
     // --out, --in and --remove-key belong to the backup commands only.
     let backup = cmd.starts_with("root-");
     if (!backup && (out_file.is_some() || in_file.is_some() || remove_key))
@@ -448,6 +502,21 @@ fn main() {
                 if let Some(f) = join(&root, real, &mut s, token.as_deref()) {
                     cluster_file = Some(f);
                 }
+            }
+            if !new_devices.is_empty() {
+                // SAFETY: geteuid has no preconditions.
+                if real && unsafe { libc::geteuid() } != 0 {
+                    fail("adding a device needs root: run it with sudo");
+                }
+                add_devices(
+                    &root,
+                    real,
+                    &mut s,
+                    cluster_file.clone(),
+                    &new_devices,
+                    device_address,
+                    force_format,
+                );
             }
             install(&root, real, no_start, &s, cluster_file, ui_from)
         }
@@ -970,6 +1039,12 @@ struct NodePlan {
     n: u32,
     /// One reactor per address, as the cluster file lists them.
     shards: Vec<std::net::SocketAddr>,
+    /// Each one's device id (D169), named in `--shard` when it isn't the
+    /// position's.
+    ids: Vec<u32>,
+    /// A block device added (D167) for each shard that has one; the
+    /// others are files in the data directory.
+    paths: Vec<Option<String>>,
     admin: String,
 }
 
@@ -978,6 +1053,16 @@ struct NodePlan {
 /// earlier run).
 fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     let mut p = role_plan(root, s, cluster_file);
+    // Devices added to this host's nodes, after the nodes' own (D167).
+    for (id, addr, path) in s.devices() {
+        if let Some(n) = p.nodes.iter_mut().find(|n| n.n == id / 1000)
+            && !n.ids.contains(&id)
+        {
+            n.shards.push(addr);
+            n.ids.push(id);
+            n.paths.push(Some(path));
+        }
+    }
     p.vhost = s.runs_vhost().then(|| vhost_plan(s));
     if p.vhost.is_some() && p.map.is_empty() {
         fail("--vhost needs the map service's addresses: --map ADDR[,ADDR...]");
@@ -1086,6 +1171,8 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
                 .map(|n| NodePlan {
                     n,
                     shards: vec![([127, 0, 0, 1], s.node_port + n as u16).into()],
+                    ids: vec![n * 1000],
+                    paths: vec![None],
                     admin: format!("127.0.0.1:{}", s.admin_port + n as u16),
                 })
                 .collect(),
@@ -1158,6 +1245,8 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         nodes.push(NodePlan {
             n,
             shards: devs.iter().map(|d| d.addr).collect(),
+            ids: devs.iter().map(|d| d.id).collect(),
+            paths: vec![None; devs.len()],
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
         });
     }
@@ -1234,6 +1323,8 @@ fn joined_storage_plan(s: &Settings) -> Plan {
             shards: (0..s.reactors)
                 .map(|i| std::net::SocketAddr::new(ip, s.node_port + i as u16))
                 .collect(),
+            ids: (0..s.reactors).map(|i| n * 1000 + i).collect(),
+            paths: vec![None; s.reactors as usize],
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
         }],
         metrics: Vec::new(),
@@ -1617,13 +1708,25 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             .enumerate()
             .map(|(i, a)| {
                 // One file per reactor; a single-reactor node keeps the
-                // all-in-one's name.
-                let file = if node.shards.len() == 1 {
-                    format!("{data}/node-{n}.img")
-                } else {
-                    format!("{data}/node-{n}-{i}.img")
+                // all-in-one's name. A device added is used whole (size
+                // 0, D167).
+                let added = node.paths.get(i).cloned().flatten();
+                let files = node.paths.iter().filter(|p| p.is_none()).count();
+                let file = match &added {
+                    Some(path) => path.clone(),
+                    None if files == 1 => format!("{data}/node-{n}.img"),
+                    None => format!("{data}/node-{n}-{i}.img"),
                 };
-                format!("--shard {a}={file}:{}", s.size_gib)
+                let size = if added.is_some() { 0 } else { s.size_gib };
+                // The id only when it isn't the position's (D169), so
+                // existing installs' options stay as they were.
+                let id = node.ids.get(i).copied().unwrap_or(n * 1000 + i as u32);
+                let named = if id == n * 1000 + i as u32 {
+                    String::new()
+                } else {
+                    format!("{id}@")
+                };
+                format!("--shard {named}{a}={file}:{size}")
             })
             .collect();
         out.push((
@@ -1637,8 +1740,32 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             0o644,
         ));
     }
+    // The devices added (D167): the service user may open each, and no
+    // other disk (not the `disk` group, which would open every one).
+    let rules: String = s
+        .devices()
+        .iter()
+        .filter_map(|(_, _, path)| path.strip_prefix("/dev/disk/by-id/"))
+        .map(|name| {
+            // DEVLINKS lists the disk's links, space-separated: the name
+            // last, or followed by a space.
+            format!(
+                "SUBSYSTEM==\"block\", ENV{{DEVTYPE}}==\"disk\", ENV{{DEVLINKS}}==\"*/dev/disk/by-id/{name}|*/dev/disk/by-id/{name} *\", OWNER=\"hyperstor\", GROUP=\"hyperstor\", MODE=\"0660\"\n"
+            )
+        })
+        .collect();
+    if !rules.is_empty() {
+        out.push((
+            UDEV_RULES.to_string(),
+            format!("# Written by hyperstor-install: the block devices hyperstord uses.\n{rules}"),
+            0o644,
+        ));
+    }
     out
 }
+
+/// The udev rules for devices added (D167).
+const UDEV_RULES: &str = "/etc/udev/rules.d/60-hyperstor.rules";
 
 /// The cluster id: kept from an existing cluster file, else fresh.
 fn cluster_id(root: &Path) -> u64 {
@@ -2048,6 +2175,13 @@ fn install(
         if path.ends_with("mgmt.env") {
             restart.push("hyperstor-mgmt.service".into());
         }
+        if path == UDEV_RULES && real {
+            let _ = run("udevadm", &["control", "--reload-rules"]);
+            let _ = run(
+                "udevadm",
+                &["trigger", "--subsystem-match=block", "--action=change"],
+            );
+        }
         if let Some(n) = path
             .strip_prefix("/etc/hyperstor/node-")
             .and_then(|r| r.strip_suffix(".env"))
@@ -2293,6 +2427,278 @@ fn pki(
 const MIN_PASSPHRASE: usize = 12;
 
 /// `root-backup`: see the top of this file.
+/// Opens `path` as hyperstord does: `O_DIRECT`, or buffered where the
+/// filesystem refuses it (tmpfs, for tests). Never creates it.
+fn open_device(path: &str) -> Result<std::sync::Arc<dyn hyperstor_engine::BlockDev>, String> {
+    use hyperstor_engine::FileDev;
+    let p = Path::new(path);
+    Ok(match FileDev::open(p, true, None) {
+        Ok(d) => std::sync::Arc::new(d),
+        Err(_) => {
+            std::sync::Arc::new(FileDev::open(p, false, None).map_err(|e| format!("{path}: {e}"))?)
+        }
+    })
+}
+
+/// Adds the block devices `paths` to this host's storage node `s.node`
+/// (24-pools-and-devices.md §27.2.1; D167, D168). Each is checked for
+/// another system's signature before anything changes; registered with
+/// the map service by the `hyperstorctl` beside this installer
+/// (`device add`, through this member's API, or the leader's if this
+/// member isn't it); formatted with the id it was given; and recorded in
+/// `s.devices`, which this run and every later one turn into a `--shard`.
+/// A device already recorded is left as it is.
+fn add_devices(
+    root: &Path,
+    real: bool,
+    s: &mut Settings,
+    cluster_file: Option<String>,
+    paths: &[String],
+    address: Option<String>,
+    force: bool,
+) {
+    use std::os::unix::fs::FileTypeExt;
+    let n = s
+        .node
+        .unwrap_or_else(|| fail("--device needs --node N: the storage node to add it to"));
+    let pki = under(root, "/etc/hyperstor/pki");
+    if !pki.join("admin.key").exists() {
+        fail(
+            "--device needs the administrator's certificate, which map service hosts have; on a storage-only host, add the device from one (hyperstorctl device add) and its --shard by hand for now",
+        );
+    }
+    let p = plan(root, s, cluster_file);
+    let Some(node) = p.nodes.iter().find(|x| x.n == n) else {
+        fail(&format!("node {n} isn't this host's"));
+    };
+    let new: Vec<&String> = paths
+        .iter()
+        .filter(|path| !s.devices().iter().any(|d| &d.2 == *path))
+        .collect();
+    if address.is_some() && new.len() > 1 {
+        fail("--device-address names one device's address: add devices one at a time");
+    }
+    // The next free port after the node's own, skipping the others in use.
+    let ip = node
+        .shards
+        .first()
+        .map(|a| a.ip())
+        .unwrap_or_else(|| fail(&format!("node {n} has no address")));
+    let used: Vec<u16> = p
+        .nodes
+        .iter()
+        .flat_map(|x| x.shards.iter().map(|a| a.port()))
+        .chain([s.api_port, s.map_port, s.mgmt_port])
+        .chain((0..s.nodes.max(1)).map(|i| s.admin_port + i as u16))
+        .collect();
+    let mut port = node
+        .shards
+        .iter()
+        .map(|a| a.port())
+        .max()
+        .unwrap_or(s.node_port);
+    let ctl = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
+        .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
+    for path in new {
+        let meta = fs::metadata(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+        let block = meta.file_type().is_block_device();
+        if block && !path.starts_with("/dev/disk/by-id/") {
+            fail(&format!(
+                "{path}: name a block device by /dev/disk/by-id/: /dev/nvmeXnY and /dev/sdX can change at boot"
+            ));
+        }
+        // Before anything changes: refused here leaves the map as it was.
+        let dev = open_device(path).unwrap_or_else(|e| fail(&e));
+        let sig = hyperstor_engine::probe::signature(&dev)
+            .unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+        drop(dev);
+        if let Some(sig) = &sig
+            && !force
+        {
+            fail(&format!(
+                "{path} holds {sig}: not added. Check the path; --force-format overwrites it"
+            ));
+        }
+        let addr = match &address {
+            Some(a) => a
+                .parse::<std::net::SocketAddr>()
+                .unwrap_or_else(|_| fail(&format!("--device-address {a}: not IP:PORT"))),
+            None => {
+                port += 1;
+                while used.contains(&port) {
+                    port += 1;
+                }
+                std::net::SocketAddr::new(ip, port)
+            }
+        };
+        let id = register_device(&ctl, &p.api, &pki, s.api_port, n, addr);
+        match format_device(root, path, id, force) {
+            Ok(done) => println!("{done}"),
+            Err(e) => fail(&e),
+        }
+        if real && block {
+            // Now; the udev rule this run writes keeps it across boots.
+            let real_path = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+            if !run(
+                "chown",
+                &["hyperstor:hyperstor", &real_path.to_string_lossy()],
+            ) {
+                fail(&format!("chown hyperstor {} failed", real_path.display()));
+            }
+        }
+        let entry = format!("{id}@{addr}={path}");
+        s.devices = if s.devices.is_empty() {
+            entry
+        } else {
+            format!("{},{entry}", s.devices)
+        };
+        println!("added {path} to node {n} as device {id}, served at {addr}");
+    }
+}
+
+/// Registers a device at `addr` on node `n` (`hyperstorctl device add`)
+/// and returns its id: through `api`, else through the leader it names;
+/// an address already registered (a run that stopped before saving)
+/// gives that device back.
+fn register_device(
+    ctl: &Path,
+    api: &str,
+    pki: &Path,
+    api_port: u16,
+    n: u32,
+    addr: std::net::SocketAddr,
+) -> u32 {
+    let mut api = api.to_string();
+    for _ in 0..2 {
+        let out = Command::new(ctl)
+            .args(["--api", &api, "--tls"])
+            .arg(pki)
+            .args(["device", "add", "--node", &n.to_string(), "--address"])
+            .arg(addr.to_string())
+            .output()
+            .unwrap_or_else(|e| fail(&format!("{}: {e}", ctl.display())));
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let number_after = |key: &str| -> Option<u32> {
+            let rest = &text[text.find(key)? + key.len()..];
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()
+        };
+        if out.status.success()
+            && let Some(id) = number_after("device ")
+        {
+            return id;
+        }
+        if let Some(id) = number_after("is already device ")
+            && id / 1000 == n
+        {
+            return id;
+        }
+        // A follower: the leader's map address, and its API on our port.
+        if let Some(leader) = text
+            .split("the leader is ")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|a| {
+                a.trim_end_matches([')', '.', ','])
+                    .parse::<std::net::SocketAddr>()
+                    .ok()
+            })
+        {
+            api = std::net::SocketAddr::new(leader.ip(), api_port).to_string();
+            continue;
+        }
+        fail(&format!("hyperstorctl device add: {}", text.trim()));
+    }
+    fail("hyperstorctl device add: the leader kept moving; run it again")
+}
+
+/// `format-device --path P --id D [--force-format] [--root DIR]`
+/// (D168): formats a block device for `hyperstord`, which formats only
+/// files. Exits.
+fn format_device_cmd(args: &[String]) -> ! {
+    let (mut path, mut device, mut force, mut root) = (None, None, false, PathBuf::from("/"));
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().unwrap_or_else(|| usage());
+        match a.as_str() {
+            "--path" => path = Some(val()),
+            "--id" => device = Some(val().parse::<u32>().unwrap_or_else(|_| usage())),
+            "--force-format" => force = true,
+            "--root" => root = PathBuf::from(val()),
+            _ => usage(),
+        }
+    }
+    let (Some(path), Some(device)) = (path, device) else {
+        usage()
+    };
+    match format_device(&root, &path, device, force) {
+        Ok(done) => {
+            println!("{done}");
+            std::process::exit(0)
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+/// Formats `path` as device `id` (D168), only when it holds no other
+/// signature (hyperstor_engine::probe), unless `force`: then its first
+/// and last 128 KiB are zeroed first, so no old signature is left for
+/// other tools to find. The cluster is the installed cluster file's, or
+/// 0, which the node replaces with the map's at its first start (I203).
+fn format_device(root: &Path, path: &str, id: u32, force: bool) -> Result<String, String> {
+    use hyperstor_engine::{AlignedBuf, DeviceConfig};
+    let dev = open_device(path)?;
+    // Run again (a later install): already this device, so done.
+    if let Ok(i) = hyperstor_engine::device_info(&dev)
+        && i.device_id == id as u128
+    {
+        return Ok(format!("{path} is device {id} already"));
+    }
+    let found = hyperstor_engine::probe::signature(&dev).map_err(|e| format!("{path}: {e}"))?;
+    if let Some(sig) = &found {
+        if !force {
+            return Err(format!(
+                "{path} holds {sig}: not formatted. Check the path; --force-format overwrites it"
+            ));
+        }
+        let span = (128u64 << 10).min(dev.len());
+        let zero = AlignedBuf::zeroed(span as usize);
+        for at in [0, dev.len() - span] {
+            dev.write(at, &zero).map_err(|e| format!("{path}: {e}"))?;
+        }
+        dev.flush().map_err(|e| format!("{path}: {e}"))?;
+    }
+    let cluster: u128 = fs::read_to_string(root.join("etc/hyperstor/cluster.txt"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.trim().strip_prefix("cluster ")?.trim().parse().ok())
+        })
+        .unwrap_or(0);
+    hyperstor_engine::format(
+        &dev,
+        &DeviceConfig {
+            device_id: id as u128,
+            cluster_id: cluster,
+            shards: 1,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
+    Ok(match found {
+        Some(sig) => format!("formatted {path} as device {id} of cluster {cluster}, over {sig}"),
+        None => format!("formatted {path} as device {id} of cluster {cluster}"),
+    })
+}
+
 fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
     if passphrase.chars().count() < MIN_PASSPHRASE {
         fail(&format!(
@@ -2483,6 +2889,54 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 mod tests {
     use super::*;
 
+    /// D168: format-device formats a blank device with the installed
+    /// cluster's id, refuses one that holds another system's signature
+    /// (or hyperstor's), and overwrites it only when forced.
+    #[test]
+    fn format_device_refuses_foreign_signatures_unless_forced() {
+        let dir = std::env::temp_dir().join(format!("hs-fmtdev-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("etc/hyperstor")).unwrap();
+        fs::write(dir.join("etc/hyperstor/cluster.txt"), "cluster 42\n").unwrap();
+        let disk = dir.join("disk");
+        let f = fs::File::create(&disk).unwrap();
+        f.set_len(64 << 20).unwrap();
+        drop(f);
+        let d = disk.to_str().unwrap();
+        let done = format_device(&dir, d, 1002, false).unwrap();
+        assert_eq!(done, format!("formatted {d} as device 1002 of cluster 42"));
+        // Formatted already: refused, naming it.
+        let e = format_device(&dir, d, 1003, false).unwrap_err();
+        assert!(
+            e.contains("hyperstor device (device 1002 of cluster 42)"),
+            "{e}"
+        );
+        // An LVM physical volume: refused; forced, overwritten.
+        let mut b = vec![0u8; 8192];
+        b[512..520].copy_from_slice(b"LABELONE");
+        b[536..544].copy_from_slice(b"LVM2 001");
+        fs::write(&disk, &b).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&disk)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let e = format_device(&dir, d, 1003, false).unwrap_err();
+        assert!(
+            e.contains("an LVM physical volume") && e.contains("--force-format"),
+            "{e}"
+        );
+        let done = format_device(&dir, d, 1003, true).unwrap();
+        assert!(done.ends_with("over an LVM physical volume"), "{done}");
+        let head = fs::read(&disk).unwrap();
+        assert!(
+            !head.windows(8).any(|w| w == b"LABELONE"),
+            "the label is gone"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn settings_round_trip_and_flags_override() {
         let mut s = Settings::defaults();
@@ -2495,6 +2949,75 @@ mod tests {
         t.apply("nodes = 2\n");
         assert_eq!(t.nodes, 2);
         assert_eq!(t.data_dir, "/srv/hs");
+    }
+
+    /// D167: devices added are kept in install.conf and become `--shard`
+    /// options after the node's own, used whole (size 0), named by id
+    /// when it isn't the position's; block devices by-id get a udev rule
+    /// for the service user; install.conf has no `devices` line until
+    /// there is one.
+    #[test]
+    fn added_devices_become_shards_and_udev_rules() {
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100 10.0.0.1:9101\n\
+                       pool 1 vol replicated size 1 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        assert!(!s.save().contains("devices"), "no line until there is one");
+        s.devices =
+            "2@10.0.0.1:9102=/dev/disk/by-id/nvme-X_1,5@10.0.0.1:9103=/srv/extra.img".into();
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert_eq!(t.devices, s.devices, "kept across runs");
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        let f = files(&s, &p);
+        let get = |name: &str| &f.iter().find(|x| x.0 == name).unwrap().1;
+        let env = get("/etc/hyperstor/node-0.env");
+        for want in [
+            "--shard 10.0.0.1:9100=/var/lib/hyperstor/node-0-0.img:4",
+            "--shard 10.0.0.1:9101=/var/lib/hyperstor/node-0-1.img:4",
+            "--shard 10.0.0.1:9102=/dev/disk/by-id/nvme-X_1:0",
+            "--shard 5@10.0.0.1:9103=/srv/extra.img:0",
+        ] {
+            assert!(env.contains(want), "{want}: {env}");
+        }
+        let rules = get(UDEV_RULES);
+        assert!(
+            rules.contains(
+                "ENV{DEVLINKS}==\"*/dev/disk/by-id/nvme-X_1|*/dev/disk/by-id/nvme-X_1 *\""
+            ) && rules.contains("OWNER=\"hyperstor\""),
+            "{rules}"
+        );
+        assert!(!rules.contains("extra.img"), "files need no rule");
+    }
+
+    /// D169: a device id the cluster file names is passed to `--shard`
+    /// when it isn't the position's; positional ones are written as
+    /// before, so an existing install's options don't change.
+    #[test]
+    fn named_device_ids_reach_the_node_options() {
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100 2@10.0.0.1:9102\n\
+                       pool 1 vol replicated size 1 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        assert!(
+            env.contains("--shard 10.0.0.1:9100=/var/lib/hyperstor/node-0-0.img:4"),
+            "{env}"
+        );
+        assert!(
+            env.contains("--shard 2@10.0.0.1:9102=/var/lib/hyperstor/node-0-1.img:4"),
+            "{env}"
+        );
     }
 
     #[test]

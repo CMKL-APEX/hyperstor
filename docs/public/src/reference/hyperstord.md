@@ -3,14 +3,14 @@
 A storage node. See [Storage nodes](../admin-guide/storage-nodes.md).
 
 ```text
-usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]
+usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--node N` | required | This node's number in the [cluster file](cluster-file.md) |
 | `--meta ADDR` | required | `IP:PORT` of the map service; with several members, all of them separated by commas (`IP:PORT,IP:PORT,…`), and the node finds the leader |
-| `--shard ADDR=PATH:SIZE_GIB` | at least one | One device: serve it on `ADDR` (as listed for this node in the cluster file, in order), store it in `PATH` (a file of `SIZE_GIB` GiB, created if needed, or a block device with size `0`). Repeat for each device |
+| `--shard [ID@]ADDR=PATH:SIZE_GIB` | at least one | One device: serve it on `ADDR` (as listed for this node in the cluster file, in order), store it in `PATH` (a file of `SIZE_GIB` GiB, created if needed, or a block device with size `0`, formatted first with `hyperstor-install format-device`: `hyperstord` formats only files). Repeat for each device. The device is `ID` if given (one of the node's, `N × 1000` to `N × 1000 + 999`), else `N × 1000 +` its position among the `--shard` options; the map must have it on this node at `ADDR`, or the node stops (it asks the map again for 5 s first, so a device just added with `hyperstorctl device add` is found) |
 | `--cpus LIST` | not pinned | Comma-separated CPUs; the i-th `--shard`'s thread runs on the i-th CPU |
 | `--buffered` | off | Use the page cache instead of `O_DIRECT`, for testing |
 | `--hdd` | off | The devices are hard disks: defer small overwrites through the log |

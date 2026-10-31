@@ -65,6 +65,268 @@ fn status_and_tables() {
     c.ctl(&["pg-grid", "--pool", "9"]).expect(1);
 }
 
+/// D167: a device appended to a running node waits at weight 0, so
+/// nothing moves; once the node is restarted with one more `--shard`, the
+/// device reports its capacity, is weighted, and PGs move onto it, while
+/// the data written before reads back. An address in use and a node that
+/// isn't there are refused, and the change is audited.
+#[test]
+fn a_device_is_added_to_a_running_node() {
+    let mut c = Cluster::all_in_one("adddev", 3);
+    let made = c
+        .ctl(&["create-volume", "--size", "16M", "--name", "before"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let data: Vec<u8> = (0..(8u32 << 20)).map(|i| (i % 251) as u8).collect();
+    let src = c.scratch.path("before.raw");
+    std::fs::write(&src, &data).unwrap();
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    // Each device's (id, weight), and the PGs that list device 1.
+    let devices = |c: &Cluster| -> Vec<(u64, f64)> {
+        // Exit status 1 while health is warn (backfilling): read it anyway.
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["weight"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect()
+    };
+    let on_device_1 = |c: &Cluster| -> usize {
+        let s = c.ctl(&["pgs", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["acting"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(1)))
+            })
+            .count()
+    };
+    let addr = format!("127.0.0.1:{}", free_ports(1));
+    let add = c
+        .ctl(&["device", "add", "--node", "0", "--address", &addr])
+        .ok();
+    assert!(add.has("device 1 added to node 0"), "{}", add.out);
+    // Published once fenced, as other map changes are.
+    wait_for("device 1 in the map at weight 0", 10, || {
+        devices(&c).contains(&(1, 0.0)).then_some(())
+    });
+    assert_eq!(on_device_1(&c), 0, "nothing placed on it yet");
+    c.ctl(&["device", "add", "--node", "1", "--address", &addr])
+        .expect(1);
+    c.ctl(&["device", "add", "--node", "9", "--address", "127.0.0.1:1"])
+        .expect(1);
+    c.ctl(&["device", "add", "--node", "0"]).expect(2);
+    // The node runs it once restarted with one more --shard.
+    c.kill_node(0);
+    let img = c.data_dir().join("node-0-1.img");
+    let shard = format!("{addr}={}:1", img.display());
+    c.start_node_with(0, &["--shard", &shard]);
+    wait_for("device 1 weighted by its capacity", 30, || {
+        devices(&c)
+            .iter()
+            .any(|(d, w)| *d == 1 && *w > 0.0)
+            .then_some(())
+    });
+    wait_for("PGs on device 1, and health ok", 120, || {
+        (on_device_1(&c) > 0 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+    let out = c.scratch.path("after.raw");
+    c.ctl(&[
+        "read-volume",
+        "--id",
+        &id,
+        "--size",
+        &data.len().to_string(),
+        "--out",
+        out.to_str().unwrap(),
+    ])
+    .ok();
+    assert!(std::fs::read(&out).unwrap() == data, "the data reads back");
+    wait_for("the change in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "AddDevice"]).ok();
+        a.has(&format!("node 0 address {addr}")).then_some(())
+    });
+}
+
+/// D169: a reactor serves only a device the map has, on its node, at its
+/// address; a `--shard` the map lacks or places elsewhere stops the node,
+/// saying why. A device id can be named (`--shard ID@ADDR=...`), so a
+/// node can run its second added device without its first.
+#[test]
+fn a_shard_must_be_the_maps_and_can_name_its_id() {
+    let mut c = Cluster::all_in_one("deviceids", 3);
+    let ports = free_ports(2);
+    let (a, b) = (
+        format!("127.0.0.1:{ports}"),
+        format!("127.0.0.1:{}", ports + 1),
+    );
+    let img = |i: u32| c.data_dir().join(format!("node-0-{i}.img"));
+    let (img1, img2) = (img(1), img(2));
+    let stopped_saying = |c: &mut Cluster, what: &str| {
+        wait_for("node 0 to stop", 20, || c.node_exited(0));
+        let log = c.node_log(0);
+        assert!(log.contains(what), "{log}");
+    };
+    // Not in the map: refused, after asking again for a few seconds.
+    c.kill_node(0);
+    c.start_node_with(0, &["--shard", &format!("7@{a}={}:1", img1.display())]);
+    stopped_saying(&mut c, "device 7: not in the map");
+    // Its file is made (sparse) before the check, but nothing is written:
+    // no superblock.
+    let mut head = vec![0u8; 64 << 10];
+    if let Ok(mut f) = std::fs::File::open(&img1) {
+        use std::io::Read;
+        let _ = f.read_exact(&mut head);
+    }
+    assert!(
+        head.iter().all(|&x| x == 0),
+        "nothing written for a refused device"
+    );
+    // Two devices added: 1 at a, 2 at b.
+    c.ctl(&["device", "add", "--node", "0", "--address", &a])
+        .ok();
+    let add = c
+        .ctl(&["device", "add", "--node", "0", "--address", &b])
+        .ok();
+    assert!(add.has("device 2 added"), "{}", add.out);
+    // Device 2 at device 1's address: refused.
+    c.start_node_with(0, &["--shard", &format!("2@{a}={}:1", img2.display())]);
+    stopped_saying(&mut c, "device 2: the map has it on node 0 at");
+    // Device 2 by its id, without device 1: served, weighted, given PGs.
+    c.start_node_with(0, &["--shard", &format!("2@{b}={}:1", img2.display())]);
+    wait_for("device 2 weighted by its capacity", 30, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(2) && d["weight"].as_f64().unwrap_or(0.0) > 0.0)
+            .then_some(())
+    });
+    assert!(c.node_exited(0).is_none(), "node 0 runs");
+}
+
+/// D167, D168: `hyperstor-install install --node N --device PATH` adds a
+/// device to an installed node: checked for another system's data first
+/// (refused with the map unchanged), registered, formatted, recorded in
+/// install.conf and written into the node's options, so a later run keeps
+/// it and the node runs it once restarted.
+#[test]
+fn the_installer_adds_a_device_to_a_node() {
+    let mut c = Cluster::all_in_one("instdev", 3);
+    let device_ids = |c: &Cluster| -> Vec<u64> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| d["id"].as_u64().unwrap_or(0))
+            .collect()
+    };
+    let addr = format!("127.0.0.1:{}", free_ports(1));
+    // An LVM physical volume: refused before the map changes.
+    let lvm = c.scratch.path("lvm.img");
+    let mut b = vec![0u8; 8192];
+    b[512..520].copy_from_slice(b"LABELONE");
+    b[536..544].copy_from_slice(b"LVM2 001");
+    std::fs::write(&lvm, &b).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&lvm)
+        .unwrap()
+        .set_len(64 << 20)
+        .unwrap();
+    let refused = install_cmd(
+        &c.root,
+        "install",
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            lvm.to_str().unwrap(),
+            "--device-address",
+            &addr,
+        ],
+    );
+    assert!(
+        refused.code != 0 && refused.has("an LVM physical volume"),
+        "{}",
+        refused.out
+    );
+    assert!(!device_ids(&c).contains(&1), "nothing registered");
+    // A blank disk: added as device 1.
+    let disk = c.scratch.path("extra.img");
+    std::fs::File::create(&disk)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let d = disk.to_str().unwrap();
+    let added = install(
+        &c.root,
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            d,
+            "--device-address",
+            &addr,
+        ],
+    );
+    assert!(
+        added.has(&format!(
+            "added {d} to node 0 as device 1, served at {addr}"
+        )),
+        "{}",
+        added.out
+    );
+    let conf = std::fs::read_to_string(c.root.join("etc/hyperstor/install.conf")).unwrap();
+    assert!(conf.contains(&format!("devices = 1@{addr}={d}")), "{conf}");
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert!(env.contains(&format!("--shard {addr}={d}:0")), "{env}");
+    // A later run keeps it, and adds nothing twice.
+    let again = install(&c.root, &["--no-start", "--node", "0", "--device", d]);
+    assert!(!again.has("added"), "{}", again.out);
+    let env2 = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert_eq!(env, env2);
+    // The node runs it once restarted from its options.
+    c.kill_node(0);
+    c.start_node(0);
+    wait_for("device 1 weighted, with PGs, and health ok", 120, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let weighted = v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(1) && d["weight"].as_f64().unwrap_or(0.0) > 0.0);
+        let pgs: serde_json::Value = serde_json::from_str(&c.ctl(&["pgs", "--json"]).out).ok()?;
+        let on_1 = pgs["pgs"].as_array()?.iter().any(|p| {
+            p["acting"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(1)))
+        });
+        (weighted && on_1 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

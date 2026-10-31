@@ -854,3 +854,70 @@ point 114's first stage is built (I199), with tests; it is not settled.
 Settled on 2026-10-31, both as recommended: point 114 as D165, point
 115 as D166. Host check G43 (17-milestones.md §22) measures stage 1 on
 the pilot.
+
+## Pools and devices at run time (2026-10-31)
+
+A node's devices are fixed when it joins, a pool's when the map service
+first starts, and a pool's PG count when it is made (24-pools-and-devices.md
+§27.1). On the pilot a free 3.5 TB NVMe drive can't be added to the node
+on its host, and no pool can be made for it. Asked by the owner to design
+pools whose space follows the devices added and removed, and that may
+use several classes of devices. Two points were answered first:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 116 | What "a pool's size follows its devices" means: its capacity (data rebalances, the PG count grows, removals drain first; recommended); its copy count; both | Capacity | D163 |
+| 117 | How a pool uses several classes: any device of a set, by capacity (recommended); a class per copy position; tiers by preference | Any of a set | D164 |
+
+The design (24-pools-and-devices.md §27) follows the recommendations
+below; none is settled.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 118 | **How a device joins a running node** | (a) `AddDevice` in the cluster API (`hyperstorctl device add`), and a node's join may append addresses after its own; the installer records `--device` and does both; (b) a node joins again with all its addresses; (c) the cluster file, read again | (a). The map service is the record of devices since D72, so a call changes it. A storage-only host has no administrator certificate, so its join may append. (c) is read only at the first start |
+| 119 | **Who formats a block device, and how a device is known.** The identity half, (a)'s check of the device's and cluster's ids, is built (I203) | (a) the installer, after checking for other signatures (partition tables, LVM, Ceph BlueStore, md, filesystems), with `--force-format`; `hyperstord` formats files only, and refuses a device whose superblock names another device or cluster; (b) `hyperstord` checks signatures itself and formats; (c) as today | (a). `hyperstord` formats without asking, and a Ceph disk has no hyperstor magic; NVMe names can change at boot. Formatting is the operator's step, and the ids are fields the superblock has |
+| 120 | **Device ids** | (a) named in `--shard ID@ADDR=PATH`, kept in the map, never reused; (b) by position, with removed positions left empty | (a). Removing a device that isn't a node's last would renumber the rest by position, and (b) leaves holes in every list |
+| 121 | **Adding a device to a running `hyperstord`** | (a) a restart, which the installer does; (b) a reactor started without a restart | (a) now: the node's other devices keep their data and a short down is held as any (D149). (b) later, if restarts prove costly |
+| 122 | **What a pool without classes uses** | (a) every device, for pools made before class sets only; a new pool names its classes; (b) every device, always | (a). With several kinds, "every device" mixes them, and a device of a new class would join pools nobody chose for it. Old pools keep their meaning, so an upgrade moves nothing |
+| 123 | **Hard disks and flash in one class set** | (a) refused (§5.2), except in cache pools; (b) allowed, with a warning | (a). A write waits for its slowest copy (§8.1). A cache pool keeps one copy, so its writes don't wait on another kind |
+| 124 | **How the PG count grows** | (a) split in place, then move the new PGs gradually: a pool's PG count doubles, a placement count follows later, and each device moves the objects of `p + 2^n` to their new keys without copying; (b) double and re-place at once; (c) a count fixed large enough at creation | (a), as Ceph does with `pg_num` and `pgp_num`. `pg_of` reduces by `mod 2^n`, so children start on their parent's devices; no data moves twice. (b) moves half the pool at once. (c) costs memory and peering per PG while the pool is small |
+| 125 | **Who changes the PG count, and merges** | (a) the map service doubles a pool's count when it passes twice the target per device, one pool at a time, never while degraded; the operator can set it or turn it off; merges only by the operator, later; (b) only the operator; (c) both directions automatic | (a). Growth is what device additions need; a merge needs two PGs' members to agree and is rarely worth it |
+| 126 | **When removing a device is refused** | (a) when a pool using it would have fewer failure domains than copies, or pass its `full` threshold without it; `--dry-run` shows what would move; (b) allowed, the pool left degraded | (a). A removal is planned; leaving pools degraded or full is what D27 and §5.3 avoid |
+| 127 | **Deleting a pool that holds data** | (a) refused while it holds volumes, snapshots or trash; (b) `--force` deletes them | (a), as 19-administration.md §23 says ("delete when empty"). Deleting volumes is a separate, audited step, with trash |
+
+Settled on 2026-10-31, every point as recommended, with three force
+options the owner added: point 118 as D167, 119 as D168, 120 as D169,
+121 as D170 (adding a reactor without a restart later), 122 as D171, 123
+as D172 (`--force` allows a pool mixing hard disks and flash, with a
+warning), 124 as D173, 125 as D174, 126 as D175 (`--force` removes a
+device leaving pools degraded, never below `min`), 127 as D176
+(`--force` deletes a pool's volumes, snapshots and trash first). Host
+check G44 (17-milestones.md §22) measures adding a device and a split on
+the pilot.
+
+## Object storage: S3 before the whole key–value store (2026-10-31)
+
+S3 is designed and settled (D36, 14-s3.md §14) but not built: HS12 waits
+for erasure coding (HS7) and the whole of `hyperstor-kv` (HS11, D35),
+neither started. Asked by the owner how hyperstor would serve object
+storage, the points below are where the design could start S3 sooner, or
+leaves a choice open. The object layer already has what a first gateway
+needs below the index: an `S3` namespace for object keys, a key–value
+table per object (an audit object holds 660,234 keys, I188), atomic
+operation lists with assertions on one object, and placement by name.
+None is settled.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 128 | **How much of `hyperstor-kv` S3 needs.** Every index change S3 makes (a PUT, a DELETE, a multipart completion, a version and its "latest" key) touches one key, or keys of one object name, which one range holds. D35's transactions across ranges, with the timestamp oracle, serve the filesystem (a rename across directories) | (a) split HS11: HS11a, ranges (a range is an object with a key–value table; splits, merges, the root range), atomic within a range; HS11b, transactions and the oracle; HS12 depends on HS11a; (b) as planned, HS12 after the whole of HS11 | (a). The range layer is most of what S3 needs and the engine already gives one-range atomicity; transactions keep their model-checked milestone for the filesystem |
+| 129 | **S3 before erasure coding** | (a) buckets on replicated pools first; EC pools when HS7 lands, chosen per bucket's data pool; (b) as planned, HS12 after HS7 | (a). Replicated pools are built and tested; a bucket's data moves to EC only by choosing another pool. HS7 still matters for the cost of large buckets |
+| 130 | **Collecting the data an overwrite or delete leaves** | (a) the index change also writes a collection record (the old object's chunks) in the same range, atomically; a collector deletes the chunks, then the record; (b) a collector scans buckets against the chunks they hold | (a). Nothing is scanned, a crash leaves at most a record to finish, and the cost follows the deletes, not the bucket's size |
+| 131 | **Copy object** | (a) copies the data; (b) shares the source's chunks, with a reference count per chunk object | (a) first. (b) makes copies instant (model weights, checkpoints) but every delete then reads and updates counts; it can come later without changing (a)'s objects |
+| 132 | **Conditional writes** (`If-Match`, `If-None-Match` on PUT) | (a) an engine assertion on one key of a key–value table (absent, or equal to a value's checksum), beside the object assertions there are; (b) a lock object per key | (a). One more assertion in the same atomic list; (b) costs a write per request |
+| 133 | **The gateway's HTTP stack** | (a) hyper and rustls on tokio, handing each chunk to the client library's reactors; (b) HTTP on a reactor, written for it | (a). D3 keeps third-party runtimes off the storage nodes' data path; the gateway is its own process, a hop between threads is small next to a 4 MiB chunk, and S3 over RDMA (§14.3) bypasses the gateway's data path anyway |
+| 134 | **ETags** | (a) the MD5 of a single PUT's body, as S3 does, computed as it streams; multipart as S3 does (MD5 of the parts' MD5s); CRC32C stored natively; (b) MD5 only when the client sends `Content-MD5` | (a). Clients and sync tools compare ETags with MD5s; G45 measures the cost per core |
+| 135 | **Where bucket names and access keys live** | (a) bucket names in the key–value store's root range, one namespace per cluster; access keys in `hyperstor-mgmt`'s credential store, per tenant, or issued by glidex per project; (b) buckets in `.meta`, as volume headers | (a). The root range is where every bucket's index range starts, and listing buckets is a range scan |
+| 136 | **A bucket's pools** | (a) a data pool and an index pool, chosen at creation: data on bulk classes (EC later), the index on flash classes (D164); a pool used by a bucket can't be deleted (24-pools-and-devices.md §27.3.4); (b) one pool for both | (a). Index ranges are small random reads and writes; data is large and written once |
+| 137 | **Addressing** | (a) path-style (`/bucket/key`) and virtual-hosted (`bucket.endpoint/key`, with a wildcard DNS name and certificate); (b) path-style only | (a), path-style first. AWS deprecated path-style for new buckets; many SDKs default to virtual-hosted |
+
+Host check G45 (17-milestones.md §22) measures the gateway on the pilot.

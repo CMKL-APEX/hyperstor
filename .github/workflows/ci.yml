@@ -9,7 +9,8 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    # Long-lived feature branches take pull requests too (elastic pools).
+    branches: [ "main", "feature/**" ]
   # Nightly, with many more crash-test seeds than a pull request can wait for.
   schedule:
     - cron: "17 19 * * *"

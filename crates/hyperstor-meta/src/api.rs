@@ -895,6 +895,82 @@ impl ClusterService for Api {
         }
     }
 
+    async fn add_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::AddDeviceRequest>,
+    ) -> ServiceResult<pb::AddDeviceResponse> {
+        let class = req.class.map(str::to_string);
+        let target = format!(
+            "node {} address {}{}",
+            req.node,
+            req.address,
+            class
+                .as_ref()
+                .map_or(String::new(), |c| format!(" class {c}"))
+        );
+        let who = self.authorize(&ctx, "AddDevice", &target, true)?;
+        let addr = req
+            .address
+            .parse::<SocketAddr>()
+            .ok()
+            .filter(|a| !a.ip().is_unspecified() && a.port() != 0)
+            .ok_or_else(|| {
+                with_reason(
+                    ConnectError::invalid_argument(format!(
+                        "{}: not an address a node can listen on",
+                        req.address
+                    )),
+                    "invalid_argument",
+                )
+            })?;
+        if let Some(c) = class.as_deref().filter(|c| !crate::valid_class(c)) {
+            return Err(with_reason(
+                ConnectError::invalid_argument(format!(
+                    "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+                )),
+                "invalid_argument",
+            ));
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::AddDevice {
+                node: req.node,
+                addr,
+                class,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "AddDevice",
+            &target,
+            &match &r {
+                Some(Ok((device, epoch))) => format!("ok, device {device}, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((device, map_epoch))) => Ok(pb::AddDeviceResponse {
+                device,
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no node") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "device_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn list_volumes(
         &self,
         ctx: RequestContext,
