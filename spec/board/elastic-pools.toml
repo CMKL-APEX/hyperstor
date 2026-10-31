@@ -1,9 +1,9 @@
-title = "Pools and devices at run time, and S3 sooner (D163, D164; points 118–137)"
+title = "Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)"
 status = "review"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-10-31
 updated = 2026-10-31
 branch = "feature/elastic-pools"
 prs = [96]
-now = "Design drafted in 24-pools-and-devices.md §27: devices added and removed on running nodes, identity and formatting, class sets, pools made and deleted, PG splits; and points 128–137 on serving S3 sooner (14-s3.md §14.5)"
-next = "The owner's answers to points 118–137; then stage 1 (devices added to a running node). Work lands on feature/elastic-pools; it merges into main once the required features are in"
+now = "Design settled: points 116–127 as D163, D164 and D167–D176 (with forced variants for mixed kinds, degraded removals and deleting pools with data); S3 points 128–137 open"
+next = "Merge #96 into feature/elastic-pools; then stage 1: AddDevice (1a), explicit device ids (1b), the format rule (1c), the installer's --device (1d), nvme6n1 on the pilot (1e)"

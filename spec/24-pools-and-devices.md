@@ -6,10 +6,11 @@ Part of the hyperstor design; sections keep their numbers across
 documents, so `§N` in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **draft for review** (2026-10-31). D163 and D164 are settled;
-the identity check of §27.2.2 is built (I203); points 118–127 of [05-decision-log.md](05-decision-log.md) are open, with
-recommendations, and this document follows the recommendations. Nothing
-here is built.
+Status: **settled, not yet built** (2026-10-31): D163, D164 and
+D167–D176 (points 116–127 of [05-decision-log.md](05-decision-log.md)).
+Of it, only the identity check of §27.2.2 is built (I203). The work
+lands on the branch `feature/elastic-pools`, which merges into `main`
+once the required features are in.
 
 ## 27. Pools and devices at run time
 
@@ -67,7 +68,7 @@ device weights from capacity (D158).
     NVMe generic device, for passthrough), never the `disk` group.
 - Adding a device to a running node: the installer formats it (§27.2.2),
   registers it (`AddDevice`, or the join above), rewrites `node-N.env`
-  and restarts `hyperstord` (point 121). The node's other devices keep
+  and restarts `hyperstord` (D170; a reactor started without a restart comes later). The node's other devices keep
   their data; a restart is a short down, held as any other (D149).
 - **Data moves once it runs.** The new device reports its space as its
   reactor starts; the map service weights it by capacity at once (D158)
@@ -100,7 +101,7 @@ device weights from capacity (D158).
   `ID@`, the position gives it, as today. The map keeps each device's id
   and address; nothing derives one from the other. Why: removing a
   device that isn't the last would otherwise renumber the ones after it
-  (point 120).
+  (D169).
 - A device's id is never reused, as a pool's isn't (§27.3.4).
 
 #### 27.2.4 Classes
@@ -123,10 +124,15 @@ device weights from capacity (D158).
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
    PGs move to the other devices of their pools.
-2. It is refused at the start (point 126) when, without the device, a
-   pool that uses it would have fewer failure domains than copies (or
-   EC shards), or its data would pass the pool's `full` threshold (D27).
-   `--dry-run` shows the PGs that would move and the space left.
+2. It is refused at the start (D175) when, without the device, a pool
+   that uses it would have fewer failure domains than copies (or EC
+   shards), or its data would pass the pool's `full` threshold (D27).
+   `--force` overrides the first: such a pool runs degraded, with fewer
+   copies than its `size`, but never fewer than its `min`, below which
+   it would stop taking writes. The space check isn't forceable: data
+   that fits nowhere else can't leave the device. `--dry-run` shows the
+   PGs that would move, the pools that would be degraded and the space
+   left.
 3. When no PG lists the device in `up` or `acting`, the map service
    removes it from the map, and the installer (or the operator) removes
    its `--shard` and restarts the node. A node whose last device goes is
@@ -157,7 +163,7 @@ device weights from capacity (D158).
 | Class set | PGs move to the devices of the new set; refused when the new set has fewer domains than copies |
 | Thresholds | Only accounting |
 | Failure domain | PGs move; refused as above |
-| PG count | Only up, by doubling (§27.5), unless point 125 decides otherwise |
+| PG count | Only up, by doubling (§27.5, D174) |
 | Name | Only the name |
 
 Not changed: the kind, copies, `min`, the chunk size (D9: fixed per pool;
@@ -178,8 +184,9 @@ copy of the volumes.
 
 - **`DeletePool`** is a long operation, with step-up and `--dry-run`
   (19-administration.md §23). It is refused while the pool holds a
-  volume, a snapshot or anything in trash (point 127), or while a bucket
-  uses it (point 136); glidex datastores
+  volume, a snapshot or anything in trash, or while a bucket uses it
+  (D176; point 136). `--force` deletes those first, each one audited,
+  after `--dry-run` has listed them. glidex datastores
   name a pool, so glidex must stop using one first (16-glidex.md §17).
 - Then: the pool is marked deleting in the map (clients get
   `not_found`), each device deletes its objects in the pool's PGs (the
@@ -197,13 +204,15 @@ copy of the volumes.
   for every pool (D158).
 - **An empty set** (every device) stays as the meaning for pools made
   before class sets, so nothing moves on upgrade. A new pool names its
-  classes (point 122). Why: with devices of several kinds, "every
+  classes (D171). Why: with devices of several kinds, "every
   device" mixes them silently, and a device added later of a new class
   would join pools nobody chose for it.
 - **Hard disks and flash don't mix** in one pool (§5.2): a class set
   whose kinds include `hdd` and any flash kind is refused, unless the
-  pool is a cache pool (point 123). Why: a replicated write waits for its
-  slowest copy (§8.1).
+  pool is a cache pool (D172). `--force` allows it: the call warns, the
+  audit record says it was forced, and `hyperstorctl pools` and the UI
+  mark the pool. Why: a replicated write waits for its slowest copy
+  (§8.1); an operator may still accept that, knowingly.
 - `.meta` uses flash only: its set is every flash class, and it follows
   them as they change (§4.2).
 - A PG may hold copies on devices of different classes in the set; its
@@ -215,7 +224,7 @@ copy of the volumes.
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting
   each copy. A pool on 6 devices with 3 copies wants about 200 PGs, so
   256; the same pool on 60 devices, 2,048.
-- **Splitting** (point 124). `pg_of` reduces the hash by `mod 2^n`
+- **Splitting** (D173). `pg_of` reduces the hash by `mod 2^n`
   (`hyperstor-placement`), so when the count doubles the chunks of PG
   `p` go to `p` or `p + 2^n`, on the devices that already hold `p`:
   1. The pool gets a new count, and **a placement count** that stays at
@@ -235,8 +244,8 @@ copy of the volumes.
   and bounded. Ceph splits the same way (`pg_num`, then `pgp_num`).
 - **Merging** (halving) is the reverse and more delicate: two PGs' members
   must first agree, which needs both on the same devices. It comes
-  later, and only by the operator (point 125).
-- **Who decides** (point 125): the map service doubles a pool's count
+  later, and only by the operator (D174).
+- **Who decides** (D174): the map service doubles a pool's count
   when its PGs per device pass twice the target, at most one pool at a
   time, and never while the cluster is degraded. `pool set --pgs N`
   does it by hand; `--autoscale off` stops it per pool.
@@ -279,4 +288,4 @@ Each stage is a milestone item with its own pull requests and tests:
 3. Pools made, changed and deleted (§27.3).
 4. Devices removed (§27.2.5).
 5. PG splits and the autoscaler (§27.5).
-6. Merges, if point 125 asks for them.
+6. Merges, by the operator (D174), when needed.

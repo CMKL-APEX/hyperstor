@@ -885,8 +885,15 @@ below; none is settled.
 | 126 | **When removing a device is refused** | (a) when a pool using it would have fewer failure domains than copies, or pass its `full` threshold without it; `--dry-run` shows what would move; (b) allowed, the pool left degraded | (a). A removal is planned; leaving pools degraded or full is what D27 and §5.3 avoid |
 | 127 | **Deleting a pool that holds data** | (a) refused while it holds volumes, snapshots or trash; (b) `--force` deletes them | (a), as 19-administration.md §23 says ("delete when empty"). Deleting volumes is a separate, audited step, with trash |
 
-Host check G44 (17-milestones.md §22) measures adding a device and a
-split on the pilot.
+Settled on 2026-10-31, every point as recommended, with three force
+options the owner added: point 118 as D167, 119 as D168, 120 as D169,
+121 as D170 (adding a reactor without a restart later), 122 as D171, 123
+as D172 (`--force` allows a pool mixing hard disks and flash, with a
+warning), 124 as D173, 125 as D174, 126 as D175 (`--force` removes a
+device leaving pools degraded, never below `min`), 127 as D176
+(`--force` deletes a pool's volumes, snapshots and trash first). Host
+check G44 (17-milestones.md §22) measures adding a device and a split on
+the pilot.
 
 ## Object storage: S3 before the whole key–value store (2026-10-31)
 

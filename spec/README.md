@@ -37,7 +37,7 @@ documents cite them by number.
 | [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
 | [20-tenants.md](20-tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [21-federation.md](21-federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
-| [24-pools-and-devices.md](24-pools-and-devices.md) | §27 | Devices added to and removed from running nodes, device identity and formatting, classes and class sets, pools made, changed and deleted, PG splits (draft for review) |
+| [24-pools-and-devices.md](24-pools-and-devices.md) | §27 | Devices added to and removed from running nodes, device identity and formatting, classes and class sets, pools made, changed and deleted, PG splits (settled; built on `feature/elastic-pools`) |
 | [16-glidex.md](16-glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
 | [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24, G39–G45 (G25–G38 in 22-nfs.md) |
 | [00-filesystem.md](00-filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
