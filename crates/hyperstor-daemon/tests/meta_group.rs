@@ -160,6 +160,7 @@ impl Group {
     fn node(&self, n: usize, device: DeviceSpec) -> NodeHandle {
         start(NodeConfig {
             push_part_bytes: 0,
+            stray_grace: std::time::Duration::ZERO,
             io_timeout: std::time::Duration::ZERO,
             commit_delays: None,
             partitions: None,

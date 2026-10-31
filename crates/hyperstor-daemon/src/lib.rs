@@ -160,6 +160,9 @@ pub struct NodeConfig {
     /// before the rest follows in parts ([`Msg::PushKv`]); zero: a quarter
     /// of the frame limit ([`PUSH_PART_BYTES`]). Tests set it small.
     pub push_part_bytes: usize,
+    /// How long a PG this device no longer serves must stay clean before
+    /// the device deletes its copy (D177); zero: [`STRAY_GRACE`].
+    pub stray_grace: Duration,
     /// How long a commit round's writes and flush may take before the
     /// device is failed (I199); zero: [`IO_TIMEOUT`].
     pub io_timeout: Duration,
@@ -197,6 +200,11 @@ pub const STALL: Duration = Duration::from_millis(100);
 /// went down; now the reactor goes on, and this ends the wait. Linux gives
 /// an NVMe command 30 s before it aborts and retries it.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a PG this device has left must stay clean, at one epoch,
+/// before the device deletes its copy (D177): a map change back within it
+/// finds the copy still there.
+pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
@@ -299,6 +307,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             n => n,
         };
         let partitions = cfg.partitions.clone();
+        let stray_grace = match cfg.stray_grace {
+            Duration::ZERO => STRAY_GRACE,
+            g => g,
+        };
         let commit_delays = cfg.commit_delays.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
@@ -353,6 +365,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().peer_watch(node, peer_timeout));
                         }
                         spawn(st.clone().backfiller());
+                        spawn(st.clone().strays(stray_grace));
                         if !scrub_interval.is_zero() {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
@@ -712,6 +725,17 @@ fn wire_key(k: &ObjKey) -> WireKey {
         name: k.name.clone(),
         version: k.version,
     }
+}
+
+/// Whether `me` may delete its copy of PG `pool`.`pg` under `map` (D177):
+/// the PG's epoch when the map has the PG, `me` is in neither its `up`
+/// nor its `acting` set, and the PG is clean, `acting` being `up` with
+/// every member live; `None` otherwise. A PG the map lacks is left alone.
+fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
+    let p = map.pg(pool, pg)?;
+    let member = p.up.contains(&me) || p.acting.contains(&me);
+    let clean = !p.acting.is_empty() && p.acting == p.up && p.acting.iter().all(|d| map.live(*d));
+    (!member && clean).then_some(p.epoch)
 }
 
 fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
@@ -3512,6 +3536,82 @@ impl ShardState {
         }
     }
 
+    /// Deletes this device's copies of PGs it no longer serves (D177):
+    /// each PG [`is_stray`] says it may drop, once that has held at one
+    /// PG epoch for `grace`. Object by object through the commit queue, a
+    /// batch at a time, checking before each that the PG is still the
+    /// same, so live work goes on meanwhile.
+    async fn strays(self: Rc<Self>, grace: Duration) {
+        let every = (grace / 4).clamp(Duration::from_millis(50), Duration::from_secs(10));
+        // Since when each stray PG has been clean, at which PG epoch.
+        let mut clean: HashMap<(u32, u32), (u64, std::time::Instant)> = HashMap::new();
+        loop {
+            sleep(every).await;
+            if self.cut_off() || self.failed.get() {
+                continue;
+            }
+            let map = self.map();
+            let held = self.shard.get().await.held_pgs();
+            clean.retain(|k, _| held.contains(k));
+            for (pool, pg) in held {
+                let Some(epoch) = is_stray(&map, self.me, pool, pg) else {
+                    clean.remove(&(pool, pg));
+                    continue;
+                };
+                let since = clean
+                    .entry((pool, pg))
+                    .and_modify(|e| {
+                        if e.0 != epoch {
+                            *e = (epoch, std::time::Instant::now());
+                        }
+                    })
+                    .or_insert((epoch, std::time::Instant::now()));
+                if since.1.elapsed() < grace {
+                    continue;
+                }
+                let n = self.drop_copy(pool, pg, epoch).await;
+                clean.remove(&(pool, pg));
+                if n > 0 {
+                    eprintln!(
+                        "hyperstord: device {}: deleted its copy of PG {pool}.{pg} ({n} objects), which devices {:?} serve",
+                        self.me,
+                        map.pg(pool, pg)
+                            .map(|p| p.acting.clone())
+                            .unwrap_or_default()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Deletes this device's objects of PG `pool`.`pg` while it is still a
+    /// stray at `epoch`; returns how many went.
+    async fn drop_copy(&self, pool: u32, pg: u32, epoch: u64) -> usize {
+        let keys = self.shard.get().await.list_pg(pool, pg);
+        let mut done = 0;
+        for batch in keys.chunks(DIGEST_BATCH) {
+            if is_stray(&self.map(), self.me, pool, pg) != Some(epoch) {
+                break;
+            }
+            let commits: Vec<_> = batch
+                .iter()
+                .map(|key| {
+                    self.enqueue(OpList {
+                        key: key.clone(),
+                        ops: vec![Op::Delete],
+                    })
+                })
+                .collect();
+            for c in commits {
+                if c.await.is_ok() {
+                    done += 1;
+                }
+            }
+            hyperstor_reactor::yield_now().await;
+        }
+        done
+    }
+
     async fn backfill(self: Rc<Self>, pool: u32, pg: u32, target: u32, pg_epoch: u64) {
         let k = (pool, pg, target);
         let mut reported = false;
@@ -4470,6 +4570,45 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// D177: a copy is a stray only off both sets of a PG that is clean
+    /// with every member live; a PG the map lacks is left alone.
+    #[test]
+    fn a_copy_is_dropped_only_when_its_pg_is_clean_elsewhere() {
+        use super::is_stray;
+        use hyperstor_meta::{ClusterMap, replicated_pool};
+        let mut m = ClusterMap::new(1);
+        for n in 0..5 {
+            m.add_node(n, &[format!("127.0.0.1:{}", 7000 + n).parse().unwrap()], 0);
+        }
+        m.add_pool(replicated_pool(1, "vol", 3, 8));
+        m.recompute();
+        let (pg, members) = m
+            .pgs
+            .iter()
+            .find(|(k, _)| k.0 == 1)
+            .map(|(k, p)| (k.1, p.acting.clone()))
+            .unwrap();
+        let others: Vec<u32> = (0..5)
+            .map(|n| n * 1000)
+            .filter(|d| !members.contains(d))
+            .collect();
+        let (a, b) = (others[0], others[1]);
+        let epoch = m.pg(1, pg).unwrap().epoch;
+        assert_eq!(is_stray(&m, a, 1, pg), Some(epoch), "off the PG, clean");
+        assert_eq!(is_stray(&m, members[0], 1, pg), None, "a member");
+        assert_eq!(is_stray(&m, a, 1, 999), None, "a PG the map lacks");
+        // Backfilling to `a` (up isn't acting): `b` keeps its copy, as does
+        // the member leaving up but still acting.
+        m.pgs.get_mut(&(1, pg)).unwrap().up[0] = a;
+        assert_eq!(is_stray(&m, b, 1, pg), None, "not clean");
+        assert_eq!(is_stray(&m, members[0], 1, pg), None, "still acting");
+        let p = m.pgs.get_mut(&(1, pg)).unwrap();
+        p.up = p.acting.clone();
+        // A member down: a copy elsewhere may be needed back.
+        m.nodes.get_mut(&(members[1] / 1000)).unwrap().up = false;
+        assert_eq!(is_stray(&m, b, 1, pg), None, "a member down");
+    }
 
     /// D168: hyperstord formats a blank file, never a blank block device;
     /// and a block device is what DeviceSpec says it is.

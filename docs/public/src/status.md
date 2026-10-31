@@ -73,6 +73,7 @@ covered by tests that run on every change.
 |---|---|
 | Failure detection by heartbeats, and writes that continue with fewer copies | Done |
 | Backfill: returning or replacement nodes are refilled | Done |
+| A device deletes its copies of PGs it no longer serves, once they are clean elsewhere | Done |
 | Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair) | Done |
 | A primary fetches a member's copy of a large object in parts (repair of its own copy) | Done |
 | Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts | Done |

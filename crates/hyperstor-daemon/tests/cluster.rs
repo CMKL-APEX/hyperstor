@@ -25,6 +25,8 @@ const DOWN_OUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum MetaCmd {
     Stop,
+    /// Takes a device out of placement, or brings it in (`out`, `in`).
+    SetIn(u32, bool),
     /// The PGs scrub reported inconsistent.
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
 }
@@ -60,6 +62,8 @@ struct Cluster {
     commit_delays: Arc<hyperstor_daemon::faults::CommitDelays>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
+    /// Stray grace given to restarted nodes (D177); zero: the default.
+    stray_grace: std::time::Duration,
 }
 
 impl Cluster {
@@ -149,6 +153,9 @@ impl Cluster {
                 while let Some(cmd) = meta_rx.recv().await {
                     match cmd {
                         MetaCmd::Stop => break,
+                        MetaCmd::SetIn(d, up_in) => {
+                            meta.set_device_in(d, up_in).unwrap();
+                        }
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
@@ -168,6 +175,7 @@ impl Cluster {
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
                     push_part_bytes: TEST_PART_BYTES,
+                    stray_grace: std::time::Duration::ZERO,
                     io_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
                     partitions: Some(partitions.clone()),
@@ -213,6 +221,7 @@ impl Cluster {
             faulty,
             commit_delays,
             io_timeout: std::time::Duration::ZERO,
+            stray_grace: std::time::Duration::ZERO,
         }
     }
 
@@ -246,6 +255,7 @@ impl Cluster {
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
             push_part_bytes: TEST_PART_BYTES,
+            stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
             commit_delays: Some(self.commit_delays.clone()),
             partitions: Some(self.partitions.clone()),
@@ -260,6 +270,11 @@ impl Cluster {
             scrub_interval: self.scrub,
             no_digests,
         }));
+    }
+
+    /// Takes device `d` out of placement, or brings it back in.
+    fn set_in(&self, d: u32, up_in: bool) {
+        assert!(self.meta_tx.send(MetaCmd::SetIn(d, up_in)).is_ok());
     }
 
     /// The PGs scrub has reported inconsistent to the map service.
@@ -2635,6 +2650,75 @@ fn a_hung_device_fails_after_the_io_timeout() {
     });
     c.commit_delays.set(2000, Duration::ZERO);
     c.stop();
+}
+
+/// D177: a device taken out deletes its copies of the PGs that moved away,
+/// once each is clean elsewhere for the grace; the data stays readable,
+/// and the other copies agree.
+#[test]
+fn a_device_deletes_the_copies_it_no_longer_serves() {
+    use std::time::Duration;
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    // Node 3 with a short grace.
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.kill(3);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 3 down", |m| !m.nodes[&3].up).await;
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(Duration::from_secs(3));
+    c.stray_grace = Duration::from_millis(300);
+    c.restart(3);
+    let chunks: Vec<(u128, u64)> = (1..=8u128).map(|v| (v, 0)).collect();
+    let held = with_client(meta, 7, |cl| async move {
+        wait_all_up(&cl).await;
+        for v in 1..=8u128 {
+            cl.write(POOL, v, 0, pattern(300 + v as u64, CHUNK as usize))
+                .await
+                .unwrap();
+        }
+        wait_backfilled(&cl).await;
+        cl.map()
+            .pgs
+            .values()
+            .filter(|p| p.acting.contains(&3000))
+            .count()
+    });
+    assert!(held > 0, "device 3000 serves some PGs");
+    c.set_in(3000, false);
+    with_client(meta, 8, |cl| async move {
+        wait_map(&cl, "device 3000 out", |m| !m.devices[&3000].up_in).await;
+        wait_backfilled(&cl).await;
+        // The grace, the sweep, and the deletes.
+        hyperstor_reactor::time::sleep(Duration::from_secs(3)).await;
+        for v in 1..=8u128 {
+            let got = cl.read(POOL, v, 0, CHUNK as u64).await.unwrap();
+            assert!(got == pattern(300 + v as u64, CHUNK as usize), "volume {v}");
+        }
+    });
+    let (map, devs) = c.stop();
+    let dev = &devs.iter().find(|(id, _)| *id == 3000).unwrap().1;
+    let shard = hyperstor_engine::open(dev).unwrap().1.pop().unwrap();
+    let left: Vec<(u32, u32)> = shard
+        .held_pgs()
+        .into_iter()
+        .filter(|&(pool, pg)| {
+            map.pg(pool, pg)
+                .is_some_and(|p| !p.up.contains(&3000) && !p.acting.contains(&3000))
+        })
+        .collect();
+    assert!(left.is_empty(), "copies of PGs device 3000 left: {left:?}");
+    let others: Devices = devs.into_iter().filter(|(id, _)| *id != 3000).collect();
+    copies_agree(&map, others, &chunks);
 }
 
 /// A replica whose disk hangs while its node stays up (D91): the primary

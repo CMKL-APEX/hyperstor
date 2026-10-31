@@ -281,6 +281,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A device deletes its copies of PGs it no longer serves, once they are clean elsewhere"
+spec = ["07-placement.md §5.3", "D177", "I208"]
+status = "done"
+tests = [
+    "hyperstor_engine::shard::tests::held_pgs_are_listed_once_each",
+    "hyperstor_daemon::tests::a_copy_is_dropped_only_when_its_pg_is_clean_elsewhere",
+    "cluster::a_device_deletes_the_copies_it_no_longer_serves",
+]
+
+[[milestone.item]]
 what = "Objects too large for one frame are pushed in parts (backfill, peer sync, scrub repair)"
 spec = ["09-replication.md §8.5", "D146", "I177", "I179", "I188"]
 status = "done"

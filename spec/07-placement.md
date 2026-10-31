@@ -40,6 +40,10 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
 
 ### 5.3 Rebalancing
 
+- **Copies left behind** (D177): a device in neither `up` nor `acting`
+  of a PG deletes its copy once the PG is clean (`acting` is `up`,
+  every member live) for a minute. A device brought back is
+  backfilled, which also deletes what its old copy had extra.
 - A map change recomputes `up` for the PGs it affects. While `up`
   differs from `acting`, the PG keeps serving from `acting` and the new
   members are backfilled (09-replication.md §8.5). When they have caught up, `acting`

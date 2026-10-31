@@ -375,6 +375,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 .collect();
             start(NodeConfig {
                 push_part_bytes: 0,
+                stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 commit_delays: None,
                 partitions: None,
@@ -531,6 +532,7 @@ fn adminload_suite(secs: f64) {
         .map(|(n, l)| {
             start(NodeConfig {
                 push_part_bytes: 0,
+                stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 commit_delays: None,
                 partitions: None,
@@ -1310,6 +1312,7 @@ fn failover_suite() {
                 .map(|(n, l)| {
                     Some(start(NodeConfig {
                         push_part_bytes: 0,
+                        stray_grace: std::time::Duration::ZERO,
                         io_timeout: std::time::Duration::ZERO,
                         commit_delays: None,
                         partitions: None,
@@ -1426,6 +1429,7 @@ fn rejoin_suite() {
         let node = |n: u32, device: DeviceSpec, l: std::net::TcpListener| {
             start(NodeConfig {
                 push_part_bytes: 0,
+                stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 commit_delays: None,
                 partitions: None,
