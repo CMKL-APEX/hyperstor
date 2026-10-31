@@ -1122,3 +1122,88 @@ openssl speed -seconds 3 -bytes 4096 -evp aes-256-xts   # and the others
    XTS, a little more on GCM. These are OpenSSL's numbers; the Rust
    crate the engine would use needs its own measurement when it is
    chosen.
+
+
+## 2026-10-31: device waits off the reactor (G43; pilot and dev-2)
+
+Host check G43 (17-milestones.md §22) for D165's first stage (I199):
+the pilot (three hosts, 2 devices of 64 GiB per node, files on an ext4
+RAID 1 of NVMe drives, peer timeout 300 ms) with `main` after #97
+(`64a4a82`) on every host since 03:25 UTC, against the 23 hours before
+on older builds.
+
+**Before, at the pilot's normal load** (journals of all three nodes and
+both map service members that log it):
+
+| Node | Reactor holds of 100 ms or more | Longest | Cause |
+|---|---|---|---|
+| 0 | 11 | 205 ms | each a commit of one list taking 105–212 ms: the flush, on the reactor |
+| 1 | 0 | | |
+| 2 | 0 | | |
+
+Every node marked down (7) and every peer reported silent in those 23
+hours lines up with a deliberate restart or reinstall: the pilot doesn't
+flap at its normal load.
+
+**After, under load.** `hyperstor-bench remote` against the pilot's map
+service, from node 1's host, into eight test volumes made for it and
+purged after (`HS_BENCH_SECS=10`):
+
+| Test | ops/s | p50 | p99 |
+|---|---|---|---|
+| 4 KiB random writes, QD1 | 943 | 1.09 ms | 1.38 ms |
+| 4 KiB random writes, QD32 | 15,008 | 2.13 ms | 3.08 ms |
+| 4 KiB random reads, QD1 | 2,372 | 0.40 ms | 0.63 ms |
+| 4 KiB random reads, QD32 | 22,629 | 0.63 ms | 5.47 ms |
+| 1 MiB writes, QD4 | 63 (66 MB/s) | 55 ms | 256 ms |
+| 1 MiB reads, QD4 | 106 (111 MB/s) | 21 ms | 273 ms |
+
+`hyperstor_reactor_stalls_total` stayed 0 on all six devices; no node
+logged a hold, a slow commit or a device wait of 100 ms or more.
+
+**A returning node.** The same benchmark (`HS_BENCH_SECS=40`); node 2
+stopped 30 s in and started again 90 s later:
+
+| Time | Event |
+|---|---|
+| +0 s | node 2 stopped; both peers report it silent within 0.4 s; marked down at +0.44 s |
+| +0 to +91.7 s | every PG of pool 1 (128) and `.meta` (256) degraded, writes go on with two copies |
+| +90.5 s | node 2 started; its devices open in 0.9 and 1.0 s; up at +91.7 s |
+| +94.7 s | 36 PGs backfilling |
+| +98.7 s | every PG clean |
+
+The benchmark's numbers matched the first run (4 KiB QD32 writes 19,415
+ops/s, p99 2.58 ms).
+
+**The I/O timeout on a real device.** A scratch cluster on dev-2's host
+(map service and three nodes on localhost, separate from the pilot),
+node 2's device a 2 GiB loop file behind `dm-delay` (Linux 6.8), the
+same benchmark writing (`HS_BENCH_SECS=30`):
+
+| `dm-delay` | Seen |
+|---|---|
+| 0 | as usual |
+| 2 s (writes and flushes) | each commit "waited 4,094–4,110 ms for the device", without a reactor hold; the primaries on nodes 0 and 1 dropped the device from 20 PGs as too slow (D91). Then four reactor holds of 1,993–2,020 ms with no commit behind them: reads, which still wait in the device's calls. Node 2 was reported silent and marked down five times, held 4, 8, 16, 32 and 60 s (D149) |
+| 60 s | a commit of 1,872 lists waited 30,000 ms and the device was failed ("the device took over 30000 ms to write a commit", D166); the map service placed its PGs elsewhere and node 2 came up. That commit's own work took 526 ms on the reactor |
+| back to 0 | the abandoned writes completed; the device-mapper device, the loop device and the module were removed |
+
+### Findings
+
+1. **Commits no longer hold a reactor**, at 15,000 writes a second on
+   the pilot and with a device delaying each write and flush 2 s.
+2. **The I/O timeout works on a real kernel device**: the device was
+   failed at 30 s, its PGs moved, its node came back, and nothing was
+   left behind.
+3. **Reads are now what holds a reactor on a slow device**: with a 2 s
+   delay, reads held node 2's reactor 2 s at a time and the node flapped
+   until it was held down 60 s. Stage 2 (reads) comes next (D165);
+   stage 3 matters too, as a commit's own work took 526 ms once.
+4. **A returning node catches up in about 4 s** after a 90 s absence
+   under writes, without a reactor hold.
+5. Not explained: three single reports of a peer silent for 300–400 ms
+   during 1 MiB tests and just after node 2 returned, with no reactor
+   hold logged on the reported node. One reporter is not enough to mark
+   a node down, and none was. Pings may wait behind large transfers on
+   the host or the network; worth a look before lowering timeouts.
+6. The 1 MiB p99s of 190–275 ms are long next to their p50s; not looked
+   into.

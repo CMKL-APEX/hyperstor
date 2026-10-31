@@ -49,8 +49,8 @@ design is split by topic, with section numbers kept across files.
 - **Next:** glidex's `hyperstor` driver is merged (glidex #177) and
   `hyperstor-vhost` installs and restarts without losing disks (D142–D145);
   then the rest of
-  D165 (reads, checkpoint slices and deferred writes off the reactor's
-  thread, after G43's measurements), the rest of
+  D165: reads off the reactor's thread first (G43 found reads on a slow
+  device still hold it), then checkpoint slices and deferred writes; the rest of
   §11.1 (adaptive polling, reactors per NUMA node); zone or FDP placement for write-once pools (D105, G23);
   the on-device index (D43, D44) when index RAM calls for it; cache-pool expiry and eviction and priority classes
   (HS10b, D45, D46).
