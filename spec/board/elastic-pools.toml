@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS18"
 branch = "feature/elastic-pools"
-prs = [96, 101, 102, 104, 106, 113]
+prs = [96, 101, 102, 104, 106, 113, 114]
 now = "Stage 2a in review (#113, I209); 2b built (I210): pools place on class sets, hyperstorctl pool set --classes, hard disks and flash only with --force"
 next = "Stage 3: pools made, changed and deleted (CreatePool, the rest of SetPool, DeletePool)"
