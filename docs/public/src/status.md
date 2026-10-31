@@ -30,6 +30,7 @@ covered by tests that run on every change.
 | HS15: Tenancy: quotas and fair share between tenants | Planned |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
+| HS18: Pools and devices at run time | In progress |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
@@ -111,6 +112,15 @@ covered by tests that run on every change.
 | Consistency groups | Done |
 | Paged checkpoints: only the pages changed since the last (D105) | Done |
 | The host read cache, in the client library | In progress |
+
+## HS18: Pools and devices at run time
+
+| Feature | Status |
+|---|---|
+| A device added to a running node: registered, weighted once it runs, then given PGs | In progress |
+| Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address | Done |
+| Block devices are formatted by the installer after a check for other systems' signatures; the node formats only files | Done |
+| The installer adds a block device to an installed node and keeps it across runs | In progress |
 
 ## AD0: Administration API, identities and CLI
 

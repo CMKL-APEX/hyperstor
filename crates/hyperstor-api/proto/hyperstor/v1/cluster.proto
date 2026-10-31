@@ -28,6 +28,11 @@ service ClusterService {
   // changes. Write.
   rpc SetDeviceWeight(SetDeviceWeightRequest) returns (SetDeviceWeightResponse);
 
+  // Appends a device to a node (04-decisions.md D167): the node's next
+  // device, at weight 0 until it reports its capacity, so nothing moves
+  // until the node runs it (restarted with one more --shard). Write.
+  rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -346,6 +351,22 @@ message SetDeviceWeightResponse {
   // The weight now: as set, or the capacity last reported (unchanged
   // until the device reports).
   double weight = 2;
+}
+
+message AddDeviceRequest {
+  uint32 node = 1;
+  // IP:PORT where the node's new reactor will listen.
+  string address = 2;
+  // The device's class (`nvme`, `nvme-qlc`, ...); absent: that of the
+  // node's other devices.
+  optional string class = 3;
+}
+
+message AddDeviceResponse {
+  // The new device's id: node × 1000 + its position among the node's.
+  uint32 device = 1;
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 2 [json_name = "map_epoch"];
 }
 
 message Volume {

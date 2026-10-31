@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 1 | 12 |
+| 5 | 0 | 1 | 12 |
 
 ## In progress
 
@@ -19,6 +19,7 @@ updated for a while may have been left behind.
 |---|---|---|---|---|---|---|
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
+| **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `feature/elastic-pools`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106) | Stage 1 done and on the pilot: all three hosts on the feature build; nvme6n1 added to prism1's node 1 as device 1002 by the installer (G44, first half: health ok in 94 s, no flap) | Stage 2: classes and class sets (D164, D171, D172); storage-only hosts' --device by token; G44's VM-disk p99 and stray copies | 2026-10-31 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT | HS0 | `bench/g43`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100) | G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped | Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
@@ -77,6 +78,7 @@ against the tests.
 | HS15 | Tenancy: quotas and fair share between tenants | 0 | 0 | 0 |
 | HS16 | Sites and replication between clusters | 0 | 0 | 0 |
 | HS17 | Global namespace and federation | 0 | 0 | 0 |
+| HS18 | Pools and devices at run time | 2 | 2 | 0 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 6 | 1 | 0 |

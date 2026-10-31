@@ -615,6 +615,50 @@ id = "HS17"
 title = "Global namespace and federation"
 
 [[milestone]]
+id = "HS18"
+title = "Pools and devices at run time"
+
+[[milestone.item]]
+what = "A device added to a running node: registered, weighted once it runs, then given PGs"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "I204"]
+status = "partial"
+tests = [
+    "hyperstor_map::tests::a_device_is_appended_to_its_node_at_weight_0",
+    "hyperstor_meta::tests::a_device_is_added_to_a_node_and_weighted_once_it_reports",
+    "manage::a_device_is_added_to_a_running_node",
+]
+
+[[milestone.item]]
+what = "Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address"
+spec = ["24-pools-and-devices.md §27.2.3", "D169", "I205"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::device_ids_are_named_or_positional",
+    "hyperstor_install::tests::named_device_ids_reach_the_node_options",
+    "manage::a_shard_must_be_the_maps_and_can_name_its_id",
+]
+
+[[milestone.item]]
+what = "Block devices are formatted by the installer after a check for other systems' signatures; the node formats only files"
+spec = ["24-pools-and-devices.md §27.2.2", "D168", "I206"]
+status = "done"
+tests = [
+    "hyperstor_engine::probe::tests::foreign_signatures_are_named_and_blank_devices_pass",
+    "hyperstor_engine::probe::tests::a_hyperstor_device_is_named_with_its_ids",
+    "hyperstor_daemon::tests::only_files_are_formatted_by_the_node",
+    "hyperstor_install::tests::format_device_refuses_foreign_signatures_unless_forced",
+]
+
+[[milestone.item]]
+what = "The installer adds a block device to an installed node and keeps it across runs"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "I207"]
+status = "partial"
+tests = [
+    "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
+    "manage::the_installer_adds_a_device_to_a_node",
+]
+
+[[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
 

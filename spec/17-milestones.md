@@ -27,6 +27,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS15 | Tenancy (20-tenants.md §24): tenant ids on lineages, buckets, filesystems and ranges; per-`(pool, tenant)` counters and quotas; two-level fair share in the reactors (D62); the glidex project mapping. | HS4, HS10b, AD3 |
 | HS16 | Sites and replication (21-federation.md §25.2, §25.3): `site` as a failure domain with the preflight limit (G19); `hyperstor-sync` for snapshots and S3 objects, with policies, lag health and cross-cluster trust. | HS4, HS12, AD3 |
 | HS17 | The global namespace (21-federation.md §25.4–§25.6): range homes, read-through replicas, forwarded writes, the partition queue with its allowlist (D66), cache-pool sources (D67), the federated view in `hyperstor-mgmt` and glidex (D68); G20. | HS11, HS16 |
+| HS18 | Pools and devices at run time (24-pools-and-devices.md §27, D163–D176), on the branch `feature/elastic-pools` until its required stages are in: devices added to running nodes, with the installer's `--device`, explicit ids and the format rule (stage 1); classes and class sets (2); pools made, changed and deleted (3); devices removed (4); PG splits and their autoscaler (5). | HS2, AD0 |
 | AD0 | Administration foundation (19-administration.md §23.11): `hyperstor.v1` on connectrpc with `buf` checks (D51), leaf identities and the two-level CA (D53, D56), `hyperstorctl` generated from the protos with the local socket (D55). | HS1 |
 | AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
 | AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
@@ -195,3 +196,19 @@ and pNFS front end, are in 22-nfs.md §26.11.
   under load or with a 2 s device delay; the device was failed at 30 s
   and its node came back. Reads on a slow device still hold the reactor,
   and its node flapped: stage 2 of D165 next.
+- **G44. Adding a device and splitting PGs** (24-pools-and-devices.md
+  §27.2, §27.5; points 118 and 124). On the pilot, with nvme6n1 added to
+  node 1: how long backfill takes and what it costs other I/O (p99
+  latency of a VM disk meanwhile); then, doubling pool 1's PG count, how
+  long each device takes to move a split PG's objects to their new keys,
+  how much index memory the extra PGs cost, and whether writes during
+  the split see more than one `StaleMap` retry each.
+  **First half measured 2026-10-31** (02-benchmarks.md): nvme6n1 added
+  to prism1's node 1 by the installer; health ok again in 94 s, with no
+  reactor hold or flap; VM-disk p99 during the backfill and the split
+  still to do.
+- **G45. The S3 gateway's cost** (05-decision-log.md points 133 and 134).
+  On a pilot host, with the first gateway: PUT and GET throughput per
+  gateway core for 4 KiB, 1 MiB and 64 MiB objects, with and without the
+  MD5 ETag, and the p99 latency of small PUTs (index commit included);
+  then the same through the load balancer in front of two gateways.

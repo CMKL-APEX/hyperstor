@@ -256,6 +256,34 @@ A pool's usable space (`hyperstorctl pools`) counts what it can hold
 with each copy on a different host (or rack): with as many hosts as
 copies, the smallest host bounds it.
 
+## Adding a device to a node
+
+A node can take more devices while the cluster runs (D167). On the
+node's host, if it runs the map service too:
+
+```sh
+sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-NAME
+```
+
+The installer refuses a device that holds anything it recognises (a
+partition table, LVM, a Ceph OSD, a filesystem...; `--force-format`
+overwrites it), registers it with the map service, formats it, lets
+the `hyperstor` user open it (a udev rule for that disk only), records
+it in `install.conf` and restarts the node with it. Later runs, the
+daily renewal included, keep it. Name devices by `/dev/disk/by-id/`.
+
+The device is the node's next one, `node × 1000 + i`, and starts at
+weight 0: nothing moves until the node runs it. Once it has reported
+its capacity, within a second of starting, it gets its weight and PGs
+move onto it, as after a weight change.
+
+By hand, or on a host without the map service: `hyperstorctl device
+add --node 1 --address 192.0.2.21:9102` (from a host that has the
+administrator's certificate), `hyperstor-install format-device --path
+PATH --id D` on the node's host, then one more `--shard
+192.0.2.21:9102=PATH:0` in the node's options (which a later installer
+run rewrites).
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and

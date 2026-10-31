@@ -1,9 +1,11 @@
-//! `hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...]
+//! `hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...]
 //!            [--cpus 2,3] [--buffered] [--hdd] [--spin-us N] [--peer-timeout-ms N]
 //!            [--admin ADDR] [--io-timeout-secs N]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
-//! the cluster file) and storing on PATH (a file, created and extended to
+//! the cluster file) as device ID (default `N * 1000 +` its position among
+//! the `--shard` options; D169), which the map must have on node N at ADDR,
+//! and storing on PATH (a file, created and extended to
 //! SIZE_GIB if needed, or a block device), opened `O_DIRECT` through
 //! io_uring unless `--buffered`. Formats unformatted devices. Stops on
 //! SIGINT or SIGTERM by exiting; the engine recovers on the next start.
@@ -35,7 +37,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]"
         );
         std::process::exit(2)
     };
@@ -56,11 +58,15 @@ fn main() {
         .map(|s| s.split(',').filter_map(|c| c.parse().ok()).collect())
         .unwrap_or_default();
     let mut shards = Vec::new();
+    // Device ids as named (`ID@`), else by position (D169).
+    let mut named = Vec::new();
     for (i, w) in args.windows(2).enumerate() {
         if w[0] != "--shard" {
             continue;
         }
         let (addr, rest) = w[1].split_once('=').unwrap_or_else(|| usage());
+        let (id, addr) = hyperstor_meta::split_device_id(addr).unwrap_or_else(|e| fail_args(&e));
+        named.push(id);
         let (path, gib) = rest.rsplit_once(':').unwrap_or_else(|| usage());
         let gib: u64 = gib.parse().unwrap_or_else(|_| usage());
         // Served by a reactor: wait a moment if a previous instance's
@@ -71,7 +77,8 @@ fn main() {
             std::process::exit(1)
         });
         shards.push(ShardSpec {
-            device_id: node * 1000 + shards.len() as u32,
+            // Set below, once every --shard is read.
+            device_id: 0,
             device: DeviceSpec::File {
                 path: PathBuf::from(path),
                 bytes: gib << 30,
@@ -84,6 +91,10 @@ fn main() {
     }
     if shards.is_empty() {
         usage();
+    }
+    let ids = hyperstor_meta::device_ids(node, &named).unwrap_or_else(|e| fail_args(&e));
+    for (s, id) in shards.iter_mut().zip(ids) {
+        s.device_id = id;
     }
     // D166: how long a commit's writes and flush may take before the
     // device is failed.
@@ -152,4 +163,10 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// A `--shard` the node can't use: says why and exits as `usage` does.
+fn fail_args(why: &str) -> ! {
+    eprintln!("hyperstord: --shard: {why}");
+    std::process::exit(2)
 }

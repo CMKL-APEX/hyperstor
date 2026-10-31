@@ -9,7 +9,8 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    # Long-lived feature branches take pull requests too (elastic pools).
+    branches: [ "main", "feature/**" ]
   workflow_dispatch:
 
 # The jobs only read the repository; deploy alone writes gh-pages.

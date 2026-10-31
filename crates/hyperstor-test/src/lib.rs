@@ -858,6 +858,12 @@ impl Cluster {
     }
 
     pub fn start_node(&mut self, n: u32) {
+        self.start_node_with(n, &[]);
+    }
+
+    /// Starts storage node `n` with `extra` options after its installed
+    /// ones (one more `--shard`, say).
+    pub fn start_node_with(&mut self, n: u32, extra: &[&str]) {
         let log = std::fs::File::create(self.scratch.path(&format!("node-{n}.log"))).unwrap();
         let p = Command::new(self.bin.join("hyperstord"))
             .args(env_args(
@@ -865,6 +871,7 @@ impl Cluster {
                 self.scratch.run(),
                 &format!("node-{n}.env"),
             ))
+            .args(extra)
             .args(NODE_ARGS)
             .stderr(log)
             .spawn()
@@ -894,6 +901,11 @@ impl Cluster {
     /// The map service's log so far.
     pub fn meta_log(&self) -> String {
         std::fs::read_to_string(&self.meta_log).unwrap_or_default()
+    }
+
+    /// Storage node `n`'s exit status, once it has exited by itself.
+    pub fn node_exited(&mut self, n: u32) -> Option<std::process::ExitStatus> {
+        self.node_procs.get_mut(&n)?.try_wait().ok().flatten()
     }
 
     /// Kills storage node `n` (as a crash would).

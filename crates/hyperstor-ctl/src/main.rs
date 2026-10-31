@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -23,6 +23,9 @@
 //! - `weight --device D --weight W|auto`: keep a device's placement weight
 //!   at W, or let it follow the device's capacity in TiB again (D158);
 //!   its PGs move as the weight changes;
+//! - `device add --node N --address A [--class C]`: append a device to a
+//!   node (D167), at weight 0 until the node runs it (restarted with one
+//!   more `--shard`) and it reports its capacity;
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
 //!   and `delete-volume --id ID [--force]` (04-decisions.md D77, D80);
@@ -121,7 +124,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -203,6 +206,9 @@ struct Args {
     usage: bool,
     /// `weight`: the weight to set, or `None` for `auto` (D158).
     weight: Option<Option<f64>>,
+    /// `device add`: where the node's new reactor listens, and the class.
+    address: Option<String>,
+    class: Option<String>,
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
@@ -264,6 +270,8 @@ fn main() {
         sparse: false,
         usage: false,
         weight: None,
+        address: None,
+        class: None,
         poll: false,
     };
     let mut cmd = None;
@@ -314,6 +322,8 @@ fn main() {
                 }
             }
             "--node" => a.node = Some(num(it.next())),
+            "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--class" => a.class = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--size" => {
                 a.size = Some(
                     it.next()
@@ -381,6 +391,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
+            | "device"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -395,6 +406,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
+                    "device" => matches!(sub, Some("add")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -406,8 +418,17 @@ fn main() {
         }
     }
     let Some(cmd) = cmd else { usage() };
-    if (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
-        == (a.device.is_none() && a.node.is_none())
+    // device add takes a node, an address and maybe a class; nothing else
+    // takes the last two.
+    let device_add = cmd == "device add";
+    if device_add != (a.node.is_some() && a.address.is_some() && a.device.is_none())
+        || (!device_add && (a.address.is_some() || a.class.is_some()))
+    {
+        usage();
+    }
+    if !device_add
+        && (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
+            == (a.device.is_none() && a.node.is_none())
         || (cmd == "drain" && a.node.is_none())
         || (cmd == "weight") != (a.weight.is_some() && a.device.is_some() && a.node.is_none())
     {
@@ -956,6 +977,42 @@ where
                     eprintln!(
                         "hyperstorctl: {}",
                         e.message.as_deref().unwrap_or("not found")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "device add" => {
+            let (Some(node), Some(address)) = (a.node, a.address.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let r = client
+                .add_device(pb::AddDeviceRequest {
+                    node,
+                    address: address.clone(),
+                    class: a.class.clone(),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "device {} added to node {node} at {address} (map epoch {}), at weight 0 until it reports its capacity; restart node {node} with one more --shard {address}=PATH to run it",
+                        r.device, r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
                     );
                     return Ok(Next::Exit(1));
                 }

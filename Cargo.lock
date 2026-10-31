@@ -1701,6 +1701,7 @@ dependencies = [
  "glidex-tls",
  "http",
  "hyperstor-api",
+ "hyperstor-engine",
  "hyperstor-meta",
  "hyperstor-pki",
  "io-uring",
