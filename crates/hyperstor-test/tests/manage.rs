@@ -626,6 +626,80 @@ fn a_pool_is_deleted_once_it_holds_nothing() {
     });
 }
 
+/// D176: `pool delete --force` deletes what the pool holds first, as
+/// an operation: a volume with a snapshot, its clone, and a volume in the
+/// trash, each audited; then the pool.
+#[test]
+fn a_forced_pool_delete_takes_its_volumes_with_it() {
+    let c = Cluster::all_in_one("forcepool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "doomed", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("doomed").then_some(())
+    });
+    let id_of = |r: &Run| r.out.split_whitespace().nth(1).unwrap().to_string();
+    let v = id_of(
+        &c.ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "v",
+        ])
+        .ok(),
+    );
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "s"])
+        .ok();
+    let k = id_of(
+        &c.ctl(&["clone-volume", "--id", &v, "--epoch", "1", "--name", "k"])
+            .ok(),
+    );
+    let t = id_of(
+        &c.ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "t",
+        ])
+        .ok(),
+    );
+    c.ctl(&["delete-volume", "--id", &t]).ok();
+    let dry = c
+        .ctl(&["pool", "delete", "--pool", "3", "--dry-run"])
+        .expect(1);
+    assert!(dry.has(&v) && dry.has(&k) && dry.has(&t), "{}", dry.out);
+    let del = c
+        .ctl(&["pool", "delete", "--pool", "3", "--force", "--wait", "120"])
+        .ok();
+    assert!(
+        del.has("deleting these volumes") && del.has("pool 3 deleted"),
+        "{}",
+        del.out
+    );
+    wait_for("pool 3 out of the map", 10, || {
+        (!c.ctl(&["pools"]).has("doomed")).then_some(())
+    });
+    assert!(!c.ctl(&["trash", "list"]).ok().has(&t));
+    wait_for("each volume's delete in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "PurgeFromTrash"]).ok();
+        [&v, &k, &t]
+            .iter()
+            .all(|id| a.has(&format!("volume {id} (pool 3 deleted)")))
+            .then_some(())
+    });
+    let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+    assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts

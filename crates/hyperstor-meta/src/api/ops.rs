@@ -225,6 +225,10 @@ impl Runner {
                     )
                     .await;
                 }
+                Work::DeletePool { pool } => {
+                    let r = me.delete_pool(&op, pool).await;
+                    me.finish(&op, r, format!("pool {pool} deleted")).await;
+                }
                 Work::Purge { volume, epoch } => {
                     let (reply, rx) = oneshot();
                     let sent = me.tx.send(Admin::Trash {
@@ -283,6 +287,7 @@ impl Runner {
         // Recorded under the call that started it, as the operation's.
         let rpc = match op.work {
             Work::Flatten { .. } => "FlattenVolume",
+            Work::DeletePool { .. } => "DeletePool",
             _ => "PurgeFromTrash",
         };
         audit(
@@ -294,6 +299,121 @@ impl Runner {
                 _ => format!("failed: operation {}: {message}", op.id),
             },
         );
+    }
+
+    /// Deletes pool `pool` with what it holds (D176): each volume to the
+    /// trash, its holder preempted, then purged with its snapshots, each
+    /// audited; then the pool. Purges are tried again while any succeeds,
+    /// so clones go before what they were cloned from. Runs again from
+    /// what is left when resumed; stops when cancelled. None: the map
+    /// service stopped.
+    async fn delete_pool(
+        &self,
+        op: &Op,
+        pool: u32,
+    ) -> Option<Result<(), (crate::VolumeFault, String)>> {
+        let mut last_err = None;
+        loop {
+            let id = op.id.clone();
+            match self.store(move |s| s.get(&id)).await {
+                Ok(Some(now)) if now.running() => {}
+                _ => return None,
+            }
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ListVolumes {
+                    pool,
+                    trash: true,
+                    reply,
+                })
+                .ok()?;
+            let left = match rx.recv().await? {
+                Ok(v) => v,
+                // The pool may already be gone: resumed after its delete.
+                Err((crate::VolumeFault::NotFound, _)) => Vec::new(),
+                Err(e) => return Some(Err(e)),
+            };
+            if left.is_empty() {
+                break;
+            }
+            let id = op.id.clone();
+            let n = left.len() as u32;
+            let _ = self
+                .store(move |s| {
+                    s.update(&id, |o| {
+                        o.total = o.total.max(n + 1);
+                        o.done = o.total - n - 1;
+                        o.message = format!("{n} volume(s) left");
+                    })
+                })
+                .await;
+            let mut progress = false;
+            for v in left {
+                let target = format!("volume {:032x} (pool {pool} deleted)", v.id);
+                if v.state != crate::VolumeState::Trashed {
+                    let (reply, rx) = oneshot();
+                    self.tx
+                        .send(Admin::DeleteVolume {
+                            id: v.id,
+                            force: true,
+                            reply,
+                        })
+                        .ok()?;
+                    let r = rx.recv().await?;
+                    audit(
+                        &op.created_by,
+                        "DeleteVolume",
+                        &format!("{target} force"),
+                        &match &r {
+                            Ok(_) => format!("ok, operation {}", op.id),
+                            Err((_, e)) => format!("failed: {e}"),
+                        },
+                    );
+                    if let Err(e) = r {
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+                let (reply, rx) = oneshot();
+                self.tx
+                    .send(Admin::Trash {
+                        op: crate::TrashOp::Purge {
+                            id: v.id,
+                            epoch: None,
+                        },
+                        reply,
+                    })
+                    .ok()?;
+                let r = rx.recv().await?;
+                audit(
+                    &op.created_by,
+                    "PurgeFromTrash",
+                    &target,
+                    &match &r {
+                        Ok(_) => format!("ok, operation {}", op.id),
+                        Err((_, e)) => format!("failed: {e}"),
+                    },
+                );
+                match r {
+                    Ok(_) => progress = true,
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            if !progress {
+                return Some(Err(last_err.unwrap_or((
+                    crate::VolumeFault::Invalid,
+                    "no volume could be purged".into(),
+                ))));
+            }
+        }
+        let (reply, rx) = oneshot();
+        self.tx.send(Admin::DeletePool { pool, reply }).ok()?;
+        match rx.recv().await? {
+            Ok(_) => Some(Ok(())),
+            // Deleted before a restart.
+            Err(e) if e.starts_with("no pool") => Some(Ok(())),
+            Err(e) => Some(Err((crate::VolumeFault::Invalid, e))),
+        }
     }
 
     /// Follows a drain every half second until every moved PG is clean of

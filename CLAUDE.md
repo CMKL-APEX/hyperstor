@@ -42,7 +42,7 @@ design is split by topic, with section numbers kept across files.
 - **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127, D129, D130, D138–D141, D142–D144, D147–D149, D150–D153 and D154–D181 in 04-decisions.md, and the
   choices behind D28–D31 and D34–D37.
 - **Open for the owner's review:** D20–D37, D56–D60 and D66's merge
-  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I214, the NFS and pNFS proposals
+  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I215, the NFS and pNFS proposals
   D128 and D131–D137 (`spec/22-nfs.md`), every host check (G1–G45,
   FG1–FG2), and points 97–103 (the engine's layout and AI workloads) and
   128–137 (S3 sooner) of `spec/05-decision-log.md`. Pools and devices at

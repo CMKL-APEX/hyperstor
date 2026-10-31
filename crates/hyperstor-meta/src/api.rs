@@ -1167,7 +1167,17 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::DeletePoolResponse> {
         let pool = req.pool;
         let dry_run = req.dry_run;
-        let target = format!("pool {pool}{}", if dry_run { " dry-run" } else { "" });
+        let force = req.force && !dry_run;
+        let target = format!(
+            "pool {pool}{}",
+            if dry_run {
+                " dry-run"
+            } else if force {
+                " force"
+            } else {
+                ""
+            }
+        );
         let who = self.authorize(&ctx, "DeletePool", &target, !dry_run)?;
         let (map, ..) = self.published().await?;
         if !map.pools.contains_key(&pool) {
@@ -1203,6 +1213,24 @@ impl ClusterService for Api {
             }
             .into());
         }
+        // Forced (D176): an operation deletes what it holds, then the pool.
+        if force && !held.is_empty() {
+            let op = self
+                .start_op(
+                    &who,
+                    "DeletePool",
+                    crate::operations::Work::DeletePool { pool },
+                    target,
+                    format!("{} volume(s) left", held.len()),
+                )
+                .await?;
+            return Ok(pb::DeletePoolResponse {
+                volumes,
+                operation: op.into(),
+                ..Default::default()
+            }
+            .into());
+        }
         let r = if held.is_empty() {
             let (reply, rx) = oneshot();
             self.tx
@@ -1211,7 +1239,7 @@ impl ClusterService for Api {
             rx.recv().await
         } else {
             Some(Err(format!(
-                "pool {pool} holds {} volume(s), with their snapshots and the trash; delete and purge them first (--dry-run lists them)",
+                "pool {pool} holds {} volume(s), with their snapshots and the trash; delete and purge them first, or --force (--dry-run lists them)",
                 held.len()
             )))
         };

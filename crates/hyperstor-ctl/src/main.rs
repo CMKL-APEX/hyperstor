@@ -35,9 +35,11 @@
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
 //!   --pool P --device D`: let pool P use one more device, beyond its
 //!   classes, or stop using one of them (D180);
-//! - `pool delete --pool P [--dry-run]`: delete pool P, which must hold
-//!   no volume, snapshot or trash (D176); it leaves the map at once and
-//!   devices delete its data (D181); `--dry-run` lists what it holds;
+//! - `pool delete --pool P [--dry-run] [--force [--wait SECS]]`: delete
+//!   pool P, which must hold no volume, snapshot or trash (D176); it
+//!   leaves the map at once and devices delete its data (D181);
+//!   `--dry-run` lists what it holds; `--force` deletes that first, as an
+//!   operation;
 //! - `device class --device D --class C|auto`: set a device's class, or
 //!   let it follow the device's kind again (D178);
 //! - `device add --node N --address A [--class C]`: append a device to a
@@ -632,7 +634,8 @@ fn main() {
             && cmd != "member remove"
             && cmd != "pool set"
             && cmd != "pool create"
-            && cmd != "pool add-device")
+            && cmd != "pool add-device"
+            && cmd != "pool delete")
     {
         usage();
     }
@@ -891,6 +894,8 @@ where
         }
         _ => {}
     }
+    // pool delete --force --wait follows its operation.
+    let ops = OperationServiceClient::new(transport.clone(), config.clone());
     let client = ClusterServiceClient::new(transport, config);
     let status = || async {
         client
@@ -1210,6 +1215,7 @@ where
                 .delete_pool(pb::DeletePoolRequest {
                     pool,
                     dry_run: a.dry_run,
+                    force: a.force,
                     ..Default::default()
                 })
                 .await;
@@ -1231,6 +1237,24 @@ where
                             }
                         });
                         return Ok(Next::Exit(if r.volumes.is_empty() { 0 } else { 1 }));
+                    }
+                    // Forced (D176): an operation deletes what it holds first.
+                    if let Some(op) = r.operation.as_option().cloned() {
+                        show(a, &r, || {
+                            format!(
+                                "pool {pool}: deleting these volumes (with their snapshots), then the pool: operation {} (hyperstorctl op watch --id {})\n{}",
+                                op.id,
+                                op.id,
+                                volumes_text(&pb::ListVolumesResponse {
+                                    volumes: r.volumes.clone(),
+                                    ..Default::default()
+                                })
+                            )
+                        });
+                        return match a.wait {
+                            Some(_) => follow(&ops, op.id, a).await,
+                            None => Ok(Next::Exit(0)),
+                        };
                     }
                     println!(
                         "pool {pool} deleted (map epoch {}); its devices delete its data",

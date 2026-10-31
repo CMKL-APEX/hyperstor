@@ -60,7 +60,9 @@ service ClusterService {
   // D176, D181): it leaves the map at once, its id is never given again,
   // and each device deletes what it holds of it. Refused for .meta and
   // while the pool holds a volume, a snapshot or anything in the trash;
-  // dry_run lists those and deletes nothing. Write, with step-up.
+  // dry_run lists those and deletes nothing. force deletes them first,
+  // each audited, as an operation that deletes the pool last (D176).
+  // Write, with step-up.
   rpc DeletePool(DeletePoolRequest) returns (DeletePoolResponse);
 
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
@@ -440,6 +442,9 @@ message DeletePoolRequest {
   uint32 pool = 1;
   // List what the pool holds; delete nothing.
   bool dry_run = 2 [json_name = "dry_run"];
+  // Delete what the pool holds first: its volumes, even attached ones
+  // (their holders are preempted), with their snapshots and the trash.
+  bool force = 3;
 }
 
 message DeletePoolResponse {
@@ -448,6 +453,8 @@ message DeletePoolResponse {
   // What the pool holds (volumes, with those in the trash): what keeps it
   // from being deleted.
   repeated Volume volumes = 2;
+  // With force: the operation that deletes them, then the pool.
+  Operation operation = 3;
 }
 
 message SetPoolRequest {

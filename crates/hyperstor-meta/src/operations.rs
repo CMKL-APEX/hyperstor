@@ -45,6 +45,9 @@ pub enum Work {
         #[serde(with = "hex_id")]
         volume: u128,
     },
+    /// A pool deleted with what it holds (D176): its volumes to the trash
+    /// and purged, then the pool.
+    DeletePool { pool: u32 },
     /// A volume, or one of its snapshots, deleted from the trash.
     Purge {
         #[serde(with = "hex_id")]
@@ -74,6 +77,7 @@ impl Work {
             Work::Drain { .. } => "drain",
             Work::Flatten { .. } => "flatten",
             Work::Purge { .. } => "purge",
+            Work::DeletePool { .. } => "delete-pool",
         }
     }
 }
@@ -324,6 +328,12 @@ mod tests {
         };
         ops.put(&f).unwrap();
         assert_eq!(ops.get("f").unwrap().unwrap(), f);
+        let p = Op {
+            work: Work::DeletePool { pool: 3 },
+            ..op("p", now, State::Running, 0)
+        };
+        ops.put(&p).unwrap();
+        assert_eq!(ops.get("p").unwrap().unwrap(), p);
         assert_eq!(
             ops.get("b").unwrap().unwrap().work,
             op("b", 0, State::Done, 0).work

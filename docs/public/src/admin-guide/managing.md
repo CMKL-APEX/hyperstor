@@ -361,6 +361,17 @@ id is never given to another pool. Each device deletes the pool's data
 about a minute later; a device that was down does when it returns
 (D181). Through `hyperstor-mgmt` it needs a fresh login (step-up).
 
+To delete a pool with what it holds, list it first, then force:
+
+```sh
+hyperstorctl pool delete --pool 3 --dry-run
+hyperstorctl pool delete --pool 3 --force --wait 600
+```
+
+An operation moves each volume to the trash, preempting a client that
+has it attached, and purges it with its snapshots, each audited; then
+it deletes the pool. Nothing of it can be restored.
+
 ## Draining a node
 
 `hyperstorctl drain --node N` takes every device of node N out and
