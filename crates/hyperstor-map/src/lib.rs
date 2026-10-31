@@ -170,6 +170,41 @@ impl ClusterMap {
             .collect()
     }
 
+    /// Appends a device at `addr` to node `node` (24-pools-and-devices.md
+    /// §27.2.1, D167): the node's next shard, id `node * 1000 + shard`,
+    /// of class `class`, at weight 0 until it reports its capacity (D158),
+    /// so nothing is placed on it before it runs. Returns its id; `None`
+    /// when there is no such node or it has 1000 devices. The caller
+    /// checks that the address is free and recomputes.
+    pub fn add_device(&mut self, node: u32, addr: SocketAddr, class: &str) -> Option<u32> {
+        let shard = self
+            .devices
+            .values()
+            .filter(|d| d.node == node)
+            .map(|d| d.shard + 1)
+            .max()
+            .unwrap_or(0);
+        if shard >= 1000 {
+            return None;
+        }
+        let n = self.nodes.get_mut(&node)?;
+        n.reactors = n.reactors.max(shard + 1);
+        let id = node * 1000 + shard;
+        self.devices.insert(
+            id,
+            DeviceInfo {
+                id,
+                node,
+                shard,
+                addr,
+                weight: 0.0,
+                class: class.into(),
+                up_in: true,
+            },
+        );
+        Some(id)
+    }
+
     /// Adds the `.meta` pool (06-metadata.md §4.2) if the map lacks it:
     /// replicated, three copies (fewer on smaller clusters), 256 PGs.
     /// Whether it was added; the caller recomputes.
@@ -207,7 +242,8 @@ impl ClusterMap {
     /// Adds the nodes, devices and pools of `seed` (a cluster file) that
     /// this map lacks, and recomputes if any were. What this map has is
     /// kept as it is: removals go through `out` and `in`. Whether
-    /// anything was added.
+    /// anything was added. Devices added start at weight 0, as a joining
+    /// host's do (D158), and a node given more devices counts them.
     pub fn merge_new(&mut self, seed: &ClusterMap) -> bool {
         let mut added = false;
         for (id, n) in &seed.nodes {
@@ -218,7 +254,16 @@ impl ClusterMap {
         }
         for (id, d) in &seed.devices {
             if !self.devices.contains_key(id) {
-                self.devices.insert(*id, d.clone());
+                self.devices.insert(
+                    *id,
+                    DeviceInfo {
+                        weight: 0.0,
+                        ..d.clone()
+                    },
+                );
+                if let Some(n) = self.nodes.get_mut(&d.node) {
+                    n.reactors = n.reactors.max(d.shard + 1);
+                }
                 added = true;
             }
         }
@@ -903,6 +948,30 @@ mod tests {
         });
         m.recompute();
         m
+    }
+
+    #[test]
+    fn a_device_is_appended_to_its_node_at_weight_0() {
+        let mut m = map();
+        let addr: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        assert_eq!(m.add_device(0, addr, "nvme"), Some(2));
+        let d = &m.devices[&2];
+        assert_eq!((d.node, d.shard, d.addr, d.weight), (0, 2, addr, 0.0));
+        assert_eq!(m.nodes[&0].reactors, 3);
+        m.recompute();
+        assert!(
+            m.pgs.values().all(|p| !p.up.contains(&2)),
+            "nothing placed on it"
+        );
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert_eq!(m.add_device(9, addr, "nvme"), None, "no node 9");
+        // From a cluster file: a new device of a node already here.
+        let mut seed = map();
+        seed.add_device(1, "127.0.0.1:7012".parse().unwrap(), "nvme");
+        seed.devices.get_mut(&1002).unwrap().weight = 1.0;
+        assert!(m.merge_new(&seed));
+        assert_eq!((m.devices[&1002].weight, m.nodes[&1].reactors), (0.0, 3));
+        assert!(!m.merge_new(&seed), "nothing new the second time");
     }
 
     #[test]
