@@ -145,6 +145,12 @@ pub struct ClusterMap {
     /// them. Why: clients, the host read cache and copies on devices that
     /// were down name data by pool id.
     pub deleted_pools: BTreeSet<u32>,
+    /// The ids of removed devices and nodes (24-pools-and-devices.md
+    /// §27.2.5, D182): never given again. Why: a device's id is in its
+    /// superblock and a node's in its devices' ids; one given again would
+    /// let an old device or host pass for the new one.
+    pub removed_devices: BTreeSet<u32>,
+    pub removed_nodes: BTreeSet<u32>,
 }
 
 /// What a device is (24-pools-and-devices.md §27.2.4), as its node
@@ -269,7 +275,15 @@ impl ClusterMap {
     pub fn add_device(&mut self, node: u32, addr: SocketAddr, class: &str) -> Option<u32> {
         let on_node = || self.devices.values().filter(|d| d.node == node);
         let shard = on_node().map(|d| d.shard + 1).max().unwrap_or(0);
-        let id = on_node().map(|d| d.id + 1).max().unwrap_or(node * 1000);
+        let gone = self
+            .removed_devices
+            .range(node * 1000..node * 1000 + 1000)
+            .map(|d| d + 1);
+        let id = on_node()
+            .map(|d| d.id + 1)
+            .chain(gone)
+            .max()
+            .unwrap_or(node * 1000);
         if id >= node * 1000 + 1000 {
             return None;
         }
@@ -414,6 +428,43 @@ impl ClusterMap {
         self.deleted_pools.insert(id);
         self.recompute();
         true
+    }
+
+    /// The id a new node gets: after every node's, removed ones' too
+    /// (D182).
+    pub fn next_node_id(&self) -> u32 {
+        let nodes = self.nodes.keys().next_back().map_or(0, |n| n + 1);
+        let removed = self.removed_nodes.last().map_or(0, |n| n + 1);
+        nodes.max(removed)
+    }
+
+    /// Removes device `id` from the map, keeping its id as removed, and
+    /// its node with it if that was the node's last device (D182); the
+    /// epoch moves. Whether the device was there, and whether its node
+    /// went too.
+    pub fn remove_device(&mut self, id: u32) -> Option<bool> {
+        let node = self.devices.remove(&id)?.node;
+        self.removed_devices.insert(id);
+        for set in [
+            &mut self.auto_out,
+            &mut self.failed,
+            &mut self.fixed_weights,
+            &mut self.fixed_classes,
+        ] {
+            set.remove(&id);
+        }
+        self.kinds.remove(&id);
+        for p in self.pools.values_mut() {
+            p.added.remove(&id);
+            p.removed.remove(&id);
+        }
+        let last = !self.devices.values().any(|d| d.node == node);
+        if last {
+            self.nodes.remove(&node);
+            self.removed_nodes.insert(node);
+        }
+        self.recompute();
+        Some(last)
     }
 
     pub fn add_pool(&mut self, pool: PoolInfo) {
@@ -588,6 +639,30 @@ impl ClusterMap {
         }
     }
 
+    /// Takes `device` out of the acting set of each PG whose `up` it has
+    /// left and that backfills nothing: placement found no other failure
+    /// domain for its copy (a forced removal, 24-pools-and-devices.md
+    /// §27.2.5), so no backfill would ever make `acting` be `up`. Returns
+    /// how many PGs changed; the epoch moves if any did.
+    pub fn release(&mut self, device: u32) -> usize {
+        let epoch = self.epoch + 1;
+        let mut n = 0;
+        for pg in self.pgs.values_mut() {
+            if pg.acting.contains(&device)
+                && !pg.up.contains(&device)
+                && pg.backfilling().next().is_none()
+            {
+                pg.acting = pg.up.clone();
+                pg.epoch = epoch;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.epoch = epoch;
+        }
+        n
+    }
+
     /// Records that `device` has a full copy of a PG (09-replication.md §8.5). It
     /// joins `acting`; once every member of `up` has, `acting` becomes
     /// `up`, dropping members placement no longer wants. Refused (false)
@@ -760,10 +835,12 @@ impl ClusterMap {
         // Format 2 adds the blocklist, 3 the devices out by the down-out
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set, 6 class sets, 7
-        // a pool's devices added and removed, 8 deleted pools' ids; a map
-        // without them keeps the older format, which nodes from before
-        // them read.
-        let format = if !self.deleted_pools.is_empty() {
+        // a pool's devices added and removed, 8 deleted pools' ids, 9
+        // removed devices' and nodes' ids; a map without them keeps the
+        // older format, which nodes from before them read.
+        let format = if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
+            9
+        } else if !self.deleted_pools.is_empty() {
             8
         } else if self
             .pools
@@ -895,13 +972,21 @@ impl ClusterMap {
                 e.u32(*p);
             }
         }
+        if format >= 9 {
+            for set in [&self.removed_devices, &self.removed_nodes] {
+                e.u32(set.len() as u32);
+                for id in set {
+                    e.u32(*id);
+                }
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=8).contains(&v) {
+        if !(1..=9).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1042,6 +1127,10 @@ impl ClusterMap {
         }
         if v >= 8 {
             m.deleted_pools = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 9 {
+            m.removed_devices = d.seq(4, |d| d.u32())?.into_iter().collect();
+            m.removed_nodes = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -1379,6 +1468,42 @@ mod tests {
         let back = ClusterMap::decode(&m.encode()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.next_pool_id(), top + 1);
+    }
+
+    /// D182: a removed device leaves the map, its node with its last
+    /// device; both ids are kept, in format 9 only once there is one, and
+    /// never given again.
+    #[test]
+    fn removed_devices_and_nodes_keep_their_ids() {
+        let mut m = map();
+        assert_ne!(m.encode()[..4], 9u32.to_le_bytes());
+        let node = *m.nodes.keys().next_back().unwrap();
+        let mut ids: Vec<u32> = m
+            .devices
+            .values()
+            .filter(|d| d.node == node)
+            .map(|d| d.id)
+            .collect();
+        ids.sort();
+        let top = *ids.last().unwrap();
+        m.pools.get_mut(&1).unwrap().added.insert(top);
+        let epoch = m.epoch;
+        assert_eq!(m.remove_device(top), Some(ids.len() == 1));
+        assert_eq!(m.remove_device(top), None, "only once");
+        assert!(m.epoch > epoch && !m.pools[&1].added.contains(&top));
+        assert!(m.pgs.values().all(|p| !p.up.contains(&top)));
+        assert_eq!(m.encode()[..4], 9u32.to_le_bytes());
+        let a: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        assert_eq!(m.add_device(node, a, "nvme"), Some(top + 1), "not again");
+        assert_eq!(m.remove_device(top + 1), Some(false));
+        for &d in &ids[..ids.len() - 1] {
+            assert!(m.remove_device(d).is_some());
+        }
+        assert!(!m.nodes.contains_key(&node) && m.removed_nodes.contains(&node));
+        assert_eq!(m.next_node_id(), node + 1);
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.next_node_id(), node + 1);
     }
 
     /// D180: a pool's devices added and removed are kept in format 7,

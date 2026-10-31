@@ -220,6 +220,153 @@ fn a_shard_must_be_the_maps_and_can_name_its_id() {
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
 
+/// §27.2.5, D175, D182: `hyperstorctl device remove` takes a device out,
+/// follows its PGs off it as an operation and removes it from the map,
+/// while the data written before reads back; a node restarted with its
+/// `--shard` stops, saying so. A removal that would leave pools short of
+/// copies is refused unless forced; forced, the pools keep fewer copies
+/// and the node leaves the map with its last device. Neither id is given
+/// again, and each removal is audited.
+#[test]
+fn a_device_is_removed_once_its_pgs_have_moved() {
+    let mut c = Cluster::all_in_one("rmdev", 3);
+    // The PGs that list device `d` in `up` or `acting`, and the map's
+    // devices and nodes.
+    let listing = |c: &Cluster, d: u64| -> usize {
+        let s = c.ctl(&["pgs", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                ["up", "acting"].iter().any(|k| {
+                    p[k].as_array()
+                        .is_some_and(|a| a.iter().any(|x| x.as_u64() == Some(d)))
+                })
+            })
+            .count()
+    };
+    let in_map = |c: &Cluster| -> (Vec<u64>, Vec<u64>) {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let nodes = v["nodes"].as_array().unwrap();
+        (
+            nodes
+                .iter()
+                .flat_map(|n| n["devices"].as_array().unwrap().clone())
+                .map(|d| d["id"].as_u64().unwrap_or(0))
+                .collect(),
+            nodes
+                .iter()
+                .map(|n| n["id"].as_u64().unwrap_or(0))
+                .collect(),
+        )
+    };
+    // A second device on node 0, run and given PGs.
+    let ports = free_ports(2);
+    let addr = format!("127.0.0.1:{ports}");
+    c.ctl(&["device", "add", "--node", "0", "--address", &addr])
+        .ok();
+    c.kill_node(0);
+    let img = c.data_dir().join("node-0-1.img");
+    let shard = format!("{addr}={}:1", img.display());
+    c.start_node_with(0, &["--shard", &shard]);
+    wait_for("PGs on device 1, and health ok", 120, || {
+        (listing(&c, 1) > 0 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+    let made = c
+        .ctl(&["create-volume", "--size", "16M", "--name", "kept"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let data: Vec<u8> = (0..(8u32 << 20)).map(|i| (i % 253) as u8).collect();
+    let src = c.scratch.path("kept.raw");
+    std::fs::write(&src, &data).unwrap();
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    // A dry run changes nothing.
+    let dry = c
+        .ctl(&["device", "remove", "--device", "1", "--dry-run"])
+        .ok();
+    assert!(dry.has("would move off device 1"), "{}", dry.out);
+    assert!(listing(&c, 1) > 0 && in_map(&c).0.contains(&1));
+    c.ctl(&["device", "remove", "--device", "9"]).expect(1);
+    c.ctl(&["device", "remove", "--device", "1", "--node", "0"])
+        .expect(2);
+    let rm = c
+        .ctl(&["device", "remove", "--device", "1", "--wait", "600"])
+        .ok();
+    assert!(rm.has("device 1 removed from the map"), "{}", rm.out);
+    wait_for("device 1 out of the map", 10, || {
+        (!in_map(&c).0.contains(&1)).then_some(())
+    });
+    assert_eq!(listing(&c, 1), 0);
+    let out = c.scratch.path("kept.out");
+    c.ctl(&[
+        "read-volume",
+        "--id",
+        &id,
+        "--size",
+        &data.len().to_string(),
+        "--out",
+        out.to_str().unwrap(),
+    ])
+    .ok();
+    assert!(std::fs::read(&out).unwrap() == data, "the data reads back");
+    // Its --shard stops the node, which runs without it.
+    c.kill_node(0);
+    c.start_node_with(0, &["--shard", &shard]);
+    wait_for("node 0 to stop", 20, || c.node_exited(0));
+    let log = c.node_log(0);
+    assert!(log.contains("device 1: removed from the map"), "{log}");
+    c.start_node(0);
+    wait_for("health ok without device 1", 60, || {
+        c.ctl(&["status"]).has("health  ok").then_some(())
+    });
+    // Node 2's only device: three copies would span two hosts.
+    let short = c.ctl(&["device", "remove", "--device", "2000"]).expect(1);
+    assert!(
+        short.has("would keep 2 of its 3 copies; --force"),
+        "{}",
+        short.out
+    );
+    let forced = c
+        .ctl(&[
+            "device", "remove", "--device", "2000", "--force", "--wait", "600",
+        ])
+        .ok();
+    assert!(
+        forced.has("pool 1 keeps 2 of its 3 copies")
+            && forced.has("device 2000 removed from the map, and node 2 with it"),
+        "{}",
+        forced.out
+    );
+    wait_for("node 2 out of the map", 10, || {
+        (!in_map(&c).1.contains(&2)).then_some(())
+    });
+    c.ctl(&[
+        "read-volume",
+        "--id",
+        &id,
+        "--size",
+        &data.len().to_string(),
+        "--out",
+        out.to_str().unwrap(),
+    ])
+    .ok();
+    assert!(std::fs::read(&out).unwrap() == data, "and on two copies");
+    // Device 1's id isn't given again.
+    let again = format!("127.0.0.1:{}", ports + 1);
+    let add = c
+        .ctl(&["device", "add", "--node", "0", "--address", &again])
+        .ok();
+    assert!(add.has("device 2 added to node 0"), "{}", add.out);
+    wait_for("both removals in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "RemoveDevice"]).ok();
+        (a.has("device 1 ") && a.has("device 2000 force") && a.has("done")).then_some(())
+    });
+}
+
 /// D167, D168: `hyperstor-install install --node N --device PATH` adds a
 /// device to an installed node: checked for another system's data first
 /// (refused with the map unchanged), registered, formatted, recorded in

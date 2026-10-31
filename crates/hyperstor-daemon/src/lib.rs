@@ -765,8 +765,13 @@ fn wire_key(k: &ObjKey) -> WireKey {
 /// the PG's epoch when the map has the PG, `me` is in neither its `up`
 /// nor its `acting` set, and the PG is clean, `acting` being `up` with
 /// every member live; 0 for a PG of a deleted pool (D181); `None`
-/// otherwise. A PG the map lacks is left alone.
+/// otherwise. A PG the map lacks is left alone, and so is everything on a
+/// device the map no longer has: a removed device's data is left as it is
+/// (D182).
 fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
+    if !map.devices.contains_key(&me) {
+        return None;
+    }
     // A deleted pool's PGs are nobody's (D181): epoch 0, which stays.
     if map.deleted_pools.contains(&pool) {
         return Some(0);
@@ -851,6 +856,9 @@ impl ShardState {
                     d.node,
                     d.addr,
                     addr.map_or("?".into(), |a| a.to_string())
+                ),
+                None if map.removed_devices.contains(&me) => format!(
+                    "device {me}: removed from the map (hyperstorctl device remove): drop its --shard; its data is left as it was"
                 ),
                 None => format!(
                     "device {me}: not in the map: add it first (hyperstorctl device add --node {node} --address {}), or check --shard",
@@ -4661,6 +4669,10 @@ mod tests {
             Some(0),
             "a deleted pool's"
         );
+        // A removed device keeps what it holds (D182).
+        let mut removed = m.clone();
+        removed.remove_device(a);
+        assert_eq!(is_stray(&removed, a, 1, pg), None, "a removed device's");
         // Backfilling to `a` (up isn't acting): `b` keeps its copy, as does
         // the member leaving up but still acting.
         m.pgs.get_mut(&(1, pg)).unwrap().up[0] = a;

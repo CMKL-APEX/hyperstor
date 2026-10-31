@@ -134,6 +134,8 @@ running node has reported, so older nodes can still read it.
 
 #### 27.2.5 Removing a device
 
+Built but for the installer (I216, D182); the installer is stage 4b.
+
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
    PGs move to the other devices of their pools.
@@ -149,7 +151,7 @@ running node has reported, so older nodes can still read it.
 3. When no PG lists the device in `up` or `acting`, the map service
    removes it from the map, and the installer (or the operator) removes
    its `--shard` and restarts the node. A node whose last device goes is
-   removed with it.
+   removed with it. Neither id is given again (D182).
 4. The device's data is left as it is; wiping it is a separate step.
 
 ### 27.3 Pools

@@ -967,3 +967,13 @@ recommendation:
 |---|---|---|---|
 | 142 | Whether a deleted pool leaves the map at once, its id kept and devices deleting its data as they delete stray copies (recommended), or is marked deleting until every device reports it holds nothing | At once | D181 |
 | 143 | Whether `--force` (D176: delete the pool's volumes first) comes with stage 3c or in its own pull request after it (recommended) | Its own pull request | D181 |
+
+## Removing a device (2026-11-01)
+
+Building `RemoveDevice` (stage 4), one point the design in
+24-pools-and-devices.md §27.2.5 left open. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 144 | What happens to a node whose last device is removed: it leaves the map with it, and the map keeps removed device and node ids so none is given again (recommended); or it stays in the map, empty, until a later `node remove` | It leaves; ids kept | D182 |
