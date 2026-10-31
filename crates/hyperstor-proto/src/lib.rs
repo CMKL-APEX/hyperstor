@@ -465,6 +465,19 @@ pub enum Msg {
         total_bytes: u64,
         free_bytes: u64,
     },
+    /// Follower to the map service's leader: what only the leader knows,
+    /// for a follower's `GetStatus` (I197).
+    LeaderState,
+    /// Answer to `LeaderState`: how long ago each node was last heard
+    /// from (ms), PGs scrub couldn't repair (pool, pg, objects), nodes
+    /// flapping (node, transitions) and each device's space (device,
+    /// total, free bytes).
+    LeaderStateOk {
+        heard: Vec<(u32, u64)>,
+        inconsistent: Vec<(u32, u32, u32)>,
+        flapping: Vec<(u32, u32)>,
+        space: Vec<(u32, u64, u64)>,
+    },
     /// Answer to `DeviceFailed`, `MemberSlow`, `ScrubReport` and
     /// `DeviceSpace`: the map epoch that has the change (or the current
     /// one).
@@ -677,6 +690,8 @@ mod kind {
     pub const PG_USAGE: u16 = 71;
     pub const PG_USAGE_OK: u16 = 72;
     pub const DEVICE_SPACE: u16 = 73;
+    pub const LEADER_STATE: u16 = 74;
+    pub const LEADER_STATE_OK: u16 = 75;
     pub const ERROR: u16 = 99;
 }
 
@@ -759,6 +774,8 @@ impl Msg {
             Msg::BlocklistOk { .. } => BLOCKLIST_OK,
             Msg::DeviceFailed { .. } => DEVICE_FAILED,
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
+            Msg::LeaderState => LEADER_STATE,
+            Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::Noted { .. } => NOTED,
@@ -810,6 +827,7 @@ impl Msg {
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
                 | Msg::PgUsageOk { .. }
+                | Msg::LeaderStateOk { .. }
                 | Msg::FetchOk { .. }
                 | Msg::FetchPartOk { .. }
                 | Msg::VersionsOk { .. }
@@ -1052,6 +1070,26 @@ impl Msg {
             }
             Msg::PgUsageOk { known } => {
                 e.u32(*known);
+            }
+            Msg::LeaderState => {}
+            Msg::LeaderStateOk {
+                heard,
+                inconsistent,
+                flapping,
+                space,
+            } => {
+                e.seq(heard, |e, (n, ms)| {
+                    e.u32(*n).u64(*ms);
+                })
+                .seq(inconsistent, |e, (p, g, k)| {
+                    e.u32(*p).u32(*g).u32(*k);
+                })
+                .seq(flapping, |e, (n, k)| {
+                    e.u32(*n).u32(*k);
+                })
+                .seq(space, |e, (d, t, f)| {
+                    e.u32(*d).u64(*t).u64(*f);
+                });
             }
             Msg::Fetch { to, key } => {
                 to.enc(e);
@@ -1341,6 +1379,13 @@ impl Msg {
                 pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
             },
             PG_USAGE_OK => Msg::PgUsageOk { known: d.u32()? },
+            LEADER_STATE => Msg::LeaderState,
+            LEADER_STATE_OK => Msg::LeaderStateOk {
+                heard: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
+                inconsistent: d.seq(12, |d| Ok((d.u32()?, d.u32()?, d.u32()?)))?,
+                flapping: d.seq(8, |d| Ok((d.u32()?, d.u32()?)))?,
+                space: d.seq(20, |d| Ok((d.u32()?, d.u64()?, d.u64()?)))?,
+            },
             FETCH => Msg::Fetch {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
@@ -1992,6 +2037,13 @@ mod tests {
                 pgs: vec![(1, 2, 4096), (1, 3, 0)],
             },
             Msg::PgUsageOk { known: 2 },
+            Msg::LeaderState,
+            Msg::LeaderStateOk {
+                heard: vec![(0, 40), (1, 1200)],
+                inconsistent: vec![(1, 2, 3)],
+                flapping: vec![(2, 6)],
+                space: vec![(1000, 1 << 30, 1 << 29)],
+            },
             Msg::Noted { map_epoch: 9 },
             Msg::Fetch {
                 to,

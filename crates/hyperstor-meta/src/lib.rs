@@ -43,8 +43,10 @@ pub enum Admin {
             Flapping,
         )>,
     ),
-    /// Each device's last `DeviceSpace` report: total and free bytes.
-    Space(hyperstor_reactor::chan::OneSender<DeviceSpace>),
+    /// What only the leader knows (I197): this member's own if it leads,
+    /// else the leader's, asked over the map protocol and kept a second;
+    /// `None` when there is no leader or it doesn't answer.
+    LeaderView(hyperstor_reactor::chan::OneSender<Option<LeaderView>>),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -383,6 +385,8 @@ pub struct Meta {
     persisted: Cell<bool>,
     beats: RefCell<HashMap<u32, Instant>>,
     space: RefCell<DeviceSpace>,
+    /// A follower's last [`LeaderView`] from the leader, and when.
+    leader_view: RefCell<Option<(Instant, LeaderView)>>,
     /// When each node was last granted a non-zero lease.
     granted: RefCell<HashMap<u32, Instant>>,
     /// Nodes that didn't answer a fence: no leases until it resolves.
@@ -434,6 +438,21 @@ pub type DeviceSpace = BTreeMap<u32, (u64, u64)>;
 
 /// Bytes in a TiB: a device's weight is its capacity in TiB (D158).
 const TIB: f64 = (1u64 << 40) as f64;
+
+/// What only the leader knows, for `GetStatus` (I197): how long ago each
+/// node was last heard from, scrub's unrepaired PGs, flapping nodes and
+/// each device's space.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LeaderView {
+    pub heard: BTreeMap<u32, Duration>,
+    pub inconsistent: Inconsistent,
+    pub flapping: Flapping,
+    pub space: DeviceSpace,
+}
+
+/// How long a follower keeps the leader's view: `GetStatus` is polled
+/// every few seconds by each UI tab.
+const LEADER_VIEW_FOR: Duration = Duration::from_secs(1);
 
 /// How long the leader waits for the group to commit a map.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -549,6 +568,7 @@ impl Meta {
             persisted: Cell::new(true),
             beats: RefCell::new(HashMap::new()),
             space: RefCell::new(BTreeMap::new()),
+            leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
             conns: RefCell::new(HashMap::new()),
@@ -652,6 +672,65 @@ impl Meta {
             Role::Leader { since } => Lead::Leader { since, instance },
             Role::Follower { .. } => Lead::Follower,
         }
+    }
+
+    /// This member's own [`LeaderView`]: complete only on the leader.
+    fn own_view(&self, now: Instant) -> LeaderView {
+        LeaderView {
+            heard: self
+                .beats
+                .borrow()
+                .iter()
+                .map(|(n, t)| (*n, now.duration_since(*t)))
+                .collect(),
+            inconsistent: self.inconsistent.borrow().clone(),
+            flapping: self.flapping(now),
+            space: self.space.borrow().clone(),
+        }
+    }
+
+    /// [`Admin::LeaderView`]'s answer.
+    async fn leader_view(&self) -> Option<LeaderView> {
+        let leader = match self.role.get() {
+            Role::Follower { leader: Some(a) } => a,
+            Role::Follower { leader: None } => return None,
+            _ => return Some(self.own_view(Instant::now())),
+        };
+        if let Some((at, v)) = &*self.leader_view.borrow()
+            && at.elapsed() < LEADER_VIEW_FOR
+        {
+            return Some(v.clone());
+        }
+        let asked = async {
+            let c = self.conn(leader).await.ok()?;
+            c.call(&hyperstor_proto::Msg::LeaderState, &[]).await.ok()
+        };
+        let Ok(Some((
+            hyperstor_proto::Msg::LeaderStateOk {
+                heard,
+                inconsistent,
+                flapping,
+                space,
+            },
+            _,
+        ))) = hyperstor_reactor::time::timeout(LEADER_VIEW_FOR, asked).await
+        else {
+            return None;
+        };
+        let v = LeaderView {
+            heard: heard
+                .into_iter()
+                .map(|(n, ms)| (n, Duration::from_millis(ms)))
+                .collect(),
+            inconsistent: inconsistent
+                .into_iter()
+                .map(|(p, g, k)| ((p, g), k))
+                .collect(),
+            flapping: flapping.into_iter().collect(),
+            space: space.into_iter().map(|(d, t, f)| (d, (t, f))).collect(),
+        };
+        *self.leader_view.borrow_mut() = Some((Instant::now(), v.clone()));
+        Some(v)
     }
 
     /// Applies what the Raft side reports (`replica::spawn`): maps the
@@ -1012,8 +1091,12 @@ impl Meta {
                         self.flapping(now),
                     ));
                 }
-                Admin::Space(reply) => {
-                    let _ = reply.send(self.space.borrow().clone());
+                // A task of its own: it may wait on the leader.
+                Admin::LeaderView(reply) => {
+                    let me = self.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let _ = reply.send(me.leader_view().await);
+                    });
                 }
                 Admin::SetDeviceIn {
                     device,
@@ -1565,6 +1648,7 @@ impl Meta {
                     | Msg::BackfillDone { .. }
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
+                    | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
                     | Msg::PgUsage { .. })
@@ -1593,6 +1677,14 @@ impl Meta {
                         m.encode()
                     },
                 }
+            }
+            // A node not heard from since this member started serving is
+            // still starting: it heartbeats only once every device is
+            // open (I188), and answers no pings until then. Its silence
+            // isn't news; the heartbeat timeout covers one that never
+            // comes up (I198).
+            Ok(Msg::PeerDown { peer, .. }) if !self.beats.borrow().contains_key(&peer) => {
+                Msg::PeerDownOk
             }
             Ok(Msg::PeerDown { reporter, peer }) => {
                 self.reports
@@ -1653,6 +1745,23 @@ impl Meta {
                 }
                 Msg::Noted {
                     map_epoch: map.epoch,
+                }
+            }
+            Ok(Msg::LeaderState) => {
+                let v = self.own_view(Instant::now());
+                Msg::LeaderStateOk {
+                    heard: v
+                        .heard
+                        .iter()
+                        .map(|(n, d)| (*n, d.as_millis() as u64))
+                        .collect(),
+                    inconsistent: v
+                        .inconsistent
+                        .iter()
+                        .map(|(&(p, g), &k)| (p, g, k))
+                        .collect(),
+                    flapping: v.flapping.into_iter().collect(),
+                    space: v.space.iter().map(|(&d, &(t, f))| (d, t, f)).collect(),
                 }
             }
             Ok(Msg::DeviceSpace {
@@ -1936,6 +2045,31 @@ mod tests {
         };
         assert_eq!(b[..3], [None, Some(0), Some(8192)]);
         assert!(m.pool_usage(pool + 100, 0).is_err());
+    }
+
+    /// I198: peers' reports about a node not heard from yet (still
+    /// opening its devices) don't mark it down; once it has heartbeated,
+    /// they do.
+    #[test]
+    fn reports_about_a_starting_node_wait_for_its_first_heartbeat() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        for n in [0, 1] {
+            m.handle(Ok(Msg::Heartbeat { node: n }));
+        }
+        let report = |reporter| {
+            m.handle(Ok(Msg::PeerDown { reporter, peer: 3 }));
+        };
+        let timeout = Duration::from_secs(3);
+        report(0);
+        report(1);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        assert!(m.map.borrow().nodes[&3].up, "still starting");
+        m.handle(Ok(Msg::Heartbeat { node: 3 }));
+        report(0);
+        report(1);
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        assert!(!m.map.borrow().nodes[&3].up, "silent once it had started");
     }
 
     #[test]
@@ -2256,6 +2390,57 @@ mod tests {
             assert!(!m.may_change_roles());
             assert!(matches!(
                 beat(),
+                Msg::Error {
+                    code: Code::NotLeader,
+                    ..
+                }
+            ));
+        });
+    }
+
+    /// I197: a follower's view of what only the leader knows comes from
+    /// the leader over the map protocol, kept a second; with no leader,
+    /// none.
+    #[test]
+    fn a_follower_asks_the_leader_for_its_view() {
+        use hyperstor_proto::*;
+        use hyperstor_reactor::{block_on, net::*, spawn};
+        use replica::{Leading, ToReactor};
+        let leader = Meta::new(map());
+        leader.handle(Ok(Msg::Heartbeat { node: 1 }));
+        leader.handle(Ok(Msg::DeviceSpace {
+            device: 7,
+            total_bytes: 1 << 30,
+            free_bytes: 1 << 29,
+        }));
+        leader.inconsistent.borrow_mut().insert((1, 2), 3);
+        let (commits, _committed) = tokio::sync::mpsc::unbounded_channel::<replica::Commit>();
+        let f = Meta::replicated(map(), Duration::from_millis(200), commits);
+        block_on(async move {
+            assert_eq!(f.leader_view().await, None, "no leader known");
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            spawn(serve(l, leader.clone()));
+            let (tx, rx) = hyperstor_reactor::chan::channel();
+            spawn(f.clone().follow(rx));
+            tx.send(ToReactor::Leader(Leading::Other(addr))).unwrap();
+            hyperstor_reactor::time::sleep(Duration::from_millis(20)).await;
+            let v = f.leader_view().await.expect("the leader's view");
+            assert_eq!(v.space.get(&7), Some(&(1 << 30, 1 << 29)));
+            assert_eq!(v.inconsistent.get(&(1, 2)), Some(&3));
+            assert!(v.heard[&1] < Duration::from_secs(1), "{v:?}");
+            // Kept a second: a change on the leader shows after.
+            leader.handle(Ok(Msg::DeviceSpace {
+                device: 7,
+                total_bytes: 1 << 30,
+                free_bytes: 1 << 28,
+            }));
+            assert_eq!(f.leader_view().await.unwrap().space[&7].1, 1 << 29);
+            hyperstor_reactor::time::sleep(LEADER_VIEW_FOR).await;
+            assert_eq!(f.leader_view().await.unwrap().space[&7].1, 1 << 28);
+            // The leader answers only as leader.
+            assert!(matches!(
+                f.handle(Ok(Msg::LeaderState)),
                 Msg::Error {
                     code: Code::NotLeader,
                     ..

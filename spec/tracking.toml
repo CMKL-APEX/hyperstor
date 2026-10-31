@@ -249,11 +249,12 @@ tests = [
 
 [[milestone.item]]
 what = "Backfill: returning or replacement nodes are refilled"
-spec = ["09-replication.md §8.5", "I187"]
+spec = ["09-replication.md §8.5", "I187", "I198"]
 status = "done"
 tests = [
     "cluster::a_node_returns_with_stale_data_and_is_refilled",
     "manage::an_empty_node_is_refilled_without_flapping",
+    "hyperstor_meta::tests::reports_about_a_starting_node_wait_for_its_first_heartbeat",
     "hyperstor_map::tests::a_pg_whose_copies_are_all_down_stays_down",
 ]
 
@@ -880,19 +881,21 @@ tests = [
 
 [[milestone.item]]
 what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages"
-spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193"]
+spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193", "I197"]
 status = "done"
 tests = [
     "hyperstor_meta::api::tests::pool_space_from_device_reports",
     # Also shown by manage::status_and_tables, tracked earlier.
     "hyperstor_meta::tests::device_space_is_kept_out_of_the_map",
     # The columns and bars: ctl's tables_list_every_device_and_pool and
-    # browser::the_pages_show_the_cluster, tracked earlier.
+    # browser::the_pages_show_the_cluster, tracked earlier; a follower's
+    # answer also by join::map_service_members_join_the_first.
+    "hyperstor_meta::tests::a_follower_asks_the_leader_for_its_view",
 ]
 
 [[milestone.item]]
 what = "Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto"
-spec = ["07-placement.md §5.2", "D158", "I197"]
+spec = ["07-placement.md §5.2", "D158", "I199"]
 status = "done"
 tests = [
     "hyperstor_meta::tests::device_weights_follow_capacity",
@@ -903,7 +906,7 @@ tests = [
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"
-spec = ["16-glidex.md §17", "D159", "I198"]
+spec = ["16-glidex.md §17", "D159", "I200"]
 status = "done"
 tests = [
     "hyperstor_meta::api::tests::pool_space_under_the_domain_rule",

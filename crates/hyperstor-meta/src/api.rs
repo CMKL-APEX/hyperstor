@@ -404,8 +404,9 @@ pub fn stalled(s: &mut pb::GetStatusResponse, d: std::time::Duration) {
 
 /// The status as this member can tell it: `leads` is `Err(why)` on a
 /// follower, which hears no heartbeats and gets no scrub results (they go
-/// to the leader). A follower answers from the map, which the leader
-/// published, without warning about what only the leader knows, and says
+/// to the leader). A follower asks the leader for those first (I197);
+/// only when it can't does it answer from the map alone, which the leader
+/// published, without warning about what only the leader knows, and say
 /// so in a note; one that knows no leader warns, since nothing can change
 /// the map (and `hyperstorctl status --wait` waits for an election).
 pub fn status_for(
@@ -708,24 +709,36 @@ impl ClusterService for Api {
             .send(Admin::Uncommitted(reply))
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let uncommitted = rx.recv().await.flatten();
-        let (map, heard, inconsistent, flapping) = self.published().await?;
-        let mut s = status_for(
-            &map,
-            &heard,
-            &inconsistent,
-            &flapping,
-            &self.map_address,
-            leads,
-        );
-        if let Some(d) = uncommitted {
-            stalled(&mut s, d);
-        }
+        let (map, ..) = self.published().await?;
+        // What only the leader knows, asked of it by a follower (I197).
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::Space(reply))
+            .send(Admin::LeaderView(reply))
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
-        if let Some(space) = rx.recv().await {
-            pool_space(&mut s, &map, &space);
+        let mut s = match rx.recv().await.flatten() {
+            Some(v) => {
+                let mut s = status(
+                    &map,
+                    Some(&v.heard),
+                    &v.inconsistent,
+                    &v.flapping,
+                    &self.map_address,
+                );
+                pool_space(&mut s, &map, &v.space);
+                s
+            }
+            // No leader, or it didn't answer: the map alone.
+            None => status_for(
+                &map,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &self.map_address,
+                leads,
+            ),
+        };
+        if let Some(d) = uncommitted {
+            stalled(&mut s, d);
         }
         Ok(s.into())
     }
