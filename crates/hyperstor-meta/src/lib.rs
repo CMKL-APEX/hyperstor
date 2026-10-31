@@ -1484,6 +1484,14 @@ impl Meta {
                     },
                 }
             }
+            // A node not heard from since this member started serving is
+            // still starting: it heartbeats only once every device is
+            // open (I188), and answers no pings until then. Its silence
+            // isn't news; the heartbeat timeout covers one that never
+            // comes up (I198).
+            Ok(Msg::PeerDown { peer, .. }) if !self.beats.borrow().contains_key(&peer) => {
+                Msg::PeerDownOk
+            }
             Ok(Msg::PeerDown { reporter, peer }) => {
                 self.reports
                     .borrow_mut()
@@ -1825,6 +1833,31 @@ mod tests {
         };
         assert_eq!(b[..3], [None, Some(0), Some(8192)]);
         assert!(m.pool_usage(pool + 100, 0).is_err());
+    }
+
+    /// I198: peers' reports about a node not heard from yet (still
+    /// opening its devices) don't mark it down; once it has heartbeated,
+    /// they do.
+    #[test]
+    fn reports_about_a_starting_node_wait_for_its_first_heartbeat() {
+        use hyperstor_proto::Msg;
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        for n in [0, 1] {
+            m.handle(Ok(Msg::Heartbeat { node: n }));
+        }
+        let report = |reporter| {
+            m.handle(Ok(Msg::PeerDown { reporter, peer: 3 }));
+        };
+        let timeout = Duration::from_secs(3);
+        report(0);
+        report(1);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        assert!(m.map.borrow().nodes[&3].up, "still starting");
+        m.handle(Ok(Msg::Heartbeat { node: 3 }));
+        report(0);
+        report(1);
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        assert!(!m.map.borrow().nodes[&3].up, "silent once it had started");
     }
 
     #[test]

@@ -199,7 +199,7 @@ fn an_empty_node_is_refilled_without_flapping() {
         .ok();
     // Writing the filler on a loaded runner can hold a reactor past the
     // peer timeout, so a node may go down and come back before the kill;
-    // D149 then warns "flapping" for 10 minutes (I198). What is checked is
+    // D149 then warns "flapping" for 10 minutes (I200). What is checked is
     // the refill, so that is allowed, once every node is up again.
     let settled = |s: &str| {
         s.contains("health  ok")
