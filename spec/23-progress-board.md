@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 1 | 12 |
+| 5 | 0 | 0 | 13 |
 
 ## In progress
 
@@ -19,7 +19,7 @@ updated for a while may have been left behind.
 |---|---|---|---|---|---|---|
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
-| **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `feature/elastic-pools`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106), [#113](https://github.com/CMKL-APEX/hyperstor/pull/113), [#114](https://github.com/CMKL-APEX/hyperstor/pull/114) | Stage 2a in review (#113, I209); 2b built (I210): pools place on class sets, hyperstorctl pool set --classes, hard disks and flash only with --force | Stage 3: pools made, changed and deleted (CreatePool, the rest of SetPool, DeletePool) | 2026-10-31 |
+| **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `feature/elastic-pools`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106), [#113](https://github.com/CMKL-APEX/hyperstor/pull/113), [#114](https://github.com/CMKL-APEX/hyperstor/pull/114) | Stages 1 and 2 done: stage 1 on main (#110); stage 2 (kinds, class sets; #113, #114) on the feature branch and on the pilot, where the six files are class file and nvme6n1 nvme, nothing moved | Stage 3: pools made, changed and deleted (CreatePool, the rest of SetPool, DeletePool) | 2026-10-31 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT | HS0 | `bench/g43`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100) | G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped | Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
@@ -29,9 +29,7 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Copies a device no longer serves are deleted (D177)** (`stray-copies`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/stray-copies`, [#111](https://github.com/CMKL-APEX/hyperstor/pull/111) | Built (I208): a device deletes its copy of a PG it is in neither up nor acting of, once the PG is clean for 60 s | Review and merge; then install on the pilot, where node 1's old copies (about 8.8 GiB) should go within a minute | 2026-10-31 |
+None.
 
 ## Done
 
@@ -40,6 +38,7 @@ None.
 | **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | 2026-10-31 |
 | **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
+| **Copies a device no longer serves are deleted (D177)** (`stray-copies`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/stray-copies`, [#111](https://github.com/CMKL-APEX/hyperstor/pull/111) | 2026-10-31 |
 | **The refill test's flapping on CI (I200)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | 2026-10-31 |
 | **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95), [#98](https://github.com/CMKL-APEX/hyperstor/pull/98) | 2026-10-31 |
 | **Device identity checked before a device is opened** (`device-identity`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-identity`, [#99](https://github.com/CMKL-APEX/hyperstor/pull/99) | 2026-10-31 |
