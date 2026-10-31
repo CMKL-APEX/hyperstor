@@ -37,7 +37,7 @@ def milestone_status(m):
 
 
 RUNNING = re.compile(r"^\s+Running (?:unittests )?\S+ \(.*/deps/(.+)-[0-9a-f]+(?:\.exe)?\)$")
-RESULT = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)")
+RESULT = re.compile(r"^test (\S+)(?: - should panic(?: with [^.]*)?)? \.\.\. (ok|FAILED|ignored)")
 # Colour codes, which cargo writes with CARGO_TERM_COLOR=always (as in CI).
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

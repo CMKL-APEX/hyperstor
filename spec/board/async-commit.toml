@@ -1,0 +1,10 @@
+title = "Device waits off the reactor (points 114–115)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-10-31
+updated = 2026-10-31
+milestone = "HS0"
+branch = "feat/async-commit"
+prs = [94]
+now = "Points 114–115 written up with G43; stage 1 prototyped (I199): commits wait for the device on the reactor's ring, one in flight, with an I/O timeout"
+next = "The owner's answers to points 114 and 115; G43 on the pilot; then stages 2 (reads) and 3 (checkpoints, deferred writes)"
