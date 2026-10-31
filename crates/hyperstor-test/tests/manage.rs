@@ -220,6 +220,113 @@ fn a_shard_must_be_the_maps_and_can_name_its_id() {
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
 
+/// D167, D168: `hyperstor-install install --node N --device PATH` adds a
+/// device to an installed node: checked for another system's data first
+/// (refused with the map unchanged), registered, formatted, recorded in
+/// install.conf and written into the node's options, so a later run keeps
+/// it and the node runs it once restarted.
+#[test]
+fn the_installer_adds_a_device_to_a_node() {
+    let mut c = Cluster::all_in_one("instdev", 3);
+    let device_ids = |c: &Cluster| -> Vec<u64> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| d["id"].as_u64().unwrap_or(0))
+            .collect()
+    };
+    let addr = format!("127.0.0.1:{}", free_ports(1));
+    // An LVM physical volume: refused before the map changes.
+    let lvm = c.scratch.path("lvm.img");
+    let mut b = vec![0u8; 8192];
+    b[512..520].copy_from_slice(b"LABELONE");
+    b[536..544].copy_from_slice(b"LVM2 001");
+    std::fs::write(&lvm, &b).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&lvm)
+        .unwrap()
+        .set_len(64 << 20)
+        .unwrap();
+    let refused = install_cmd(
+        &c.root,
+        "install",
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            lvm.to_str().unwrap(),
+            "--device-address",
+            &addr,
+        ],
+    );
+    assert!(
+        refused.code != 0 && refused.has("an LVM physical volume"),
+        "{}",
+        refused.out
+    );
+    assert!(!device_ids(&c).contains(&1), "nothing registered");
+    // A blank disk: added as device 1.
+    let disk = c.scratch.path("extra.img");
+    std::fs::File::create(&disk)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let d = disk.to_str().unwrap();
+    let added = install(
+        &c.root,
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            d,
+            "--device-address",
+            &addr,
+        ],
+    );
+    assert!(
+        added.has(&format!(
+            "added {d} to node 0 as device 1, served at {addr}"
+        )),
+        "{}",
+        added.out
+    );
+    let conf = std::fs::read_to_string(c.root.join("etc/hyperstor/install.conf")).unwrap();
+    assert!(conf.contains(&format!("devices = 1@{addr}={d}")), "{conf}");
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert!(env.contains(&format!("--shard {addr}={d}:0")), "{env}");
+    // A later run keeps it, and adds nothing twice.
+    let again = install(&c.root, &["--no-start", "--node", "0", "--device", d]);
+    assert!(!again.has("added"), "{}", again.out);
+    let env2 = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert_eq!(env, env2);
+    // The node runs it once restarted from its options.
+    c.kill_node(0);
+    c.start_node(0);
+    wait_for("device 1 weighted, with PGs, and health ok", 120, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let weighted = v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(1) && d["weight"].as_f64().unwrap_or(0.0) > 0.0);
+        let pgs: serde_json::Value = serde_json::from_str(&c.ctl(&["pgs", "--json"]).out).ok()?;
+        let on_1 = pgs["pgs"].as_array()?.iter().any(|p| {
+            p["acting"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(1)))
+        });
+        (weighted && on_1 && c.ctl(&["status"]).has("health  ok")).then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]
@@ -405,6 +512,10 @@ fn a_killed_node_is_reported_and_comes_back() {
 #[test]
 fn a_returning_node_goes_down_once() {
     let mut c = Cluster::all_in_one("return", 3);
+    // On a slow host every node may be marked down once at the start, by
+    // the heartbeat timeout, while its device opens (I198): what is
+    // checked is the kill and the return.
+    let before = c.meta_log().lines().count();
     c.kill_node(2);
     wait_for("node 2 down", 20, || {
         c.ctl(&["status"]).has("node(s) down: 2").then_some(())
@@ -416,6 +527,7 @@ fn a_returning_node_goes_down_once() {
     let log = std::fs::read_to_string(&c.meta_log).unwrap();
     let changes: Vec<&str> = log
         .lines()
+        .skip(before)
         .filter(|l| l.starts_with("hyperstor-meta: node 2 "))
         .collect();
     assert_eq!(

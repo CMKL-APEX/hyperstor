@@ -253,22 +253,31 @@ copies, the smallest host bounds it.
 
 ## Adding a device to a node
 
-A node can take more devices while the cluster runs (D167). Register
-the device with the map service, then restart the node with one more
-`--shard`, at the address you registered:
+A node can take more devices while the cluster runs (D167). On the
+node's host, if it runs the map service too:
 
 ```sh
-hyperstorctl device add --node 1 --address 192.0.2.21:9102
-# then add --shard 192.0.2.21:9102=PATH:SIZE_GIB to node 1's options,
-# after its other --shard options, and restart it
+sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-NAME
 ```
+
+The installer refuses a device that holds anything it recognises (a
+partition table, LVM, a Ceph OSD, a filesystem...; `--force-format`
+overwrites it), registers it with the map service, formats it, lets
+the `hyperstor` user open it (a udev rule for that disk only), records
+it in `install.conf` and restarts the node with it. Later runs, the
+daily renewal included, keep it. Name devices by `/dev/disk/by-id/`.
 
 The device is the node's next one, `node × 1000 + i`, and starts at
 weight 0: nothing moves until the node runs it. Once it has reported
 its capacity, within a second of starting, it gets its weight and PGs
-move onto it, as after a weight change. The installer doesn't yet add
-a device to an installed node by itself: edit the node's options as
-above (a later installer run rewrites them, so for now keep a copy).
+move onto it, as after a weight change.
+
+By hand, or on a host without the map service: `hyperstorctl device
+add --node 1 --address 192.0.2.21:9102` (from a host that has the
+administrator's certificate), `hyperstor-install format-device --path
+PATH --id D` on the node's host, then one more `--shard
+192.0.2.21:9102=PATH:0` in the node's options (which a later installer
+run rewrites).
 
 ## Draining a node
 

@@ -23,7 +23,7 @@ A device is a file or a block device:
   (`/dev/nvme1n1:0`).
 - A **file** without Hyperstor's format is **formatted on first start**.
   A **block device** never is: format it first with `sudo hyperstor-install
-  format-device --path /dev/disk/by-id/NAME --device D`, which refuses a
+  format-device --path /dev/disk/by-id/NAME --id D`, which refuses a
   device that holds anything else (a partition table, LVM, a Ceph OSD,
   a filesystem...) unless `--force-format`. A node given a blank block
   device stops, saying so. Name block devices by `/dev/disk/by-id/`:
