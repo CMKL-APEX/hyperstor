@@ -311,6 +311,20 @@ by default) as the pool keeps copies. A set with hard disks and flash
 both is refused unless `--force`: a write waits for its slowest copy.
 `.meta` always uses every device but hard disks.
 
+A pool can also use one device beyond its classes, or leave out one of
+them, without changing any device's class: other pools keep using it
+as before (D180).
+
+```sh
+hyperstorctl pool add-device --pool 1 --device 3001
+hyperstorctl pool remove-device --pool 1 --device 2000
+```
+
+Each is checked as `pool set` is, and its PGs move the same way;
+`hyperstorctl pools` shows the classes, then `+3001-2000`. A device's
+space is shared by every pool that uses it, so a pool has no size of
+its own: its free space is that of its devices.
+
 A pool is made on the classes it names:
 
 ```sh

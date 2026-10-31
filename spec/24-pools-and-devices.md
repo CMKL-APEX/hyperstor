@@ -218,7 +218,12 @@ D180 amends this: a pool uses the devices of its classes, plus devices
 added to it and less devices removed from it (`hyperstorctl pool
 add-device`, `pool remove-device`), so one pool can have a device
 another pool of the same class doesn't. A device serves every pool that
-may use it, sharing its space.
+may use it, sharing its space. Built (I212): an added device is one not
+of the pool's classes, a removed device one of them; each edit is
+checked as a class set is (failure domains, kinds), and `hyperstorctl
+pools` shows them after the classes (`nvme+3001-2000`). Why per pool:
+a class is shared by every pool that names it, so moving a device
+between classes moves it in all of them.
 
 Built (I210), with `SetPool` for classes only until stage 3. Only
 `SetPool` checks a set's domains and kinds; relabelling a device later

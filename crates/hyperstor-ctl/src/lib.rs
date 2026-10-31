@@ -74,18 +74,24 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     // Usable space (D156): `-` until every device has reported.
     let mut mixed = false;
     for p in &s.pools {
-        // Every device, or the pool's classes (D164); `!` when they mix
-        // hard disks and flash (D172).
+        // Every device, or the pool's classes (D164), then the devices
+        // added and removed (`+D`, `-D`, D180); `!` when they mix hard
+        // disks and flash (D172).
         mixed |= p.mixed_kinds;
-        let classes = if p.classes.is_empty() {
+        let mut classes = if p.classes.is_empty() {
             "any".to_string()
         } else {
-            format!(
-                "{}{}",
-                p.classes.join(","),
-                if p.mixed_kinds { "!" } else { "" }
-            )
+            p.classes.join(",")
         };
+        for d in &p.added_devices {
+            let _ = write!(classes, "+{d}");
+        }
+        for d in &p.removed_devices {
+            let _ = write!(classes, "-{d}");
+        }
+        if p.mixed_kinds {
+            classes.push('!');
+        }
         let _ = writeln!(
             o,
             "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} {}",
@@ -287,6 +293,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
+    (
+        "ClusterService.SetPoolDevice",
+        "pool add-device, pool remove-device",
+    ),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
@@ -816,6 +826,14 @@ mod tests {
         assert!(n.contains(" 0.2500* ") && n.lines().count() == 5, "{n}");
         let p = pools_text(&s);
         assert!(p.contains("replicated"), "{p}");
+        // A pool's classes, then its devices added and removed (D180).
+        let mut edited = s.clone();
+        edited.pools[0].classes = vec!["nvme".into()];
+        edited.pools[0].added_devices = vec![7];
+        edited.pools[0].removed_devices = vec![2, 3];
+        edited.pools[0].mixed_kinds = true;
+        let p = pools_text(&edited);
+        assert!(p.contains(" nvme+7-2-3!\n"), "{p}");
         let pgs = pgs_text(&pb::ListPgsResponse {
             pgs: vec![pb::Pg {
                 pool: 1,

@@ -468,6 +468,70 @@ fn a_pool_places_on_its_classes_only() {
     });
 }
 
+/// D180: a pool stops using one device of its classes, and its PGs
+/// leave it; a second removal would leave too few hosts; a device of
+/// another class is added to it, and PGs come to it. Audited.
+#[test]
+fn devices_are_added_to_and_removed_from_a_pool() {
+    let c = Cluster::all_in_one("pooldevs", 4);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 4).then_some(())
+    });
+    let on_3000 = |c: &Cluster| -> usize {
+        let pgs: serde_json::Value =
+            serde_json::from_str(&c.ctl(&["pgs", "--pool", "1", "--json"]).out).unwrap();
+        pgs["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["up"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|d| d.as_u64() == Some(3000)))
+            })
+            .count()
+    };
+    c.ctl(&["pool", "set", "--pool", "1", "--classes", "file"])
+        .ok();
+    wait_for("PGs of pool 1 on device 3000", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    let out = c
+        .ctl(&["pool", "remove-device", "--pool", "1", "--device", "3000"])
+        .ok();
+    assert!(out.has("pool 1 no longer uses device 3000"), "{}", out.out);
+    wait_for("no PG of pool 1 on device 3000", 10, || {
+        (on_3000(&c) == 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" file-3000"), "{}", pools.out);
+    let narrow = c
+        .ctl(&["pool", "remove-device", "--pool", "1", "--device", "2000"])
+        .expect(1);
+    assert!(narrow.has("span 2 host(s)"), "{}", narrow.out);
+    c.ctl(&["pool", "remove-device", "--pool", "0", "--device", "0"])
+        .expect(1);
+    c.ctl(&["pool", "add-device", "--pool", "1", "--device", "99"])
+        .expect(1);
+    c.ctl(&["pool", "add-device", "--pool", "1"]).expect(2);
+    // Device 3000 in a class of its own: still out of pool 1 once taken
+    // back, then added beyond the pool's classes.
+    c.ctl(&["device", "class", "--device", "3000", "--class", "spare"])
+        .ok();
+    c.ctl(&["pool", "add-device", "--pool", "1", "--device", "3000"])
+        .ok();
+    wait_for("device 3000 back in pool 1", 10, || {
+        (on_3000(&c) > 0).then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has(" file+3000"), "{}", pools.out);
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPoolDevice"]).ok();
+        (a.has("pool 1 remove device 3000") && a.has("pool 1 add device 3000")).then_some(())
+    });
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts

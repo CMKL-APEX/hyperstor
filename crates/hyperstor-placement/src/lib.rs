@@ -94,6 +94,10 @@ pub struct Rule {
     pub classes: Vec<String>,
     /// No rotational disks (`.meta`, 07-placement.md §5.2).
     pub no_hdd: bool,
+    /// Devices added to the pool beyond its classes, and devices removed
+    /// from it (D180).
+    pub added: Vec<u32>,
+    pub removed: Vec<u32>,
 }
 
 /// Uniform in (0, 1], from a hash.
@@ -168,7 +172,10 @@ impl Topology {
         for d in devices.iter().filter(|d| {
             d.up_in
                 && d.weight > 0.0
-                && (rule.classes.is_empty() || rule.classes.contains(&d.class))
+                && !rule.removed.contains(&d.id)
+                && (rule.classes.is_empty()
+                    || rule.classes.contains(&d.class)
+                    || rule.added.contains(&d.id))
                 && !(rule.no_hdd && d.hdd)
         }) {
             tree.entry(domain_of(d, rule.domain))
@@ -322,6 +329,8 @@ mod tests {
             domain,
             classes: Vec::new(),
             no_hdd: false,
+            added: Vec::new(),
+            removed: Vec::new(),
         }
     }
 
@@ -539,6 +548,8 @@ mod tests {
             domain: Domain::Host,
             classes: vec!["nvme".into(), "ssd".into()],
             no_hdd: false,
+            added: Vec::new(),
+            removed: Vec::new(),
         };
         let mut seen = HashSet::new();
         for pg in 0..500 {
@@ -548,9 +559,22 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2, "both classes used");
+        // D180: a device added beyond the classes, one of them removed.
+        let edited = Rule {
+            added: vec![2],
+            removed: vec![0],
+            ..set.clone()
+        };
+        let mut used = HashSet::new();
+        for pg in 0..500 {
+            used.extend(place(&edited, pg, &devs));
+        }
+        assert!(used.contains(&2) && !used.contains(&0));
         let meta = Rule {
             classes: Vec::new(),
             no_hdd: true,
+            added: Vec::new(),
+            removed: Vec::new(),
             ..set
         };
         for pg in 0..500 {
@@ -570,6 +594,8 @@ mod tests {
             domain: Domain::Host,
             classes: vec!["hdd".into()],
             no_hdd: false,
+            added: Vec::new(),
+            removed: Vec::new(),
         };
         for pg in 0..200 {
             for d in place(&r, pg, &devs) {

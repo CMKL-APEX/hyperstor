@@ -688,6 +688,16 @@ tests = [
     "manage::a_pool_is_made_on_its_classes",
 ]
 
+[[milestone.item]]
+what = "A pool's devices added beyond its classes, and removed from them"
+spec = ["24-pools-and-devices.md §27.4", "D180", "I212"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::devices_added_and_removed_change_placement_and_need_format_7",
+    "hyperstor_meta::tests::devices_are_added_to_and_removed_from_a_pool",
+    "manage::devices_are_added_to_and_removed_from_a_pool",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

@@ -117,6 +117,15 @@ pub enum Admin {
         op: SnapOp,
         reply: VolumeReply<SnapDone>,
     },
+    /// Adds a device to a pool, or removes it (D180). Replies with the
+    /// working map's epoch and whether the pool's devices mix kinds.
+    SetPoolDevice {
+        pool: u32,
+        device: u32,
+        member: bool,
+        force: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
+    },
     /// Makes a pool (D163, D171). Replies with its id, PG count, the
     /// working map's epoch and whether its classes mix kinds (forced).
     CreatePool {
@@ -1174,7 +1183,11 @@ impl Meta {
         let Some(info) = map.pools.get(&pool).cloned() else {
             return Err(format!("no pool {pool}"));
         };
-        let mixed = check_class_set(&map, &info, &classes, force)?;
+        let wanted = PoolInfo {
+            classes: classes.clone(),
+            ..info.clone()
+        };
+        let mixed = check_class_set(&map, &wanted, force)?;
         if info.classes != classes {
             if let Some(p) = map.pools.get_mut(&pool) {
                 p.classes = classes;
@@ -1236,11 +1249,6 @@ impl Meta {
             return Err(format!("a pool is already named {name}"));
         }
         let id = map.next_pool_id();
-        let eligible = map
-            .devices
-            .values()
-            .filter(|d| d.up_in && classes.contains(&d.class))
-            .count();
         let mut info = PoolInfo {
             id,
             name,
@@ -1251,13 +1259,68 @@ impl Meta {
             domain,
             chunk_size,
             classes,
+            added: BTreeSet::new(),
+            removed: BTreeSet::new(),
         };
-        let mixed = check_class_set(&map, &info, &info.classes.clone(), force)?;
+        let eligible = map
+            .devices
+            .values()
+            .filter(|d| d.up_in && info.uses(d))
+            .count();
+        let mixed = check_class_set(&map, &info, force)?;
         info.pg_count = pg_count.unwrap_or_else(|| default_pg_count(eligible, size));
         let pgs = info.pg_count;
         map.add_pool(info);
         map.recompute();
         Ok((id, pgs, map.epoch, mixed))
+    }
+
+    /// Adds `device` to pool `pool`, or (`member` false) removes it
+    /// (24-pools-and-devices.md §27.4; D180): a device of the pool's
+    /// classes that was removed is taken back, one outside them added; a
+    /// device added is dropped, one of its classes removed. Checked as
+    /// `SetPool` checks a class set; `.meta` is refused. Returns the
+    /// working map's epoch and whether the pool's devices mix hard disks
+    /// and flash (forced).
+    pub fn set_pool_device(
+        &self,
+        pool: u32,
+        device: u32,
+        member: bool,
+        force: bool,
+    ) -> Result<(u64, bool), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if pool == META_POOL {
+            return Err(".meta places on every flash device; its devices can't be set".into());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(info) = map.pools.get(&pool).cloned() else {
+            return Err(format!("no pool {pool}"));
+        };
+        let Some(d) = map.devices.get(&device).cloned() else {
+            return Err(format!("no device {device}"));
+        };
+        let mut wanted = info.clone();
+        let of_classes = wanted.classes.is_empty() || wanted.classes.contains(&d.class);
+        if member {
+            wanted.removed.remove(&device);
+            if !of_classes {
+                wanted.added.insert(device);
+            }
+        } else {
+            wanted.added.remove(&device);
+            if of_classes {
+                wanted.removed.insert(device);
+            }
+        }
+        let mixed = check_class_set(&map, &wanted, force)?;
+        if wanted != info {
+            map.pools.insert(pool, wanted);
+            map.recompute();
+        }
+        Ok((map.epoch, mixed))
     }
 
     /// Puts the kinds devices reported into the map once every device of
@@ -1481,6 +1544,15 @@ impl Meta {
                 }
                 Admin::AddNode { rack, addrs, reply } => {
                     let _ = reply.send(self.add_node(rack, &addrs));
+                }
+                Admin::SetPoolDevice {
+                    pool,
+                    device,
+                    member,
+                    force,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_pool_device(pool, device, member, force));
                 }
                 Admin::CreatePool { new, reply } => {
                     let _ = reply.send(self.create_pool(new));
@@ -2209,24 +2281,33 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
 /// domains as `pool` keeps copies, and its classes may hold hard disks and
 /// flash both only when forced or for a cache pool. Returns whether they
 /// mix.
-fn check_class_set(
-    map: &ClusterMap,
-    pool: &PoolInfo,
-    classes: &[String],
-    force: bool,
-) -> Result<bool, String> {
+fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<bool, String> {
     use hyperstor_placement::Domain;
-    let mixed = mixes_disks_and_flash(map, classes);
+    let what = || {
+        let mut w = if pool.classes.is_empty() {
+            "any".to_string()
+        } else {
+            pool.classes.join(",")
+        };
+        for d in &pool.added {
+            w.push_str(&format!(" +{d}"));
+        }
+        for d in &pool.removed {
+            w.push_str(&format!(" -{d}"));
+        }
+        w
+    };
+    let mixed = mixes_disks_and_flash(map, pool);
     if mixed && !force && pool.kind != PoolKind::Cache {
         return Err(format!(
-            "classes {} hold hard disks and flash: a write would wait for the slowest copy; --force allows it",
-            classes.join(",")
+            "devices {} hold hard disks and flash: a write would wait for the slowest copy; --force allows it",
+            what()
         ));
     }
     let domains: BTreeSet<u32> = map
         .devices
         .values()
-        .filter(|d| d.up_in && (classes.is_empty() || classes.contains(&d.class)))
+        .filter(|d| d.up_in && pool.uses(d))
         .map(|d| match pool.domain {
             Domain::Device => d.id,
             Domain::Host => d.node,
@@ -2236,11 +2317,7 @@ fn check_class_set(
     if domains.len() < pool.size as usize {
         return Err(format!(
             "the devices of classes {} span {} {}(s); pool {} keeps {} copies",
-            if classes.is_empty() {
-                "any".to_string()
-            } else {
-                classes.join(",")
-            },
+            what(),
             domains.len(),
             match pool.domain {
                 Domain::Device => "device",
@@ -2265,12 +2342,27 @@ pub fn default_pg_count(devices: usize, copies: u8) -> u32 {
 /// Whether `classes` hold hard disks and flash both (D172, D179): `file`
 /// mixes with any kind, and a class whose devices haven't reported a kind
 /// counts as neither.
-pub fn mixes_disks_and_flash(map: &ClusterMap, classes: &[String]) -> bool {
+pub fn mixes_disks_and_flash(map: &ClusterMap, pool: &PoolInfo) -> bool {
     use hyperstor_map::DeviceKind;
-    let kinds: Vec<DeviceKind> = classes
-        .iter()
-        .filter_map(|c| map.class_kind(c, None).or_else(|| DeviceKind::from_name(c)))
+    // A pool without classes uses every device, as pools made before class
+    // sets do (D171): the rule is about the sets operators choose.
+    if pool.classes.is_empty() {
+        return false;
+    }
+    // The kinds of the devices it uses, and of a class named after a kind
+    // that has no device yet.
+    let mut kinds: Vec<DeviceKind> = map
+        .devices
+        .values()
+        .filter(|d| pool.uses(d))
+        .filter_map(|d| map.kinds.get(&d.id).copied())
         .collect();
+    kinds.extend(
+        pool.classes
+            .iter()
+            .filter(|c| map.class_kind(c, None).is_none())
+            .filter_map(|c| DeviceKind::from_name(c)),
+    );
     kinds.contains(&DeviceKind::Hdd)
         && kinds
             .iter()
@@ -2326,6 +2418,76 @@ mod tests {
         let d = &map.devices[&1001];
         assert_eq!((d.addr, d.shard, d.weight), (addr(9300), 1, 0.0));
         assert_eq!(map.nodes[&1].reactors, 2);
+    }
+
+    /// D180: a device outside a pool's classes is added to it, one of
+    /// them removed and taken back; each checked as a class set is (too
+    /// few hosts, hard disks with flash unless forced); `.meta` refused.
+    #[test]
+    fn devices_are_added_to_and_removed_from_a_pool() {
+        use hyperstor_map::DeviceKind;
+        let meta = Meta::new(map());
+        {
+            let mut m = meta.map.borrow_mut();
+            for n in 0..4u32 {
+                m.set_kind(n * 1000, DeviceKind::Nvme);
+                m.set_kind(n * 1000 + 1, DeviceKind::Hdd);
+            }
+            m.recompute();
+        }
+        meta.set_pool_classes(1, vec!["nvme".into()], false)
+            .unwrap();
+        let uses = |d: u32| {
+            meta.map
+                .borrow()
+                .pgs
+                .iter()
+                .any(|(k, p)| k.0 == 1 && p.up.contains(&d))
+        };
+        assert!(
+            meta.set_pool_device(0, 0, false, false)
+                .unwrap_err()
+                .contains(".meta")
+        );
+        assert!(
+            meta.set_pool_device(1, 99, true, false)
+                .unwrap_err()
+                .contains("no device 99")
+        );
+        // An NVMe device out: 3 hosts left for 3 copies.
+        meta.set_pool_device(1, 3000, false, false).unwrap();
+        assert!(!uses(3000));
+        assert_eq!(
+            meta.map.borrow().pools[&1]
+                .removed
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [3000]
+        );
+        assert!(
+            meta.set_pool_device(1, 2000, false, false)
+                .unwrap_err()
+                .contains("span 2 host(s)")
+        );
+        // A hard disk in: refused unless forced.
+        assert!(
+            meta.set_pool_device(1, 1, true, false)
+                .unwrap_err()
+                .contains("--force")
+        );
+        assert_eq!(
+            meta.set_pool_device(1, 1, true, true).map(|r| r.1),
+            Ok(true)
+        );
+        assert!(uses(1) || meta.map.borrow().pools[&1].added.contains(&1));
+        // Back as they were.
+        meta.set_pool_device(1, 1, false, false).unwrap();
+        meta.set_pool_device(1, 3000, true, false).unwrap();
+        let m = meta.map.borrow().clone();
+        assert!(m.pools[&1].added.is_empty() && m.pools[&1].removed.is_empty());
+        drop(m);
+        assert!(uses(3000));
     }
 
     /// D163, D171: a pool is made with its classes, checked as `SetPool`
@@ -2626,6 +2788,8 @@ mod tests {
             domain: Domain::Host,
             chunk_size: 4 << 20,
             classes: Vec::new(),
+            added: Default::default(),
+            removed: Default::default(),
         });
         m.recompute();
         m
