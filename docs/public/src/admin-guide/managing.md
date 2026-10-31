@@ -196,6 +196,10 @@ its peers wait. Each storage node logs:
 - `device D: reactor held N ms` when the thread serving a device is held
   100 ms or more, and `device D: a commit of N list(s) took N ms` when a
   commit is the cause. These count in `hyperstor_reactor_stalls_total`.
+- `device D: a commit of N list(s) waited N ms for the device` when the
+  device took 100 ms or more to write and flush a commit. The thread goes
+  on serving meanwhile, so this alone doesn't make a node flap; requests
+  for that device's data wait.
 - `device D: node P silent for N ms; reporting it` once each time it
   reports a peer to the map service.
 

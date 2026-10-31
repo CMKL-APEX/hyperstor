@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 1 | 7 |
+| 2 | 0 | 2 | 7 |
 
 ## In progress
 
@@ -29,6 +29,7 @@ None.
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
 | **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | Points 104–113 settled as recommended: D158–D162 recorded | Merge; then build weights and pool space (D158, D159) before encryption | 2026-10-31 |
+| **Device waits off the reactor (points 114–115)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/async-commit` | Points 114–115 written up with G43; stage 1 prototyped (I199): commits wait for the device on the reactor's ring, one in flight, with an I/O timeout | The owner's answers to points 114 and 115; G43 on the pilot; then stages 2 (reads) and 3 (checkpoints, deferred writes) | 2026-10-31 |
 
 ## Done
 
@@ -49,7 +50,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 6 | 1 | 1 |
+| HS0 | Local storage engine and reactor | 6 | 2 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 15 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |

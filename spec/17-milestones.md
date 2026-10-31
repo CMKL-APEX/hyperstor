@@ -184,3 +184,10 @@ and pNFS front end, are in 22-nfs.md §26.11.
   `sed-opal` interface (`IOC_OPAL_*`, on the hosts' Linux 6.8) can lock and unlock a
   range at boot without a person, and how long a cryptographic erase
   takes.
+- **G43. Device waits off the reactor** (05-decision-log.md points 114
+  and 115). On a pilot host, with the build before and after I199: the
+  reactor holds logged (`hyperstor_reactor_stalls_total`) and the longest
+  commit wait during a refill of a returning node and during 4 KiB random
+  writes at QD32; their throughput and p99 latency; and, with a device
+  under `dm-delay` (a 2 s and a 60 s delay), whether its node stays up
+  and the device is failed after the I/O timeout.
