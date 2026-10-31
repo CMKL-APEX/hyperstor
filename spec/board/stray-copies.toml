@@ -5,5 +5,6 @@ started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS2"
 branch = "fix/stray-copies"
+prs = [111]
 now = "Built (I208): a device deletes its copy of a PG it is in neither up nor acting of, once the PG is clean for 60 s"
 next = "Review and merge; then install on the pilot, where node 1's old copies (about 8.8 GiB) should go within a minute"
