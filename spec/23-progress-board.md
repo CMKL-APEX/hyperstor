@@ -28,7 +28,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **The refill test's flapping on CI (I198)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping` | Explained: nodes flap while the filler is written on a loaded runner, before the kill; the test now waits for every node up and allows flapping warnings from then | Review and merge; CI on main green again | 2026-10-31 |
+| **The refill test's flapping on CI (I198)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | Explained: nodes flap while the filler is written on a loaded runner, before the kill; the test now waits for every node up and allows flapping warnings from then | Review and merge; CI on main green again | 2026-10-31 |
 
 ## Done
 
