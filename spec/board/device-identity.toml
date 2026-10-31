@@ -6,5 +6,5 @@ updated = 2026-10-31
 milestone = "HS2"
 branch = "feat/device-identity"
 prs = [99]
-now = "Built (I203) and in review: superblock device and cluster checked before a device is opened"
-next = "PR; on deploy, each pilot device records the cluster id once"
+now = "Deployed to all three pilot hosts from the PR's head (1d2d08f): every device recorded the cluster id once, none refused, no PG moved"
+next = "Merge once CI passes, then mark done"
