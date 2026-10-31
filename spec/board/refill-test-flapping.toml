@@ -1,0 +1,10 @@
+title = "The refill test's flapping on CI (I200)"
+status = "done"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-10-31
+updated = 2026-10-31
+milestone = "HS2"
+branch = "fix/refill-test-flapping"
+prs = [92]
+now = "Merged (#92): the refill test allows flapping from before its kill"
+next = "Device waits off the reactor (points 114–115, #94) removes the cause"

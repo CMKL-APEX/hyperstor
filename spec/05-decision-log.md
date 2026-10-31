@@ -841,7 +841,7 @@ answers no pings, accepts nothing and serves nothing. On NVMe with
 power-loss protection a flush takes microseconds, so the pilot rarely
 notices. Where a device is slower, peers report a healthy node silent:
 on CI one commit held a reactor for up to 1.1 s, past the 600 ms peer
-timeout, and nodes were marked down (I195), the same pattern as
+timeout, and nodes were marked down (I195, I200), the same pattern as
 the pilot's flapping (D149, I187, I188). Hard disks (D29) write their
 data extents inside the commit, at milliseconds a seek. A prototype of
 point 114's first stage is built (I199), with tests; it is not settled.

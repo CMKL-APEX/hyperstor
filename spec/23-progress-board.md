@@ -11,13 +11,14 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 2 | 7 |
+| 3 | 0 | 2 | 9 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | Built and tested (I193): devices' own space in GetStatus and hyperstorctl nodes; bars on the Pools, Nodes and Overview pages | Merge once CI passes, then deploy to the pilot | 2026-10-30 |
+| **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
+| **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked
@@ -35,7 +36,9 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
+| **The refill test's flapping on CI (I200)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | 2026-10-31 |
 | **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | 2026-10-31 |
 | **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |

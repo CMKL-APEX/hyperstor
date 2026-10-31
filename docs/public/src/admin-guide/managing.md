@@ -152,6 +152,8 @@ device's raw free and total space. The web UI shows the same as bars on
 the Pools and Nodes pages and under each pool on the Overview, amber
 from 85 % used and red from 95 %. Devices report their space to the map
 service's leader every 5 seconds; until each has, its figures show `-`.
+Any member answers with them: one that doesn't lead asks the leader,
+so `hyperstorctl` gives the same figures wherever it runs.
 
 `hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details;
 `pgs --pool 1 --pg 17` shows one PG. `hyperstorctl pg-grid --pool 1`
