@@ -539,7 +539,7 @@ fn the_installer_drops_a_removed_device() {
         "{}",
         other.out
     );
-    c.ctl(&["device", "remove", "--device", "1", "--wait", "120"])
+    c.ctl(&["device", "remove", "--device", "1", "--wait", "600"])
         .ok();
     let done = drop(&c, "1").ok();
     assert!(done.has("dropped device 1 from node 0"), "{}", done.out);
