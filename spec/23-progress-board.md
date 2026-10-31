@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 1 | 7 |
+| 2 | 0 | 2 | 7 |
 
 ## In progress
 
@@ -28,6 +28,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | Points 104–113 settled as recommended: D158–D162 recorded | Merge; then build weights and pool space (D158, D159) before encryption | 2026-10-31 |
 | **The refill test's flapping on CI (I198)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | Explained: nodes flap while the filler is written on a loaded runner, before the kill; the test now waits for every node up and allows flapping warnings from then | Review and merge; CI on main green again | 2026-10-31 |
 
 ## Done
