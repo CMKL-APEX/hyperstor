@@ -285,6 +285,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.AddDevice", "device add"),
     ("ClusterService.SetDeviceClass", "device class"),
+    ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),

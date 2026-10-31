@@ -945,3 +945,14 @@ with a recommendation:
 |---|---|---|---|
 | 139 | What happens to the `nvme` every device was given: a device whose class no operator set takes its reported kind (recommended); labels kept until an operator relabels | Take the kind | D178 |
 | 140 | How a file-backed device counts for D172's rule: a kind of its own that mixes with any (recommended); the kind of the disk under its filesystem | Its own kind | D179 |
+
+## A pool's devices (2026-10-31)
+
+Pools that name the same class share every device of it, so a device
+couldn't be in one such pool and not another except by giving it a
+class of its own. Asked how a pool's devices should be chosen, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 141 | How a pool's devices are chosen: its classes, plus devices added to it, less devices removed from it (recommended); an explicit list per pool; labels only (as built); several tags per device | Classes and per-pool edits | D180 |

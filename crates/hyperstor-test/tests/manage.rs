@@ -468,6 +468,42 @@ fn a_pool_places_on_its_classes_only() {
     });
 }
 
+/// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
+/// with about 100 PGs per device per copy; volumes and I/O go to it;
+/// a pool without classes, a name in use and classes with too few hosts
+/// are refused; audited.
+#[test]
+fn a_pool_is_made_on_its_classes() {
+    let c = Cluster::all_in_one("mkpool", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    let made = c
+        .ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .ok();
+    // Pools 0, 1 and 2 are the trial's; 3 devices, 3 copies: 100, so 128.
+    assert!(made.has("pool 3 fast made, 128 PGs"), "{}", made.out);
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("fast").then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has("fast") && pools.has(" file"), "{}", pools.out);
+    c.ctl(&["io-test", "--pool", "3", "--mib", "4"]).ok();
+    c.ctl(&["pool", "create", "--name", "x"]).expect(2);
+    c.ctl(&["pool", "create", "--name", "fast", "--classes", "file"])
+        .expect(1);
+    let narrow = c
+        .ctl(&["pool", "create", "--name", "y", "--classes", "nvme"])
+        .expect(1);
+    assert!(narrow.has("span 0 host(s)"), "{}", narrow.out);
+    wait_for("the pool in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "CreatePool"]).ok();
+        a.has("pool fast replicated copies=3 classes=file")
+            .then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

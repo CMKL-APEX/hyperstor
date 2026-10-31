@@ -123,6 +123,7 @@ covered by tests that run on every change.
 | The installer adds a block device to an installed node and keeps it across runs | In progress |
 | Each device's kind reported; classes follow it unless an operator sets one | Done |
 | Pools place on a set of device classes; hard disks and flash mix only when forced | Done |
+| Pools made at run time on the device classes they name | Done |
 
 ## AD0: Administration API, identities and CLI
 

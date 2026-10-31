@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -23,6 +23,10 @@
 //! - `weight --device D --weight W|auto`: keep a device's placement weight
 //!   at W, or let it follow the device's capacity in TiB again (D158);
 //!   its PGs move as the weight changes;
+//! - `pool create --name N --classes C[,C...] [--kind replicated|cache]
+//!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
+//!   device|host|rack] [--force]`: make a pool on devices of those classes
+//!   (D171); PGs, unless given, about 100 per device per copy;
 //! - `pool set --pool P --classes C[,C...]|any [--force]`: place pool P's
 //!   PGs on devices of those classes only, or on every device (D164);
 //!   `--force` allows classes of hard disks and flash both (D172);
@@ -129,7 +133,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool set|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -216,6 +220,13 @@ struct Args {
     class: Option<String>,
     /// `pool set`: the classes, `any` for every device.
     classes: Option<String>,
+    /// `pool create`: kind, copies, min, PG count, chunk bytes, domain.
+    kind: Option<String>,
+    copies: Option<u32>,
+    min: Option<u32>,
+    pgs: Option<u32>,
+    chunk: Option<u64>,
+    domain: Option<String>,
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
@@ -280,6 +291,12 @@ fn main() {
         address: None,
         class: None,
         classes: None,
+        kind: None,
+        copies: None,
+        min: None,
+        pgs: None,
+        chunk: None,
+        domain: None,
         poll: false,
     };
     let mut cmd = None;
@@ -333,6 +350,19 @@ fn main() {
             "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--class" => a.class = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--classes" => a.classes = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--kind" => a.kind = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--copies" => a.copies = Some(num(it.next())),
+            "--min" => a.min = Some(num(it.next())),
+            "--pgs" => a.pgs = Some(num(it.next())),
+            "--chunk" => {
+                a.chunk = Some(
+                    it.next()
+                        .and_then(|s| parse_size(s))
+                        .filter(|c| *c <= u64::from(u32::MAX))
+                        .unwrap_or_else(|| usage()),
+                )
+            }
+            "--domain" => a.domain = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--size" => {
                 a.size = Some(
                     it.next()
@@ -416,7 +446,7 @@ fn main() {
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
                     "device" => matches!(sub, Some("add" | "class")),
-                    "pool" => matches!(sub, Some("set")),
+                    "pool" => matches!(sub, Some("set" | "create")),
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
@@ -432,9 +462,19 @@ fn main() {
     // takes the last two.
     let device_add = cmd == "device add";
     let device_class = cmd == "device class";
-    // pool set takes a pool and classes; nothing else takes classes.
+    // pool set takes a pool and classes, pool create a name and classes;
+    // nothing else takes classes, and only pool create its own options.
+    let create = cmd == "pool create";
     if (cmd == "pool set" && (a.pool.is_none() || a.classes.is_none()))
-        || (cmd != "pool set" && a.classes.is_some())
+        || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
+        || (cmd != "pool set" && !create && a.classes.is_some())
+        || (!create
+            && (a.kind.is_some()
+                || a.copies.is_some()
+                || a.min.is_some()
+                || a.pgs.is_some()
+                || a.chunk.is_some()
+                || a.domain.is_some()))
     {
         usage();
     }
@@ -560,7 +600,11 @@ fn main() {
     ) != a.size.is_some()
         || (cmd == "delete-volume" && a.id.is_none())
         || (a.id.is_some() && cmd != "create-volume" && cmd != "delete-volume" && !needs_id)
-        || (a.force && cmd != "delete-volume" && cmd != "member remove" && cmd != "pool set")
+        || (a.force
+            && cmd != "delete-volume"
+            && cmd != "member remove"
+            && cmd != "pool set"
+            && cmd != "pool create")
     {
         usage();
     }
@@ -997,6 +1041,61 @@ where
                     eprintln!(
                         "hyperstorctl: {}",
                         e.message.as_deref().unwrap_or("not found")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "pool create" => {
+            let classes: Vec<String> = a
+                .classes
+                .clone()
+                .unwrap_or_default()
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .map(str::to_string)
+                .collect();
+            let kind = a.kind.clone().unwrap_or_else(|| "replicated".into());
+            let copies = a.copies.unwrap_or(if kind == "cache" { 1 } else { 3 });
+            let r = client
+                .create_pool(pb::CreatePoolRequest {
+                    name: a.name.clone(),
+                    kind,
+                    size: copies,
+                    min_size: a.min,
+                    pg_count: a.pgs,
+                    chunk_size: a.chunk.map(|c| c as u32),
+                    domain: a.domain.clone(),
+                    classes,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "pool {} {} made, {} PGs (map epoch {})",
+                        r.pool, a.name, r.pg_count, r.map_epoch
+                    );
+                    if r.mixed_kinds {
+                        eprintln!(
+                            "hyperstorctl: warning: its classes hold hard disks and flash; a write waits for its slowest copy"
+                        );
+                    }
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::FailedPrecondition
+                            | connectrpc::ErrorCode::InvalidArgument
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
                     );
                     return Ok(Next::Exit(1));
                 }

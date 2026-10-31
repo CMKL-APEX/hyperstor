@@ -958,6 +958,108 @@ impl ClusterService for Api {
         }
     }
 
+    async fn create_pool(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CreatePoolRequest>,
+    ) -> ServiceResult<pb::CreatePoolResponse> {
+        use hyperstor_map::PoolKind;
+        use hyperstor_placement::Domain;
+        let classes: Vec<String> = req.classes.iter().map(|c| c.to_string()).collect();
+        let target = format!(
+            "pool {} {} copies={} classes={}{}",
+            req.name,
+            req.kind,
+            req.size,
+            classes.join(","),
+            if req.force { " force" } else { "" }
+        );
+        let who = self.authorize(&ctx, "CreatePool", &target, true)?;
+        let bad = |m: String| with_reason(ConnectError::invalid_argument(m), "invalid_argument");
+        let kind = match req.kind {
+            "replicated" => PoolKind::Replicated,
+            "cache" => PoolKind::Cache,
+            k => return Err(bad(format!("a pool is replicated or cache, not {k:?}"))),
+        };
+        let domain = match req.domain.unwrap_or("host") {
+            "device" => Domain::Device,
+            "host" => Domain::Host,
+            "rack" => Domain::Rack,
+            d => return Err(bad(format!("a domain is device, host or rack, not {d:?}"))),
+        };
+        if let Some(c) = classes.iter().find(|c| !crate::valid_class(c)) {
+            return Err(bad(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            )));
+        }
+        let size = u8::try_from(req.size).map_err(|_| bad(format!("{} copies", req.size)))?;
+        let min_size = match req.min_size {
+            Some(m) => u8::try_from(m).map_err(|_| bad(format!("min {m}")))?,
+            None if kind == PoolKind::Cache => 1,
+            None => size.div_ceil(2).max(1),
+        };
+        let new = crate::NewPool {
+            name: req.name.to_string(),
+            kind,
+            size,
+            min_size,
+            pg_count: req.pg_count,
+            chunk_size: req.chunk_size.unwrap_or(4 << 20),
+            domain,
+            classes,
+            force: req.force,
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::CreatePool { new, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "CreatePool",
+            &target,
+            &match &r {
+                Some(Ok((id, pgs, epoch, mixed))) => format!(
+                    "ok, pool {id}, {pgs} PGs, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((pool, pg_count, map_epoch, mixed_kinds))) => Ok(pb::CreatePoolResponse {
+                pool,
+                pg_count,
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e))
+                if e.starts_with("the devices")
+                    || e.starts_with("classes")
+                    || e.starts_with("a pool is already") =>
+            {
+                Err(meta_error(
+                    e,
+                    ConnectError::failed_precondition,
+                    "pool_conflict",
+                ))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn set_pool(
         &self,
         ctx: RequestContext,

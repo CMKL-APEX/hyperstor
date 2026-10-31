@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `AddDevice`, `SetDeviceClass`, `SetPool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `AddDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -80,6 +80,7 @@ values are left out of answers.
 | `SetDeviceWeight` | `{"device": 2, "weight": 0.5}`, or `{"device": 2}` to follow the device's capacity again | `map_epoch` after the change, and `weight` now; `invalid_argument` for a weight below 0 |
 | `AddDevice` | `{"node": 0, "address": "192.0.2.20:9102"}`, and `"class"` if not the node's others' | `device`, its id, and `map_epoch`; `not_found` without the node, `failed_precondition` (`device_conflict`) for an address in use, `invalid_argument` for an address a node can't listen on or a bad class |
 | `SetDeviceClass` | `{"device": 2, "class": "fast"}`, or `{"device": 2}` to follow its kind again | `map_epoch` and `class` now; `not_found` without the device, `failed_precondition` (`class_conflict`) for a device whose kind isn't known or a class of another kind, `invalid_argument` for a bad class |
+| `CreatePool` | `{"name": "fast", "kind": "replicated", "size": 3, "classes": ["nvme"]}`; optional `min_size`, `pg_count`, `chunk_size`, `domain`, `force` | `pool` (its id, never one a pool had), `pg_count`, `map_epoch`, `mixed_kinds`; `failed_precondition` (`pool_conflict`) for a name in use, too few failure domains or an unforced mix; `invalid_argument` for no classes, a bad name, kind, domain, copies, chunk or PG count |
 | `SetPool` | `{"pool": 1, "classes": ["nvme", "ssd"]}`, `"force": true` to allow hard disks with flash; no classes for every device | `map_epoch`, and `mixed_kinds` when the classes mix them; `not_found` without the pool, `failed_precondition` (`pool_conflict`) for `.meta`, too few failure domains, or an unforced mix; `invalid_argument` for a bad class. Each pool in `GetStatus` gives its `classes` and `mixed_kinds` |
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`; trashed volumes aren't listed), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none) |
 | `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) | `volume` |
