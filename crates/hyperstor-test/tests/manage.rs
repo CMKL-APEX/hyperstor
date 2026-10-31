@@ -161,6 +161,65 @@ fn a_device_is_added_to_a_running_node() {
     });
 }
 
+/// D169: a reactor serves only a device the map has, on its node, at its
+/// address; a `--shard` the map lacks or places elsewhere stops the node,
+/// saying why. A device id can be named (`--shard ID@ADDR=...`), so a
+/// node can run its second added device without its first.
+#[test]
+fn a_shard_must_be_the_maps_and_can_name_its_id() {
+    let mut c = Cluster::all_in_one("deviceids", 3);
+    let ports = free_ports(2);
+    let (a, b) = (
+        format!("127.0.0.1:{ports}"),
+        format!("127.0.0.1:{}", ports + 1),
+    );
+    let img = |i: u32| c.data_dir().join(format!("node-0-{i}.img"));
+    let (img1, img2) = (img(1), img(2));
+    let stopped_saying = |c: &mut Cluster, what: &str| {
+        wait_for("node 0 to stop", 20, || c.node_exited(0));
+        let log = c.node_log(0);
+        assert!(log.contains(what), "{log}");
+    };
+    // Not in the map: refused, after asking again for a few seconds.
+    c.kill_node(0);
+    c.start_node_with(0, &["--shard", &format!("7@{a}={}:1", img1.display())]);
+    stopped_saying(&mut c, "device 7: not in the map");
+    // Its file is made (sparse) before the check, but nothing is written:
+    // no superblock.
+    let mut head = vec![0u8; 64 << 10];
+    if let Ok(mut f) = std::fs::File::open(&img1) {
+        use std::io::Read;
+        let _ = f.read_exact(&mut head);
+    }
+    assert!(
+        head.iter().all(|&x| x == 0),
+        "nothing written for a refused device"
+    );
+    // Two devices added: 1 at a, 2 at b.
+    c.ctl(&["device", "add", "--node", "0", "--address", &a])
+        .ok();
+    let add = c
+        .ctl(&["device", "add", "--node", "0", "--address", &b])
+        .ok();
+    assert!(add.has("device 2 added"), "{}", add.out);
+    // Device 2 at device 1's address: refused.
+    c.start_node_with(0, &["--shard", &format!("2@{a}={}:1", img2.display())]);
+    stopped_saying(&mut c, "device 2: the map has it on node 0 at");
+    // Device 2 by its id, without device 1: served, weighted, given PGs.
+    c.start_node_with(0, &["--shard", &format!("2@{b}={}:1", img2.display())]);
+    wait_for("device 2 weighted by its capacity", 30, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(2) && d["weight"].as_f64().unwrap_or(0.0) > 0.0)
+            .then_some(())
+    });
+    assert!(c.node_exited(0).is_none(), "node 0 runs");
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

@@ -903,6 +903,11 @@ impl Cluster {
         std::fs::read_to_string(&self.meta_log).unwrap_or_default()
     }
 
+    /// Storage node `n`'s exit status, once it has exited by itself.
+    pub fn node_exited(&mut self, n: u32) -> Option<std::process::ExitStatus> {
+        self.node_procs.get_mut(&n)?.try_wait().ok().flatten()
+    }
+
     /// Kills storage node `n` (as a crash would).
     pub fn kill_node(&mut self, n: u32) {
         if let Some(mut p) = self.node_procs.remove(&n) {

@@ -31,10 +31,13 @@ node ID rack RACK ADDR [ADDR ...]
 |---|---|
 | `ID` | The node's number, as given to `hyperstord --node` |
 | `RACK` | The rack number, for pools whose failure domain is `rack` |
-| `ADDR` | `IP:PORT` of one device, in the order of the node's `--shard` options |
+| `ADDR` | `[DEV@]IP:PORT` of one device, in the order of the node's `--shard` options; `DEV@` names its device number |
 
 Each address is one device. Devices get the numbers `ID × 1000 + i`, where
-`i` counts the node's addresses from 0.
+`i` counts the node's addresses from 0, unless the address names its
+number (`1002@192.0.2.21:9102`): one of the node's, `ID × 1000` to
+`ID × 1000 + 999`, and no two the same. A node whose device was removed
+keeps the others' numbers this way.
 
 ## `pool`
 

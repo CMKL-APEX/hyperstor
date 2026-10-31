@@ -970,6 +970,9 @@ struct NodePlan {
     n: u32,
     /// One reactor per address, as the cluster file lists them.
     shards: Vec<std::net::SocketAddr>,
+    /// Each one's device id (D169), named in `--shard` when it isn't the
+    /// position's.
+    ids: Vec<u32>,
     admin: String,
 }
 
@@ -1086,6 +1089,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
                 .map(|n| NodePlan {
                     n,
                     shards: vec![([127, 0, 0, 1], s.node_port + n as u16).into()],
+                    ids: vec![n * 1000],
                     admin: format!("127.0.0.1:{}", s.admin_port + n as u16),
                 })
                 .collect(),
@@ -1158,6 +1162,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         nodes.push(NodePlan {
             n,
             shards: devs.iter().map(|d| d.addr).collect(),
+            ids: devs.iter().map(|d| d.id).collect(),
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
         });
     }
@@ -1234,6 +1239,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
             shards: (0..s.reactors)
                 .map(|i| std::net::SocketAddr::new(ip, s.node_port + i as u16))
                 .collect(),
+            ids: (0..s.reactors).map(|i| n * 1000 + i).collect(),
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
         }],
         metrics: Vec::new(),
@@ -1623,7 +1629,15 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                 } else {
                     format!("{data}/node-{n}-{i}.img")
                 };
-                format!("--shard {a}={file}:{}", s.size_gib)
+                // The id only when it isn't the position's (D169), so
+                // existing installs' options stay as they were.
+                let id = node.ids.get(i).copied().unwrap_or(n * 1000 + i as u32);
+                let named = if id == n * 1000 + i as u32 {
+                    String::new()
+                } else {
+                    format!("{id}@")
+                };
+                format!("--shard {named}{a}={file}:{}", s.size_gib)
             })
             .collect();
         out.push((
@@ -2495,6 +2509,34 @@ mod tests {
         t.apply("nodes = 2\n");
         assert_eq!(t.nodes, 2);
         assert_eq!(t.data_dir, "/srv/hs");
+    }
+
+    /// D169: a device id the cluster file names is passed to `--shard`
+    /// when it isn't the position's; positional ones are written as
+    /// before, so an existing install's options don't change.
+    #[test]
+    fn named_device_ids_reach_the_node_options() {
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100 2@10.0.0.1:9102\n\
+                       pool 1 vol replicated size 1 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        let f = files(&s, &p);
+        let env = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        assert!(
+            env.contains("--shard 10.0.0.1:9100=/var/lib/hyperstor/node-0-0.img:4"),
+            "{env}"
+        );
+        assert!(
+            env.contains("--shard 2@10.0.0.1:9102=/var/lib/hyperstor/node-0-1.img:4"),
+            "{env}"
+        );
     }
 
     #[test]

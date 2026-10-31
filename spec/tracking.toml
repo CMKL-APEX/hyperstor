@@ -618,6 +618,16 @@ tests = [
     "manage::a_device_is_added_to_a_running_node",
 ]
 
+[[milestone.item]]
+what = "Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address"
+spec = ["24-pools-and-devices.md §27.2.3", "D169", "I205"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::device_ids_are_named_or_positional",
+    "hyperstor_install::tests::named_device_ids_reach_the_node_options",
+    "manage::a_shard_must_be_the_maps_and_can_name_its_id",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

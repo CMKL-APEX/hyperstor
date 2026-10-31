@@ -141,25 +141,38 @@ impl ClusterMap {
     /// Adds a node with one device (engine shard and reactor) per address
     /// in `addrs`; returns the device ids (`node * 1000 + shard`).
     pub fn add_node(&mut self, id: u32, addrs: &[SocketAddr], rack: u32) -> Vec<u32> {
+        let devices: Vec<(u32, SocketAddr)> = addrs
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (id * 1000 + i as u32, *a))
+            .collect();
+        self.add_node_ids(id, &devices, rack)
+    }
+
+    /// As [`Self::add_node`], with each device's id given (D169): device
+    /// `i` of `devices` is the node's shard `i`. The ids are the caller's
+    /// to check ([`device_ids`]).
+    pub fn add_node_ids(&mut self, id: u32, devices: &[(u32, SocketAddr)], rack: u32) -> Vec<u32> {
         self.nodes.insert(
             id,
             NodeInfo {
                 id,
-                reactors: addrs.len() as u32,
+                reactors: devices.len() as u32,
                 rack,
                 up: true,
             },
         );
-        (0..addrs.len() as u32)
-            .map(|shard| {
-                let dev = id * 1000 + shard;
+        devices
+            .iter()
+            .enumerate()
+            .map(|(shard, &(dev, addr))| {
                 self.devices.insert(
                     dev,
                     DeviceInfo {
                         id: dev,
                         node: id,
-                        shard,
-                        addr: addrs[shard as usize],
+                        shard: shard as u32,
+                        addr,
                         weight: 1.0,
                         class: "nvme".into(),
                         up_in: true,
@@ -171,25 +184,22 @@ impl ClusterMap {
     }
 
     /// Appends a device at `addr` to node `node` (24-pools-and-devices.md
-    /// §27.2.1, D167): the node's next shard, id `node * 1000 + shard`,
-    /// of class `class`, at weight 0 until it reports its capacity (D158),
-    /// so nothing is placed on it before it runs. Returns its id; `None`
-    /// when there is no such node or it has 1000 devices. The caller
-    /// checks that the address is free and recomputes.
+    /// §27.2.1, D167): the node's next shard, with the id after the
+    /// node's highest (D169: ids are never reused, so removing a device
+    /// must keep its id taken), of class `class`, at weight 0 until it
+    /// reports its capacity (D158), so nothing is placed on it before it
+    /// runs. Returns its id; `None` when there is no such node or its ids
+    /// are used up. The caller checks that the address is free and
+    /// recomputes.
     pub fn add_device(&mut self, node: u32, addr: SocketAddr, class: &str) -> Option<u32> {
-        let shard = self
-            .devices
-            .values()
-            .filter(|d| d.node == node)
-            .map(|d| d.shard + 1)
-            .max()
-            .unwrap_or(0);
-        if shard >= 1000 {
+        let on_node = || self.devices.values().filter(|d| d.node == node);
+        let shard = on_node().map(|d| d.shard + 1).max().unwrap_or(0);
+        let id = on_node().map(|d| d.id + 1).max().unwrap_or(node * 1000);
+        if id >= node * 1000 + 1000 {
             return None;
         }
         let n = self.nodes.get_mut(&node)?;
         n.reactors = n.reactors.max(shard + 1);
-        let id = node * 1000 + shard;
         self.devices.insert(
             id,
             DeviceInfo {
@@ -790,6 +800,43 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
 /// ```
 ///
 /// and returns the map with every PG placed.
+/// `[ID@]ADDR`, as a node's devices are given (`hyperstord --shard`, the
+/// cluster file; D169): the id named, if any, and the rest.
+pub fn split_device_id(s: &str) -> Result<(Option<u32>, &str), String> {
+    match s.split_once('@') {
+        None => Ok((None, s)),
+        Some((id, rest)) => id
+            .parse::<u32>()
+            .map(|id| (Some(id), rest))
+            .map_err(|_| format!("{id:?} is not a device id")),
+    }
+}
+
+/// The ids of a node's devices, in order (24-pools-and-devices.md
+/// §27.2.3, D169): each named id as given, each other `node * 1000 +` its
+/// position. A named id must be one of the node's (`node * 1000` to
+/// `node * 1000 + 999`), and no two may be the same.
+pub fn device_ids(node: u32, named: &[Option<u32>]) -> Result<Vec<u32>, String> {
+    let ids: Vec<u32> = named
+        .iter()
+        .enumerate()
+        .map(|(i, n)| n.unwrap_or(node * 1000 + i as u32))
+        .collect();
+    for (i, id) in ids.iter().enumerate() {
+        if *id / 1000 != node || node > u32::MAX / 1000 {
+            return Err(format!(
+                "device {id} isn't one of node {node}'s ({}–{})",
+                node * 1000,
+                node * 1000 + 999
+            ));
+        }
+        if ids[..i].contains(id) {
+            return Err(format!("device {id} is given twice"));
+        }
+    }
+    Ok(ids)
+}
+
 pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
     let mut map = ClusterMap::new(0);
     for (lineno, line) in text.lines().enumerate() {
@@ -803,11 +850,17 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
         match w[0] {
             "cluster" if w.len() == 2 => map.cluster_id = num(w[1])? as u128,
             "node" if w.len() >= 5 && w[2] == "rack" => {
-                let addrs: Vec<SocketAddr> = w[4..]
-                    .iter()
-                    .map(|a| a.parse().map_err(|_| bad("bad address")))
-                    .collect::<Result<_, _>>()?;
-                map.add_node(num(w[1])? as u32, &addrs, num(w[3])? as u32);
+                let node = num(w[1])? as u32;
+                let mut named = Vec::new();
+                let mut addrs: Vec<SocketAddr> = Vec::new();
+                for a in &w[4..] {
+                    let (id, a) = split_device_id(a).map_err(|e| bad(&e))?;
+                    named.push(id);
+                    addrs.push(a.parse().map_err(|_| bad("bad address"))?);
+                }
+                let ids = device_ids(node, &named).map_err(|e| bad(&e))?;
+                let devices: Vec<(u32, SocketAddr)> = ids.into_iter().zip(addrs).collect();
+                map.add_node_ids(node, &devices, num(w[3])? as u32);
             }
             "pool" if w.len() >= 4 => {
                 if num(w[1])? as u32 == META_POOL {
@@ -948,6 +1001,41 @@ mod tests {
         });
         m.recompute();
         m
+    }
+
+    #[test]
+    fn device_ids_are_named_or_positional() {
+        assert_eq!(
+            split_device_id("1002@127.0.0.1:1"),
+            Ok((Some(1002), "127.0.0.1:1"))
+        );
+        assert_eq!(split_device_id("127.0.0.1:1"), Ok((None, "127.0.0.1:1")));
+        assert!(split_device_id("x@127.0.0.1:1").is_err());
+        assert_eq!(device_ids(1, &[None, None]), Ok(vec![1000, 1001]));
+        assert_eq!(device_ids(1, &[None, Some(1005)]), Ok(vec![1000, 1005]));
+        assert!(
+            device_ids(1, &[Some(2000)])
+                .unwrap_err()
+                .contains("isn't one of node 1's")
+        );
+        assert!(
+            device_ids(1, &[None, Some(1000)])
+                .unwrap_err()
+                .contains("given twice")
+        );
+        // A cluster file with a gap: node 1's second device is 1002.
+        let m = parse_cluster("node 1 rack 0 127.0.0.1:1 1002@127.0.0.1:2\n").unwrap();
+        let d = &m.devices[&1002];
+        assert_eq!((d.node, d.shard, d.addr.port()), (1, 1, 2));
+        assert!(!m.devices.contains_key(&1001));
+        assert!(parse_cluster("node 1 rack 0 3000@127.0.0.1:1\n").is_err());
+        // The next device added takes the id after the node's highest.
+        let mut m = m;
+        assert_eq!(
+            m.add_device(1, "127.0.0.1:3".parse().unwrap(), "nvme"),
+            Some(1003)
+        );
+        assert_eq!(m.devices[&1003].shard, 2);
     }
 
     #[test]
