@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS18"
 branch = "feature/elastic-pools"
-prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121]
+prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123]
 now = "Stage 4a: hyperstorctl device remove, an operation that moves a device's PGs off it and removes it from the map, its node with its last device, ids never given again (D182, I216)"
 next = "Stage 4b: the installer drops removed devices' --shard; then stage 5 (PG splits and the autoscaler)"
