@@ -99,24 +99,29 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} STATE",
-        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "FREE", "TOTAL"
+        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} STATE",
+        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "CLASS", "FREE", "TOTAL"
     );
     let mut fixed = false;
+    let mut class_set = false;
     for n in &s.nodes {
         for d in &n.devices {
             // In TiB from the device's capacity, unless set (D158).
             fixed |= d.weight_fixed;
             let weight = format!("{:.4}{}", d.weight, if d.weight_fixed { "*" } else { "" });
+            // The device's kind, unless set (D178).
+            class_set |= d.class_fixed;
+            let class = format!("{}{}", d.class, if d.class_fixed { "+" } else { "" });
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:>10} {:>10} {}",
+                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {}",
                 n.id,
                 n.rack,
                 if n.up { "yes" } else { "no" },
                 d.id,
                 d.addr,
                 weight,
+                class,
                 gib(d.free_bytes),
                 gib(d.total_bytes),
                 if d.up_in { "in" } else { "out" }
@@ -127,6 +132,12 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
         let _ = writeln!(
             o,
             "* weight set with hyperstorctl weight; the others follow capacity"
+        );
+    }
+    if class_set {
+        let _ = writeln!(
+            o,
+            "+ class set with hyperstorctl device class; the others are their kind"
         );
     }
     o
@@ -253,6 +264,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.AddDevice", "device add"),
+    ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.ListVolumes", "volumes"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),

@@ -327,6 +327,84 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
+/// D178, D179: each node reports its device's kind; once every node has,
+/// a device whose class no operator set takes its kind ("nvme" until
+/// then, for every device), so these files become "file". An operator's
+/// class stays and is marked; one named after another kind is refused;
+/// `auto` goes back to the kind. Audited.
+#[test]
+fn devices_report_their_kind_and_classes_follow_it() {
+    let c = Cluster::all_in_one("kinds", 3);
+    // (id, kind, class, class_fixed) of each device.
+    let devices = |c: &Cluster| -> Vec<(u64, String, String, bool)> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["kind"].as_str().unwrap_or("").to_string(),
+                    d["class"].as_str().unwrap_or("").to_string(),
+                    d["class_fixed"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    };
+    wait_for("every device's kind, and its class from it", 20, || {
+        devices(&c)
+            .iter()
+            .all(|d| d.1 == "file" && d.2 == "file" && !d.3)
+            .then_some(())
+    });
+    let set = c
+        .ctl(&["device", "class", "--device", "1000", "--class", "scratch"])
+        .ok();
+    assert!(
+        set.has("device 1000 class scratch, kept as set"),
+        "{}",
+        set.out
+    );
+    wait_for("the class set", 10, || {
+        devices(&c)
+            .contains(&(1000, "file".into(), "scratch".into(), true))
+            .then_some(())
+    });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(
+        n.has(" scratch+ ") && n.has("+ class set with hyperstorctl device class"),
+        "{}",
+        n.out
+    );
+    let refused = c
+        .ctl(&["device", "class", "--device", "0", "--class", "nvme"])
+        .expect(1);
+    assert!(
+        refused.has("class nvme is for nvme devices"),
+        "{}",
+        refused.out
+    );
+    c.ctl(&["device", "class", "--device", "0"]).expect(2);
+    c.ctl(&["device", "class", "--device", "99", "--class", "x"])
+        .expect(1);
+    let auto = c
+        .ctl(&["device", "class", "--device", "1000", "--class", "auto"])
+        .ok();
+    assert!(auto.has("class file, following its kind"), "{}", auto.out);
+    wait_for("back to its kind", 10, || {
+        devices(&c)
+            .contains(&(1000, "file".into(), "file".into(), false))
+            .then_some(())
+    });
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetDeviceClass"]).ok();
+        (a.has("class=scratch") && a.has("class=auto")).then_some(())
+    });
+}
+
 /// D158: each device's weight follows its capacity in TiB, from its own
 /// reports; an operator's weight stays, marked, until set back to auto.
 #[test]

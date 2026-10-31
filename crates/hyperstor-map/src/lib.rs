@@ -115,6 +115,57 @@ pub struct ClusterMap {
     /// Devices whose weight an operator set (04-decisions.md D158): the map
     /// service keeps it as set instead of following the device's capacity.
     pub fixed_weights: BTreeSet<u32>,
+    /// Each device's kind, as its node reports it (24-pools-and-devices.md
+    /// §27.2.4, D178).
+    pub kinds: BTreeMap<u32, DeviceKind>,
+    /// Devices whose class an operator set (`SetDeviceClass`, or a class
+    /// given to `AddDevice`); the others take their kind as class (D178).
+    pub fixed_classes: BTreeSet<u32>,
+}
+
+/// What a device is (24-pools-and-devices.md §27.2.4), as its node
+/// reports it: the default for its class, and what a class may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeviceKind {
+    /// An NVMe namespace.
+    Nvme,
+    /// Other flash: SATA or SAS SSDs.
+    Ssd,
+    /// A rotational disk.
+    Hdd,
+    /// A file on a filesystem: trials and tests. It mixes with any kind
+    /// (D179).
+    File,
+}
+
+impl DeviceKind {
+    pub const ALL: [DeviceKind; 4] = [Self::Nvme, Self::Ssd, Self::Hdd, Self::File];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Nvme => "nvme",
+            Self::Ssd => "ssd",
+            Self::Hdd => "hdd",
+            Self::File => "file",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == s)
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Nvme => 1,
+            Self::Ssd => 2,
+            Self::Hdd => 3,
+            Self::File => 4,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.code() == c)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +264,82 @@ impl ClusterMap {
             },
         );
         Some(id)
+    }
+
+    /// The kind of the devices of `class`, if one has reported its kind
+    /// (all a class's devices are of one kind), leaving out `except`.
+    pub fn class_kind(&self, class: &str, except: Option<u32>) -> Option<DeviceKind> {
+        self.devices
+            .values()
+            .filter(|d| d.class == class && Some(d.id) != except)
+            .find_map(|d| self.kinds.get(&d.id).copied())
+    }
+
+    /// Whether `device`, of `kind`, may have class `class`
+    /// (24-pools-and-devices.md §27.2.4): a class named after a kind holds
+    /// only that kind, and any other holds one kind, that of its first
+    /// device.
+    pub fn class_fits(&self, device: u32, class: &str, kind: DeviceKind) -> Result<(), String> {
+        if let Some(named) = DeviceKind::from_name(class)
+            && named != kind
+        {
+            return Err(format!(
+                "class {class} is for {class} devices; device {device} is {}",
+                kind.name()
+            ));
+        }
+        match self.class_kind(class, Some(device)) {
+            Some(k) if k != kind => Err(format!(
+                "class {class} holds {} devices; device {device} is {}",
+                k.name(),
+                kind.name()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records `device`'s kind (D178): a device whose class no operator
+    /// set takes the kind as its class. Whether the map changed; the
+    /// caller recomputes.
+    pub fn set_kind(&mut self, device: u32, kind: DeviceKind) -> bool {
+        let Some(d) = self.devices.get(&device) else {
+            return false;
+        };
+        let mut changed = self.kinds.insert(device, kind) != Some(kind);
+        if !self.fixed_classes.contains(&device) && d.class != kind.name() {
+            if let Some(d) = self.devices.get_mut(&device) {
+                d.class = kind.name().into();
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Sets `device`'s class as an operator chose it, or (`None`) lets it
+    /// follow the device's kind again (D178). The device's kind must be
+    /// known, and the class must fit it ([`Self::class_fits`]). Whether the
+    /// map changed; the caller recomputes.
+    pub fn set_class(&mut self, device: u32, class: Option<&str>) -> Result<bool, String> {
+        if !self.devices.contains_key(&device) {
+            return Err(format!("no device {device}"));
+        }
+        let Some(kind) = self.kinds.get(&device).copied() else {
+            return Err(format!(
+                "device {device} hasn't reported its kind yet: start its node first"
+            ));
+        };
+        let fixed = class.is_some();
+        let class = class.unwrap_or(kind.name());
+        self.class_fits(device, class, kind)?;
+        let d = self.devices.get_mut(&device).expect("checked");
+        let changed = d.class != class;
+        d.class = class.into();
+        let was = if fixed {
+            !self.fixed_classes.insert(device)
+        } else {
+            self.fixed_classes.remove(&device)
+        };
+        Ok(changed || was != fixed)
     }
 
     /// Adds the `.meta` pool (06-metadata.md §4.2) if the map lacks it:
@@ -582,10 +709,12 @@ impl ClusterMap {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
-        // interval and the failed ones, 4 the weights an operator set; a
-        // map without them keeps the older format, which nodes from before
-        // them read.
-        let format = if !self.fixed_weights.is_empty() {
+        // interval and the failed ones, 4 the weights an operator set, 5
+        // devices' kinds and the classes an operator set; a map without
+        // them keeps the older format, which nodes from before them read.
+        let format = if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
+            5
+        } else if !self.fixed_weights.is_empty() {
             4
         } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
             3
@@ -657,13 +786,23 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 5 {
+            e.u32(self.kinds.len() as u32);
+            for (d, k) in &self.kinds {
+                e.u32(*d).u8(k.code());
+            }
+            e.u32(self.fixed_classes.len() as u32);
+            for d in &self.fixed_classes {
+                e.u32(*d);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=4).contains(&v) {
+        if !(1..=5).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -764,6 +903,21 @@ impl ClusterMap {
         }
         if v >= 4 {
             m.fixed_weights = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 5 {
+            m.kinds = d
+                .seq(5, |d| {
+                    let id = d.u32()?;
+                    let c = d.u8()?;
+                    let k = DeviceKind::from_code(c).ok_or(DecodeError::Invalid {
+                        field: "device kind",
+                        value: c as u64,
+                    })?;
+                    Ok((id, k))
+                })?
+                .into_iter()
+                .collect();
+            m.fixed_classes = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -1001,6 +1155,59 @@ mod tests {
         });
         m.recompute();
         m
+    }
+
+    /// D178, D179: a reported kind becomes a device's class unless an
+    /// operator set it; a class holds one kind, and a class named after a
+    /// kind only that kind; kinds and set classes need format 5, written
+    /// only once there is one.
+    #[test]
+    fn kinds_become_classes_unless_an_operator_set_one() {
+        let mut m = map();
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "no kinds: format 1");
+        assert!(m.set_kind(0, DeviceKind::Nvme));
+        assert!(m.set_kind(1, DeviceKind::File));
+        assert!(
+            !m.set_kind(1, DeviceKind::File),
+            "reported again: no change"
+        );
+        assert_eq!(
+            (m.devices[&0].class.as_str(), m.devices[&1].class.as_str()),
+            ("nvme", "file")
+        );
+        assert_eq!(m.encode()[..4], 5u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // Not before the kind is known; not a class of another kind.
+        assert!(
+            m.set_class(1000, Some("fast"))
+                .unwrap_err()
+                .contains("hasn't reported")
+        );
+        assert!(
+            m.set_class(1, Some("nvme"))
+                .unwrap_err()
+                .contains("class nvme is for nvme")
+        );
+        assert_eq!(m.set_class(0, Some("fast")), Ok(true));
+        assert!(m.fixed_classes.contains(&0));
+        assert!(
+            m.set_class(1, Some("fast"))
+                .unwrap_err()
+                .contains("holds nvme devices")
+        );
+        // An operator's class stays when the kind is reported again.
+        assert!(!m.set_kind(0, DeviceKind::Nvme));
+        assert_eq!(m.devices[&0].class, "fast");
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // Back to its kind.
+        assert_eq!(m.set_class(0, None), Ok(true));
+        assert_eq!(m.devices[&0].class, "nvme");
+        assert!(m.fixed_classes.is_empty());
+        assert_eq!(m.set_class(0, None), Ok(false));
+        // A file may share a label with another file.
+        assert_eq!(m.set_class(1, Some("scratch")), Ok(true));
+        assert!(m.set_kind(1001, DeviceKind::File));
+        assert_eq!(m.set_class(1001, Some("scratch")), Ok(true));
     }
 
     #[test]

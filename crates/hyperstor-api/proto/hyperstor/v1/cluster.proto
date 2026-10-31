@@ -33,6 +33,12 @@ service ClusterService {
   // until the node runs it (restarted with one more --shard). Write.
   rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
 
+  // Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
+  // follow the device's kind again (04-decisions.md D178). A class holds
+  // devices of one kind, and a class named after a kind only that kind.
+  // Pools limited to classes move PGs as it changes. Write.
+  rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
+
   // A pool's volumes, from their headers in .meta (06-metadata.md §4.2).
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
@@ -235,6 +241,12 @@ message Device {
   // Whether an operator set the weight (SetDeviceWeight); otherwise it is
   // the device's capacity in TiB, from its reports (04-decisions.md D158).
   bool weight_fixed = 8 [json_name = "weight_fixed"];
+  // What the device is, as its node reports it: "nvme", "ssd", "hdd" or
+  // "file"; empty until the map has it (04-decisions.md D178).
+  string kind = 9;
+  // Whether an operator set the class (SetDeviceClass, or a class given
+  // to AddDevice); otherwise it is the device's kind.
+  bool class_fixed = 10 [json_name = "class_fixed"];
 }
 
 message Pool {
@@ -360,6 +372,18 @@ message AddDeviceRequest {
   // The device's class (`nvme`, `nvme-qlc`, ...); absent: that of the
   // node's other devices.
   optional string class = 3;
+}
+
+message SetDeviceClassRequest {
+  uint32 device = 1;
+  // The class to keep; absent: follow the device's kind again.
+  optional string class = 2;
+}
+
+message SetDeviceClassResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  string class = 2;
 }
 
 message AddDeviceResponse {

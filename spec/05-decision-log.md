@@ -933,3 +933,15 @@ weight change. Asked how to remove them, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 138 | When a device deletes its copy of a PG it has left: (a) once it is in neither `up` nor `acting` and the PG is clean (acting is up, every member live) for a grace of a minute (recommended); (b) the same, but keeping copies of devices that are only out, for a faster return | (a) | D177 |
+
+## Device kinds (2026-10-31)
+
+Building stage 2 of 24-pools-and-devices.md: nodes start reporting what
+their devices are, but every device was labelled `nvme`, whatever it
+was, and files have no media of their own. Asked before building, each
+with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 139 | What happens to the `nvme` every device was given: a device whose class no operator set takes its reported kind (recommended); labels kept until an operator relabels | Take the kind | D178 |
+| 140 | How a file-backed device counts for D172's rule: a kind of its own that mixes with any (recommended); the kind of the disk under its filesystem | Its own kind | D179 |

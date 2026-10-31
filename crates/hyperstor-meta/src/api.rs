@@ -617,6 +617,8 @@ pub fn status(
                         weight: d.weight,
                         class: d.class.clone(),
                         weight_fixed: map.fixed_weights.contains(&d.id),
+                        kind: map.kinds.get(&d.id).map_or("", |k| k.name()).into(),
+                        class_fixed: map.fixed_classes.contains(&d.id),
                         ..Default::default()
                     })
                     .collect(),
@@ -891,6 +893,61 @@ impl ClusterService for Api {
             }
             .into()),
             Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_device_class(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDeviceClassRequest>,
+    ) -> ServiceResult<pb::SetDeviceClassResponse> {
+        let class = req.class.map(str::to_string);
+        let target = format!(
+            "device {} class={}",
+            req.device,
+            class.as_deref().unwrap_or("auto")
+        );
+        let who = self.authorize(&ctx, "SetDeviceClass", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetDeviceClass {
+                device: req.device,
+                class,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDeviceClass",
+            &target,
+            &match &r {
+                Some(Ok((epoch, c))) => format!("ok, class {c}, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, class))) => Ok(pb::SetDeviceClassResponse {
+                map_epoch,
+                class,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) if e.starts_with("a class is") => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "class_conflict",
+            )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }
