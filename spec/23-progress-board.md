@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 3 | 0 | 2 | 9 |
+| 4 | 0 | 1 | 9 |
 
 ## In progress
 
@@ -19,6 +19,7 @@ updated for a while may have been left behind.
 |---|---|---|---|---|---|---|
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
+| **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT | HS0 | `spec/reactor-decisions`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94) | Stage 1 merged (#94); points 114 and 115 settled as D165 and D166; `hyperstord --io-timeout-secs` | Install on the pilot and measure (G43); read CI's split commit logs; then stage 2 or 3, whichever G43 points to | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked
@@ -30,7 +31,6 @@ None.
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
 | **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | Points 104–113 settled as recommended: D158–D162 recorded | Merge; then build weights and pool space (D158, D159) before encryption | 2026-10-31 |
-| **Device waits off the reactor (points 114–115)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/async-commit`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94) | Points 114–115 written up with G43; stage 1 prototyped (I199): commits wait for the device on the reactor's ring, one in flight, with an I/O timeout | The owner's answers to points 114 and 115; G43 on the pilot; then stages 2 (reads) and 3 (checkpoints, deferred writes) | 2026-10-31 |
 
 ## Done
 

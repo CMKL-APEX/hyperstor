@@ -46,6 +46,13 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - queue depth per reactor is capped from the device's
     `queue/nr_requests`, so one reactor can't starve the others on a SATA
     device's single queue.
+- **Completion-driven** (D165): the engine plans an operation in
+  memory, submits its I/O on the reactor's io_uring and finishes on the
+  completions, so no device wait holds a reactor's thread. As built:
+  commits only, one in flight per shard (01-implementation-notes.md
+  I199); reads, checkpoint slices and deferred writes still wait in the
+  device's calls. A commit that takes longer than the I/O timeout (30 s,
+  `hyperstord --io-timeout-secs`) fails its device (D166).
 - **Hard disks** (D29):
   - the log and the index go on a partition of a flash **log device**;
     one log device serves up to eight hard disks, each with its own
