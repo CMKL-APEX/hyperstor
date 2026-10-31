@@ -470,7 +470,7 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         for d in map.devices.values().filter(|d| {
             d.up_in
                 && d.weight > 0.0
-                && (info.classes.is_empty() || info.classes.contains(&d.class))
+                && info.uses(d)
                 && !(info.id == hyperstor_map::META_POOL
                     && map.kinds.get(&d.id) == Some(&hyperstor_map::DeviceKind::Hdd))
         }) {
@@ -643,7 +643,9 @@ pub fn status(
                 chunk_size: p.chunk_size,
                 domain: domain(p.domain),
                 classes: p.classes.clone(),
-                mixed_kinds: crate::mixes_disks_and_flash(map, &p.classes),
+                mixed_kinds: crate::mixes_disks_and_flash(map, p),
+                added_devices: p.added.iter().copied().collect(),
+                removed_devices: p.removed.iter().copied().collect(),
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -1121,6 +1123,66 @@ impl ClusterService for Api {
             }
             .into()),
             Some(Err(e)) if e.starts_with("no pool") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "pool_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_pool_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPoolDeviceRequest>,
+    ) -> ServiceResult<pb::SetPoolDeviceResponse> {
+        let target = format!(
+            "pool {} {} device {}{}",
+            req.pool,
+            if req.member { "add" } else { "remove" },
+            req.device,
+            if req.force { " force" } else { "" }
+        );
+        let who = self.authorize(&ctx, "SetPoolDevice", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPoolDevice {
+                pool: req.pool,
+                device: req.device,
+                member: req.member,
+                force: req.force,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetPoolDevice",
+            &target,
+            &match &r {
+                Some(Ok((epoch, mixed))) => format!(
+                    "ok, map epoch {epoch}{}",
+                    if *mixed {
+                        ", forced: mixes hard disks and flash"
+                    } else {
+                        ""
+                    }
+                ),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, mixed_kinds))) => Ok(pb::SetPoolDeviceResponse {
+                map_epoch,
+                mixed_kinds,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no pool") || e.starts_with("no device") => {
                 Err(meta_error(e, ConnectError::not_found, "not_found"))
             }
             Some(Err(e)) => Err(meta_error(

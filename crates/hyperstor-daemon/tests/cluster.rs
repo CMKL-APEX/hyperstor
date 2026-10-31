@@ -136,6 +136,8 @@ impl Cluster {
             domain: hyperstor_placement::Domain::Host,
             chunk_size: CHUNK,
             classes: Vec::new(),
+            added: Default::default(),
+            removed: Default::default(),
         });
         map.ensure_meta_pool();
         map.recompute();

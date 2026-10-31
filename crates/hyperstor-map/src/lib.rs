@@ -61,6 +61,23 @@ pub struct PoolInfo {
     /// The device classes the pool places on (D164); empty: every device,
     /// as pools made before class sets do (D171).
     pub classes: Vec<String>,
+    /// Devices added to the pool beyond its classes, and devices removed
+    /// from it (D180).
+    pub added: BTreeSet<u32>,
+    pub removed: BTreeSet<u32>,
+}
+
+impl PoolInfo {
+    /// Whether the pool may place on `device` (D164, D180): of one of its
+    /// classes (any, without classes) or added to it, and not removed.
+    /// Whether the device is in, weighted and not a hard disk for `.meta`
+    /// is placement's to check.
+    pub fn uses(&self, device: &DeviceInfo) -> bool {
+        !self.removed.contains(&device.id)
+            && (self.classes.is_empty()
+                || self.classes.contains(&device.class)
+                || self.added.contains(&device.id))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,6 +493,8 @@ impl ClusterMap {
                 domain: p.domain,
                 classes: p.classes.clone(),
                 no_hdd: p.id == META_POOL,
+                added: p.added.iter().copied().collect(),
+                removed: p.removed.iter().copied().collect(),
             };
             let devs = if p.kind == PoolKind::Cache {
                 &devs_live
@@ -722,7 +741,13 @@ impl ClusterMap {
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set; a map without
         // them keeps the older format, which nodes from before them read.
-        let format = if self.pools.values().any(|p| p.classes.len() > 1) {
+        let format = if self
+            .pools
+            .values()
+            .any(|p| !p.added.is_empty() || !p.removed.is_empty())
+        {
+            7
+        } else if self.pools.values().any(|p| p.classes.len() > 1) {
             6
         } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
             5
@@ -823,13 +848,30 @@ impl ClusterMap {
                 });
             }
         }
+        if format >= 7 {
+            let edited: Vec<&PoolInfo> = self
+                .pools
+                .values()
+                .filter(|p| !p.added.is_empty() || !p.removed.is_empty())
+                .collect();
+            e.u32(edited.len() as u32);
+            for p in edited {
+                e.u32(p.id);
+                for set in [&p.added, &p.removed] {
+                    e.u32(set.len() as u32);
+                    for d in set {
+                        e.u32(*d);
+                    }
+                }
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=6).contains(&v) {
+        if !(1..=7).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -901,6 +943,8 @@ impl ClusterMap {
                     domain,
                     chunk_size,
                     classes,
+                    added: BTreeSet::new(),
+                    removed: BTreeSet::new(),
                 },
             );
         }
@@ -955,6 +999,17 @@ impl ClusterMap {
                 }
             }
         }
+        if v >= 7 {
+            for _ in 0..d.u32()? {
+                let id = d.u32()?;
+                let added = d.seq(4, |d| d.u32())?.into_iter().collect();
+                let removed = d.seq(4, |d| d.u32())?.into_iter().collect();
+                if let Some(p) = m.pools.get_mut(&id) {
+                    p.added = added;
+                    p.removed = removed;
+                }
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -976,6 +1031,8 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         domain: Domain::Host,
         chunk_size: 4 << 20,
         classes: Vec::new(),
+        added: BTreeSet::new(),
+        removed: BTreeSet::new(),
     }
 }
 
@@ -1194,6 +1251,8 @@ mod tests {
             domain: Domain::Host,
             chunk_size: 4 << 20,
             classes: Vec::new(),
+            added: BTreeSet::new(),
+            removed: BTreeSet::new(),
         });
         m.recompute();
         m
@@ -1267,6 +1326,29 @@ mod tests {
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
         m.pools.get_mut(&1).unwrap().classes.truncate(1);
         assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "one class: as before");
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+
+    /// D180: a pool's devices added and removed are kept in format 7,
+    /// written only while one pool has some; placement follows them.
+    #[test]
+    fn devices_added_and_removed_change_placement_and_need_format_7() {
+        let mut m = map();
+        m.pools.get_mut(&1).unwrap().classes = vec!["fast".into()];
+        for d in [0, 1000, 2000] {
+            m.devices.get_mut(&d).unwrap().class = "fast".into();
+        }
+        m.recompute();
+        assert_ne!(m.encode()[..4], 7u32.to_le_bytes());
+        let uses =
+            |m: &ClusterMap, d: u32| m.pgs.iter().any(|(k, p)| k.0 == 1 && p.up.contains(&d));
+        assert!(!uses(&m, 3000) && uses(&m, 0));
+        let p = m.pools.get_mut(&1).unwrap();
+        p.added.insert(3000);
+        p.removed.insert(0);
+        m.recompute();
+        assert!(uses(&m, 3000) && !uses(&m, 0));
+        assert_eq!(m.encode()[..4], 7u32.to_le_bytes());
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
     }
 
@@ -1528,6 +1610,8 @@ mod tests {
             domain: Domain::Host,
             chunk_size: 4 << 20,
             classes: Vec::new(),
+            added: BTreeSet::new(),
+            removed: BTreeSet::new(),
         });
         m.recompute();
         let before = m.clone();

@@ -46,6 +46,11 @@ service ClusterService {
   // Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
+  // Adds a device to a pool beyond its classes, or removes one of them
+  // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
+  // move as for SetPool, which it is checked as. Write.
+  rpc SetPoolDevice(SetPoolDeviceRequest) returns (SetPoolDeviceResponse);
+
   // Makes a pool (24-pools-and-devices.md §27.3.1): its device classes are
   // required (04-decisions.md D171) and checked as SetPool checks them;
   // its id is one no pool has had. Write.
@@ -287,6 +292,10 @@ message Pool {
   // Whether those classes hold hard disks and flash both, which only a
   // forced SetPool allows (D172).
   bool mixed_kinds = 13 [json_name = "mixed_kinds"];
+  // Devices the pool uses beyond its classes, and devices of its classes
+  // it does not use (04-decisions.md D180).
+  repeated uint32 added_devices = 14 [json_name = "added_devices"];
+  repeated uint32 removed_devices = 15 [json_name = "removed_devices"];
 }
 
 // Each PG is counted once, under its worst state.
@@ -431,6 +440,21 @@ message SetPoolRequest {
 message SetPoolResponse {
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   // The set mixes hard disks and flash (only when forced).
+  bool mixed_kinds = 2 [json_name = "mixed_kinds"];
+}
+
+message SetPoolDeviceRequest {
+  uint32 pool = 1;
+  uint32 device = 2;
+  // true: the pool uses the device; false: it does not.
+  bool member = 3;
+  // Allow hard disks with flash (D172).
+  bool force = 4;
+}
+
+message SetPoolDeviceResponse {
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The pool's devices mix hard disks and flash (only when forced).
   bool mixed_kinds = 2 [json_name = "mixed_kinds"];
 }
 

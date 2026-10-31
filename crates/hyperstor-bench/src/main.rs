@@ -1702,6 +1702,8 @@ fn main() {
                     domain,
                     classes: Vec::new(),
                     no_hdd: false,
+                    added: Vec::new(),
+                    removed: Vec::new(),
                 };
                 let topo = Topology::new(&rule, &devs);
                 let t = Instant::now();
