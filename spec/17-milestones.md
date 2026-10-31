@@ -192,6 +192,10 @@ and pNFS front end, are in 22-nfs.md §26.11.
   writes at QD32; their throughput and p99 latency; and, with a device
   under `dm-delay` (a 2 s and a 60 s delay), whether its node stays up
   and the device is failed after the I/O timeout.
+  **Measured 2026-10-31** (02-benchmarks.md): no commit held a reactor,
+  under load or with a 2 s device delay; the device was failed at 30 s
+  and its node came back. Reads on a slow device still hold the reactor,
+  and its node flapped: stage 2 of D165 next.
 - **G44. Adding a device and splitting PGs** (24-pools-and-devices.md
   §27.2, §27.5; points 118 and 124). On the pilot, with nvme6n1 added to
   node 1: how long backfill takes and what it costs other I/O (p99

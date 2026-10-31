@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 1 | 11 |
+| 5 | 0 | 0 | 12 |
 
 ## In progress
 
@@ -20,7 +20,7 @@ updated for a while may have been left behind.
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
 | **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `feature/elastic-pools`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106) | Stages 1a–1c merged (#101, #102, #104); 1d built (I207): hyperstor-install install --node N --device PATH registers, formats and keeps a device | 1e: nvme6n1 on prism1 (needs the owner's go-ahead); then stage 2, classes and class sets | 2026-10-31 |
-| **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT | HS0 | `spec/reactor-decisions`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97) | Stage 1 merged (#94) and installed on prism1 (2026-10-31, main at #95); points 114 and 115 settled as D165 and D166; `hyperstord --io-timeout-secs` | Install on prism2 and gpu-dev2, where the stalls are; measure G43 against prism1's 24 h baseline (0 stalls of its own, 31 reports of nodes 0 and 2); then stage 2 or 3 | 2026-10-31 |
+| **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT | HS0 | `bench/g43`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100) | G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped | Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
 
 ## Blocked
@@ -29,9 +29,7 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Device identity checked before a device is opened** (`device-identity`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-identity`, [#99](https://github.com/CMKL-APEX/hyperstor/pull/99) | Deployed to all three pilot hosts from the PR's head (1d2d08f): every device recorded the cluster id once, none refused, no PG moved | Merge once CI passes, then mark done | 2026-10-31 |
+None.
 
 ## Done
 
@@ -42,6 +40,7 @@ None.
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
 | **The refill test's flapping on CI (I200)** (`refill-test-flapping`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS2 | `fix/refill-test-flapping`, [#92](https://github.com/CMKL-APEX/hyperstor/pull/92) | 2026-10-31 |
 | **Device weights by capacity and pool space under the domain rule** (`device-weights`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/device-weights`, [#95](https://github.com/CMKL-APEX/hyperstor/pull/95), [#98](https://github.com/CMKL-APEX/hyperstor/pull/98) | 2026-10-31 |
+| **Device identity checked before a device is opened** (`device-identity`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-identity`, [#99](https://github.com/CMKL-APEX/hyperstor/pull/99) | 2026-10-31 |
 | **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | 2026-10-31 |
 | **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |

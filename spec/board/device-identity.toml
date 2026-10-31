@@ -1,10 +1,9 @@
 title = "Device identity checked before a device is opened"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS2"
 branch = "feat/device-identity"
 prs = [99]
-now = "Deployed to all three pilot hosts from the PR's head (1d2d08f): every device recorded the cluster id once, none refused, no PG moved"
-next = "Merge once CI passes, then mark done"
+now = "Merged (#99, 09627c1) and running on all three pilot hosts: every device recorded the cluster id once, none refused, no PG moved"
