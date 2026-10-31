@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 2 | 0 | 2 | 6 |
+| 2 | 0 | 1 | 7 |
 
 ## In progress
 
@@ -29,12 +29,12 @@ None.
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
 | **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | Points 104–113 settled as recommended: D158–D162 recorded | Merge; then build weights and pool space (D158, D159) before encryption | 2026-10-31 |
-| **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | Built and tested: compatible, read-only-compatible and incompatible flags, version 1 written while none is set; hyperstord formats only blank devices (I196); checks pass (one host-specific end-to-end test aside), in review | Review and merge; a conversion tool when the first flag is defined | 2026-10-31 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
 | **The engine's layout and the AI workloads: points for the owner** (`ai-workload-review`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | — | `spec/ai-workload-review`, [#86](https://github.com/CMKL-APEX/hyperstor/pull/86) | 2026-10-31 |
 | **PG usage shading in the PG grid** (`ui-pg-usage`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-usage-linear`, [#79](https://github.com/CMKL-APEX/hyperstor/pull/79), [#82](https://github.com/CMKL-APEX/hyperstor/pull/82) | 2026-10-30 |
 | **A grid of PG states in the web UI** (`ui-pg-grid`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/pg-grid`, [#76](https://github.com/CMKL-APEX/hyperstor/pull/76) | 2026-10-30 |
