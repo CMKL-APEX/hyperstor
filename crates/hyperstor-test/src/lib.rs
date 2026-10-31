@@ -894,6 +894,23 @@ impl Cluster {
     }
 
     /// Storage node `n`'s log so far.
+    /// Whether every PG of every pool is clean: none degraded, backfilling
+    /// or inactive. Unlike `health  ok`, a node that flapped while it
+    /// restarted slowly (a warning for ten minutes) doesn't count.
+    pub fn settled(&self) -> bool {
+        let s = self.ctl(&["status", "--json"]);
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&s.out) else {
+            return false;
+        };
+        v["pools"].as_array().is_some_and(|pools| {
+            pools.iter().all(|p| {
+                ["degraded", "backfilling", "inactive"]
+                    .iter()
+                    .all(|k| p["pgs"][k].as_u64().unwrap_or(0) == 0)
+            })
+        })
+    }
+
     pub fn node_log(&self, n: u32) -> String {
         std::fs::read_to_string(self.scratch.path(&format!("node-{n}.log"))).unwrap_or_default()
     }
