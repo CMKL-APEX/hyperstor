@@ -58,7 +58,9 @@ pub struct PoolInfo {
     pub pg_count: u32,
     pub domain: Domain,
     pub chunk_size: u32,
-    pub class: Option<String>,
+    /// The device classes the pool places on (D164); empty: every device,
+    /// as pools made before class sets do (D171).
+    pub classes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +456,7 @@ impl ClusterMap {
                         weight: d.weight,
                         class: d.class.clone(),
                         up_in: d.up_in && (node.up || !live_only),
+                        hdd: self.kinds.get(&d.id) == Some(&DeviceKind::Hdd),
                     }
                 })
                 .collect()
@@ -465,7 +468,8 @@ impl ClusterMap {
                 pool: p.id,
                 size: p.size as usize,
                 domain: p.domain,
-                class: p.class.clone(),
+                classes: p.classes.clone(),
+                no_hdd: p.id == META_POOL,
             };
             let devs = if p.kind == PoolKind::Cache {
                 &devs_live
@@ -712,7 +716,9 @@ impl ClusterMap {
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set; a map without
         // them keeps the older format, which nodes from before them read.
-        let format = if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
+        let format = if self.pools.values().any(|p| p.classes.len() > 1) {
+            6
+        } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
             5
         } else if !self.fixed_weights.is_empty() {
             4
@@ -753,7 +759,9 @@ impl ClusterMap {
                 Domain::Rack => 2,
             });
             e.u32(p.chunk_size);
-            match &p.class {
+            // One class where formats before 6 keep it; more are in format
+            // 6's own section, below.
+            match p.classes.first() {
                 Some(c) => e.bool(true).str(c),
                 None => e.bool(false),
             };
@@ -796,13 +804,26 @@ impl ClusterMap {
                 e.u32(*d);
             }
         }
+        if format >= 6 {
+            let sets: Vec<&PoolInfo> = self
+                .pools
+                .values()
+                .filter(|p| p.classes.len() > 1)
+                .collect();
+            e.u32(sets.len() as u32);
+            for p in sets {
+                e.u32(p.id).seq(&p.classes, |e, c| {
+                    e.str(c);
+                });
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=5).contains(&v) {
+        if !(1..=6).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -857,10 +878,10 @@ impl ClusterMap {
                 _ => Domain::Rack,
             };
             let chunk_size = d.u32()?;
-            let class = if d.bool()? {
-                Some(d.str()?.to_string())
+            let classes = if d.bool()? {
+                vec![d.str()?.to_string()]
             } else {
-                None
+                Vec::new()
             };
             m.pools.insert(
                 id,
@@ -873,7 +894,7 @@ impl ClusterMap {
                     pg_count,
                     domain,
                     chunk_size,
-                    class,
+                    classes,
                 },
             );
         }
@@ -919,6 +940,15 @@ impl ClusterMap {
                 .collect();
             m.fixed_classes = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
+        if v >= 6 {
+            for _ in 0..d.u32()? {
+                let id = d.u32()?;
+                let classes = d.seq(1, |d| Ok(d.str()?.to_string()))?;
+                if let Some(p) = m.pools.get_mut(&id) {
+                    p.classes = classes;
+                }
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -939,7 +969,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         pg_count,
         domain: Domain::Host,
         chunk_size: 4 << 20,
-        class: None,
+        classes: Vec::new(),
     }
 }
 
@@ -1045,7 +1075,13 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                         "min" => p.min_size = num(w[i + 1])? as u8,
                         "pgs" => p.pg_count = num(w[i + 1])? as u32,
                         "chunk" => p.chunk_size = num(w[i + 1])? as u32,
-                        "class" => p.class = Some(w[i + 1].to_string()),
+                        "class" => {
+                            p.classes = w[i + 1]
+                                .split(',')
+                                .filter(|c| !c.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        }
                         "domain" => {
                             p.domain = match w[i + 1] {
                                 "device" => Domain::Device,
@@ -1151,7 +1187,7 @@ mod tests {
             pg_count: 32,
             domain: Domain::Host,
             chunk_size: 4 << 20,
-            class: None,
+            classes: Vec::new(),
         });
         m.recompute();
         m
@@ -1208,6 +1244,24 @@ mod tests {
         assert_eq!(m.set_class(1, Some("scratch")), Ok(true));
         assert!(m.set_kind(1001, DeviceKind::File));
         assert_eq!(m.set_class(1001, Some("scratch")), Ok(true));
+    }
+
+    /// D164: a pool's class set: one class in the field formats before 6
+    /// read, more in format 6, written only then; the cluster file takes
+    /// `class a,b`.
+    #[test]
+    fn class_sets_round_trip_and_need_format_6_only_when_several() {
+        let mut m = parse_cluster(
+            "node 0 rack 0 127.0.0.1:1\npool 1 vol replicated size 1 min 1 pgs 8 class nvme,ssd\n\
+             pool 2 one replicated size 1 min 1 pgs 8 class nvme\n",
+        )
+        .unwrap();
+        assert_eq!(m.pools[&1].classes, ["nvme", "ssd"]);
+        assert_eq!(m.encode()[..4], 6u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.pools.get_mut(&1).unwrap().classes.truncate(1);
+        assert_eq!(m.encode()[..4], 1u32.to_le_bytes(), "one class: as before");
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
     }
 
     #[test]
@@ -1467,7 +1521,7 @@ mod tests {
             pg_count: 32,
             domain: Domain::Host,
             chunk_size: 4 << 20,
-            class: None,
+            classes: Vec::new(),
         });
         m.recompute();
         let before = m.clone();

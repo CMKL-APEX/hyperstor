@@ -70,6 +70,8 @@ pub struct Device {
     pub class: String,
     /// `in` devices take placements; `out` ones don't.
     pub up_in: bool,
+    /// A rotational disk, which a rule with `no_hdd` skips.
+    pub hdd: bool,
 }
 
 /// The level whose members must be distinct among a PG's copies.
@@ -87,8 +89,11 @@ pub struct Rule {
     /// Copies (replicated) or `k + m` (EC).
     pub size: usize,
     pub domain: Domain,
-    /// Only devices of this class, if set.
-    pub class: Option<String>,
+    /// Only devices whose class is one of these (D164); empty: every
+    /// device, for pools made before class sets (D171).
+    pub classes: Vec<String>,
+    /// No rotational disks (`.meta`, 07-placement.md §5.2).
+    pub no_hdd: bool,
 }
 
 /// Uniform in (0, 1], from a hash.
@@ -161,7 +166,10 @@ impl Topology {
         // domain -> host -> devices, in a stable order.
         let mut tree: BTreeMap<u64, BTreeMap<u32, Vec<(u32, f64)>>> = BTreeMap::new();
         for d in devices.iter().filter(|d| {
-            d.up_in && d.weight > 0.0 && rule.class.as_ref().is_none_or(|c| *c == d.class)
+            d.up_in
+                && d.weight > 0.0
+                && (rule.classes.is_empty() || rule.classes.contains(&d.class))
+                && !(rule.no_hdd && d.hdd)
         }) {
             tree.entry(domain_of(d, rule.domain))
                 .or_default()
@@ -297,6 +305,7 @@ mod tests {
                         rack: r,
                         weight: 1.0,
                         class: "nvme".into(),
+                        hdd: false,
                         up_in: true,
                     });
                     id += 1;
@@ -311,7 +320,8 @@ mod tests {
             pool: 1,
             size,
             domain,
-            class: None,
+            classes: Vec::new(),
+            no_hdd: false,
         }
     }
 
@@ -410,6 +420,7 @@ mod tests {
                 rack: 0,
                 weight: 1.0,
                 class: "nvme".into(),
+                hdd: false,
                 up_in: true,
             });
         }
@@ -513,6 +524,40 @@ mod tests {
         assert_eq!(short, vec![Some(7), None, Some(3)]);
     }
 
+    /// D164: a rule with several classes places on any device of them,
+    /// and only them; `no_hdd` skips rotational disks (`.meta`).
+    #[test]
+    fn class_sets_and_no_hdd() {
+        let mut devs = cluster(1, 4, 3);
+        for d in devs.iter_mut() {
+            d.class = ["nvme", "ssd", "hdd"][d.id as usize % 3].into();
+            d.hdd = d.class == "hdd";
+        }
+        let set = Rule {
+            pool: 2,
+            size: 3,
+            domain: Domain::Host,
+            classes: vec!["nvme".into(), "ssd".into()],
+            no_hdd: false,
+        };
+        let mut seen = HashSet::new();
+        for pg in 0..500 {
+            for d in place(&set, pg, &devs) {
+                assert_ne!(d % 3, 2, "no hdd class");
+                seen.insert(d % 3);
+            }
+        }
+        assert_eq!(seen.len(), 2, "both classes used");
+        let meta = Rule {
+            classes: Vec::new(),
+            no_hdd: true,
+            ..set
+        };
+        for pg in 0..500 {
+            assert!(place(&meta, pg, &devs).iter().all(|d| d % 3 != 2));
+        }
+    }
+
     #[test]
     fn class_filter_and_out_devices() {
         let mut devs = cluster(1, 4, 2);
@@ -523,7 +568,8 @@ mod tests {
             pool: 2,
             size: 3,
             domain: Domain::Host,
-            class: Some("hdd".into()),
+            classes: vec!["hdd".into()],
+            no_hdd: false,
         };
         for pg in 0..200 {
             for d in place(&r, pg, &devs) {

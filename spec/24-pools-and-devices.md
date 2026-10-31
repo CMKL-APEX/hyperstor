@@ -212,6 +212,10 @@ copy of the volumes.
 
 ### 27.4 Class sets
 
+Built (I210), with `SetPool` for classes only until stage 3. Only
+`SetPool` checks a set's domains and kinds; relabelling a device later
+isn't checked against the pools that use its class.
+
 - A pool's class set is a list of labels. A device is eligible when its
   class is in the list, and the pool's weight on it is its capacity, as
   for every pool (D158).
