@@ -117,6 +117,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | A device added to a running node: registered, weighted once it runs, then given PGs | In progress |
+| Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address | Done |
 
 ## AD0: Administration API, identities and CLI
 

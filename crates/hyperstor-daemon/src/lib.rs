@@ -307,6 +307,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         let st = ShardState::open(
                             node,
                             sh.device_id,
+                            sh.listener.local_addr().ok(),
                             d2,
                             meta,
                             defer,
@@ -704,9 +705,11 @@ fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
 }
 
 impl ShardState {
+    #[allow(clippy::too_many_arguments)]
     async fn open(
         node: u32,
         me: u32,
+        addr: Option<SocketAddr>,
         dev: Arc<dyn BlockDev>,
         meta: Vec<SocketAddr>,
         defer: Option<usize>,
@@ -727,6 +730,31 @@ impl ShardState {
             }
         }
         let client = client.ok_or("map service unreachable")?;
+        // D169: the map must have this device, on this node, at the
+        // address this reactor serves. A --shard it lacks (a typo, a
+        // device not added yet) is refused, not run unseen. A device just
+        // added is published once fenced, so ask again for a few seconds.
+        for tries in 0.. {
+            let map = client.map();
+            let why = match map.devices.get(&me) {
+                Some(d) if d.node == node && addr.is_none_or(|a| a == d.addr) => break,
+                Some(d) => format!(
+                    "device {me}: the map has it on node {} at {}, not node {node} at {}: check --shard",
+                    d.node,
+                    d.addr,
+                    addr.map_or("?".into(), |a| a.to_string())
+                ),
+                None => format!(
+                    "device {me}: not in the map: add it first (hyperstorctl device add --node {node} --address {}), or check --shard",
+                    addr.map_or("ADDR".into(), |a| a.to_string())
+                ),
+            };
+            if tries >= 25 {
+                return Err(why);
+            }
+            sleep(Duration::from_millis(200)).await;
+            let _ = client.refresh_map().await;
+        }
         let cluster = client.map().cluster_id;
         let refused = |e: EngineError| format!("device {me}: {e}");
         // Checked from the superblock alone, before the shard is opened
