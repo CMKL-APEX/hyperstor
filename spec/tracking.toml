@@ -249,11 +249,12 @@ tests = [
 
 [[milestone.item]]
 what = "Backfill: returning or replacement nodes are refilled"
-spec = ["09-replication.md §8.5", "I187"]
+spec = ["09-replication.md §8.5", "I187", "I198"]
 status = "done"
 tests = [
     "cluster::a_node_returns_with_stale_data_and_is_refilled",
     "manage::an_empty_node_is_refilled_without_flapping",
+    "hyperstor_meta::tests::reports_about_a_starting_node_wait_for_its_first_heartbeat",
     "hyperstor_map::tests::a_pg_whose_copies_are_all_down_stays_down",
 ]
 
