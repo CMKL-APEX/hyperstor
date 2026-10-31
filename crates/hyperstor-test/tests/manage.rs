@@ -512,6 +512,10 @@ fn a_killed_node_is_reported_and_comes_back() {
 #[test]
 fn a_returning_node_goes_down_once() {
     let mut c = Cluster::all_in_one("return", 3);
+    // On a slow host every node may be marked down once at the start, by
+    // the heartbeat timeout, while its device opens (I198): what is
+    // checked is the kill and the return.
+    let before = c.meta_log().lines().count();
     c.kill_node(2);
     wait_for("node 2 down", 20, || {
         c.ctl(&["status"]).has("node(s) down: 2").then_some(())
@@ -523,6 +527,7 @@ fn a_returning_node_goes_down_once() {
     let log = std::fs::read_to_string(&c.meta_log).unwrap();
     let changes: Vec<&str> = log
         .lines()
+        .skip(before)
         .filter(|l| l.starts_with("hyperstor-meta: node 2 "))
         .collect();
     assert_eq!(
