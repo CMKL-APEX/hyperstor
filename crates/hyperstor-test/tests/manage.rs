@@ -501,18 +501,9 @@ fn the_installer_drops_a_removed_device() {
             &addr,
         ],
     );
-    c.kill_node(0);
-    c.start_node(0);
-    wait_for("device 1 running, and health ok", 120, || {
-        let s = c.ctl(&["status", "--json"]);
-        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
-        let weighted = v["nodes"]
-            .as_array()?
-            .iter()
-            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
-            .any(|d| d["id"].as_u64() == Some(1) && d["weight"].as_f64().unwrap_or(0.0) > 0.0);
-        (weighted && c.ctl(&["status"]).has("health  ok")).then_some(())
-    });
+    // Registered, at weight 0, and not run: it holds no PG, so its removal
+    // below needs no data to move (the removal itself is
+    // `a_device_is_removed_once_its_pgs_have_moved`'s).
     let drop = |c: &Cluster, id: &str| {
         install_cmd(
             &c.root,

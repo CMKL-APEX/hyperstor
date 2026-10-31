@@ -473,6 +473,17 @@ impl Runner {
         // has the devices out, it's in progress, not undone.
         let mut seen_out = false;
         loop {
+            // A removal: any later change to the map (a weight, a node
+            // coming back) can leave a PG listing the device with nothing
+            // to backfill; it is let go each time (D182).
+            if done.is_none() {
+                for &device in devices {
+                    let (reply, rx) = oneshot();
+                    if self.tx.send(Admin::Release { device, reply }).is_ok() {
+                        let _ = rx.recv().await;
+                    }
+                }
+            }
             let id = op.id.clone();
             let Ok(Some(now)) = self.store(move |s| s.get(&id)).await else {
                 return false;
