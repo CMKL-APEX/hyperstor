@@ -181,6 +181,9 @@ Built (I211).
 | PG count | Only up, by doubling (§27.5, D174) |
 | Name | Only the name |
 
+Built (I213): the class set, failure domain and name, any of them in one
+call; thresholds wait for them to exist, and the PG count for stage 5.
+
 Not changed: the kind, copies, `min`, the chunk size (D9: fixed per pool;
 chunks are named by index). A pool with other copies is a new pool and a
 copy of the volumes.

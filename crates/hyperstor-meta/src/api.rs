@@ -1069,30 +1069,56 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::SetPoolResponse> {
         let classes: Vec<String> = req.classes.iter().map(|c| c.to_string()).collect();
         let force = req.force;
-        let target = format!(
-            "pool {} classes={}{}",
-            req.pool,
-            if classes.is_empty() {
-                "any".to_string()
-            } else {
-                classes.join(",")
-            },
-            if force { " force" } else { "" }
-        );
+        let mut target = format!("pool {}", req.pool);
+        if req.every_device {
+            target.push_str(" classes=any");
+        } else if !classes.is_empty() {
+            target.push_str(&format!(" classes={}", classes.join(",")));
+        }
+        if let Some(n) = req.name {
+            target.push_str(&format!(" name={n}"));
+        }
+        if let Some(d) = req.domain {
+            target.push_str(&format!(" domain={d}"));
+        }
+        if force {
+            target.push_str(" force");
+        }
         let who = self.authorize(&ctx, "SetPool", &target, true)?;
+        let bad = |m: String| with_reason(ConnectError::invalid_argument(m), "invalid_argument");
+        if req.every_device && !classes.is_empty() {
+            return Err(bad("every_device takes no classes".into()));
+        }
         if let Some(c) = classes.iter().find(|c| !crate::valid_class(c)) {
-            return Err(with_reason(
-                ConnectError::invalid_argument(format!(
-                    "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
-                )),
-                "invalid_argument",
+            return Err(bad(format!(
+                "a class is 1 to 32 lowercase letters, digits and dashes, not {c:?}"
+            )));
+        }
+        if let Some(n) = req.name {
+            crate::check_pool_name(n).map_err(bad)?;
+        }
+        let domain = match req.domain {
+            None => None,
+            Some("device") => Some(Domain::Device),
+            Some("host") => Some(Domain::Host),
+            Some("rack") => Some(Domain::Rack),
+            Some(d) => return Err(bad(format!("a domain is device, host or rack, not {d:?}"))),
+        };
+        let change = crate::PoolChange {
+            classes: (req.every_device || !classes.is_empty()).then_some(classes),
+            name: req.name.map(str::to_string),
+            domain,
+        };
+        if change.classes.is_none() && change.name.is_none() && change.domain.is_none() {
+            return Err(bad(
+                "nothing to change: give classes, a name or a domain".into()
             ));
         }
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::SetPoolClasses {
+            .send(Admin::SetPool {
                 pool: req.pool,
-                classes,
+                change,
                 force,
                 reply,
             })

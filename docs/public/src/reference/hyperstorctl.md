@@ -41,7 +41,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `device add` | Appends a device to `--node N`, served at `--address A` (D167), of class `--class C` (default: that of the node's other devices). It is device `N × 1000 + i`, at weight 0, so nothing moves until the node is restarted with one more `--shard A=PATH:SIZE` and the device reports its capacity. An address in use or a node that isn't there exits 1 |
 | `device class` | Keeps `--device`'s class at `--class C`, or with `--class auto` lets it follow the device's kind (`nvme`, `ssd`, `hdd`, `file`) again (D178). A class holds devices of one kind, and a class named after a kind only that kind; a device whose kind isn't known yet (its node hasn't run) is refused, exit 1. Pools limited to classes move its PGs |
 | `pool create` | Makes pool `--name N` on devices of `--classes C,C...` (required, D171): `--kind replicated` (default) or `cache`, `--copies N` (3; 1 for cache), `--min N` (half the copies, rounded up; 1 for cache), `--pgs N` (a power of two; default about 100 per device of its classes per copy), `--chunk BYTES` (4M), `--domain device\|host\|rack` (host). Refused (exit 1) for a name in use, classes whose devices span fewer domains than the copies, and hard disks with flash unless `--force` |
-| `pool set` | Places pool `--pool P`'s PGs on devices of `--classes C,C...` only, or with `--classes any` on every device (D164); PGs move as for a weight change. Refused (exit 1) for `.meta`, when the classes' devices span fewer failure domains than the pool's copies, and when the classes hold hard disks and flash both, unless `--force`, which warns (D172). `pools` lists each pool's classes, `!` marking a forced mix |
+| `pool set` | Changes pool `--pool P`: places its PGs on devices of `--classes C,C...` only, or with `--classes any` on every device (D164); keeps a copy per `--domain device\|host\|rack`; renames it `--name N`. What isn't given stays; PGs move as for a weight change. Refused (exit 1) for `.meta`, for a name another pool has, when the pool's devices would span fewer failure domains than its copies, and when the classes hold hard disks and flash both, unless `--force`, which warns (D172). `pools` lists each pool's classes, `!` marking a forced mix |
 | `pool add-device` | Lets pool `--pool P` use device `--device D` too, though it is not of the pool's classes, or takes back a device removed from it (D180); PGs move as for `pool set`, and it is refused as `pool set` is (exit 1), `--force` allowing hard disks with flash. A device serves every pool that uses it, sharing its space |
 | `pool remove-device` | Stops pool `--pool P` using device `--device D` (D180), whether one of its classes or added; its PGs there move to the pool's other devices. Refused (exit 1) when the pool's devices would span fewer failure domains than its copies. `pools` lists a pool's classes, then `+D` for each device added and `-D` for each removed |
 | `io-test` | Writes random data to a new volume, reads it back and compares |
@@ -82,15 +82,15 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--node N` | | Every device of node N, for `out` and `in`; the node for `device add` |
 | `--address A` | | `device add`: `IP:PORT` where the node's new reactor listens |
 | `--class C` | | `device add`: the device's class; `device class`: the class to keep, or `auto` |
-| `--classes C,C...\|any` | | `pool create`: the classes (required); `pool set`: the classes, or every device |
+| `--classes C,C...\|any` | | `pool create`: the classes (required); `pool set`: the new classes, or every device |
 | `--kind K` | replicated | `pool create`: `replicated` or `cache` |
 | `--copies N` | 3 (1 for cache) | `pool create`: copies |
 | `--min N` | half the copies | `pool create`: copies that must be reachable to write |
 | `--pgs N` | about 100 per device per copy | `pool create`: PG count, a power of two |
 | `--chunk B` | 4M | `pool create`: chunk size, a multiple of 4096 bytes |
-| `--domain D` | host | `pool create`: `device`, `host` or `rack` |
+| `--domain D` | host | `pool create`, `pool set`: `device`, `host` or `rack` |
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
-| `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique |
+| `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique. `pool create`, `pool set`: the pool's name, unique |
 | `--id ID` | | `delete-volume` and the snapshot commands: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
 | `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`: the snapshot, by the epoch `snapshot list` shows. `trash restore`, `trash purge`: a snapshot in the trash; without it, the volume |
 | `--ids ID,ID...` | | `snapshot group`: the volumes, comma-separated |

@@ -306,6 +306,13 @@ hyperstorctl pool set --pool 1 --classes nvme,ssd
 hyperstorctl pool set --pool 1 --classes any
 ```
 
+The same command renames a pool or changes its failure domain, a copy
+per device, host or rack; what isn't given stays:
+
+```sh
+hyperstorctl pool set --pool 1 --name blocks --domain rack
+```
+
 The classes' devices must span at least as many failure domains (hosts,
 by default) as the pool keeps copies. A set with hard disks and flash
 both is refused unless `--force`: a write waits for its slowest copy.

@@ -39,11 +39,11 @@ service ClusterService {
   // Pools limited to classes move PGs as it changes. Write.
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
-  // Changes a pool (24-pools-and-devices.md §27.3.2); for now its device
-  // classes (D164): PGs move to the devices of the new set. Refused for
-  // .meta, when the set spans fewer failure domains than the pool's
-  // copies, and when it mixes hard disks and flash unless forced (D172).
-  // Write.
+  // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
+  // (D164) or failure domain, and PGs move to match, or its name. Refused
+  // for .meta, when its devices would span fewer failure domains than the
+  // pool's copies, when they mix hard disks and flash unless forced
+  // (D172), and for a name another pool has. Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
   // Adds a device to a pool beyond its classes, or removes one of them
@@ -431,10 +431,17 @@ message CreatePoolResponse {
 
 message SetPoolRequest {
   uint32 pool = 1;
-  // The classes to place on; empty: every device.
+  // The classes to place on; empty: unchanged, unless every_device.
   repeated string classes = 2;
   // Allow a set that mixes hard disks and flash (D172).
   bool force = 3;
+  // A new name; absent: unchanged.
+  optional string name = 4;
+  // "device", "host" or "rack"; absent: unchanged.
+  optional string domain = 5;
+  // Place on every device, as pools made before class sets do (D171);
+  // classes must then be empty.
+  bool every_device = 6 [json_name = "every_device"];
 }
 
 message SetPoolResponse {

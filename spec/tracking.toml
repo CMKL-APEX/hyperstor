@@ -689,6 +689,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A pool renamed, or its failure domain changed, with its PGs following"
+spec = ["24-pools-and-devices.md §27.3.2", "I213"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::a_pool_is_renamed_and_its_domain_changed",
+    "manage::a_pool_is_renamed_and_its_domain_changed",
+]
+
+[[milestone.item]]
 what = "A pool's devices added beyond its classes, and removed from them"
 spec = ["24-pools-and-devices.md §27.4", "D180", "I212"]
 status = "done"
