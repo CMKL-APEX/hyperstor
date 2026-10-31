@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-10-31
 milestone = "HS0"
 branch = "bench/g43"
-prs = [94, 97]
+prs = [94, 97, 100]
 now = "G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped"
 next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after"
