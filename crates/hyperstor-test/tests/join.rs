@@ -625,6 +625,16 @@ fn map_service_members_join_the_first() {
     let r = ctl(&bin, &apis[0], &first_pki, &["status", "--wait", "30"]);
     assert_eq!(r.code, 0, "{}", r.out);
     ctl(&bin, &apis[0], &first_pki, &["io-test", "--mib", "4"]).ok();
+    // A follower answers with what only the leader knows (I197): each
+    // device's space, nodes heard from, and no note to ask the leader.
+    let n = wait_for("the follower to show device space", 30, || {
+        let r = ctl(&bin, &apis[follower], &pkis[follower], &["nodes"]).ok();
+        (r.out.lines().count() > 1 && r.out.lines().skip(1).all(|l| !l.contains(" - ")))
+            .then_some(r)
+    });
+    assert!(n.has("G "), "{}", n.out);
+    let st = ctl(&bin, &apis[follower], &pkis[follower], &["status"]).ok();
+    assert!(!st.has("ask it for those"), "{}", st.out);
     // Every member lists the tokens: they are replicated.
     for i in 0..3 {
         let r = ctl(&bin, &apis[i], &pkis[i], &["token", "list"]).ok();
