@@ -1046,7 +1046,7 @@ export type Pool = Message<"hyperstor.v1.Pool"> & {
   placementCount: number;
 
   /**
-   * A split under way (D183): to twice pg_count, with this many PGs split.
+   * A split under way (D187): to twice pg_count, with this many PGs split.
    *
    * @generated from field: bool splitting = 17;
    */
@@ -1174,7 +1174,7 @@ export type PoolJson = {
   placement_count?: number;
 
   /**
-   * A split under way (D183): to twice pg_count, with this many PGs split.
+   * A split under way (D187): to twice pg_count, with this many PGs split.
    *
    * @generated from field: bool splitting = 17;
    */
@@ -2190,7 +2190,7 @@ export type SetPoolRequest = Message<"hyperstor.v1.SetPoolRequest"> & {
   everyDevice: boolean;
 
   /**
-   * Twice the pool's PG count: the pool splits (D183).
+   * Twice the pool's PG count: the pool splits (D187).
    *
    * @generated from field: optional uint32 pg_count = 7 [json_name = "pg_count"];
    */
@@ -2250,7 +2250,7 @@ export type SetPoolRequestJson = {
   every_device?: boolean;
 
   /**
-   * Twice the pool's PG count: the pool splits (D183).
+   * Twice the pool's PG count: the pool splits (D187).
    *
    * @generated from field: optional uint32 pg_count = 7 [json_name = "pg_count"];
    */
@@ -4007,7 +4007,7 @@ export const ClusterService: GenService<{
   },
   /**
    * Removes a device (24-pools-and-devices.md §27.2.5, 04-decisions.md
-   * D175, D182): it is taken out, and an operation follows its PGs off it,
+   * D175, D186): it is taken out, and an operation follows its PGs off it,
    * then removes it from the map, with its node if it was the node's last;
    * neither id is given again, and the device's data is left as it is.
    * Refused when a pool using it would keep fewer copies than its min, or,
@@ -4040,7 +4040,7 @@ export const ClusterService: GenService<{
    * Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
    * (D164) or failure domain, and PGs move to match, or its name; or
    * doubles its PG count, splitting its PGs in place, a few at a time,
-   * each paused briefly (§27.5, D173, D183). Refused for .meta, when its
+   * each paused briefly (§27.5, D173, D187). Refused for .meta, when its
    * devices would span fewer failure domains than the pool's copies, when
    * they mix hard disks and flash unless forced (D172), for a name another
    * pool has, and for a count that isn't twice the pool's or while it

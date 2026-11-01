@@ -1363,7 +1363,7 @@ impl ClusterService for Api {
             return Ok(out.into());
         }
         // The device is out: an operation follows its PGs off it, then
-        // removes it from the map (D182).
+        // removes it from the map (D186).
         let n = removal.moves.len();
         let op = self
             .admin

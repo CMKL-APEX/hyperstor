@@ -484,7 +484,7 @@ struct ShardState {
     /// PGs fenced by the map service, with the map epoch that lifts each.
     fenced: RefCell<HashMap<(u32, u32), u64>>,
     /// PGs paused while this device splits them, until the map flips them
-    /// (24-pools-and-devices.md §27.5, D183), with the PG epoch the split
+    /// (24-pools-and-devices.md §27.5, D187), with the PG epoch the split
     /// was last reported at (0: not yet).
     splitting: RefCell<HashMap<(u32, u32), u64>>,
     /// Writes accepted as primary and not yet answered, per PG.
@@ -525,7 +525,7 @@ struct ShardState {
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
-    /// Cache-pool PGs (D45, D185), with the generation this device last
+    /// Cache-pool PGs (D45, D188), with the generation this device last
     /// served each at, as kept on the device ([`cache_gens_key`]). Serving
     /// one at another generation first drops what this device holds of
     /// it: a member joined without the data, so this copy may be older
@@ -774,7 +774,7 @@ fn wire_key(k: &ObjKey) -> WireKey {
 /// every member live; 0 for a PG of a deleted pool (D181); `None`
 /// otherwise. A PG the map lacks is left alone, and so is everything on a
 /// device the map no longer has: a removed device's data is left as it is
-/// (D182).
+/// (D186).
 fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
     if !map.devices.contains_key(&me) {
         return None;
@@ -827,7 +827,7 @@ pub fn split_lists(sh: &hyperstor_engine::Shard, pool: u32, pg: u32, pg_count: u
 }
 
 /// The object that keeps, on a device, the generation it last served each
-/// cache PG at (D185), as a key–value table: outside every pool, so no
+/// cache PG at (D188), as a key–value table: outside every pool, so no
 /// split, backfill or stray sweep touches it.
 fn cache_gens_key() -> ObjKey {
     ObjKey::new(u32::MAX, 0, Namespace::Internal, b"cache-gens".to_vec(), 0)
@@ -1200,7 +1200,7 @@ impl ShardState {
         }
     }
 
-    /// Splits the PGs the map marks (24-pools-and-devices.md §27.5, D183)
+    /// Splits the PGs the map marks (24-pools-and-devices.md §27.5, D187)
     /// that this device is in the acting set of: pauses each, lets the
     /// requests in flight finish, moves its objects that belong to its new
     /// sibling, and reports it at the PG's epoch (again if the epoch
@@ -1292,7 +1292,7 @@ impl ShardState {
         }
         let n = lists.len();
         // A cache pool's new PGs hold its objects, moved: they take its
-        // generation, so they keep them (D185).
+        // generation, so they keep them (D188).
         let mut gens = Vec::new();
         if self.map().pools.get(&pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache) {
             let generation = self.cache_gen(pool, pg).await;
@@ -1323,7 +1323,7 @@ impl ShardState {
     }
 
     /// The generation this device last served cache PG `pool`.`pg` at
-    /// (D185): kept on the device, so a restart keeps it; 0 if never.
+    /// (D188): kept on the device, so a restart keeps it; 0 if never.
     async fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
         if let Some(g) = self.cache_gens.borrow().get(&(pool, pg)) {
             return *g;
@@ -4921,7 +4921,7 @@ mod tests {
             Some(0),
             "a deleted pool's"
         );
-        // A removed device keeps what it holds (D182).
+        // A removed device keeps what it holds (D186).
         let mut removed = m.clone();
         removed.remove_device(a);
         assert_eq!(is_stray(&removed, a, 1, pg), None, "a removed device's");

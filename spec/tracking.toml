@@ -728,7 +728,7 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D182", "I216", "I217"]
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I217"]
 status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",
@@ -740,7 +740,7 @@ tests = [
 
 [[milestone.item]]
 what = "A PG split in place: objects moved to their new PG's key without a copy, PG by PG"
-spec = ["24-pools-and-devices.md §27.5", "D173", "D183", "I218", "I219", "I220"]
+spec = ["24-pools-and-devices.md §27.5", "D173", "D187", "I218", "I219", "I220"]
 status = "done"
 tests = [
     "engine::take_moves_an_object_whole",
@@ -763,7 +763,7 @@ tests = [
 
 [[milestone.item]]
 what = "A cache pool's data kept across splits, the moves they cause and restarts (cache generations)"
-spec = ["09-replication.md §8.7", "D185", "I222"]
+spec = ["09-replication.md §8.7", "D188", "I222"]
 status = "done"
 tests = [
     "hyperstor_map::tests::cache_generations_move_only_when_a_member_starts_empty",

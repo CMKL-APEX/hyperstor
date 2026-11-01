@@ -70,14 +70,14 @@ pub struct PoolInfo {
     /// on its parent's devices until this rises past it. `pg_count` but
     /// after a split, until it has risen.
     pub placement: u32,
-    /// A split under way (D183): the count doubles PG by PG.
+    /// A split under way (D187): the count doubles PG by PG.
     pub split: Option<Split>,
     /// Whether the map service doubles the PG count as devices are added
     /// (D174, D184).
     pub autoscale: bool,
 }
 
-/// A pool's split under way (24-pools-and-devices.md §27.5, D183): to
+/// A pool's split under way (24-pools-and-devices.md §27.5, D187): to
 /// twice `pg_count` PGs, PG by PG. A marked PG's members move the objects
 /// of its new sibling (`pg + pg_count`) to its keys and report it; once
 /// all have, it flips: the sibling joins the map on the PG's devices,
@@ -212,17 +212,17 @@ pub struct ClusterMap {
     /// were down name data by pool id.
     pub deleted_pools: BTreeSet<u32>,
     /// The ids of removed devices and nodes (24-pools-and-devices.md
-    /// §27.2.5, D182): never given again. Why: a device's id is in its
+    /// §27.2.5, D186): never given again. Why: a device's id is in its
     /// superblock and a node's in its devices' ids; one given again would
     /// let an old device or host pass for the new one.
     pub removed_devices: BTreeSet<u32>,
     pub removed_nodes: BTreeSet<u32>,
-    /// Each cache PG's generation (D185), where it isn't 0: it moves when
+    /// Each cache PG's generation (D188), where it isn't 0: it moves when
     /// a member joins without the PG's data, and a device drops what it
     /// holds of a PG whose generation isn't the one it last served.
     pub cache_gens: BTreeMap<(u32, u32), u64>,
     /// Cache PGs the next [`ClusterMap::recompute`] backfills if it moves
-    /// them, rather than starting their new members empty (D185); empty
+    /// them, rather than starting their new members empty (D188); empty
     /// after it, and not in the encoding.
     pub keep_acting: BTreeSet<(u32, u32)>,
 }
@@ -506,7 +506,7 @@ impl ClusterMap {
     }
 
     /// The id a new node gets: after every node's, removed ones' too
-    /// (D182).
+    /// (D186).
     pub fn next_node_id(&self) -> u32 {
         let nodes = self.nodes.keys().next_back().map_or(0, |n| n + 1);
         let removed = self.removed_nodes.last().map_or(0, |n| n + 1);
@@ -514,7 +514,7 @@ impl ClusterMap {
     }
 
     /// Removes device `id` from the map, keeping its id as removed, and
-    /// its node with it if that was the node's last device (D182); the
+    /// its node with it if that was the node's last device (D186); the
     /// epoch moves. Whether the device was there, and whether its node
     /// went too.
     pub fn remove_device(&mut self, id: u32) -> Option<bool> {
@@ -543,7 +543,7 @@ impl ClusterMap {
     }
 
     /// Starts doubling pool `pool`'s PG count (24-pools-and-devices.md
-    /// §27.5, D183): nothing moves until PGs are marked. The epoch moves.
+    /// §27.5, D187): nothing moves until PGs are marked. The epoch moves.
     pub fn start_split(&mut self, pool: u32) -> Result<(), String> {
         let p = self.pools.get_mut(&pool).ok_or(format!("no pool {pool}"))?;
         if p.split.is_some() {
@@ -752,7 +752,7 @@ impl ClusterMap {
                     // empty. But a PG the placement count moves after a
                     // split, and one still being filled since, keeps its
                     // live members while the new ones are backfilled
-                    // (D185).
+                    // (D188).
                     Some(o) if p.kind == PoolKind::Cache => {
                         let fill = self.keep_acting.contains(&(p.id, pg)) || o.acting != o.up;
                         let kept: Vec<u32> =
@@ -801,7 +801,7 @@ impl ClusterMap {
                     }
                 };
                 // A cache member that joins without the data moves the PG's
-                // generation, so devices drop what they held of it (D185).
+                // generation, so devices drop what they held of it (D188).
                 if p.kind == PoolKind::Cache
                     && let Some(o) = &old
                     && acting
@@ -1007,7 +1007,7 @@ impl ClusterMap {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
 
-    /// A cache PG's generation (D185): 0 until a member first joins it
+    /// A cache PG's generation (D188): 0 until a member first joins it
     /// without the data.
     pub fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
         self.cache_gens.get(&(pool, pg)).copied().unwrap_or(0)
@@ -1719,7 +1719,7 @@ mod tests {
         assert_eq!(back.next_pool_id(), top + 1);
     }
 
-    /// D183: a split marks PGs, then flips each: its sibling joins the
+    /// D187: a split marks PGs, then flips each: its sibling joins the
     /// map on the PG's devices, keys go to it by the doubled count, others
     /// stay with their parent; the last flip doubles the count, and the
     /// placement count stays, so nothing moves. Format 10 while it runs.
@@ -1830,7 +1830,7 @@ mod tests {
         );
     }
 
-    /// D185: a cache PG's generation moves when a member joins it without
+    /// D188: a cache PG's generation moves when a member joins it without
     /// the data (a device out), not when it is split or flipped, and a new
     /// PG takes its parent's; a cache PG the placement count moves keeps
     /// its old member while the new one is backfilled. Format 11.
@@ -1920,7 +1920,7 @@ mod tests {
         assert_eq!(pg.acting, pg.up);
     }
 
-    /// D182: a removed device leaves the map, its node with its last
+    /// D186: a removed device leaves the map, its node with its last
     /// device; both ids are kept, in format 9 only once there is one, and
     /// never given again.
     #[test]

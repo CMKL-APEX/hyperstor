@@ -59,7 +59,7 @@ pub struct PoolChange {
     /// PGs move, as for the classes.
     pub domain: Option<hyperstor_placement::Domain>,
     /// Twice the PG count: the pool splits (24-pools-and-devices.md
-    /// §27.5, D183).
+    /// §27.5, D187).
     pub pg_count: Option<u32>,
     /// Whether the map service grows its PG count (D174, D184).
     pub autoscale: Option<bool>,
@@ -163,7 +163,7 @@ pub enum Admin {
         reply: hyperstor_reactor::chan::OneSender<usize>,
     },
     /// Removes a device that no PG lists from the map, its node with it if
-    /// it was the last (D182). Replies with whether the node went, and the
+    /// it was the last (D186). Replies with whether the node went, and the
     /// working map's epoch; `None` if the map hasn't the device.
     FinishRemoval {
         device: u32,
@@ -257,10 +257,10 @@ pub struct Removal {
 }
 
 /// Each marked PG's split reports: the PG epoch they name, and who sent
-/// them (D183).
+/// them (D187).
 type SplitReports = HashMap<(u32, u32), (u64, BTreeSet<u32>)>;
 
-/// PGs of one pool split at a time (D183): each pauses its I/O briefly.
+/// PGs of one pool split at a time (D187): each pauses its I/O briefly.
 pub const SPLITS_AT_ONCE: usize = 4;
 
 /// A device may be filled to this share of its size by a removal: a pool's
@@ -515,7 +515,7 @@ pub struct Meta {
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
     kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
-    /// Members' reports of marked PGs split (D183): the PG epoch they name
+    /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
     /// A follower's last [`LeaderView`] from the leader, and when.
@@ -1644,7 +1644,7 @@ impl Meta {
 
     /// Removes `device` from the map once it is out and no PG lists it in
     /// `up` or `acting`, and its node with it if it was the last; both ids
-    /// are kept (D182). `None` if the map hasn't the device (removed
+    /// are kept (D186). `None` if the map hasn't the device (removed
     /// already).
     pub fn finish_removal(&self, device: u32) -> Result<Option<(bool, u64)>, String> {
         if !self.leads() {
@@ -1969,7 +1969,7 @@ impl Meta {
         }
     }
 
-    /// Moves splits on (24-pools-and-devices.md §27.5, D183): flips each
+    /// Moves splits on (24-pools-and-devices.md §27.5, D187): flips each
     /// marked PG every member of whose acting set has reported it split at
     /// its epoch, and marks more PGs, the clean ones, up to
     /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count. Then,
@@ -1998,7 +1998,7 @@ impl Meta {
                 let from = p.placement;
                 p.placement = (p.placement + SPLITS_AT_ONCE as u32).min(p.pg_count);
                 // A cache pool's PGs that move are backfilled, so the
-                // move loses nothing (D185).
+                // move loses nothing (D188).
                 if p.kind == PoolKind::Cache {
                     let to = p.placement;
                     map.keep_acting.extend((from..to).map(|pg| (pool, pg)));
@@ -2554,7 +2554,7 @@ impl Meta {
                 device,
             }) => {
                 // A marked PG's acting set only shrinks until it flips
-                // (D183): a member that joined would hold the PG without
+                // (D187): a member that joined would hold the PG without
                 // what moved to its sibling. Backfill tries again after.
                 let marked = self
                     .map
@@ -3354,7 +3354,7 @@ mod tests {
 
     /// A drain's dry run changes nothing and says what a drain moves; the
     /// drain takes every device of the node out.
-    /// §27.5, D183: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
+    /// §27.5, D187: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
     /// a marked PG flips once every member of its acting set has reported
     /// it split at its epoch (a report at an older epoch doesn't count),
     /// and refuses a member joining by backfill until then; the last flip
@@ -3520,7 +3520,7 @@ mod tests {
         assert!(!meta.map.borrow().pools[&1].autoscale);
     }
 
-    /// §27.2.5, D175, D182: a device is taken out to be removed unless a
+    /// §27.2.5, D175, D186: a device is taken out to be removed unless a
     /// device taking its data would pass [`FULL`], or a pool would keep
     /// fewer copies than its `min` (or, unforced, its `size`); it leaves
     /// the map once no PG lists it, its node with its last device, and

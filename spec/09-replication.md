@@ -176,8 +176,8 @@ loss without backfill, and "not found" on a miss. Each cache PG has a
 generation in the map, which moves when a member joins it without the
 data; a node that serves a cache PG at another generation than it last
 did first empties what it holds of it, so a node that returns never
-serves a copy older than a write made while it was away (D185). A split,
-the moves of the PGs it makes (backfilled, D185) and a restart keep the
+serves a copy older than a write made while it was away (D188). A split,
+the moves of the PGs it makes (backfilled, D188) and a restart keep the
 generation, and so the data. Expiry and eviction are not built yet.
 
 - **Copies.** One by default, placed like a replicated pool of that size;
@@ -189,7 +189,7 @@ generation, and so the data. Expiry and eviction are not built yet.
   no backfill, no recovery. The PG is placed again with an empty
   `acting` set, and its first write starts it afresh. Clients treat "not
   found" as a miss and recompute. The one move that backfills is a PG
-  a split made going to its own devices (D185): nothing failed, and the
+  a split made going to its own devices (D188): nothing failed, and the
   data is there to copy.
 - **Space.** Under pressure a cache pool evicts, by expiry first, then
   least recently read, instead of refusing writes; the D27 thresholds

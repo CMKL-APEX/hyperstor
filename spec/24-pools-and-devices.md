@@ -134,7 +134,7 @@ running node has reported, so older nodes can still read it.
 
 #### 27.2.5 Removing a device
 
-Built (I216, I217, D182).
+Built (I224, I217, D186).
 
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
@@ -151,7 +151,7 @@ Built (I216, I217, D182).
 3. When no PG lists the device in `up` or `acting`, the map service
    removes it from the map, and the installer (or the operator) removes
    its `--shard` and restarts the node. A node whose last device goes is
-   removed with it. Neither id is given again (D182).
+   removed with it. Neither id is given again (D186).
 4. The device's data is left as it is; wiping it is a separate step.
 
 ### 27.3 Pools
@@ -263,7 +263,7 @@ isn't checked against the pools that use its class.
 
 Built (I218–I221): the engine's move, a device's split, the protocol
 and `pool set --pgs`, the placement count rising, and the autoscaler
-(D184). Clients switch to a split PG's sibling PG by PG (D183). Merges
+(D184). Clients switch to a split PG's sibling PG by PG (D187). Merges
 (stage 6) come when needed.
 
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting

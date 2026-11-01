@@ -34,7 +34,7 @@
 //!   [--force]`: place pool P's
 //!   PGs on devices of those classes only, or on every device (D164),
 //!   with a copy per device, host or rack; or rename it; or split its PGs
-//!   to N, twice as many, PG by PG (D173, D183), with `--wait` until it
+//!   to N, twice as many, PG by PG (D173, D187), with `--wait` until it
 //!   is done; `--force` allows classes of hard disks and flash both
 //!   (D172);
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
@@ -52,7 +52,7 @@
 //!   more `--shard`) and it reports its capacity;
 //! - `device remove --device D [--dry-run] [--force] [--wait SECS]`:
 //!   take device D out and, once its PGs have moved, remove it from the
-//!   map, with its node if it was the last (D175, D182); `--dry-run`
+//!   map, with its node if it was the last (D175, D186); `--dry-run`
 //!   shows what would move, the pools left short of copies and the space
 //!   after; `--force` lets pools keep fewer copies than their size, never
 //!   than their min;
@@ -1229,7 +1229,7 @@ where
                             "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
                         );
                     }
-                    // --wait: until the split is done (D183).
+                    // --wait: until the split is done (D187).
                     if let (Some(n), Some(secs)) = (a.pgs, a.wait) {
                         let deadline = Instant::now() + Duration::from_secs(secs.into());
                         loop {

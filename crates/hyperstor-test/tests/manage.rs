@@ -220,7 +220,7 @@ fn a_shard_must_be_the_maps_and_can_name_its_id() {
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
 
-/// §27.2.5, D175, D182: `hyperstorctl device remove` takes a device out,
+/// §27.2.5, D175, D186: `hyperstorctl device remove` takes a device out,
 /// follows its PGs off it as an operation and removes it from the map,
 /// while the data written before reads back; a node restarted with its
 /// `--shard` stops, saying so. A removal that would leave pools short of
@@ -474,7 +474,7 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
-/// D182: `hyperstor-install install --remove-device ID` drops a device
+/// D186: `hyperstor-install install --remove-device ID` drops a device
 /// removed from the map from its node: refused while the map still has
 /// it; then kept in install.conf, so the node's options lose its
 /// `--shard` on this run and every later one, and the node runs without
@@ -932,7 +932,7 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
     assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
 }
 
-/// §27.5, D173, D183: `hyperstorctl pool set --pgs` doubles a pool's PG
+/// §27.5, D173, D187: `hyperstorctl pool set --pgs` doubles a pool's PG
 /// count, splitting PG by PG while volumes are written; the new PGs then
 /// move to their own devices; what was written before and during the
 /// split reads back, also after a node restarts; a count that isn't
@@ -1107,7 +1107,7 @@ fn the_autoscaler_grows_pools_that_ask_for_it() {
     );
 }
 
-/// D185: a cache pool keeps what it holds across a split, the moves of
+/// D188: a cache pool keeps what it holds across a split, the moves of
 /// its new PGs (backfilled, not started empty) and a restart of every
 /// node, as an upgrade does.
 #[test]

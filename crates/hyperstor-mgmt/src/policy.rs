@@ -55,7 +55,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
     ("ClusterService.SetDeviceClass", Group::Operate, false),
-    // A device's removal is final once its PGs have moved (D182).
+    // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),
     ("NodeService.DrainNode", Group::Operate, false),
     ("OperationService.CancelOperation", Group::Operate, false),
