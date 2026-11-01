@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 1 | 15 |
+| 6 | 0 | 1 | 15 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `s3/decisions` | Points 128–137 settled as D191–D199: S3 on hyperstor-kv's ranges (HS11) and replicated pools, before transactions (HS11b) and EC (HS7); bucket names in the root range in .meta, access keys stored encrypted in .meta | HS11's design for review: range objects, the root range, splits and merges, and the client's range cache; then build it | 2026-11-01 |
 | **Fullness thresholds: D27 revised, D182, D183** (`fullness`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `check/g46-hold`, [#128](https://github.com/CMKL-APEX/hyperstor/pull/128), [#133](https://github.com/CMKL-APEX/hyperstor/pull/133), [#136](https://github.com/CMKL-APEX/hyperstor/pull/136), [#139](https://github.com/CMKL-APEX/hyperstor/pull/139), [#142](https://github.com/CMKL-APEX/hyperstor/pull/142), [#144](https://github.com/CMKL-APEX/hyperstor/pull/144), [#149](https://github.com/CMKL-APEX/hyperstor/pull/149) | All merged (#133, #136, #139, #142, #144) and on the pilot since 2026-11-01 (main #145). G46 measured for Linux 6.8: holds up to 300 s cost a guest a warning only; --hold-full default raised to 300 s (D183 revised) | glidex refusing new disks on a full datastore; G46 for the newest kernel and Windows when at hand | 2026-11-01 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `feat/reads-off-reactor`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145) | Stage 2 of D165 built (D190, I230): client reads wait for the device on the ring, freed extents held by generation, 128 reads in flight per device, a 2 s read timeout served by a member (#145) | Merge #145; install #129, #134 and stage 2 on the pilot and repeat the 1 MiB load test (silences and reactor holds); then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes) | 2026-11-01 |
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
@@ -74,7 +75,8 @@ against the tests.
 | HS9 | GPU-direct storage in virtual machines | 0 | 0 | 0 |
 | HS10 | Hard-disk pools with flash log devices | 0 | 0 | 0 |
 | HS10b | Cache pools and priority classes | 0 | 0 | 0 |
-| HS11 | Transactional key-value store | 0 | 0 | 0 |
+| HS11 | Key-value ranges | 0 | 0 | 0 |
+| HS11b | Key-value transactions | 0 | 0 | 0 |
 | HS12 | S3 gateway | 0 | 0 | 0 |
 | HS13 | S3 over RDMA | 0 | 0 | 0 |
 | HS14 | Distributed filesystem | 0 | 0 | 0 |

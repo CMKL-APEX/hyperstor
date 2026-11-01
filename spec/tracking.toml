@@ -607,7 +607,11 @@ title = "Cache pools and priority classes"
 
 [[milestone]]
 id = "HS11"
-title = "Transactional key-value store"
+title = "Key-value ranges"
+
+[[milestone]]
+id = "HS11b"
+title = "Key-value transactions"
 
 [[milestone]]
 id = "HS12"

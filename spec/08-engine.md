@@ -220,7 +220,8 @@ device is formatted with the cluster's id; a superblock without one
   range's keys. A range is split in two when it passes 64 MiB or a
   sustained write rate, and adjacent small ranges are merged.
 - **Finding a range.** A root range, with a fixed id, maps key
-  boundaries to range ids, like Bigtable's root table. Clients cache it
+  boundaries to range ids, like Bigtable's root table. Its object is
+  in `.meta` (D197). Clients cache it
   and refresh an entry when a range answers `RangeMoved`.
 - **Records.** Each key holds versions by commit timestamp, plus a lock
   column during a transaction, as in Percolator.
@@ -235,7 +236,9 @@ device is formatted with the cluster's id; a superblock without one
      the key forward; abandoned past its time-to-live, it rolls it back.
 
   A transaction whose keys are all in one range commits in one atomic
-  operation on that range's object, with no locks.
+  operation on that range's object, with no locks. S3 needs only these
+  (D191): HS11 builds ranges and changes within one range, HS11b the
+  transactions and the oracle.
 - **Timestamp oracle.** The `hyperstor-meta` leader hands out timestamps
   from memory in batches. It writes a high-water mark through Raft,
   reserving the next three seconds of timestamps, so a new leader starts

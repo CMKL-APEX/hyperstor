@@ -210,7 +210,7 @@ too (I215), as an operation that runs again from what is left.
 - **`DeletePool`** is a long operation, with step-up and `--dry-run`
   (19-administration.md §23). It is refused while the pool holds a
   volume, a snapshot or anything in trash, or while a bucket uses it
-  (D176; point 136). `--force` deletes those first, each one audited,
+  (D176, D198). `--force` deletes those first, each one audited,
   after `--dry-run` has listed them. glidex datastores
   name a pool, so glidex must stop using one first (16-glidex.md §17).
 - Then: the pool is marked deleting in the map (clients get

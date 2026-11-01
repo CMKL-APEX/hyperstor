@@ -1,0 +1,10 @@
+title = "S3 sooner: key-value ranges, then the gateway (D191–D199)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-11-01
+updated = 2026-11-01
+milestone = "HS11"
+branch = "s3/decisions"
+prs = []
+now = "Points 128–137 settled as D191–D199: S3 on hyperstor-kv's ranges (HS11) and replicated pools, before transactions (HS11b) and EC (HS7); bucket names in the root range in .meta, access keys stored encrypted in .meta"
+next = "HS11's design for review: range objects, the root range, splits and merges, and the client's range cache; then build it"
