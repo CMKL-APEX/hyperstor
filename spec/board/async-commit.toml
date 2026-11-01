@@ -1,10 +1,10 @@
 title = "Device waits off the reactor (D165, D166)"
 status = "active"
-owner = "Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB"
 started = 2026-10-31
-updated = 2026-10-31
+updated = 2026-11-01
 milestone = "HS0"
-branch = "bench/g43"
+branch = "investigate/peer-silence"
 prs = [94, 97, 100]
-now = "G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped"
-next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after"
+now = "Taken over; looking into G43's unexplained peer silences of 300–400 ms before stage 2"
+next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight and how freed extents wait for reads; stage 3 after"
