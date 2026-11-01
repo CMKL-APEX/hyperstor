@@ -220,3 +220,8 @@ and pNFS front end, are in 22-nfs.md §26.11.
   logs hung tasks or remounts read-only, and whether the write then
   completes normally. Windows' viostor driver too, where a guest is
   at hand.
+  **Measured 2026-11-01 for Linux 6.8** (02-benchmarks.md): no timeout,
+  reset or read-only remount under either hypervisor for holds of 30 to
+  300 s, only hung-task warnings past 120 s, and the write completes;
+  the hold running out aborts ext4's journal. The newest kernel and
+  Windows still to do.

@@ -49,9 +49,9 @@ fn main() {
                     .filter(|q| (1..=64).contains(q))
                     .unwrap_or_else(|| usage()),
             };
-            // D183: 60 s unless set, at most an hour.
+            // D183: 300 s unless set (G46), at most an hour.
             let hold_full = match get("--hold-full") {
-                None => 60,
+                None => 300,
                 Some(s) => s
                     .parse()
                     .ok()

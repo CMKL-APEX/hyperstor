@@ -1330,3 +1330,48 @@ reads.
 5. G43's 1 MiB p99s of 190–275 ms were not the network either; here
    they were 129 ms (writes) and 85 ms (reads) with round trips under
    10 ms, so the time is spent in the nodes.
+
+## 2026-11-01: a guest's write held while the cluster is full (G46; dev-2)
+
+Host **dev-2**, Linux 6.8.0 (Ubuntu 24.04), Cloud Hypervisor v53.0 and
+QEMU 8.2.2. The guest is the host's kernel (6.8, so Ubuntu 24.04's) with
+a busybox initramfs, two vCPUs, a virtio-blk disk with two queues over
+`hyperstor-vhost`. A three-node test cluster with every device past
+52 % and the full ratio at 51 %, so every new block is refused (D182).
+The guest mounts ext4 (made by the host's `mkfs.ext4`, written sparsely,
+so the journal and the free blocks are new to the cluster), writes a
+1 MiB file with `dd conv=fsync`, and the test raises the full ratio to
+95 % after the hold. One more run per hypervisor lets the hold run out
+(`--hold-full 30`, space never freed).
+
+```sh
+HS_VM=1 HS_G46=30,60,120,300 cargo test --release -p hyperstor-test --test vm a_guest_waits -- --nocapture
+```
+
+| Held | Write took | Guest kernel | Afterwards |
+|---|---|---|---|
+| 30 s | 30.9 s (CH), 30.7 s (QEMU) | nothing | file intact, ext4 read-write |
+| 60 s | 60.9 s, 60.7 s | nothing | same |
+| 120 s | 120.9 s, 120.7 s | nothing | same |
+| 300 s | 301.0 s, 300.8 s | `INFO: task jbd2/vda-8 blocked for more than 122 seconds` and the same for `dd`, once each, at 247 s | same |
+| past the hold (30 s) | `IOERR` at 30.0 s | `I/O error, dev vda`, `failed to convert unwritten extents ... potential data loss`, then `Aborting journal on device vda-8` 6 s later | journal aborted: the filesystem refuses writes until it is remounted after a check |
+
+Both hypervisors behaved the same.
+
+### Findings
+
+1. **The guest doesn't time out a held write.** Linux 6.8's virtio-blk
+   has no timeout handler: `/sys/block/vda/queue/io_timeout` doesn't
+   exist, so the block layer never aborts, retries or resets. Neither
+   hypervisor times requests out either.
+2. **A hold costs only warnings.** Past the hung-task timeout (120 s,
+   checked every 120 s, so first logged between 120 and 240 s blocked)
+   the kernel logs each blocked task once; nothing else changes, and the
+   write completes normally when space returns.
+3. **What hurts is the hold running out.** One `IOERR` on a data write
+   loses the data, and on a journal write aborts ext4's journal: the
+   guest needs a remount, usually a reboot and a check.
+4. So the 60 s default is safe but short: anything up to several
+   minutes costs the guest nothing, and an operator freeing space takes
+   minutes. Still to check: the newest kernel, and Windows' viostor
+   driver (a Windows guest wasn't at hand).
