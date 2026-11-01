@@ -184,6 +184,8 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         deleted_pools: map.deleted_pools.clone(),
         removed_devices: map.removed_devices.clone(),
         removed_nodes: map.removed_nodes.clone(),
+        cache_gens: map.cache_gens.clone(),
+        keep_acting: Default::default(),
     }
     .encode()
 }

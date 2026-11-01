@@ -761,6 +761,15 @@ tests = [
     "manage::the_autoscaler_grows_pools_that_ask_for_it",
 ]
 
+[[milestone.item]]
+what = "A cache pool's data kept across splits, the moves they cause and restarts (cache generations)"
+spec = ["09-replication.md §8.7", "D185", "I222"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::cache_generations_move_only_when_a_member_starts_empty",
+    "manage::a_cache_pool_keeps_its_data_across_splits_and_restarts",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
