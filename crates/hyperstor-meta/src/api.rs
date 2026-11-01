@@ -716,6 +716,7 @@ pub fn status(
                 splitting: p.split.is_some(),
                 split_done: p.split.as_ref().map_or(0, |s| s.done.len() as u32),
                 autoscale: p.autoscale,
+                cache_grace: p.cache_grace,
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -1162,6 +1163,7 @@ impl ClusterService for Api {
             classes,
             force: req.force,
             autoscale: req.autoscale.unwrap_or(true),
+            cache_grace: req.cache_grace,
         };
         let (reply, rx) = oneshot();
         self.tx
@@ -1268,15 +1270,18 @@ impl ClusterService for Api {
             domain,
             pg_count: req.pg_count,
             autoscale: req.autoscale,
+            cache_grace: req.cache_grace,
         };
         if change.classes.is_none()
             && change.name.is_none()
             && change.domain.is_none()
             && change.pg_count.is_none()
             && change.autoscale.is_none()
+            && change.cache_grace.is_none()
         {
             return Err(bad(
-                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
+                "nothing to change: give classes, a name, a domain, a PG count, autoscale or a cache grace"
+                    .into(),
             ));
         }
         let (reply, rx) = oneshot();

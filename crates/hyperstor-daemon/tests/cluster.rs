@@ -172,6 +172,7 @@ impl Cluster {
             placement: 16,
             split: None,
             autoscale: false,
+            cache_grace: hyperstor_meta::CACHE_GRACE_SECS,
         });
         map.ensure_meta_pool();
         map.recompute();
@@ -487,8 +488,14 @@ fn clients_follow_map_changes() {
     client.join().unwrap();
     let (map, _) = c.stop();
     assert!(!map.nodes[&0].up);
-    for pg in map.pgs.values() {
-        assert!(pg.acting.iter().all(|d| map.devices[d].node != 0));
+    for (&(pool, n), pg) in &map.pgs {
+        let on0 = pg.acting.iter().any(|d| map.devices[d].node == 0);
+        // The cache pool's PGs there wait for it (D189).
+        if pool == CACHE_POOL && on0 {
+            assert!(map.cache_waiting(pool, n), "cache PG {pool}.{n}");
+        } else {
+            assert!(!on0, "PG {pool}.{n}");
+        }
     }
 }
 

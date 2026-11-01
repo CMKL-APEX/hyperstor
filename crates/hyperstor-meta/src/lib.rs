@@ -48,6 +48,9 @@ pub struct NewPool {
     pub force: bool,
     /// Whether the map service grows its PG count (D174, D184).
     pub autoscale: bool,
+    /// Cache pools: seconds a PG waits for a down member (D189); None:
+    /// [`CACHE_GRACE_SECS`].
+    pub cache_grace: Option<u32>,
 }
 
 /// What `SetPool` changes (24-pools-and-devices.md §27.3.2); `None`
@@ -64,6 +67,26 @@ pub struct PoolChange {
     pub pg_count: Option<u32>,
     /// Whether the map service grows its PG count (D174, D184).
     pub autoscale: Option<bool>,
+    /// Cache pools: seconds a PG waits for a down member (D189).
+    pub cache_grace: Option<u32>,
+}
+
+/// The longest a cache pool's PGs may wait for a down member (D189).
+/// Why: past an hour, the node is better taken out, and its PGs' reads
+/// keep missing meanwhile.
+pub const CACHE_GRACE_MAX: u32 = 3600;
+
+/// Checks a cache grace (D189) for a pool of `kind`.
+fn check_cache_grace(kind: PoolKind, grace: Option<u32>) -> Result<(), String> {
+    match grace {
+        Some(_) if kind != PoolKind::Cache => Err(
+            "a grace is for cache pools: other pools keep their data while a node is down".into(),
+        ),
+        Some(g) if g > CACHE_GRACE_MAX => Err(format!(
+            "a cache grace is at most {CACHE_GRACE_MAX} s, not {g}"
+        )),
+        _ => Ok(()),
+    }
 }
 
 pub enum Admin {
@@ -1401,24 +1424,31 @@ impl Meta {
             domain,
             pg_count,
             autoscale,
+            cache_grace,
         } = change;
         if classes.is_none()
             && name.is_none()
             && domain.is_none()
             && pg_count.is_none()
             && autoscale.is_none()
+            && cache_grace.is_none()
         {
             return Err(
-                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
+                "nothing to change: give classes, a name, a domain, a PG count, autoscale or a cache grace"
+                    .into(),
             );
         }
         let mut map = self.map.borrow_mut();
         let Some(info) = map.pools.get(&pool).cloned() else {
             return Err(format!("no pool {pool}"));
         };
+        check_cache_grace(info.kind, cache_grace)?;
         let mut wanted = info.clone();
         if let Some(a) = autoscale {
             wanted.autoscale = a;
+        }
+        if let Some(g) = cache_grace {
+            wanted.cache_grace = g;
         }
         if let Some(mut classes) = classes {
             classes.sort();
@@ -1484,7 +1514,9 @@ impl Meta {
             mut classes,
             force,
             autoscale,
+            cache_grace,
         } = new;
+        check_cache_grace(kind, cache_grace)?;
         classes.sort();
         classes.dedup();
         if classes.is_empty() {
@@ -1524,6 +1556,7 @@ impl Meta {
             placement: 0,
             split: None,
             autoscale,
+            cache_grace: cache_grace.unwrap_or(CACHE_GRACE_SECS),
         };
         let eligible = map
             .devices
@@ -2327,6 +2360,41 @@ impl Meta {
                     }
                 }
             }
+            // Cache pools wait for a down node up to their grace (D189),
+            // timed from when this leader saw it down.
+            let mut held = BTreeSet::new();
+            for p in map.pools.values() {
+                if p.kind != PoolKind::Cache || p.cache_grace == 0 {
+                    continue;
+                }
+                let grace = Duration::from_secs(p.cache_grace as u64);
+                for (&node, &t) in since.iter() {
+                    if now.duration_since(t) < grace && map.nodes.contains_key(&node) {
+                        held.insert((p.id, node));
+                    }
+                }
+            }
+            let before = map.cache_held.clone();
+            if map.set_cache_held(held) {
+                for (pool, node) in before.difference(&map.cache_held) {
+                    let back = map.nodes.get(node).is_some_and(|n| n.up);
+                    eprintln!(
+                        "hyperstor-meta: pool {pool} stops waiting for node {node} ({})",
+                        if back {
+                            "back"
+                        } else {
+                            "its grace passed: its cache PGs start empty"
+                        }
+                    );
+                }
+                for (pool, node) in map.cache_held.difference(&before) {
+                    let grace = map.pools.get(pool).map_or(0, |p| p.cache_grace);
+                    eprintln!(
+                        "hyperstor-meta: pool {pool} waits up to {grace} s for node {node}: reads of its cache PGs there miss"
+                    );
+                }
+                changed = true;
+            }
         }
         changed
     }
@@ -2601,6 +2669,7 @@ impl Meta {
                     | Msg::DeviceSpace { .. }
                     | Msg::DeviceKind { .. }
                     | Msg::PgSplit { .. }
+                    | Msg::CacheRelease { .. }
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
@@ -2748,6 +2817,17 @@ impl Meta {
                 self.advance_splits();
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
+                }
+            }
+            Ok(Msg::CacheRelease { pool, pg }) => {
+                let mut map = self.map.borrow_mut();
+                if map.release_cache_pg(pool, pg) {
+                    eprintln!(
+                        "hyperstor-meta: cache PG {pool}.{pg} written while waiting: it moves now, starting empty"
+                    );
+                }
+                Msg::Noted {
+                    map_epoch: map.epoch,
                 }
             }
             Ok(Msg::DeviceKind { device, kind }) => {
@@ -3250,6 +3330,7 @@ mod tests {
             classes: classes.iter().map(|c| c.to_string()).collect(),
             force: false,
             autoscale: true,
+            cache_grace: None,
         };
         assert!(
             meta.create_pool(new("fast", &[]))
@@ -3789,6 +3870,7 @@ mod tests {
             placement: 32,
             split: None,
             autoscale: true,
+            cache_grace: CACHE_GRACE_SECS,
         });
         m.recompute();
         m
@@ -3885,6 +3967,98 @@ mod tests {
         report(1);
         assert!(m.liveness_tick(timeout, Instant::now()));
         assert!(!m.map.borrow().nodes[&3].up, "silent once it had started");
+    }
+
+    /// D189: a node down, cache pools wait for it up to their grace,
+    /// health warns rather than errs, a write's release moves one PG, and
+    /// once the grace has passed the rest move; a pool with grace 0 never
+    /// waits. `--cache-grace` is refused for other pools and past an hour.
+    #[test]
+    fn cache_pools_wait_for_a_down_node_up_to_their_grace() {
+        use hyperstor_proto::Msg;
+        let mut map = map();
+        for (id, grace) in [(3, CACHE_GRACE_SECS), (4, 0)] {
+            let mut p = replicated_pool(id, &format!("c{id}"), 1, 16);
+            p.kind = PoolKind::Cache;
+            p.min_size = 1;
+            p.cache_grace = grace;
+            map.add_pool(p);
+        }
+        map.recompute();
+        let m = Meta::with_lease(map, Duration::from_millis(400));
+        for n in 0..4 {
+            m.handle(Ok(Msg::Heartbeat { node: n }));
+        }
+        let timeout = Duration::from_secs(3);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        let node = 3;
+        let pgs_on = |pool: u32| -> Vec<u32> {
+            let map = m.map.borrow();
+            (0..16)
+                .filter(|pg| map.devices[&map.pgs[&(pool, *pg)].acting[0]].node == node)
+                .collect()
+        };
+        let (on3, on4) = (pgs_on(3), pgs_on(4));
+        assert!(!on3.is_empty() && !on4.is_empty());
+        for reporter in [0, 1] {
+            m.handle(Ok(Msg::PeerDown {
+                reporter,
+                peer: node,
+            }));
+        }
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        m.map.borrow_mut().recompute();
+        {
+            let map = m.map.borrow();
+            assert_eq!(map.cache_held, [(3, node)].into(), "pool 4's grace is 0");
+            assert!(on3.iter().all(|pg| map.cache_waiting(3, *pg)));
+            assert!(on4.iter().all(|pg| map.live(map.pgs[&(4, *pg)].acting[0])));
+            let r = health::report(&map);
+            assert!(
+                r.reasons
+                    .iter()
+                    .any(|(h, w)| *h == health::Health::Warn && w.contains("waiting up to 60 s")),
+                "{r:?}"
+            );
+            assert!(
+                !r.reasons
+                    .iter()
+                    .any(|(_, w)| w.contains("pool c3: ") && w.contains("without copies"))
+            );
+        }
+        // A write to one waiting PG releases it.
+        let w = on3[0];
+        let epoch = m.map.borrow().epoch;
+        match m.handle(Ok(Msg::CacheRelease { pool: 3, pg: w })) {
+            Msg::Noted { map_epoch } => assert!(map_epoch > epoch),
+            other => panic!("{other:?}"),
+        }
+        assert!(!m.map.borrow().cache_waiting(3, w));
+        // The grace passes with the node down: the rest move.
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(CACHE_GRACE_SECS as u64 + 1))
+            .unwrap();
+        m.down_since.borrow_mut().insert(node, long_ago);
+        assert!(m.liveness_tick(timeout, Instant::now()));
+        m.map.borrow_mut().recompute();
+        let map = m.map.borrow();
+        assert!(map.cache_held.is_empty() && map.cache_released.is_empty());
+        assert!(on3.iter().all(|pg| map.live(map.pgs[&(3, *pg)].acting[0])));
+        drop(map);
+        let set = |pool, grace| {
+            m.set_pool(
+                pool,
+                PoolChange {
+                    cache_grace: Some(grace),
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        assert!(set(1, 30).unwrap_err().contains("for cache pools"));
+        assert!(set(3, 3601).unwrap_err().contains("at most 3600"));
+        set(3, 300).unwrap();
+        assert_eq!(m.map.borrow().pools[&3].cache_grace, 300);
     }
 
     #[test]

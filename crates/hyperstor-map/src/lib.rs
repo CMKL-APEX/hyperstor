@@ -75,7 +75,15 @@ pub struct PoolInfo {
     /// Whether the map service doubles the PG count as devices are added
     /// (D174, D184).
     pub autoscale: bool,
+    /// Cache pools: how long, in seconds, a PG waits for a down member
+    /// before moving to devices without its data (D189); 0 moves at once.
+    /// Other kinds keep the default and don't use it.
+    pub cache_grace: u32,
 }
+
+/// How long a cache PG waits for a down member unless its pool says
+/// otherwise (D189): longer than a host's restart.
+pub const CACHE_GRACE_SECS: u32 = 60;
 
 /// A pool's split under way (24-pools-and-devices.md §27.5, D187): to
 /// twice `pg_count` PGs, PG by PG. A marked PG's members move the objects
@@ -225,6 +233,14 @@ pub struct ClusterMap {
     /// them, rather than starting their new members empty (D188); empty
     /// after it, and not in the encoding.
     pub keep_acting: BTreeSet<(u32, u32)>,
+    /// Down nodes that cache pools wait for (D189), as (pool, node): their
+    /// devices count as live for the pool's placement, so its PGs keep
+    /// them, and the data on them, until the node is back or the pool's
+    /// grace has passed. The map service's leader keeps it.
+    pub cache_held: BTreeSet<(u32, u32)>,
+    /// Cache PGs whose wait a write ended (D189): placed without the held
+    /// nodes, so they move now. Dropped with their pool's last held node.
+    pub cache_released: BTreeSet<(u32, u32)>,
     /// The fullness thresholds every device is held to (04-decisions.md
     /// D27, D182).
     pub full_ratios: FullRatios,
@@ -563,6 +579,8 @@ impl ClusterMap {
         }
         self.pgs.retain(|(pool, _), _| *pool != id);
         self.cache_gens.retain(|(pool, _), _| *pool != id);
+        self.cache_held.retain(|(pool, _)| *pool != id);
+        self.cache_released.retain(|(pool, _)| *pool != id);
         self.deleted_pools.insert(id);
         self.recompute();
         true
@@ -734,6 +752,51 @@ impl ClusterMap {
             .is_some_and(|d| d.up_in && self.nodes.get(&d.node).is_some_and(|n| n.up))
     }
 
+    /// Whether cache PG `pool`.`pg` is waiting for a down member (D189):
+    /// it has members, none live, and its pool waits for one's node.
+    pub fn cache_waiting(&self, pool: u32, pg: u32) -> bool {
+        let Some(info) = self.pgs.get(&(pool, pg)) else {
+            return false;
+        };
+        let members: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != NO_DEVICE)
+            .collect();
+        !members.is_empty()
+            && members.iter().all(|d| !self.live(*d))
+            && members.iter().any(|d| {
+                self.devices
+                    .get(d)
+                    .is_some_and(|d| self.cache_held.contains(&(pool, d.node)))
+            })
+    }
+
+    /// Sets the down nodes cache pools wait for (D189), dropping released
+    /// PGs of pools that wait for none. Whether it changed; the caller
+    /// recomputes.
+    pub fn set_cache_held(&mut self, held: BTreeSet<(u32, u32)>) -> bool {
+        if held == self.cache_held {
+            return false;
+        }
+        self.cache_held = held;
+        let waiting: BTreeSet<u32> = self.cache_held.iter().map(|(pool, _)| *pool).collect();
+        self.cache_released
+            .retain(|(pool, _)| waiting.contains(pool));
+        true
+    }
+
+    /// Ends cache PG `pool`.`pg`'s wait, for a write to it (D189): it moves
+    /// now, its generation moving with it. Whether it was waiting.
+    pub fn release_cache_pg(&mut self, pool: u32, pg: u32) -> bool {
+        if !self.cache_waiting(pool, pg) || !self.cache_released.insert((pool, pg)) {
+            return false;
+        }
+        self.recompute();
+        true
+    }
+
     /// Members of a PG's `up` being backfilled now: not acting, and live.
     /// A member whose node is down waits, without moving data, until it
     /// returns or the down-out interval marks it out.
@@ -788,8 +851,35 @@ impl ClusterMap {
                 &devs_in
             };
             let topo = Topology::new(&rule, devs);
+            // A cache pool waiting for down nodes places as if they were
+            // up (D189), but for the PGs a write released and those with a
+            // live copy, which go on serving and move as before.
+            let held: Option<Topology> = (p.kind == PoolKind::Cache
+                && self.cache_held.iter().any(|(pool, _)| *pool == p.id))
+            .then(|| {
+                let devs: Vec<Device> = devs_in
+                    .iter()
+                    .map(|d| Device {
+                        up_in: d.up_in
+                            && (self.nodes[&d.host].up
+                                || self.cache_held.contains(&(p.id, d.host))),
+                        ..d.clone()
+                    })
+                    .collect();
+                Topology::new(&rule, &devs)
+            });
             for pg in p.pgs().collect::<Vec<_>>() {
-                let members = topo.place(p.placed_as(pg));
+                let members = match &held {
+                    Some(t) if !self.cache_released.contains(&(p.id, pg)) => {
+                        let m = t.place(p.placed_as(pg));
+                        if m.iter().any(|d| self.live(*d)) {
+                            topo.place(p.placed_as(pg))
+                        } else {
+                            m
+                        }
+                    }
+                    _ => topo.place(p.placed_as(pg)),
+                };
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
                     PoolKind::Replicated | PoolKind::Cache => members,
@@ -1096,8 +1186,17 @@ impl ClusterMap {
         // ratios other than the defaults and devices past `backfillfull`;
         // a map without them keeps the older format, which nodes from
         // before them read. Why 12 after 11: the feature branch's 9-11 ran
-        // on the pilot before main's fullness took 9 (I216).
-        let format = if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+        // on the pilot before main's fullness took 9 (I216). 13: cache
+        // pools' grace other than the default, and what they wait for.
+        let format = if !self.cache_held.is_empty()
+            || !self.cache_released.is_empty()
+            || self
+                .pools
+                .values()
+                .any(|p| p.cache_grace != CACHE_GRACE_SECS)
+        {
+            13
+        } else if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
             12
         } else if !self.cache_gens.is_empty() {
             11
@@ -1278,13 +1377,24 @@ impl ClusterMap {
                 e.u32(*d);
             }
         }
+        if format >= 13 {
+            for p in self.pools.values() {
+                e.u32(p.cache_grace);
+            }
+            for set in [&self.cache_held, &self.cache_released] {
+                e.u32(set.len() as u32);
+                for &(a, b) in set {
+                    e.u32(a).u32(b);
+                }
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=12).contains(&v) {
+        if !(1..=13).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1361,6 +1471,7 @@ impl ClusterMap {
                     placement: pg_count,
                     split: None,
                     autoscale: true,
+                    cache_grace: CACHE_GRACE_SECS,
                 },
             );
         }
@@ -1459,6 +1570,19 @@ impl ClusterMap {
             };
             m.backfillfull = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
+        if v >= 13 {
+            for p in m.pools.values_mut() {
+                p.cache_grace = d.u32()?;
+            }
+            m.cache_held = d
+                .seq(8, |d| Ok((d.u32()?, d.u32()?)))?
+                .into_iter()
+                .collect();
+            m.cache_released = d
+                .seq(8, |d| Ok((d.u32()?, d.u32()?)))?
+                .into_iter()
+                .collect();
+        }
         d.finish()?;
         Ok(m)
     }
@@ -1485,6 +1609,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         placement: pg_count,
         split: None,
         autoscale: true,
+        cache_grace: CACHE_GRACE_SECS,
     }
 }
 
@@ -1709,6 +1834,7 @@ mod tests {
             placement: 32,
             split: None,
             autoscale: true,
+            cache_grace: CACHE_GRACE_SECS,
         });
         m.recompute();
         m
@@ -2003,6 +2129,118 @@ mod tests {
         m.recompute();
         let pg = &m.pgs[&k];
         assert_eq!(pg.acting, pg.up);
+    }
+
+    /// D189: a cache pool waiting for a down node keeps its PGs there,
+    /// with their data and generations; a write's release moves one PG
+    /// at once, empty; the node back, nothing else moves; a grace that
+    /// passes with the node down moves them all. Format 13 while waiting.
+    #[test]
+    fn a_cache_pool_waits_for_a_down_node_within_its_grace() {
+        let mut m = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        let mut cache = replicated_pool(3, "kv", 1, 32);
+        cache.kind = PoolKind::Cache;
+        cache.min_size = 1;
+        m.add_pool(cache);
+        m.recompute();
+        assert_ne!(m.encode()[..4], 13u32.to_le_bytes(), "the default grace");
+        let node = m.devices[&m.pgs[&(3, 0)].acting[0]].node;
+        let on_node: Vec<u32> = (0..32)
+            .filter(|pg| m.devices[&m.pgs[&(3, *pg)].acting[0]].node == node)
+            .collect();
+        assert!(on_node.len() > 1, "{on_node:?}");
+        let before = m.clone();
+        m.nodes.get_mut(&node).unwrap().up = false;
+        assert!(m.set_cache_held([(3, node)].into()));
+        assert!(!m.set_cache_held([(3, node)].into()), "unchanged");
+        m.recompute();
+        for pg in 0..32 {
+            assert_eq!(
+                m.pgs[&(3, pg)].acting,
+                before.pgs[&(3, pg)].acting,
+                "PG {pg}"
+            );
+            assert_eq!(m.cache_waiting(3, pg), on_node.contains(&pg), "PG {pg}");
+        }
+        assert!(m.cache_gens.is_empty(), "nothing joined empty");
+        assert_eq!(m.encode()[..4], 13u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        // A write to one PG ends its wait: it moves now, empty.
+        let w = on_node[0];
+        assert!(!m.release_cache_pg(3, on_node.iter().max().unwrap() + 100));
+        assert!(m.release_cache_pg(3, w));
+        assert!(!m.release_cache_pg(3, w), "once");
+        assert!(m.live(m.pgs[&(3, w)].acting[0]) && !m.cache_waiting(3, w));
+        assert_eq!(m.cache_gen(3, w), 1);
+        for &pg in &on_node[1..] {
+            assert!(m.cache_waiting(3, pg) && m.cache_gen(3, pg) == 0);
+        }
+        // The node back: the waiting PGs never moved; the released one
+        // returns, empty again.
+        let mut back = m.clone();
+        back.nodes.get_mut(&node).unwrap().up = true;
+        assert!(back.set_cache_held(BTreeSet::new()));
+        assert!(back.cache_released.is_empty());
+        back.recompute();
+        for pg in 0..32 {
+            assert_eq!(back.pgs[&(3, pg)].acting, before.pgs[&(3, pg)].acting);
+            assert_eq!(
+                back.cache_gen(3, pg),
+                if pg == w { 2 } else { 0 },
+                "PG {pg}"
+            );
+        }
+        assert_ne!(back.encode()[..4], 13u32.to_le_bytes());
+        // The grace passed, the node still down: the rest move, empty.
+        assert!(m.set_cache_held(BTreeSet::new()));
+        m.recompute();
+        for &pg in &on_node {
+            assert!(m.live(m.pgs[&(3, pg)].acting[0]), "PG {pg}");
+            assert!(m.cache_gen(3, pg) >= 1, "PG {pg}");
+        }
+        // Two copies: a PG with a live one doesn't wait, and moves as
+        // before; one with both on held nodes waits.
+        let mut two = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            two.add_node(n, &[a], 0);
+        }
+        let mut cache = replicated_pool(4, "kv2", 2, 32);
+        cache.kind = PoolKind::Cache;
+        cache.min_size = 1;
+        two.add_pool(cache);
+        two.recompute();
+        let nodes_of = |m: &ClusterMap, pg: u32| -> Vec<u32> {
+            m.pgs[&(4, pg)]
+                .acting
+                .iter()
+                .map(|d| m.devices[d].node)
+                .collect()
+        };
+        let (a, b) = (nodes_of(&two, 0)[0], nodes_of(&two, 0)[1]);
+        two.nodes.get_mut(&a).unwrap().up = false;
+        assert!(two.set_cache_held([(4, a)].into()));
+        two.recompute();
+        for pg in 0..32 {
+            let i = &two.pgs[&(4, pg)];
+            assert!(
+                i.acting.iter().all(|d| two.live(*d)),
+                "PG {pg}: a live copy serves"
+            );
+            assert!(!two.cache_waiting(4, pg));
+        }
+        two.nodes.get_mut(&b).unwrap().up = false;
+        assert!(two.set_cache_held([(4, a), (4, b)].into()));
+        two.recompute();
+        assert!(two.cache_waiting(4, 0), "both copies down: it waits");
+        // A grace of 0 moves at once, as before D189; format 13 keeps it.
+        m.pools.get_mut(&3).unwrap().cache_grace = 0;
+        assert_eq!(m.encode()[..4], 13u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
     }
 
     /// D186: a removed device leaves the map, its node with its last
@@ -2374,6 +2612,7 @@ mod tests {
             placement: 32,
             split: None,
             autoscale: true,
+            cache_grace: CACHE_GRACE_SECS,
         });
         m.recompute();
         let before = m.clone();
