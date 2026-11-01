@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS0"
 branch = "investigate/peer-silence"
-prs = [94, 97, 100]
+prs = [94, 97, 100, 129]
 now = "Taken over; looking into G43's unexplained peer silences of 300–400 ms before stage 2"
 next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight and how freed extents wait for reads; stage 3 after"
