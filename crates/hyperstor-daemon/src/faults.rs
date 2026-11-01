@@ -82,9 +82,12 @@ impl Pings {
 /// [`FaultyDev`]'s delay, which holds it as the device's own calls do. A
 /// node's reactors consult it before each commit round's writes
 /// (`NodeConfig::commit_delays`); the wait counts toward the I/O timeout.
+/// Reads can be made slow the same way ([`CommitDelays::set_reads`], D190),
+/// and their wait counts toward the read timeout.
 #[derive(Default)]
 pub struct CommitDelays {
     by_device: Mutex<std::collections::HashMap<u32, Duration>>,
+    reads: Mutex<std::collections::HashMap<u32, Duration>>,
 }
 
 impl CommitDelays {
@@ -99,6 +102,25 @@ impl CommitDelays {
 
     pub fn get(&self, device: u32) -> Duration {
         self.by_device
+            .lock()
+            .unwrap()
+            .get(&device)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Makes each read on `device` wait `d` more; zero: none.
+    pub fn set_reads(&self, device: u32, d: Duration) {
+        let mut m = self.reads.lock().unwrap();
+        if d.is_zero() {
+            m.remove(&device);
+        } else {
+            m.insert(device, d);
+        }
+    }
+
+    pub fn reads(&self, device: u32) -> Duration {
+        self.reads
             .lock()
             .unwrap()
             .get(&device)

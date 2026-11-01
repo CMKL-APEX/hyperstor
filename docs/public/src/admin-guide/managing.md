@@ -584,6 +584,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_request_duration_seconds{kind}` | Histogram of client writes (until every replica has answered) and reads, from arrival to answer |
 | `hyperstor_write_errors_total` | Client writes answered with an error |
 | `hyperstor_reactor_stalls_total` | Times a device's reactor was held 100 ms or more (each is logged with its length, and a slow commit with what it committed). Pings wait meanwhile, so stalls near the peer timeout (300 ms) can get a node reported silent |
+| `hyperstor_read_timeouts_total` | Reads that waited for their device past the read timeout (2 s, `hyperstord --read-timeout-ms`), by `kind`: `abandoned`, and `from_member` for those another copy answered. Three in a row fail the device |
 | `hyperstor_scrub_objects_total{kind}` | Scrub on the PGs a device leads: objects `compared`, those whose copies differed (`inconsistent`), then `repaired` or `unresolved` (no majority: look at the log). `damaged`: objects of this device whose deep scrub found a bad checksum. `peering`: objects a new primary pushed before it served (see [Failures and recovery](failures.md#scrub)) |
 | `hyperstor_device_objects` | Objects on the device |
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |

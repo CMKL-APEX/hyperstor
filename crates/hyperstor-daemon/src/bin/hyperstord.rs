@@ -1,6 +1,6 @@
 //! `hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...]
 //!            [--cpus 2,3] [--buffered] [--hdd] [--spin-us N] [--peer-timeout-ms N]
-//!            [--admin ADDR] [--io-timeout-secs N]`
+//!            [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
 //! the cluster file) as device ID (default `N * 1000 +` its position among
@@ -21,6 +21,9 @@
 //! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
+//! `--read-timeout-ms N`: a read that waits longer for its device is
+//! served from a member, and three in a row fail the device (default 2000,
+//! 04-decisions.md D190).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
 //! through the log (04-decisions.md D38); flash redirects every write.
 
@@ -37,7 +40,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N] [--read-timeout-ms N]"
         );
         std::process::exit(2)
     };
@@ -108,6 +111,17 @@ fn main() {
             })
             .unwrap_or(hyperstor_daemon::IO_TIMEOUT.as_secs()),
     );
+    // D190: how long a read may wait for the device.
+    let read_timeout = std::time::Duration::from_millis(
+        get("--read-timeout-ms")
+            .map(|s| {
+                s.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .unwrap_or_else(|| usage())
+            })
+            .unwrap_or(hyperstor_daemon::READ_TIMEOUT.as_millis() as u64),
+    );
     let admin = get("--admin").map(|a| {
         std::net::TcpListener::bind(&a).unwrap_or_else(|e| {
             eprintln!("bind {a}: {e}");
@@ -126,6 +140,7 @@ fn main() {
         push_part_bytes: 0,
         stray_grace: std::time::Duration::ZERO,
         io_timeout,
+        read_timeout,
         commit_delays: None,
         pings: None,
         partitions: None,
