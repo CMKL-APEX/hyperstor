@@ -89,9 +89,14 @@ hyperstorctl trash settings --pool 1 --grace 604800   # keep a week
 
 A restored volume whose name another volume took meanwhile comes back
 as `NAME-restored`. `--on-full purge` lets a full pool purge its oldest
-trash first rather than refuse writes; it is kept but not acted on
-yet (pools have fullness thresholds now; the purge comes later). The
-UI's Trash page does the same.
+trash rather than refuse new data: while a pool is past `full`
+([Full devices](#full-devices)), the leader purges its trash oldest
+first, one item at a time, and waits for the devices' next reports
+before the next, so it stops once the pool is no longer full. Each
+purge is an operation of `map-service/purger`.
+The default, `keep`, never loses data an operator may still want; the
+pool stays full until space is freed. The UI's Trash page does the
+same.
 
 ## The audit log
 
@@ -279,7 +284,9 @@ pool is `full`, new volumes, clones and snapshots in it are refused
 Past `full`, overwrites of written blocks, deletes, discards and
 snapshot deletes still work, so you can always free space. A refused
 write reaches a host's block device as `ENOSPC`. Free space by deleting
-volumes or snapshots and purging the trash, or add devices.
+volumes or snapshots and purging the trash, or add devices. A pool
+whose trash is set to `--on-full purge` ([The trash](#the-trash))
+purges its oldest trash by itself.
 
 ```sh
 hyperstorctl full-ratios                       # the thresholds now

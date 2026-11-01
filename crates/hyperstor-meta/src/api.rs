@@ -1935,17 +1935,7 @@ impl Api {
     /// the devices' space; none when the leader can't be asked, so a lost
     /// leader doesn't stop creations.
     async fn full_pools(&self) -> BTreeMap<u32, String> {
-        let Ok((map, ..)) = self.published().await else {
-            return BTreeMap::new();
-        };
-        let (reply, rx) = oneshot();
-        if self.tx.send(Admin::LeaderView(reply)).is_err() {
-            return BTreeMap::new();
-        }
-        match rx.recv().await.flatten() {
-            Some(v) => crate::fullness::full_pools(&map, &v.space),
-            None => BTreeMap::new(),
-        }
+        full_pools(&self.tx).await
     }
 
     /// Why a new snapshot or clone of volumes `ids` is refused: one is in
@@ -2240,6 +2230,26 @@ pub fn spawn(
             })
         })
         .expect("spawn the API thread")
+}
+
+/// The pools now full (D27), from the published map and the leader's
+/// view of device space; none when either is missing.
+async fn full_pools(tx: &Sender<Admin>) -> BTreeMap<u32, String> {
+    let (reply, rx) = oneshot();
+    if tx.send(Admin::Published(reply)).is_err() {
+        return BTreeMap::new();
+    }
+    let Some((map, ..)) = rx.recv().await else {
+        return BTreeMap::new();
+    };
+    let (reply, rx) = oneshot();
+    if tx.send(Admin::LeaderView(reply)).is_err() {
+        return BTreeMap::new();
+    }
+    match rx.recv().await.flatten() {
+        Some(v) => crate::fullness::full_pools(&map, &v.space),
+        None => BTreeMap::new(),
+    }
 }
 
 /// The local socket: each connection served over HTTP/1 or h2c, every
