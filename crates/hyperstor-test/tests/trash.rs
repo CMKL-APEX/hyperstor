@@ -73,7 +73,7 @@ fn deletes_go_to_the_trash_until_purged() {
     // A pool's settings: the default day, then a second.
     let st = c.ctl(&["trash", "settings", "--pool", "1"]).ok();
     assert!(
-        st.has("kept 86400 s") && st.has("would keep it"),
+        st.has("kept 86400 s") && st.has("when full, the pool keeps it"),
         "{}",
         st.out
     );
@@ -89,7 +89,11 @@ fn deletes_go_to_the_trash_until_purged() {
             "purge",
         ])
         .ok();
-    assert!(st.has("kept 1 s") && st.has("would purge it"), "{}", st.out);
+    assert!(
+        st.has("kept 1 s") && st.has("the pool purges the oldest first"),
+        "{}",
+        st.out
+    );
     c.ctl(&["trash", "settings", "--pool", "0", "--grace", "1"])
         .expect(1);
 

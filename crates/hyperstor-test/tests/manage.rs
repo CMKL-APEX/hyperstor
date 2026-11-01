@@ -1436,6 +1436,117 @@ fn a_full_device_refuses_growth_only() {
     });
 }
 
+/// D115: a full pool whose trash is set to `purge` purges its oldest
+/// trash, one item at a time, until it is no longer full; one set to
+/// `keep` (the default) keeps it.
+#[test]
+fn a_full_pool_purges_its_oldest_trash() {
+    let c = Cluster::all_in_one("trashfull", 3);
+    let used = || -> f64 {
+        // Exits 1 while health is an error, as it is once full.
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let n = |d: &serde_json::Value, f: &str| {
+            d[f].as_str()
+                .and_then(|t| t.parse::<f64>().ok())
+                .or(d[f].as_f64())
+        };
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .filter_map(|d| Some(100.0 * (1.0 - n(&d, "free_bytes")? / n(&d, "total_bytes")?)))
+            .fold(0.0, f64::max)
+    };
+    let chunk = 32u64 << 20;
+    let src = c.scratch.path("chunk.raw");
+    std::fs::write(&src, hyperstor_test::vhost::pattern(9, chunk as usize)).unwrap();
+    let make = |name: &str| {
+        let made = c
+            .ctl(&["create-volume", "--size", "1G", "--name", name])
+            .ok();
+        made.out.split_whitespace().nth(1).unwrap().to_string()
+    };
+    let write = |id: &str, at: u64| {
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            id,
+            "--file",
+            src.to_str().unwrap(),
+            "--offset",
+            &(at * chunk).to_string(),
+            "--map",
+            &c.map,
+        ])
+        .ok();
+    };
+    // The older volume takes the devices past 52 %; the newer holds one
+    // chunk. Both go to the trash, kept a day.
+    let old = make("old");
+    let mut next = 0;
+    while used() < 52.0 {
+        let had = used();
+        for _ in 0..4 {
+            write(&old, next);
+            next += 1;
+        }
+        assert!(next * chunk < 1 << 30, "the volume filled first");
+        wait_for("a space report", 15, || (used() > had).then_some(()));
+    }
+    let newer = make("newer");
+    write(&newer, 0);
+    // Trashed in different seconds, as the trash records them.
+    c.ctl(&["delete-volume", "--id", &old]).ok();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    c.ctl(&["delete-volume", "--id", &newer]).ok();
+    c.ctl(&[
+        "full-ratios",
+        "--nearfull",
+        "50",
+        "--backfillfull",
+        "50.5",
+        "--full",
+        "51",
+    ])
+    .ok();
+    wait_for("the pool full", 20, || {
+        c.ctl(&["pools"]).ok().has("  full (device ").then_some(())
+    });
+    // Kept: the default.
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    let l = c.ctl(&["trash", "list"]).ok();
+    assert!(l.has(&old) && l.has(&newer), "{}", l.out);
+    // Purged, the oldest first, until the pool is no longer full.
+    c.ctl(&["trash", "settings", "--pool", "1", "--on-full", "purge"])
+        .ok();
+    wait_for("the oldest purged", 60, || {
+        (!c.ctl(&["trash", "list"]).ok().has(&old)).then_some(())
+    });
+    wait_for("the pool no longer full", 30, || {
+        (!c.ctl(&["pools"]).ok().has("  full (device ")).then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(12));
+    let l = c.ctl(&["trash", "list"]).ok();
+    assert!(
+        l.has(&newer),
+        "only the oldest is purged: {}\n{}",
+        l.out,
+        c.ctl(&["op", "list", "--json"]).ok().out
+    );
+    let ops = c.ctl(&["op", "list", "--json"]).ok();
+    assert!(
+        ops.has("\"created_by\":\"map-service/purger\"")
+            && ops.has(&format!("volume {old}"))
+            && !ops.has(&format!("volume {newer}")),
+        "{}",
+        ops.out
+    );
+    c.ctl(&["create-volume", "--size", "4M", "--name", "more"])
+        .ok();
+}
+
 /// I203: each device's superblock names its device and cluster. A node
 /// given another node's device (swapped paths) refuses it and says whose
 /// it is, writing nothing; with the paths put right it serves again.

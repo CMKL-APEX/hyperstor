@@ -210,8 +210,8 @@ message SetTrashSettingsRequest {
   uint32 pool = 1;
   // Seconds a deleted volume or snapshot stays; 0 purges at once.
   uint64 grace_seconds = 2 [json_name = "grace_seconds"];
-  // "keep" or "purge": what a full pool does with its trash (D115;
-  // not acted on yet).
+  // "keep" or "purge": what a full pool does with its trash (D115):
+  // keep it, or purge the oldest first until the pool is no longer full.
   string on_full = 3 [json_name = "on_full"];
 }
 

@@ -1961,9 +1961,13 @@ where
             };
             let s = s.into_option().unwrap_or_default();
             show(a, &s, || {
+                let full = match s.on_full.as_str() {
+                    "purge" => "purges the oldest first",
+                    _ => "keeps it",
+                };
                 format!(
-                    "pool {}: kept {} s in the trash; a full pool would {} it (not acted on yet, D115)\n",
-                    s.pool, s.grace_seconds, s.on_full
+                    "pool {}: kept {} s in the trash; when full, the pool {full}\n",
+                    s.pool, s.grace_seconds
                 )
             });
             Next::Exit(0)
