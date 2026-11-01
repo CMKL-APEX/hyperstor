@@ -235,6 +235,22 @@ impl Runner {
                             Ok(()) => rx.recv().await,
                             Err(_) => None,
                         };
+                        // Done once the published map, which clients and
+                        // the installer read, lacks it (it is fenced first).
+                        if let Some(Ok(Some((_, epoch)))) = &r {
+                            let t = std::time::Instant::now();
+                            while t.elapsed() < Duration::from_secs(10) {
+                                let (reply, rx) = oneshot();
+                                if me.tx.send(Admin::Published(reply)).is_err() {
+                                    break;
+                                }
+                                match rx.recv().await {
+                                    Some((map, ..)) if map.epoch < *epoch => {}
+                                    _ => break,
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        }
                         let done = match &r {
                             Some(Ok(Some((true, _)))) => format!(
                                 "device {device} removed from the map, and node {} with it",
