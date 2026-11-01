@@ -42,6 +42,41 @@ impl Partitions {
     }
 }
 
+/// Pings that fail (D185): TCP pings to some nodes lost, as on a connection
+/// stalled behind a lost segment, and nodes started without UDP, as an
+/// older build or behind a firewall that drops it. A node's reactors
+/// consult it when they bind and when they ping (`NodeConfig::pings`).
+#[derive(Default)]
+pub struct Pings {
+    tcp_lost: Mutex<HashSet<u32>>,
+    no_udp: Mutex<HashSet<u32>>,
+}
+
+impl Pings {
+    /// TCP pings to `node` get no answer while `lost`.
+    pub fn lose_tcp(&self, node: u32, lost: bool) {
+        let mut s = self.tcp_lost.lock().unwrap();
+        if lost {
+            s.insert(node);
+        } else {
+            s.remove(&node);
+        }
+    }
+
+    pub fn tcp_lost(&self, node: u32) -> bool {
+        self.tcp_lost.lock().unwrap().contains(&node)
+    }
+
+    /// `node`, when it next starts, binds no UDP socket.
+    pub fn start_without_udp(&self, node: u32) {
+        self.no_udp.lock().unwrap().insert(node);
+    }
+
+    pub fn no_udp(&self, node: u32) -> bool {
+        self.no_udp.lock().unwrap().contains(&node)
+    }
+}
+
 /// Devices whose commits take longer without holding their reactor
 /// (I199): a slow device written through the reactor's ring, as opposed to
 /// [`FaultyDev`]'s delay, which holds it as the device's own calls do. A

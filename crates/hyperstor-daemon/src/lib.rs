@@ -47,7 +47,7 @@ use hyperstor_proto::{
     encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
-use hyperstor_reactor::net::{TcpListener, TcpStream};
+use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
 use hyperstor_reactor::{block_on, spawn, time::sleep};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -199,6 +199,8 @@ pub struct NodeConfig {
     /// Test hook: devices whose commits take longer without holding their
     /// reactor (04-decisions.md D92, I199).
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
+    /// Test hook: pings that fail (D185).
+    pub pings: Option<Arc<faults::Pings>>,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
@@ -224,6 +226,16 @@ const BACKFILL_WINDOW: usize = 16;
 /// a third of the production peer timeout (300 ms), so a stall that gets
 /// a node reported silent is always in the log.
 pub const STALL: Duration = Duration::from_millis(100);
+
+/// How long a ping waits for its answer, over TCP or UDP.
+const PING_WAIT: Duration = Duration::from_millis(200);
+/// A UDP ping and its answer (D185): four bytes saying which, then the
+/// ping's nonce (8 bytes, little-endian), which the answer echoes.
+const UDP_PING: [u8; 4] = *b"HSP?";
+const UDP_PONG: [u8; 4] = *b"HSP!";
+/// A peer that answers over TCP and not over UDP for this long is logged
+/// once (an older build, or a firewall that drops UDP).
+const TCP_ONLY_AFTER: Duration = Duration::from_secs(5);
 
 /// How long a commit round's writes and flush may take before the device
 /// is failed (I199). Before, a hung device held its reactor, so the node
@@ -342,6 +354,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             g => g,
         };
         let commit_delays = cfg.commit_delays.clone();
+        let ping_faults = cfg.pings.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
@@ -377,9 +390,27 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.commit_delays.borrow_mut() = commit_delays;
+                        let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
+                        *st.ping_faults.borrow_mut() = ping_faults;
                         st.io_timeout.set(io_timeout);
                         st.kind.set(kind);
                         let l = TcpListener::from_std(sh.listener);
+                        let udp = if no_udp {
+                            Err(std::io::Error::other("test hook"))
+                        } else {
+                            l.local_addr().and_then(UdpSocket::bind)
+                        };
+                        match udp {
+                            Ok(u) => {
+                                let u = Rc::new(u);
+                                *st.udp.borrow_mut() = Some(u.clone());
+                                spawn(st.clone().udp_pings(u));
+                            }
+                            Err(e) => eprintln!(
+                                "hyperstord: device {}: no UDP for pings ({e}); peers ping it over TCP",
+                                sh.device_id
+                            ),
+                        }
                         eprintln!(
                             "hyperstord: device {} open in {} ms",
                             sh.device_id,
@@ -450,6 +481,8 @@ struct ShardState {
     kind: Cell<hyperstor_meta::DeviceKind>,
     /// The test hook of `NodeConfig::commit_delays`.
     commit_delays: RefCell<Option<Arc<faults::CommitDelays>>>,
+    /// The test hook of `NodeConfig::pings`.
+    ping_faults: RefCell<Option<Arc<faults::Pings>>>,
     client: Rc<Client>,
     queue: RefCell<Vec<(OpList, OneSender<CommitResult>)>>,
     committer: RefCell<Option<Waker>>,
@@ -463,6 +496,14 @@ struct ShardState {
     /// replication queued before it, and liveness should not depend on how
     /// much data is on its way.
     pings: hyperstor_client::rpc::Pool,
+    /// This device's socket for pings over UDP (D185), at its TCP port's
+    /// number; none if it couldn't be bound, and peers then ping it over
+    /// TCP only.
+    udp: RefCell<Option<Rc<UdpSocket>>>,
+    /// This device's UDP pings in flight: nonce -> (peer node, sent).
+    udp_pings: RefCell<HashMap<u64, (u32, std::time::Instant)>>,
+    /// When each peer last answered one of them in time.
+    udp_pongs: RefCell<HashMap<u32, std::time::Instant>>,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
@@ -893,6 +934,7 @@ impl ShardState {
             io_timeout: Cell::new(IO_TIMEOUT),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
             commit_delays: RefCell::new(None),
+            ping_faults: RefCell::new(None),
             client,
             queue: RefCell::new(Vec::new()),
             committer: RefCell::new(None),
@@ -900,6 +942,9 @@ impl ShardState {
             peers: Default::default(),
             backfill_bytes: RefCell::new(HashMap::new()),
             pings: Default::default(),
+            udp: RefCell::new(None),
+            udp_pings: RefCell::new(HashMap::new()),
+            udp_pongs: RefCell::new(HashMap::new()),
             batches: Cell::new(0),
             backfills: RefCell::new(HashMap::new()),
             fill_inflight: RefCell::new(HashMap::new()),
@@ -3303,14 +3348,53 @@ impl ShardState {
             .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// Answers peers' UDP pings with the nonce each carries, and notes
+    /// which peer answered each of this device's own in time (D185).
+    async fn udp_pings(self: Rc<Self>, sock: Rc<UdpSocket>) {
+        let mut buf = [0u8; 64];
+        loop {
+            let (n, from) = match sock.recv_from(&mut buf).await {
+                Ok(r) => r,
+                Err(_) => {
+                    sleep(PING_WAIT).await;
+                    continue;
+                }
+            };
+            if n != 12 {
+                continue;
+            }
+            let kind: [u8; 4] = buf[..4].try_into().unwrap();
+            if kind == UDP_PING {
+                buf[..4].copy_from_slice(&UDP_PONG);
+                let _ = sock.send_to(&buf[..12], from);
+            } else if kind == UDP_PONG {
+                let nonce = u64::from_le_bytes(buf[4..12].try_into().unwrap());
+                let sent = self.udp_pings.borrow_mut().remove(&nonce);
+                if let Some((peer, sent)) = sent
+                    && sent.elapsed() <= PING_WAIT
+                {
+                    self.udp_pongs
+                        .borrow_mut()
+                        .insert(peer, std::time::Instant::now());
+                }
+            }
+        }
+    }
+
     /// Pings every node this reactor shares a PG with, every 100 ms, and
     /// reports to the map service any that stays silent for
     /// `peer_timeout` (D40). The map service marks a node down on reports
-    /// from two distinct nodes.
+    /// from two distinct nodes. Pings go over UDP, and over TCP too until a
+    /// peer first answers over UDP (D185).
     async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
         let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
         // Peers reported since they last answered: logged once each.
         let reported: Rc<RefCell<HashSet<u32>>> = Rc::default();
+        // Peers that have answered over UDP, so need no TCP ping; when each
+        // was first watched; those logged as answering over TCP only.
+        let mut udp_seen: HashSet<u32> = HashSet::new();
+        let mut watched: HashMap<u32, std::time::Instant> = HashMap::new();
+        let mut tcp_only: HashSet<u32> = HashSet::new();
         const TICK: Duration = Duration::from_millis(100);
         let mut ticked = std::time::Instant::now();
         loop {
@@ -3347,6 +3431,27 @@ impl ShardState {
             // afresh when it comes back: its old silence isn't news.
             last_ok.borrow_mut().retain(|p, _| peers.contains_key(p));
             reported.borrow_mut().retain(|p| peers.contains_key(p));
+            udp_seen.retain(|p| peers.contains_key(p));
+            watched.retain(|p, _| peers.contains_key(p));
+            tcp_only.retain(|p| peers.contains_key(p));
+            self.udp_pings
+                .borrow_mut()
+                .retain(|_, (_, sent)| now.duration_since(*sent) <= PING_WAIT);
+            // Answers over UDP since the last tick. One older than the
+            // peer's entry (a peer that just came back, a tick counted
+            // afresh) changes nothing.
+            for (&peer, &t) in self.udp_pongs.borrow().iter() {
+                if !peers.contains_key(&peer) {
+                    continue;
+                }
+                udp_seen.insert(peer);
+                let mut lo = last_ok.borrow_mut();
+                let e = lo.entry(peer).or_insert(now);
+                if t > *e {
+                    *e = t;
+                    reported.borrow_mut().remove(&peer);
+                }
+            }
             for (peer, addr) in peers {
                 let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
                 if now.duration_since(first) > peer_timeout && !self.cut_off() {
@@ -3365,6 +3470,38 @@ impl ShardState {
                         })
                         .await;
                 }
+                let since = *watched.entry(peer).or_insert(now);
+                let udp = self.udp.borrow().clone();
+                if let Some(u) = &udp
+                    && self.partitioned(addr).is_ok()
+                {
+                    let nonce = hyperstor_client::random_u64();
+                    self.udp_pings.borrow_mut().insert(nonce, (peer, now));
+                    let mut d = [0u8; 12];
+                    d[..4].copy_from_slice(&UDP_PING);
+                    d[4..].copy_from_slice(&nonce.to_le_bytes());
+                    let _ = u.send_to(&d, addr);
+                }
+                if udp.is_some() && udp_seen.contains(&peer) {
+                    continue;
+                }
+                if udp.is_some()
+                    && now.duration_since(since) >= TCP_ONLY_AFTER
+                    && tcp_only.insert(peer)
+                {
+                    eprintln!(
+                        "hyperstord: device {}: node {peer} answers no UDP pings at {addr}; pinging it over TCP (D185)",
+                        self.me
+                    );
+                }
+                if self
+                    .ping_faults
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|f| f.tcp_lost(peer))
+                {
+                    continue;
+                }
                 let me = self.clone();
                 let last_ok = last_ok.clone();
                 let reported = reported.clone();
@@ -3374,12 +3511,10 @@ impl ShardState {
                     // else (I187), stays.
                     let ping = async {
                         let c = me.ping_peer(addr).await.ok()?;
-                        c.try_within(&Msg::Ping, &[], Duration::from_millis(200))
-                            .await
-                            .ok()
+                        c.try_within(&Msg::Ping, &[], PING_WAIT).await.ok()
                     };
                     if let Ok(Some((Msg::Pong, _))) =
-                        hyperstor_reactor::time::timeout(Duration::from_millis(200), ping).await
+                        hyperstor_reactor::time::timeout(PING_WAIT, ping).await
                     {
                         last_ok.borrow_mut().insert(peer, std::time::Instant::now());
                         reported.borrow_mut().remove(&peer);

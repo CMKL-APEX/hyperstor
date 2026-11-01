@@ -683,6 +683,14 @@ fn check(root: &Path, s: &Settings) -> bool {
         .chain((0..s.nodes).map(|n| s.admin_port + n as u16))
         .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_err())
         .map(|p| p.to_string())
+        // Storage nodes answer pings over UDP at their TCP port's number
+        // (D185).
+        .chain(
+            (0..s.nodes)
+                .map(|n| s.node_port + n as u16)
+                .filter(|p| std::net::UdpSocket::bind(("127.0.0.1", *p)).is_err())
+                .map(|p| format!("{p}/udp")),
+        )
         .collect();
     if busy.is_empty() {
         note(Level::Ok, "ports", "free".into());
