@@ -609,6 +609,26 @@ title = "Cache pools and priority classes"
 id = "HS11"
 title = "Key-value ranges"
 
+[[milestone.item]]
+what = "Per-key assertions on an object's key-value table"
+spec = ["25-kv-ranges.md §28.2", "D194"]
+status = "planned"
+
+[[milestone.item]]
+what = "Tables, rows and range objects found through the root; one-row atomic changes and scans"
+spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200"]
+status = "planned"
+
+[[milestone.item]]
+what = "Splits and merges by each range's primary, resumed after failover"
+spec = ["25-kv-ranges.md §28.4", "25-kv-ranges.md §28.5", "D201", "D202"]
+status = "planned"
+
+[[milestone.item]]
+what = "The deletion queue, drained by the range's primary"
+spec = ["25-kv-ranges.md §28.6", "D192"]
+status = "planned"
+
 [[milestone]]
 id = "HS11b"
 title = "Key-value transactions"

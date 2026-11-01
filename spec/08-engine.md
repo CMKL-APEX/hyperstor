@@ -237,8 +237,8 @@ device is formatted with the cluster's id; a superblock without one
 
   A transaction whose keys are all in one range commits in one atomic
   operation on that range's object, with no locks. S3 needs only these
-  (D191): HS11 builds ranges and changes within one range, HS11b the
-  transactions and the oracle.
+  (D191): HS11 builds ranges and one-row changes (D200; 25-kv-ranges.md
+  §28), HS11b the transactions and the oracle.
 - **Timestamp oracle.** The `hyperstor-meta` leader hands out timestamps
   from memory in batches. It writes a high-water mark through Raft,
   reserving the next three seconds of timestamps, so a new leader starts

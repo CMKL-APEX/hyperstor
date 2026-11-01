@@ -1102,3 +1102,15 @@ aborts ext4's journal. Asked, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 168 | `hyperstor-vhost`'s `--hold-full` default: 300 s, enough for an operator to purge trash or add a device, costing a guest only a warning (recommended); 60 s as before; 600 s; 3600 s, close to holding until space frees | 300 s | D183 revised |
+
+## Key–value ranges, HS11 (2026-11-01)
+
+Designing HS11 (25-kv-ranges.md §28) after D191 put it ahead of S3, four
+points the design left open. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 169 | What the range layer makes atomic before HS11b: one row (keys are a row and a column; ranges split only between rows) (recommended); or any keys one range holds now, failing with `CrossRange` once a split divides them | One row | D200 |
+| 170 | Who splits and merges ranges: the primary of the range's PG, through the client it has, with progress in the range's attributes (recommended); the map service's leader, as long operations; or clients, when a write's answer flags a large range | The range's primary | D201 |
+| 171 | What writes to the upper half do while a split copies it: wait and retry for the copy's length, reads and the lower half going on (recommended); or go on, logged and copied in a short last pass | Wait | D201 |
+| 172 | When a range splits: past 64 MiB, on size only, merging neighbours under 16 MiB together (recommended); past 16 MiB; or past 64 MiB and on a sustained write rate | 64 MiB, size only | D202 |

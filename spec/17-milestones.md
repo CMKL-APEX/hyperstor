@@ -20,7 +20,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS9 | GPU-direct in glidex VMs: lease delegates, the vsock credential, virtio disks in the interposer (12-gpu.md §12.3, G2); server-side QoS; PG splitting. | HS8 |
 | HS10 | Hard-disk pools with flash log devices (D29). | HS2 |
 | HS10b | Cache pools (D45): the pool kind, expiry, eviction, loss without recovery; priority classes (D46) in the reactors' queues and on the wire. | HS2 |
-| HS11 | `hyperstor-kv`'s ranges (D191): `kv` objects holding a range's keys, splits and merges, the root range in `.meta`, atomic changes within one range. Tested against a model of a sorted map under faults. | HS2 |
+| HS11 | `hyperstor-kv`'s ranges (D191, D200–D202; 25-kv-ranges.md §28): tables, `kv` range objects, the root in `.meta`, one-row atomic changes, splits and merges by each range's primary, the deletion queue. Tested against a model of a sorted map, with primaries killed mid-split. | HS2 |
 | HS11b | `hyperstor-kv`'s transactions across ranges (D35): the timestamp oracle, Percolator locks, old versions' collection. Tested against a model of snapshot isolation (Jepsen-style histories) under faults. | HS11 |
 | HS12 | The S3 gateway over HTTP (14-s3.md §14.1, 14-s3.md §14.2) on replicated pools (D191–D199), with access keys from mgmt or glidex and Cedar. EC data pools once HS7 lands. | HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (14-s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |

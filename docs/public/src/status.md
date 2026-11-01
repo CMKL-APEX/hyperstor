@@ -115,6 +115,15 @@ covered by tests that run on every change.
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
 
+## HS11: Key-value ranges
+
+| Feature | Status |
+|---|---|
+| Per-key assertions on an object's key-value table | Planned |
+| Tables, rows and range objects found through the root; one-row atomic changes and scans | Planned |
+| Splits and merges by each range's primary, resumed after failover | Planned |
+| The deletion queue, drained by the range's primary | Planned |
+
 ## HS18: Pools and devices at run time
 
 | Feature | Status |
