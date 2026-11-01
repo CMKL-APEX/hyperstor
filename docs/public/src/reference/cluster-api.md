@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `AddDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -74,10 +74,11 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address` |
+| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent) |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 | `SetDeviceWeight` | `{"device": 2, "weight": 0.5}`, or `{"device": 2}` to follow the device's capacity again | `map_epoch` after the change, and `weight` now; `invalid_argument` for a weight below 0 |
+| `SetFullRatios` | `{"full": 97}`, or any of `nearfull`, `backfillfull` and `full` (percentages); what isn't given stays | `map_epoch` after the change, and `ratios` now; `invalid_argument` unless each is between 50 and 99 and `nearfull` < `backfillfull` < `full` |
 | `AddDevice` | `{"node": 0, "address": "192.0.2.20:9102"}`, and `"class"` if not the node's others' | `device`, its id, and `map_epoch`; `not_found` without the node, `failed_precondition` (`device_conflict`) for an address in use, `invalid_argument` for an address a node can't listen on or a bad class |
 | `SetDeviceClass` | `{"device": 2, "class": "fast"}`, or `{"device": 2}` to follow its kind again | `map_epoch` and `class` now; `not_found` without the device, `failed_precondition` (`class_conflict`) for a device whose kind isn't known or a class of another kind, `invalid_argument` for a bad class |
 | `CreatePool` | `{"name": "fast", "kind": "replicated", "size": 3, "classes": ["nvme"]}`; optional `min_size`, `pg_count`, `chunk_size`, `domain`, `force` | `pool` (its id, never one a pool had), `pg_count`, `map_epoch`, `mixed_kinds`; `failed_precondition` (`pool_conflict`) for a name in use, too few failure domains or an unforced mix; `invalid_argument` for no classes, a bad name, kind, domain, copies, chunk or PG count |
@@ -173,7 +174,7 @@ word for scripts (the message is for people, and may change):
 
 - **Reads** (`GetStatus`, `ListPgs`) come from the published map: what
   storage nodes and clients see.
-- **`SetDeviceIn`**, **`SetDeviceWeight`** and **`AddDevice`** change the map service's working map. The change is
+- **`SetDeviceIn`**, **`SetDeviceWeight`**, **`SetFullRatios`** and **`AddDevice`** change the map service's working map. The change is
   published once the devices losing roles have been fenced, usually
   within a second, and `GetStatus` then shows the PGs moving.
 - **Health** is `HEALTH_ERROR` when a PG can't take writes (fewer copies

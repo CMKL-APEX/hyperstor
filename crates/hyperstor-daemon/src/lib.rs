@@ -999,6 +999,8 @@ impl ShardState {
         }
         let (lists, txs): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
         let n = lists.len();
+        // D27: past `full`, what grows the used space is refused.
+        c.shard().set_full_ratio(self.map().full_ratios.full);
         let mut rest: std::collections::VecDeque<OpList> = lists.into();
         let mut results = Vec::with_capacity(n);
         let t = std::time::Instant::now();
@@ -3697,6 +3699,10 @@ impl ShardState {
                     continue;
                 }
                 for target in map.filling(info) {
+                    // Past backfillfull (D182): the PG waits for room.
+                    if map.backfillfull.contains(&target) {
+                        continue;
+                    }
                     let k = (*pool, *pg, target);
                     if self.backfills.borrow().contains_key(&k) {
                         continue;

@@ -335,6 +335,9 @@ pub struct Shard {
     /// space are refused until one completes (it is retried once the room
     /// it needs is free).
     ckpt_stalled: bool,
+    /// Thousandths of the data region past which changes that grow the
+    /// used space are refused (04-decisions.md D27); 0: none.
+    full_ratio: u16,
     /// A fuzzy checkpoint in progress.
     fuzzy: Option<Fuzzy>,
     slice_bytes: usize,
@@ -442,6 +445,7 @@ impl Shard {
             page_bytes: PAGE_BYTES,
             ckpt_pages_written: 0,
             ckpt_stalled: false,
+            full_ratio: 0,
             fuzzy: None,
             slice_bytes: SLICE_BYTES,
             opened_lsn: 0,
@@ -1061,6 +1065,13 @@ impl Shard {
         // Whether the list can take space (data or index); one that only
         // frees is let through on a full shard, so it can be emptied.
         let mut grows = false;
+        // Whether it grows the used space past what it frees (D27's
+        // `full`): a new object, or a write to blocks the object doesn't
+        // hold yet. Keys and attributes of an object that exists don't
+        // count: leases and volume headers are kept so, and their index
+        // space comes from the room above `full`.
+        let mut takes_room = false;
+        let held = self.index.objects.get(&key);
         for op in &list.ops {
             match op {
                 Op::AssertRevision(r) if *r != cur => {
@@ -1078,6 +1089,8 @@ impl Shard {
                     need += (data.len() / BLOCK) as u64;
                     mutates = true;
                     grows = true;
+                    let n = (data.len() / BLOCK) as u64;
+                    takes_room |= !held.is_some_and(|o| o.all_mapped(off / BLOCK as u64, n));
                 }
                 Op::Zero { off, len } => {
                     if off % BLOCK as u64 != 0 || len % BLOCK as u64 != 0 {
@@ -1095,6 +1108,7 @@ impl Shard {
                 _ => {
                     mutates = true;
                     grows = true;
+                    takes_room |= held.is_none();
                 }
             }
         }
@@ -1109,6 +1123,13 @@ impl Shard {
         }
         let free = self.alloc.free_blocks();
         if need > free || (grows && (self.ckpt_stalled || need + self.checkpoint_reserve() > free))
+        {
+            return Err(OpError::NoSpace);
+        }
+        let total = self.region.data_blocks();
+        if takes_room
+            && self.full_ratio > 0
+            && self.used_blocks() + need > Self::limit(total, self.full_ratio)
         {
             return Err(OpError::NoSpace);
         }
@@ -1406,6 +1427,29 @@ impl Shard {
         let dir = self.ckpt.as_ref().map_or(1, |c| blocks(c.len));
         let base = pages + legacy + dir + 1;
         base + base / 4 + 8
+    }
+
+    /// Refuses, past `thousandths` of the data region, changes that grow
+    /// the used space (04-decisions.md D27): new objects, and writes to
+    /// blocks an object doesn't hold. Overwrites, an existing object's keys
+    /// and attributes, deletes and the rest go on, in the room above it. 0
+    /// lifts the limit.
+    pub fn set_full_ratio(&mut self, thousandths: u16) {
+        self.full_ratio = thousandths;
+    }
+
+    /// Whether the used space is past `thousandths` of the data region
+    /// (D27's thresholds, D182's `backfillfull`).
+    pub fn past(&self, thousandths: u16) -> bool {
+        self.used_blocks() > Self::limit(self.region.data_blocks(), thousandths)
+    }
+
+    fn used_blocks(&self) -> u64 {
+        self.region.data_blocks() - self.alloc.free_blocks()
+    }
+
+    fn limit(total: u64, thousandths: u16) -> u64 {
+        (total as u128 * thousandths as u128 / 1000) as u64
     }
 
     /// Sets the size at which checkpoint pages are cut (tests make it
@@ -2337,6 +2381,94 @@ mod tests {
     /// A checkpoint with no room is abandoned, not fatal (implementation-
     /// notes.md I162): the shard refuses what takes space, still deletes,
     /// and checkpoints again once room is back; it reopens consistent.
+    /// D27: past `full`, what would grow the used space is refused;
+    /// overwrites of held blocks, deletes and discards go on.
+    #[test]
+    fn past_full_only_growth_is_refused() {
+        let region = Region {
+            start: 0,
+            blocks: 2048,
+            log_blocks: 64,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(2048 * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        let mut sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        let write = |sh: &mut Shard, i: u64, off: u64, blocks: usize| {
+            sh.commit(vec![OpList {
+                key: key(i),
+                ops: vec![Op::Write {
+                    off: off * BLOCK as u64,
+                    data: vec![i as u8; blocks * BLOCK],
+                }],
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+        };
+        // Fill to a little past a fifth, then hold the shard to a fifth.
+        let total = sh.region.data_blocks();
+        let mut i = 0;
+        while sh.used_blocks() * 5 <= total {
+            write(&mut sh, i, 0, 16).unwrap();
+            i += 1;
+        }
+        sh.set_full_ratio(200);
+        assert!(sh.past(200) && !sh.past(500));
+        assert_eq!(
+            write(&mut sh, 1000, 0, 1),
+            Err(OpError::NoSpace),
+            "a new object"
+        );
+        assert_eq!(
+            write(&mut sh, 0, 16, 1),
+            Err(OpError::NoSpace),
+            "a block not held"
+        );
+        let kv = |sh: &mut Shard, i: u64| {
+            sh.commit(vec![OpList {
+                key: key(i),
+                ops: vec![Op::KvPut(b"k".to_vec(), b"v".to_vec())],
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .map(|_| ())
+        };
+        assert_eq!(
+            kv(&mut sh, 1001),
+            Err(OpError::NoSpace),
+            "a new object's key"
+        );
+        kv(&mut sh, 0).expect("a key of an object that exists");
+        write(&mut sh, 0, 0, 16).expect("an overwrite of held blocks");
+        write(&mut sh, 1, 4, 1).expect("an overwrite of one held block");
+        let used = sh.used_blocks();
+        sh.commit(vec![OpList {
+            key: key(1),
+            ops: vec![Op::Delete],
+        }])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .expect("a delete");
+        assert!(sh.used_blocks() < used);
+        // Below the limit again, growth goes through; lifted, too.
+        while sh.past(200) {
+            i -= 1;
+            sh.commit(vec![OpList {
+                key: key(i),
+                ops: vec![Op::Delete],
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
+        }
+        write(&mut sh, 1000, 0, 1).expect("room again");
+        sh.set_full_ratio(0);
+        write(&mut sh, 1001, 0, 64).expect("no limit");
+    }
+
     #[test]
     fn a_checkpoint_without_room_is_abandoned() {
         let region = Region {
