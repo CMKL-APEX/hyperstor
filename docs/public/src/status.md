@@ -23,7 +23,8 @@ covered by tests that run on every change.
 | HS9: GPU-direct storage in virtual machines | Planned |
 | HS10: Hard-disk pools with flash log devices | Planned |
 | HS10b: Cache pools and priority classes | Planned |
-| HS11: Transactional key-value store | Planned |
+| HS11: Key-value ranges | Planned |
+| HS11b: Key-value transactions | Planned |
 | HS12: S3 gateway | Planned |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
@@ -113,6 +114,15 @@ covered by tests that run on every change.
 | Consistency groups | Done |
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
+
+## HS11: Key-value ranges
+
+| Feature | Status |
+|---|---|
+| Per-key assertions on an object's key-value table | Planned |
+| Tables, rows and range objects found through the root; one-row atomic changes and scans | Planned |
+| Splits and merges by each range's primary, resumed after failover | Planned |
+| The deletion queue, drained by the range's primary | Planned |
 
 ## HS18: Pools and devices at run time
 
