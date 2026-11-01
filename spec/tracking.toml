@@ -1003,12 +1003,13 @@ id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
-what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI"
+what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to (D115), its settings; in the API, hyperstorctl and the UI"
 spec = ["19-administration.md §23.9.3", "D54", "D114", "D115"]
 status = "done"
 tests = [
     "cluster::the_trash_keeps_what_it_holds_until_purged",
     "trash::deletes_go_to_the_trash_until_purged",
+    "manage::a_full_pool_purges_its_oldest_trash",
     "browser::the_trash_restores_and_purges",
     "hyperstor_meta::settings::tests::defaults_until_set_then_what_was_set",
 ]

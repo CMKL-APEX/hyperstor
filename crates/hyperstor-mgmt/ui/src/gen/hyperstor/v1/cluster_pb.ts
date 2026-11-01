@@ -418,8 +418,8 @@ export type SetTrashSettingsRequest = Message<"hyperstor.v1.SetTrashSettingsRequ
   graceSeconds: bigint;
 
   /**
-   * "keep" or "purge": what a full pool does with its trash (D115;
-   * not acted on yet).
+   * "keep" or "purge": what a full pool does with its trash (D115):
+   * keep it, or purge the oldest first until the pool is no longer full.
    *
    * @generated from field: string on_full = 3 [json_name = "on_full"];
    */
@@ -443,8 +443,8 @@ export type SetTrashSettingsRequestJson = {
   grace_seconds?: string;
 
   /**
-   * "keep" or "purge": what a full pool does with its trash (D115;
-   * not acted on yet).
+   * "keep" or "purge": what a full pool does with its trash (D115):
+   * keep it, or purge the oldest first until the pool is no longer full.
    *
    * @generated from field: string on_full = 3 [json_name = "on_full"];
    */

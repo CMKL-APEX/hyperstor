@@ -171,7 +171,7 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, its settings; in the API, hyperstorctl and the UI | Done |
+| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to (D115), its settings; in the API, hyperstorctl and the UI | Done |
 | Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
 | The audit log bounded after a retry storm: repeated refusals summarised a minute at a time, and a day written as numbered parts per member of at most 16 MiB, merged on read and pruned whole | Done |
 | Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI | Done |
