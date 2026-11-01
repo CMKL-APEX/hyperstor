@@ -154,6 +154,8 @@ pub struct Guest {
     avail: u16,
     used: u16,
     config: Vec<u8>,
+    /// How long a request may take before the test fails (10 s).
+    pub wait: Duration,
 }
 
 impl Guest {
@@ -236,6 +238,7 @@ impl Guest {
             call,
             avail: 0,
             used: 0,
+            wait: Duration::from_secs(10),
             config: config.to_vec(),
         }
     }
@@ -321,7 +324,7 @@ impl Guest {
             if u16::from_le_bytes(idx) != self.used {
                 break;
             }
-            assert!(t.elapsed() < Duration::from_secs(10), "no completion");
+            assert!(t.elapsed() < self.wait, "no completion");
             std::thread::sleep(Duration::from_millis(1));
         }
         let elem = USED + 4 + 8 * (self.used % QSIZE) as u64;
@@ -381,7 +384,7 @@ impl Guest {
             if u16::from_le_bytes(idx) == want {
                 break;
             }
-            assert!(t.elapsed() < Duration::from_secs(10), "no completion");
+            assert!(t.elapsed() < self.wait, "no completion");
             std::thread::sleep(Duration::from_millis(1));
         }
         let mut out = Vec::new();

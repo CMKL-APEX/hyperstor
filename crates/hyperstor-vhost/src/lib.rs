@@ -43,6 +43,9 @@ pub struct Options {
     pub group: Option<u32>,
     /// Queues each disk offers.
     pub queues: u16,
+    /// How long a write refused for space is held before the guest sees
+    /// an I/O error (04-decisions.md D183; 0: at once).
+    pub hold_full: std::time::Duration,
 }
 
 /// The control socket's path in `dir`.
@@ -476,6 +479,8 @@ impl Service {
             serial,
             queues: self.opts.queues,
             locks: Default::default(),
+            hold: self.opts.hold_full,
+            held: Default::default(),
         });
         let conn = Rc::new(RefCell::new(None));
         let stopping = Rc::new(Cell::new(false));

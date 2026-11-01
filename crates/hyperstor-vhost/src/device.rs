@@ -10,15 +10,18 @@
 
 use crate::blk::{self, Bad, Request};
 use crate::inflight::Inflight;
+use hyperstor_client::ClientError;
 use hyperstor_client::volume::Attached;
 use hyperstor_reactor::chan::{OneSender, oneshot};
 use hyperstor_reactor::fd;
-use std::cell::RefCell;
+use hyperstor_reactor::time::sleep;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use vhost::VhostUserMemoryRegionBase;
 use vhost::vhost_user::message::{
     VhostTransferStateDirection, VhostTransferStatePhase, VhostUserConfigFlags, VhostUserInflight,
@@ -48,6 +51,97 @@ pub struct Disk {
     /// Queues offered.
     pub queues: u16,
     pub locks: Locks,
+    /// How long a write refused for space is held (04-decisions.md D183).
+    pub hold: Duration,
+    /// Writes held for space now.
+    pub held: Cell<u32>,
+}
+
+/// One write held for space: the first held, and the last let go, are
+/// logged, not each one.
+struct Holding<'a>(&'a Disk);
+
+impl<'a> Holding<'a> {
+    fn new(disk: &'a Disk) -> Holding<'a> {
+        if disk.held.get() == 0 {
+            eprintln!(
+                "hyperstor-vhost: volume {:032x}: a write refused for space; holding writes up to {} s",
+                disk.volume.volume().id,
+                disk.hold.as_secs()
+            );
+        }
+        disk.held.set(disk.held.get() + 1);
+        Holding(disk)
+    }
+}
+
+impl Drop for Holding<'_> {
+    fn drop(&mut self) {
+        let d = self.0;
+        d.held.set(d.held.get() - 1);
+        if d.held.get() == 0 {
+            eprintln!(
+                "hyperstor-vhost: volume {:032x}: no write held for space now",
+                d.volume.volume().id
+            );
+        }
+    }
+}
+
+/// Whether a write failed for want of space (D27): a device past full.
+fn no_space(e: &ClientError) -> bool {
+    matches!(
+        e,
+        ClientError::Server {
+            code: hyperstor_proto::Code::NoSpace,
+            ..
+        }
+    )
+}
+
+/// Does a write, holding it while it is refused for space (D183):
+/// `attempt` is tried again every second for up to the disk's `hold`, so
+/// space freed meanwhile (trash purged, a device added) lets it finish.
+/// virtio-blk has no status for "no space": past the hold it fails, and
+/// the guest sees `IOERR`. `attempt` answers `Err(None)` when the guest's
+/// buffers can't be read; it reads the data from guest memory each time,
+/// which stays the guest's until the request completes.
+async fn held<F, Fut>(disk: &Disk, mut attempt: F) -> Result<(), ()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), Option<ClientError>>>,
+{
+    match attempt().await {
+        Ok(()) => return Ok(()),
+        Err(Some(e)) if no_space(&e) => {}
+        Err(_) => return Err(()),
+    }
+    let until = Instant::now() + disk.hold;
+    let _holding = Holding::new(disk);
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            eprintln!(
+                "hyperstor-vhost: volume {:032x}: a write held {} s for space failed: an I/O error to the guest",
+                disk.volume.volume().id,
+                disk.hold.as_secs()
+            );
+            return Err(());
+        }
+        sleep(left.min(Duration::from_secs(1))).await;
+        match attempt().await {
+            Ok(()) => return Ok(()),
+            Err(Some(e)) if no_space(&e) => {}
+            Err(e) => {
+                eprintln!(
+                    "hyperstor-vhost: volume {:032x}: a write held for space failed otherwise: {}",
+                    disk.volume.volume().id,
+                    e.map_or("guest memory unreadable".into(), |e| e.to_string())
+                );
+                return Err(());
+            }
+        }
+    }
 }
 
 /// The volume blocks writes in flight cover. A write waits for those
@@ -117,28 +211,28 @@ async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ()> {
 
 /// Writes `data` (whole sectors) at `off`: whole volume blocks as they
 /// are; a partial block at either end read, merged and written with them.
-async fn write_at(disk: &Disk, off: u64, data: Vec<u8>) -> Result<(), ()> {
+async fn write_at(disk: &Disk, off: u64, data: Vec<u8>) -> Result<(), ClientError> {
     let v = &disk.volume;
     let len = data.len() as u64;
     let (start, end) = blk::blocks(off, len);
     let _held = disk.locks.lock(start, end).await;
     if start == off && end == off + len {
-        return v.write(off, data).await.map_err(drop);
+        return v.write(off, data).await;
     }
     let block = blk::BLOCK as usize;
     let mut buf = vec![0u8; (end - start) as usize];
     if off != start {
-        let b = v.read(start, blk::BLOCK).await.map_err(drop)?;
+        let b = v.read(start, blk::BLOCK).await?;
         buf[..block].copy_from_slice(&b);
     }
     if off + len != end && (off == start || end - start > blk::BLOCK) {
-        let b = v.read(end - blk::BLOCK, blk::BLOCK).await.map_err(drop)?;
+        let b = v.read(end - blk::BLOCK, blk::BLOCK).await?;
         let n = buf.len();
         buf[n - block..].copy_from_slice(&b);
     }
     let at = (off - start) as usize;
     buf[at..at + data.len()].copy_from_slice(&data);
-    v.write(start, buf).await.map_err(drop)
+    v.write(start, buf).await
 }
 
 type Mem = Rc<GuestMemoryMmap>;
@@ -564,12 +658,13 @@ async fn run_request(
             Err(_) => (blk::S_IOERR, 1),
         },
         Request::Write { off, len } => {
-            let Some(data) = read_stream(mem, &segs.readable, 16, len) else {
-                return (blk::S_IOERR, 1);
+            let write = || async {
+                let data = read_stream(mem, &segs.readable, 16, len).ok_or(None)?;
+                write_at(disk, off, data).await.map_err(Some)
             };
-            match write_at(disk, off, data).await {
+            match held(disk, write).await {
                 Ok(()) => (blk::S_OK, 1),
-                Err(_) => (blk::S_IOERR, 1),
+                Err(()) => (blk::S_IOERR, 1),
             }
         }
         // Writes are acknowledged once every copy has them (10-volumes.md
@@ -587,7 +682,9 @@ async fn run_request(
                 while at < off + len {
                     let next = (at / blk::ZERO_PIECE + 1) * blk::ZERO_PIECE;
                     let n = next.min(off + len) - at;
-                    if write_at(disk, at, vec![0; n as usize]).await.is_err() {
+                    let zero =
+                        || async { write_at(disk, at, vec![0; n as usize]).await.map_err(Some) };
+                    if held(disk, zero).await.is_err() {
                         return (blk::S_IOERR, 1);
                     }
                     at += n;
