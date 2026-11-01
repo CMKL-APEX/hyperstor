@@ -1,0 +1,10 @@
+title = "S3 sooner: key-value ranges, then the gateway (D191–D199)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-11-01
+updated = 2026-11-01
+milestone = "HS11"
+branch = "s3/decisions"
+prs = [151]
+now = "Points 128–137 settled as D191–D199, and HS11 designed (25-kv-ranges.md §28; points 169–172 settled as D200–D202): one-row atomic changes, range objects found through a root in .meta, splits past 64 MiB and merges by each range's primary with the copied half frozen"
+next = "Build HS11 in four stages: AssertKv in the engine; hyperstor-kv without splits; splits and merges in hyperstord; the deletion queue"
