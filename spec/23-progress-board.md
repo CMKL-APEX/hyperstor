@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 0 | 13 |
+| 6 | 0 | 1 | 13 |
 
 ## In progress
 
@@ -30,7 +30,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/ui-manage`, [#147](https://github.com/CMKL-APEX/hyperstor/pull/147) | Built and tested in a browser (I231): pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded | Merge on the owner's word, then the pilot | 2026-11-01 |
 
 ## Done
 
@@ -81,6 +83,6 @@ against the tests.
 | HS18 | Pools and devices at run time | 14 | 2 | 0 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
-| AD2 | Management service and read-only web UI | 6 | 1 | 0 |
+| AD2 | Management service and read-only web UI | 7 | 1 | 0 |
 | AD3 | Administration from the UI and CLI, with roles, trash and audit | 11 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

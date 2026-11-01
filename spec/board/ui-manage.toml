@@ -1,0 +1,10 @@
+title = "Pools, devices and volumes managed in the web UI"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-11-01
+updated = 2026-11-01
+milestone = "AD3"
+branch = "feat/ui-manage"
+prs = [147]
+now = "Built and tested in a browser (I231): pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded"
+next = "Merge on the owner's word, then the pilot"

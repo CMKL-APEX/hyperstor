@@ -1023,6 +1023,14 @@ tests = [
     "install::the_web_ui_is_installed_as_files",
 ]
 
+[[milestone.item]]
+what = "Pools, devices and volumes managed in the web UI: pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded"
+spec = ["19-administration.md §23.7", "I231"]
+status = "done"
+tests = [
+    "browser::pools_devices_and_volumes_are_managed",
+]
+
 [[milestone]]
 id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"
