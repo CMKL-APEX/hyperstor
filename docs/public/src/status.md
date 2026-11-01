@@ -34,7 +34,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -181,5 +181,5 @@ covered by tests that run on every change.
 | Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages | Done |
 | Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto | Done |
 | Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
-| A write refused for space held by hyperstor-vhost, retried for up to 60 s, before the guest gets an I/O error | Planned |
+| A write refused for space held by hyperstor-vhost, retried every second for up to 60 s (--hold-full), before the guest gets an I/O error | Done |
 | A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool | Done |
