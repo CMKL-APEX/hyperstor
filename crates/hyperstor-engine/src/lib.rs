@@ -22,7 +22,7 @@ pub use device::{
     DeviceConfig, DeviceInfo, Features, format, info as device_info, open, record_cluster,
 };
 pub use shard::{
-    DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, Region, Round, Shard,
+    DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, ReadPlan, Region, Round, Shard,
     ShardStats,
 };
 pub use types::{Committed, EngineError, Namespace, ObjKey, ObjStat, Op, OpError, OpList};

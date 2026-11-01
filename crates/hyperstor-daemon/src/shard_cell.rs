@@ -7,15 +7,29 @@
 //! [`ShardCell::get`] waits for the commit to end; [`ShardCell::borrow`]
 //! panics during one, so a path that forgot to wait fails in tests rather
 //! than serving wrong data.
+//!
+//! Reads plan with the shard and then wait for the device on the ring
+//! (D190): at most [`MAX_READS`] at a time, the rest in the order they
+//! came ([`ShardCell::read_slot`]).
 
-use hyperstor_engine::Shard;
+use hyperstor_engine::{ReadPlan, Shard};
 use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::task::{Poll, Waker};
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
+
+/// Reads a device has in flight at most (D190): it bounds their buffers
+/// and how long freed extents are held for them.
+pub const MAX_READS: usize = 128;
 
 pub struct ShardCell {
     cell: RefCell<Shard>,
     busy: Cell<bool>,
     waiting: RefCell<Vec<Waker>>,
+    reads: Cell<usize>,
+    /// Reads waiting for a slot, in the order they came.
+    read_queue: RefCell<VecDeque<(u64, Option<Waker>)>>,
+    next_read: Cell<u64>,
 }
 
 impl ShardCell {
@@ -24,6 +38,47 @@ impl ShardCell {
             cell: RefCell::new(shard),
             busy: Cell::new(false),
             waiting: RefCell::new(Vec::new()),
+            reads: Cell::new(0),
+            read_queue: RefCell::new(VecDeque::new()),
+            next_read: Cell::new(0),
+        }
+    }
+
+    /// A slot for one read in flight, once fewer than [`MAX_READS`] are
+    /// and every read that came first has one.
+    pub async fn read_slot(&self) -> ReadSlot<'_> {
+        if self.reads.get() < MAX_READS && self.read_queue.borrow().is_empty() {
+            self.reads.set(self.reads.get() + 1);
+            return ReadSlot { cell: self };
+        }
+        let id = self.next_read.get();
+        self.next_read.set(id + 1);
+        self.read_queue.borrow_mut().push_back((id, None));
+        WaitSlot {
+            cell: self,
+            id,
+            done: false,
+        }
+        .await
+    }
+
+    /// Reads in flight, with a slot.
+    #[cfg(test)]
+    pub fn reads(&self) -> usize {
+        self.reads.get()
+    }
+
+    /// Ends a read planned with the shard ([`Shard::read_end`]), also while
+    /// a commit is in flight: it only lets extents the read held go.
+    pub fn end_read(&self, plan: &ReadPlan) {
+        self.cell.borrow_mut().read_end(plan);
+    }
+
+    fn wake_next_read(&self) {
+        if self.reads.get() < MAX_READS
+            && let Some((_, Some(w))) = self.read_queue.borrow_mut().front_mut()
+        {
+            w.wake_by_ref();
         }
     }
 
@@ -66,6 +121,57 @@ impl ShardCell {
         self.idle().await;
         self.busy.set(true);
         Committing { cell: self }
+    }
+}
+
+/// A read's place among the [`MAX_READS`] in flight, given back on drop.
+pub struct ReadSlot<'a> {
+    cell: &'a ShardCell,
+}
+
+impl Drop for ReadSlot<'_> {
+    fn drop(&mut self) {
+        self.cell.reads.set(self.cell.reads.get() - 1);
+        self.cell.wake_next_read();
+    }
+}
+
+struct WaitSlot<'a> {
+    cell: &'a ShardCell,
+    id: u64,
+    done: bool,
+}
+
+impl<'a> Future for WaitSlot<'a> {
+    type Output = ReadSlot<'a>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<ReadSlot<'a>> {
+        let cell = self.cell;
+        let mut q = cell.read_queue.borrow_mut();
+        if cell.reads.get() < MAX_READS && q.front().is_some_and(|(id, _)| *id == self.id) {
+            q.pop_front();
+            drop(q);
+            cell.reads.set(cell.reads.get() + 1);
+            self.done = true;
+            // Another slot may be free too.
+            cell.wake_next_read();
+            return Poll::Ready(ReadSlot { cell });
+        }
+        if let Some(e) = q.iter_mut().find(|(id, _)| *id == self.id) {
+            e.1 = Some(cx.waker().clone());
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for WaitSlot<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.cell
+                .read_queue
+                .borrow_mut()
+                .retain(|(id, _)| *id != self.id);
+            self.cell.wake_next_read();
+        }
     }
 }
 
@@ -119,6 +225,51 @@ mod tests {
                 c.shard().commit_done();
                 drop(c);
                 assert_eq!(reader.await, 1, "the reader sees the commit's end");
+            }
+        });
+    }
+
+    /// D190: past [`MAX_READS`] in flight, reads wait, and get their slots
+    /// in the order they came; one that gives up waiting holds no place.
+    #[test]
+    fn reads_past_the_limit_wait_in_order() {
+        let cell = Rc::new(ShardCell::new(shard()));
+        hyperstor_reactor::block_on({
+            let cell = cell.clone();
+            async move {
+                let mut held = Vec::new();
+                for _ in 0..MAX_READS {
+                    held.push(cell.read_slot().await);
+                }
+                let order = Rc::new(RefCell::new(Vec::new()));
+                let mut waiters = Vec::new();
+                for i in 0..3 {
+                    let (cell, order) = (cell.clone(), order.clone());
+                    waiters.push(hyperstor_reactor::spawn(async move {
+                        let _s = cell.read_slot().await;
+                        order.borrow_mut().push(i);
+                        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }));
+                    hyperstor_reactor::yield_now().await;
+                }
+                // One that gives up while waiting.
+                let gave_up = hyperstor_reactor::time::timeout(
+                    std::time::Duration::from_millis(5),
+                    cell.read_slot(),
+                )
+                .await;
+                assert!(gave_up.is_err());
+                assert_eq!(cell.reads(), MAX_READS);
+                assert!(order.borrow().is_empty(), "none passed the limit");
+                held.pop();
+                held.pop();
+                for w in waiters {
+                    w.await;
+                }
+                assert_eq!(*order.borrow(), vec![0, 1, 2]);
+                drop(held);
+                assert_eq!(cell.reads(), 0);
+                drop(cell.read_slot().await);
             }
         });
     }
