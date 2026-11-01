@@ -315,6 +315,91 @@ impl IntoRawFd for TcpStream {
     }
 }
 
+/// A UDP socket, for peers' pings (D185). Datagrams are small and few: a
+/// receive waits on the ring for the socket to be readable and then takes
+/// what arrived without blocking; a send that would block is refused at
+/// once, as a lost datagram would be.
+pub struct UdpSocket {
+    inner: std::net::UdpSocket,
+}
+
+impl UdpSocket {
+    /// Binds `addr`, waiting up to [`BIND_RETRY`] while it is in use: a
+    /// pending receive holds the socket a moment after its process has
+    /// exited, as a pending accept does ([`bind_retrying`]).
+    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
+        let until = std::time::Instant::now() + BIND_RETRY;
+        let inner = loop {
+            match std::net::UdpSocket::bind(addr) {
+                Err(e)
+                    if e.kind() == io::ErrorKind::AddrInUse
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                r => break r?,
+            }
+        };
+        inner.set_nonblocking(true)?;
+        Ok(Self { inner })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    /// Receives one datagram into `buf` (truncated to its length); returns
+    /// its length and sender.
+    pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        loop {
+            match self.inner.recv_from(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    crate::fd::readable(self.inner.as_raw_fd()).await?;
+                }
+                r => return r,
+            }
+        }
+    }
+
+    /// Sends one datagram to `addr`.
+    pub fn send_to(&self, buf: &[u8], addr: SocketAddr) -> io::Result<usize> {
+        self.inner.send_to(buf, addr)
+    }
+}
+
+#[cfg(test)]
+mod udp_tests {
+    use super::*;
+    use crate::{block_on, spawn};
+
+    /// Datagrams go both ways between two sockets on one reactor, and a
+    /// receive waits for one to arrive without holding the reactor.
+    #[test]
+    fn datagrams_go_both_ways() {
+        block_on(async {
+            let a = std::rc::Rc::new(UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap());
+            let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let (aa, ba) = (a.local_addr().unwrap(), b.local_addr().unwrap());
+            let echo = {
+                let a = a.clone();
+                spawn(async move {
+                    let mut buf = [0u8; 16];
+                    let (n, from) = a.recv_from(&mut buf).await.unwrap();
+                    a.send_to(&buf[..n], from).unwrap();
+                    from
+                })
+            };
+            crate::time::sleep(std::time::Duration::from_millis(5)).await;
+            assert!(!echo.is_finished(), "nothing sent yet");
+            b.send_to(b"ping", aa).unwrap();
+            let mut buf = [0u8; 16];
+            let (n, from) = b.recv_from(&mut buf).await.unwrap();
+            assert_eq!((&buf[..n], from), (&b"ping"[..], aa));
+            assert_eq!(echo.await, ba);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
