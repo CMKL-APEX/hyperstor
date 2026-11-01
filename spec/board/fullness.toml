@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-01
 milestone = "HS2"
 branch = "feat/fullness-states"
-prs = [128, 133]
+prs = [128, 133, 136]
 now = "Step 1 merged (#133). Step 2 built: device and pool fullness in health, the tables, the UI and the audit log; no new volume, clone or snapshot in a full pool"
 next = "D183 in hyperstor-vhost (with host check G46); D115's purge of a full pool's trash; glidex refusing new disks on a full datastore"
