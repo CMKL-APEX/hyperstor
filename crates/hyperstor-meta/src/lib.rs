@@ -11,6 +11,7 @@ pub mod api;
 pub mod audit_log;
 pub mod backup;
 pub mod certs;
+pub mod fullness;
 pub mod health;
 pub mod mgmt_store;
 pub mod operations;
@@ -466,6 +467,8 @@ pub enum VolumeFault {
     /// refused as things stand.
     InUse,
     Unavailable,
+    /// The pool is past `full` (04-decisions.md D27): nothing new in it.
+    Full,
 }
 
 pub type VolumeReply<T> = hyperstor_reactor::chan::OneSender<Result<T, (VolumeFault, String)>>;
@@ -516,6 +519,9 @@ pub struct Meta {
     persisted: Cell<bool>,
     beats: RefCell<HashMap<u32, Instant>>,
     space: RefCell<DeviceSpace>,
+    /// Each device's fullness as last reported (D27, D182): a change is
+    /// audited.
+    fullness: RefCell<BTreeMap<u32, fullness::Level>>,
     /// Kinds devices reported (D178), kept here until every device of a
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
@@ -706,6 +712,7 @@ impl Meta {
             persisted: Cell::new(true),
             beats: RefCell::new(HashMap::new()),
             space: RefCell::new(BTreeMap::new()),
+            fullness: RefCell::new(BTreeMap::new()),
             kind_reports: RefCell::new(BTreeMap::new()),
             split_reports: RefCell::new(HashMap::new()),
             leader_view: RefCell::new(None),
@@ -1067,7 +1074,21 @@ impl Meta {
             map.full_ratios = now;
             map.epoch += 1;
         }
-        Ok((map.epoch, now))
+        drop(map);
+        // Each device against the new ratios now, not at its next report.
+        if now != was {
+            let space: Vec<(u32, u64, u64)> = self
+                .space
+                .borrow()
+                .iter()
+                .map(|(&d, &(t, f))| (d, t, f))
+                .collect();
+            for (d, total, free) in space {
+                self.note_backfillfull(d, total, free);
+                self.note_fullness(d, total, free);
+            }
+        }
+        Ok((self.map.borrow().epoch, now))
     }
 
     /// Marks `device` in the map while it is past `backfillfull`, so that
@@ -1097,6 +1118,30 @@ impl Meta {
                 map.backfillfull.insert(device);
             }
             map.epoch += 1;
+        }
+    }
+
+    /// Audits a device's fullness when it changes (04-decisions.md D27): as
+    /// the map service, op `DeviceFullness`. A device's first report is
+    /// audited only when it isn't ok.
+    fn note_fullness(&self, device: u32, total: u64, free: u64) {
+        if !self.leads() || !self.map.borrow().devices.contains_key(&device) {
+            return;
+        }
+        let now = fullness::level(&self.map.borrow().full_ratios, total, free);
+        let was = self.fullness.borrow_mut().insert(device, now);
+        if was.unwrap_or(fullness::Level::Ok) != now {
+            let used = 100.0 * total.saturating_sub(free) as f64 / total.max(1) as f64;
+            audit_log::record(
+                "hyperstor-meta",
+                "DeviceFullness",
+                &format!("device {device}"),
+                &format!(
+                    "{}, was {}: {used:.1}% used",
+                    now.name(),
+                    was.unwrap_or(fullness::Level::Ok).name()
+                ),
+            );
         }
     }
 
@@ -2729,6 +2774,7 @@ impl Meta {
                     .insert(device, (total_bytes, free_bytes));
                 self.auto_weights();
                 self.note_backfillfull(device, total_bytes, free_bytes);
+                self.note_fullness(device, total_bytes, free_bytes);
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }
@@ -4126,6 +4172,17 @@ mod tests {
         assert!(m.map.borrow().backfillfull.is_empty());
         report(99, 999);
         assert!(m.map.borrow().backfillfull.is_empty(), "no such device");
+        // Each change of a device's fullness is noted (and audited), at
+        // once when the ratios change.
+        report(1, 650);
+        m.set_full_ratios(Some(500), Some(600), Some(700)).unwrap();
+        assert_eq!(
+            m.fullness.borrow().get(&1),
+            Some(&fullness::Level::Backfillfull)
+        );
+        assert!(m.map.borrow().backfillfull.contains(&1));
+        report(1, 750);
+        assert_eq!(m.fullness.borrow().get(&1), Some(&fullness::Level::Full));
     }
 
     /// A replicated member (D72, D73): a follower serves the map and

@@ -731,7 +731,7 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I217"]
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I225"]
 status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",
@@ -1096,15 +1096,23 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill"
-spec = ["D27", "D182", "I216"]
-status = "partial"
+what = "Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool"
+spec = ["D27", "D182", "I216", "I217"]
+status = "done"
 tests = [
     "hyperstor_map::tests::full_ratios_round_trip_in_format_12_only_when_set",
     "hyperstor_meta::tests::full_ratios_and_devices_past_backfillfull",
     "hyperstor_engine::shard::tests::past_full_only_growth_is_refused",
     "manage::a_full_device_refuses_growth_only",
+    "hyperstor_meta::fullness::tests::levels_follow_the_ratios",
+    "hyperstor_meta::api::tests::fullness_of_devices_and_pools",
 ]
+
+[[milestone.item]]
+what = "A write refused for space held by hyperstor-vhost, retried for up to 60 s, before the guest gets an I/O error"
+spec = ["D183", "G46"]
+status = "planned"
+tests = []
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"
