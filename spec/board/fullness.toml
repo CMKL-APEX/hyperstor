@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-01
 milestone = "HS2"
 branch = "feat/fullness"
-prs = [128]
+prs = [128, 133]
 now = "Decisions merged (#128). Step 1 built: ratios in the map, hyperstorctl full-ratios, devices past full refuse growth, no backfill past backfillfull"
 next = "Step 2: pool states, health and audit events, refusing new volumes on a full pool; then D183 in hyperstor-vhost"
