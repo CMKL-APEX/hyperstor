@@ -383,6 +383,24 @@ give more if many devices are to come. Volumes go to it with
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
 
+## Splitting a pool's PGs
+
+A pool's PG count doubles in place (D173): each PG splits into itself and
+a new one, with no data copied.
+
+```sh
+hyperstorctl pool set --pool 1 --pgs 128 --wait 600
+```
+
+The map service splits a few PGs at a time, the clean ones. Each PG's
+devices pause its I/O for a moment, move the objects that now belong to
+the new PG to its keys, and report; once all have, clients use the new
+PG (D183). Volumes stay attached and writes go on, retried over each
+pause. `hyperstorctl pools` shows how far it has got. The new PGs stay
+on their parents' devices for now. A split is refused for any count but
+twice the pool's, and while one runs. A device that was down during the
+split catches up when it returns.
+
 ## Deleting a pool
 
 A pool is deleted once it holds nothing: no volume, no snapshot, and

@@ -56,6 +56,9 @@ pub struct PoolChange {
     pub name: Option<String>,
     /// PGs move, as for the classes.
     pub domain: Option<hyperstor_placement::Domain>,
+    /// Twice the PG count: the pool splits (24-pools-and-devices.md
+    /// §27.5, D183).
+    pub pg_count: Option<u32>,
 }
 
 pub enum Admin {
@@ -248,6 +251,13 @@ pub struct Removal {
     pub short: Vec<(u32, u32, u8)>,
     pub space: Vec<(u32, u64, u64)>,
 }
+
+/// Each marked PG's split reports: the PG epoch they name, and who sent
+/// them (D183).
+type SplitReports = HashMap<(u32, u32), (u64, BTreeSet<u32>)>;
+
+/// PGs of one pool split at a time (D183): each pauses its I/O briefly.
+pub const SPLITS_AT_ONCE: usize = 4;
 
 /// A device may be filled to this share of its size by a removal: a pool's
 /// `full` threshold (D27).
@@ -501,6 +511,9 @@ pub struct Meta {
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
     kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
+    /// Members' reports of marked PGs split (D183): the PG epoch they name
+    /// and who reported.
+    split_reports: RefCell<SplitReports>,
     /// A follower's last [`LeaderView`] from the leader, and when.
     leader_view: RefCell<Option<(Instant, LeaderView)>>,
     /// When each node was last granted a non-zero lease.
@@ -685,6 +698,7 @@ impl Meta {
             beats: RefCell::new(HashMap::new()),
             space: RefCell::new(BTreeMap::new()),
             kind_reports: RefCell::new(BTreeMap::new()),
+            split_reports: RefCell::new(HashMap::new()),
             leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
@@ -1274,9 +1288,10 @@ impl Meta {
             classes,
             name,
             domain,
+            pg_count,
         } = change;
-        if classes.is_none() && name.is_none() && domain.is_none() {
-            return Err("nothing to change: give classes, a name or a domain".into());
+        if classes.is_none() && name.is_none() && domain.is_none() && pg_count.is_none() {
+            return Err("nothing to change: give classes, a name, a domain or a PG count".into());
         }
         let mut map = self.map.borrow_mut();
         let Some(info) = map.pools.get(&pool).cloned() else {
@@ -1298,10 +1313,31 @@ impl Meta {
             }
             wanted.name = name;
         }
+        if let Some(n) = pg_count {
+            if info.split.is_some() {
+                return Err(format!(
+                    "pool {pool} is splitting to {} PGs already",
+                    info.pg_count * 2
+                ));
+            }
+            if n != info.pg_count * 2 {
+                return Err(format!(
+                    "pool {pool} has {} PGs: a split doubles them, to {}",
+                    info.pg_count,
+                    info.pg_count * 2
+                ));
+            }
+        }
         let mixed = check_class_set(&map, &wanted, force)?;
         if wanted != info {
             map.pools.insert(pool, wanted);
             map.recompute();
+        }
+        if pg_count.is_some() {
+            map.start_split(pool)?;
+            drop(map);
+            self.advance_splits();
+            return Ok((self.map.borrow().epoch, mixed));
         }
         Ok((map.epoch, mixed))
     }
@@ -1362,6 +1398,8 @@ impl Meta {
             classes,
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 0,
+            split: None,
         };
         let eligible = map
             .devices
@@ -1370,6 +1408,7 @@ impl Meta {
             .count();
         let mixed = check_class_set(&map, &info, force)?;
         info.pg_count = pg_count.unwrap_or_else(|| default_pg_count(eligible, size));
+        info.placement = info.pg_count;
         let pgs = info.pg_count;
         map.add_pool(info);
         map.recompute();
@@ -1906,6 +1945,74 @@ impl Meta {
             if self.may_change_roles() && self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
             }
+            if self.may_change_roles() {
+                self.advance_splits();
+            }
+        }
+    }
+
+    /// Moves splits on (24-pools-and-devices.md §27.5, D183): flips each
+    /// marked PG every member of whose acting set has reported it split at
+    /// its epoch, and marks more PGs, the clean ones, up to
+    /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count.
+    pub fn advance_splits(&self) {
+        if !self.leads() {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        let splitting: Vec<u32> = map
+            .pools
+            .values()
+            .filter(|p| p.split.is_some())
+            .map(|p| p.id)
+            .collect();
+        for pool in splitting {
+            let marked = map.pools[&pool]
+                .split
+                .as_ref()
+                .map(|s| s.marked.clone())
+                .unwrap_or_default();
+            for pg in marked {
+                let Some(info) = map.pgs.get(&(pool, pg)) else {
+                    continue;
+                };
+                let members: Vec<u32> = info
+                    .acting
+                    .iter()
+                    .copied()
+                    .filter(|d| *d != NO_DEVICE)
+                    .collect();
+                let all = self
+                    .split_reports
+                    .borrow()
+                    .get(&(pool, pg))
+                    .is_some_and(|(e, by)| {
+                        *e == info.epoch && members.iter().all(|d| by.contains(d))
+                    });
+                if !members.is_empty() && all && map.flip_split(pool, pg) {
+                    self.split_reports.borrow_mut().remove(&(pool, pg));
+                }
+            }
+            let Some(p) = map.pools.get(&pool) else {
+                continue;
+            };
+            let Some(s) = &p.split else {
+                continue;
+            };
+            let clean = |pg: u32| {
+                map.pgs.get(&(pool, pg)).is_some_and(|i| {
+                    !i.acting.is_empty()
+                        && i.acting == i.up
+                        && i.acting.iter().all(|d| map.live(*d))
+                })
+            };
+            let next: Vec<u32> = (0..p.pg_count)
+                .filter(|pg| !s.marked.contains(pg) && !s.done.contains(pg) && clean(*pg))
+                .take(SPLITS_AT_ONCE.saturating_sub(s.marked.len()))
+                .collect();
+            for pg in next {
+                map.mark_split(pool, pg);
+            }
         }
     }
 
@@ -2277,6 +2384,7 @@ impl Meta {
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
                     | Msg::DeviceKind { .. }
+                    | Msg::PgSplit { .. }
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
@@ -2345,10 +2453,20 @@ impl Meta {
                 pg_epoch,
                 device,
             }) => {
-                let ok = self
+                // A marked PG's acting set only shrinks until it flips
+                // (D183): a member that joined would hold the PG without
+                // what moved to its sibling. Backfill tries again after.
+                let marked = self
                     .map
-                    .borrow_mut()
-                    .backfill_done(pool, pg, pg_epoch, device);
+                    .borrow()
+                    .pools
+                    .get(&pool)
+                    .is_some_and(|p| p.split.as_ref().is_some_and(|s| s.marked.contains(&pg)));
+                let ok = !marked
+                    && self
+                        .map
+                        .borrow_mut()
+                        .backfill_done(pool, pg, pg_epoch, device);
                 let epoch = self.map.borrow().epoch;
                 if ok {
                     Msg::BackfillOk { map_epoch: epoch }
@@ -2391,6 +2509,29 @@ impl Meta {
                         .collect(),
                     flapping: v.flapping.into_iter().collect(),
                     space: v.space.iter().map(|(&d, &(t, f))| (d, t, f)).collect(),
+                }
+            }
+            Ok(Msg::PgSplit {
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            }) => {
+                {
+                    // A report from before the PG's last change is stale;
+                    // a newer one starts the count again.
+                    let mut r = self.split_reports.borrow_mut();
+                    let e = r.entry((pool, pg)).or_default();
+                    if pg_epoch > e.0 {
+                        *e = (pg_epoch, BTreeSet::new());
+                    }
+                    if pg_epoch == e.0 {
+                        e.1.insert(device);
+                    }
+                }
+                self.advance_splits();
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
                 }
             }
             Ok(Msg::DeviceKind { device, kind }) => {
@@ -3099,6 +3240,90 @@ mod tests {
 
     /// A drain's dry run changes nothing and says what a drain moves; the
     /// drain takes every device of the node out.
+    /// §27.5, D183: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
+    /// a marked PG flips once every member of its acting set has reported
+    /// it split at its epoch (a report at an older epoch doesn't count),
+    /// and refuses a member joining by backfill until then; the last flip
+    /// doubles the count.
+    #[test]
+    fn splits_flip_pgs_once_every_member_reports() {
+        use hyperstor_proto::Msg;
+        let meta = Meta::new(map());
+        let n = meta.map.borrow().pools[&1].pg_count;
+        let change = |pg_count| PoolChange {
+            pg_count: Some(pg_count),
+            ..Default::default()
+        };
+        assert!(
+            meta.set_pool(1, change(n + 1), false)
+                .unwrap_err()
+                .contains("doubles")
+        );
+        meta.set_pool(1, change(n * 2), false).unwrap();
+        assert!(
+            meta.set_pool(1, change(n * 2), false)
+                .unwrap_err()
+                .contains("already")
+        );
+        let marked = || {
+            meta.map.borrow().pools[&1]
+                .split
+                .as_ref()
+                .map(|s| s.marked.clone())
+        };
+        let first = marked().unwrap();
+        assert_eq!(first.len(), SPLITS_AT_ONCE);
+        let report = |pg: u32, device: u32, pg_epoch: u64| {
+            meta.handle(Ok(Msg::PgSplit {
+                pool: 1,
+                pg,
+                pg_epoch,
+                device,
+            }))
+        };
+        let pg = *first.iter().next().unwrap();
+        let info = meta.map.borrow().pgs[&(1, pg)].clone();
+        // Backfill to it is refused while it is marked.
+        assert!(matches!(
+            meta.handle(Ok(Msg::BackfillDone {
+                pool: 1,
+                pg,
+                pg_epoch: info.epoch,
+                device: 9999,
+            })),
+            Msg::Error { .. }
+        ));
+        for (i, d) in info.acting.iter().enumerate() {
+            assert!(
+                marked().unwrap().contains(&pg),
+                "flipped before every member"
+            );
+            // A report at an older epoch first: not counted.
+            report(pg, *d, info.epoch - 1);
+            if i + 1 < info.acting.len() {
+                report(pg, *d, info.epoch);
+            }
+        }
+        assert!(marked().unwrap().contains(&pg));
+        report(pg, *info.acting.last().unwrap(), info.epoch);
+        let m = meta.map.borrow().clone();
+        let s = m.pools[&1].split.as_ref().unwrap();
+        assert!(s.done.contains(&pg) && !s.marked.contains(&pg));
+        assert_eq!(s.marked.len(), SPLITS_AT_ONCE, "the next one marked");
+        assert_eq!(m.pgs[&(1, pg + n)].acting, info.acting);
+        // Every other PG, by every member.
+        while let Some(marked) = marked() {
+            for pg in marked {
+                let i = meta.map.borrow().pgs[&(1, pg)].clone();
+                for d in &i.acting {
+                    report(pg, *d, i.epoch);
+                }
+            }
+        }
+        let p = meta.map.borrow().pools[&1].clone();
+        assert_eq!((p.pg_count, p.placement, p.split), (n * 2, n, None));
+    }
+
     /// §27.2.5, D175, D182: a device is taken out to be removed unless a
     /// device taking its data would pass [`FULL`], or a pool would keep
     /// fewer copies than its `min` (or, unforced, its `size`); it leaves
@@ -3247,6 +3472,8 @@ mod tests {
             classes: Vec::new(),
             added: Default::default(),
             removed: Default::default(),
+            placement: 32,
+            split: None,
         });
         m.recompute();
         m

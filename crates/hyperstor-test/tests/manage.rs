@@ -932,6 +932,106 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
     assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
 }
 
+/// §27.5, D173, D183: `hyperstorctl pool set --pgs` doubles a pool's PG
+/// count, splitting PG by PG while volumes are written; the new PGs stay
+/// on their parents' devices; what was written before and during the
+/// split reads back, also after a node restarts; a count that isn't
+/// twice the pool's is refused; audited.
+#[test]
+fn a_pool_splits_its_pgs_in_place() {
+    let mut c = Cluster::all_in_one("split", 3);
+    let made = c
+        .ctl(&["create-volume", "--size", "32M", "--name", "v"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let block =
+        |seed: u32| -> Vec<u8> { (0..(8u32 << 20)).map(|i| (i % 249 + seed) as u8).collect() };
+    let (before, during) = (block(1), block(2));
+    let write = |c: &Cluster, data: &[u8], off: &str, name: &str| {
+        let f = c.scratch.path(name);
+        std::fs::write(&f, data).unwrap();
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            &id,
+            "--offset",
+            off,
+            "--file",
+            f.to_str().unwrap(),
+        ])
+        .ok();
+    };
+    let read = |c: &Cluster, off: &str| -> Vec<u8> {
+        let f = c.scratch.path("read.raw");
+        c.ctl(&[
+            "read-volume",
+            "--id",
+            &id,
+            "--offset",
+            off,
+            "--size",
+            &(8u32 << 20).to_string(),
+            "--out",
+            f.to_str().unwrap(),
+        ])
+        .ok();
+        std::fs::read(&f).unwrap()
+    };
+    write(&c, &before, "0", "before.raw");
+    c.ctl(&["pool", "set", "--pool", "1", "--pgs", "100"])
+        .expect(1);
+    c.ctl(&["pool", "set", "--pool", "0", "--pgs", "128"])
+        .expect(1);
+    let set = c.ctl(&["pool", "set", "--pool", "1", "--pgs", "128"]).ok();
+    assert!(set.has("pool 1 splits to 128 PGs"), "{}", set.out);
+    c.ctl(&["pool", "set", "--pool", "1", "--pgs", "128"])
+        .expect(1);
+    write(&c, &during, "16M", "during.raw");
+    wait_for("pool 1 split to 128 PGs", 300, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let p = v["pools"]
+            .as_array()?
+            .iter()
+            .find(|p| p["id"].as_u64() == Some(1))?
+            .clone();
+        (p["pg_count"].as_u64() == Some(128) && p["splitting"].as_bool() != Some(true))
+            .then_some(())
+    });
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(
+        pools.has("pool 1: its 128 PGs are placed as 64"),
+        "{}",
+        pools.out
+    );
+    let pgs = c.ctl(&["pgs", "--pool", "1", "--json"]).ok();
+    let v: serde_json::Value = serde_json::from_str(&pgs.out).unwrap();
+    let list = v["pgs"].as_array().unwrap();
+    assert_eq!(list.len(), 128);
+    // Each new PG on its parent's devices.
+    let up = |pg: u64| -> String {
+        list.iter()
+            .find(|p| p["pg"].as_u64().unwrap_or(0) == pg)
+            .map(|p| p["up"].to_string())
+            .unwrap()
+    };
+    for pg in 0..64 {
+        assert_eq!(up(pg), up(pg + 64), "PG {pg}");
+    }
+    assert!(read(&c, "0") == before, "written before the split");
+    assert!(read(&c, "16M") == during, "written during it");
+    c.kill_node(1);
+    c.start_node(1);
+    wait_for("every PG clean after node 1 restarts", 120, || {
+        c.settled().then_some(())
+    });
+    assert!(read(&c, "0") == before && read(&c, "16M") == during);
+    wait_for("the split in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPool"]).ok();
+        a.has("pool 1 pgs=128").then_some(())
+    });
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts

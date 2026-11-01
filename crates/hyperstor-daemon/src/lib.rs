@@ -391,6 +391,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().committer());
                         spawn(st.deadlines.clone().ticker());
                         spawn(st.clone().follow_map());
+                        spawn(st.clone().splitter());
                         spawn(st.clone().heartbeat(node, all_open));
                         spawn(st.clone().space());
                         if !peer_timeout.is_zero() {
@@ -482,6 +483,10 @@ struct ShardState {
     lease_until: Cell<Option<std::time::Instant>>,
     /// PGs fenced by the map service, with the map epoch that lifts each.
     fenced: RefCell<HashMap<(u32, u32), u64>>,
+    /// PGs paused while this device splits them, until the map flips them
+    /// (24-pools-and-devices.md §27.5, D183), with the PG epoch the split
+    /// was last reported at (0: not yet).
+    splitting: RefCell<HashMap<(u32, u32), u64>>,
     /// Writes accepted as primary and not yet answered, per PG.
     pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
     /// The test hook of `NodeConfig::meta_blocked`.
@@ -787,18 +792,33 @@ fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
 /// (24-pools-and-devices.md §27.5, D173): each object of the PG that
 /// belongs to its new sibling under `pg_count` moves to that PG's key,
 /// whole and without a copy (`Op::Take`). Empty once it is split, so a
-/// split cut short by a crash is finished by asking again.
+/// split cut short by a crash is finished by asking again. An object
+/// whose new key already holds one is dropped instead: a device that
+/// missed a split and catches up may have been sent the newer copy by
+/// backfill (in a split itself the new key is empty, the PG not yet
+/// routed to).
 pub fn split_lists(sh: &hyperstor_engine::Shard, pool: u32, pg: u32, pg_count: u32) -> Vec<OpList> {
     sh.list_pg(pool, pg)
         .into_iter()
         .filter_map(|k| {
             let to = hyperstor_placement::key_pg(k.ns as u8, &k.name, pg_count);
-            (to != pg).then(|| OpList {
-                key: ObjKey {
-                    pg: to,
-                    ..k.clone()
-                },
-                ops: vec![Op::Take(k)],
+            if to == pg {
+                return None;
+            }
+            let dst = ObjKey {
+                pg: to,
+                ..k.clone()
+            };
+            Some(if sh.stat(&dst).is_some() {
+                OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                }
+            } else {
+                OpList {
+                    key: dst,
+                    ops: vec![Op::Take(k)],
+                }
             })
         })
         .collect()
@@ -936,6 +956,7 @@ impl ShardState {
             required: RefCell::new(std::collections::HashSet::new()),
             lease_until: Cell::new(None),
             fenced: RefCell::new(HashMap::new()),
+            splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
@@ -1155,6 +1176,148 @@ impl ShardState {
         }
     }
 
+    /// Splits the PGs the map marks (24-pools-and-devices.md §27.5, D183)
+    /// that this device is in the acting set of: pauses each, lets the
+    /// requests in flight finish, moves its objects that belong to its new
+    /// sibling, and reports it at the PG's epoch (again if the epoch
+    /// moves); the PG stays paused until the map stops marking it, so no
+    /// request finds a moved object missing. And whenever a pool's count
+    /// or its flipped PGs change, moves what this device holds by an older
+    /// count, so a device that missed a split catches up before it serves
+    /// its PGs again.
+    async fn splitter(self: Rc<Self>) {
+        // Each pool's count and flipped PGs when last caught up with.
+        let mut seen: HashMap<u32, (u32, BTreeSet<u32>)> = HashMap::new();
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            if self.cut_off() {
+                continue;
+            }
+            let map = self.map();
+            self.splitting.borrow_mut().retain(|(pool, pg), _| {
+                map.pools
+                    .get(pool)
+                    .and_then(|p| p.split.as_ref())
+                    .is_some_and(|s| s.marked.contains(pg))
+            });
+            for p in map.pools.values() {
+                let done = p.split.as_ref().map(|s| s.done.clone()).unwrap_or_default();
+                // Every PG held the first time; then the PGs flipped since.
+                let flipped: Option<Vec<u32>> = match seen.get(&p.id) {
+                    None => None,
+                    Some((n, was)) if *n == p.pg_count => {
+                        Some(done.difference(was).copied().collect())
+                    }
+                    Some((n, was)) => Some((0..*n).filter(|pg| !was.contains(pg)).collect()),
+                };
+                let changed = flipped.as_ref().is_none_or(|f| !f.is_empty());
+                if !changed || self.catch_up(p, flipped).await {
+                    seen.insert(p.id, (p.pg_count, done));
+                }
+                let Some(s) = &p.split else { continue };
+                for &pg in &s.marked {
+                    let Some(info) = map.pg(p.id, pg) else {
+                        continue;
+                    };
+                    let k = (p.id, pg);
+                    if !info.acting.contains(&self.me)
+                        || self.splitting.borrow().get(&k) == Some(&info.epoch)
+                    {
+                        continue;
+                    }
+                    self.splitting.borrow_mut().entry(k).or_insert(0);
+                    if !self.split_pg(p.id, pg, p.pg_count * 2).await {
+                        continue;
+                    }
+                    let r = self
+                        .client
+                        .call_meta(&Msg::PgSplit {
+                            pool: p.id,
+                            pg,
+                            pg_epoch: info.epoch,
+                            device: self.me,
+                        })
+                        .await;
+                    if matches!(r, Ok((Msg::Noted { .. }, _)))
+                        && let Some(e) = self.splitting.borrow_mut().get_mut(&k)
+                    {
+                        *e = info.epoch;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Moves the objects of PG `pool`.`pg` that belong to another PG under
+    /// `pg_count` there, once the requests in flight for it are answered.
+    /// Whether every move committed.
+    async fn split_pg(&self, pool: u32, pg: u32, pg_count: u32) -> bool {
+        while self
+            .pg_inflight
+            .borrow()
+            .get(&(pool, pg))
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            sleep(Duration::from_millis(1)).await;
+        }
+        let lists = split_lists(&*self.shard.get().await, pool, pg, pg_count);
+        if lists.is_empty() {
+            return true;
+        }
+        let n = lists.len();
+        let waits: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        let mut ok = true;
+        for w in waits {
+            ok &= w.await.is_ok();
+        }
+        eprintln!(
+            "hyperstord: device {}: PG {pool}.{pg} split, {n} object(s) moved",
+            self.me
+        );
+        ok
+    }
+
+    /// Moves what this device holds of `p` by an older PG count to the PG
+    /// it belongs to now, pausing each PG that has some (the marked ones
+    /// are the split's own): of every PG it holds, or of `only`. Whether
+    /// it all committed.
+    async fn catch_up(&self, p: &hyperstor_meta::PoolInfo, only: Option<Vec<u32>>) -> bool {
+        let n = p.pg_count;
+        let marked = p
+            .split
+            .as_ref()
+            .map(|s| s.marked.clone())
+            .unwrap_or_default();
+        let held: Vec<u32> = self
+            .shard
+            .get()
+            .await
+            .held_pgs()
+            .into_iter()
+            .filter(|&(pool, pg)| {
+                pool == p.id
+                    && !marked.contains(&pg)
+                    && only.as_ref().is_none_or(|o| o.contains(&pg))
+            })
+            .map(|(_, pg)| pg)
+            .collect();
+        let mut ok = true;
+        for pg in held {
+            let flipped = pg >= n || p.split.as_ref().is_some_and(|s| s.done.contains(&pg));
+            let count = if flipped { n * 2 } else { n };
+            if split_lists(&*self.shard.get().await, p.id, pg, count).is_empty() {
+                continue;
+            }
+            let k = (p.id, pg);
+            self.splitting.borrow_mut().insert(k, 0);
+            ok &= self.split_pg(p.id, pg, count).await;
+            self.splitting.borrow_mut().remove(&k);
+        }
+        ok
+    }
+
     async fn accept(self: Rc<Self>, l: TcpListener) {
         loop {
             match l.accept().await {
@@ -1191,6 +1354,10 @@ impl ShardState {
             && map.epoch < *e
         {
             return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
+        }
+        // Retried by clients, as for a fence: the split is short.
+        if self.splitting.borrow().contains_key(&(to.pool, to.pg)) {
+            return Err(err(Code::Unavailable, &map, "PG splitting"));
         }
         if map.pools.get(&to.pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache)
             && let Some(pg) = map.pg(to.pool, to.pg)
@@ -4761,6 +4928,26 @@ mod tests {
             }])
             .unwrap();
         }
+        // A newer copy at one new key already (backfill to a device that
+        // missed the split): the old one is dropped, not moved over it.
+        let newer = keys
+            .iter()
+            .find(|k| key_pg(k.ns as u8, &k.name, new) != 3)
+            .unwrap()
+            .clone();
+        let at = ObjKey {
+            pg: 3 + old,
+            ..newer.clone()
+        };
+        let ops = vec![
+            Op::Write {
+                off: 0,
+                data: vec![7; 4096],
+            },
+            Op::SetAttr(b"a".to_vec(), newer.name.clone()),
+            Op::KvPut(b"k".to_vec(), newer.name.clone()),
+        ];
+        sh.commit(vec![OpList { key: at, ops }]).unwrap();
         let lists = split_lists(&sh, pool, 3, new);
         let moved = lists.len();
         assert!(
@@ -4768,7 +4955,12 @@ mod tests {
             "{moved} of {}",
             keys.len()
         );
-        assert!(lists.iter().all(|l| l.key.pg == 3 + old));
+        // Each a move to the sibling, but the one dropped in PG 3.
+        assert!(
+            lists
+                .iter()
+                .all(|l| l.key.pg == 3 + old || (l.key == newer && l.ops == [Op::Delete]))
+        );
         for r in sh.commit(lists).unwrap() {
             r.unwrap();
         }
@@ -4785,7 +4977,8 @@ mod tests {
                 ..k.clone()
             };
             assert!(sh.stat(&other).is_none(), "{k:?} in one PG only");
-            assert_eq!(sh.read(&at, 0, 4096).unwrap()[0], k.name[0]);
+            let fill = if *k == newer { 7 } else { k.name[0] };
+            assert_eq!(sh.read(&at, 0, 4096).unwrap()[0], fill);
             assert_eq!(sh.attrs(&at).unwrap()[&b"a"[..]], k.name);
             assert_eq!(sh.kv_get(&at, b"k"), Some(&k.name[..]));
         }

@@ -380,8 +380,9 @@ impl Client {
                     version: 0,
                 },
             };
-            // By the key sent: what a device splitting the PG goes by.
-            let pg = hyperstor_placement::key_pg(key.ns, &key.name, p.pg_count);
+            // By the key sent, as a device splitting the PG goes by it
+            // (24-pools-and-devices.md §27.5).
+            let pg = p.pg_of_key(key.ns, &key.name);
             let info = map.pg(pool, pg).ok_or(ClientError::NoPrimary(pool, pg))?;
             let Some(primary) = info.primary() else {
                 last = format!("PG {pool}.{pg} has no primary");
