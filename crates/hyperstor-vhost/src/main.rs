@@ -1,4 +1,4 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS]`
 //! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -49,6 +49,15 @@ fn main() {
                     .filter(|q| (1..=64).contains(q))
                     .unwrap_or_else(|| usage()),
             };
+            // D183: 60 s unless set, at most an hour.
+            let hold_full = match get("--hold-full") {
+                None => 60,
+                Some(s) => s
+                    .parse()
+                    .ok()
+                    .filter(|s| *s <= 3600)
+                    .unwrap_or_else(|| usage()),
+            };
             let stop = stop_on_signal();
             let r = serve(
                 Options {
@@ -57,6 +66,7 @@ fn main() {
                     allow_uids,
                     group,
                     queues,
+                    hold_full: std::time::Duration::from_secs(hold_full),
                 },
                 |p| {
                     println!("hyperstor-vhost: control socket {}", p.display());

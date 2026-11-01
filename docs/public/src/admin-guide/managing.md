@@ -283,7 +283,12 @@ pool is `full`, new volumes, clones and snapshots in it are refused
 
 Past `full`, overwrites of written blocks, deletes, discards and
 snapshot deletes still work, so you can always free space. A refused
-write reaches a host's block device as `ENOSPC`. Free space by deleting
+write reaches a host's block device (`hyperstor-ublk`) as `ENOSPC`. A
+VM's disk has no such error: `hyperstor-vhost` holds the write instead,
+trying it again every second for up to 60 s (`--hold-full`), so space
+freed in time lets it finish; past that the guest sees an I/O error,
+which may make its filesystem read-only. The service logs when it
+starts and stops holding writes for a volume. Free space by deleting
 volumes or snapshots and purging the trash, or add devices. A pool
 whose trash is set to `--on-full purge` ([The trash](#the-trash))
 purges its oldest trash by itself.

@@ -245,3 +245,129 @@ fn a_restarted_service_takes_its_volumes_back() {
     other.stop();
     svc.stop();
 }
+
+/// D183: a write refused for space (a device past full, D27) is held and
+/// tried again every second; space freed in time lets it finish, and past
+/// `--hold-full` the guest sees `IOERR`. An overwrite of written blocks
+/// isn't refused, so isn't held.
+#[test]
+fn a_write_refused_for_space_is_held() {
+    let c = Cluster::all_in_one("vhostfull", 3);
+    // Exits 1 while health is an error, as it is once full.
+    let used = || -> f64 {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let n = |d: &serde_json::Value, f: &str| {
+            d[f].as_str()
+                .and_then(|t| t.parse::<f64>().ok())
+                .or(d[f].as_f64())
+        };
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .filter_map(|d| Some(100.0 * (1.0 - n(&d, "free_bytes")? / n(&d, "total_bytes")?)))
+            .fold(0.0, f64::max)
+    };
+    let held = volume(&c, "1G");
+    let refused = volume(&c, "1G");
+    let chunk = 32u64 << 20;
+    let src = c.scratch.path("chunk.raw");
+    std::fs::write(&src, pattern(3, chunk as usize)).unwrap();
+    let write = |id: &str, at: u64| {
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            id,
+            "--file",
+            src.to_str().unwrap(),
+            "--offset",
+            &(at * chunk).to_string(),
+            "--map",
+            &c.map,
+        ])
+    };
+    // Past 52 % on every device (each holds a copy of everything).
+    let mut next = 0;
+    while used() < 52.0 {
+        let had = used();
+        for _ in 0..4 {
+            write(&held, next).ok();
+            next += 1;
+        }
+        assert!(next * chunk < 1 << 30, "the volume filled first");
+        hyperstor_test::wait_for("a space report", 15, || (used() > had).then_some(()));
+    }
+    let full = |pct: &str| {
+        c.ctl(&[
+            "full-ratios",
+            "--nearfull",
+            "50",
+            "--backfillfull",
+            "50.5",
+            "--full",
+            pct,
+        ])
+        .ok();
+    };
+    // Each probe a chunk never written: one written before the devices
+    // had the ratio would let the next through as an overwrite.
+    let probe = std::cell::Cell::new(0);
+    let refuses = || {
+        probe.set(probe.get() + 1);
+        write(&refused, probe.get()).code != 0
+    };
+    full("51");
+    hyperstor_test::wait_for("new blocks refused", 20, || refuses().then_some(()));
+
+    // Held for 30 s: space freed after 3 s lets the write finish.
+    let a = Service::start(&c, "full-a", &["--hold-full", "30"]);
+    let r = a.attach(&held, "attach");
+    let mut g = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    g.wait = std::time::Duration::from_secs(40);
+    let t = std::time::Instant::now();
+    g.write(0, &pattern(4, 8192));
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(1),
+        "an overwrite isn't held"
+    );
+    let fresh = 1000 << 20;
+    let data = pattern(5, 64 << 10);
+    let (status, t) = std::thread::scope(|s| {
+        s.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            full("95");
+        });
+        let t = std::time::Instant::now();
+        let (status, _, _) = g.request(T_OUT, fresh / 512, &data, 0);
+        (status, t.elapsed())
+    });
+    assert_eq!(status, S_OK, "held until space was freed");
+    assert!(t >= std::time::Duration::from_secs(3), "held {t:?}");
+    assert!(g.read(fresh, data.len() as u32) == data);
+
+    // Held for 2 s, then an I/O error.
+    full("51");
+    hyperstor_test::wait_for("new blocks refused again", 20, || refuses().then_some(()));
+    let b = Service::start(&c, "full-b", &["--hold-full", "2"]);
+    let r = b.attach(&refused, "attach");
+    let mut g = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    let t = std::time::Instant::now();
+    let (status, _, _) = g.request(T_OUT, fresh / 512, &data, 0);
+    assert_eq!(status, S_IOERR, "past the hold");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+    // A bad value is refused at start.
+    let o = std::process::Command::new(hyperstor_test::bin_dir().join("hyperstor-vhost"))
+        .args(["serve", "--meta", &c.map, "--hold-full", "3601"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    drop(g);
+    a.stop();
+    b.stop();
+}

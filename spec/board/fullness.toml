@@ -4,7 +4,7 @@ owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb
 started = 2026-11-01
 updated = 2026-11-01
 milestone = "HS2"
-branch = "feat/trash-on-full"
+branch = "feat/vhost-nospace"
 prs = [128, 133, 136, 139]
-now = "Steps 1 and 2 merged (#133, #136). D115 built: a full pool set to trash_on_full = purge purges its oldest trash, one item at a time, until it is no longer full"
-next = "D183 in hyperstor-vhost (with host check G46); glidex refusing new disks on a full datastore; deploying to the pilot"
+now = "Steps 1 and 2 (#133, #136) and D115 (#139) merged. D183 built: hyperstor-vhost holds a write refused for space up to --hold-full (60 s), then IOERR"
+next = "Host check G46 for the hold's default; glidex refusing new disks on a full datastore; deploying to the pilot"
