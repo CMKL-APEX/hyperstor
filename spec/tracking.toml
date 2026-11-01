@@ -740,7 +740,7 @@ tests = [
 
 [[milestone.item]]
 what = "A PG split in place: objects moved to their new PG's key without a copy, PG by PG"
-spec = ["24-pools-and-devices.md §27.5", "D173", "D183", "I218", "I219"]
+spec = ["24-pools-and-devices.md §27.5", "D173", "D183", "I218", "I219", "I220"]
 status = "partial"
 tests = [
     "engine::take_moves_an_object_whole",
@@ -749,6 +749,7 @@ tests = [
     "hyperstor_map::tests::a_split_flips_pg_by_pg_then_doubles_the_count",
     "hyperstor_meta::tests::splits_flip_pgs_once_every_member_reports",
     "manage::a_pool_splits_its_pgs_in_place",
+    "hyperstor_map::tests::raising_the_placement_count_moves_only_the_pgs_it_passes",
 ]
 
 [[milestone]]

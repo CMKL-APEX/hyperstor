@@ -1954,12 +1954,36 @@ impl Meta {
     /// Moves splits on (24-pools-and-devices.md §27.5, D183): flips each
     /// marked PG every member of whose acting set has reported it split at
     /// its epoch, and marks more PGs, the clean ones, up to
-    /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count.
+    /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count. Then,
+    /// once every PG of a split pool is clean, places [`SPLITS_AT_ONCE`]
+    /// more of its new PGs on their own devices (D173), so they move a
+    /// few at a time, under the backfill budget.
     pub fn advance_splits(&self) {
         if !self.leads() {
             return;
         }
         let mut map = self.map.borrow_mut();
+        let moving: Vec<u32> = map
+            .pools
+            .values()
+            .filter(|p| p.split.is_none() && p.placement < p.pg_count)
+            .map(|p| p.id)
+            .collect();
+        let mut placed = false;
+        for pool in moving {
+            let clean = map.pgs.iter().filter(|(k, _)| k.0 == pool).all(|(_, i)| {
+                !i.acting.is_empty()
+                    && i.acting == i.up
+                    && i.acting.iter().all(|d| *d != NO_DEVICE && map.live(*d))
+            });
+            if clean && let Some(p) = map.pools.get_mut(&pool) {
+                p.placement = (p.placement + SPLITS_AT_ONCE as u32).min(p.pg_count);
+                placed = true;
+            }
+        }
+        if placed {
+            map.recompute();
+        }
         let splitting: Vec<u32> = map
             .pools
             .values()
@@ -3322,6 +3346,37 @@ mod tests {
         }
         let p = meta.map.borrow().pools[&1].clone();
         assert_eq!((p.pg_count, p.placement, p.split), (n * 2, n, None));
+        // The new PGs move a few at a time (D173), only while the pool's
+        // PGs are all clean; no split until they have.
+        assert!(
+            meta.set_pool(1, change(n * 4), false)
+                .unwrap_err()
+                .contains("still moving")
+        );
+        let placement = || meta.map.borrow().pools[&1].placement;
+        let settle = || {
+            for (k, pg) in meta.map.borrow_mut().pgs.iter_mut() {
+                if k.0 == 1 {
+                    pg.acting = pg.up.clone();
+                }
+            }
+        };
+        settle();
+        meta.advance_splits();
+        assert_eq!(placement(), n + SPLITS_AT_ONCE as u32);
+        // Unclean: wait.
+        {
+            let mut m = meta.map.borrow_mut();
+            let pg = m.pgs.get_mut(&(1, 0)).unwrap();
+            pg.acting.rotate_left(1);
+        }
+        meta.advance_splits();
+        assert_eq!(placement(), n + SPLITS_AT_ONCE as u32);
+        while placement() < n * 2 {
+            settle();
+            meta.advance_splits();
+        }
+        meta.set_pool(1, change(n * 4), false).unwrap();
     }
 
     /// §27.2.5, D175, D182: a device is taken out to be removed unless a
