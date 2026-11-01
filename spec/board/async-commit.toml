@@ -6,5 +6,5 @@ updated = 2026-11-01
 milestone = "HS0"
 branch = "investigate/peer-silence"
 prs = [94, 97, 100, 129]
-now = "Taken over; looking into G43's unexplained peer silences of 300–400 ms before stage 2"
-next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight and how freed extents wait for reads; stage 3 after"
+now = "Peer silences explained (02-benchmarks.md, 2026-11-01): packets lost on the 1 GbE network under 1 MiB load stall a ping connection for TCP's 200 ms minimum retransmission timeout; one 431 ms process-wide pause on node 0 still unexplained"
+next = "The owner's call on how pings travel (TCP as now, UDP, or a lower minimum retransmission timeout); then stage 2 of D165 (reads off the reactor), with its design note"
