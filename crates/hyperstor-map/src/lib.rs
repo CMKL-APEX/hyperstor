@@ -72,6 +72,9 @@ pub struct PoolInfo {
     pub placement: u32,
     /// A split under way (D183): the count doubles PG by PG.
     pub split: Option<Split>,
+    /// Whether the map service doubles the PG count as devices are added
+    /// (D174, D184).
+    pub autoscale: bool,
 }
 
 /// A pool's split under way (24-pools-and-devices.md §27.5, D183): to
@@ -985,7 +988,7 @@ impl ClusterMap {
         let format = if self
             .pools
             .values()
-            .any(|p| p.split.is_some() || p.placement != p.pg_count)
+            .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
         {
             10
         } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
@@ -1131,9 +1134,10 @@ impl ClusterMap {
             }
         }
         if format >= 10 {
-            // Every pool, in order: its placement count and split.
+            // Every pool, in order: its placement count, split and
+            // autoscale.
             for p in self.pools.values() {
-                e.u32(p.placement).bool(p.split.is_some());
+                e.u32(p.placement).bool(p.autoscale).bool(p.split.is_some());
                 if let Some(s) = &p.split {
                     for set in [&s.marked, &s.done] {
                         e.u32(set.len() as u32);
@@ -1226,6 +1230,7 @@ impl ClusterMap {
                     removed: BTreeSet::new(),
                     placement: pg_count,
                     split: None,
+                    autoscale: true,
                 },
             );
         }
@@ -1301,6 +1306,7 @@ impl ClusterMap {
         if v >= 10 {
             for p in m.pools.values_mut() {
                 p.placement = d.u32()?;
+                p.autoscale = d.bool()?;
                 if d.bool()? {
                     p.split = Some(Split {
                         marked: d.seq(4, |d| d.u32())?.into_iter().collect(),
@@ -1334,6 +1340,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         removed: BTreeSet::new(),
         placement: pg_count,
         split: None,
+        autoscale: true,
     }
 }
 
@@ -1557,6 +1564,7 @@ mod tests {
             removed: BTreeSet::new(),
             placement: 32,
             split: None,
+            autoscale: true,
         });
         m.recompute();
         m
@@ -2100,6 +2108,7 @@ mod tests {
             removed: BTreeSet::new(),
             placement: 32,
             split: None,
+            autoscale: true,
         });
         m.recompute();
         let before = m.clone();

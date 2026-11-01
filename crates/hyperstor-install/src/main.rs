@@ -1198,13 +1198,26 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         for n in 0..s.nodes {
             cluster += &format!("node {n} rack 0 127.0.0.1:{}\n", s.node_port + n as u16);
         }
+        // Each pool at the smallest PG count (at least 64) the autoscaler
+        // keeps for these devices, so a new trial doesn't split (D184).
+        let pgs = |copies: u8| {
+            let mut n = 64;
+            while hyperstor_meta::autoscale_wants(s.nodes as usize, copies, n) {
+                n *= 2;
+            }
+            n
+        };
         // One host: `domain host` puts copies on different storage nodes,
         // which here are hyperstord instances.
         cluster += &format!(
-            "pool 1 vol replicated size {size} min {min} pgs 64 chunk 4194304 domain host\n"
+            "pool 1 vol replicated size {size} min {min} pgs {} chunk 4194304 domain host\n",
+            pgs(size as u8)
         );
         // A cache pool (D45): one copy, lost rather than recovered.
-        cluster += "pool 2 cache cache copies 1 pgs 64 chunk 4194304 domain host\n";
+        cluster += &format!(
+            "pool 2 cache cache copies 1 pgs {} chunk 4194304 domain host\n",
+            pgs(1)
+        );
         let map = format!("127.0.0.1:{}", s.map_port);
         let metrics = (0..s.nodes)
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))

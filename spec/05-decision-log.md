@@ -987,3 +987,12 @@ design left open. Asked, with a recommendation:
 |---|---|---|---|
 | 145 | When clients start using a split PG's sibling: PG by PG, each once every member has split it, the map holding a set of split PGs per pool (recommended); or the whole pool at once, devices translating requests until every PG is split | PG by PG | D183 |
 | 146 | How stage 5 is cut: four pull requests (the engine's move and a device's split; the map's split state, protocol and `pool set --pgs`; the placement count rising; the autoscaler) (recommended), or two | Four | D183 |
+
+## The autoscaler (2026-11-01)
+
+Building stage 5d (D174), two points. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 147 | D174's trigger, "when its PGs per device pass twice the target", reads reversed (doubling raises PGs per device; adding devices lowers them): double when the devices call for at least twice the pool's count (recommended), or as written | Twice the count | D184 |
+| 148 | Whether the autoscaler is on for pools that exist when a cluster upgrades: on for every pool, the trial's pools sized so they don't split (recommended); on for new pools only; off by default | On for every pool | D184 |

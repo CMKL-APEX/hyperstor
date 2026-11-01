@@ -45,6 +45,8 @@ pub struct NewPool {
     pub classes: Vec<String>,
     /// Allow classes of hard disks and flash both (D172).
     pub force: bool,
+    /// Whether the map service grows its PG count (D174, D184).
+    pub autoscale: bool,
 }
 
 /// What `SetPool` changes (24-pools-and-devices.md §27.3.2); `None`
@@ -59,6 +61,8 @@ pub struct PoolChange {
     /// Twice the PG count: the pool splits (24-pools-and-devices.md
     /// §27.5, D183).
     pub pg_count: Option<u32>,
+    /// Whether the map service grows its PG count (D174, D184).
+    pub autoscale: Option<bool>,
 }
 
 pub enum Admin {
@@ -1289,15 +1293,26 @@ impl Meta {
             name,
             domain,
             pg_count,
+            autoscale,
         } = change;
-        if classes.is_none() && name.is_none() && domain.is_none() && pg_count.is_none() {
-            return Err("nothing to change: give classes, a name, a domain or a PG count".into());
+        if classes.is_none()
+            && name.is_none()
+            && domain.is_none()
+            && pg_count.is_none()
+            && autoscale.is_none()
+        {
+            return Err(
+                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
+            );
         }
         let mut map = self.map.borrow_mut();
         let Some(info) = map.pools.get(&pool).cloned() else {
             return Err(format!("no pool {pool}"));
         };
         let mut wanted = info.clone();
+        if let Some(a) = autoscale {
+            wanted.autoscale = a;
+        }
         if let Some(mut classes) = classes {
             classes.sort();
             classes.dedup();
@@ -1361,6 +1376,7 @@ impl Meta {
             domain,
             mut classes,
             force,
+            autoscale,
         } = new;
         classes.sort();
         classes.dedup();
@@ -1400,6 +1416,7 @@ impl Meta {
             removed: BTreeSet::new(),
             placement: 0,
             split: None,
+            autoscale,
         };
         let eligible = map
             .devices
@@ -1947,6 +1964,7 @@ impl Meta {
             }
             if self.may_change_roles() {
                 self.advance_splits();
+                self.autoscale();
             }
         }
     }
@@ -2037,6 +2055,57 @@ impl Meta {
             for pg in next {
                 map.mark_split(pool, pg);
             }
+        }
+    }
+
+    /// The autoscaler (D174, D184): starts splitting the first pool, but
+    /// `.meta`, whose devices call for at least twice its PG count, while
+    /// none splits or is moving its new PGs and every PG is clean, so one
+    /// pool at a time and never while the cluster is degraded. Pools with
+    /// autoscale off are left alone.
+    pub fn autoscale(&self) {
+        if !self.leads() {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        if map
+            .pools
+            .values()
+            .any(|p| p.split.is_some() || p.placement < p.pg_count)
+        {
+            return;
+        }
+        let clean = map.pgs.values().all(|i| {
+            !i.acting.is_empty()
+                && i.acting == i.up
+                && i.acting.iter().all(|d| *d != NO_DEVICE && map.live(*d))
+        });
+        if !clean {
+            return;
+        }
+        let grow = map.pools.values().find_map(|p| {
+            if p.id == META_POOL || !p.autoscale {
+                return None;
+            }
+            let devices = map
+                .devices
+                .values()
+                .filter(|d| d.up_in && d.weight > 0.0 && p.uses(d))
+                .count();
+            autoscale_wants(devices, p.size, p.pg_count).then_some((p.id, p.pg_count, devices))
+        });
+        if let Some((pool, n, devices)) = grow
+            && map.start_split(pool).is_ok()
+        {
+            eprintln!(
+                "hyperstor-meta: pool {pool} splits to {} PGs: its {devices} devices call for about {} (D184)",
+                n * 2,
+                target_pgs(devices, map.pools[&pool].size)
+            );
+        }
+        drop(map);
+        if grow.is_some() {
+            self.advance_splits();
         }
     }
 
@@ -2770,6 +2839,19 @@ fn domains(map: &ClusterMap, pool: &PoolInfo) -> usize {
         .len()
 }
 
+/// About 100 PGs per device a pool may use, counting each copy
+/// (24-pools-and-devices.md §27.5): what its devices call for.
+pub fn target_pgs(devices: usize, copies: u8) -> u32 {
+    (devices * 100 / copies.max(1) as usize) as u32
+}
+
+/// Whether the autoscaler doubles a pool of `pg_count` PGs on `devices`
+/// devices (D184): when they call for at least twice as many, up to
+/// 65,536.
+pub fn autoscale_wants(devices: usize, copies: u8, pg_count: u32) -> bool {
+    pg_count < 1 << 16 && target_pgs(devices, copies) >= pg_count.saturating_mul(2)
+}
+
 /// The PG count a new pool gets when none is given (24-pools-and-devices.md
 /// §27.5): about 100 PGs per device it may use, counting each copy, as a
 /// power of two, at least 8.
@@ -3042,6 +3124,7 @@ mod tests {
             domain: hyperstor_placement::Domain::Host,
             classes: classes.iter().map(|c| c.to_string()).collect(),
             force: false,
+            autoscale: true,
         };
         assert!(
             meta.create_pool(new("fast", &[]))
@@ -3379,6 +3462,57 @@ mod tests {
         meta.set_pool(1, change(n * 4), false).unwrap();
     }
 
+    /// D174, D184: the autoscaler splits the first pool whose devices
+    /// call for at least twice its PGs, one pool at a time, not while a PG
+    /// is unclean, never `.meta` nor a pool with autoscale off.
+    #[test]
+    fn the_autoscaler_grows_one_pool_at_a_time() {
+        assert!(autoscale_wants(8, 3, 64) && !autoscale_wants(3, 3, 64));
+        assert!(!autoscale_wants(1 << 20, 1, 1 << 16), "at most 65,536");
+        let splitting = |meta: &Meta| -> Vec<u32> {
+            meta.map
+                .borrow()
+                .pools
+                .values()
+                .filter(|p| p.split.is_some())
+                .map(|p| p.id)
+                .collect()
+        };
+        let meta = Meta::new(map());
+        // Eight devices call for about 266 PGs of pool 1's 64; one PG
+        // unclean: nothing.
+        meta.map
+            .borrow_mut()
+            .pgs
+            .get_mut(&(2, 0))
+            .unwrap()
+            .acting
+            .rotate_left(1);
+        meta.autoscale();
+        assert!(splitting(&meta).is_empty());
+        meta.map
+            .borrow_mut()
+            .pgs
+            .get_mut(&(2, 0))
+            .unwrap()
+            .acting
+            .rotate_right(1);
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [1]);
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [1], "one pool at a time");
+        // With autoscale off, pool 2 instead.
+        let meta = Meta::new(map());
+        let off = PoolChange {
+            autoscale: Some(false),
+            ..Default::default()
+        };
+        meta.set_pool(1, off, false).unwrap();
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [2]);
+        assert!(!meta.map.borrow().pools[&1].autoscale);
+    }
+
     /// §27.2.5, D175, D182: a device is taken out to be removed unless a
     /// device taking its data would pass [`FULL`], or a pool would keep
     /// fewer copies than its `min` (or, unforced, its `size`); it leaves
@@ -3529,6 +3663,7 @@ mod tests {
             removed: Default::default(),
             placement: 32,
             split: None,
+            autoscale: true,
         });
         m.recompute();
         m

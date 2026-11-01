@@ -649,6 +649,7 @@ pub fn status(
                 placement_count: p.placement,
                 splitting: p.split.is_some(),
                 split_done: p.split.as_ref().map_or(0, |s| s.done.len() as u32),
+                autoscale: p.autoscale,
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -1013,6 +1014,7 @@ impl ClusterService for Api {
             domain,
             classes,
             force: req.force,
+            autoscale: req.autoscale.unwrap_or(true),
         };
         let (reply, rx) = oneshot();
         self.tx
@@ -1087,6 +1089,9 @@ impl ClusterService for Api {
         if let Some(n) = req.pg_count {
             target.push_str(&format!(" pgs={n}"));
         }
+        if let Some(a) = req.autoscale {
+            target.push_str(&format!(" autoscale={}", if a { "on" } else { "off" }));
+        }
         if force {
             target.push_str(" force");
         }
@@ -1115,14 +1120,16 @@ impl ClusterService for Api {
             name: req.name.map(str::to_string),
             domain,
             pg_count: req.pg_count,
+            autoscale: req.autoscale,
         };
         if change.classes.is_none()
             && change.name.is_none()
             && change.domain.is_none()
             && change.pg_count.is_none()
+            && change.autoscale.is_none()
         {
             return Err(bad(
-                "nothing to change: give classes, a name, a domain or a PG count".into(),
+                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
             ));
         }
         let (reply, rx) = oneshot();

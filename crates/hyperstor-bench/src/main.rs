@@ -329,7 +329,10 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
         map.add_node(n, &addrs, 0);
         listeners.push(ls);
     }
-    map.add_pool(replicated_pool(1, "vol", 3, 128));
+    map.add_pool(hyperstor_meta::PoolInfo {
+        autoscale: false,
+        ..replicated_pool(1, "vol", 3, 128)
+    });
     map.recompute();
     std::thread::spawn(move || {
         hyperstor_reactor::block_on(async move {
@@ -504,7 +507,10 @@ fn adminload_suite(secs: f64) {
         map.add_node(n, &[l.local_addr().unwrap()], 0);
         listeners.push(l);
     }
-    map.add_pool(replicated_pool(1, "vol", 3, 64));
+    map.add_pool(hyperstor_meta::PoolInfo {
+        autoscale: false,
+        ..replicated_pool(1, "vol", 3, 64)
+    });
     map.recompute();
     let (tx, rx) = hyperstor_reactor::chan::channel();
     std::thread::spawn(move || {
@@ -1294,7 +1300,10 @@ fn failover_suite() {
                 map.add_node(n, &[l.local_addr().unwrap()], 0);
                 listeners.push(l);
             }
-            map.add_pool(replicated_pool(1, "vol", 3, 64));
+            map.add_pool(hyperstor_meta::PoolInfo {
+                autoscale: false,
+                ..replicated_pool(1, "vol", 3, 64)
+            });
             map.recompute();
             let probe = map.clone();
             std::thread::spawn(move || {
@@ -1414,6 +1423,7 @@ fn rejoin_suite() {
             listeners.push(l);
         }
         let mut pool = replicated_pool(1, "vol", 3, 64);
+        pool.autoscale = false;
         pool.chunk_size = CHUNK as u32;
         map.add_pool(pool);
         map.recompute();
