@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -23,6 +23,9 @@
 //! - `weight --device D --weight W|auto`: keep a device's placement weight
 //!   at W, or let it follow the device's capacity in TiB again (D158);
 //!   its PGs move as the weight changes;
+//! - `full-ratios [--nearfull PCT] [--backfillfull PCT] [--full PCT]`:
+//!   the fullness thresholds every device is held to, as percentages
+//!   (D27, D182), or set one or more of them;
 //! - `pool create --name N --classes C[,C...] [--kind replicated|cache]
 //!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
 //!   device|host|rack] [--force]`: make a pool on devices of those classes
@@ -143,7 +146,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -225,6 +228,9 @@ struct Args {
     usage: bool,
     /// `weight`: the weight to set, or `None` for `auto` (D158).
     weight: Option<Option<f64>>,
+    /// `full-ratios`: nearfull, backfillfull and full, as percentages
+    /// (D27, D182); those not given stay as they are.
+    ratios: [Option<f64>; 3],
     /// `device add`: where the node's new reactor listens, and the class.
     address: Option<String>,
     class: Option<String>,
@@ -298,6 +304,7 @@ fn main() {
         sparse: false,
         usage: false,
         weight: None,
+        ratios: [None; 3],
         address: None,
         class: None,
         classes: None,
@@ -355,6 +362,18 @@ fn main() {
                     )),
                     None => usage(),
                 }
+            }
+            "--nearfull" | "--backfillfull" | "--full" => {
+                let i = ["--nearfull", "--backfillfull", "--full"]
+                    .iter()
+                    .position(|f| f == arg)
+                    .unwrap_or_default();
+                a.ratios[i] = Some(
+                    it.next()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .filter(|v| v.is_finite())
+                        .unwrap_or_else(|| usage()),
+                );
             }
             "--node" => a.node = Some(num(it.next())),
             "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -431,9 +450,9 @@ fn main() {
                 _ => usage(),
             },
             "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in" | "weight" | "drain" | "clone-volume"
-            | "rollback-volume" | "flatten-volume" | "expand-volume" | "write-volume"
-            | "read-volume" | "enroll"
+            | "delete-volume" | "io-test" | "out" | "in" | "weight" | "full-ratios" | "drain"
+            | "clone-volume" | "rollback-volume" | "flatten-volume" | "expand-volume"
+            | "write-volume" | "read-volume" | "enroll"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
@@ -522,6 +541,10 @@ fn main() {
     {
         // out, in, weight and drain need a target; nothing else takes one.
         // weight takes one device and its weight.
+        usage();
+    }
+    // Only full-ratios takes ratios.
+    if cmd != "full-ratios" && a.ratios.iter().any(Option::is_some) {
         usage();
     }
     let needs_id = matches!(
@@ -1044,6 +1067,44 @@ where
                 // Its reason and exit status as every other refusal's.
                 Err(e) => return Err(e),
             }
+        }
+        "full-ratios" => {
+            let r = if a.ratios.iter().any(Option::is_some) {
+                let [nearfull, backfillfull, full] = a.ratios;
+                let r = client
+                    .set_full_ratios(pb::SetFullRatiosRequest {
+                        nearfull,
+                        backfillfull,
+                        full,
+                        ..Default::default()
+                    })
+                    .await;
+                match r {
+                    Ok(r) => r.into_owned().ratios,
+                    Err(e) if e.code == connectrpc::ErrorCode::InvalidArgument => {
+                        eprintln!(
+                            "hyperstorctl: {}",
+                            e.message.as_deref().unwrap_or("invalid ratios")
+                        );
+                        return Ok(Next::Exit(1));
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else {
+                client
+                    .get_status(pb::GetStatusRequest::default())
+                    .await?
+                    .into_owned()
+                    .full_ratios
+            };
+            let r = r.into_option().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "nearfull {}%  backfillfull {}%  full {}%\n",
+                    r.nearfull, r.backfillfull, r.full
+                )
+            });
+            Next::Exit(0)
         }
         "weight" => {
             let (Some(device), Some(weight)) = (a.device, a.weight) else {

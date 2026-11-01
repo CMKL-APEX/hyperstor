@@ -87,6 +87,15 @@ pub enum Admin {
         weight: Option<f64>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, f64), String>>,
     },
+    /// Sets the fullness ratios (D27, D182), in thousandths; one not given
+    /// stays as it is. Replies with the working map's epoch and the ratios
+    /// now.
+    SetFullRatios {
+        nearfull: Option<u16>,
+        backfillfull: Option<u16>,
+        full: Option<u16>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, FullRatios), String>>,
+    },
     /// Volume operations (04-decisions.md D77), run on this reactor as a
     /// client of `.meta` (06-metadata.md §4.2).
     /// A pool's volumes; with `trash`, those in the trash too (D54).
@@ -982,6 +991,63 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Sets the fullness ratios every device is held to (04-decisions.md
+    /// D27, D182), in thousandths; one not given stays as it is. Returns
+    /// the working map's epoch and the ratios now.
+    pub fn set_full_ratios(
+        &self,
+        nearfull: Option<u16>,
+        backfillfull: Option<u16>,
+        full: Option<u16>,
+    ) -> Result<(u64, FullRatios), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let was = map.full_ratios;
+        let now = FullRatios {
+            nearfull: nearfull.unwrap_or(was.nearfull),
+            backfillfull: backfillfull.unwrap_or(was.backfillfull),
+            full: full.unwrap_or(was.full),
+        };
+        now.check()?;
+        if now != was {
+            map.full_ratios = now;
+            map.epoch += 1;
+        }
+        Ok((map.epoch, now))
+    }
+
+    /// Marks `device` in the map while it is past `backfillfull`, so that
+    /// primaries start no backfill to it (04-decisions.md D182), and
+    /// clears it once it is a percent below, so a device at the threshold
+    /// doesn't change the map with every report.
+    fn note_backfillfull(&self, device: u32, total: u64, free: u64) {
+        if !self.leads() || total == 0 {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        if !map.devices.contains_key(&device) {
+            return;
+        }
+        let used = total.saturating_sub(free);
+        let at = map.full_ratios.backfillfull;
+        let marked = map.backfillfull.contains(&device);
+        let change = if marked {
+            used <= FullRatios::limit(total, at.saturating_sub(10))
+        } else {
+            used > FullRatios::limit(total, at)
+        };
+        if change {
+            if marked {
+                map.backfillfull.remove(&device);
+            } else {
+                map.backfillfull.insert(device);
+            }
+            map.epoch += 1;
+        }
+    }
+
     /// Gives devices the weight of their capacity (04-decisions.md D158),
     /// from their space reports, except those an operator set. A device
     /// still at weight 0 (on a host that just joined) gets it at once; the
@@ -1515,6 +1581,14 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_weight(device, weight));
+                }
+                Admin::SetFullRatios {
+                    nearfull,
+                    backfillfull,
+                    full,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_full_ratios(nearfull, backfillfull, full));
                 }
                 // Each in a task of its own: a delete runs through every
                 // chunk of the volume.
@@ -2230,6 +2304,7 @@ impl Meta {
                     .borrow_mut()
                     .insert(device, (total_bytes, free_bytes));
                 self.auto_weights();
+                self.note_backfillfull(device, total_bytes, free_bytes);
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }
@@ -3290,6 +3365,58 @@ mod tests {
         assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
         report(new, TIB);
         assert_eq!(weight(new), 1.0);
+    }
+
+    /// D27, D182: ratios are set together or one at a time, checked; a
+    /// device past `backfillfull` is marked in the map from its report,
+    /// and cleared a percent below.
+    #[test]
+    fn full_ratios_and_devices_past_backfillfull() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let report = |device: u32, used: u64| {
+            m.handle(Ok(Msg::DeviceSpace {
+                device,
+                total_bytes: 1000,
+                free_bytes: 1000 - used,
+            }))
+        };
+        let epoch = m.map.borrow().epoch;
+        let (e, r) = m.set_full_ratios(None, None, Some(970)).unwrap();
+        assert_eq!(
+            (e, r.nearfull, r.backfillfull, r.full),
+            (epoch + 1, 850, 900, 970)
+        );
+        assert_eq!(
+            m.set_full_ratios(None, None, Some(970)),
+            Ok((epoch + 1, r)),
+            "no change"
+        );
+        assert!(
+            m.set_full_ratios(Some(950), None, None).is_err(),
+            "nearfull above backfillfull"
+        );
+        assert!(
+            m.set_full_ratios(None, None, Some(995)).is_err(),
+            "past 99 %"
+        );
+        assert_eq!(
+            m.map.borrow().full_ratios,
+            r,
+            "a refused change leaves them"
+        );
+        report(0, 900);
+        assert!(m.map.borrow().backfillfull.is_empty(), "at it, not past it");
+        report(0, 901);
+        assert!(m.map.borrow().backfillfull.contains(&0));
+        let marked = m.map.borrow().epoch;
+        assert!(marked > epoch + 1);
+        report(0, 895);
+        assert_eq!(m.map.borrow().epoch, marked, "within a percent: kept");
+        report(0, 890);
+        assert!(m.map.borrow().backfillfull.is_empty());
+        report(99, 999);
+        assert!(m.map.borrow().backfillfull.is_empty(), "no such device");
     }
 
     /// A replicated member (D72, D73): a follower serves the map and
