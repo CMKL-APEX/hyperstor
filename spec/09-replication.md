@@ -176,8 +176,8 @@ loss without backfill, and "not found" on a miss. Each cache PG has a
 generation in the map, which moves when a member joins it without the
 data; a node that serves a cache PG at another generation than it last
 did first empties what it holds of it, so a node that returns never
-serves a copy older than a write made while it was away (D185). A split,
-the moves of the PGs it makes (backfilled, D185) and a restart keep the
+serves a copy older than a write made while it was away (D188). A split,
+the moves of the PGs it makes (backfilled, D188) and a restart keep the
 generation, and so the data. Expiry and eviction are not built yet.
 
 - **Copies.** One by default, placed like a replicated pool of that size;
@@ -189,7 +189,7 @@ generation, and so the data. Expiry and eviction are not built yet.
   no backfill, no recovery. The PG is placed again with an empty
   `acting` set, and its first write starts it afresh. Clients treat "not
   found" as a miss and recompute. The one move that backfills is a PG
-  a split made going to its own devices (D185): nothing failed, and the
+  a split made going to its own devices (D188): nothing failed, and the
   data is there to copy.
 - **Space.** Under pressure a cache pool evicts, by expiry first, then
   least recently read, instead of refusing writes; the D27 thresholds
@@ -208,7 +208,7 @@ generation, and so the data. Expiry and eviction are not built yet.
 | A node is down for good | After `down_out_interval` its PGs are re-placed and backfilled (07-placement.md §5.3). |
 | A device fails | It is marked `failed`; its PGs are re-placed at once, without waiting for `down_out_interval` (I102). |
 | A replica is slow, or its primary can't reach it | Its primary reports it after the operation timeout (2 s) and it is dropped from that PG's acting set, then backfilled back (D91, I103). |
-| A peer stops answering, or its host vanishes | A call to it gives up after 10 s (a ping after 200 ms) and its connection is dropped; TCP keepalive (10 s idle, then every 5 s, 3 probes) and a 30 s send timeout close a connection to a host that is gone, and a connect gives up after 3 s. Each daemon and client keeps one connection per peer, so concurrent callers share it (I184); a daemon pings its peers on a second connection, so a ping doesn't wait behind data (I187). Replication keeps its own timeouts (D91). |
+| A peer stops answering, or its host vanishes | A call to it gives up after 10 s (a ping after 200 ms) and its connection is dropped; TCP keepalive (10 s idle, then every 5 s, 3 probes) and a 30 s send timeout close a connection to a host that is gone, and a connect gives up after 3 s. Each daemon and client keeps one connection per peer, so concurrent callers share it (I184); a daemon pings its peers on a second connection, so a ping doesn't wait behind data (I187), and over UDP at the same port number, so a lost ping doesn't hold the next behind TCP's retransmission timeout; a peer that hasn't answered over UDP yet is pinged both ways (D185). Replication keeps its own timeouts (D91). |
 | The primary is cut off from its replicas | Its peers report it and it is marked down; its map lease runs out, so it stops serving, and a new primary takes over (§8.4, D40). |
 | The metadata service loses quorum | I/O, lease renewals, releases and ordinary volume operations continue on the current map. PG failover, rebalancing, blocklisting and so forced lease takeovers wait (D23). A PG that loses a member meanwhile can't shrink its in-sync set, so its writes stall until quorum is back. |
 | The client's host dies | Its volume leases expire; the next attachment is a forced takeover with a blocklist round (06-metadata.md §9). |

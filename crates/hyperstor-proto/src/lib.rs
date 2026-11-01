@@ -475,7 +475,7 @@ pub enum Msg {
     /// Storage node to map service: `device` has split PG `pool`.`pg`,
     /// marked to split at `pg_epoch`: its objects that belong to the PG's
     /// new sibling are under the sibling's keys (24-pools-and-devices.md
-    /// §27.5, D183). Answered `Noted`.
+    /// §27.5, D187). Answered `Noted`.
     PgSplit {
         pool: u32,
         pg: u32,

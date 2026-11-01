@@ -491,7 +491,7 @@ impl Runner {
         loop {
             // A removal: any later change to the map (a weight, a node
             // coming back) can leave a PG listing the device with nothing
-            // to backfill; it is let go each time (D182).
+            // to backfill; it is let go each time (D186).
             if done.is_none() {
                 for &device in devices {
                     let (reply, rx) = oneshot();

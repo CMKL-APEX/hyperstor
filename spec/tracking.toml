@@ -327,13 +327,16 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Failure reports from peers"
-spec = ["D40", "I188"]
+what = "Failure reports from peers, pinged over UDP with TCP as the fallback"
+spec = ["D40", "I188", "D185", "I223"]
 status = "done"
 tests = [
     "cluster::peers_report_a_dead_node_before_the_map_service_notices",
     "cluster::a_node_is_up_only_once_every_device_is_open",
     "cluster::held_nodes_report_no_healthy_peer",
+    "cluster::lost_tcp_pings_report_no_one",
+    "cluster::a_peer_without_udp_is_pinged_over_tcp",
+    "cluster::a_node_cut_off_from_its_peers_is_reported",
     "hyperstor_meta::tests::two_peer_reports_mark_a_node_down_and_stop_its_lease",
     "manage::a_returning_node_goes_down_once",
 ]
@@ -728,7 +731,7 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D182", "I216", "I217"]
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I217"]
 status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",
@@ -740,7 +743,7 @@ tests = [
 
 [[milestone.item]]
 what = "A PG split in place: objects moved to their new PG's key without a copy, PG by PG"
-spec = ["24-pools-and-devices.md §27.5", "D173", "D183", "I218", "I219", "I220"]
+spec = ["24-pools-and-devices.md §27.5", "D173", "D187", "I218", "I219", "I220"]
 status = "done"
 tests = [
     "engine::take_moves_an_object_whole",
@@ -763,7 +766,7 @@ tests = [
 
 [[milestone.item]]
 what = "A cache pool's data kept across splits, the moves they cause and restarts (cache generations)"
-spec = ["09-replication.md §8.7", "D185", "I222"]
+spec = ["09-replication.md §8.7", "D188", "I222"]
 status = "done"
 tests = [
     "hyperstor_map::tests::cache_generations_move_only_when_a_member_starts_empty",
@@ -1090,6 +1093,17 @@ tests = [
     # The map's format 4: hyperstor_map's encode_round_trip_and_addresses,
     # tracked earlier.
     "manage::weights_follow_capacity_or_are_set",
+]
+
+[[milestone.item]]
+what = "Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill"
+spec = ["D27", "D182", "I216"]
+status = "partial"
+tests = [
+    "hyperstor_map::tests::full_ratios_round_trip_in_format_12_only_when_set",
+    "hyperstor_meta::tests::full_ratios_and_devices_past_backfillfull",
+    "hyperstor_engine::shard::tests::past_full_only_growth_is_refused",
+    "manage::a_full_device_refuses_growth_only",
 ]
 
 [[milestone.item]]

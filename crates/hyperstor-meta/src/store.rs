@@ -186,6 +186,8 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         removed_nodes: map.removed_nodes.clone(),
         cache_gens: map.cache_gens.clone(),
         keep_acting: Default::default(),
+        full_ratios: map.full_ratios,
+        backfillfull: map.backfillfull.clone(),
     }
     .encode()
 }

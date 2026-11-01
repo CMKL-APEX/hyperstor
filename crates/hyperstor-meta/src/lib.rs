@@ -59,7 +59,7 @@ pub struct PoolChange {
     /// PGs move, as for the classes.
     pub domain: Option<hyperstor_placement::Domain>,
     /// Twice the PG count: the pool splits (24-pools-and-devices.md
-    /// §27.5, D183).
+    /// §27.5, D187).
     pub pg_count: Option<u32>,
     /// Whether the map service grows its PG count (D174, D184).
     pub autoscale: Option<bool>,
@@ -93,6 +93,15 @@ pub enum Admin {
         device: u32,
         weight: Option<f64>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, f64), String>>,
+    },
+    /// Sets the fullness ratios (D27, D182), in thousandths; one not given
+    /// stays as it is. Replies with the working map's epoch and the ratios
+    /// now.
+    SetFullRatios {
+        nearfull: Option<u16>,
+        backfillfull: Option<u16>,
+        full: Option<u16>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, FullRatios), String>>,
     },
     /// Volume operations (04-decisions.md D77), run on this reactor as a
     /// client of `.meta` (06-metadata.md §4.2).
@@ -163,7 +172,7 @@ pub enum Admin {
         reply: hyperstor_reactor::chan::OneSender<usize>,
     },
     /// Removes a device that no PG lists from the map, its node with it if
-    /// it was the last (D182). Replies with whether the node went, and the
+    /// it was the last (D186). Replies with whether the node went, and the
     /// working map's epoch; `None` if the map hasn't the device.
     FinishRemoval {
         device: u32,
@@ -257,15 +266,11 @@ pub struct Removal {
 }
 
 /// Each marked PG's split reports: the PG epoch they name, and who sent
-/// them (D183).
+/// them (D187).
 type SplitReports = HashMap<(u32, u32), (u64, BTreeSet<u32>)>;
 
-/// PGs of one pool split at a time (D183): each pauses its I/O briefly.
+/// PGs of one pool split at a time (D187): each pauses its I/O briefly.
 pub const SPLITS_AT_ONCE: usize = 4;
-
-/// A device may be filled to this share of its size by a removal: a pool's
-/// `full` threshold (D27).
-pub const FULL: f64 = 0.95;
 
 /// A PG a drain moves: its acting set before, where it goes after.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -515,7 +520,7 @@ pub struct Meta {
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
     kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
-    /// Members' reports of marked PGs split (D183): the PG epoch they name
+    /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
     /// A follower's last [`LeaderView`] from the leader, and when.
@@ -1038,6 +1043,63 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Sets the fullness ratios every device is held to (04-decisions.md
+    /// D27, D182), in thousandths; one not given stays as it is. Returns
+    /// the working map's epoch and the ratios now.
+    pub fn set_full_ratios(
+        &self,
+        nearfull: Option<u16>,
+        backfillfull: Option<u16>,
+        full: Option<u16>,
+    ) -> Result<(u64, FullRatios), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let was = map.full_ratios;
+        let now = FullRatios {
+            nearfull: nearfull.unwrap_or(was.nearfull),
+            backfillfull: backfillfull.unwrap_or(was.backfillfull),
+            full: full.unwrap_or(was.full),
+        };
+        now.check()?;
+        if now != was {
+            map.full_ratios = now;
+            map.epoch += 1;
+        }
+        Ok((map.epoch, now))
+    }
+
+    /// Marks `device` in the map while it is past `backfillfull`, so that
+    /// primaries start no backfill to it (04-decisions.md D182), and
+    /// clears it once it is a percent below, so a device at the threshold
+    /// doesn't change the map with every report.
+    fn note_backfillfull(&self, device: u32, total: u64, free: u64) {
+        if !self.leads() || total == 0 {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        if !map.devices.contains_key(&device) {
+            return;
+        }
+        let used = total.saturating_sub(free);
+        let at = map.full_ratios.backfillfull;
+        let marked = map.backfillfull.contains(&device);
+        let change = if marked {
+            used <= FullRatios::limit(total, at.saturating_sub(10))
+        } else {
+            used > FullRatios::limit(total, at)
+        };
+        if change {
+            if marked {
+                map.backfillfull.remove(&device);
+            } else {
+                map.backfillfull.insert(device);
+            }
+            map.epoch += 1;
+        }
+    }
+
     /// Gives devices the weight of their capacity (04-decisions.md D158),
     /// from their space reports, except those an operator set. A device
     /// still at weight 0 (on a host that just joined) gets it at once; the
@@ -1547,8 +1609,8 @@ impl Meta {
     /// nothing. Refused when a pool using it would keep fewer copies than
     /// its `min`, or (unless `force`) fewer than its `size`, for want of
     /// failure domains, and when a device that takes its data would pass
-    /// [`FULL`], by the primaries' PG usage (D155) and the devices' space
-    /// reports.
+    /// the map's `full` ratio (D27), by the primaries' PG usage (D155) and
+    /// the devices' space reports.
     pub fn remove_device(
         &self,
         device: u32,
@@ -1615,16 +1677,17 @@ impl Meta {
         drop(usage);
         let reports = self.space.borrow();
         let mut space = Vec::new();
+        let full = map.full_ratios.full;
         for (&d, &gain) in &gains {
             let Some(&(total, free)) = reports.get(&d) else {
                 continue;
             };
             let used = total.saturating_sub(free) + gain;
-            if used as f64 > total as f64 * FULL {
+            if used > FullRatios::limit(total, full) {
                 return Err(format!(
-                    "device {d} would be {:.0}% full with device {device}'s data, past {:.0}%: it has nowhere to go",
+                    "device {d} would be {:.0}% full with device {device}'s data, past {:.1}%: it has nowhere to go",
                     used as f64 * 100.0 / total.max(1) as f64,
-                    FULL * 100.0
+                    full as f64 / 10.0
                 ));
             }
             space.push((d, used, total));
@@ -1644,7 +1707,7 @@ impl Meta {
 
     /// Removes `device` from the map once it is out and no PG lists it in
     /// `up` or `acting`, and its node with it if it was the last; both ids
-    /// are kept (D182). `None` if the map hasn't the device (removed
+    /// are kept (D186). `None` if the map hasn't the device (removed
     /// already).
     pub fn finish_removal(&self, device: u32) -> Result<Option<(bool, u64)>, String> {
         if !self.leads() {
@@ -1737,6 +1800,14 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_weight(device, weight));
+                }
+                Admin::SetFullRatios {
+                    nearfull,
+                    backfillfull,
+                    full,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_full_ratios(nearfull, backfillfull, full));
                 }
                 // Each in a task of its own: a delete runs through every
                 // chunk of the volume.
@@ -1969,7 +2040,7 @@ impl Meta {
         }
     }
 
-    /// Moves splits on (24-pools-and-devices.md §27.5, D183): flips each
+    /// Moves splits on (24-pools-and-devices.md §27.5, D187): flips each
     /// marked PG every member of whose acting set has reported it split at
     /// its epoch, and marks more PGs, the clean ones, up to
     /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count. Then,
@@ -1998,7 +2069,7 @@ impl Meta {
                 let from = p.placement;
                 p.placement = (p.placement + SPLITS_AT_ONCE as u32).min(p.pg_count);
                 // A cache pool's PGs that move are backfilled, so the
-                // move loses nothing (D185).
+                // move loses nothing (D188).
                 if p.kind == PoolKind::Cache {
                     let to = p.placement;
                     map.keep_acting.extend((from..to).map(|pg| (pool, pg)));
@@ -2554,7 +2625,7 @@ impl Meta {
                 device,
             }) => {
                 // A marked PG's acting set only shrinks until it flips
-                // (D183): a member that joined would hold the PG without
+                // (D187): a member that joined would hold the PG without
                 // what moved to its sibling. Backfill tries again after.
                 let marked = self
                     .map
@@ -2657,6 +2728,7 @@ impl Meta {
                     .borrow_mut()
                     .insert(device, (total_bytes, free_bytes));
                 self.auto_weights();
+                self.note_backfillfull(device, total_bytes, free_bytes);
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }
@@ -3354,7 +3426,7 @@ mod tests {
 
     /// A drain's dry run changes nothing and says what a drain moves; the
     /// drain takes every device of the node out.
-    /// §27.5, D183: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
+    /// §27.5, D187: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
     /// a marked PG flips once every member of its acting set has reported
     /// it split at its epoch (a report at an older epoch doesn't count),
     /// and refuses a member joining by backfill until then; the last flip
@@ -3520,8 +3592,8 @@ mod tests {
         assert!(!meta.map.borrow().pools[&1].autoscale);
     }
 
-    /// §27.2.5, D175, D182: a device is taken out to be removed unless a
-    /// device taking its data would pass [`FULL`], or a pool would keep
+    /// §27.2.5, D175, D186: a device is taken out to be removed unless a
+    /// device taking its data would pass the `full` ratio, or a pool would keep
     /// fewer copies than its `min` (or, unforced, its `size`); it leaves
     /// the map once no PG lists it, its node with its last device, and
     /// neither id is given again.
@@ -4002,6 +4074,58 @@ mod tests {
         assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
         report(new, TIB);
         assert_eq!(weight(new), 1.0);
+    }
+
+    /// D27, D182: ratios are set together or one at a time, checked; a
+    /// device past `backfillfull` is marked in the map from its report,
+    /// and cleared a percent below.
+    #[test]
+    fn full_ratios_and_devices_past_backfillfull() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let report = |device: u32, used: u64| {
+            m.handle(Ok(Msg::DeviceSpace {
+                device,
+                total_bytes: 1000,
+                free_bytes: 1000 - used,
+            }))
+        };
+        let epoch = m.map.borrow().epoch;
+        let (e, r) = m.set_full_ratios(None, None, Some(970)).unwrap();
+        assert_eq!(
+            (e, r.nearfull, r.backfillfull, r.full),
+            (epoch + 1, 850, 900, 970)
+        );
+        assert_eq!(
+            m.set_full_ratios(None, None, Some(970)),
+            Ok((epoch + 1, r)),
+            "no change"
+        );
+        assert!(
+            m.set_full_ratios(Some(950), None, None).is_err(),
+            "nearfull above backfillfull"
+        );
+        assert!(
+            m.set_full_ratios(None, None, Some(995)).is_err(),
+            "past 99 %"
+        );
+        assert_eq!(
+            m.map.borrow().full_ratios,
+            r,
+            "a refused change leaves them"
+        );
+        report(0, 900);
+        assert!(m.map.borrow().backfillfull.is_empty(), "at it, not past it");
+        report(0, 901);
+        assert!(m.map.borrow().backfillfull.contains(&0));
+        let marked = m.map.borrow().epoch;
+        assert!(marked > epoch + 1);
+        report(0, 895);
+        assert_eq!(m.map.borrow().epoch, marked, "within a percent: kept");
+        report(0, 890);
+        assert!(m.map.borrow().backfillfull.is_empty());
+        report(99, 999);
+        assert!(m.map.borrow().backfillfull.is_empty(), "no such device");
     }
 
     /// A replicated member (D72, D73): a follower serves the map and

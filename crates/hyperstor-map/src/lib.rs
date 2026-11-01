@@ -70,14 +70,14 @@ pub struct PoolInfo {
     /// on its parent's devices until this rises past it. `pg_count` but
     /// after a split, until it has risen.
     pub placement: u32,
-    /// A split under way (D183): the count doubles PG by PG.
+    /// A split under way (D187): the count doubles PG by PG.
     pub split: Option<Split>,
     /// Whether the map service doubles the PG count as devices are added
     /// (D174, D184).
     pub autoscale: bool,
 }
 
-/// A pool's split under way (24-pools-and-devices.md §27.5, D183): to
+/// A pool's split under way (24-pools-and-devices.md §27.5, D187): to
 /// twice `pg_count` PGs, PG by PG. A marked PG's members move the objects
 /// of its new sibling (`pg + pg_count`) to its keys and report it; once
 /// all have, it flips: the sibling joins the map on the PG's devices,
@@ -212,19 +212,82 @@ pub struct ClusterMap {
     /// were down name data by pool id.
     pub deleted_pools: BTreeSet<u32>,
     /// The ids of removed devices and nodes (24-pools-and-devices.md
-    /// §27.2.5, D182): never given again. Why: a device's id is in its
+    /// §27.2.5, D186): never given again. Why: a device's id is in its
     /// superblock and a node's in its devices' ids; one given again would
     /// let an old device or host pass for the new one.
     pub removed_devices: BTreeSet<u32>,
     pub removed_nodes: BTreeSet<u32>,
-    /// Each cache PG's generation (D185), where it isn't 0: it moves when
+    /// Each cache PG's generation (D188), where it isn't 0: it moves when
     /// a member joins without the PG's data, and a device drops what it
     /// holds of a PG whose generation isn't the one it last served.
     pub cache_gens: BTreeMap<(u32, u32), u64>,
     /// Cache PGs the next [`ClusterMap::recompute`] backfills if it moves
-    /// them, rather than starting their new members empty (D185); empty
+    /// them, rather than starting their new members empty (D188); empty
     /// after it, and not in the encoding.
     pub keep_acting: BTreeSet<(u32, u32)>,
+    /// The fullness thresholds every device is held to (04-decisions.md
+    /// D27, D182).
+    pub full_ratios: FullRatios,
+    /// Devices past `backfillfull`, from their space reports to the
+    /// leader (D182): primaries start no backfill to them.
+    pub backfillfull: BTreeSet<u32>,
+}
+
+/// Fullness thresholds, in thousandths of a device's data region
+/// (04-decisions.md D27, D182): past `nearfull` a device warns, past
+/// `backfillfull` it takes no backfill, past `full` it refuses what would
+/// grow its used space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullRatios {
+    pub nearfull: u16,
+    pub backfillfull: u16,
+    pub full: u16,
+}
+
+impl Default for FullRatios {
+    fn default() -> Self {
+        Self {
+            nearfull: 850,
+            backfillfull: 900,
+            full: 950,
+        }
+    }
+}
+
+impl FullRatios {
+    /// Between 50 % and 99 %, each below the next (D27).
+    pub fn check(&self) -> Result<(), String> {
+        let ok = 500 <= self.nearfull
+            && self.nearfull < self.backfillfull
+            && self.backfillfull < self.full
+            && self.full <= 990;
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "ratios must be between 50% and 99%, nearfull < backfillfull < full: got {}",
+                self
+            ))
+        }
+    }
+
+    /// Used blocks a device of `total` blocks may have under `ratio`.
+    pub fn limit(total: u64, ratio: u16) -> u64 {
+        (total as u128 * ratio as u128 / 1000) as u64
+    }
+}
+
+impl std::fmt::Display for FullRatios {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pct = |r: u16| format!("{}.{}%", r / 10, r % 10);
+        write!(
+            f,
+            "nearfull {} backfillfull {} full {}",
+            pct(self.nearfull),
+            pct(self.backfillfull),
+            pct(self.full)
+        )
+    }
 }
 
 /// What a device is (24-pools-and-devices.md §27.2.4), as its node
@@ -506,7 +569,7 @@ impl ClusterMap {
     }
 
     /// The id a new node gets: after every node's, removed ones' too
-    /// (D182).
+    /// (D186).
     pub fn next_node_id(&self) -> u32 {
         let nodes = self.nodes.keys().next_back().map_or(0, |n| n + 1);
         let removed = self.removed_nodes.last().map_or(0, |n| n + 1);
@@ -514,7 +577,7 @@ impl ClusterMap {
     }
 
     /// Removes device `id` from the map, keeping its id as removed, and
-    /// its node with it if that was the node's last device (D182); the
+    /// its node with it if that was the node's last device (D186); the
     /// epoch moves. Whether the device was there, and whether its node
     /// went too.
     pub fn remove_device(&mut self, id: u32) -> Option<bool> {
@@ -543,7 +606,7 @@ impl ClusterMap {
     }
 
     /// Starts doubling pool `pool`'s PG count (24-pools-and-devices.md
-    /// §27.5, D183): nothing moves until PGs are marked. The epoch moves.
+    /// §27.5, D187): nothing moves until PGs are marked. The epoch moves.
     pub fn start_split(&mut self, pool: u32) -> Result<(), String> {
         let p = self.pools.get_mut(&pool).ok_or(format!("no pool {pool}"))?;
         if p.split.is_some() {
@@ -752,7 +815,7 @@ impl ClusterMap {
                     // empty. But a PG the placement count moves after a
                     // split, and one still being filled since, keeps its
                     // live members while the new ones are backfilled
-                    // (D185).
+                    // (D188).
                     Some(o) if p.kind == PoolKind::Cache => {
                         let fill = self.keep_acting.contains(&(p.id, pg)) || o.acting != o.up;
                         let kept: Vec<u32> =
@@ -801,7 +864,7 @@ impl ClusterMap {
                     }
                 };
                 // A cache member that joins without the data moves the PG's
-                // generation, so devices drop what they held of it (D185).
+                // generation, so devices drop what they held of it (D188).
                 if p.kind == PoolKind::Cache
                     && let Some(o) = &old
                     && acting
@@ -1007,7 +1070,7 @@ impl ClusterMap {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
 
-    /// A cache PG's generation (D185): 0 until a member first joins it
+    /// A cache PG's generation (D188): 0 until a member first joins it
     /// without the data.
     pub fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
         self.cache_gens.get(&(pool, pg)).copied().unwrap_or(0)
@@ -1028,9 +1091,15 @@ impl ClusterMap {
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set, 6 class sets, 7
         // a pool's devices added and removed, 8 deleted pools' ids, 9
-        // removed devices' and nodes' ids; a map without them keeps the
-        // older format, which nodes from before them read.
-        let format = if !self.cache_gens.is_empty() {
+        // removed devices' and nodes' ids, 10 pools' placement counts,
+        // autoscale and splits, 11 cache PGs' generations, 12 fullness
+        // ratios other than the defaults and devices past `backfillfull`;
+        // a map without them keeps the older format, which nodes from
+        // before them read. Why 12 after 11: the feature branch's 9-11 ran
+        // on the pilot before main's fullness took 9 (I216).
+        let format = if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+            12
+        } else if !self.cache_gens.is_empty() {
             11
         } else if self
             .pools
@@ -1201,13 +1270,21 @@ impl ClusterMap {
                 e.u32(pool).u32(pg).u64(g);
             }
         }
+        if format >= 12 {
+            let r = &self.full_ratios;
+            e.u16(r.nearfull).u16(r.backfillfull).u16(r.full);
+            e.u32(self.backfillfull.len() as u32);
+            for d in &self.backfillfull {
+                e.u32(*d);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=11).contains(&v) {
+        if !(1..=12).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1373,6 +1450,14 @@ impl ClusterMap {
                 let k = (d.u32()?, d.u32()?);
                 m.cache_gens.insert(k, d.u64()?);
             }
+        }
+        if v >= 12 {
+            m.full_ratios = FullRatios {
+                nearfull: d.u16()?,
+                backfillfull: d.u16()?,
+                full: d.u16()?,
+            };
+            m.backfillfull = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -1719,7 +1804,7 @@ mod tests {
         assert_eq!(back.next_pool_id(), top + 1);
     }
 
-    /// D183: a split marks PGs, then flips each: its sibling joins the
+    /// D187: a split marks PGs, then flips each: its sibling joins the
     /// map on the PG's devices, keys go to it by the doubled count, others
     /// stay with their parent; the last flip doubles the count, and the
     /// placement count stays, so nothing moves. Format 10 while it runs.
@@ -1830,7 +1915,7 @@ mod tests {
         );
     }
 
-    /// D185: a cache PG's generation moves when a member joins it without
+    /// D188: a cache PG's generation moves when a member joins it without
     /// the data (a device out), not when it is split or flipped, and a new
     /// PG takes its parent's; a cache PG the placement count moves keeps
     /// its old member while the new one is backfilled. Format 11.
@@ -1920,7 +2005,7 @@ mod tests {
         assert_eq!(pg.acting, pg.up);
     }
 
-    /// D182: a removed device leaves the map, its node with its last
+    /// D186: a removed device leaves the map, its node with its last
     /// device; both ids are kept, in format 9 only once there is one, and
     /// never given again.
     #[test]
@@ -1954,6 +2039,53 @@ mod tests {
         let back = ClusterMap::decode(&m.encode()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.next_node_id(), node + 1);
+    }
+
+    /// D27, D182: fullness ratios other than the defaults are kept in
+    /// format 12, and only then.
+    #[test]
+    fn full_ratios_round_trip_in_format_12_only_when_set() {
+        let mut m = map();
+        assert_ne!(
+            m.encode()[..4],
+            12u32.to_le_bytes(),
+            "defaults: older format"
+        );
+        assert_eq!(m.full_ratios.check(), Ok(()));
+        m.full_ratios = FullRatios {
+            nearfull: 600,
+            backfillfull: 700,
+            full: 805,
+        };
+        assert_eq!(m.encode()[..4], 12u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.full_ratios = FullRatios::default();
+        m.backfillfull.insert(2);
+        assert_eq!(
+            m.encode()[..4],
+            12u32.to_le_bytes(),
+            "a device past backfillfull"
+        );
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.full_ratios.full = 805;
+        assert_eq!(
+            m.full_ratios.to_string(),
+            "nearfull 85.0% backfillfull 90.0% full 80.5%"
+        );
+        assert_eq!(FullRatios::limit(1000, 805), 805);
+        for (n, b, f) in [
+            (499, 700, 800),
+            (700, 700, 800),
+            (600, 900, 800),
+            (600, 700, 991),
+        ] {
+            let r = FullRatios {
+                nearfull: n,
+                backfillfull: b,
+                full: f,
+            };
+            assert!(r.check().is_err(), "{r}");
+        }
     }
 
     /// D180: a pool's devices added and removed are kept in format 7,

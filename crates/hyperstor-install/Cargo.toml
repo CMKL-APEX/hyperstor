@@ -16,7 +16,7 @@ hyperstor-pki = { path = "../hyperstor-pki" }
 hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
 http = "1"
-# Reading the map's devices from hyperstorctl --json (D182).
+# Reading the map's devices from hyperstorctl --json (D186).
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time"] }
 io-uring.workspace = true

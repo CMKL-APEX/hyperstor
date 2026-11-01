@@ -41,7 +41,7 @@ pub enum Work {
         pgs: Vec<(u32, u32)>,
     },
     /// A device out, followed until no PG lives on it, then removed from
-    /// the map (24-pools-and-devices.md §27.2.5, D182).
+    /// the map (24-pools-and-devices.md §27.2.5, D186).
     RemoveDevice {
         device: u32,
         /// The PGs that move: (pool, PG).

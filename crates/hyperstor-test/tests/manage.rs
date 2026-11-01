@@ -220,7 +220,7 @@ fn a_shard_must_be_the_maps_and_can_name_its_id() {
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
 
-/// §27.2.5, D175, D182: `hyperstorctl device remove` takes a device out,
+/// §27.2.5, D175, D186: `hyperstorctl device remove` takes a device out,
 /// follows its PGs off it as an operation and removes it from the map,
 /// while the data written before reads back; a node restarted with its
 /// `--shard` stops, saying so. A removal that would leave pools short of
@@ -474,7 +474,7 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
-/// D182: `hyperstor-install install --remove-device ID` drops a device
+/// D186: `hyperstor-install install --remove-device ID` drops a device
 /// removed from the map from its node: refused while the map still has
 /// it; then kept in install.conf, so the node's options lose its
 /// `--shard` on this run and every later one, and the node runs without
@@ -928,11 +928,14 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
             .all(|id| a.has(&format!("volume {id} (pool 3 deleted)")))
             .then_some(())
     });
-    let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
-    assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
+    // The operation is stored done before its audit entry is written.
+    wait_for("the forced delete done in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+        (a.has("pool 3 force") && a.has("done")).then_some(())
+    });
 }
 
-/// §27.5, D173, D183: `hyperstorctl pool set --pgs` doubles a pool's PG
+/// §27.5, D173, D187: `hyperstorctl pool set --pgs` doubles a pool's PG
 /// count, splitting PG by PG while volumes are written; the new PGs then
 /// move to their own devices; what was written before and during the
 /// split reads back, also after a node restarts; a count that isn't
@@ -1107,7 +1110,7 @@ fn the_autoscaler_grows_pools_that_ask_for_it() {
     );
 }
 
-/// D185: a cache pool keeps what it holds across a split, the moves of
+/// D188: a cache pool keeps what it holds across a split, the moves of
 /// its new PGs (backfilled, not started empty) and a restart of every
 /// node, as an upgrade does.
 #[test]
@@ -1300,6 +1303,102 @@ fn weights_follow_capacity_or_are_set() {
     wait_for("both changes in the audit log", 20, || {
         let a = c.ctl(&["audit", "list", "--op", "SetDeviceWeight"]).ok();
         (a.has("weight=0.5") && a.has("weight=auto")).then_some(())
+    });
+}
+
+/// D27: past `full`, a device refuses what would grow its used space,
+/// and overwrites go on; the ratios are shown, set and checked.
+#[test]
+fn a_full_device_refuses_growth_only() {
+    let c = Cluster::all_in_one("full", 3);
+    let r = c.ctl(&["full-ratios"]).ok();
+    assert!(
+        r.has("nearfull 85%  backfillfull 90%  full 95%"),
+        "{}",
+        r.out
+    );
+    let bad = c.ctl(&["full-ratios", "--nearfull", "96"]).expect(1);
+    assert!(bad.has("nearfull < backfillfull < full"), "{}", bad.out);
+    c.ctl(&["full-ratios", "--full", "x"]).expect(2);
+    c.ctl(&["full-ratios", "--device", "0"]).expect(2);
+    // The most any device has used, as a percentage of its data area.
+    let used = || -> f64 {
+        let s = c.ctl(&["status", "--json"]).ok();
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let n = |d: &serde_json::Value, f: &str| {
+            d[f].as_str()
+                .and_then(|t| t.parse::<f64>().ok())
+                .or(d[f].as_f64())
+        };
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .filter_map(|d| Some(100.0 * (1.0 - n(&d, "free_bytes")? / n(&d, "total_bytes")?)))
+            .fold(0.0, f64::max)
+    };
+    let made = c
+        .ctl(&["create-volume", "--size", "1G", "--name", "filling"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let chunk = 32u64 << 20;
+    let src = c.scratch.path("chunk.raw");
+    std::fs::write(&src, hyperstor_test::vhost::pattern(7, chunk as usize)).unwrap();
+    let write = |at: u64| {
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            &id,
+            "--file",
+            src.to_str().unwrap(),
+            "--offset",
+            &(at * chunk).to_string(),
+            "--map",
+            &c.map,
+        ])
+    };
+    // Past 52 % on every device (each holds a copy of everything), as the
+    // devices report it every few seconds.
+    let mut next = 0;
+    while used() < 52.0 {
+        let had = used();
+        for _ in 0..4 {
+            write(next).ok();
+            next += 1;
+        }
+        assert!(next * chunk < 1 << 30, "the volume filled first");
+        wait_for("a space report", 15, || (used() > had).then_some(()));
+    }
+    let set = c
+        .ctl(&[
+            "full-ratios",
+            "--nearfull",
+            "50",
+            "--backfillfull",
+            "50.5",
+            "--full",
+            "51",
+        ])
+        .ok();
+    assert!(
+        set.has("nearfull 50%  backfillfull 50.5%  full 51%"),
+        "{}",
+        set.out
+    );
+    // Published once fenced: new blocks are refused, once devices have it.
+    wait_for("new blocks refused", 20, || {
+        (write(next).code != 0).then_some(())
+    });
+    write(0).ok();
+    write(next - 1).ok();
+    c.ctl(&["full-ratios", "--full", "95"]).ok();
+    wait_for("new blocks taken again", 20, || {
+        (write(next).code == 0).then_some(())
+    });
+    wait_for("the changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetFullRatios"]).ok();
+        (a.has("full=51") && a.has("full=95")).then_some(())
     });
 }
 

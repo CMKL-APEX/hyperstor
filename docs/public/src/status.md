@@ -34,7 +34,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -78,7 +78,7 @@ covered by tests that run on every change.
 | A primary fetches a member's copy of a large object in parts (repair of its own copy) | Done |
 | Peer and map-service calls have deadlines; one connection per peer; TCP keepalive and connect timeouts | Done |
 | Map leases with fencing and pushes: a cut-off primary stops serving | Done |
-| Failure reports from peers | Done |
+| Failure reports from peers, pinged over UDP with TCP as the fallback | Done |
 | Flap damping: a node that goes down is held down, longer each time; health warns | Done |
 | Peering and delta recovery, by content digests instead of a PG log | Done |
 | Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums | Done |
@@ -179,4 +179,5 @@ covered by tests that run on every change.
 | Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hyperstorctl pg-grid --usage prints a digit | Done |
 | Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages | Done |
 | Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto | Done |
+| Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill | In progress |
 | A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool | Done |

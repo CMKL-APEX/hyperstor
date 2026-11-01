@@ -141,7 +141,7 @@ struct Settings {
     /// Block devices added to this host's nodes (D167, D168), as
     /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
     devices: String,
-    /// Devices removed from this host's nodes (D182), comma-separated
+    /// Devices removed from this host's nodes (D186), comma-separated
     /// ids: no `--shard` for them, whether the cluster file or `devices`
     /// names them.
     removed_devices: String,
@@ -320,7 +320,7 @@ fn main() {
     let mut new_devices: Vec<String> = Vec::new();
     let mut device_address: Option<String> = None;
     let mut force_format = false;
-    // Devices removed from the map to drop from this host's node (D182).
+    // Devices removed from the map to drop from this host's node (D186).
     let mut removed: Vec<u32> = Vec::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -723,6 +723,14 @@ fn check(root: &Path, s: &Settings) -> bool {
         .chain((0..s.nodes).map(|n| s.admin_port + n as u16))
         .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_err())
         .map(|p| p.to_string())
+        // Storage nodes answer pings over UDP at their TCP port's number
+        // (D185).
+        .chain(
+            (0..s.nodes)
+                .map(|n| s.node_port + n as u16)
+                .filter(|p| std::net::UdpSocket::bind(("127.0.0.1", *p)).is_err())
+                .map(|p| format!("{p}/udp")),
+        )
         .collect();
     if busy.is_empty() {
         note(Level::Ok, "ports", "free".into());
@@ -1103,7 +1111,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             n.paths.push(Some(path));
         }
     }
-    // Devices removed (D182): no --shard, whoever named them.
+    // Devices removed (D186): no --shard, whoever named them.
     let removed = s.removed();
     for n in &mut p.nodes {
         let kept: Vec<_> = n
@@ -2627,7 +2635,7 @@ fn add_devices(
 }
 
 /// Drops devices removed from the map from this host's node
-/// (24-pools-and-devices.md §27.2.5, D182): recorded in
+/// (24-pools-and-devices.md §27.2.5, D186): recorded in
 /// `s.removed_devices` (and out of `s.devices`), so this run and every
 /// later one leave out their `--shard`. With the administrator's
 /// certificate, a device the map still has is refused: `hyperstorctl
@@ -3145,7 +3153,7 @@ mod tests {
         assert!(!rules.contains("extra.img"), "files need no rule");
     }
 
-    /// D182: a removed device has no `--shard`, whether the cluster file
+    /// D186: a removed device has no `--shard`, whether the cluster file
     /// or `devices` named it; the devices after it keep their ids, and
     /// install.conf keeps the list.
     #[test]

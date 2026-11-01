@@ -62,6 +62,8 @@ struct Cluster {
     faulty: std::collections::HashMap<u32, Arc<hyperstor_daemon::faults::FaultyDev>>,
     /// Devices whose commits take longer without holding a reactor (I199).
     commit_delays: Arc<hyperstor_daemon::faults::CommitDelays>,
+    /// Pings that fail (D185).
+    pings: Arc<hyperstor_daemon::faults::Pings>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
@@ -205,6 +207,7 @@ impl Cluster {
             (0..nodes).map(|_| Arc::default()).collect();
         let partitions = Arc::new(hyperstor_daemon::faults::Partitions::default());
         let commit_delays = Arc::new(hyperstor_daemon::faults::CommitDelays::default());
+        let pings = Arc::new(hyperstor_daemon::faults::Pings::default());
         let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
@@ -215,6 +218,7 @@ impl Cluster {
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
+                    pings: Some(pings.clone()),
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -257,6 +261,7 @@ impl Cluster {
             partitions,
             faulty,
             commit_delays,
+            pings,
             io_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
         }
@@ -295,6 +300,7 @@ impl Cluster {
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
             commit_delays: Some(self.commit_delays.clone()),
+            pings: Some(self.pings.clone()),
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -1813,6 +1819,127 @@ fn peers_report_a_dead_node_before_the_map_service_notices() {
     );
     let (map, _) = c.stop();
     assert!(!map.nodes[&2].up);
+}
+
+/// Pings go over UDP (D185). On the pilot, a ping's TCP connection that
+/// lost a segment waited 200 ms for its retransmission, the pings behind
+/// it with it, and a healthy peer was reported silent. Here every TCP ping
+/// to node 2 is lost for 3 s, ten times the peer timeout, while its UDP
+/// pings are answered: no one reports it, and it is never marked down.
+#[test]
+fn lost_tcp_pings_report_no_one() {
+    let peer = std::time::Duration::from_millis(300);
+    let c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        // Liveness by heartbeats only after 3 s: peer reports decide.
+        std::time::Duration::from_millis(3000),
+        peer,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.pings.lose_tcp(2, true);
+    let downs = with_client(meta, 6, |cl| async move {
+        let t = std::time::Instant::now();
+        let mut downs = 0;
+        while t.elapsed() < std::time::Duration::from_secs(3) {
+            cl.refresh_map().await.unwrap();
+            downs += usize::from(!cl.map().nodes[&2].up);
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        downs
+    });
+    c.pings.lose_tcp(2, false);
+    assert_eq!(downs, 0, "node 2 was marked down while answering over UDP");
+    c.stop();
+}
+
+/// A peer that answers no UDP pings, an older build during a rolling
+/// upgrade or one behind a firewall that drops UDP, is pinged over TCP
+/// (D185): it stays up past the time it is logged as answering over TCP
+/// only, and when it dies its peers report it before the map service's
+/// own timeout (3 s here) would.
+#[test]
+fn a_peer_without_udp_is_pinged_over_tcp() {
+    let peer = std::time::Duration::from_millis(300);
+    let mut c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        std::time::Duration::from_millis(3000),
+        peer,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.kill(2);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    c.pings.start_without_udp(2);
+    c.restart(2);
+    let downs = with_client(meta, 7, |cl| async move {
+        wait_map(&cl, "node 2 up", |m| m.nodes[&2].up).await;
+        let t = std::time::Instant::now();
+        let mut downs = 0;
+        while t.elapsed() < std::time::Duration::from_secs(6) {
+            cl.refresh_map().await.unwrap();
+            downs += usize::from(!cl.map().nodes[&2].up);
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        downs
+    });
+    assert_eq!(downs, 0, "node 2 without UDP was marked down");
+    c.kill(2);
+    let t = std::time::Instant::now();
+    with_client(meta, 8, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(2000),
+        "node 2 marked down after {:?}: its peers didn't report it",
+        t.elapsed()
+    );
+    c.stop();
+}
+
+/// A node cut off from its peers while it still heartbeats to the map
+/// service is reported by them and marked down (D40): a partition cuts its
+/// pings over UDP as well as over TCP (D185), as a real one would.
+#[test]
+fn a_node_cut_off_from_its_peers_is_reported() {
+    let peer = std::time::Duration::from_millis(300);
+    let c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        // Liveness by heartbeats only after 3 s: peer reports decide.
+        std::time::Duration::from_millis(3000),
+        peer,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    c.partitions.cut(2, 0);
+    c.partitions.cut(2, 1);
+    let t = std::time::Instant::now();
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(2000),
+        "node 2 marked down after {:?}: its peers didn't report it",
+        t.elapsed()
+    );
+    c.partitions.heal_all();
+    c.stop();
 }
 
 /// A node is marked up only once every device of it is open (I188): a

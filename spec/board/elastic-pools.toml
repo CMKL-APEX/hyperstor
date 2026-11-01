@@ -6,5 +6,5 @@ updated = 2026-11-01
 milestone = "HS18"
 branch = "feature/elastic-pools"
 prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124, 125, 126, 127, 130, 131, 132]
-now = "Stages 4–5 and D185 on the pilot: all three hosts run f1a3e91, followers first, health ok throughout; the autoscaler split the cache pool 64 → 128 → 256 → 512 PGs in about 3.5 min, its data kept (free space unchanged); to main in #131"
+now = "Stages 4–5 and D188 on the pilot: all three hosts run f1a3e91, followers first, health ok throughout; the autoscaler split the cache pool 64 → 128 → 256 → 512 PGs in about 3.5 min, its data kept (free space unchanged); to main in #131"
 next = "Merge #131 when the owner says so"

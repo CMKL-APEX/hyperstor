@@ -28,13 +28,17 @@ service ClusterService {
   // changes. Write.
   rpc SetDeviceWeight(SetDeviceWeightRequest) returns (SetDeviceWeightResponse);
 
+  // Sets the fullness thresholds every device is held to (04-decisions.md
+  // D27, D182); one not given stays as it is. Write.
+  rpc SetFullRatios(SetFullRatiosRequest) returns (SetFullRatiosResponse);
+
   // Appends a device to a node (04-decisions.md D167): the node's next
   // device, at weight 0 until it reports its capacity, so nothing moves
   // until the node runs it (restarted with one more --shard). Write.
   rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
 
   // Removes a device (24-pools-and-devices.md §27.2.5, 04-decisions.md
-  // D175, D182): it is taken out, and an operation follows its PGs off it,
+  // D175, D186): it is taken out, and an operation follows its PGs off it,
   // then removes it from the map, with its node if it was the node's last;
   // neither id is given again, and the device's data is left as it is.
   // Refused when a pool using it would keep fewer copies than its min, or,
@@ -53,7 +57,7 @@ service ClusterService {
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
   // (D164) or failure domain, and PGs move to match, or its name; or
   // doubles its PG count, splitting its PGs in place, a few at a time,
-  // each paused briefly (§27.5, D173, D183). Refused for .meta, when its
+  // each paused briefly (§27.5, D173, D187). Refused for .meta, when its
   // devices would span fewer failure domains than the pool's copies, when
   // they mix hard disks and flash unless forced (D172), for a name another
   // pool has, and for a count that isn't twice the pool's or while it
@@ -248,6 +252,17 @@ message GetStatusResponse {
   // Where storage nodes and clients reach the map service (the D5
   // protocol), for clients that start from the API.
   string map_address = 7 [json_name = "map_address"];
+  // The fullness thresholds devices are held to (04-decisions.md D27, D182).
+  FullRatios full_ratios = 8 [json_name = "full_ratios"];
+}
+
+// Percentages of a device's data area, to a tenth of a percent: past
+// `nearfull` it warns, past `backfillfull` it takes no backfill, past
+// `full` it refuses what would grow its used space.
+message FullRatios {
+  double nearfull = 1;
+  double backfillfull = 2;
+  double full = 3;
 }
 
 message Reason {
@@ -322,7 +337,7 @@ message Pool {
   // The PGs placement goes by (D173): below pg_count after a split, until
   // the new PGs move to their own devices.
   uint32 placement_count = 16 [json_name = "placement_count"];
-  // A split under way (D183): to twice pg_count, with this many PGs split.
+  // A split under way (D187): to twice pg_count, with this many PGs split.
   bool splitting = 17;
   uint32 split_done = 18 [json_name = "split_done"];
   // Whether the map service doubles its PG count as devices are added
@@ -424,6 +439,19 @@ message SetDeviceWeightResponse {
   double weight = 2;
 }
 
+message SetFullRatiosRequest {
+  // Between 50 and 99, nearfull < backfillfull < full; absent: unchanged.
+  optional double nearfull = 1;
+  optional double backfillfull = 2;
+  optional double full = 3;
+}
+
+message SetFullRatiosResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  FullRatios ratios = 2;
+}
+
 message AddDeviceRequest {
   uint32 node = 1;
   // IP:PORT where the node's new reactor will listen.
@@ -496,7 +524,7 @@ message SetPoolRequest {
   // Place on every device, as pools made before class sets do (D171);
   // classes must then be empty.
   bool every_device = 6 [json_name = "every_device"];
-  // Twice the pool's PG count: the pool splits (D183).
+  // Twice the pool's PG count: the pool splits (D187).
   optional uint32 pg_count = 7 [json_name = "pg_count"];
   // Turns the autoscaler on or off for the pool (D174, D184).
   optional bool autoscale = 8;

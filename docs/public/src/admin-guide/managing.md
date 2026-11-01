@@ -256,6 +256,33 @@ A pool's usable space (`hyperstorctl pools`) counts what it can hold
 with each copy on a different host (or rack): with as many hosts as
 copies, the smallest host bounds it.
 
+## Full devices
+
+A thin-provisioned cluster can run out of space. Each device is held to
+three thresholds, percentages of its data area, the same for every
+device:
+
+| Threshold | Default | Past it |
+|---|---|---|
+| `nearfull` | 85 % | Kept for warnings; `hyperstorctl status` doesn't show them yet |
+| `backfillfull` | 90 % | No PG is backfilled onto the device; a PG that needs it waits, degraded or remapped, until there is room |
+| `full` | 95 % | The device refuses what would grow its used space: new objects and writes to blocks not yet written |
+
+Past `full`, overwrites of written blocks, deletes, discards and
+snapshot deletes still work, so you can always free space. A refused
+write reaches a host's block device as `ENOSPC`. Free space by deleting
+volumes or snapshots and purging the trash, or add devices.
+
+```sh
+hyperstorctl full-ratios                       # the thresholds now
+hyperstorctl full-ratios --full 97             # one or more of them
+```
+
+Each is between 50 and 99, with `nearfull` below `backfillfull` below
+`full`. Setting them to anything but the defaults changes the map's
+format: do it only once every storage node and map service member runs
+a build that has `hyperstorctl full-ratios`.
+
 ## Adding a device to a node
 
 A node can take more devices while the cluster runs (D167). On the
@@ -286,7 +313,7 @@ run rewrites).
 
 ## Removing a device
 
-A device leaves once its data has moved (D175, D182):
+A device leaves once its data has moved (D175, D186):
 
 ```sh
 hyperstorctl device remove --device 1001 --dry-run   # what would move; nothing changes
@@ -395,13 +422,13 @@ hyperstorctl pool set --pool 1 --pgs 128 --wait 600
 The map service splits a few PGs at a time, the clean ones. Each PG's
 devices pause its I/O for a moment, move the objects that now belong to
 the new PG to its keys, and report; once all have, clients use the new
-PG (D183). Volumes stay attached and writes go on, retried over each
+PG (D187). Volumes stay attached and writes go on, retried over each
 pause. `hyperstorctl pools` shows how far it has got. The new PGs start
 on their parents' devices; then, whenever every PG of the pool is clean,
 the map service places a few more on their own devices, and they move
 under the backfill budget, until all are placed. A cache pool keeps its data
 through all of it: its new PGs are copied to their devices, not started
-empty, and a restart doesn't empty its devices either (D185). A split is refused for
+empty, and a restart doesn't empty its devices either (D188). A split is refused for
 any count but twice the pool's, while one runs, and until the last
 one's PGs have moved. A device that was down during the
 split catches up when it returns.
