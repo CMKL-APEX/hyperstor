@@ -99,10 +99,11 @@ covered by tests that run on every change.
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
-| Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates | Done |
+| Fencing one volume of a shared client: a lease identity per attached volume, with delegates acting under it | Done |
 | Client readahead | Planned |
 | hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume | Done |
-| The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering | Planned |
+| The glidex hyperstor driver (glidex #177): create, delete, expand, stage through hyperstor-vhost, images as golden snapshots and clones | Done |
+| Metering of hyperstor disks in glidex | Planned |
 
 ## HS4: Snapshots, clones and the host read cache
 
@@ -111,7 +112,7 @@ covered by tests that run on every change.
 | Engine: chunk versions read through layers, and merged without copying | Done |
 | Snapshots, clones, rollback, flatten and snapshot deletion | Done |
 | Consistency groups | Done |
-| Paged checkpoints: only the pages changed since the last (D105) | Done |
+| Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
 
 ## HS18: Pools and devices at run time
@@ -174,7 +175,7 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to (D115), its settings; in the API, hyperstorctl and the UI | Done |
+| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI | Done |
 | Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
 | The audit log bounded after a retry storm: repeated refusals summarised a minute at a time, and a day written as numbered parts per member of at most 16 MiB, merged on read and pruned whole | Done |
 | Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI | Done |

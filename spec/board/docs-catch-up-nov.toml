@@ -1,0 +1,8 @@
+title = "Public docs caught up with the implementation (November)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH"
+started = 2026-11-01
+updated = 2026-11-01
+branch = "docs/catch-up-nov"
+now = "Guides, developer guide, README and landing page caught up with ~70 PRs; reference pages cleaned of decision numbers; glidex driver marked done (glidex #177) with metering planned; pools and devices moved to their own admin page"
+next = "A pull request, once the owner has looked at the branch"

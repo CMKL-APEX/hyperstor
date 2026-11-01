@@ -6,14 +6,18 @@ to each machine.
 ## Requirements
 
 - **Linux** on x86-64 (other architectures are untested), with io_uring
-  enabled: Linux 5.6 or later, and a current long-term kernel is
-  recommended. Some distributions turn io_uring off with the
-  `kernel.io_uring_disabled` sysctl; it must be `0`.
+  enabled. `hyperstor-install check` fails below Linux 5.19 and warns
+  below 6.1, which is what Hyperstor is tested on. Some distributions
+  turn io_uring off with the `kernel.io_uring_disabled` sysctl; it must
+  be `0`.
 - **Rust** 1.88 or later, with cargo.
 - For storage devices: a filesystem that supports `O_DIRECT` for device
   files, or whole block devices.
+- For the web UI: [bun](https://bun.sh), to build it (optional; without
+  it, the management service serves a simpler built-in dashboard).
 - TCP connectivity between all storage nodes, and from clients to the map
-  service and to every storage node. See the security note in
+  service and to every storage node; UDP too between storage nodes (see
+  [Planning a cluster](planning.md#network)). See the security note in
   [Running a cluster](index.md).
 
 ## Building
@@ -30,10 +34,21 @@ cargo build --release
 | `target/release/hyperstord` | every storage node | [storage node](storage-nodes.md) |
 | `target/release/hyperstor-bench` | any host, optional | [load generator](benchmarking.md) |
 | `target/release/hyperstorctl` | any host that reaches the cluster API | [managing a cluster](managing.md) |
+| `target/release/hyperstor-mgmt`, `hyperstor-authd` | the map service host | [management service](../reference/hyperstor-mgmt.md) and its [password helper](../reference/hyperstor-authd.md) |
+| `target/release/hyperstor-vhost` | hosts that run VMs | [VM disks](../reference/hyperstor-vhost.md) |
+| `target/release/hyperstor-ublk` | any host, optional | [volumes as block devices](../reference/hyperstor-ublk.md) |
 | `target/release/hyperstor-install` | run from the build directory | [installer](../reference/hyperstor-install.md) |
 
 Build once, on a machine with the same CPU architecture and a C library
 no newer than the target hosts', and copy the binaries.
+`hyperstor-install` installs the binaries found beside it.
+
+The web UI is built separately, and installed with `--ui`:
+
+```sh
+(cd crates/hyperstor-mgmt/ui && bun install && bun run build)   # → dist/
+sudo target/release/hyperstor-install install --ui crates/hyperstor-mgmt/ui/dist
+```
 
 ## Installing a trial cluster
 
@@ -54,11 +69,13 @@ hyperstorctl io-test
 `install` runs the checks, copies the binaries to `/usr/local/bin`,
 creates the `hyperstor` user, writes the configuration in
 `/etc/hyperstor`, the cluster's certificates in `/etc/hyperstor/pki`,
-and the units, and starts `hyperstor-meta` and
-`hyperstord@0` to `hyperstord@2`. Everything listens on `127.0.0.1`:
-the cluster API on 8850, the map service on 8849, the storage nodes on
-9100 to 9102. Device files go to `/var/lib/hyperstor` (4 GiB each,
-sparse).
+and the units, and starts `hyperstor-meta`, `hyperstord@0` to
+`hyperstord@2`, the management service `hyperstor-mgmt` and its
+password helper `hyperstor-authd`. The cluster API (8850), the map
+service (8849) and the storage nodes (9100 to 9102) listen on
+`127.0.0.1`; the management service listens on every address over
+HTTPS, on 8852 (`--mgmt-listen loopback` keeps it on `127.0.0.1`). Device
+files go to `/var/lib/hyperstor` (4 GiB each, sparse).
 
 The installer is convergent: run it again after rebuilding and it
 updates what changed (binaries, configuration, units) and restarts the
@@ -72,6 +89,7 @@ All options are in the [reference](../reference/hyperstor-install.md).
 and the `hyperstor-admin` group: run it with `sudo`, or join the group
 (`sudo usermod -aG hyperstor-admin $USER`, then log in again).
 
+To log in to the web UI, see [Logins and roles](managing.md#logins-and-roles).
 Then see [Managing a cluster](managing.md).
 
 ## Joining hosts with tokens
@@ -136,7 +154,17 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
 A member's host can also run a storage node: list the nodes in the
 cluster file, and give each member `--role both --node N` (the first
 with `--cluster`, the others with `--join`); a joined member gets the
-file, and so its node, from the first.
+file, and so its node, from the first:
+
+```sh
+sudo hyperstor-install install --cluster cluster.txt --role both --node 0 \
+    --members $M --member-id 1
+sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
+    --role both --node 1 --members $M --member-id 2
+```
+
+`--node` is checked before the token is sent, so a run refused for it
+leaves the token usable.
 
 Tokens are made and used through the leader; the other members refuse
 with the leader's address. Before the members have formed a group, the
@@ -182,7 +210,8 @@ sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user g
 
 `--vhost-user glidex` lets glidex's control plane attach volumes and its
 hypervisors open their sockets. Restarting the service (an upgrade, say)
-keeps the VMs' disks.
+keeps the VMs' disks; `--no-vhost` and `uninstall` detach them first.
+See [VM disks](managing.md#vm-disks).
 
 ## Running as services by hand
 

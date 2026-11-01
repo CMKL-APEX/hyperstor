@@ -49,16 +49,16 @@ pool ID NAME KIND [OPTION VALUE ...]
 |---|---|
 | `ID` | The pool's number, used by clients. Pool 0 is `.meta`, which the map service adds itself, for volume headers; a file can't declare it |
 | `NAME` | A name, for people |
-| `KIND` | `replicated`, or `ecK+M` (for example `ec4+2`) for erasure coding, which is not served yet |
+| `KIND` | `replicated`; `cache`, for data that can be recomputed (one copy unless `copies` says otherwise, nothing recovered when a device fails); or `ecK+M` (for example `ec4+2`) for erasure coding, which is not served yet |
 
 | Option | Default | Meaning |
 |---|---|---|
-| `size` | 3 (K+M for `ec`) | Copies of each chunk |
-| `min` | 2 (K+1 for `ec`) | Copies that must be reachable to accept a write. The default doesn't follow `size`: with `size 2`, set `min 1` to keep writing while one copy is down |
+| `size` (or `copies`) | 3 (1 for `cache`, K+M for `ec`) | Copies of each chunk |
+| `min` | 2 (1 for `cache`, K+1 for `ec`) | Copies that must be reachable to accept a write. The default doesn't follow `size`: with `size 2`, set `min 1` to keep writing while one copy is down |
 | `pgs` | 128 | Placement groups; a power of two |
 | `chunk` | 4194304 | Chunk size in bytes; a multiple of 4096 |
 | `domain` | `host` | Failure domain: `device`, `host` or `rack` |
-| `class` | any | Only use devices of these classes, comma-separated (`nvme,ssd`; D164). A device's class is its kind (`nvme`, `ssd`, `hdd`, `file`) unless set with `hyperstorctl device class` |
+| `class` | any | Only use devices of these classes, comma-separated (`nvme,ssd`). A device's class is its kind (`nvme`, `ssd`, `hdd`, `file`) unless set with `hyperstorctl device class` |
 
 ## Errors
 
