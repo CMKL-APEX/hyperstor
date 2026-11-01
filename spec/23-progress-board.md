@@ -63,7 +63,7 @@ against the tests.
 | HS0 | Local storage engine and reactor | 7 | 3 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
-| HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |
+| HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |
 | HS4 | Snapshots, clones and the host read cache | 4 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
 | HS5b | Lower CPU cost per operation | 0 | 0 | 0 |
