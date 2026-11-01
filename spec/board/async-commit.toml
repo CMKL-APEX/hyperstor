@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS0"
 branch = "investigate/mib-reads"
-prs = [94, 97, 100, 129, 134, 145]
+prs = [94, 97, 100, 129, 134, 145, 152]
 now = "Stage 2 (D190) installed on the pilot and load-tested: 4 KiB reads at QD32 3.7× faster, no holds or silences; 1 MiB reads were slower only because pool 1 had moved onto two NVMe devices, now removed from it (02-benchmarks.md, 2026-11-01)"
 next = "Why 1 MiB reads lose throughput above QD1 when a synthetic test does not; node 0's 170 ms process-wide pause; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes)"
