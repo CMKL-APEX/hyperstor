@@ -65,9 +65,10 @@ pub struct PoolInfo {
     /// from it (D180).
     pub added: BTreeSet<u32>,
     pub removed: BTreeSet<u32>,
-    /// The PGs placement goes by (D173): PG `p` is placed as PG
-    /// `p % placement`, so a PG a split made stays on its parent's devices
-    /// until this rises. `pg_count` but after a split.
+    /// The PGs placed on their own (D173): a PG at or past it is placed
+    /// as its parent ([`PoolInfo::placed_as`]), so a PG a split made stays
+    /// on its parent's devices until this rises past it. `pg_count` but
+    /// after a split, until it has risen.
     pub placement: u32,
     /// A split under way (D183): the count doubles PG by PG.
     pub split: Option<Split>,
@@ -96,6 +97,22 @@ impl PoolInfo {
                 .iter()
                 .flat_map(move |s| s.done.iter().map(move |p| p + n)),
         )
+    }
+
+    /// The PG whose placement PG `pg` takes (D173): itself below the
+    /// placement count, else its parent, the PG it was split from. Raising
+    /// the count by k moves k PGs to their own devices and no other.
+    pub fn placed_as(&self, pg: u32) -> u32 {
+        let full = if self.split.is_some() {
+            self.pg_count * 2
+        } else {
+            self.pg_count
+        };
+        if pg < self.placement || full < 2 {
+            pg
+        } else {
+            pg - full / 2
+        }
     }
 
     /// The PG of a stored key (24-pools-and-devices.md §27.5): by
@@ -520,6 +537,12 @@ impl ClusterMap {
         if p.split.is_some() {
             return Err(format!("pool {pool} is splitting already"));
         }
+        if p.placement < p.pg_count {
+            return Err(format!(
+                "pool {pool}'s last split is still moving its new PGs ({} of {} placed)",
+                p.placement, p.pg_count
+            ));
+        }
         if p.pg_count >= 1 << 16 {
             return Err(format!("pool {pool} has {} PGs, the most", p.pg_count));
         }
@@ -686,9 +709,8 @@ impl ClusterMap {
                 &devs_in
             };
             let topo = Topology::new(&rule, devs);
-            let by = p.placement.clamp(1, p.pg_count.max(1));
             for pg in p.pgs().collect::<Vec<_>>() {
-                let members = topo.place(pg % by);
+                let members = topo.place(p.placed_as(pg));
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
                     PoolKind::Replicated | PoolKind::Cache => members,
@@ -1699,6 +1721,46 @@ mod tests {
             .map(|k| hyperstor_placement::key_pg(3, k, n * 2))
             .collect();
         assert_eq!(routed(&m), full);
+    }
+
+    /// D173: after a split, a PG at or past the placement count is placed
+    /// as its parent; raising the count by k places k more on their own
+    /// and moves no other PG.
+    #[test]
+    fn raising_the_placement_count_moves_only_the_pgs_it_passes() {
+        let mut m = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        m.add_pool(replicated_pool(1, "rbd", 3, 16));
+        m.recompute();
+        m.start_split(1).unwrap();
+        for pg in 0..16 {
+            assert!(m.mark_split(1, pg) && m.flip_split(1, pg));
+        }
+        m.recompute();
+        assert!(m.start_split(1).unwrap_err().contains("still moving"));
+        let up = |m: &ClusterMap| -> Vec<Vec<u32>> {
+            (0..32).map(|pg| m.pgs[&(1, pg)].up.clone()).collect()
+        };
+        let before = up(&m);
+        for pg in 16..32 {
+            assert_eq!(before[pg], before[pg - 16], "on its parent's devices");
+        }
+        m.pools.get_mut(&1).unwrap().placement = 20;
+        m.recompute();
+        let after = up(&m);
+        let moved: Vec<usize> = (0..32).filter(|&pg| after[pg] != before[pg]).collect();
+        assert!(moved.iter().all(|pg| (16..20).contains(pg)), "{moved:?}");
+        assert!(!moved.is_empty(), "eight hosts: some move");
+        m.pools.get_mut(&1).unwrap().placement = 32;
+        m.recompute();
+        assert_ne!(
+            m.encode()[..4],
+            10u32.to_le_bytes(),
+            "all placed: format 10 no more"
+        );
     }
 
     /// A PG whose acting set holds `up`'s devices in another order takes

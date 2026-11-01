@@ -933,8 +933,8 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
 }
 
 /// §27.5, D173, D183: `hyperstorctl pool set --pgs` doubles a pool's PG
-/// count, splitting PG by PG while volumes are written; the new PGs stay
-/// on their parents' devices; what was written before and during the
+/// count, splitting PG by PG while volumes are written; the new PGs then
+/// move to their own devices; what was written before and during the
 /// split reads back, also after a node restarts; a count that isn't
 /// twice the pool's is refused; audited.
 #[test]
@@ -998,26 +998,25 @@ fn a_pool_splits_its_pgs_in_place() {
         (p["pg_count"].as_u64() == Some(128) && p["splitting"].as_bool() != Some(true))
             .then_some(())
     });
-    let pools = c.ctl(&["pools"]).ok();
-    assert!(
-        pools.has("pool 1: its 128 PGs are placed as 64"),
-        "{}",
-        pools.out
+    // Then the new PGs move to their own devices, a few at a time (D173).
+    wait_for(
+        "every PG of pool 1 placed on its own, and clean",
+        300,
+        || {
+            let s = c.ctl(&["status", "--json"]);
+            let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+            let p = v["pools"]
+                .as_array()?
+                .iter()
+                .find(|p| p["id"].as_u64() == Some(1))?
+                .clone();
+            (p["placement_count"].as_u64() == Some(128) && c.settled()).then_some(())
+        },
     );
+    assert!(!c.ctl(&["pools"]).ok().has("placed as"));
     let pgs = c.ctl(&["pgs", "--pool", "1", "--json"]).ok();
     let v: serde_json::Value = serde_json::from_str(&pgs.out).unwrap();
-    let list = v["pgs"].as_array().unwrap();
-    assert_eq!(list.len(), 128);
-    // Each new PG on its parent's devices.
-    let up = |pg: u64| -> String {
-        list.iter()
-            .find(|p| p["pg"].as_u64().unwrap_or(0) == pg)
-            .map(|p| p["up"].to_string())
-            .unwrap()
-    };
-    for pg in 0..64 {
-        assert_eq!(up(pg), up(pg + 64), "PG {pg}");
-    }
+    assert_eq!(v["pgs"].as_array().unwrap().len(), 128);
     assert!(read(&c, "0") == before, "written before the split");
     assert!(read(&c, "16M") == during, "written during it");
     c.kill_node(1);

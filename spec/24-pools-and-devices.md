@@ -261,10 +261,10 @@ isn't checked against the pools that use its class.
 
 ### 27.5 PG count
 
-Stages 5a and 5b built (I218, I219): the engine's move, a device's
-split, the protocol and `pool set --pgs`. Clients switch to a split
-PG's sibling PG by PG (D183). The placement count rising (5c) and the
-autoscaler (5d) are next.
+Stages 5a to 5c built (I218–I220): the engine's move, a device's
+split, the protocol and `pool set --pgs`, and the placement count
+rising. Clients switch to a split PG's sibling PG by PG (D183). The
+autoscaler (5d) is next.
 
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting
   each copy. A pool on 6 devices with 3 copies wants about 200 PGs, so

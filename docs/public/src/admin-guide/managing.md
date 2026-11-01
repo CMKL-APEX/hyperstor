@@ -396,9 +396,12 @@ The map service splits a few PGs at a time, the clean ones. Each PG's
 devices pause its I/O for a moment, move the objects that now belong to
 the new PG to its keys, and report; once all have, clients use the new
 PG (D183). Volumes stay attached and writes go on, retried over each
-pause. `hyperstorctl pools` shows how far it has got. The new PGs stay
-on their parents' devices for now. A split is refused for any count but
-twice the pool's, and while one runs. A device that was down during the
+pause. `hyperstorctl pools` shows how far it has got. The new PGs start
+on their parents' devices; then, whenever every PG of the pool is clean,
+the map service places a few more on their own devices, and they move
+under the backfill budget, until all are placed. A split is refused for
+any count but twice the pool's, while one runs, and until the last
+one's PGs have moved. A device that was down during the
 split catches up when it returns.
 
 ## Deleting a pool
