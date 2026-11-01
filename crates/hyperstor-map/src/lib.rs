@@ -145,6 +145,69 @@ pub struct ClusterMap {
     /// them. Why: clients, the host read cache and copies on devices that
     /// were down name data by pool id.
     pub deleted_pools: BTreeSet<u32>,
+    /// The fullness thresholds every device is held to (04-decisions.md
+    /// D27, D182).
+    pub full_ratios: FullRatios,
+    /// Devices past `backfillfull`, from their space reports to the
+    /// leader (D182): primaries start no backfill to them.
+    pub backfillfull: BTreeSet<u32>,
+}
+
+/// Fullness thresholds, in thousandths of a device's data region
+/// (04-decisions.md D27, D182): past `nearfull` a device warns, past
+/// `backfillfull` it takes no backfill, past `full` it refuses what would
+/// grow its used space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullRatios {
+    pub nearfull: u16,
+    pub backfillfull: u16,
+    pub full: u16,
+}
+
+impl Default for FullRatios {
+    fn default() -> Self {
+        Self {
+            nearfull: 850,
+            backfillfull: 900,
+            full: 950,
+        }
+    }
+}
+
+impl FullRatios {
+    /// Between 50 % and 99 %, each below the next (D27).
+    pub fn check(&self) -> Result<(), String> {
+        let ok = 500 <= self.nearfull
+            && self.nearfull < self.backfillfull
+            && self.backfillfull < self.full
+            && self.full <= 990;
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "ratios must be between 50% and 99%, nearfull < backfillfull < full: got {}",
+                self
+            ))
+        }
+    }
+
+    /// Used blocks a device of `total` blocks may have under `ratio`.
+    pub fn limit(total: u64, ratio: u16) -> u64 {
+        (total as u128 * ratio as u128 / 1000) as u64
+    }
+}
+
+impl std::fmt::Display for FullRatios {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pct = |r: u16| format!("{}.{}%", r / 10, r % 10);
+        write!(
+            f,
+            "nearfull {} backfillfull {} full {}",
+            pct(self.nearfull),
+            pct(self.backfillfull),
+            pct(self.full)
+        )
+    }
 }
 
 /// What a device is (24-pools-and-devices.md §27.2.4), as its node
@@ -760,10 +823,13 @@ impl ClusterMap {
         // Format 2 adds the blocklist, 3 the devices out by the down-out
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set, 6 class sets, 7
-        // a pool's devices added and removed, 8 deleted pools' ids; a map
-        // without them keeps the older format, which nodes from before
-        // them read.
-        let format = if !self.deleted_pools.is_empty() {
+        // a pool's devices added and removed, 8 deleted pools' ids, 9
+        // fullness ratios other than the defaults and devices past
+        // `backfillfull`; a map without them keeps the older format, which
+        // nodes from before them read.
+        let format = if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+            9
+        } else if !self.deleted_pools.is_empty() {
             8
         } else if self
             .pools
@@ -895,13 +961,21 @@ impl ClusterMap {
                 e.u32(*p);
             }
         }
+        if format >= 9 {
+            let r = &self.full_ratios;
+            e.u16(r.nearfull).u16(r.backfillfull).u16(r.full);
+            e.u32(self.backfillfull.len() as u32);
+            for d in &self.backfillfull {
+                e.u32(*d);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=8).contains(&v) {
+        if !(1..=9).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1042,6 +1116,14 @@ impl ClusterMap {
         }
         if v >= 8 {
             m.deleted_pools = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 9 {
+            m.full_ratios = FullRatios {
+                nearfull: d.u16()?,
+                backfillfull: d.u16()?,
+                full: d.u16()?,
+            };
+            m.backfillfull = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -1379,6 +1461,53 @@ mod tests {
         let back = ClusterMap::decode(&m.encode()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.next_pool_id(), top + 1);
+    }
+
+    /// D27, D182: fullness ratios other than the defaults are kept in
+    /// format 9, and only then.
+    #[test]
+    fn full_ratios_round_trip_in_format_9_only_when_set() {
+        let mut m = map();
+        assert_ne!(
+            m.encode()[..4],
+            9u32.to_le_bytes(),
+            "defaults: older format"
+        );
+        assert_eq!(m.full_ratios.check(), Ok(()));
+        m.full_ratios = FullRatios {
+            nearfull: 600,
+            backfillfull: 700,
+            full: 805,
+        };
+        assert_eq!(m.encode()[..4], 9u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.full_ratios = FullRatios::default();
+        m.backfillfull.insert(2);
+        assert_eq!(
+            m.encode()[..4],
+            9u32.to_le_bytes(),
+            "a device past backfillfull"
+        );
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.full_ratios.full = 805;
+        assert_eq!(
+            m.full_ratios.to_string(),
+            "nearfull 85.0% backfillfull 90.0% full 80.5%"
+        );
+        assert_eq!(FullRatios::limit(1000, 805), 805);
+        for (n, b, f) in [
+            (499, 700, 800),
+            (700, 700, 800),
+            (600, 900, 800),
+            (600, 700, 991),
+        ] {
+            let r = FullRatios {
+                nearfull: n,
+                backfillfull: b,
+                full: f,
+            };
+            assert!(r.check().is_err(), "{r}");
+        }
     }
 
     /// D180: a pool's devices added and removed are kept in format 7,
