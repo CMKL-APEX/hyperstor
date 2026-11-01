@@ -1,10 +1,10 @@
 title = "Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS18"
-branch = "feat/cache-grace"
-prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124, 125, 126, 127, 130, 131, 132, 137, 138, 140, 141]
-now = "Merged into main (#131) and the feature branch deleted; the pilot runs main (c1639ee) on all three hosts, health ok. Building D189 (I227): cache PGs wait for a down node up to their pool's grace, reads miss, a write moves the PG"
-next = "D189 PR to main, merged on the owner's word; then the pilot"
+branch = "main"
+prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124, 125, 126, 127, 130, 131, 132, 137, 138, 140, 141, 143]
+now = "Merged and deployed: stages 1–5 (#131) and D189 (#143) are on main, and the pilot runs main (628ae52, with #145 and #147) on all three hosts, upgraded leader last, health ok. Cache PGs wait up to 60 s for a down node: in the #145 rollout prism2's node was down for 2 s and its cache PGs waited and kept their data"
+next = "Nothing open here; S3 sooner (points 128–137) is not started and would be its own workstream"
