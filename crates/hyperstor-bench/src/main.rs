@@ -448,6 +448,12 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
             ("1 MiB writes", true, 1 << 20, 4),
             ("1 MiB reads", false, 1 << 20, 4),
         ] {
+            // HS_BENCH_ONLY="1 MiB reads, QD4" runs only the tests named.
+            if let Ok(only) = std::env::var("HS_BENCH_ONLY")
+                && !only.split(';').any(|o| o == format!("{name}, QD{qd}"))
+            {
+                continue;
+            }
             let lats = Rc::new(RefCell::new(Vec::new()));
             let t = Instant::now();
             let hs: Vec<_> = (0..qd)

@@ -22,6 +22,7 @@ The usage line lists the most common modes; all of them:
 | Environment variable | Default | Meaning |
 |---|---|---|
 | `HS_BENCH_SECS` | 3 | Seconds per test |
+| `HS_BENCH_ONLY` | every test | `remote`: only the tests named, as in its output after the address (`1 MiB reads, QD4`), separated by `;` |
 | `HS_DEFER_MAX` | | Override the size up to which the engine defers overwrites through its log, in bytes (`engine` and `mem`) |
 
 Output is Markdown table rows. Files given to `raw`, `engine` and
