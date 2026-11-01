@@ -1,15 +1,19 @@
 # Comparison with other systems
 
-Hyperstor is early: today it has replicated pools, the replicated map
-service, failure handling, recovery, scrub, volumes with leases,
-snapshots, clones and consistency groups, used through a Rust client
-library or, for testing, a ublk block device. Erasure coding, the front
-ends for VMs and remote hosts, RDMA, GPU-direct, S3 and the filesystem
-are designed but not built.
+Hyperstor is early. Today it has replicated pools that grow and shrink
+with their devices, the replicated map service, failure handling,
+recovery, scrub, volumes with leases and per-volume fencing, snapshots,
+clones and consistency groups. Volumes are used as VM disks over
+vhost-user-blk (Cloud Hypervisor and QEMU), as ublk block devices, or
+through a Rust client library. Administration has a CLI and a web UI
+with logins, roles, a trash, an audit log and long operations.
+Erasure coding, NVMe-oF for remote hosts, RDMA, GPU-direct, S3 and the
+filesystem are designed but not built, and NFS is a proposal.
 The systems below are mature products; this page compares **designs**,
 and says where Hyperstor is behind.
 
-Product facts are as of October 2026, from the sources in
+Product facts are as of October 2026 (Ceph's full ratios, November
+2026), from the sources in
 [References](references.md#products). Check the vendors' own pages for
 anything you rely on.
 
@@ -17,7 +21,7 @@ anything you rely on.
 
 | System | License | Data path | Protection | Metadata | Recovery of a returning copy | Front ends | GPU-direct (NVIDIA GDS list) |
 |---|---|---|---|---|---|---|---|
-| **Hyperstor** | MIT or Apache-2.0 | Own io_uring reactor, thread per core, pure Rust; kernel NVMe driver | 2–3 copies; erasure coding planned; one-copy cache pools | Raft map service (3 or 5 members); volume headers in a replicated pool | Compare content digests, send what differs | Client library, ublk (testing); vhost-user-blk, NVMe-oF, S3, filesystem planned | Planned: dma-buf and RDMA behind cuFile and hipFile |
+| **Hyperstor** | MIT or Apache-2.0 | Own io_uring reactor, thread per core, pure Rust; kernel NVMe driver | 2–3 copies; erasure coding planned; one-copy cache pools | Raft map service (3 or 5 members); volume headers in a replicated pool | Compare content digests, send what differs | vhost-user-blk (VMs), ublk, client library; NVMe-oF, S3, filesystem planned; NFS proposed | Planned: dma-buf and RDMA behind cuFile and hipFile |
 | **Ceph** (v20 Tentacle) | LGPL | BlueStore on raw devices; the Seastar-based Crimson OSD is a technology preview | Replication, erasure coding | Monitors (Paxos); CRUSH placement | PG log, then backfill | RBD, NVMe-oF gateway, S3 (RGW), CephFS | Not listed |
 | **Longhorn** (1.9) | Apache-2.0 | One engine per volume; a V2 engine on SPDK (experimental) | Replicas per volume | Kubernetes resources | Replica rebuild | iSCSI, ublk; NVMe/TCP with V2 | Not listed |
 | **OpenEBS Mayastor** | Apache-2.0 | SPDK, in Rust; huge pages and polling cores | Replicas per volume | etcd | Replica rebuild | NVMe/TCP | Not listed |
@@ -52,6 +56,12 @@ blocklist for exclusive locks.
   newer version in one log record, without copying data, and resets a
   volume to its newest snapshot in place, which suits VMs reset after
   every task.
+- **Fullness:** both use the same three ratios with the same defaults
+  (`nearfull` 85 %, `backfillfull` 90 %, `full` 95 %). In Ceph, an OSD
+  past `full` stops client writes; Hyperstor refuses only what would
+  grow a full device, so overwrites and deletes go on, and its pool space
+  counts each failure domain once, which doesn't jump when one device
+  runs ahead ([why](decisions.md#fullness-is-measured-on-each-device)).
 - **Behind:** Ceph has erasure coding, S3, a filesystem,
   multi-site replication and years of production at scale. Hyperstor has
   none of these yet.
@@ -67,8 +77,8 @@ Longhorn with an engine per volume, Mayastor through a "nexus" on SPDK.
   the kernel with SPDK and poll whole cores; Hyperstor keeps the kernel
   driver and sleeps when idle, and has yet to show how close it gets
   to SPDK on NVMe.
-- **Behind:** both ship NVMe/TCP, Kubernetes integration, backups and a
-  UI today.
+- **Behind:** both ship NVMe/TCP, Kubernetes integration and backups
+  today. Hyperstor has a web UI and VM disks, but none of those three.
 
 ### LINSTOR and DRBD
 
@@ -95,8 +105,9 @@ is why the map service runs as three or five members.
 NVMe/TCP block storage: Lightbits with its own userspace target,
 simplyblock on SPDK with erasure coding first. Both ship what Hyperstor
 plans: an NVMe-oF target and erasure-coded pools. Hyperstor's
-difference is the same object layer under VMs (vhost-user-blk, without
-NVMe-oF in between), GPU-direct reads, S3 and a filesystem.
+difference is the same object layer under VMs (vhost-user-blk, built,
+without NVMe-oF in between) and, planned, GPU-direct reads, S3 and a
+filesystem.
 
 ### DAOS
 
@@ -133,8 +144,10 @@ so the gateway stays off the data path.
 | **Kernel-friendly speed** | Pure Rust on io_uring, one thread per core, one port per reactor; no SPDK, DPDK or huge pages, devices stay visible to the host, idle cores sleep |
 | **Recovery without a log** | Content digests from the index drive peering, delta recovery and scrub: no extra persisted state, 96× less sent on a rejoin after 1 % changed |
 | **Bounded stale primaries** | Map leases fence a cut-off primary in under a second, with no synchronized clocks, and double as read leases |
-| **One writer per volume, enforced** | Volume leases and a cluster-wide blocklist; preemption for a scheduler that moves VMs |
-| **Placement that moves little** | Weighted rendezvous hashing over failure domains, by lineage so clones share placement |
+| **One writer per volume, enforced** | Volume leases and a cluster-wide blocklist, per volume: a takeover fences one disk's lease, not the host's other VMs |
+| **VM disks that outlive their server** | `hyperstor-vhost` keeps its disks across a restart or upgrade, and replays requests the hypervisor had in flight; 512e disks boot cloud images |
+| **Placement that moves little** | Weighted rendezvous hashing over failure domains, by lineage so clones share placement; weights follow capacity, and PGs split in place without copying |
+| **Fullness that keeps the cluster usable** | Per-device thresholds: overwrites and deletes go on when a device is full, backfill stops before survivors fill, and VM writes are held while space is freed |
 | **Built for AI platforms** | Cache pools for recomputable data such as offloaded KV caches; GPU-direct for NVIDIA and AMD behind the standard APIs; separate indexes tuned for block maps and for metadata (planned) |
 | **Tested against models** | Crash tests with torn writes, and an in-process fault rig with partitions and hung devices, replaying any failure exactly |
 | **Open** | MIT or Apache-2.0 |

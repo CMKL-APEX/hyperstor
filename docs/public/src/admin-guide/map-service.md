@@ -15,9 +15,12 @@ It prints the size of the map it loaded, then runs until stopped. All
 options are in the [reference](../reference/hyperstor-meta.md).
 
 With `--api 127.0.0.1:8850` it also serves the
-[cluster API](../reference/cluster-api.md), which `hyperstorctl` uses to
-report health and take devices out and in. Add `--api-tls DIR` to
-require client certificates; without it, keep the API on loopback.
+[cluster API](../reference/cluster-api.md), which `hyperstorctl`, the
+management service and other management clients use. Add `--api-tls
+DIR` to require client certificates; without it, keep the API on
+loopback. The installer also gives it a local socket (`--api-socket`),
+which root and the `hyperstor-admin` group use without a certificate,
+so an expired or lost certificate never locks the administrator out.
 
 ## Leases and failure detection
 
@@ -33,6 +36,13 @@ service has already stopped serving, because its lease ran out first.
 Nothing is copied until `--down-out-secs` pass, so a reboot moves no data
 (see [Failures and recovery](failures.md)). Shorter times detect failures
 sooner, at the cost of false alarms on a slow or busy network.
+
+Storage nodes also watch each other: a node that two others report
+silent is marked down even while its heartbeats arrive. A node marked
+down is held down for at least 2 s, longer each time it goes down again
+within 10 minutes (up to a minute), so a node that keeps going down and
+up doesn't move its PGs back and forth; health then warns that it flaps
+(see [Failures and recovery](failures.md#a-node-that-flaps)).
 
 ## Several members
 
@@ -65,8 +75,13 @@ map, and the others send nodes to it.
   that comes back catches up with the others. The cluster file seeds the
   map the first time; after that, hosts and pools you add to the file
   (on every member) are added when a leader is next elected: restart the
-  members, one at a time.
-  Removing them goes through `hyperstorctl out` and `in`.
+  members, one at a time. Hosts can also join with a token, and devices
+  and pools be added and removed with `hyperstorctl`, with no restart
+  (see [Managing a cluster](managing.md)).
+- **Any member answers** `hyperstorctl` and the web UI. What only the
+  leader knows (devices' space, when each node was last heard from,
+  flapping nodes, scrub's findings) a member that doesn't lead asks the
+  leader for, so the answers are the same wherever you ask.
 - **Members talk over mutual TLS** with their `--api-tls` certificates,
   which must name each member's address. `hyperstor-install` sets this up
   when members join the first one with a token (see

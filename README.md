@@ -7,22 +7,21 @@ behind the cuFile and hipFile APIs, and later an S3 gateway and a
 distributed filesystem, all on one replicated or erasure-coded object
 layer.
 
-**Status: early implementation.** HS0 (the local engine) and HS1 (placement,
-wire protocol, reactor, map service, storage daemon, client) are built,
-with the map service replicated over three or five members by Raft (with
-members changed at run time and a lost majority recovered), volumes with
-leases, a blocklist and forced takeovers, and `hyperstor-ublk` to serve a
-volume as a Linux block device for testing. HS4 has started: snapshots,
-consistency groups, clones, rollback, flatten and snapshot deletion that
-moves no data. HS2 (failure
-handling) is done: failure detection and peer reports, down and out,
-failed devices and slow replicas, backfill, peering, delta recovery and
-light and deep scrub by content digests, repair of a damaged primary,
-and an in-process fault-injection rig. Administration has started too: a
-cluster API over mutual TLS, `hyperstorctl` with drains as operations,
-`hyperstor-install`, which joins hosts with single-use tokens, certificate
-revocation, map backups with restore, and people's logins with roles in
-`hyperstor-mgmt`. The design is in [`spec/`](spec/README.md); what was built, how it deviates, and what
+**Status: early implementation, not for production data.** Built so
+far: the local engine and reactor (HS0) and replicated pools over TCP
+with a Raft-replicated map service and the client library (HS1); failure
+handling (HS2, done); volumes as VM disks with `hyperstor-vhost` over
+vhost-user-blk, each attached volume fenced on its own (HS3, in
+progress); snapshots, clones, consistency groups and paged checkpoints,
+with the host read cache under way (HS4); pools and devices changed at
+run time, device classes and weights, PG splits, cache pools without
+expiry or eviction, and fullness thresholds (HS18, in progress). For
+administration: the cluster API over mutual TLS, `hyperstorctl`,
+`hyperstor-install` (a trial cluster, or hosts joined with tokens),
+`hyperstor-mgmt` with password and OIDC logins, roles and a React web
+UI, and the trash, the audit log and long operations. The public
+[status page](docs/public/src/status.md) lists every item. The design is
+in [`spec/`](spec/README.md); what was built, how it deviates, and what
 to review is in [`spec/01-implementation-notes.md`](spec/01-implementation-notes.md),
 with measurements in [`spec/02-benchmarks.md`](spec/02-benchmarks.md).
 
@@ -47,9 +46,10 @@ HS_BENCH_SECS=2 target/release/hyperstor-bench remote 127.0.0.1:19000
 
 Kill one `hyperstord`: after the map service marks it down (0.8 s), writes go
 on with two copies; start it again and it receives only what it missed.
-Programs use `hyperstor-client`; for testing, `hyperstor-ublk` serves a
-volume as `/dev/ublkbN`. Front ends for VMs and remote hosts come next
-(vhost-user-blk is HS3, NVMe-oF HS5).
+Programs use `hyperstor-client`; VMs use `hyperstor-vhost`; for testing,
+`hyperstor-ublk` serves a volume as `/dev/ublkbN`. NVMe-oF for remote
+hosts is HS5. To install a trial cluster as system services instead:
+`sudo target/release/hyperstor-install install --all-in-one`.
 
 Tests: `cargo test --workspace --release` (the engine's crash test takes
 `HS_CRASH_SEEDS`). CI also checks the spec and tracks each milestone's
@@ -65,18 +65,19 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 ## Planned features
 
 - **Block volumes**: thin provisioned, expandable, with crash-consistent
-  snapshots, consistency groups and instant clones
+  snapshots, consistency groups and instant clones (built)
 - **Protection**: 2 or 3 replicas, or erasure coding (k+m) with a
   replicated write log for small writes
 - **Data path**: pure Rust on io_uring, one reactor per core; NVMe
   passthrough, SAS and SATA SSDs, and hard disks with a flash log;
   RDMA over RoCEv2 and InfiniBand without NVMe-oF
-- **Virtual machines**: vhost-user-blk for glidex VMs, a host-wide read
-  cache for images and snapshots
+- **Virtual machines**: vhost-user-blk for glidex VMs (built), a
+  host-wide read cache for images and snapshots (under way)
 - **GPU-direct storage**: one network hop into GPU memory, behind cuFile
   (GDS) and hipFile, on bare metal and in VMs
-- **Later**: an S3 gateway with S3-over-RDMA, and a distributed
-  filesystem mounted through virtio-fs and FUSE
+- **Later**: an S3 gateway with S3-over-RDMA, a distributed filesystem
+  mounted through virtio-fs and FUSE, and NFS and pNFS for it (a
+  proposal, [`spec/22-nfs.md`](spec/22-nfs.md))
 
 ## Repository layout
 
@@ -86,7 +87,8 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 | `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
 | `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
 | `.github/workflows/` | CI and documentation publishing |
-| `crates/` | Rust crates (`spec/15-operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install, mgmt, authd (`hyperstor-authd`); and test (end-to-end suite) |
+| `crates/` | Rust crates (`spec/15-operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), vhost (`hyperstor-vhost`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install (`hyperstor-install`), mgmt (`hyperstor-mgmt`, with the web UI in `crates/hyperstor-mgmt/ui`), authd (`hyperstor-authd`); and test (end-to-end suite) |
+| `deploy/` | Prometheus and Grafana configuration for the storage nodes' metrics |
 | `LICENSES/` | License texts and copyright notice |
 
 ## License

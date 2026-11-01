@@ -487,7 +487,7 @@ spec = ["11-frontends.md §11.1", "I159"]
 status = "planned"
 
 [[milestone.item]]
-what = "Fencing one volume of a shared client: a lease identity per attached volume, with D33's delegates"
+what = "Fencing one volume of a shared client: a lease identity per attached volume, with delegates acting under it"
 spec = ["06-metadata.md §9", "D33", "D150", "D151", "D152", "I186"]
 status = "done"
 tests = [
@@ -501,14 +501,14 @@ spec = ["10-volumes.md §10.1"]
 status = "planned"
 
 [[milestone.item]]
-what = "hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
-spec = ["16-glidex.md §17", "D122", "D123", "I167"]
+what = "The glidex hyperstor driver (glidex #177): create, delete, expand, stage through hyperstor-vhost, images as golden snapshots and clones; hyperstor's side: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
+spec = ["16-glidex.md §17", "D79", "D118", "D122", "D123", "I167"]
 status = "done"
 tests = ["enroll::a_management_client_enrolls_and_manages_volumes"]
 
 [[milestone.item]]
-what = "The glidex hyperstor driver: create, delete, expand, stage, images as golden snapshots and clones, metering"
-spec = ["16-glidex.md §17", "D79", "D118"]
+what = "Metering of hyperstor disks in glidex"
+spec = ["16-glidex.md §17"]
 status = "planned"
 
 [[milestone]]
@@ -548,7 +548,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Paged checkpoints: only the pages changed since the last (D105)"
+what = "Paged checkpoints: only the pages changed since the last"
 spec = ["08-engine.md §7.3", "D47", "D105", "I148", "I149"]
 status = "done"
 tests = [
@@ -1036,7 +1036,7 @@ id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
-what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to (D115), its settings; in the API, hyperstorctl and the UI"
+what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI"
 spec = ["19-administration.md §23.9.3", "D54", "D114", "D115"]
 status = "done"
 tests = [

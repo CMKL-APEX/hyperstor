@@ -1,7 +1,12 @@
 # Quick start
 
-> To install a trial cluster as system services in one command instead,
-> see [Installing a trial cluster](admin-guide/installation.md#installing-a-trial-cluster).
+> **The easiest start** is the installer, which sets up the map service,
+> three storage nodes, `hyperstorctl` and the dashboard on one host, as
+> system services, after the build below:
+> `sudo target/release/hyperstor-install install --all-in-one` (see
+> [Installing a trial cluster](admin-guide/installation.md#installing-a-trial-cluster)).
+> The steps here run the same kind of cluster by hand, installing
+> nothing, to show its parts.
 
 This starts a cluster of three storage nodes and a map service on one
 Linux machine, writes to it, and shows a node failure. It needs the
@@ -16,9 +21,10 @@ cd hyperstor
 cargo build --release
 ```
 
-The binaries are in `target/release/`: `hyperstor-meta` (the map
-service), `hyperstord` (a storage node) and `hyperstor-bench` (a load
-generator).
+The binaries are in `target/release/`. This page uses `hyperstor-meta`
+(the map service), `hyperstord` (a storage node) and `hyperstor-bench`
+(a load generator); the [reference](reference/index.md) describes the
+others.
 
 ## 2. Describe the cluster
 

@@ -14,7 +14,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
 | `root-backup` | Writes the root CA's certificate and key to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the key from this host |
 | `root-restore` | Puts the root CA from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster |
-| `format-device` | Formats the block device `--path` (by its `/dev/disk/by-id/` name) as device `--id` for `hyperstord`, which formats only files (D168). It refuses a device that holds anything it recognises (a partition table, LVM, Ceph BlueStore, md RAID, LUKS, a filesystem, swap, or a hyperstor device already), naming it; `--force-format` zeroes the device's first and last 128 KiB and formats it anyway. The cluster's id comes from the installed cluster file, or the node records it at its first start |
+| `format-device` | Formats the block device `--path` (by its `/dev/disk/by-id/` name) as device `--id` for `hyperstord`, which formats only files. It refuses a device that holds anything it recognises (a partition table, LVM, Ceph BlueStore, md RAID, LUKS, a filesystem, swap, or a hyperstor device already), naming it; `--force-format` zeroes the device's first and last 128 KiB and formats it anyway. The cluster's id comes from the installed cluster file, or the node records it at its first start |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -56,8 +56,8 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--path P` | | `format-device`: the device to format |
 | `--id D` | | `format-device`: its device id (`N × 1000 + i`, as `hyperstorctl device add` gave it) |
 | `--force-format` | off | `format-device` and `--device`: format over another system's signature |
-| `--device PATH` | | `install`: add the block device PATH (by `/dev/disk/by-id/`) to this host's node `--node N`, while the cluster runs (D167): checked for another system's data first, registered with the map service, formatted, given to the service user by a udev rule, and kept in `install.conf`, so later runs keep it. Repeatable. Needs the administrator's certificate (a map service host) |
-| `--remove-device ID` | | `install`: drop device ID, which `hyperstorctl device remove` has taken out of the map, from this host's node (D186): kept in `install.conf`, so this run and later ones leave out its `--shard`, and the node is restarted without it. Refused while the map still has the device (checked with the administrator's certificate; without it, the installer says it couldn't check), and for a node's last device. The device's data is left as it is. Repeatable |
+| `--device PATH` | | `install`: add the block device PATH (by `/dev/disk/by-id/`) to this host's node `--node N`, while the cluster runs: checked for another system's data first, registered with the map service, formatted, given to the service user by a udev rule, and kept in `install.conf`, so later runs keep it. Repeatable. Needs the administrator's certificate (a map service host) |
+| `--remove-device ID` | | `install`: drop device ID, which `hyperstorctl device remove` has taken out of the map, from this host's node: kept in `install.conf`, so this run and later ones leave out its `--shard`, and the node is restarted without it. Refused while the map still has the device (checked with the administrator's certificate; without it, the installer says it couldn't check), and for a node's last device. The device's data is left as it is. Repeatable |
 | `--device-address IP:PORT` | the node's next free port | `--device`: where the device is served (one device at a time) |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later

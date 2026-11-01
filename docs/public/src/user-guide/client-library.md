@@ -86,6 +86,9 @@ disk.detach().await?;
   doubled. `volume(id)`, `list_volumes(pool)`, `expand_volume(id, size)`
   (volumes don't shrink) and `delete_volume(id)` manage them;
   `hyperstorctl` does the same for administrators.
+- A `Volume`'s `state` is `Active`, `Trashed` (see [The trash](#the-trash))
+  or `Deleting` (a delete under way, or one that stopped half-way:
+  delete it again to finish).
 - Ids are 128-bit, chosen by you (for example a disk's UUID) or drawn at
   random. Names are shown, not unique.
 
@@ -154,3 +157,45 @@ client.delete_snapshot(v.id, snap.epoch).await?;
 - `delete_snapshot(id, epoch)` merges the snapshot's data into what
   still needs it, without copying blocks, and is refused
   (`SnapshotInUse`) while a clone or a rollback depends on it.
+
+## The trash
+
+`delete_volume(id)` and `delete_snapshot(id, epoch)` delete at once. The
+cluster API, `hyperstorctl` and the web UI move what they delete to the
+[trash](../concepts.md#the-trash) instead, where the map service purges
+it after the pool's grace period. A program can do the same:
+
+```rust
+client.trash_volume(v.id, false).await?;      // true: preempt a holder first
+client.restore_volume(v.id, None).await?;     // or Some("new-name")
+client.purge_volume(v.id).await?;             // only from the trash
+```
+
+- `trash_volume(id, force)` moves a volume, with its snapshots, to the
+  trash. An attached volume is refused (`VolumeAttached`) unless
+  `force`, which preempts its holder.
+- `restore_volume(id, name)` brings it back, under its own name, or
+  `NAME-restored` if another volume of its pool took the name meanwhile.
+- `purge_volume(id)` deletes a trashed volume for good; an active one is
+  refused (`Refused`).
+- `trash_snapshot(id, epoch)`, `restore_snapshot(id, epoch)`,
+  `purge_snapshot(id, epoch)` and `trash_group(group)` do the same for
+  snapshots and consistency groups.
+- `list_volumes(pool)` returns trashed volumes too, with their `state`;
+  `hyperstor_client::trash::trash_of(&volumes)` picks out what is in the
+  trash.
+
+## The read cache
+
+Each `Client` keeps a read cache in memory, 256 MiB by default, shared
+by every volume it has attached. It holds only blocks of versions that
+can no longer change: a snapshot's, or the parent's that a clone reads
+through. So clones of one image, attached by one client (for example by
+`hyperstor-vhost` for the VMs of a host), read the image's blocks from
+the cluster once. A volume's own newest writes are never cached, so the
+cache never needs invalidating.
+
+- `set_read_cache_bytes(bytes)` sets its size; `0` turns it off.
+- `read_cache_stats()` returns its hits, misses and blocks held.
+
+The cache is new and still being completed.

@@ -29,6 +29,27 @@ another copy, repairs its own and returns the good data. If no copy is
 good, the read fails (`Server` with code `Checksum`); `Checksum` on its
 own means the data was damaged on the way to the client.
 
+A read that waits too long for a slow device (2 s by default) is served
+from another copy instead; if none answers, the client retries it as it
+does `Unavailable`.
+
+## Full devices
+
+A device past its `full` threshold (95 % by default, set by the
+administrator) refuses writes that would take more of its space: writes
+to blocks never written, and new objects. They fail with `Server` and
+code `NoSpace`, which the client does not retry. Overwrites of written
+blocks, deletes and snapshot deletes still work, so space can always be
+freed. A pool is full while any device it uses is, and the cluster API
+then refuses new volumes, clones and snapshots in it; the client
+library's own calls don't check this.
+
+`hyperstor-ublk` passes `NoSpace` to its block device as `ENOSPC`.
+`hyperstor-vhost` holds the write instead and tries it again every second
+for up to 5 minutes (its `--hold-full`), so the VM sees no error if space is
+freed in time; after that the guest gets an I/O error. See
+[Full devices](../admin-guide/pools-and-devices.md#full-devices).
+
 ## Volumes and leases
 
 A volume attached through `attach`, `take_over` or `preempt` has one
@@ -71,7 +92,8 @@ The errors your program sees:
 | `VolumeAttached(id)` | A delete or rollback of an attached volume | Detach it first, or force the delete |
 | `NoSnapshot(epoch)` | The volume has no snapshot at that epoch | Check `volume(id)`'s snapshots |
 | `SnapshotInUse(epoch)` | A clone or a rollback still reads from that snapshot | Flatten or delete the clone first |
-| `Refused(why)` | The cluster refused a volume or snapshot operation, for example an unknown group | Read `why` |
-| `Server { code, .. }` | The storage node refused the request, for example `NoSpace`, `Io`, `Checksum` when no copy is good, or `Busy` when a snapshot couldn't pause the volume's writer in time | Depends on the code; report `Io` and `Checksum` to the administrator |
+| `Refused(why)` | The cluster refused a volume or snapshot operation, for example an unknown group, or a purge of something not in the trash | Read `why` |
+| `Server { code: NoSpace, .. }` | A device the write needs is past `full` | Free space (delete volumes or snapshots, purge the trash) or ask the administrator for more; overwrites still work |
+| `Server { code, .. }` | The storage node refused the request, for example `Io`, `Checksum` when no copy is good, or `Busy` when a snapshot couldn't pause the volume's writer in time | Depends on the code; report `Io` and `Checksum` to the administrator |
 | `Exhausted(n, why)` | The client retried `n` times without success, for example while a failed node is being detected | Retry after a few seconds; `why` is the last error |
 | `Rpc(..)` | A connection or protocol error the client did not retry, for example while fetching the map | Check that the map service is up and reachable, and that client and cluster run the same version |

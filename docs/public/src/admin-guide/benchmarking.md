@@ -22,12 +22,16 @@ is overwritten.
 ## A running cluster
 
 ```sh
-HS_BENCH_SECS=10 hyperstor-bench remote 192.0.2.10:9000
+HS_BENCH_SECS=10 hyperstor-bench remote 192.0.2.10:8849
 ```
 
-This connects as a client, writes to and reads from pool 1, and reports
-4 KiB random and 1 MiB sequential results. It writes test data into the
-pool: use a test cluster.
+Give it the map service's address (its `--listen`; port 8849 on an
+installed cluster). It connects as a client, writes 512 MiB of test
+data to pool 1, then reports 4 KiB random and 1 MiB sequential results
+over it. The test data stays in the pool: use a test cluster.
+
+`hyperstor-bench cluster mem` runs a whole cluster in one process, on
+memory, to measure the code without a network or devices.
 
 ## Tips
 

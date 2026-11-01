@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 0 | 15 |
+| 5 | 0 | 1 | 15 |
 
 ## In progress
 
@@ -29,7 +29,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Public docs caught up with the implementation (November)** (`docs-catch-up-nov`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | — | `docs/catch-up-nov`, [#148](https://github.com/CMKL-APEX/hyperstor/pull/148) | Guides, developer guide, README and landing page caught up with ~70 PRs; reference pages cleaned of decision numbers; glidex driver marked done (glidex #177) with metering planned; pools and devices moved to their own admin page | The owner's review and merge of #148 | 2026-11-01 |
 
 ## Done
 

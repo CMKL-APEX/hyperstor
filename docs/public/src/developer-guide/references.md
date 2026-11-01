@@ -28,14 +28,31 @@
 | Interface | Reference |
 |---|---|
 | NVIDIA GPUDirect Storage (cuFile) | Release notes and support list: <https://docs.nvidia.com/gpudirect-storage/release-notes/index.html>; API: <https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html> |
-| vhost-user | QEMU, "Vhost-user Protocol". <https://www.qemu.org/docs/master/interop/vhost-user.html> |
+| vhost-user | QEMU, "Vhost-user Protocol" (including the in-flight buffer, `INFLIGHT_SHMFD`). <https://www.qemu.org/docs/master/interop/vhost-user.html>; used by [`hyperstor-vhost`](decisions.md#vm-disks-over-vhost-user-blk-one-service-per-host) |
+| virtio-blk | OASIS, *Virtual I/O Device (VIRTIO) Version 1.2*, §5.2 Block Device (topology fields for 512e). <https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html> |
+| rust-vmm | The `vhost`, `virtio-queue` and `vm-memory` crates. <https://github.com/rust-vmm> |
+| Cloud Hypervisor and QEMU | The hypervisors VM disks are tested with. <https://www.cloudhypervisor.org/>, <https://www.qemu.org/> |
+| ublk | Linux kernel documentation, "Userspace block device driver (ublk driver)", Linux 6.0 and later. <https://docs.kernel.org/block/ublk.html>; used by [`hyperstor-ublk`](decisions.md#its-own-ublk-server-on-the-reactor) |
+| ext4 feature flags | Linux kernel documentation, "The Super Block" (compatible, read-only-compatible and incompatible features). <https://docs.kernel.org/filesystems/ext4/super.html>; the model for [device feature flags](decisions.md#devices-name-themselves-and-carry-feature-flags) |
+| dm-delay | Linux kernel documentation, "dm-delay". <https://docs.kernel.org/admin-guide/device-mapper/delay.html>; used to check device timeouts |
 | NVMe over Fabrics | NVM Express specifications. <https://nvmexpress.org/specifications/> |
+| NFSv4.1 and pNFS | RFC 8881, "Network File System (NFS) Version 4 Minor Version 1 Protocol" (the files layout in chapter 13); RFC 8435, "Parallel NFS (pNFS) Flexible File Layout"; RFC 9289, "Towards Remote Procedure Call Encryption by Default" (RPC-with-TLS). <https://www.rfc-editor.org/rfc/rfc8881>, <https://www.rfc-editor.org/rfc/rfc8435>, <https://www.rfc-editor.org/rfc/rfc9289>; the [proposed NFS front end](decisions.md#nfs-and-pnfs-a-settled-direction-the-rest-proposed) |
+
+## Security and identity
+
+| Topic | Reference | Where it is used |
+|---|---|---|
+| Cedar | The Cedar policy language. <https://www.cedarpolicy.com/>; J. W. Cutler et al., "Cedar: A New Language for Expressive, Fast, Safe, and Analyzable Authorization", OOPSLA 2024 | [Roles](decisions.md#administration) over every cluster API call |
+| OpenID Connect | OpenID Foundation, "OpenID Connect Core 1.0". <https://openid.net/specs/openid-connect-core-1_0.html> | Logins with an identity provider |
+| OAuth 2.0 and PKCE | RFC 6749, "The OAuth 2.0 Authorization Framework"; RFC 7636, "Proof Key for Code Exchange by OAuth Public Clients". <https://www.rfc-editor.org/rfc/rfc6749>, <https://www.rfc-editor.org/rfc/rfc7636> | The authorization code flow behind OIDC logins |
+| PAM | Linux-PAM. <https://github.com/linux-pam/linux-pam> | Password logins, through a root helper |
+| AES-XTS | IEEE Std 1619, "Cryptographic Protection of Data on Block-Oriented Storage Devices"; NIST SP 800-38E. <https://csrc.nist.gov/pubs/sp/800/38/e/final> | The [designed encryption at rest](decisions.md#encryption-at-rest-designed-not-built) |
 
 ## Products
 
 | Product | Sources |
 |---|---|
-| Ceph | v20.2.0 Tentacle: <https://www.ceph.io/en/news/blog/2025/v20-2-0-tentacle-released/>; Crimson: <https://ceph.io/en/developers/crimson/> |
+| Ceph | v20.2.0 Tentacle: <https://www.ceph.io/en/news/blog/2025/v20-2-0-tentacle-released/>; Crimson: <https://ceph.io/en/developers/crimson/>; full ratios: <https://docs.ceph.com/en/latest/rados/configuration/mon-config-ref/#storage-capacity>, <https://docs.ceph.com/en/latest/rados/operations/health-checks/> |
 | Longhorn | v1.9: <https://longhorn.io/blog/longhorn-v1.9.0/>; V2 data engine: <https://documentation.suse.com/cloudnative/virtualization/v1.9/en/storage/longhorn-v2-data-engine.html> |
 | OpenEBS Mayastor | <https://github.com/openebs/mayastor> |
 | DRBD and LINSTOR | <https://github.com/LINBIT/drbd>, <https://github.com/LINBIT/linstor-server> |

@@ -17,6 +17,7 @@
   - [Installation](admin-guide/installation.md)
   - [Planning a cluster](admin-guide/planning.md)
   - [Managing a cluster](admin-guide/managing.md)
+  - [Pools and devices](admin-guide/pools-and-devices.md)
   - [The map service](admin-guide/map-service.md)
   - [Storage nodes](admin-guide/storage-nodes.md)
   - [Failures and recovery](admin-guide/failures.md)

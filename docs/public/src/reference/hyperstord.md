@@ -16,8 +16,8 @@ usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard 
 | `--hdd` | off | The devices are hard disks: defer small overwrites through the log |
 | `--admin ADDR` | off | Serve metrics (`GET /metrics`, Prometheus format) and `GET /health` on `IP:PORT`; plain HTTP, read-only: keep it on the management network |
 | `--scrub-hours N` | 24 | Compare every copy of each placement group this node leads, every N hours, and repair a copy the others outvote; the first pass and every seventh also read every block and check its checksum; `0` turns it off |
-| `--io-timeout-secs N` | 30 | How long a device may take to write and flush a commit before the node fails it (D166): its placement groups go elsewhere, as after an I/O error, and the node stays up. At least 1 |
-| `--read-timeout-ms N` | 2000 | How long a read may wait for its device (D190). Past it, the read is served from another copy of the placement group; three in a row fail the device, as after an I/O error. At least 1 |
+| `--io-timeout-secs N` | 30 | How long a device may take to write and flush a commit before the node fails it: its placement groups go elsewhere, as after an I/O error, and the node stays up. At least 1 |
+| `--read-timeout-ms N` | 2000 | How long a read may wait for its device. Past it, the read is served from another copy of the placement group; three in a row fail the device, as after an I/O error. At least 1 |
 
 **Diagnostic build.** Built with `HYPERSTOR_DIAG=1 cargo build --release
 -p hyperstor-daemon`, a node also logs, to standard error (the journal),

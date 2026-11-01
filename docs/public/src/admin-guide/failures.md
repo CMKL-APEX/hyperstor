@@ -2,9 +2,11 @@
 
 ## A storage node fails
 
-1. The node stops sending heartbeats. Clients' requests to it fail, and
-   the client library retries.
-2. After `--down-after-ms` (0.8 s by default) the map service marks the
+1. The node stops sending heartbeats to the map service and answering
+   its peers' pings. Clients' requests to it fail, and the client
+   library retries.
+2. After `--down-after-ms` (0.8 s by default) without a heartbeat, or
+   once two other nodes report it silent, the map service marks the
    node down. Each placement group the node held goes on with the copies
    left, if at least the pool's `min` remain; a new primary takes over
    where the failed node was primary. Before it serves, the new primary
@@ -34,12 +36,37 @@ its own copy, object by object, and sends only the objects that differ
 writes. Only then does the node count as a full copy again, and any copy
 placed elsewhere meanwhile is dropped.
 
+A node marked down stays down for at least 2 s, and longer if it keeps
+going down and up (see [A node that flaps](#a-node-that-flaps)).
+
 So a node that was down briefly receives about what was written while it
 was away. A new or empty node receives all of its PGs' data: plan for
 that traffic when you add or replace one.
 
 A device you took out yourself (`hyperstorctl out`) stays out until you
 bring it back in.
+
+## A node that flaps
+
+A node whose thread is held (a stalled device, a host short of CPU or
+memory) can miss its peers' pings for long enough to be reported, then
+answer again: it goes down and up. Each time is costly, since its PGs
+change primaries and are refilled. So the map service holds a node that
+went down: 2 s the first time, doubled for each further time within 10
+minutes, up to a minute; ten quiet minutes reset it. Health warns
+`node N flapping (K transitions in 10 min)`. Look at that node's log for
+what holds it (see [Health](managing.md#health)).
+
+## A storage node is cut off from its peers
+
+Storage nodes ping each other several times a second, over UDP (TCP for
+a peer that doesn't answer over UDP). A node silent for about 300 ms is
+reported to the map service. A node reported by two others is marked
+down even while its heartbeats still reach the map service: it can't
+serve its PGs' copies if its peers can't reach it. One report alone
+marks nothing down, and a node not heard from since the map service
+started is not marked down by reports: it may still be opening its
+devices.
 
 ## A replica is slow or unreachable
 
@@ -69,9 +96,30 @@ for its device (`--read-timeout-ms`) is served from another copy, and
 counted in `hyperstor_read_timeouts_total`; three in a row fail the
 device the same way (`3 reads in a row took over 2000 ms`).
 
-If the device is broken, replace it and start the node again (the new
-device is formatted), then bring it back in with `hyperstorctl in
---device D`: its PGs are backfilled.
+If the device is broken, replace it, format the new one (a block device
+with `hyperstor-install format-device`; a file is formatted by the node)
+and start the node again, then bring it back in with `hyperstorctl in
+--device D`: its PGs are backfilled. To retire a device instead, remove
+it (see [Removing a device](pools-and-devices.md#removing-a-device)).
+
+## A device fills up
+
+Past the `full` threshold (95 % by default) a device refuses new data,
+and its pools are `full`: new volumes, clones and snapshots in them are
+refused. Overwrites, deletes and discards still work, so space can
+always be freed. A VM's disk holds a write refused for space for up to a
+minute before the guest sees an I/O error. See
+[Full devices](pools-and-devices.md#full-devices).
+
+## Cache pools
+
+A cache pool keeps one copy by default and doesn't recover a lost one:
+when a device fails, its cache PGs start empty elsewhere, and clients
+recompute what they miss. When a node goes down, its cache PGs wait for
+it for the pool's grace (60 s by default): back in time, it keeps their
+data. Meanwhile reads of them miss (a volume reads zeros there), and a
+write to one moves it at once to another device, empty. Health warns
+while PGs wait.
 
 ## Damaged data
 
@@ -109,8 +157,14 @@ every second. If that client dies or is cut off, another client takes
 the volume over: it waits for the old lease to run out (up to 4 s) and
 **blocklists** the old lease, so every storage node refuses the old
 client's requests for that volume from then on, even if it comes back.
-Its other volumes are not affected. See
+Each attached volume has a lease of its own, so the old client's other
+volumes are not affected. See
 [the client library](../user-guide/client-library.md#attaching-a-volume).
+
+The same holds for VM disks: when a VM moves to another host because its
+old host failed, that host's `hyperstor-vhost` takes the volume over or
+preempts the old one, and only that disk is fenced; the other VMs on the
+old host keep theirs. See [VM disks](managing.md#vm-disks).
 
 ## The map service fails
 

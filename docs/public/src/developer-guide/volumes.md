@@ -8,7 +8,7 @@ are three nodes, 256 PGs):
 
 | Object | Contents |
 |---|---|
-| Header `h/{id}` | The volume's pool, size, lineage, state and name, a version number, a creation token, and while attached, its lease holder |
+| Header `h/{id}` | The volume's pool, size, lineage, state and name, a version number, a creation token; while attached, its lease (identity, client, mode and label) and delegates; in the trash, when it went there |
 | Directory `d/{pool}/{shard}` | The pool's volumes, in 64 shards by id, one key–value entry each |
 
 Every change to a header is a **compare-and-set** on its version: an
@@ -16,8 +16,14 @@ operation list that asserts the version it read, then writes the new
 header, decided by the header's PG primary under a lock on the key.
 Creating a volume carries a token, so a retry after a lost answer is
 recognised rather than doubled. Create writes the header and then the
-directory entry; delete marks the header *deleting*, removes the data,
-then the entry, then the header, so every step can be resumed.
+directory entry; expand raises the size (never lowers it). A delete
+moves the volume to the **trash**: the header is marked with the time,
+and a trashed volume is neither listed nor attachable, but its data
+stays until it is restored or purged (after its pool's grace period, a
+day by default, or at once on request). A purge marks the header
+*deleting*, removes the data, then the entry, then the header, so every
+step can be resumed. In a full pool, creating volumes, clones and
+snapshots is refused.
 
 **Why not in Raft:** volume operations then scale with the number of
 PGs, not with one Raft group, and a Raft write is needed only for map
@@ -29,7 +35,10 @@ A client **attaches** a volume by taking its **lease**: the header's PG
 primary records the holder in the header and keeps the expiry in memory.
 Each attach has a lease **identity** of its own, a random 64-bit number
 recorded with the holder and carried by every request under the lease,
-so one client's leases can be fenced one at a time (D150).
+so one client's leases can be fenced one at a time. A lease also records
+a short **label** from its holder (`vhost:<node>` for a VM disk,
+`hyperstorctl` for a tool), which a refused attach names, so the caller
+can tell a VM's disk from a tool's hold.
 
 | Timing | Value |
 |---|---|
@@ -61,10 +70,10 @@ whole client is the same with its instance, which every connection names
 at `Hello`. `preempt` does the same for a live holder, for example when
 glidex finds a disk still held by a node its VM no longer runs on: it
 blocklists first, then waits out the lease. A forced delete preempts the
-holder and deletes the volume while holding its lease. Blocklist entries
+holder and moves the volume to the trash while holding its lease. Blocklist entries
 expire after an hour.
 
-**Delegates** (D151) act under a holder's lease from another client:
+**Delegates** act under a holder's lease from another client:
 the holder records their identities in the header, they renew nothing,
 and they are blocklisted with the holder, before the holder detaches,
 and when the holder removes one. A snapshot's quiesce waits for each.
@@ -75,6 +84,13 @@ and state to every copy. Requests do carry the lease identity, but only
 to look it up in the blocklist, which costs nothing on the write path
 that could be measured, and one Raft write per takeover. Ceph uses the
 same approach for RBD exclusive locks.
+
+**Why an identity per lease, not per client:** one `hyperstor-vhost`
+serves every VM of its node through one client. Fencing the client took
+every disk off the node to move one. With an identity per lease, the
+connection stays shared and only the lease taken is fenced. Only client
+connections are checked: a primary forwards its client's request to its
+copies, and a copy must not refuse a write its primary accepted.
 
 A forced takeover takes one volume lease, about 4.0 s; a preemption
 about 3.8 s.
@@ -142,9 +158,102 @@ outright. **Why:** deleting snapshots is the hot background job when VMs
 are reset after every task; this way it costs index work, not device
 I/O.
 
+## The host read cache
+
+Every client keeps an LRU cache of 4 KiB blocks in memory (256 MiB by
+default; 0 turns it off). It holds only blocks of versions that can no
+longer change: a block read from a version other than the volume's head
+(a snapshot's, or a clone's parent's). **Why no invalidation:** versions
+are never rewritten, epochs never reused, and a merge only adds blocks a
+version lacked, so an entry never goes stale. Entries are keyed by
+lineage, the lineage's random **incarnation** (so a volume deleted and
+made again never matches), branch, epoch, chunk and block.
+
+- Each read answer names the version each block came from. An attached
+  volume remembers that source per block until it writes the block or
+  its header changes; a read that overlapped a write records nothing.
+- When the cache holds blocks of the lineage and a read's sources aren't
+  known, the client first asks the primary for them alone, without the
+  data. If every block comes from a cached version, the read is served
+  from memory; otherwise it is read as usual.
+
+**Why ask first:** clones of one golden image then share what any of
+them has read, for one small round trip per miss, asked only once the
+lineage is cached. Not built yet: serving the cached part of a read that
+also needs head blocks (such a read fetches everything), a second tier
+on local NVMe, and measurements on hardware.
+
+## Volumes as disks
+
+Two front ends serve volumes through the client library, each on one
+reactor thread with no other runtime.
+
+| | `hyperstor-ublk` | `hyperstor-vhost` |
+|---|---|---|
+| Serves | One volume as `/dev/ublkbN`, through the kernel's ublk driver | Every VM disk of a compute node, over vhost-user-blk: a socket per volume, which Cloud Hypervisor or QEMU connects to |
+| Queues | ublk's `uring_cmd`s, one task per tag | Each virtqueue a task woken by its kick eventfd; `EVENT_IDX`, indirect descriptors, multiqueue, flush, write-zeroes |
+| Sectors | 4 KiB | 512-byte sectors on 4 KiB blocks (512e) |
+| Device full | `ENOSPC` at once | The write is held and tried every second for up to 5 minutes, then `IOERR` |
+
+**512e.** Guests and their boot loaders expect 512-byte sectors, while
+a volume stores 4 KiB blocks with a CRC each. A read of part of a block
+reads the whole block and returns the part. A write takes a lock on the
+range of whole blocks it touches, and, when it starts or ends inside a
+block, reads that block, merges and writes the span. Reads take no lock: a read racing a write may
+see either, as on any disk. Without the lock, two writes into one
+block's sectors lose one of them; a test checks it.
+
+**Flush is answered at once:** a write is acknowledged only once every
+copy has it durable, so the disk has no volatile cache to flush.
+
+**Held writes.** virtio-blk has no "no space" status, and an I/O error
+can turn a guest's filesystem read-only. So `hyperstor-vhost` tries a
+write refused for space again every second, up to `--hold-full`
+(60 s by default), while trash is purged or a device added. Each try
+reads the data from guest memory again, which stays the guest's until
+the request completes, so the usual path copies nothing more.
+
+**Restarts.** Stopping `hyperstor-vhost` doesn't detach its volumes. A
+state file in the runtime directory names its client and each volume's
+lease identity and serial; the next start takes each lease back from
+that identity (waiting out the lease, about 4 s) and opens the sockets
+again, and the hypervisors reconnect. Requests the guest had in flight
+are found in the hypervisor's **in-flight buffer** (a shared memory
+region where each request is marked when taken and cleared when
+answered) and run again. **Why the runtime directory:** after a reboot,
+no VM uses the volumes, and their leases should lapse, not come back. A
+volume another node took meanwhile is left to it. One taken while the
+service runs is listed as `lost`, its I/O failing, until it is attached
+afresh.
+
+**For glidex.** Hyperstor's side of glidex's driver is built:
+`hyperstor-vhost`'s control socket (one JSON request per line: attach,
+with the node's name as the lease's label; detach; list); a management
+identity enrolled with a single-use join token (`hyperstorctl enroll`);
+`expand-volume`; and `hyperstorctl write-volume` and `read-volume` for
+images (`--sparse` skips zero blocks). The label is what lets a driver
+starting a VM preempt a disk still held by another node's
+`hyperstor-vhost` after a crash or a failed detach, fencing only that
+lease, while it waits for a tool's hold.
+
+glidex's driver is built on these: a disk on a `hyperstor` datastore is
+a volume, blank, filled from an image, or a linked clone of the image
+volume's `golden` snapshot, grown to the disk's size; the VM's node
+stages it through its `hyperstor-vhost`, and Cloud Hypervisor or QEMU
+connects over vhost-user-blk. A deleted disk's clone waits in the trash,
+keeping the image volume it reads from; glidex deletes leftover image
+volumes once their image is gone and the clone is purged. Metering of
+hyperstor disks in glidex is still to come.
+
 ## Planned
 
 - Read-only attachments of snapshots, by several clients at once, with
   reads from any copy.
-- A host-wide read cache in the client library, for versions that can't
-  change.
+- Discard and write-zeroes that allocate nothing: discard can't simply
+  unmap the head's blocks, or a read would fall through to a snapshot's,
+  so it needs a "zeroed" marker in the head version.
+- Telling a running guest its disk grew (virtio's config-change event);
+  today it sees the new size at its next attach.
+- In `hyperstor-vhost`: queues on several reactors, one per NUMA node,
+  adaptive polling, and zero copy from guest memory.
+- A delegate's identity handed to a guest over virtio-vsock.

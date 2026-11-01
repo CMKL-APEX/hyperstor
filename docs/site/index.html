@@ -59,8 +59,8 @@
     <p>A sharded, distributed storage system in Rust, built for
     <a href="https://github.com/CMKL-APEX/glidex">glidex</a> nodes and
     usable without them. Replicated pools on its own io_uring engine, with
-    block volumes, GPU-direct storage, S3 and a filesystem to come on the
-    same object layer.</p>
+    block volumes for programs and virtual machines today, and GPU-direct
+    storage, S3 and a filesystem to come on the same object layer.</p>
   </header>
 
   <div class="actions">
@@ -71,23 +71,27 @@
   </div>
 
   <pre><code>git clone https://github.com/CMKL-APEX/hyperstor.git &amp;&amp; cd hyperstor
-cargo build --release</code></pre>
+cargo build --release
+sudo target/release/hyperstor-install install --all-in-one   # a trial cluster on this host</code></pre>
 
   <h2>Today</h2>
   <div class="grid">
     <div class="card"><h3>Replicated pools</h3><p>Two or three copies of every chunk, placed across devices, hosts or racks. A write returns once every copy has it.</p></div>
     <div class="card"><h3>Its own engine</h3><p>Pure Rust on io_uring, one thread per device, checksums on every 4 KiB block, crash recovery tested against a model.</p></div>
     <div class="card"><h3>Snapshots and clones</h3><p>Crash-consistent snapshots of a volume or a group at one instant, instant clones and rollbacks, snapshot deletion that moves no data.</p></div>
-    <div class="card"><h3>Failure handling</h3><p>Failed nodes detected by heartbeats, writes that go on with fewer copies, no data moved for a short reboot, recovery of only what a returning node missed, failed devices and slow replicas replaced at once, scrub that repairs damaged copies, and leases that fence cut-off nodes.</p></div>
+    <div class="card"><h3>Virtual machine disks</h3><p>Volumes served to VMs over vhost-user-blk, booting under Cloud Hypervisor and QEMU, fenced one volume at a time, kept across service restarts.</p></div>
+    <div class="card"><h3>Pools and devices at run time</h3><p>Pools made and changed on device classes, devices added and removed, weights from capacity, PG splits, cache pools, and fullness thresholds that always leave room to free space.</p></div>
+    <div class="card"><h3>Administration</h3><p>A one-command installer, hosts joined with tokens, <code>hyperstorctl</code> and a web UI with logins, roles, a trash, an audit log and long operations.</p></div>
+    <div class="card"><h3>Failure handling</h3><p>Failed nodes detected by heartbeats and held down when they flap, writes that go on with fewer copies, no data moved for a short reboot, recovery of only what a returning node missed, failed devices and slow replicas replaced at once, scrub that repairs damaged copies, and leases that fence cut-off nodes.</p></div>
   </div>
 
   <h2>Documentation</h2>
   <div class="grid">
     <a class="card" href="docs/quick-start.html"><h3>Quick start</h3><p>A three-node cluster on one machine, and a node failure.</p></a>
-    <a class="card" href="docs/user-guide/index.html"><h3>User guide</h3><p>The client library, what a write guarantees, and its errors.</p></a>
-    <a class="card" href="docs/admin-guide/index.html"><h3>Administrator guide</h3><p>Installation, planning, the map service, storage nodes and failures.</p></a>
+    <a class="card" href="docs/user-guide/index.html"><h3>User guide</h3><p>The ways in: the client library, VM disks and block devices; what a write guarantees, and its errors.</p></a>
+    <a class="card" href="docs/admin-guide/index.html"><h3>Administrator guide</h3><p>Installation, planning, managing a cluster, the map service, storage nodes and failures.</p></a>
     <a class="card" href="docs/developer-guide/index.html"><h3>Developer guide</h3><p>Architecture, algorithms, design trade-offs, benchmarks and how Hyperstor compares.</p></a>
-    <a class="card" href="docs/reference/index.html"><h3>Reference</h3><p>The cluster file and every command-line option.</p></a>
+    <a class="card" href="docs/reference/index.html"><h3>Reference</h3><p>The cluster file, the cluster API and every command-line option.</p></a>
     <a class="card" href="api/hyperstor_client/index.html"><h3>Client API</h3><p>The Rust client library, generated from its source.</p></a>
     <a class="card" href="docs/status.html"><h3>Status</h3><p>What each milestone delivers and what is built today.</p></a>
   </div>
