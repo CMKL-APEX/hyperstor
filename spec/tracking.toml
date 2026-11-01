@@ -773,6 +773,16 @@ tests = [
     "manage::a_cache_pool_keeps_its_data_across_splits_and_restarts",
 ]
 
+[[milestone.item]]
+what = "Cache PGs wait for a down node up to their pool's grace: reads miss, a write moves the PG"
+spec = ["09-replication.md §8.7", "D189", "I228"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::a_cache_pool_waits_for_a_down_node_within_its_grace",
+    "hyperstor_meta::tests::cache_pools_wait_for_a_down_node_up_to_their_grace",
+    "manage::a_cache_pool_keeps_its_data_across_splits_and_restarts",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"

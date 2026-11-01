@@ -482,6 +482,14 @@ pub enum Msg {
         pg_epoch: u64,
         device: u32,
     },
+    /// Client to map service: a write to cache PG `pool`.`pg`, which is
+    /// waiting for a down member (D189): end its wait, so it moves now and
+    /// takes the write empty. Answered `Noted` with the working map's
+    /// epoch.
+    CacheRelease {
+        pool: u32,
+        pg: u32,
+    },
     /// Follower to the map service's leader: what only the leader knows,
     /// for a follower's `GetStatus` (I197).
     LeaderState,
@@ -711,6 +719,7 @@ mod kind {
     pub const LEADER_STATE_OK: u16 = 75;
     pub const DEVICE_KIND: u16 = 76;
     pub const PG_SPLIT: u16 = 77;
+    pub const CACHE_RELEASE: u16 = 78;
     pub const ERROR: u16 = 99;
 }
 
@@ -795,6 +804,7 @@ impl Msg {
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
             Msg::DeviceKind { .. } => DEVICE_KIND,
             Msg::PgSplit { .. } => PG_SPLIT,
+            Msg::CacheRelease { .. } => CACHE_RELEASE,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
@@ -1074,6 +1084,9 @@ impl Msg {
                 device,
             } => {
                 e.u32(*pool).u32(*pg).u64(*pg_epoch).u32(*device);
+            }
+            Msg::CacheRelease { pool, pg } => {
+                e.u32(*pool).u32(*pg);
             }
             Msg::MemberSlow {
                 reporter,
@@ -1399,6 +1412,10 @@ impl Msg {
                 pg: d.u32()?,
                 pg_epoch: d.u64()?,
                 device: d.u32()?,
+            },
+            CACHE_RELEASE => Msg::CacheRelease {
+                pool: d.u32()?,
+                pg: d.u32()?,
             },
             MEMBER_SLOW => Msg::MemberSlow {
                 reporter: d.u32()?,
@@ -2071,6 +2088,7 @@ mod tests {
                 pg_epoch: 77,
                 device: 2001,
             },
+            Msg::CacheRelease { pool: 3, pg: 12 },
             Msg::MemberSlow {
                 reporter: 1000,
                 pool: 1,

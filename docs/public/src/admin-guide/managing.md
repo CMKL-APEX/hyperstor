@@ -448,6 +448,16 @@ any count but twice the pool's, while one runs, and until the last
 one's PGs have moved. A device that was down during the
 split catches up when it returns.
 
+A cache pool also waits for a node that goes down (D189): a PG whose
+copies are all on down nodes stays there for the pool's grace, 60
+seconds unless set with `hyperstorctl pool set --pool P --cache-grace
+SECS` (0 to 3600; 0 doesn't wait), so a host that restarts, or comes back
+from a short crash, keeps its share of the cache. Meanwhile reads of
+those PGs miss (a volume reads zeros there), health warns that they are
+waiting, and a write to one moves it at once to another device, empty.
+A PG moved that way, or because the grace passed, moves back to the node
+when it returns and starts empty there.
+
 The map service also splits on its own (D184): when a pool's devices
 call for at least twice its PGs (about 100 per device, counting copies),
 typically after devices were added, it doubles the count, one pool at a

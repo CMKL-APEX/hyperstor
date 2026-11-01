@@ -29,6 +29,47 @@ pub const NS_VOL: u8 = hyperstor_placement::NS_VOL;
 /// `.meta` objects: headers, lineages, directories, groups (06-metadata.md §4.2).
 pub const NS_META: u8 = 3;
 pub(crate) const BLOCK: u64 = 4096;
+
+/// What an empty device answers to a read, for a cache PG waiting for its
+/// down member (D189): a miss for a plain read, zeros from no version for
+/// a volume's, nothing found. None: not a read.
+fn empty_answer(msg: &Msg) -> Option<Result<rpc::Reply, ClientError>> {
+    let none = |len: u64| vec![(u32::MAX, 0u64); len.div_ceil(BLOCK) as usize];
+    Some(match msg {
+        Msg::Read { to, .. } => Err(ClientError::Server {
+            code: Code::NotFound,
+            detail: format!(
+                "not in the cache: PG {}.{} waits for its device",
+                to.pool, to.pg
+            ),
+        }),
+        Msg::ReadAt { len, .. } => {
+            let data = vec![0; *len as usize];
+            Ok((
+                Msg::ReadAtOk {
+                    crcs: block_crcs(&data),
+                    sources: none(*len),
+                },
+                data,
+            ))
+        }
+        Msg::Sources { len, .. } => Ok((
+            Msg::ReadAtOk {
+                crcs: Vec::new(),
+                sources: none(*len),
+            },
+            Vec::new(),
+        )),
+        Msg::Lookup { .. } => Ok((Msg::LookupOk { found: false }, Vec::new())),
+        Msg::Versions { .. } => Ok((
+            Msg::VersionsOk {
+                versions: Vec::new(),
+            },
+            Vec::new(),
+        )),
+        _ => return None,
+    })
+}
 const RETRIES: usize = 20;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -399,6 +440,22 @@ impl Client {
                 pg_epoch: info.epoch,
                 lease,
             };
+            // A cache PG waiting for its down member (D189): a read is
+            // answered at once as an empty device answers it; a write ends
+            // the wait, so the PG moves and takes the write empty, and is
+            // sent again.
+            if p.kind == hyperstor_map::PoolKind::Cache && !map.live(primary) {
+                if let Some(r) = empty_answer(&make(to, key.clone())) {
+                    return r;
+                }
+                last = match self.call_meta(&Msg::CacheRelease { pool, pg }).await {
+                    Ok(_) => format!(
+                        "cache PG {pool}.{pg} waited for device {primary}; released for a write"
+                    ),
+                    Err(e) => e.to_string(),
+                };
+                continue;
+            }
             let conn = match self.conn(addr).await {
                 Ok(c) => c,
                 Err(e) => {

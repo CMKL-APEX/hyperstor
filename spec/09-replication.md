@@ -178,15 +178,20 @@ data; a node that serves a cache PG at another generation than it last
 did first empties what it holds of it, so a node that returns never
 serves a copy older than a write made while it was away (D188). A split,
 the moves of the PGs it makes (backfilled, D188) and a restart keep the
-generation, and so the data. Expiry and eviction are not built yet.
+generation, and so the data. A PG all of whose copies are on down nodes
+waits for them for the pool's grace (60 s by default, `--cache-grace`),
+so a node back within it keeps its data; meanwhile reads of the PG are
+answered as from an empty device, and a write ends its wait, moving it
+now (D189, I228). Expiry and eviction are not built yet.
 
 - **Copies.** One by default, placed like a replicated pool of that size;
   writes are acknowledged when every copy has them, as in §8.1.
 - **Expiry.** Every object has an expiry time (the pool's default, or set
   per object by the writer). Each primary drops expired objects in the
   background, and reads of an expired object answer "not found".
-- **Loss.** A device or node that goes down takes its copies with it:
-  no backfill, no recovery. The PG is placed again with an empty
+- **Loss.** A device or node that goes down past the pool's grace
+  (D189) takes its copies with it: no backfill, no recovery. The PG is
+  placed again with an empty
   `acting` set, and its first write starts it afresh. Clients treat "not
   found" as a miss and recompute. The one move that backfills is a PG
   a split made going to its own devices (D188): nothing failed, and the

@@ -132,6 +132,7 @@ covered by tests that run on every change.
 | A PG split in place: objects moved to their new PG's key without a copy, PG by PG | Done |
 | The autoscaler: a pool's PG count doubled as devices are added, one pool at a time, unless off | Done |
 | A cache pool's data kept across splits, the moves they cause and restarts (cache generations) | Done |
+| Cache PGs wait for a down node up to their pool's grace: reads miss, a write moves the PG | Done |
 
 ## AD0: Administration API, identities and CLI
 
