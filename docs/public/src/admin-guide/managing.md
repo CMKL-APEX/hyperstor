@@ -399,7 +399,9 @@ PG (D183). Volumes stay attached and writes go on, retried over each
 pause. `hyperstorctl pools` shows how far it has got. The new PGs start
 on their parents' devices; then, whenever every PG of the pool is clean,
 the map service places a few more on their own devices, and they move
-under the backfill budget, until all are placed. A split is refused for
+under the backfill budget, until all are placed. A cache pool keeps its data
+through all of it: its new PGs are copied to their devices, not started
+empty, and a restart doesn't empty its devices either (D185). A split is refused for
 any count but twice the pool's, while one runs, and until the last
 one's PGs have moved. A device that was down during the
 split catches up when it returns.

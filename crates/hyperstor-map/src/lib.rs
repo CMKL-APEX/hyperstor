@@ -217,6 +217,14 @@ pub struct ClusterMap {
     /// let an old device or host pass for the new one.
     pub removed_devices: BTreeSet<u32>,
     pub removed_nodes: BTreeSet<u32>,
+    /// Each cache PG's generation (D185), where it isn't 0: it moves when
+    /// a member joins without the PG's data, and a device drops what it
+    /// holds of a PG whose generation isn't the one it last served.
+    pub cache_gens: BTreeMap<(u32, u32), u64>,
+    /// Cache PGs the next [`ClusterMap::recompute`] backfills if it moves
+    /// them, rather than starting their new members empty (D185); empty
+    /// after it, and not in the encoding.
+    pub keep_acting: BTreeSet<(u32, u32)>,
 }
 
 /// What a device is (24-pools-and-devices.md §27.2.4), as its node
@@ -491,6 +499,7 @@ impl ClusterMap {
             return false;
         }
         self.pgs.retain(|(pool, _), _| *pool != id);
+        self.cache_gens.retain(|(pool, _), _| *pool != id);
         self.deleted_pools.insert(id);
         self.recompute();
         true
@@ -602,6 +611,10 @@ impl ClusterMap {
             i.epoch = epoch;
             let sibling = i.clone();
             self.pgs.insert((pool, pg + n), sibling);
+            // Its objects are the parent's, moved: the same generation.
+            if let Some(g) = self.cache_gens.get(&(pool, pg)).copied() {
+                self.cache_gens.insert((pool, pg + n), g);
+            }
         }
         true
     }
@@ -734,10 +747,25 @@ impl ClusterMap {
                 };
                 let acting = match &old {
                     None => up.clone(),
-                    // Cache pools (D45): no backfill and no recovery; the
-                    // acting set is always where placement wants it, and a
-                    // new member starts empty.
-                    Some(_) if p.kind == PoolKind::Cache => up.clone(),
+                    // Cache pools (D45): no recovery; the acting set is
+                    // where placement wants it, and a new member starts
+                    // empty. But a PG the placement count moves after a
+                    // split, and one still being filled since, keeps its
+                    // live members while the new ones are backfilled
+                    // (D185).
+                    Some(o) if p.kind == PoolKind::Cache => {
+                        let fill = self.keep_acting.contains(&(p.id, pg)) || o.acting != o.up;
+                        let kept: Vec<u32> =
+                            o.acting.iter().copied().filter(|d| self.live(*d)).collect();
+                        if !fill
+                            || kept.is_empty()
+                            || (kept.len() == up.len() && up.iter().all(|d| kept.contains(d)))
+                        {
+                            up.clone()
+                        } else {
+                            kept
+                        }
+                    }
                     // Never had a copy (the pool was made before any host
                     // joined): nothing to keep, so start where placement
                     // wants it, as a new PG does.
@@ -772,6 +800,16 @@ impl ClusterMap {
                         }
                     }
                 };
+                // A cache member that joins without the data moves the PG's
+                // generation, so devices drop what they held of it (D185).
+                if p.kind == PoolKind::Cache
+                    && let Some(o) = &old
+                    && acting
+                        .iter()
+                        .any(|d| *d != NO_DEVICE && !o.acting.contains(d))
+                {
+                    *self.cache_gens.entry((p.id, pg)).or_default() += 1;
+                }
                 let e = self.pgs.entry((p.id, pg)).or_insert(PgInfo {
                     epoch: self.epoch,
                     acting: Vec::new(),
@@ -784,6 +822,7 @@ impl ClusterMap {
                 }
             }
         }
+        self.keep_acting.clear();
     }
 
     /// Takes `device` out of the acting set of each PG whose `up` it has
@@ -968,6 +1007,12 @@ impl ClusterMap {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
 
+    /// A cache PG's generation (D185): 0 until a member first joins it
+    /// without the data.
+    pub fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
+        self.cache_gens.get(&(pool, pg)).copied().unwrap_or(0)
+    }
+
     pub fn pg(&self, pool: u32, pg: u32) -> Option<&PgInfo> {
         self.pgs.get(&(pool, pg))
     }
@@ -985,7 +1030,9 @@ impl ClusterMap {
         // a pool's devices added and removed, 8 deleted pools' ids, 9
         // removed devices' and nodes' ids; a map without them keeps the
         // older format, which nodes from before them read.
-        let format = if self
+        let format = if !self.cache_gens.is_empty() {
+            11
+        } else if self
             .pools
             .values()
             .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
@@ -1134,8 +1181,8 @@ impl ClusterMap {
             }
         }
         if format >= 10 {
-            // Every pool, in order: its placement count, split and
-            // autoscale.
+            // Every pool, in order: its placement count, autoscale and
+            // split.
             for p in self.pools.values() {
                 e.u32(p.placement).bool(p.autoscale).bool(p.split.is_some());
                 if let Some(s) = &p.split {
@@ -1148,13 +1195,19 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 11 {
+            e.u32(self.cache_gens.len() as u32);
+            for (&(pool, pg), &g) in &self.cache_gens {
+                e.u32(pool).u32(pg).u64(g);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=10).contains(&v) {
+        if !(1..=11).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1313,6 +1366,12 @@ impl ClusterMap {
                         done: d.seq(4, |d| d.u32())?.into_iter().collect(),
                     });
                 }
+            }
+        }
+        if v >= 11 {
+            for _ in 0..d.u32()? {
+                let k = (d.u32()?, d.u32()?);
+                m.cache_gens.insert(k, d.u64()?);
             }
         }
         d.finish()?;
@@ -1769,6 +1828,80 @@ mod tests {
             10u32.to_le_bytes(),
             "all placed: format 10 no more"
         );
+    }
+
+    /// D185: a cache PG's generation moves when a member joins it without
+    /// the data (a device out), not when it is split or flipped, and a new
+    /// PG takes its parent's; a cache PG the placement count moves keeps
+    /// its old member while the new one is backfilled. Format 11.
+    #[test]
+    fn cache_generations_move_only_when_a_member_starts_empty() {
+        let mut m = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        let mut cache = replicated_pool(3, "kv", 1, 16);
+        cache.kind = PoolKind::Cache;
+        cache.min_size = 1;
+        m.add_pool(cache);
+        m.recompute();
+        assert!(m.cache_gens.is_empty());
+        // A device out: its cache PGs start empty elsewhere.
+        let (k, d) = m
+            .pgs
+            .iter()
+            .find(|(k, _)| k.0 == 3)
+            .map(|(k, i)| (*k, i.acting[0]))
+            .unwrap();
+        m.set_in(d, false);
+        m.recompute();
+        assert_eq!(m.cache_gen(k.0, k.1), 1);
+        assert_eq!(m.encode()[..4], 11u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.set_in(d, true);
+        m.recompute();
+        let gens = m.cache_gens.clone();
+        // A split: marking and flipping move no generation; the new PGs
+        // take their parents'.
+        m.start_split(3).unwrap();
+        for pg in 0..16 {
+            assert!(m.mark_split(3, pg) && m.flip_split(3, pg));
+        }
+        for pg in 0..16 {
+            assert_eq!(m.cache_gen(3, pg + 16), m.cache_gen(3, pg));
+            assert_eq!(gens.get(&(3, pg)).copied().unwrap_or(0), m.cache_gen(3, pg));
+        }
+        // The placement count rising: the moved PGs keep their member and
+        // backfill the new one; no generation moves.
+        let before = m.clone();
+        m.pools.get_mut(&3).unwrap().placement = 24;
+        m.keep_acting.extend((16..24).map(|pg| (3, pg)));
+        m.recompute();
+        assert!(m.keep_acting.is_empty());
+        let mut filling = 0;
+        for pg in 16..24 {
+            let (was, now) = (&before.pgs[&(3, pg)], &m.pgs[&(3, pg)]);
+            if now.up != was.up {
+                assert_eq!(now.acting, was.acting, "PG {pg} keeps its copy");
+                filling += 1;
+            }
+            assert_eq!(m.cache_gen(3, pg), before.cache_gen(3, pg));
+        }
+        assert!(filling > 0);
+        // Filled: the new member joins; still no generation moves.
+        for pg in 16..24 {
+            let i = m.pgs[&(3, pg)].clone();
+            for d in i.backfilling().collect::<Vec<_>>() {
+                assert!(m.backfill_done(3, pg, m.pgs[&(3, pg)].epoch, d));
+            }
+            assert_eq!(m.pgs[&(3, pg)].acting, m.pgs[&(3, pg)].up);
+            assert_eq!(m.cache_gen(3, pg), before.cache_gen(3, pg));
+        }
+        // A recompute after leaves them be.
+        let settled = m.clone();
+        m.recompute();
+        assert_eq!(m.cache_gens, settled.cache_gens);
     }
 
     /// A PG whose acting set holds `up`'s devices in another order takes

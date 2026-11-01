@@ -1995,7 +1995,14 @@ impl Meta {
                     && i.acting.iter().all(|d| *d != NO_DEVICE && map.live(*d))
             });
             if clean && let Some(p) = map.pools.get_mut(&pool) {
+                let from = p.placement;
                 p.placement = (p.placement + SPLITS_AT_ONCE as u32).min(p.pg_count);
+                // A cache pool's PGs that move are backfilled, so the
+                // move loses nothing (D185).
+                if p.kind == PoolKind::Cache {
+                    let to = p.placement;
+                    map.keep_acting.extend((from..to).map(|pg| (pool, pg)));
+                }
                 placed = true;
             }
         }

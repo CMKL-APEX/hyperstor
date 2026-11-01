@@ -525,12 +525,14 @@ struct ShardState {
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
-    /// Cache-pool PGs (D45), with the epoch this device last served each
-    /// at. Serving one at a new epoch, or for the first time since start,
-    /// first drops what this device holds of it: the copy may be older
+    /// Cache-pool PGs (D45, D185), with the generation this device last
+    /// served each at, as kept on the device ([`cache_gens_key`]). Serving
+    /// one at another generation first drops what this device holds of
+    /// it: a member joined without the data, so this copy may be older
     /// than writes made elsewhere meanwhile, and a cache may lose data but
-    /// must never serve stale data.
-    cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
+    /// must never serve stale data. A split, its moves (backfilled) and a
+    /// restart leave the generation, and so the data.
+    cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
 }
@@ -824,6 +826,28 @@ pub fn split_lists(sh: &hyperstor_engine::Shard, pool: u32, pg: u32, pg_count: u
         .collect()
 }
 
+/// The object that keeps, on a device, the generation it last served each
+/// cache PG at (D185), as a key–value table: outside every pool, so no
+/// split, backfill or stray sweep touches it.
+fn cache_gens_key() -> ObjKey {
+    ObjKey::new(u32::MAX, 0, Namespace::Internal, b"cache-gens".to_vec(), 0)
+}
+
+fn cache_gen_name(pool: u32, pg: u32) -> Vec<u8> {
+    [pool.to_be_bytes(), pg.to_be_bytes()].concat()
+}
+
+/// The list that records generation `generation` for cache PG `pool`.`pg`.
+fn cache_gen_list(pool: u32, pg: u32, generation: u64) -> OpList {
+    OpList {
+        key: cache_gens_key(),
+        ops: vec![Op::KvPut(
+            cache_gen_name(pool, pg),
+            generation.to_le_bytes().to_vec(),
+        )],
+    }
+}
+
 fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
     let ns = Namespace::from_u8(k.ns).map_err(|_| ())?;
     Ok(ObjKey::new(to.pool, to.pg, ns, k.name.clone(), k.version))
@@ -973,7 +997,7 @@ impl ShardState {
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
-            cache_epochs: RefCell::new(HashMap::new()),
+            cache_gens: RefCell::new(HashMap::new()),
             metrics,
         }))
     }
@@ -1267,7 +1291,26 @@ impl ShardState {
             return true;
         }
         let n = lists.len();
-        let waits: Vec<_> = lists.into_iter().map(|l| self.enqueue(l)).collect();
+        // A cache pool's new PGs hold its objects, moved: they take its
+        // generation, so they keep them (D185).
+        let mut gens = Vec::new();
+        if self.map().pools.get(&pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache) {
+            let generation = self.cache_gen(pool, pg).await;
+            let to: BTreeSet<u32> = lists
+                .iter()
+                .map(|l| l.key.pg)
+                .filter(|p| *p != pg)
+                .collect();
+            for t in to {
+                self.cache_gens.borrow_mut().insert((pool, t), generation);
+                gens.push(cache_gen_list(pool, t, generation));
+            }
+        }
+        let waits: Vec<_> = lists
+            .into_iter()
+            .chain(gens)
+            .map(|l| self.enqueue(l))
+            .collect();
         let mut ok = true;
         for w in waits {
             ok &= w.await.is_ok();
@@ -1277,6 +1320,23 @@ impl ShardState {
             self.me
         );
         ok
+    }
+
+    /// The generation this device last served cache PG `pool`.`pg` at
+    /// (D185): kept on the device, so a restart keeps it; 0 if never.
+    async fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
+        if let Some(g) = self.cache_gens.borrow().get(&(pool, pg)) {
+            return *g;
+        }
+        let kept = self
+            .shard
+            .get()
+            .await
+            .kv_get(&cache_gens_key(), &cache_gen_name(pool, pg))
+            .and_then(|v| v.try_into().ok())
+            .map_or(0, u64::from_le_bytes);
+        self.cache_gens.borrow_mut().insert((pool, pg), kept);
+        kept
     }
 
     /// Moves what this device holds of `p` by an older PG count to the PG
@@ -1360,23 +1420,26 @@ impl ShardState {
             return Err(err(Code::Unavailable, &map, "PG splitting"));
         }
         if map.pools.get(&to.pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache)
-            && let Some(pg) = map.pg(to.pool, to.pg)
-            && self.cache_epochs.borrow().get(&(to.pool, to.pg)) != Some(&pg.epoch)
+            && map.pg(to.pool, to.pg).is_some()
         {
-            self.cache_epochs
-                .borrow_mut()
-                .insert((to.pool, to.pg), pg.epoch);
-            // Committed here, after anything already queued and before this
-            // request goes on: reads don't pass through the queue.
-            let keys = self.shard.get().await.list_pg(to.pool, to.pg);
-            self.queue.borrow_mut().extend(keys.into_iter().map(|k| {
-                let list = OpList {
-                    key: k,
-                    ops: vec![Op::Delete],
-                };
-                (list, oneshot().0)
-            }));
-            self.commit_queued().await;
+            let k = (to.pool, to.pg);
+            let generation = map.cache_gen(to.pool, to.pg);
+            if self.cache_gen(to.pool, to.pg).await != generation {
+                self.cache_gens.borrow_mut().insert(k, generation);
+                // Committed here, after anything already queued and before
+                // this request goes on: reads don't pass through the queue.
+                let keys = self.shard.get().await.list_pg(to.pool, to.pg);
+                self.queue.borrow_mut().extend(
+                    keys.into_iter()
+                        .map(|k| OpList {
+                            key: k,
+                            ops: vec![Op::Delete],
+                        })
+                        .chain([cache_gen_list(to.pool, to.pg, generation)])
+                        .map(|list| (list, oneshot().0)),
+                );
+                self.commit_queued().await;
+            }
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             if map.deleted_pools.contains(&to.pool) {

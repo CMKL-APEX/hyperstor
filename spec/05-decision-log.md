@@ -996,3 +996,13 @@ Building stage 5d (D174), two points. Asked, with a recommendation:
 |---|---|---|---|
 | 147 | D174's trigger, "when its PGs per device pass twice the target", reads reversed (doubling raises PGs per device; adding devices lowers them): double when the devices call for at least twice the pool's count (recommended), or as written | Twice the count | D184 |
 | 148 | Whether the autoscaler is on for pools that exist when a cluster upgrades: on for every pool, the trial's pools sized so they don't split (recommended); on for new pools only; off by default | On for every pool | D184 |
+
+## Cache data across splits (2026-11-01)
+
+Before rolling stages 4 and 5 to the pilot, whose cache pool the
+autoscaler would split three times. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 149 | Whether a cache pool keeps its data across a split: build it before the rollout (recommended); roll out with the cache pool's autoscale off and build it later; leave it off | Build it first | D185 |
+| 150 | Which pieces: a generation per cache PG, backfill for the PGs a split moves, and the generation kept on each device so a restart keeps data too (recommended); the first two only | All three | D185 |

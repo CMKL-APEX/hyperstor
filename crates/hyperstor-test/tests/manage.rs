@@ -1107,6 +1107,86 @@ fn the_autoscaler_grows_pools_that_ask_for_it() {
     );
 }
 
+/// D185: a cache pool keeps what it holds across a split, the moves of
+/// its new PGs (backfilled, not started empty) and a restart of every
+/// node, as an upgrade does.
+#[test]
+fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
+    let mut c = Cluster::all_in_one("cachekeep", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&[
+        "pool",
+        "create",
+        "--name",
+        "hot",
+        "--kind",
+        "cache",
+        "--classes",
+        "file",
+        "--pgs",
+        "16",
+        "--autoscale",
+        "off",
+    ])
+    .ok();
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "16M",
+            "--name",
+            "c",
+        ])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let data: Vec<u8> = (0..(8u32 << 20)).map(|i| (i % 241 + 3) as u8).collect();
+    let src = c.scratch.path("cache.raw");
+    std::fs::write(&src, &data).unwrap();
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    let read = |c: &Cluster| -> Vec<u8> {
+        let f = c.scratch.path("cache.out");
+        c.ctl(&[
+            "read-volume",
+            "--id",
+            &id,
+            "--size",
+            &data.len().to_string(),
+            "--out",
+            f.to_str().unwrap(),
+        ])
+        .ok();
+        std::fs::read(&f).unwrap()
+    };
+    assert!(read(&c) == data);
+    c.ctl(&["pool", "set", "--pool", "3", "--pgs", "32", "--wait", "300"])
+        .ok();
+    wait_for("pool 3's new PGs placed, every PG clean", 300, || {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let p = v["pools"]
+            .as_array()?
+            .iter()
+            .find(|p| p["id"].as_u64() == Some(3))?
+            .clone();
+        (p["placement_count"].as_u64() == Some(32) && c.settled()).then_some(())
+    });
+    assert!(read(&c) == data, "after the split and the moves");
+    for n in 0..3 {
+        c.kill_node(n);
+        c.start_node(n);
+        wait_for("every PG clean after the restart", 120, || {
+            c.settled().then_some(())
+        });
+    }
+    assert!(read(&c) == data, "after every node restarted");
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts

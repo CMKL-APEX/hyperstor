@@ -171,11 +171,14 @@ members, as long as there are at least `min_size` of them. Below
 
 ### 8.7 Cache pools (D45)
 
-As built (01-implementation-notes.md I40): the pool kind, copies, loss
-without backfill, and "not found" on a miss. A node that serves a cache
-PG at a new epoch first empties what it holds of it, so a node that
-returns never serves a copy older than a write made while it was away.
-Expiry and eviction are not built yet.
+As built (01-implementation-notes.md I40, I222): the pool kind, copies,
+loss without backfill, and "not found" on a miss. Each cache PG has a
+generation in the map, which moves when a member joins it without the
+data; a node that serves a cache PG at another generation than it last
+did first empties what it holds of it, so a node that returns never
+serves a copy older than a write made while it was away (D185). A split,
+the moves of the PGs it makes (backfilled, D185) and a restart keep the
+generation, and so the data. Expiry and eviction are not built yet.
 
 - **Copies.** One by default, placed like a replicated pool of that size;
   writes are acknowledged when every copy has them, as in §8.1.
@@ -185,7 +188,9 @@ Expiry and eviction are not built yet.
 - **Loss.** A device or node that goes down takes its copies with it:
   no backfill, no recovery. The PG is placed again with an empty
   `acting` set, and its first write starts it afresh. Clients treat "not
-  found" as a miss and recompute.
+  found" as a miss and recompute. The one move that backfills is a PG
+  a split made going to its own devices (D185): nothing failed, and the
+  data is there to copy.
 - **Space.** Under pressure a cache pool evicts, by expiry first, then
   least recently read, instead of refusing writes; the D27 thresholds
   don't apply.
