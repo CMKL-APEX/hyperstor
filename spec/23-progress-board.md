@@ -32,7 +32,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/ui-manage` | Built and tested in a browser (I231): pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded | Merge on the owner's word, then the pilot | 2026-11-01 |
+| **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/ui-manage`, [#147](https://github.com/CMKL-APEX/hyperstor/pull/147) | Built and tested in a browser (I231): pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded | Merge on the owner's word, then the pilot | 2026-11-01 |
 
 ## Done
 
