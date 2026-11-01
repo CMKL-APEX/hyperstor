@@ -6,5 +6,5 @@ updated = 2026-11-01
 milestone = "HS18"
 branch = "main"
 prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124, 125, 126, 127, 130, 131, 132, 137, 138, 140, 141, 143]
-now = "Merged and deployed: stages 1–5 (#131) and D189 (#143) are on main, and the pilot runs main (8675eab) on all three hosts, leader last, health ok. Cache PGs now wait up to 60 s for a down node, so a restart keeps the cache"
+now = "Merged and deployed: stages 1–5 (#131) and D189 (#143) are on main, and the pilot runs main (1d7621a, with #145) on all three hosts, upgraded leader last, health ok. Cache PGs wait up to 60 s for a down node: in that rollout prism2's node was down for 2 s and its cache PGs waited and kept their data"
 next = "Nothing open here; S3 sooner (points 128–137) is not started and would be its own workstream"
