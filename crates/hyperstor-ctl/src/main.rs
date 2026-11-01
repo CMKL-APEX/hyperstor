@@ -1844,7 +1844,7 @@ where
             let s = s.into_option().unwrap_or_default();
             show(a, &s, || {
                 format!(
-                    "pool {}: kept {} s in the trash; a full pool would {} it (once pools have fullness thresholds, D27)\n",
+                    "pool {}: kept {} s in the trash; a full pool would {} it (not acted on yet, D115)\n",
                     s.pool, s.grace_seconds, s.on_full
                 )
             });

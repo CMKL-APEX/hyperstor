@@ -467,13 +467,7 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         // grouped by the pool's failure domain.
         let mut domains: BTreeMap<u32, (u128, u128)> = BTreeMap::new();
         let mut reported = true;
-        for d in map.devices.values().filter(|d| {
-            d.up_in
-                && d.weight > 0.0
-                && info.uses(d)
-                && !(info.id == hyperstor_map::META_POOL
-                    && map.kinds.get(&d.id) == Some(&hyperstor_map::DeviceKind::Hdd))
-        }) {
+        for d in pool_devices(map, info) {
             let Some(&(total, free)) = space.get(&d.id) else {
                 reported = false;
                 break;
@@ -498,6 +492,78 @@ pub fn pool_space(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate
         let (total, free): (Vec<u128>, Vec<u128>) = domains.into_values().unzip();
         p.total_bytes = Some((per_shard(total, n) * k).min(u64::MAX as u128) as u64);
         p.free_bytes = Some((per_shard(free, n) * k).min(u64::MAX as u128) as u64);
+    }
+}
+
+/// The devices placement may use for pool `info` (hyperstor-placement's
+/// `Topology`): in, with a weight, of its devices, and for `.meta` no
+/// hard disk.
+pub fn pool_devices<'a>(
+    map: &'a ClusterMap,
+    info: &'a hyperstor_map::PoolInfo,
+) -> impl Iterator<Item = &'a hyperstor_map::DeviceInfo> + 'a {
+    map.devices.values().filter(move |d| {
+        d.up_in
+            && d.weight > 0.0
+            && info.uses(d)
+            && !(info.id == hyperstor_map::META_POOL
+                && map.kinds.get(&d.id) == Some(&hyperstor_map::DeviceKind::Hdd))
+    })
+}
+
+/// Each device's and pool's fullness (04-decisions.md D27, D182), from the
+/// devices' reports, with a health reason for each device past a
+/// threshold: a warning past `nearfull` and `backfillfull`, an error past
+/// `full`.
+pub fn fullness(s: &mut pb::GetStatusResponse, map: &ClusterMap, space: &crate::DeviceSpace) {
+    use crate::fullness::{self, Level};
+    let devices = fullness::devices(map, space);
+    for d in s.nodes.iter_mut().flat_map(|n| n.devices.iter_mut()) {
+        if let Some((l, _)) = devices.get(&d.id) {
+            d.fullness = l.name().to_string();
+        }
+    }
+    for p in &mut s.pools {
+        if let Some((l, d)) = fullness::pool(map, p.id, &devices) {
+            p.fullness = l.pool_name().to_string();
+            p.fullest_device = d;
+        }
+    }
+    let r = &map.full_ratios;
+    let pct = |t: u16| t as f64 / 10.0;
+    for (d, (l, used)) in &devices {
+        let (level, text) = match l {
+            Level::Ok => continue,
+            Level::Nearfull => (
+                Health::Warn,
+                format!(
+                    "device {d} nearfull: {used:.1}% used, past {:.1}%",
+                    pct(r.nearfull)
+                ),
+            ),
+            Level::Backfillfull => (
+                Health::Warn,
+                format!(
+                    "device {d} backfillfull: {used:.1}% used, past {:.1}%; it takes no backfill",
+                    pct(r.backfillfull)
+                ),
+            ),
+            Level::Full => (
+                Health::Error,
+                format!(
+                    "device {d} full: {used:.1}% used, past {:.1}%; it refuses new data",
+                    pct(r.full)
+                ),
+            ),
+        };
+        s.reasons.push(pb::Reason {
+            level: health_pb(level).into(),
+            text,
+            ..Default::default()
+        });
+        if level == Health::Error || s.health == pb::Health::HEALTH_OK {
+            s.health = health_pb(level).into();
+        }
     }
 }
 
@@ -753,6 +819,7 @@ impl ClusterService for Api {
                     &self.map_address,
                 );
                 pool_space(&mut s, &map, &v.space);
+                fullness(&mut s, &map, &v.space);
                 s
             }
             // No leader, or it didn't answer: the map alone.
@@ -1521,17 +1588,22 @@ impl ClusterService for Api {
         } else {
             Some(parse_volume_id(req.id)?)
         };
-        let (reply, rx) = oneshot();
-        self.tx
-            .send(Admin::CreateVolume {
-                pool: req.pool,
-                size: req.size,
-                name: req.name.to_string(),
-                id,
-                reply,
-            })
-            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
-        let r = rx.recv().await;
+        let r = match self.full_pools().await.remove(&req.pool) {
+            Some(why) => Some(Err((crate::VolumeFault::Full, why))),
+            None => {
+                let (reply, rx) = oneshot();
+                self.tx
+                    .send(Admin::CreateVolume {
+                        pool: req.pool,
+                        size: req.size,
+                        name: req.name.to_string(),
+                        id,
+                        reply,
+                    })
+                    .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+                rx.recv().await
+            }
+        };
         audit(
             &who,
             "CreateVolume",
@@ -1859,6 +1931,40 @@ fn snapshot_pb(s: &crate::Snapshot) -> pb::Snapshot {
 }
 
 impl Api {
+    /// The pools now full (D27), each with why, from the leader's view of
+    /// the devices' space; none when the leader can't be asked, so a lost
+    /// leader doesn't stop creations.
+    async fn full_pools(&self) -> BTreeMap<u32, String> {
+        let Ok((map, ..)) = self.published().await else {
+            return BTreeMap::new();
+        };
+        let (reply, rx) = oneshot();
+        if self.tx.send(Admin::LeaderView(reply)).is_err() {
+            return BTreeMap::new();
+        }
+        match rx.recv().await.flatten() {
+            Some(v) => crate::fullness::full_pools(&map, &v.space),
+            None => BTreeMap::new(),
+        }
+    }
+
+    /// Why a new snapshot or clone of volumes `ids` is refused: one is in
+    /// a full pool (D27).
+    async fn full_for(&self, ids: &[u128]) -> Option<String> {
+        let full = self.full_pools().await;
+        if full.is_empty() {
+            return None;
+        }
+        for id in ids {
+            if let Ok(v) = self.volume_any(*id).await
+                && let Some(why) = full.get(&v.pool)
+            {
+                return Some(why.clone());
+            }
+        }
+        None
+    }
+
     /// A snapshot operation (10-volumes.md §10.3, §10.4): authorized, run on
     /// the map service's reactor as a client of `.meta`, and audited if
     /// it changes anything.
@@ -1923,11 +2029,24 @@ impl Api {
         op: crate::SnapOp,
     ) -> Result<crate::SnapDone, ConnectError> {
         let who = self.authorize(ctx, rpc, &target, write)?;
-        let (reply, rx) = oneshot();
-        self.tx
-            .send(Admin::Snapshots { op, reply })
-            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
-        let r = rx.recv().await;
+        // Snapshots and clones make more to keep: none in a full pool.
+        let full = match &op {
+            crate::SnapOp::Create { id, .. } | crate::SnapOp::Clone { id, .. } => {
+                self.full_for(&[*id]).await
+            }
+            crate::SnapOp::Group { ids, .. } => self.full_for(ids).await,
+            _ => None,
+        };
+        let r = match full {
+            Some(why) => Some(Err((crate::VolumeFault::Full, why))),
+            None => {
+                let (reply, rx) = oneshot();
+                self.tx
+                    .send(Admin::Snapshots { op, reply })
+                    .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+                rx.recv().await
+            }
+        };
         if write {
             audit(
                 &who,
@@ -2013,6 +2132,10 @@ fn volume_result<T>(r: Option<Result<T, (crate::VolumeFault, String)>>) -> Resul
         Some(Err((F::Unavailable, e))) => {
             Err(with_reason(ConnectError::unavailable(e), "unavailable"))
         }
+        Some(Err((F::Full, e))) => Err(with_reason(
+            ConnectError::resource_exhausted(e),
+            "pool_full",
+        )),
         None => Err(ConnectError::unavailable("map service stopped")),
     }
 }
@@ -2300,6 +2423,74 @@ mod tests {
         assert_eq!(pool(3), (Some(2000), Some(800)));
         // Rack 0 holds 2000, rack 1 2000: two copies, 2000.
         assert_eq!(pool(4), (Some(2000), Some(800)));
+    }
+
+    /// D27, D182: each device's fullness, each pool's (its fullest
+    /// device's), a health reason per device past a threshold, and the
+    /// full pools a creation is refused in.
+    #[test]
+    fn fullness_of_devices_and_pools() {
+        let m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
+             node 2 rack 0 127.0.0.1:9102\n\
+             pool 1 vol replicated size 2 min 1 pgs 8 domain host\n",
+        )
+        .unwrap();
+        let status = |space: &crate::DeviceSpace| {
+            let mut s = super::status(
+                &m,
+                None,
+                &Default::default(),
+                &Default::default(),
+                "127.0.0.1:8849",
+            );
+            super::fullness(&mut s, &m, space);
+            s
+        };
+        let mut space: crate::DeviceSpace = m.devices.keys().map(|d| (*d, (1000, 900))).collect();
+        let s = status(&space);
+        assert_eq!(s.health, super::pb::Health::HEALTH_OK);
+        let pool = |s: &super::pb::GetStatusResponse| {
+            let p = s.pools.iter().find(|p| p.id == 1).unwrap();
+            (p.fullness.clone(), p.fullest_device)
+        };
+        assert_eq!(pool(&s), ("ok".into(), None));
+        let ids: Vec<u32> = m.devices.keys().copied().collect();
+        space.insert(ids[1], (1000, 120));
+        let s = status(&space);
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert_eq!(pool(&s), ("nearfull".into(), Some(ids[1])));
+        assert!(s.reasons.iter().any(|r| {
+            r.text
+                .starts_with(&format!("device {} nearfull: 88.0% used", ids[1]))
+        }));
+        space.insert(ids[1], (1000, 95));
+        space.insert(ids[2], (1000, 30));
+        let s = status(&space);
+        assert_eq!(s.health, super::pb::Health::HEALTH_ERROR);
+        assert_eq!(pool(&s), ("full".into(), Some(ids[2])));
+        let dev = |id: u32| {
+            s.nodes
+                .iter()
+                .flat_map(|n| n.devices.iter())
+                .find(|d| d.id == id)
+                .unwrap()
+                .fullness
+                .clone()
+        };
+        assert_eq!(
+            (dev(ids[0]), dev(ids[1]), dev(ids[2])),
+            ("ok".into(), "backfillfull".into(), "full".into())
+        );
+        let full = crate::fullness::full_pools(&m, &space);
+        assert!(
+            full[&1].starts_with(&format!("pool 1 is full: device {} is 97.0% used", ids[2])),
+            "{full:?}"
+        );
+        assert!(full.contains_key(&0), ".meta shares the devices: {full:?}");
+        // A device not heard from: the pool's fullness isn't known.
+        space.remove(&ids[0]);
+        assert_eq!(pool(&status(&space)), (String::new(), None));
     }
 
     #[test]

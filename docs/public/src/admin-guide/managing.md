@@ -89,8 +89,9 @@ hyperstorctl trash settings --pool 1 --grace 604800   # keep a week
 
 A restored volume whose name another volume took meanwhile comes back
 as `NAME-restored`. `--on-full purge` lets a full pool purge its oldest
-trash first rather than refuse writes; it acts once pools have fullness
-thresholds. The UI's Trash page does the same.
+trash first rather than refuse writes; it is kept but not acted on
+yet (pools have fullness thresholds now; the purge comes later). The
+UI's Trash page does the same.
 
 ## The audit log
 
@@ -264,9 +265,16 @@ device:
 
 | Threshold | Default | Past it |
 |---|---|---|
-| `nearfull` | 85 % | Kept for warnings; `hyperstorctl status` doesn't show them yet |
-| `backfillfull` | 90 % | No PG is backfilled onto the device; a PG that needs it waits, degraded or remapped, until there is room |
-| `full` | 95 % | The device refuses what would grow its used space: new objects and writes to blocks not yet written |
+| `nearfull` | 85 % | Health warns |
+| `backfillfull` | 90 % | Health warns, and no PG is backfilled onto the device; a PG that needs it waits, degraded or remapped, until there is room |
+| `full` | 95 % | Health is an error. The device refuses what would grow its used space: new objects and writes to blocks not yet written |
+
+A pool is `nearfull` or `full` while any device it uses is:
+`hyperstorctl pools` shows it with the device, `hyperstorctl nodes`
+each device's state, and the web UI's **Pools** page the pool's. While a
+pool is `full`, new volumes, clones and snapshots in it are refused
+(`pool_full`). Each device's change is in the audit log, as operation
+`DeviceFullness` by `hyperstor-meta`.
 
 Past `full`, overwrites of written blocks, deletes, discards and
 snapshot deletes still work, so you can always free space. A refused

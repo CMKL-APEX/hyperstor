@@ -56,7 +56,7 @@ function Settings({ pool }: { pool: number }) {
             </select>
           </Field>
           <p className="text-xs text-slate-500">
-            The full-pool rule acts once pools have fullness thresholds. This needs a login of the last 10 minutes.
+            The full-pool rule is not acted on yet. This needs a login of the last 10 minutes.
           </p>
         </ActionDialog>
       )}

@@ -74,7 +74,7 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent) |
+| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent); each device's and pool's `fullness` (`ok`, `nearfull`, `backfillfull` for a device, `full`; empty before the devices report) and a pool's `fullest_device` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `SetDeviceIn` | `{"device": 2, "up_in": false}` | `map_epoch` after the change |
 | `SetDeviceWeight` | `{"device": 2, "weight": 0.5}`, or `{"device": 2}` to follow the device's capacity again | `map_epoch` after the change, and `weight` now; `invalid_argument` for a weight below 0 |
@@ -167,7 +167,7 @@ word for scripts (the message is for people, and may change):
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
 | `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished`, `not_cancellable` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished, or isn't a drain |
-| `resource_exhausted` | `rate_limited` | The caller is over its rate limit |
+| `resource_exhausted` | `rate_limited`, `pool_full` | The caller is over its rate limit; `CreateVolume`, `CloneVolume`, `CreateSnapshot` or `CreateGroupSnapshot` in a pool past `full` (D27) |
 | `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
 
 ## What the answers mean
