@@ -967,3 +967,17 @@ recommendation:
 |---|---|---|---|
 | 142 | Whether a deleted pool leaves the map at once, its id kept and devices deleting its data as they delete stray copies (recommended), or is marked deleting until every device reports it holds nothing | At once | D181 |
 | 143 | Whether `--force` (D176: delete the pool's volumes first) comes with stage 3c or in its own pull request after it (recommended) | Its own pull request | D181 |
+
+## How peers ping each other (2026-11-01)
+
+G43's unexplained silences came from packets lost under load, which
+stall a ping's TCP connection for the minimum retransmission timeout
+(02-benchmarks.md, 2026-11-01). Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 149 | Whether to keep pings on TCP and record that the peer timeout can't come down (recommended), lower TCP's minimum retransmission timeout on the routes between hosts, or ping over UDP | Over UDP | D185 |
+| 150 | How a UDP pong is protected: a random nonce echoed (recommended), or a MAC with a cluster key | A nonce | D185 |
+| 151 | Which port a device answers pings on: its TCP port's number (recommended), or a ping port per node in the map | Its TCP port's number | D185 |
+| 152 | How a node pings peers that don't answer UDP yet: both ways per peer until it first answers over UDP (recommended), or UDP once every node reports a version that has it | Both ways per peer | D185 |
+
