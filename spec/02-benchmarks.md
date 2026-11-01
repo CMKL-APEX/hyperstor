@@ -1375,3 +1375,64 @@ Both hypervisors behaved the same.
    minutes costs the guest nothing, and an operator freeing space takes
    minutes. Still to check: the newest kernel, and Windows' viostor
    driver (a Windows guest wasn't at hand).
+
+## 2026-11-01: reads off the reactor on the pilot (D190)
+
+The load test of the peer-silence entry above, repeated with #129, #134
+and #145 (D190) installed on every host (`main` at `3eaabbe`), then 1
+MiB reads alone. `HS_BENCH_SECS=30 hyperstor-bench remote` from node
+2's host into eight 64 MiB volumes in pool 1 (ids 0–7, purged after),
+with the same ICMP and TCP probes.
+
+| Test | ops/s | p50 | p99 | Before (ops/s, p50, p99) |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 939 | 1.03 ms | 1.61 ms | 880, 1.12 ms, 1.72 ms |
+| 4 KiB random writes, QD32 | 14,145 | 2.08 ms | 4.74 ms | 12,485, 2.49 ms, 4.77 ms |
+| 4 KiB random reads, QD1 | 1,795 | 0.50 ms | 1.30 ms | 1,927, 0.50 ms, 1.20 ms |
+| 4 KiB random reads, QD32 | 15,827 | 1.45 ms | 4.48 ms | 4,254, 7.83 ms, 9.32 ms |
+| 1 MiB writes, QD4 | 64 | 58 ms | 148 ms | 56, 70 ms, 129 ms |
+| 1 MiB reads, QD4 | 55 | 69 ms | 147 ms | 91, 42 ms, 85 ms |
+
+No peer was reported silent, no read timed out or went to another
+member, and no reactor held during the 1 MiB reads (seven holds of
+100–153 ms before). Node 0's two file devices held their reactors
+about 170 ms in the same millisecond once, during the 4 KiB writes,
+with commits on both waiting as long: a process-wide pause like the
+431 ms one above, shorter.
+
+**1 MiB reads, alone** (`HS_BENCH_ONLY`, 20–30 s each, several runs):
+
+| Build on the two serving nodes | QD1 | QD2 | QD4 |
+|---|---|---|---|
+| `main` (with D190) | 80–89 ops/s, p99 15–17 ms | 61, p99 59 ms | 55–58, p99 135–153 ms |
+| `7aa8321` (just before #145) | 83–86, p99 16–17 ms | 58–61, p99 57–61 ms | 56–59, p99 138–145 ms |
+| Synthetic: Python, 1 MiB answers from the same two hosts | 107, p99 9.5 ms | 111, p99 33 ms | 111, p99 237 ms |
+
+### Findings
+
+1. **D190 does what it was for**: 4 KiB reads at QD32 went from 4,254
+   to 15,827 ops/s (3.7×), as reads stop waiting behind each other on
+   the reactor, and 1 MiB reads no longer hold it.
+2. **The slower 1 MiB reads aren't D190.** The build from before #145
+   gives the same numbers on the two serving nodes. The cluster
+   changed instead: device 2 (3.5 TiB NVMe on node 0) joined on
+   2026-11-01, after the earlier test, beside device 1002 (node 1). Pool
+   1 has class `any`, and by weight (3.49 against 0.06 for the 63 GiB
+   file devices) they now hold the primary of 240 of its 256 PGs.
+   Earlier, part of the bench's reads were served by node 2's own
+   devices; now nearly all come over the network from nodes 0 and 1
+   into node 2's one 1 GbE port.
+3. **The tail is the network; the throughput isn't, yet.** The nodes
+   answered in 1.35 ms on average, the client used under a third of a
+   CPU, and one connection per worker changed nothing. Two TCP streams
+   into node 2 reach 122 MB/s together, and the synthetic test holds
+   111 ops/s at QD4. Its p99 of 237 ms is lost retransmits: at QD4 the
+   serving hosts retransmit 4× as many segments as at QD1 and lose 5×
+   as many retransmits. Why Hyperstor's 1 MiB reads lose throughput
+   above QD1 while the synthetic test doesn't is still open.
+4. **With the NVMe devices out of pool 1** (`pool remove-device` of
+   devices 2 and 1002; its primaries then 33–49 on each of the six file
+   devices, 90 of 256 on node 2), 1 MiB reads came back: 104 ops/s at
+   QD1 (p99 16 ms), 85 at QD2 (p99 59 ms), 82–84 at QD4 (p50 46–48
+   ms, p99 145–164 ms). Close to the earlier 91, with the same long
+   tail from lost retransmits.
