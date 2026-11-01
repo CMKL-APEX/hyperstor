@@ -1143,10 +1143,10 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A write refused for space held by hyperstor-vhost, retried every second for up to 60 s (--hold-full), before the guest gets an I/O error"
+what = "A write refused for space held by hyperstor-vhost, retried every second for up to 300 s (--hold-full), before the guest gets an I/O error"
 spec = ["D183", "G46", "I228"]
 status = "done"
-tests = ["vhost::a_write_refused_for_space_is_held"]
+tests = ["vhost::a_write_refused_for_space_is_held", "vm::a_guest_waits_on_a_write_held_while_full"]
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"

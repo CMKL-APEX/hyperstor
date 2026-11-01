@@ -1091,3 +1091,14 @@ ring), four points the stage left open. Asked, with a recommendation:
 | 165 | What a read does while a commit is in flight: waits for it, as before, while reads already in flight go on (recommended); or reads the state before the round, from the previous extent maps the commit keeps | Waits | D190 |
 | 166 | How long a read may wait for its device: the I/O timeout (30 s), past which the device is failed (recommended); or a shorter read timeout, past which a member serves the read and the device is failed only after repeated timeouts | A shorter timeout | D190: 2 s, served from a member, three in a row fail the device |
 | 167 | Whether a device limits its reads in flight: 128, the rest waiting in the order they came (recommended); only by the ring's size (1024); or by bytes | 128, in order | D190 |
+
+## How long a VM's write is held (2026-11-01)
+
+G46 measured Linux 6.8 guests under Cloud Hypervisor and QEMU
+(02-benchmarks.md): holds of 30 to 300 s cost a hung-task warning past
+120 s and nothing else, and the write completes; a hold that runs out
+aborts ext4's journal. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 168 | `hyperstor-vhost`'s `--hold-full` default: 300 s, enough for an operator to purge trash or add a device, costing a guest only a warning (recommended); 60 s as before; 600 s; 3600 s, close to holding until space frees | 300 s | D183 revised |

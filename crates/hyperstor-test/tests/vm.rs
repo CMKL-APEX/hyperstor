@@ -4,13 +4,19 @@
 //! is the host's kernel with a busybox initramfs built here, whose init
 //! checks the disk and prints `HS` lines on the serial console. Then each
 //! hypervisor again, on a fresh volume, while `hyperstor-vhost` restarts
-//! under it (D143, host check G6).
+//! under it (D143, host check G6). Last, a guest's write held while the
+//! cluster is full (D183, host check G46): the guest writes a file on
+//! ext4 while new blocks are refused, space is freed after a while, and
+//! the write lands.
 //!
 //! Needs `HS_VM=1`, `/dev/kvm` (directly, or through `sg kvm`), a kernel
 //! image the test can read (`HS_VM_KERNEL`, default
 //! `~/.cache/hyperstor-test/vmlinuz`; `/boot`'s is root-only on Ubuntu),
 //! a static `/usr/bin/busybox`, `cloud-hypervisor` and
-//! `qemu-system-x86_64`.
+//! `qemu-system-x86_64`. `HS_G46=30,60,120,300` holds the write that long
+//! instead of 5 s (minutes each, under both hypervisors) and lets one
+//! more go past `--hold-full`; the test prints what each guest's kernel
+//! logged.
 
 use hyperstor_test::Cluster;
 use hyperstor_test::vhost::Service;
@@ -51,6 +57,28 @@ if [ "$mode" = write ]; then
   done
   wait
   echo "HS wrote"
+fi
+if [ "$mode" = hold ]; then
+  # The cluster refuses new blocks: the file's blocks and the journal's
+  # are held by hyperstor-vhost until the test frees space.
+  # Warnings too on the console: hung tasks, timeouts, ext4's errors.
+  echo 7 > /proc/sys/kernel/printk
+  # Present only when the driver has a timeout handler.
+  echo "HS io_timeout $(cat /sys/block/vda/queue/io_timeout 2>/dev/null || echo none)"
+  echo "HS hung_task $(cat /proc/sys/kernel/hung_task_timeout_secs)"
+  mkdir /mnt
+  mount -t ext4 /dev/vda /mnt && echo "HS mounted"
+  yes "hyperstor 6" | head -c 1048576 > /tmp/f
+  echo "HS writing $(cut -d' ' -f1 /proc/uptime)"
+  if dd if=/tmp/f of=/mnt/f bs=64k conv=fsync 2>/dev/null; then
+    echo "HS synced $(cut -d' ' -f1 /proc/uptime)"
+  else
+    echo "HS failed $(cut -d' ' -f1 /proc/uptime)"
+  fi
+  grep -q ' /mnt ext4 ro' /proc/mounts && echo "HS read-only"
+  echo 3 > /proc/sys/vm/drop_caches
+  echo "HS file $(md5sum < /mnt/f | cut -d' ' -f1)"
+  umount /mnt && echo "HS unmounted"
 fi
 echo 3 > /proc/sys/vm/drop_caches
 for i in 1 2 3 4; do
@@ -124,7 +152,20 @@ fn boot(name: &str, cmd: &[String]) -> Vec<String> {
 }
 
 /// [`boot`], calling `on_line` with each `HS` line as it arrives.
-fn boot_with(name: &str, cmd: &[String], mut on_line: impl FnMut(&str)) -> Vec<String> {
+fn boot_with(name: &str, cmd: &[String], on_line: impl FnMut(&str)) -> Vec<String> {
+    let all = boot_for(name, cmd, Duration::from_secs(120), on_line);
+    all.iter()
+        .filter_map(|l| l.find("HS ").map(|i| l[i..].trim_end().to_string()))
+        .collect()
+}
+
+/// [`boot_with`] for at most `limit`, returning every console line.
+fn boot_for(
+    name: &str,
+    cmd: &[String],
+    limit: Duration,
+    mut on_line: impl FnMut(&str),
+) -> Vec<String> {
     let direct = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -170,7 +211,7 @@ fn boot_with(name: &str, cmd: &[String], mut on_line: impl FnMut(&str)) -> Vec<S
         all.push(l);
     };
     while child.try_wait().unwrap().is_none() {
-        if t.elapsed() > Duration::from_secs(120) {
+        if t.elapsed() > limit {
             // SAFETY: kill on our own child's process group.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             let _ = child.wait();
@@ -179,7 +220,7 @@ fn boot_with(name: &str, cmd: &[String], mut on_line: impl FnMut(&str)) -> Vec<S
                 all.push(l);
             }
             panic!(
-                "{name}: no poweroff within 120 s\n--- console\n{}\n--- stderr\n{err}",
+                "{name}: no poweroff within {limit:?}\n--- console\n{}\n--- stderr\n{err}",
                 all.join("\n")
             );
         }
@@ -191,18 +232,14 @@ fn boot_with(name: &str, cmd: &[String], mut on_line: impl FnMut(&str)) -> Vec<S
     while let Ok(l) = rx.try_recv() {
         take(&mut all, l);
     }
-    let hs: Vec<String> = all
-        .iter()
-        .filter_map(|l| l.find("HS ").map(|i| l[i..].trim_end().to_string()))
-        .collect();
     let err = stderr.join().unwrap();
-    if !hs.iter().any(|l| l == "HS done") {
+    if !all.iter().any(|l| l.trim_end().ends_with("HS done")) {
         panic!(
             "{name}: the guest didn't finish\n--- console\n{}\n--- stderr\n{err}",
             all.join("\n")
         );
     }
-    hs
+    all
 }
 
 /// The MD5 of what the guest's writer `i` writes.
@@ -220,6 +257,65 @@ fn expected_of(i: u32, len: u64) -> String {
         .output()
         .unwrap();
     String::from_utf8(o.stdout).unwrap().trim().to_string()
+}
+
+/// The command line booting the test's guest under `hypervisor`
+/// (`cloud-hypervisor` or `qemu`), from the volume served at `socket`
+/// over two queues, with `hs=mode`.
+fn machine(hypervisor: &str, kernel: &str, initrd: &str, socket: &str, mode: &str) -> Vec<String> {
+    let cmdline = format!("console=ttyS0 quiet panic=-1 hs={mode}");
+    let args: Vec<String> = if hypervisor == "cloud-hypervisor" {
+        vec![
+            "cloud-hypervisor".into(),
+            "--kernel".into(),
+            kernel.into(),
+            "--initramfs".into(),
+            initrd.into(),
+            "--cmdline".into(),
+            cmdline,
+            "--cpus".into(),
+            "boot=2".into(),
+            "--memory".into(),
+            "size=512M,shared=on".into(),
+            "--disk".into(),
+            format!("vhost_user=true,socket={socket},num_queues=2,queue_size=128"),
+            "--serial".into(),
+            "tty".into(),
+            "--console".into(),
+            "off".into(),
+        ]
+    } else {
+        vec![
+            "qemu-system-x86_64".into(),
+            "-enable-kvm".into(),
+            "-cpu".into(),
+            "host".into(),
+            "-smp".into(),
+            "2".into(),
+            "-m".into(),
+            "512M".into(),
+            "-object".into(),
+            "memory-backend-memfd,id=mem,size=512M,share=on".into(),
+            "-numa".into(),
+            "node,memdev=mem".into(),
+            "-chardev".into(),
+            format!("socket,id=disk,path={socket},reconnect=1"),
+            "-device".into(),
+            "vhost-user-blk-pci,chardev=disk,num-queues=2".into(),
+            "-kernel".into(),
+            kernel.into(),
+            "-initrd".into(),
+            initrd.into(),
+            "-append".into(),
+            cmdline,
+            "-nographic".into(),
+            "-nodefaults".into(),
+            "-serial".into(),
+            "stdio".into(),
+            "-no-reboot".into(),
+        ]
+    };
+    args
 }
 
 fn kernel() -> Option<PathBuf> {
@@ -257,26 +353,7 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
         kernel.to_str().unwrap().to_string(),
         initrd.to_str().unwrap().to_string(),
     );
-    let s = |x: &str| x.to_string();
-    let ch: Vec<String> = vec![
-        s("cloud-hypervisor"),
-        s("--kernel"),
-        k.clone(),
-        s("--initramfs"),
-        i.clone(),
-        s("--cmdline"),
-        s("console=ttyS0 quiet panic=-1 hs=write"),
-        s("--cpus"),
-        s("boot=2"),
-        s("--memory"),
-        s("size=512M,shared=on"),
-        s("--disk"),
-        format!("vhost_user=true,socket={socket},num_queues=2,queue_size=128"),
-        s("--serial"),
-        s("tty"),
-        s("--console"),
-        s("off"),
-    ];
+    let ch = machine("cloud-hypervisor", &k, &i, &socket, "write");
     let wrote = boot("cloud-hypervisor", &ch);
     eprintln!("cloud-hypervisor: {wrote:?}");
     let has = |lines: &[String], l: &str| {
@@ -294,35 +371,7 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
     }
     // The volume stayed attached; QEMU connects to the same socket and
     // reads what Cloud Hypervisor's guest wrote.
-    let qemu: Vec<String> = vec![
-        s("qemu-system-x86_64"),
-        s("-enable-kvm"),
-        s("-cpu"),
-        s("host"),
-        s("-smp"),
-        s("2"),
-        s("-m"),
-        s("512M"),
-        s("-object"),
-        s("memory-backend-memfd,id=mem,size=512M,share=on"),
-        s("-numa"),
-        s("node,memdev=mem"),
-        s("-chardev"),
-        format!("socket,id=disk,path={socket},reconnect=1"),
-        s("-device"),
-        s("vhost-user-blk-pci,chardev=disk,num-queues=2"),
-        s("-kernel"),
-        k,
-        s("-initrd"),
-        i,
-        s("-append"),
-        s("console=ttyS0 quiet panic=-1 hs=read"),
-        s("-nographic"),
-        s("-nodefaults"),
-        s("-serial"),
-        s("stdio"),
-        s("-no-reboot"),
-    ];
+    let qemu = machine("qemu", &k, &i, &socket, "read");
     let read = boot("qemu", &qemu);
     eprintln!("qemu: {read:?}");
     has(&read, "HS queues 2");
@@ -365,4 +414,209 @@ fn virtual_machines_boot_with_a_volume_as_their_disk() {
         has(&lines, &format!("HS big {}", expected_of(2, 16 << 20)));
     }
     svc.stop();
+}
+
+/// What a guest's kernel logged about a held write: hung tasks, block
+/// timeouts and resets, I/O errors and ext4's complaints.
+fn kernel_said(console: &[String]) -> Vec<String> {
+    const SIGNS: [&str; 9] = [
+        "blocked for more than",
+        "hung_task",
+        "timed out",
+        "timeout",
+        "reset",
+        "I/O error",
+        "EXT4-fs",
+        "Buffer I/O",
+        "Aborting journal",
+    ];
+    console
+        .iter()
+        .filter(|l| !l.contains("HS ") && SIGNS.iter().any(|s| l.contains(s)))
+        .map(|l| l.trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_guest_waits_on_a_write_held_while_full() {
+    if std::env::var("HS_VM").is_err() {
+        eprintln!(
+            "skipped: set HS_VM=1 (needs /dev/kvm, a kernel image, busybox and both hypervisors)"
+        );
+        return;
+    }
+    let kernel = kernel().expect("a readable kernel image (HS_VM_KERNEL)");
+    // How long each write is held before space is freed, in seconds.
+    let g46 = std::env::var("HS_G46").ok();
+    let holds: Vec<u64> = g46
+        .as_deref()
+        .map(|v| v.split(',').map(|n| n.trim().parse().unwrap()).collect())
+        .unwrap_or_else(|| vec![5]);
+    let c = Cluster::all_in_one("vmhold", 3);
+    let volume = |name: &str, size: &str| {
+        let made = c
+            .ctl(&["create-volume", "--size", size, "--name", name])
+            .ok();
+        made.out.split_whitespace().nth(1).unwrap().to_string()
+    };
+    let write = |id: &str, file: &Path, at: u64| {
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            id,
+            "--file",
+            file.to_str().unwrap(),
+            "--offset",
+            &at.to_string(),
+            "--sparse",
+            "--map",
+            &c.map,
+        ])
+    };
+    // An ext4 volume for each guest, written while there is space: only
+    // the blocks mkfs wrote something into, so the journal and the free
+    // blocks are new to the cluster, as on a disk that was never full.
+    let image = c.scratch.path("ext4.img");
+    let mkfs = Command::new("mkfs.ext4")
+        .args(["-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0"])
+        .arg(&image)
+        .arg("128M")
+        .status()
+        .unwrap();
+    assert!(mkfs.success(), "mkfs.ext4");
+    let mut runs = Vec::new();
+    for hold in holds
+        .iter()
+        .map(|h| Some(*h))
+        .chain(g46.as_ref().map(|_| None))
+    {
+        for hv in ["cloud-hypervisor", "qemu"] {
+            let id = volume("held", "128M");
+            write(&id, &image, 0).ok();
+            runs.push((hv, hold, id));
+        }
+    }
+    // Every device past 52 %, then full at 51 %: new blocks are refused.
+    let used = || -> f64 {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let n = |d: &serde_json::Value, f: &str| {
+            d[f].as_str()
+                .and_then(|t| t.parse::<f64>().ok())
+                .or(d[f].as_f64())
+        };
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .filter_map(|d| Some(100.0 * (1.0 - n(&d, "free_bytes")? / n(&d, "total_bytes")?)))
+            .fold(0.0, f64::max)
+    };
+    let filler = volume("filler", "1G");
+    let chunk = c.scratch.path("chunk.raw");
+    let pattern: Vec<u8> = (0..32u32 << 20).map(|i| (i % 251) as u8 + 1).collect();
+    std::fs::write(&chunk, &pattern).unwrap();
+    let mut next = 0u64;
+    while used() < 52.0 {
+        let had = used();
+        for _ in 0..4 {
+            write(&filler, &chunk, next << 25).ok();
+            next += 1;
+        }
+        assert!(next << 25 < 1 << 30, "the volume filled first");
+        hyperstor_test::wait_for("a space report", 15, || (used() > had).then_some(()));
+    }
+    let full = |pct: &str| {
+        c.ctl(&[
+            "full-ratios",
+            "--nearfull",
+            "50",
+            "--backfillfull",
+            "50.5",
+            "--full",
+            pct,
+        ])
+        .ok();
+    };
+    let probe = volume("probe", "1G");
+    let probes = std::cell::Cell::new(0u64);
+    let refused = || {
+        full("51");
+        hyperstor_test::wait_for("new blocks refused", 20, || {
+            probes.set(probes.get() + 1);
+            (write(&probe, &chunk, probes.get() << 25).code != 0).then_some(())
+        });
+    };
+    let initrd = c.scratch.path("initrd.cpio");
+    initramfs(&initrd);
+    let (k, i) = (
+        kernel.to_str().unwrap().to_string(),
+        initrd.to_str().unwrap().to_string(),
+    );
+    let svc = Service::start(&c, "vhost-hold", &["--queues", "2", "--hold-full", "3600"]);
+    let short = Service::start(&c, "vhost-short", &["--queues", "2", "--hold-full", "30"]);
+    let mut report = Vec::new();
+    for (hv, hold, id) in &runs {
+        refused();
+        let r = match hold {
+            Some(_) => svc.attach(id, "attach"),
+            None => short.attach(id, "attach"),
+        };
+        let socket = r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}"));
+        let cmd = machine(hv, &k, &i, socket, "hold");
+        let limit = Duration::from_secs(hold.unwrap_or(30) + 120);
+        let console = std::thread::scope(|s| {
+            boot_for(hv, &cmd, limit, |l| {
+                if l.starts_with("HS writing")
+                    && let Some(h) = *hold
+                {
+                    s.spawn(move || {
+                        std::thread::sleep(Duration::from_secs(h));
+                        full("95");
+                    });
+                }
+            })
+        });
+        let hs: Vec<&str> = console
+            .iter()
+            .filter_map(|l| l.find("HS ").map(|i| l[i..].trim_end()))
+            .collect();
+        let at = |what: &str| -> Option<f64> {
+            hs.iter()
+                .find_map(|l| l.strip_prefix(what)?.trim().parse().ok())
+        };
+        let waited = at("HS synced ")
+            .or(at("HS failed "))
+            .zip(at("HS writing "))
+            .map(|(b, a)| b - a);
+        let said = kernel_said(&console);
+        let held = match hold {
+            Some(h) => format!("freed after {h} s"),
+            None => "past --hold-full 30".into(),
+        };
+        eprintln!("{hv}, {held}: waited {waited:?} s; {hs:?}; kernel: {said:#?}");
+        report.push(format!(
+            "{hv}, {held}: waited {waited:?} s, kernel: {said:?}"
+        ));
+        if hold.is_some() {
+            assert!(hs.contains(&"HS mounted"), "{hv}: {hs:?}");
+            assert!(
+                hs.iter().any(|l| l.starts_with("HS synced")),
+                "{hv}: {hs:?}"
+            );
+            assert!(!hs.contains(&"HS read-only"), "{hv}: {hs:?}");
+            assert!(
+                hs.contains(&format!("HS file {}", expected_of(6, 1 << 20)).as_str()),
+                "{hv}: {hs:?}"
+            );
+            assert!(
+                waited.unwrap() >= hold.unwrap() as f64 - 1.0,
+                "{hv}: {waited:?}"
+            );
+        }
+    }
+    eprintln!("G46:\n{}", report.join("\n"));
+    svc.stop();
+    short.stop();
 }

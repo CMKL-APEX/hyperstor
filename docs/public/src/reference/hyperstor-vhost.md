@@ -25,7 +25,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--allow-uid UID` | | `serve`: a user allowed on the control socket besides root and the service's own; repeat for more |
 | `--group GID` | | `serve`: the group given the sockets (mode 0660), so a hypervisor running as that group can connect |
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
-| `--hold-full SECS` | 60 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/managing.md#full-devices) |
+| `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/managing.md#full-devices) |
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
 | `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
