@@ -928,8 +928,11 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
             .all(|id| a.has(&format!("volume {id} (pool 3 deleted)")))
             .then_some(())
     });
-    let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
-    assert!(a.has("pool 3 force") && a.has("done"), "{}", a.out);
+    // The operation is stored done before its audit entry is written.
+    wait_for("the forced delete done in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "DeletePool"]).ok();
+        (a.has("pool 3 force") && a.has("done")).then_some(())
+    });
 }
 
 /// §27.5, D173, D187: `hyperstorctl pool set --pgs` doubles a pool's PG
