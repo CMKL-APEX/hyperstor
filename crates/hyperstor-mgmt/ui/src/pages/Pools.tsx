@@ -56,6 +56,16 @@ export default function Pools() {
                 <td className={td}>{p.pgCount}</td>
                 <td className={td}>
                   <Space total={p.totalBytes} free={p.freeBytes} testId={`pool-${p.id}-space`} />
+                  {(p.fullness === "nearfull" || p.fullness === "full") && (
+                    // Past a threshold (D27): full refuses new data.
+                    <div
+                      data-testid={`pool-${p.id}-fullness`}
+                      className={`text-xs ${p.fullness === "full" ? "text-red-700 dark:text-red-400" : "text-amber-700 dark:text-amber-400"}`}
+                    >
+                      {p.fullness}
+                      {p.fullestDevice != null && ` (device ${p.fullestDevice})`}
+                    </div>
+                  )}
                 </td>
                 <td className={td}>
                   <div className="flex h-2.5 w-40 rounded overflow-hidden bg-slate-200 dark:bg-slate-700">

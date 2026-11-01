@@ -211,7 +211,7 @@ message SetTrashSettingsRequest {
   // Seconds a deleted volume or snapshot stays; 0 purges at once.
   uint64 grace_seconds = 2 [json_name = "grace_seconds"];
   // "keep" or "purge": what a full pool does with its trash (D115;
-  // acts once pools have fullness thresholds, D27).
+  // not acted on yet).
   string on_full = 3 [json_name = "on_full"];
 }
 
@@ -302,6 +302,10 @@ message Device {
   // Whether an operator set the class (SetDeviceClass, or a class given
   // to AddDevice); otherwise it is the device's kind.
   bool class_fixed = 10 [json_name = "class_fixed"];
+  // Against the fullness thresholds (04-decisions.md D27, D182): "ok",
+  // "nearfull", "backfillfull" or "full"; empty before a report reaches
+  // the leader.
+  string fullness = 11;
 }
 
 message Pool {
@@ -343,6 +347,13 @@ message Pool {
   // Whether the map service doubles its PG count as devices are added
   // (D174, D184): when they call for at least twice as many.
   bool autoscale = 19;
+  // "ok", "nearfull" or "full" (04-decisions.md D27): the fullest of the
+  // devices it uses, past `backfillfull` counting as nearfull; empty until
+  // they have all reported. While "full", new volumes, clones and
+  // snapshots in the pool are refused.
+  string fullness = 20;
+  // The device that set it, when not "ok".
+  optional uint32 fullest_device = 21 [json_name = "fullest_device"];
 }
 
 // Each PG is counted once, under its worst state.

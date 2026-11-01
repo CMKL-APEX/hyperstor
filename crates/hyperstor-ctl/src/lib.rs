@@ -102,6 +102,13 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         if p.mixed_kinds {
             classes.push('!');
         }
+        // Nearfull or full, and the device that made it so (D27).
+        if !p.fullness.is_empty() && p.fullness != "ok" {
+            let _ = write!(classes, "  {}", p.fullness);
+            if let Some(d) = p.fullest_device {
+                let _ = write!(classes, " (device {d})");
+            }
+        }
         let _ = writeln!(
             o,
             "{:<4} {:<12} {:<10} {:>4} {:>3} {:>5} {:>5}K {:>6} {:>8} {:>9} {:>8} {:>10} {:>10} {}",
@@ -182,7 +189,11 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
                 class,
                 gib(d.free_bytes),
                 gib(d.total_bytes),
-                if d.up_in { "in" } else { "out" }
+                // And how full, past a threshold (D27, D182).
+                match d.fullness.as_str() {
+                    "" | "ok" => (if d.up_in { "in" } else { "out" }).to_string(),
+                    f => format!("{} {f}", if d.up_in { "in" } else { "out" }),
+                }
             );
         }
     }
@@ -869,6 +880,12 @@ mod tests {
         edited.pools[0].mixed_kinds = true;
         let p = pools_text(&edited);
         assert!(p.contains(" nvme+7-2-3!\n"), "{p}");
+        // Past a threshold, and which device (D27).
+        edited.pools[0].fullness = "full".into();
+        edited.pools[0].fullest_device = Some(2);
+        assert!(pools_text(&edited).contains(" nvme+7-2-3!  full (device 2)\n"));
+        with.nodes[0].devices[0].fullness = "backfillfull".into();
+        assert!(nodes_text(&with).contains("4.0G in backfillfull"));
         let pgs = pgs_text(&pb::ListPgsResponse {
             pgs: vec![pb::Pg {
                 pool: 1,
