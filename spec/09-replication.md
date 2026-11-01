@@ -182,7 +182,7 @@ generation, and so the data. A PG all of whose copies are on down nodes
 waits for them for the pool's grace (60 s by default, `--cache-grace`),
 so a node back within it keeps its data; meanwhile reads of the PG are
 answered as from an empty device, and a write ends its wait, moving it
-now (D189, I228). Expiry and eviction are not built yet.
+now (D189, I229). Expiry and eviction are not built yet.
 
 - **Copies.** One by default, placed like a replicated pool of that size;
   writes are acknowledged when every copy has them, as in §8.1.
