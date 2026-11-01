@@ -1,5 +1,5 @@
-// A pool's volumes, and a volume's snapshots: create and delete volumes,
-// take snapshots (alone or as a consistency group), clone, roll back and
+// A pool's volumes, and a volume's snapshots: create, expand and delete
+// volumes, take snapshots (alone or as a consistency group), clone, roll back and
 // flatten (storage administrators).
 import { Fragment, useEffect, useState } from "react";
 import { cluster } from "../api";
@@ -15,7 +15,8 @@ type Dialog =
   | { kind: "deleteGroup"; group: string }
   | { kind: "clone"; v: Volume; s: Snapshot }
   | { kind: "rollback"; v: Volume; s: Snapshot }
-  | { kind: "flatten"; v: Volume };
+  | { kind: "flatten"; v: Volume }
+  | { kind: "expand"; v: Volume };
 
 function Snapshots({ v, open }: { v: Volume; open: (d: Dialog) => void }) {
   const can = useCan();
@@ -129,6 +130,15 @@ export default function Volumes() {
                 {can("operate") && <Button onClick={() => show({ kind: "snapshot", v })}>Snapshot</Button>}
                 {can("store") && (
                   <>
+                    <Button
+                      onClick={() => {
+                        // Twice its size, in MiB, as a start.
+                        setSize(`${(v.size * 2n) >> 20n}M`);
+                        show({ kind: "expand", v });
+                      }}
+                    >
+                      Expand
+                    </Button>
                     <Button onClick={() => show({ kind: "flatten", v })}>Flatten</Button>
                     <Button kind="danger" onClick={() => show({ kind: "delete", v })}>
                       Delete
@@ -284,6 +294,26 @@ export default function Volumes() {
             The volume becomes what it was at epoch {String(dialog.s.epoch)}; what was written since is lost. It must be
             detached. This needs a login of the last 10 minutes.
           </p>
+        </ActionDialog>
+      )}
+      {dialog?.kind === "expand" && (
+        <ActionDialog
+          title={`Expand ${dialog.v.name || dialog.v.id}`}
+          submit="Expand"
+          cli={`expand-volume --id ${dialog.v.id} --size ${size}`}
+          run={async () => {
+            const bytes = parseSize(size);
+            if (bytes == null) throw new Error("A size is like 20G, 512M or a number of bytes");
+            if (bytes <= dialog.v.size) throw new Error(`A volume only grows: it is ${fmtBytes(dialog.v.size)}`);
+            await cluster.expandVolume({ id: dialog.v.id, size: bytes });
+            setNotice(`Expanded to ${fmtBytes(bytes)}.`);
+          }}
+          onClose={close}
+        >
+          <p className="text-sm">It is {fmtBytes(dialog.v.size)}; a volume only grows. A client that has it attached sees the new size once it attaches again.</p>
+          <Field label="New size (G, M or bytes)">
+            <input className={input} value={size} onChange={(e) => setSize(e.target.value)} />
+          </Field>
         </ActionDialog>
       )}
       {dialog?.kind === "flatten" && (

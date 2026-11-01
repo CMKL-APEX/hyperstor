@@ -72,6 +72,16 @@ The dashboard only shows; changes go through `hyperstorctl`, or the
 cluster API through `hyperstor-mgmt` (`POST /api/hyperstor.v1.…`) as the
 person logged in, with an API token for scripts.
 
+The web UI does what the sections below do with `hyperstorctl`, each
+action on the page of what it changes, showing the command it stands
+for: on **Nodes**, adding a device, setting its weight or class, taking
+it out or in, removing it (its plan first) and draining a node; on
+**Pools**, creating a pool, changing it, choosing the devices it uses and
+deleting it (what it holds listed first); on **Volumes**, creating,
+expanding, snapshotting, cloning, flattening and deleting volumes. It
+shows only what your roles allow, and asks you to log in again for what
+needs a fresh login.
+
 ## The trash
 
 Deleting a volume or a snapshot moves it to the trash: it disappears from

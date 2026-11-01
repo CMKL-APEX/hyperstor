@@ -223,8 +223,8 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Page | Shows | Actions |
 |---|---|---|
 | Overview | health with reasons (§16), capacity, IOPS and latency | — |
-| Nodes and devices | role, reactors, NUMA, device wear and capacity (free and total space, D156, I193), peer reports (D40) | drain, out, in, add device |
-| Pools | kind (replicated, EC, cache, D45), fullness against D27's thresholds (usable free and total space, D156, I193), PG states | create, thresholds, delete when empty |
+| Nodes and devices | role, reactors, NUMA, device wear and capacity (free and total space, D156, I193), peer reports (D40) | drain, out, in, add device, weight, class, remove device (with its plan first) |
+| Pools | kind (replicated, EC, cache, D45), fullness against D27's thresholds (usable free and total space, D156, I193), PG states | create, change (classes, name, domain, a split, autoscale, a cache pool's grace), the devices it uses, thresholds, delete (forced: with its volumes, after a dry run) |
 | PGs | a state map by pool (D154: a cell per PG, sent again only when the map changes; by failure domain later), each cell shaded by the bytes on its primary (D155) | pick a PG for its acting and up sets |
 | Volumes | size, allocated, lease holder, QoS and class (D46), snapshots and clones | create, expand, snapshot, clone, flatten, QoS, delete to trash |
 | Hosts and exports | bare-metal identities, NVMe-oF exports, allowlists | export, revoke, rotate CHAP |
