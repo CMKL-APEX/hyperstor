@@ -212,3 +212,11 @@ and pNFS front end, are in 22-nfs.md §26.11.
   gateway core for 4 KiB, 1 MiB and 64 MiB objects, with and without the
   MD5 ETag, and the p99 latency of small PUTs (index commit included);
   then the same through the load balancer in front of two gateways.
+- **G46. How long a guest waits on a held virtio-blk request**
+  (05-decision-log.md point 148). With a Linux guest (Ubuntu 24.04's
+  kernel and the newest) under Cloud Hypervisor and QEMU on
+  `hyperstor-vhost`: hold one write unanswered for 30 s, 60 s, 120 s and
+  300 s, and record whether the guest times it out, resets the device,
+  logs hung tasks or remounts read-only, and whether the write then
+  completes normally. Windows' viostor driver too, where a guest is
+  at hand.

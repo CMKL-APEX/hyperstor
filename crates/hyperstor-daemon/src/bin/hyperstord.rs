@@ -127,6 +127,7 @@ fn main() {
         stray_grace: std::time::Duration::ZERO,
         io_timeout,
         commit_delays: None,
+        pings: None,
         partitions: None,
         node_id: node,
         meta,

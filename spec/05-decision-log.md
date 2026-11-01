@@ -968,6 +968,66 @@ recommendation:
 | 142 | Whether a deleted pool leaves the map at once, its id kept and devices deleting its data as they delete stray copies (recommended), or is marked deleting until every device reports it holds nothing | At once | D181 |
 | 143 | Whether `--force` (D176: delete the pool's volumes first) comes with stage 3c or in its own pull request after it (recommended) | Its own pull request | D181 |
 
+## Fullness thresholds (2026-11-01)
+
+Asked by the owner what D27 is, then to draft its open points. D27 (open)
+says a pool warns at `nearfull` (85 %) and refuses new allocations at
+`full` (95 %), while overwrites, deletes and snapshot deletes keep
+working. None of it is built. What exists:
+
+- **A device refuses only when it has no room.** A commit that needs more
+  blocks than the device has free is refused `NoSpace`, and one that adds
+  keys must also leave the checkpoint's reserve (I162). The engine writes
+  out of place, so near 100 % even an overwrite is refused.
+- **What a guest sees.** ublk answers `NoSpace` with `ENOSPC`, which
+  filesystems report as such. virtio-blk has no status for it, so a VM on
+  `hyperstor-vhost` gets `VIRTIO_BLK_S_IOERR`, and its filesystem may
+  remount read-only.
+- **Devices fill unevenly.** About ±10 % in PG count per device (point
+  107), and the pilot's PGs differ in size from 19 to 82 MiB (D155). One
+  device can pass a threshold well before its pool does.
+- **Space is reported.** Each device's `DeviceSpace` reaches the leader
+  every 5 s (D156), and a pool's usable space is water-filled over its
+  failure domains (D159). Pools whose classes overlap share devices
+  (D180), so their space isn't independent.
+- **Waiting on D27:** D115's `trash_on_full = purge`, refusing a device
+  removal that would pass `full` (24-pools-and-devices.md §27.3), health's
+  `nearfull` and `full` reasons (15-operations.md), tenants' hard limits
+  (20-tenants.md), and the balancer of point 107. Cache pools evict
+  instead of refusing once D45's eviction is built; until then they
+  follow the same rules.
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 144 | **What is measured against the thresholds** | (a) the pool's usable space (D159): one number per pool, but a device can reach 100 % while its pool shows 90 %; (b) each device on its own: a device past `full` refuses new allocations to the PGs it holds, and a pool is reported `nearfull` or `full` while any device it uses is; (c) as (b) for reporting, but the map service then sets a `full` flag on every pool using that device, and all their primaries refuse new allocations (Ceph's way) | (b). The device is what runs out, and it knows at once, with no map change or 5 s report in between; writes to other devices go on. (c) stops a whole pool, and every pool sharing the device, when one device fills. Point 107's balancer keeps (b)'s partial refusals rare |
+| 145 | **Where thresholds are set** | (a) cluster-wide ratios, `nearfull` 85 % and `full` 95 % by default, set with `hyperstorctl` and kept in the map; (b) per pool; (c) per device class | (a). Under point 144's (b) a threshold applies to a device, and devices are shared by pools (D180), so a per-pool ratio has no single meaning. Ratios between 50 % and 99 %, `nearfull` below `full` |
+| 146 | **Room for recovery.** Backfill and recovery write to a device too; filling it with another device's copies can take the room its own PGs' writes need | (a) a third ratio, `backfillfull` (90 % by default): a device past it is skipped as a backfill target and the PG waits, degraded or remapped, with a health reason; (b) none: backfill writes until `full` | (a). Recovering a lost device must not fill the survivors to the point that their writes stop. The PG waits for space to be freed, a device to be added or an operator's weight change (D158) |
+| 147 | **What `full` refuses** | (a) what grows the device's used space: writes to blocks not yet written, writes to blocks a snapshot shares (copy on write), new objects and keys; plain overwrites, deletes, discards and snapshot deletes go through; while a pool is reported `full`, creating volumes, clones and snapshots is refused too, though they take no space at once; (b) every write; only deletes and discards go through; (c) nothing on the data path: only creating and growing volumes | (a), as D27 says. The device knows whether a commit grows it; the room above `full` is what overwrites, deletes and checkpoints use. Refusing creations makes the refusal visible to an operator and glidex before a guest's write fails |
+| 148 | **What a refused write does in a VM.** virtio-blk can't say "no space" (see above) | (a) answer `IOERR` at once, as now; (b) hold the request, retrying every second, for up to a set time (default 60 s), then `IOERR`: space freed in time (trash purged, a device added) lets the write finish; (c) hold it until space frees and ask glidex to pause the VM, as QEMU's `werror=stop` does | (b) for `hyperstor-vhost`; ublk keeps `ENOSPC` at once. Holding longer than the guest's own I/O timeout gains nothing, so the default rests on G46. (c) needs a glidex API to pause a VM on a storage event; worth it later, if (b) proves short |
+
+Reported in every case: `GetStatus` and `ListPools` give each pool's
+state (`ok`, `nearfull`, `full`) and the device that set it; health
+gives `warn` for `nearfull` and `backfillfull` and `error` for `full`;
+each change is an event in the audit log. glidex can then show a full
+datastore and refuse new disks on it, whatever its overcommit setting
+(a glidex pull request).
+
+Settled on 2026-11-01, every point as recommended: points 144, 145 and
+147 as D27, revised; 146 as D182; 148 as D183.
+
+## How peers ping each other (2026-11-01)
+
+G43's unexplained silences came from packets lost under load, which
+stall a ping's TCP connection for the minimum retransmission timeout
+(02-benchmarks.md, 2026-11-01). Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 149 | Whether to keep pings on TCP and record that the peer timeout can't come down (recommended), lower TCP's minimum retransmission timeout on the routes between hosts, or ping over UDP | Over UDP | D185 |
+| 150 | How a UDP pong is protected: a random nonce echoed (recommended), or a MAC with a cluster key | A nonce | D185 |
+| 151 | Which port a device answers pings on: its TCP port's number (recommended), or a ping port per node in the map | Its TCP port's number | D185 |
+| 152 | How a node pings peers that don't answer UDP yet: both ways per peer until it first answers over UDP (recommended), or UDP once every node reports a version that has it | Both ways per peer | D185 |
+
 ## Removing a device (2026-11-01)
 
 Building `RemoveDevice` (stage 4), one point the design in

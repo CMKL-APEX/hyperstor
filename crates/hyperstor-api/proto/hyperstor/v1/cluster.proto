@@ -28,6 +28,10 @@ service ClusterService {
   // changes. Write.
   rpc SetDeviceWeight(SetDeviceWeightRequest) returns (SetDeviceWeightResponse);
 
+  // Sets the fullness thresholds every device is held to (04-decisions.md
+  // D27, D182); one not given stays as it is. Write.
+  rpc SetFullRatios(SetFullRatiosRequest) returns (SetFullRatiosResponse);
+
   // Appends a device to a node (04-decisions.md D167): the node's next
   // device, at weight 0 until it reports its capacity, so nothing moves
   // until the node runs it (restarted with one more --shard). Write.
@@ -248,6 +252,17 @@ message GetStatusResponse {
   // Where storage nodes and clients reach the map service (the D5
   // protocol), for clients that start from the API.
   string map_address = 7 [json_name = "map_address"];
+  // The fullness thresholds devices are held to (04-decisions.md D27, D182).
+  FullRatios full_ratios = 8 [json_name = "full_ratios"];
+}
+
+// Percentages of a device's data area, to a tenth of a percent: past
+// `nearfull` it warns, past `backfillfull` it takes no backfill, past
+// `full` it refuses what would grow its used space.
+message FullRatios {
+  double nearfull = 1;
+  double backfillfull = 2;
+  double full = 3;
 }
 
 message Reason {
@@ -422,6 +437,19 @@ message SetDeviceWeightResponse {
   // The weight now: as set, or the capacity last reported (unchanged
   // until the device reports).
   double weight = 2;
+}
+
+message SetFullRatiosRequest {
+  // Between 50 and 99, nearfull < backfillfull < full; absent: unchanged.
+  optional double nearfull = 1;
+  optional double backfillfull = 2;
+  optional double full = 3;
+}
+
+message SetFullRatiosResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  FullRatios ratios = 2;
 }
 
 message AddDeviceRequest {

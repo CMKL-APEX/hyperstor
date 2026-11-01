@@ -662,8 +662,26 @@ pub fn status(
             })
             .collect(),
         map_address: map_address.to_string(),
+        full_ratios: full_ratios(&map.full_ratios).into(),
         ..Default::default()
     }
+}
+
+/// Fullness ratios as the API gives them: percentages (D27, D182).
+fn full_ratios(r: &crate::FullRatios) -> pb::FullRatios {
+    let pct = |t: u16| t as f64 / 10.0;
+    pb::FullRatios {
+        nearfull: pct(r.nearfull),
+        backfillfull: pct(r.backfillfull),
+        full: pct(r.full),
+        ..Default::default()
+    }
+}
+
+/// A percentage as the map keeps it, in thousandths; `None` if it isn't
+/// one, so out-of-range values are left to [`crate::FullRatios::check`].
+fn thousandths(pct: f64) -> Option<u16> {
+    (pct.is_finite() && (0.0..=100.0).contains(&pct)).then(|| (pct * 10.0).round() as u16)
 }
 
 /// `pool`'s PG states, a byte each (D154); none while `map` is still at
@@ -859,6 +877,68 @@ impl ClusterService for Api {
             }
             .into()),
             Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_full_ratios(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetFullRatiosRequest>,
+    ) -> ServiceResult<pb::SetFullRatiosResponse> {
+        let given = [
+            ("nearfull", req.nearfull),
+            ("backfillfull", req.backfillfull),
+            ("full", req.full),
+        ];
+        let target = given
+            .iter()
+            .filter_map(|(n, v)| v.map(|v| format!("{n}={v}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let who = self.authorize(&ctx, "SetFullRatios", &target, true)?;
+        let mut t = [None; 3];
+        for (i, (name, v)) in given.iter().enumerate() {
+            if let Some(v) = v {
+                t[i] = Some(thousandths(*v).ok_or_else(|| {
+                    ConnectError::invalid_argument(format!(
+                        "{name} is a percentage between 50 and 99, not {v}"
+                    ))
+                })?);
+            }
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetFullRatios {
+                nearfull: t[0],
+                backfillfull: t[1],
+                full: t[2],
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetFullRatios",
+            &target,
+            &match &r {
+                Some(Ok((epoch, now))) => format!("ok, {now}, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, now))) => Ok(pb::SetFullRatiosResponse {
+                map_epoch,
+                ratios: full_ratios(&now).into(),
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }

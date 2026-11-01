@@ -165,6 +165,7 @@ impl Group {
             stray_grace: std::time::Duration::ZERO,
             io_timeout: std::time::Duration::ZERO,
             commit_delays: None,
+            pings: None,
             partitions: None,
             node_id: n as u32,
             meta: self.maps(),

@@ -1256,3 +1256,77 @@ sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-SAMSUNG_MZ
    1002 out, reset the controller, in again. If it didn't, `hyperstord`
    would stop node 1 entirely, its file devices with it, since a device
    it can't open fails the whole node; that deserves a fix of its own.
+
+## 2026-11-01: peer silences under load (pilot)
+
+G43's finding 5 left three single reports of a peer silent for 300–400
+ms unexplained. Looked into with every node's journal for 2026-10-31 and
+a new load test with probes. The pilot: three hosts on 1 GbE (MTU 1500,
+node 2 routed to the others), `main` at `66927ef` (#121) on every host,
+peer timeout 300 ms, pings every 100 ms on a connection of their own
+(I187), each given 200 ms.
+
+**The day's reports.** Of the 58 silence reports on 2026-10-31:
+
+| Kind | Reports | Seen as |
+|---|---|---|
+| A peer restarted on purpose (rolling reinstalls) | 48 | both devices of each other node report at once; the map service marks the node down, or it is back before a second node reports |
+| A process-wide pause on the reported node | 5 | node 0, 09:49:46 UTC: both its reactors "held 431 ms" in the same millisecond, and 118 ms together 4 s later; nodes 1 and 2 reported it and it was marked down for 2 s |
+| Unexplained (G43's) | 5 | one device of one node, 300 or 400 ms, during the 1 MiB tests and 2 s after node 2 returned; no hold on the reported node |
+
+**The load test.** `HS_BENCH_SECS=30 hyperstor-bench remote` from node
+2's host, into eight 64 MiB volumes made for it (ids 0–7) and purged
+after; meanwhile ICMP pings every 50 ms on each of the six paths, and
+the kernel's TCP counters (`nstat`) and each connection's retransmits
+(`ss -ti`) before and after.
+
+| Test | ops/s | p50 | p99 |
+|---|---|---|---|
+| 4 KiB random writes, QD1 | 880 | 1.12 ms | 1.72 ms |
+| 4 KiB random writes, QD32 | 12,485 | 2.49 ms | 4.77 ms |
+| 4 KiB random reads, QD1 | 1,927 | 0.50 ms | 1.20 ms |
+| 4 KiB random reads, QD32 | 4,254 | 7.83 ms | 9.32 ms |
+| 1 MiB writes, QD4 | 56 (59 MB/s) | 70 ms | 129 ms |
+| 1 MiB reads, QD4 | 91 (96 MB/s) | 42 ms | 85 ms |
+
+| Probe | Idle | 4 KiB tests | 1 MiB tests |
+|---|---|---|---|
+| ICMP round trip, worst of six paths | 0.3 ms | 4.4 ms | 9.1 ms |
+| ICMP pings lost, all six paths (about 600 per path and phase) | 0 | 1 | 9 |
+| TCP segments retransmitted, all hosts | | 8,241 in 3.5 min, nearly all fast retransmits on data |
+| TCP retransmission timeouts, all hosts | | 12 in 3.5 min |
+| Retransmits lost again | | 580 |
+| Ping connections that retransmitted (of 10 in both snapshots) | | 6, 1–3 segments each |
+
+No node was reported silent and no commit was slow. Node 2's device
+2000 held its reactor 100–153 ms seven times, all during the 1 MiB
+reads.
+
+### Findings
+
+1. **The silences come from lost packets, not from queues or the
+   reactors.** Under 1 MiB load the network drops a few packets in a
+   thousand (the NICs drop none, so the switch or the router does),
+   while round trips stay under 10 ms. A ping is one small segment on a
+   quiet connection: a lost ping or pong is recovered only by the
+   retransmission timeout (at least 200 ms, `rto:201` on every
+   connection) or a tail loss probe that waits as long, and the pings
+   after it queue behind it on the same connection. With 200 ms per
+   ping and a check every 100 ms, the silence comes out at 300 or 400
+   ms, as logged, and only on the one reactor whose connection lost the
+   packet, while the node's other reactor on the same path sees nothing.
+2. **They are harmless now and set a floor.** A report from one node
+   marks nothing down. But a peer timeout under about 500 ms (two
+   retransmission timeouts and a tick) would turn a lost retransmit
+   into a report from that node, and two at once into a down. The
+   timeouts shouldn't be lowered while pings ride on TCP.
+3. **One pause is still unexplained**: node 0's two reactors held 431 ms
+   together (finding of the day's logs above). Two threads held exactly
+   as long points at something they share (a lock, the process, the
+   host; the host also runs Ceph), not at a device. Nothing else in the
+   journal at that time. A held reactor should log what it was running.
+4. **1 MiB reads hold a reactor on a healthy device**: 100–153 ms on a
+   consumer NVMe (WD SN770) behind ext4. Stage 2 of D165 removes that.
+5. G43's 1 MiB p99s of 190–275 ms were not the network either; here
+   they were 129 ms (writes) and 85 ms (reads) with round trips under
+   10 ms, so the time is spent in the nodes.

@@ -53,6 +53,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
+    ("ClusterService.SetFullRatios", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
     ("ClusterService.SetDeviceClass", Group::Operate, false),
     // A device's removal is final once its PGs have moved (D186).
