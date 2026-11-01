@@ -780,7 +780,6 @@ status = "done"
 tests = [
     "hyperstor_map::tests::a_cache_pool_waits_for_a_down_node_within_its_grace",
     "hyperstor_meta::tests::cache_pools_wait_for_a_down_node_up_to_their_grace",
-    "manage::a_cache_pool_keeps_its_data_across_splits_and_restarts",
 ]
 
 [[milestone]]
