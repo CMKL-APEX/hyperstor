@@ -47,7 +47,10 @@ served yet; use replicated pools.
 
 ## Network
 
-Each storage node device needs one TCP port reachable from every client
-and every other storage node. The map service needs one port reachable
-from all of them. Pick ports and firewall rules accordingly, and keep the
+Each storage node device needs one port reachable from every client and
+every other storage node, for TCP and for UDP: storage nodes ping each
+other over UDP at the same port number, and fall back to TCP for a peer
+that doesn't answer (a firewall that drops UDP makes failures slower to
+notice under load). The map service needs one TCP port reachable from
+all of them. Pick ports and firewall rules accordingly, and keep the
 storage network isolated (see [Running a cluster](index.md)).
