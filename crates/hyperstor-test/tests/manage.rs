@@ -1132,6 +1132,9 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
         "off",
     ])
     .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("hot").then_some(())
+    });
     let made = c
         .ctl(&[
             "create-volume",
