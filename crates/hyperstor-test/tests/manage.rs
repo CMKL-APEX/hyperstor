@@ -814,7 +814,9 @@ fn weights_follow_capacity_or_are_set() {
 }
 
 /// D27: past `full`, a device refuses what would grow its used space,
-/// and overwrites go on; the ratios are shown, set and checked.
+/// and overwrites go on; the ratios are shown, set and checked. Each
+/// device's and pool's fullness shows in health, the tables and the audit
+/// log, and nothing new is made in a full pool.
 #[test]
 fn a_full_device_refuses_growth_only() {
     let c = Cluster::all_in_one("full", 3);
@@ -899,13 +901,45 @@ fn a_full_device_refuses_growth_only() {
     });
     write(0).ok();
     write(next - 1).ok();
+    let st = wait_for("health to say so", 20, || {
+        let st = c.ctl(&["status"]);
+        st.has("full: ").then_some(st)
+    });
+    assert!(
+        st.has("health  error") && st.has("it refuses new data"),
+        "{}",
+        st.out
+    );
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has("  full (device "), "{}", pools.out);
+    assert!(c.ctl(&["nodes"]).ok().has(" in full"));
+    let refused = c
+        .ctl(&["create-volume", "--size", "4M", "--name", "more"])
+        .expect(1);
+    assert!(refused.has("pool 1 is full: device "), "{}", refused.out);
+    let snap = c.ctl(&["snapshot", "create", "--id", &id]).expect(1);
+    assert!(snap.has("pool 1 is full"), "{}", snap.out);
     c.ctl(&["full-ratios", "--full", "95"]).ok();
     wait_for("new blocks taken again", 20, || {
         (write(next).code == 0).then_some(())
     });
+    // Still past nearfull and backfillfull, both 50 % or so.
+    wait_for("the pool nearfull", 20, || {
+        c.ctl(&["pools"])
+            .ok()
+            .has("  nearfull (device ")
+            .then_some(())
+    });
+    c.ctl(&["create-volume", "--size", "4M", "--name", "more"])
+        .ok();
+    c.ctl(&["snapshot", "create", "--id", &id]).ok();
     wait_for("the changes in the audit log", 20, || {
         let a = c.ctl(&["audit", "list", "--op", "SetFullRatios"]).ok();
         (a.has("full=51") && a.has("full=95")).then_some(())
+    });
+    wait_for("devices' fullness in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "DeviceFullness"]).ok();
+        (a.has("full, was ") && a.has("backfillfull, was full")).then_some(())
     });
 }
 

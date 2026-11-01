@@ -102,7 +102,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--group G` | | `snapshot group-delete`: the group, as `snapshot group` printed it |
 | `--new-id ID` | random | `clone-volume`: the clone's id (32 hex digits) |
 | `--grace SECS` | | `trash settings`: how long a deleted volume or snapshot stays in the trash; 0 purges at once; at most a year |
-| `--on-full keep\|purge` | `keep` | `trash settings`: what a full pool does with its trash (purge the oldest first, or keep it). Acts once pools have fullness thresholds |
+| `--on-full keep\|purge` | `keep` | `trash settings`: what a full pool does with its trash (purge the oldest first, or keep it). Not acted on yet |
 | `--since AGO` | | `audit list`: only records from the last `AGO`: `30m`, `2h`, `7d`, or seconds |
 | `--principal P` | | `audit list`: only records whose principal contains `P` (`user:ann`, `/admin/`) |
 | `--op OP` | | `audit list`: only records of operation `OP` (`CreateVolume`) |
