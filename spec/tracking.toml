@@ -731,7 +731,7 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I225"]
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I226"]
 status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",

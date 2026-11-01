@@ -134,7 +134,7 @@ running node has reported, so older nodes can still read it.
 
 #### 27.2.5 Removing a device
 
-Built (I224, I225, D186).
+Built (I224, I226, D186).
 
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
