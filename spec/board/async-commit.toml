@@ -1,10 +1,10 @@
 title = "Device waits off the reactor (D165, D166)"
 status = "active"
-owner = "Claude Code session https://claude.ai/code/session_01KuFVekzzDGL6xMCZnzL9PT"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB"
 started = 2026-10-31
-updated = 2026-10-31
+updated = 2026-11-01
 milestone = "HS0"
-branch = "bench/g43"
-prs = [94, 97, 100]
-now = "G43 measured on the pilot and with dm-delay: commits hold no reactor; the 30 s timeout fails a hung device; reads on a slow device still hold it, and the node flapped"
-next = "Stage 2 of D165 (reads off the reactor), with a design note on how reads see a commit in flight; stage 3 after"
+branch = "investigate/peer-silence"
+prs = [94, 97, 100, 129]
+now = "Peer silences explained (02-benchmarks.md, 2026-11-01): packets lost under 1 MiB load stall a ping's TCP connection for 200 ms. Settled: pings over UDP (D185, points 149–152)"
+next = "Build D185 (UDP pings with an echoed nonce, TCP fallback per peer) and measure it on the pilot; then stage 2 of D165 (reads off the reactor), with its design note"
