@@ -118,6 +118,78 @@ test("volumes and snapshots", async ({ page }) => {
   await expect(page.getByText(/Moved to the trash: purged/)).toBeVisible();
 });
 
+test("pools, devices and volumes are managed", async ({ page }) => {
+  await logIn(page, "ann");
+  const dialog = page.getByRole("dialog");
+  // A volume grows; the size starts at twice what it is.
+  await page.getByRole("link", { name: "Volumes" }).click();
+  const vol = page.getByTestId("volume-web-vol");
+  await vol.getByRole("button", { name: "Expand" }).click();
+  await expect(dialog.getByLabel(/New size/)).toHaveValue("128M");
+  await expect(dialog.getByText(/hyperstorctl expand-volume --id [0-9a-f]+ --size 128M/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Expand" }).click();
+  await expect(vol).toContainText("128.0 MiB");
+  // A cache pool: made, changed, its devices chosen, deleted.
+  await page.getByRole("link", { name: "Pools" }).click();
+  await page.getByRole("button", { name: "Create pool" }).click();
+  await dialog.getByLabel("Name").fill("web-pool");
+  await dialog.getByLabel("Kind").selectOption("cache");
+  await dialog.getByLabel(/^PGs/).fill("16");
+  await dialog.getByLabel(/autoscale/).uncheck();
+  await expect(
+    dialog.getByText("hyperstorctl pool create --name web-pool --classes file --kind cache --pgs 16 --autoscale off"),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByText("Pool 3 web-pool made, 16 PGs.")).toBeVisible();
+  const pool = page.getByTestId("pool-3");
+  await expect(pool).toContainText("web-pool");
+  await pool.getByRole("button", { name: "Edit" }).click();
+  await dialog.getByLabel(/Seconds a PG waits/).fill("300");
+  await expect(dialog.getByText("hyperstorctl pool set --pool 3 --cache-grace 300")).toBeVisible();
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Pool 3 changed.")).toBeVisible();
+  await pool.getByRole("button", { name: "Devices" }).click();
+  const member = dialog.getByTestId("pool-device-2000");
+  await expect(member).toContainText("yes");
+  await member.getByRole("button", { name: "Stop using" }).click();
+  await expect(member).toContainText("no (removed)");
+  await member.getByRole("button", { name: "Use" }).click();
+  await expect(member).toContainText("yes");
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await pool.getByRole("button", { name: "Delete" }).click();
+  await expect(dialog.getByText("hyperstorctl pool delete --pool 3")).toBeVisible();
+  await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByText("Pool 3 deleted.")).toBeVisible();
+  await expect(pool).toHaveCount(0);
+  // A device's weight set, then following its capacity again.
+  await page.getByRole("link", { name: "Nodes" }).click();
+  const dev = page.getByTestId("device-2000");
+  await dev.getByRole("button", { name: "Weight" }).click();
+  await dialog.getByLabel(/Weight/).fill("0.5");
+  await expect(dialog.getByText("hyperstorctl weight --device 2000 --weight 0.5")).toBeVisible();
+  await dialog.getByRole("button", { name: "Set weight" }).click();
+  await expect(dev).toContainText("0.50");
+  await dev.getByRole("button", { name: "Weight" }).click();
+  await dialog.getByLabel(/Weight/).fill("auto");
+  await dialog.getByRole("button", { name: "Set weight" }).click();
+  await expect(dev).not.toContainText("0.50");
+  // A device added to node 2 at weight 0, then removed: nothing moves.
+  await page.getByRole("button", { name: "Add device" }).click();
+  await dialog.getByRole("combobox", { name: /Node/ }).selectOption("2");
+  await dialog.getByLabel(/Address/).fill("127.0.0.1:1");
+  await expect(dialog.getByText("hyperstorctl device add --node 2 --address 127.0.0.1:1")).toBeVisible();
+  await dialog.getByRole("button", { name: "Add" }).click();
+  await expect(page.getByText(/Device 2001 added to node 2/)).toBeVisible();
+  const added = page.getByTestId("device-2001");
+  await expect(added).toContainText("0.00");
+  await added.getByRole("button", { name: "Remove" }).click();
+  await expect(dialog).toContainText("0 PG(s) move");
+  await expect(dialog.getByText("hyperstorctl device remove --device 2001")).toBeVisible();
+  await dialog.getByRole("button", { name: "Remove" }).click();
+  await expect(page.getByText(/Removing device 2001: operation [0-9a-f]{16}/)).toBeVisible();
+  await expect(added).toHaveCount(0, { timeout: 30_000 });
+});
+
 test("the trash restores and purges", async ({ page }) => {
   await logIn(page, "ann");
   await page.getByRole("link", { name: "Trash" }).click();
@@ -178,6 +250,12 @@ test("someone without roles sees nothing to do", async ({ page }) => {
   await expect(page.getByText("You have no roles yet")).toBeVisible();
   await page.getByRole("link", { name: "Volumes" }).click();
   await expect(page.getByRole("button", { name: "Create volume" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Pools" }).click();
+  await expect(page.getByRole("button", { name: "Create pool" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Nodes" }).click();
+  await expect(page.getByRole("button", { name: "Add device" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
   await page.getByRole("link", { name: "Security" }).click();
   await expect(page.getByRole("tab", { name: "People" })).toHaveCount(0);
   await page.getByRole("button", { name: "Log out" }).click();
