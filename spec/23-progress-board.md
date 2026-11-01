@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 0 | 13 |
+| 5 | 0 | 1 | 13 |
 
 ## In progress
 
@@ -29,7 +29,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Fullness thresholds: D27 revised, D182, D183** (`fullness`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `spec/fullness` | Settled as recommended: D27 revised (thresholds per device, cluster-wide ratios, what `full` refuses), D182 (`backfillfull`), D183 (vhost holds refused writes); host check G46 | Build D27 and D182 in the map service and the engine, then D183 in hyperstor-vhost | 2026-11-01 |
 
 ## Done
 
