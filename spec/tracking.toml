@@ -789,6 +789,15 @@ tests = [
     "manage::a_cache_pool_keeps_its_data_across_splits_and_restarts",
 ]
 
+[[milestone.item]]
+what = "Cache PGs wait for a down node up to their pool's grace: reads miss, a write moves the PG"
+spec = ["09-replication.md §8.7", "D189", "I229"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::a_cache_pool_waits_for_a_down_node_within_its_grace",
+    "hyperstor_meta::tests::cache_pools_wait_for_a_down_node_up_to_their_grace",
+]
+
 [[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
@@ -1126,10 +1135,10 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A write refused for space held by hyperstor-vhost, retried for up to 60 s, before the guest gets an I/O error"
-spec = ["D183", "G46"]
-status = "planned"
-tests = []
+what = "A write refused for space held by hyperstor-vhost, retried every second for up to 60 s (--hold-full), before the guest gets an I/O error"
+spec = ["D183", "G46", "I228"]
+status = "done"
+tests = ["vhost::a_write_refused_for_space_is_held"]
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"

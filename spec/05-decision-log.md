@@ -1067,6 +1067,19 @@ autoscaler would split three times. Asked, with a recommendation:
 | 158 | Whether a cache pool keeps its data across a split: build it before the rollout (recommended); roll out with the cache pool's autoscale off and build it later; leave it off | Build it first | D188 |
 | 159 | Which pieces: a generation per cache PG, backfill for the PGs a split moves, and the generation kept on each device so a restart keeps data too (recommended); the first two only | All three | D188 |
 
+## Cache PGs waiting for a down node (2026-11-01)
+
+I227: a cache PG moved off a node 800 ms after it was marked down, so a
+restart lost that node's share of the cache. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 160 | How a cache PG waits for a down member: a grace period, 60 s, cluster-wide (recommended); a hold set before planned restarts only; a grace period set per pool | Per pool, 60 s by default | D189 |
+| 161 | What clients see for a waiting PG: a miss (recommended), or waits as for any inactive PG | A miss | D189 |
+| 162 | What a write to a waiting PG does (the first answer said writes are skipped, which would leave the returning copy with an old value; asked again): it ends that PG's wait, the PG moving now (recommended); writes refused; writes wait | Ends the wait | D189 |
+| 163 | Whether to delete `feature/elastic-pools`, merged into `main` in #131: delete it, later PRs to `main` (recommended), or keep it unused | Deleted | — |
+
 ## Reads off the reactor (2026-11-01)
 
 Starting stage 2 of D165 (reads wait for the device on the reactor's

@@ -482,6 +482,14 @@ pub enum Msg {
         pg_epoch: u64,
         device: u32,
     },
+    /// Client to map service: a write to cache PG `pool`.`pg`, which is
+    /// waiting for a down member (D189): end its wait, so it moves now and
+    /// takes the write empty. Answered `Noted` with the working map's
+    /// epoch.
+    CacheRelease {
+        pool: u32,
+        pg: u32,
+    },
     /// Primary to a member of a replicated PG: the read its own device
     /// didn't answer in time, from the member's copy (04-decisions.md
     /// D190). `layers` as in [`Msg::ReadAt`], answered as it is; without,
@@ -722,7 +730,8 @@ mod kind {
     pub const LEADER_STATE_OK: u16 = 75;
     pub const DEVICE_KIND: u16 = 76;
     pub const PG_SPLIT: u16 = 77;
-    pub const READ_COPY: u16 = 78;
+    pub const CACHE_RELEASE: u16 = 78;
+    pub const READ_COPY: u16 = 79;
     pub const ERROR: u16 = 99;
 }
 
@@ -808,6 +817,7 @@ impl Msg {
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
             Msg::DeviceKind { .. } => DEVICE_KIND,
             Msg::PgSplit { .. } => PG_SPLIT,
+            Msg::CacheRelease { .. } => CACHE_RELEASE,
             Msg::ReadCopy { .. } => READ_COPY,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
@@ -1088,6 +1098,9 @@ impl Msg {
                 device,
             } => {
                 e.u32(*pool).u32(*pg).u64(*pg_epoch).u32(*device);
+            }
+            Msg::CacheRelease { pool, pg } => {
+                e.u32(*pool).u32(*pg);
             }
             Msg::ReadCopy {
                 to,
@@ -1428,6 +1441,10 @@ impl Msg {
                 pg: d.u32()?,
                 pg_epoch: d.u64()?,
                 device: d.u32()?,
+            },
+            CACHE_RELEASE => Msg::CacheRelease {
+                pool: d.u32()?,
+                pg: d.u32()?,
             },
             READ_COPY => Msg::ReadCopy {
                 to: Target::dec(&mut d)?,
@@ -2111,6 +2128,7 @@ mod tests {
                 pg_epoch: 77,
                 device: 2001,
             },
+            Msg::CacheRelease { pool: 3, pg: 12 },
             Msg::ReadCopy {
                 to,
                 key: WireKey {

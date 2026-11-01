@@ -1110,9 +1110,11 @@ fn the_autoscaler_grows_pools_that_ask_for_it() {
     );
 }
 
-/// D188: a cache pool keeps what it holds across a split, the moves of
-/// its new PGs (backfilled, not started empty) and a restart of every
-/// node, as an upgrade does.
+/// D188, D189: a cache pool keeps what it holds across a split, the
+/// moves of its new PGs (backfilled, not started empty) and a restart of
+/// every node, as an upgrade does, its PGs waiting for a node marked down
+/// while it reopens; with a node down, reads of its PGs miss and a write
+/// moves the PGs it touches.
 #[test]
 fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
     let mut c = Cluster::all_in_one("cachekeep", 3);
@@ -1131,6 +1133,8 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
         "file",
         "--pgs",
         "16",
+        "--chunk",
+        "65536",
         "--autoscale",
         "off",
     ])
@@ -1183,23 +1187,61 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
         (p["placement_count"].as_u64() == Some(32) && c.settled()).then_some(())
     });
     assert!(read(&c) == data, "after the split and the moves");
-    // A restart keeps the data only while the node isn't marked down
-    // (I227): once it is, its cache PGs move to devices without the data.
-    // A reopen after a kill can take seconds on a loaded runner.
-    let downs = |c: &Cluster| c.meta_log().matches(" down (").count();
-    let before = downs(&c);
+    // A restart keeps the data even when the node is marked down while
+    // it reopens: its cache PGs wait for it (D189, I227). Each node is
+    // started only once it is down.
     for n in 0..3 {
         c.kill_node(n);
+        wait_for("the node's cache PGs waiting for it", 30, || {
+            c.ctl(&["status"]).has("waiting up to 60 s").then_some(())
+        });
         c.start_node(n);
         wait_for("every PG clean after the restart", 120, || {
             c.settled().then_some(())
         });
     }
-    if downs(&c) == before {
-        assert!(read(&c) == data, "after every node restarted");
-    } else {
-        eprintln!("a node was marked down while restarting: data not checked (I227)");
-    }
+    assert!(read(&c) == data, "after every node restarted");
+    // A node down: its PGs wait, reads of them miss (a volume's read as
+    // zeros, as from an empty device), and health warns. 64 KiB chunks
+    // spread the volume over every node's PGs.
+    c.kill_node(0);
+    wait_for("pool 3's PGs waiting for node 0", 30, || {
+        c.ctl(&["status"]).has("waiting up to 60 s").then_some(())
+    });
+    let chunks_like = |got: &[u8], want: &[u8]| -> (usize, usize) {
+        let pairs = got.chunks(65536).zip(want.chunks(65536));
+        let same = pairs.clone().filter(|(g, w)| g == w).count();
+        let zero = pairs.filter(|(g, _)| g.iter().all(|b| *b == 0)).count();
+        (same, zero)
+    };
+    let (same, zero) = chunks_like(&read(&c), &data);
+    assert!(
+        same > 0 && zero > 0 && same + zero == 128,
+        "{same} kept, {zero} missed"
+    );
+    // A write ends the wait of the PGs it touches: they move, empty, and
+    // take it.
+    let newer: Vec<u8> = data.iter().map(|b| b.wrapping_add(1)).collect();
+    std::fs::write(&src, &newer).unwrap();
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    assert!(read(&c) == newer, "written while node 0 was down");
+    assert!(c.meta_log().contains("written while waiting"));
+    // The node back, those PGs move back to it and start empty again, as
+    // a cache PG that moved always has (D188): neither the old data nor
+    // the write survives there, so they read as zeros until written again.
+    c.start_node(0);
+    wait_for("every PG clean with node 0 back", 120, || {
+        c.settled().then_some(())
+    });
+    let (same, zero) = chunks_like(&read(&c), &newer);
+    assert!(
+        same > 0 && zero > 0 && same + zero == 128,
+        "{same} kept, {zero} missed"
+    );
+    c.ctl(&["write-volume", "--id", &id, "--file", src.to_str().unwrap()])
+        .ok();
+    assert!(read(&c) == newer, "written again");
 }
 
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
@@ -1398,11 +1440,15 @@ fn a_full_device_refuses_growth_only() {
         set.out
     );
     // Published once fenced: new blocks are refused, once devices have it.
+    // Each try a chunk never written: one written before the devices had
+    // the ratio would let the next try through as an overwrite.
+    let written = next;
     wait_for("new blocks refused", 20, || {
+        next += 1;
         (write(next).code != 0).then_some(())
     });
     write(0).ok();
-    write(next - 1).ok();
+    write(written - 1).ok();
     let st = wait_for("health to say so", 20, || {
         let st = c.ctl(&["status"]);
         st.has("full: ").then_some(st)
@@ -1423,6 +1469,7 @@ fn a_full_device_refuses_growth_only() {
     assert!(snap.has("pool 1 is full"), "{}", snap.out);
     c.ctl(&["full-ratios", "--full", "95"]).ok();
     wait_for("new blocks taken again", 20, || {
+        next += 1;
         (write(next).code == 0).then_some(())
     });
     // Still past nearfull and backfillfull, both 50 % or so.
