@@ -325,6 +325,9 @@ message Pool {
   // A split under way (D183): to twice pg_count, with this many PGs split.
   bool splitting = 17;
   uint32 split_done = 18 [json_name = "split_done"];
+  // Whether the map service doubles its PG count as devices are added
+  // (D174, D184): when they call for at least twice as many.
+  bool autoscale = 19;
 }
 
 // Each PG is counted once, under its worst state.
@@ -449,6 +452,9 @@ message CreatePoolRequest {
   repeated string classes = 8;
   // Allow classes of hard disks and flash both (D172).
   bool force = 9;
+  // Whether the map service doubles its PG count as devices are added
+  // (04-decisions.md D174, D184); absent: on.
+  optional bool autoscale = 10;
 }
 
 message CreatePoolResponse {
@@ -492,6 +498,8 @@ message SetPoolRequest {
   bool every_device = 6 [json_name = "every_device"];
   // Twice the pool's PG count: the pool splits (D183).
   optional uint32 pg_count = 7 [json_name = "pg_count"];
+  // Turns the autoscaler on or off for the pool (D174, D184).
+  optional bool autoscale = 8;
 }
 
 message SetPoolResponse {

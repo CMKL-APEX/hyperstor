@@ -129,7 +129,8 @@ covered by tests that run on every change.
 | A pool renamed, or its failure domain changed, with its PGs following | Done |
 | A pool's devices added beyond its classes, and removed from them | Done |
 | A device removed once its PGs have moved, its node with its last device, ids never given again | Done |
-| A PG split in place: objects moved to their new PG's key without a copy, PG by PG | In progress |
+| A PG split in place: objects moved to their new PG's key without a copy, PG by PG | Done |
+| The autoscaler: a pool's PG count doubled as devices are added, one pool at a time, unless off | Done |
 
 ## AD0: Administration API, identities and CLI
 

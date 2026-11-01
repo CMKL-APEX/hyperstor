@@ -741,7 +741,7 @@ tests = [
 [[milestone.item]]
 what = "A PG split in place: objects moved to their new PG's key without a copy, PG by PG"
 spec = ["24-pools-and-devices.md §27.5", "D173", "D183", "I218", "I219", "I220"]
-status = "partial"
+status = "done"
 tests = [
     "engine::take_moves_an_object_whole",
     "hyperstor_placement::tests::keys_route_as_chunks_or_names_and_split_in_two",
@@ -750,6 +750,15 @@ tests = [
     "hyperstor_meta::tests::splits_flip_pgs_once_every_member_reports",
     "manage::a_pool_splits_its_pgs_in_place",
     "hyperstor_map::tests::raising_the_placement_count_moves_only_the_pgs_it_passes",
+]
+
+[[milestone.item]]
+what = "The autoscaler: a pool's PG count doubled as devices are added, one pool at a time, unless off"
+spec = ["24-pools-and-devices.md §27.5", "D174", "D184", "I221"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::the_autoscaler_grows_one_pool_at_a_time",
+    "manage::the_autoscaler_grows_pools_that_ask_for_it",
 ]
 
 [[milestone]]

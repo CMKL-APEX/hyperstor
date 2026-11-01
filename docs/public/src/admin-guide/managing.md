@@ -404,6 +404,19 @@ any count but twice the pool's, while one runs, and until the last
 one's PGs have moved. A device that was down during the
 split catches up when it returns.
 
+The map service also splits on its own (D184): when a pool's devices
+call for at least twice its PGs (about 100 per device, counting copies),
+typically after devices were added, it doubles the count, one pool at a
+time and only while every PG is clean. Its log names each split. To keep
+a pool's count as set:
+
+```sh
+hyperstorctl pool set --pool 1 --autoscale off
+```
+
+`hyperstorctl pools` lists the pools with it off; `pool create` takes
+`--autoscale off` too.
+
 ## Deleting a pool
 
 A pool is deleted once it holds nothing: no volume, no snapshot, and

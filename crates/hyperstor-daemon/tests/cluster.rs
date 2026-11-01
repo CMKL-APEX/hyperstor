@@ -151,6 +151,8 @@ impl Cluster {
         }
         let mut pool = replicated_pool(POOL, "vol", 3, 64);
         pool.chunk_size = CHUNK;
+        // The tests' PG counts are theirs: no autoscaler (D184).
+        pool.autoscale = false;
         map.add_pool(pool);
         // A one-copy cache pool (D45).
         map.add_pool(hyperstor_meta::PoolInfo {
@@ -167,6 +169,7 @@ impl Cluster {
             removed: Default::default(),
             placement: 16,
             split: None,
+            autoscale: false,
         });
         map.ensure_meta_pool();
         map.recompute();

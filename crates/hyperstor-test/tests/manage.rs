@@ -1031,6 +1031,82 @@ fn a_pool_splits_its_pgs_in_place() {
     });
 }
 
+/// D174, D184: the map service doubles a pool's PG count while its
+/// devices call for at least twice as many, one pool at a time, and the
+/// new PGs move; a pool made with `--autoscale off` keeps its count until
+/// it is turned on; the trial's own pools are sized so they don't split.
+#[test]
+fn the_autoscaler_grows_pools_that_ask_for_it() {
+    let c = Cluster::all_in_one("autoscale", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    // Each pool's (PG count, placement count, splitting).
+    let pool = |c: &Cluster, id: u64| -> Option<(u64, u64, bool)> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).ok()?;
+        let p = v["pools"]
+            .as_array()?
+            .iter()
+            .find(|p| p["id"].as_u64() == Some(id))?
+            .clone();
+        Some((
+            p["pg_count"].as_u64()?,
+            p["placement_count"].as_u64()?,
+            p["splitting"].as_bool().unwrap_or(false),
+        ))
+    };
+    c.ctl(&[
+        "pool",
+        "create",
+        "--name",
+        "quiet",
+        "--classes",
+        "file",
+        "--pgs",
+        "16",
+        "--autoscale",
+        "off",
+    ])
+    .ok();
+    // Three devices, three copies: about 100 PGs, so 16 grows to 64.
+    c.ctl(&[
+        "pool",
+        "create",
+        "--name",
+        "grow",
+        "--classes",
+        "file",
+        "--pgs",
+        "16",
+    ])
+    .ok();
+    wait_for("pool 4 grown to 64 PGs, all placed", 300, || {
+        (pool(&c, 4) == Some((64, 64, false)) && c.settled()).then_some(())
+    });
+    assert_eq!(pool(&c, 3), Some((16, 16, false)), "autoscale off");
+    assert!(c.ctl(&["pools"]).ok().has("pool 3: autoscale off"));
+    // The trial's pools were sized for their devices.
+    assert_eq!(pool(&c, 1).map(|p| p.0), Some(64));
+    assert_eq!(pool(&c, 2).map(|p| p.0), Some(256));
+    c.ctl(&["pool", "set", "--pool", "3", "--autoscale", "on"])
+        .ok();
+    wait_for("pool 3 grown to 64 PGs", 300, || {
+        (pool(&c, 3) == Some((64, 64, false))).then_some(())
+    });
+    assert!(
+        c.ctl(&["audit", "list", "--op", "SetPool"])
+            .ok()
+            .has("pool 3 autoscale=on")
+    );
+    assert!(
+        c.meta_log().contains("pool 4 splits to 32 PGs"),
+        "{}",
+        c.meta_log()
+    );
+}
+
 /// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts

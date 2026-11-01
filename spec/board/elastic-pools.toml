@@ -6,5 +6,5 @@ updated = 2026-11-01
 milestone = "HS18"
 branch = "feature/elastic-pools"
 prs = [96, 101, 102, 104, 106, 113, 114, 116, 117, 118, 119, 120, 121, 123, 124, 125, 126, 127]
-now = "Stage 5 (PG splits, D183): 5a merged (#125), 5b in #126, 5c (the new PGs moving, I220) in #127; 5d, the autoscaler, next"
-next = "5d: the autoscaler and --autoscale off (D174)"
+now = "Stage 5 (PG splits): 5a–5c merged (#125–#127); 5d, the autoscaler (D184, I221), in its PR"
+next = "Roll stage 4 and 5 to the pilot and PR the feature branch to main when the owner says so"

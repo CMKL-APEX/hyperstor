@@ -261,10 +261,10 @@ isn't checked against the pools that use its class.
 
 ### 27.5 PG count
 
-Stages 5a to 5c built (I218–I220): the engine's move, a device's
-split, the protocol and `pool set --pgs`, and the placement count
-rising. Clients switch to a split PG's sibling PG by PG (D183). The
-autoscaler (5d) is next.
+Built (I218–I221): the engine's move, a device's split, the protocol
+and `pool set --pgs`, the placement count rising, and the autoscaler
+(D184). Clients switch to a split PG's sibling PG by PG (D183). Merges
+(stage 6) come when needed.
 
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting
   each copy. A pool on 6 devices with 3 copies wants about 200 PGs, so
@@ -290,10 +290,11 @@ autoscaler (5d) is next.
 - **Merging** (halving) is the reverse and more delicate: two PGs' members
   must first agree, which needs both on the same devices. It comes
   later, and only by the operator (D174).
-- **Who decides** (D174): the map service doubles a pool's count
-  when its PGs per device pass twice the target, at most one pool at a
-  time, and never while the cluster is degraded. `pool set --pgs N`
-  does it by hand; `--autoscale off` stops it per pool.
+- **Who decides** (D174, D184): the map service doubles a pool's count
+  when its devices call for at least twice its PGs (about 100 per
+  device, counting copies), at most one pool at a time, and never while
+  the cluster is degraded. `pool set --pgs N` does it by hand;
+  `--autoscale off` stops it per pool.
 
 ### 27.6 Safety and operations
 

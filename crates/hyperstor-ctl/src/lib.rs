@@ -127,8 +127,11 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
             "! classes hold hard disks and flash (set with --force): writes wait for the slowest copy"
         );
     }
-    // Splits (D173, D183).
+    // Splits (D173, D183), and the autoscaler (D184; not for .meta).
     for p in &s.pools {
+        if !p.autoscale && p.id != 0 {
+            let _ = writeln!(o, "pool {}: autoscale off", p.id);
+        }
         if p.splitting {
             let _ = writeln!(
                 o,
