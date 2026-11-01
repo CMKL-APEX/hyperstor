@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 1 | 15 |
+| 5 | 0 | 0 | 16 |
 
 ## In progress
 
@@ -29,9 +29,7 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Public docs caught up with the implementation (November)** (`docs-catch-up-nov`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | — | `docs/catch-up-nov`, [#148](https://github.com/CMKL-APEX/hyperstor/pull/148) | Guides, developer guide, README and landing page caught up with ~70 PRs; reference pages cleaned of decision numbers; glidex driver marked done (glidex #177) with metering planned; pools and devices moved to their own admin page | The owner's review and merge of #148 | 2026-11-01 |
+None.
 
 ## Done
 
@@ -39,6 +37,7 @@ None.
 |---|---|---|---|---|
 | **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `main`, [#147](https://github.com/CMKL-APEX/hyperstor/pull/147) | 2026-11-01 |
 | **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `main`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106), [#113](https://github.com/CMKL-APEX/hyperstor/pull/113), [#114](https://github.com/CMKL-APEX/hyperstor/pull/114), [#116](https://github.com/CMKL-APEX/hyperstor/pull/116), [#117](https://github.com/CMKL-APEX/hyperstor/pull/117), [#118](https://github.com/CMKL-APEX/hyperstor/pull/118), [#119](https://github.com/CMKL-APEX/hyperstor/pull/119), [#120](https://github.com/CMKL-APEX/hyperstor/pull/120), [#121](https://github.com/CMKL-APEX/hyperstor/pull/121), [#123](https://github.com/CMKL-APEX/hyperstor/pull/123), [#124](https://github.com/CMKL-APEX/hyperstor/pull/124), [#125](https://github.com/CMKL-APEX/hyperstor/pull/125), [#126](https://github.com/CMKL-APEX/hyperstor/pull/126), [#127](https://github.com/CMKL-APEX/hyperstor/pull/127), [#130](https://github.com/CMKL-APEX/hyperstor/pull/130), [#131](https://github.com/CMKL-APEX/hyperstor/pull/131), [#132](https://github.com/CMKL-APEX/hyperstor/pull/132), [#137](https://github.com/CMKL-APEX/hyperstor/pull/137), [#138](https://github.com/CMKL-APEX/hyperstor/pull/138), [#140](https://github.com/CMKL-APEX/hyperstor/pull/140), [#141](https://github.com/CMKL-APEX/hyperstor/pull/141), [#143](https://github.com/CMKL-APEX/hyperstor/pull/143) | 2026-11-01 |
+| **Public docs caught up with the implementation (November)** (`docs-catch-up-nov`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | — | `docs/catch-up-nov`, [#148](https://github.com/CMKL-APEX/hyperstor/pull/148) | 2026-11-01 |
 | **Device weights and encryption at rest: decisions D158–D162** (`weights-and-encryption`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | — | `spec/weights-encryption`, [#89](https://github.com/CMKL-APEX/hyperstor/pull/89) | 2026-10-31 |
 | **Pool and device space in the web UI** (`ui-capacity`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `ui/capacity`, [#84](https://github.com/CMKL-APEX/hyperstor/pull/84) | 2026-10-31 |
 | **Feature flags in the device superblock (D157)** (`superblock-features`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS0 | `feat/superblock-features`, [#87](https://github.com/CMKL-APEX/hyperstor/pull/87) | 2026-10-31 |
