@@ -338,22 +338,22 @@ message Pool {
   // it does not use (04-decisions.md D180).
   repeated uint32 added_devices = 14 [json_name = "added_devices"];
   repeated uint32 removed_devices = 15 [json_name = "removed_devices"];
-  // The PGs placement goes by (D173): below pg_count after a split, until
-  // the new PGs move to their own devices.
-  uint32 placement_count = 16 [json_name = "placement_count"];
-  // A split under way (D187): to twice pg_count, with this many PGs split.
-  bool splitting = 17;
-  uint32 split_done = 18 [json_name = "split_done"];
-  // Whether the map service doubles its PG count as devices are added
-  // (D174, D184): when they call for at least twice as many.
-  bool autoscale = 19;
   // "ok", "nearfull" or "full" (04-decisions.md D27): the fullest of the
   // devices it uses, past `backfillfull` counting as nearfull; empty until
   // they have all reported. While "full", new volumes, clones and
   // snapshots in the pool are refused.
-  string fullness = 20;
+  string fullness = 16;
   // The device that set it, when not "ok".
-  optional uint32 fullest_device = 21 [json_name = "fullest_device"];
+  optional uint32 fullest_device = 17 [json_name = "fullest_device"];
+  // A split under way (D187): to twice pg_count, with this many PGs split.
+  uint32 split_done = 18 [json_name = "split_done"];
+  // Whether the map service doubles its PG count as devices are added
+  // (D174, D184): when they call for at least twice as many.
+  bool autoscale = 19;
+  // The PGs placement goes by (D173): below pg_count after a split, until
+  // the new PGs move to their own devices.
+  uint32 placement_count = 20 [json_name = "placement_count"];
+  bool splitting = 21;
 }
 
 // Each PG is counted once, under its worst state.
