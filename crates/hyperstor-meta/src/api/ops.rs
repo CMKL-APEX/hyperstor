@@ -482,12 +482,14 @@ impl Runner {
 
     /// While this member leads, once it has fenced the last leader:
     /// resumes running operations it doesn't
-    /// follow (every 2 s), prunes finished ones past a week (hourly), and
-    /// purges the trash past each pool's grace (every `scan`).
+    /// follow (every 2 s), prunes finished ones past a week (hourly),
+    /// purges the trash past each pool's grace (every `scan`), and the
+    /// oldest trash of full pools set to purge it (D115; every 2 s).
     pub(super) async fn upkeep(self, scan: Duration) {
         let settings = self.settings.clone();
         let mut last_prune = std::time::Instant::now() - Duration::from_secs(3600);
         let mut last_scan = std::time::Instant::now();
+        let mut purged_for_full = std::collections::BTreeMap::new();
         loop {
             tokio::time::sleep(Duration::from_secs(2).min(scan)).await;
             if !self.leads().await || self.fence().await.is_err() {
@@ -506,6 +508,8 @@ impl Runner {
                 last_scan = std::time::Instant::now();
                 self.purge_expired(settings.as_ref()).await;
             }
+            self.purge_for_full(settings.as_ref(), &mut purged_for_full)
+                .await;
         }
     }
 
@@ -514,33 +518,12 @@ impl Runner {
     /// failed in the last hour (so a purge that can't finish doesn't add an
     /// operation every scan).
     async fn purge_expired(&self, settings: Option<&Arc<crate::settings::Settings>>) {
-        use hyperstor_client::trash::Trashed;
-        let (reply, rx) = oneshot();
-        if self
-            .tx
-            .send(Admin::Trash {
-                op: crate::TrashOp::List { pool: None },
-                reply,
-            })
-            .is_err()
-        {
-            return;
-        }
-        let Some(Ok(crate::TrashDone::Items(items))) = rx.recv().await else {
+        let Some(items) = self.trash().await else {
             return;
         };
         let now = now_unix();
-        let busy: HashSet<String> = self
-            .store(|s| s.list())
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|o| {
-                o.work.kind() == "purge"
-                    && (o.running() || (o.state == State::Failed && o.finished_unix + 3600 > now))
-            })
-            .map(|o| o.target)
-            .collect();
+        let (running, failed) = self.purges(now).await;
+        let busy: HashSet<String> = running.union(&failed).cloned().collect();
         for item in items {
             let grace = settings
                 .and_then(|s| s.trash(item.pool()).ok())
@@ -549,10 +532,7 @@ impl Runner {
             if item.trashed_unix().saturating_add(grace) > now {
                 continue;
             }
-            let (volume, epoch) = match &item {
-                Trashed::Volume(v) => (v.id, None),
-                Trashed::Snapshot(v, s) => (v.id, Some(s.epoch)),
-            };
+            let (volume, epoch) = purged(&item);
             let target = purge_target(volume, epoch);
             if busy.contains(&target) {
                 continue;
@@ -567,6 +547,120 @@ impl Runner {
                 )
                 .await;
         }
+    }
+
+    /// A full pool's trash (D115): in each pool past full whose trash is
+    /// set to `purge`, a purge of its oldest item, one at a time per pool,
+    /// skipping an item whose purge failed in the last hour. A pool set
+    /// to `keep` (the default) keeps its trash and stays full. `busy` has
+    /// when each pool last had a purge running: the next waits 10 s, two
+    /// device reports, so the space a purge freed is counted first.
+    async fn purge_for_full(
+        &self,
+        settings: Option<&Arc<crate::settings::Settings>>,
+        busy: &mut std::collections::BTreeMap<u32, std::time::Instant>,
+    ) {
+        let Some(settings) = settings else {
+            return;
+        };
+        let full: Vec<(u32, String)> = super::full_pools(&self.tx)
+            .await
+            .into_iter()
+            .filter(|(p, _)| {
+                settings
+                    .trash(*p)
+                    .is_ok_and(|t| t.on_full == crate::settings::OnFull::Purge)
+            })
+            .collect();
+        if full.is_empty() {
+            return;
+        }
+        let Some(items) = self.trash().await else {
+            return;
+        };
+        let (running, failed) = self.purges(now_unix()).await;
+        for (pool, why) in full {
+            let mut held: Vec<_> = items
+                .iter()
+                .filter(|i| i.pool() == pool)
+                .map(|i| (i.trashed_unix(), purged(i)))
+                .collect();
+            if held
+                .iter()
+                .any(|(_, (v, e))| running.contains(&purge_target(*v, *e)))
+            {
+                busy.insert(pool, std::time::Instant::now());
+                continue;
+            }
+            if busy
+                .get(&pool)
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(10))
+            {
+                continue;
+            }
+            held.sort();
+            let Some((_, (volume, epoch))) = held
+                .into_iter()
+                .find(|(_, (v, e))| !failed.contains(&purge_target(*v, *e)))
+            else {
+                continue;
+            };
+            eprintln!(
+                "hyperstor-meta: {why}; purging {} from its trash",
+                purge_target(volume, epoch)
+            );
+            let _ = self
+                .create(
+                    Work::Purge { volume, epoch },
+                    purge_target(volume, epoch),
+                    1,
+                    format!("{why}; its oldest in the trash, as trash_on_full = purge"),
+                    "map-service/purger".into(),
+                )
+                .await;
+            busy.insert(pool, std::time::Instant::now());
+        }
+    }
+
+    /// Everything in the trash, of every pool.
+    async fn trash(&self) -> Option<Vec<hyperstor_client::trash::Trashed>> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Trash {
+                op: crate::TrashOp::List { pool: None },
+                reply,
+            })
+            .ok()?;
+        match rx.recv().await {
+            Some(Ok(crate::TrashDone::Items(items))) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// The targets of purges running, and of those failed in the hour
+    /// before `now`.
+    async fn purges(&self, now: u64) -> (HashSet<String>, HashSet<String>) {
+        let (mut running, mut failed) = (HashSet::new(), HashSet::new());
+        for o in self.store(|s| s.list()).await.unwrap_or_default() {
+            if o.work.kind() != "purge" {
+                continue;
+            }
+            if o.running() {
+                running.insert(o.target);
+            } else if o.state == State::Failed && o.finished_unix + 3600 > now {
+                failed.insert(o.target);
+            }
+        }
+        (running, failed)
+    }
+}
+
+/// The volume and snapshot epoch a trashed item's purge names.
+fn purged(item: &hyperstor_client::trash::Trashed) -> (u128, Option<u64>) {
+    use hyperstor_client::trash::Trashed;
+    match item {
+        Trashed::Volume(v) => (v.id, None),
+        Trashed::Snapshot(v, s) => (v.id, Some(s.epoch)),
     }
 }
 
