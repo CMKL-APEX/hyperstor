@@ -139,6 +139,14 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
         if !p.autoscale && p.id != 0 {
             let _ = writeln!(o, "pool {}: autoscale off", p.id);
         }
+        // A cache pool's grace other than the default, 60 s (D189).
+        if p.kind == "cache" && p.cache_grace != 60 {
+            let _ = writeln!(
+                o,
+                "pool {}: cache PGs wait {} s for a down member",
+                p.id, p.cache_grace
+            );
+        }
         if p.splitting {
             let _ = writeln!(
                 o,

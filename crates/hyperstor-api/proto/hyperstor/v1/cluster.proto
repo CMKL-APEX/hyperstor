@@ -354,6 +354,9 @@ message Pool {
   // the new PGs move to their own devices.
   uint32 placement_count = 20 [json_name = "placement_count"];
   bool splitting = 21;
+  // Cache pools: seconds a PG waits for a down member before moving to
+  // devices without its data (04-decisions.md D189); 0 moves at once.
+  uint32 cache_grace = 22 [json_name = "cache_grace"];
 }
 
 // Each PG is counted once, under its worst state.
@@ -494,6 +497,9 @@ message CreatePoolRequest {
   // Whether the map service doubles its PG count as devices are added
   // (04-decisions.md D174, D184); absent: on.
   optional bool autoscale = 10;
+  // Cache pools: seconds a PG waits for a down member, up to 3600
+  // (04-decisions.md D189); absent: 60.
+  optional uint32 cache_grace = 11 [json_name = "cache_grace"];
 }
 
 message CreatePoolResponse {
@@ -539,6 +545,9 @@ message SetPoolRequest {
   optional uint32 pg_count = 7 [json_name = "pg_count"];
   // Turns the autoscaler on or off for the pool (D174, D184).
   optional bool autoscale = 8;
+  // Cache pools: seconds a PG waits for a down member, up to 3600; 0
+  // moves at once (D189).
+  optional uint32 cache_grace = 9 [json_name = "cache_grace"];
 }
 
 message SetPoolResponse {

@@ -57,9 +57,14 @@ pub fn pg_states<'a>(
     // An EC PG needs k shards to read; min_size is what writes need.
     map.pgs
         .range((pool.id, 0)..=(pool.id, u32::MAX))
-        .map(move |(_, pg)| {
+        .map(move |(&(id, n), pg)| {
             let have = pg.acting_count();
-            if pg.primary().is_none() || have < pool.min_size as usize {
+            // A cache PG waiting for its down member (D189) serves nothing
+            // meanwhile, though its acting set still names the member.
+            if pg.primary().is_none()
+                || have < pool.min_size as usize
+                || (pool.kind == PoolKind::Cache && map.cache_waiting(id, n))
+            {
                 PgState::Inactive
             } else if !map.filling(pg).is_empty() {
                 PgState::Backfilling
@@ -118,7 +123,26 @@ pub fn report(map: &ClusterMap) -> Report {
                 PgState::Clean => s.clean += 1,
             }
         }
-        if s.inactive > 0 {
+        // Cache PGs waiting for a down member (D189) count as inactive, but
+        // keep their data and miss reads meanwhile: a warning.
+        let waiting = if p.kind == PoolKind::Cache && s.inactive > 0 {
+            map.pgs
+                .keys()
+                .filter(|(pool, pg)| *pool == p.id && map.cache_waiting(*pool, *pg))
+                .count() as u32
+        } else {
+            0
+        };
+        if waiting > 0 {
+            reasons.push((
+                Health::Warn,
+                format!(
+                    "pool {}: {waiting} cache PG(s) waiting up to {} s for their node (reads miss)",
+                    p.name, p.cache_grace
+                ),
+            ));
+        }
+        if s.inactive > waiting {
             let what = if p.kind == PoolKind::Cache {
                 // Cache pools lose data instead of recovering it (D45).
                 "without copies (cache data lost until rewritten)"
@@ -127,7 +151,7 @@ pub fn report(map: &ClusterMap) -> Report {
             };
             reasons.push((
                 Health::Error,
-                format!("pool {}: {} PG(s) {what}", p.name, s.inactive),
+                format!("pool {}: {} PG(s) {what}", p.name, s.inactive - waiting),
             ));
         }
         if s.degraded > 0 {

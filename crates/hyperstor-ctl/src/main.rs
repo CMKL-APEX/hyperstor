@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -28,13 +28,14 @@
 //!   (D27, D182), or set one or more of them;
 //! - `pool create --name N --classes C[,C...] [--kind replicated|cache]
 //!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
-//!   device|host|rack] [--autoscale on|off] [--force]`: make a pool on
-//!   devices of those classes (D171); PGs, unless given, about 100 per
-//!   device per copy, doubled as devices are added unless `--autoscale
-//!   off` (D184);
+//!   device|host|rack] [--autoscale on|off] [--cache-grace SECS]
+//!   [--force]`: make a pool on devices of those classes (D171); PGs,
+//!   unless given, about 100 per device per copy, doubled as devices are
+//!   added unless `--autoscale off` (D184); a cache pool's PGs wait
+//!   `--cache-grace` seconds (60) for a down member (D189);
 //! - `pool set --pool P [--classes C[,C...]|any] [--name N] [--domain
 //!   device|host|rack] [--pgs N [--wait SECS]] [--autoscale on|off]
-//!   [--force]`: place pool P's
+//!   [--cache-grace SECS] [--force]`: place pool P's
 //!   PGs on devices of those classes only, or on every device (D164),
 //!   with a copy per device, host or rack; or rename it; or split its PGs
 //!   to N, twice as many, PG by PG (D173, D187), with `--wait` until it
@@ -157,7 +158,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -227,6 +228,9 @@ struct Args {
     on_full: Option<String>,
     /// `pool create`, `pool set`: the autoscaler on or off (D184).
     autoscale: Option<bool>,
+    /// `pool create`, `pool set`: how long a cache PG waits for a down
+    /// member, in seconds (D189).
+    cache_grace: Option<u32>,
     /// `audit list`: how far back (seconds), whose, which operation, how many.
     since: Option<u64>,
     principal: Option<String>,
@@ -309,6 +313,7 @@ fn main() {
         grace: None,
         on_full: None,
         autoscale: None,
+        cache_grace: None,
         since: None,
         principal: None,
         op: None,
@@ -463,6 +468,7 @@ fn main() {
                 Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
                 _ => usage(),
             },
+            "--cache-grace" => a.cache_grace = Some(num(it.next())),
             "--autoscale" => match it.next().map(String::as_str) {
                 Some("on") => a.autoscale = Some(true),
                 Some("off") => a.autoscale = Some(false),
@@ -526,9 +532,15 @@ fn main() {
                 && a.name.is_empty()
                 && a.domain.is_none()
                 && a.pgs.is_none()
-                && a.autoscale.is_none())))
+                && a.autoscale.is_none()
+                && a.cache_grace.is_none())))
         || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
-        || (!set && !create && (a.classes.is_some() || a.domain.is_some() || a.autoscale.is_some()))
+        || (!set
+            && !create
+            && (a.classes.is_some()
+                || a.domain.is_some()
+                || a.autoscale.is_some()
+                || a.cache_grace.is_some()))
         || (!create
             && (a.kind.is_some()
                 || a.copies.is_some()
@@ -1194,6 +1206,7 @@ where
                     classes,
                     force: a.force,
                     autoscale: a.autoscale,
+                    cache_grace: a.cache_grace,
                     ..Default::default()
                 })
                 .await;
@@ -1251,6 +1264,7 @@ where
                     force: a.force,
                     pg_count: a.pgs,
                     autoscale: a.autoscale,
+                    cache_grace: a.cache_grace,
                     ..Default::default()
                 })
                 .await;
@@ -1263,6 +1277,9 @@ where
                     }
                     if let Some(on) = a.autoscale {
                         what.push(format!("autoscale {}", if on { "on" } else { "off" }));
+                    }
+                    if let Some(g) = a.cache_grace {
+                        what.push(format!("cache PGs wait {g} s for a down member"));
                     }
                     if every_device {
                         what.push("places on every device".to_string());
