@@ -1440,11 +1440,15 @@ fn a_full_device_refuses_growth_only() {
         set.out
     );
     // Published once fenced: new blocks are refused, once devices have it.
+    // Each try a chunk never written: one written before the devices had
+    // the ratio would let the next try through as an overwrite.
+    let written = next;
     wait_for("new blocks refused", 20, || {
+        next += 1;
         (write(next).code != 0).then_some(())
     });
     write(0).ok();
-    write(next - 1).ok();
+    write(written - 1).ok();
     let st = wait_for("health to say so", 20, || {
         let st = c.ctl(&["status"]);
         st.has("full: ").then_some(st)
@@ -1465,6 +1469,7 @@ fn a_full_device_refuses_growth_only() {
     assert!(snap.has("pool 1 is full"), "{}", snap.out);
     c.ctl(&["full-ratios", "--full", "95"]).ok();
     wait_for("new blocks taken again", 20, || {
+        next += 1;
         (write(next).code == 0).then_some(())
     });
     // Still past nearfull and backfillfull, both 50 % or so.
