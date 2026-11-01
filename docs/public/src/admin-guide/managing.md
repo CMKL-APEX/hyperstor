@@ -256,6 +256,33 @@ A pool's usable space (`hyperstorctl pools`) counts what it can hold
 with each copy on a different host (or rack): with as many hosts as
 copies, the smallest host bounds it.
 
+## Full devices
+
+A thin-provisioned cluster can run out of space. Each device is held to
+three thresholds, percentages of its data area, the same for every
+device:
+
+| Threshold | Default | Past it |
+|---|---|---|
+| `nearfull` | 85 % | Kept for warnings; `hyperstorctl status` doesn't show them yet |
+| `backfillfull` | 90 % | No PG is backfilled onto the device; a PG that needs it waits, degraded or remapped, until there is room |
+| `full` | 95 % | The device refuses what would grow its used space: new objects and writes to blocks not yet written |
+
+Past `full`, overwrites of written blocks, deletes, discards and
+snapshot deletes still work, so you can always free space. A refused
+write reaches a host's block device as `ENOSPC`. Free space by deleting
+volumes or snapshots and purging the trash, or add devices.
+
+```sh
+hyperstorctl full-ratios                       # the thresholds now
+hyperstorctl full-ratios --full 97             # one or more of them
+```
+
+Each is between 50 and 99, with `nearfull` below `backfillfull` below
+`full`. Setting them to anything but the defaults changes the map's
+format: do it only once every storage node and map service member runs
+a build that has `hyperstorctl full-ratios`.
+
 ## Adding a device to a node
 
 A node can take more devices while the cluster runs (D167). On the

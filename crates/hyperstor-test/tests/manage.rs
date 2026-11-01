@@ -813,6 +813,102 @@ fn weights_follow_capacity_or_are_set() {
     });
 }
 
+/// D27: past `full`, a device refuses what would grow its used space,
+/// and overwrites go on; the ratios are shown, set and checked.
+#[test]
+fn a_full_device_refuses_growth_only() {
+    let c = Cluster::all_in_one("full", 3);
+    let r = c.ctl(&["full-ratios"]).ok();
+    assert!(
+        r.has("nearfull 85%  backfillfull 90%  full 95%"),
+        "{}",
+        r.out
+    );
+    let bad = c.ctl(&["full-ratios", "--nearfull", "96"]).expect(1);
+    assert!(bad.has("nearfull < backfillfull < full"), "{}", bad.out);
+    c.ctl(&["full-ratios", "--full", "x"]).expect(2);
+    c.ctl(&["full-ratios", "--device", "0"]).expect(2);
+    // The most any device has used, as a percentage of its data area.
+    let used = || -> f64 {
+        let s = c.ctl(&["status", "--json"]).ok();
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        let n = |d: &serde_json::Value, f: &str| {
+            d[f].as_str()
+                .and_then(|t| t.parse::<f64>().ok())
+                .or(d[f].as_f64())
+        };
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .filter_map(|d| Some(100.0 * (1.0 - n(&d, "free_bytes")? / n(&d, "total_bytes")?)))
+            .fold(0.0, f64::max)
+    };
+    let made = c
+        .ctl(&["create-volume", "--size", "1G", "--name", "filling"])
+        .ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let chunk = 32u64 << 20;
+    let src = c.scratch.path("chunk.raw");
+    std::fs::write(&src, hyperstor_test::vhost::pattern(7, chunk as usize)).unwrap();
+    let write = |at: u64| {
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            &id,
+            "--file",
+            src.to_str().unwrap(),
+            "--offset",
+            &(at * chunk).to_string(),
+            "--map",
+            &c.map,
+        ])
+    };
+    // Past 52 % on every device (each holds a copy of everything), as the
+    // devices report it every few seconds.
+    let mut next = 0;
+    while used() < 52.0 {
+        let had = used();
+        for _ in 0..4 {
+            write(next).ok();
+            next += 1;
+        }
+        assert!(next * chunk < 1 << 30, "the volume filled first");
+        wait_for("a space report", 15, || (used() > had).then_some(()));
+    }
+    let set = c
+        .ctl(&[
+            "full-ratios",
+            "--nearfull",
+            "50",
+            "--backfillfull",
+            "50.5",
+            "--full",
+            "51",
+        ])
+        .ok();
+    assert!(
+        set.has("nearfull 50%  backfillfull 50.5%  full 51%"),
+        "{}",
+        set.out
+    );
+    // Published once fenced: new blocks are refused, once devices have it.
+    wait_for("new blocks refused", 20, || {
+        (write(next).code != 0).then_some(())
+    });
+    write(0).ok();
+    write(next - 1).ok();
+    c.ctl(&["full-ratios", "--full", "95"]).ok();
+    wait_for("new blocks taken again", 20, || {
+        (write(next).code == 0).then_some(())
+    });
+    wait_for("the changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetFullRatios"]).ok();
+        (a.has("full=51") && a.has("full=95")).then_some(())
+    });
+}
+
 /// I203: each device's superblock names its device and cluster. A node
 /// given another node's device (swapped paths) refuses it and says whose
 /// it is, writing nothing; with the paths put right it serves again.
