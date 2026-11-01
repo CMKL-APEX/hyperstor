@@ -1079,3 +1079,15 @@ recommendation:
 | 161 | What clients see for a waiting PG: a miss (recommended), or waits as for any inactive PG | A miss | D189 |
 | 162 | What a write to a waiting PG does (the first answer said writes are skipped, which would leave the returning copy with an old value; asked again): it ends that PG's wait, the PG moving now (recommended); writes refused; writes wait | Ends the wait | D189 |
 | 163 | Whether to delete `feature/elastic-pools`, merged into `main` in #131: delete it, later PRs to `main` (recommended), or keep it unused | Deleted | — |
+
+## Reads off the reactor (2026-11-01)
+
+Starting stage 2 of D165 (reads wait for the device on the reactor's
+ring), four points the stage left open. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 164 | How extents a commit frees wait for reads in flight that may use them: by generation, each read noting the generation it began in and freed extents returned once no older read is in flight (recommended); by tracking the ranges reads use, holding only those freed; or the commit waiting for every read in flight before it frees | By generation | D190 |
+| 165 | What a read does while a commit is in flight: waits for it, as before, while reads already in flight go on (recommended); or reads the state before the round, from the previous extent maps the commit keeps | Waits | D190 |
+| 166 | How long a read may wait for its device: the I/O timeout (30 s), past which the device is failed (recommended); or a shorter read timeout, past which a member serves the read and the device is failed only after repeated timeouts | A shorter timeout | D190: 2 s, served from a member, three in a row fail the device |
+| 167 | Whether a device limits its reads in flight: 128, the rest waiting in the order they came (recommended); only by the ring's size (1024); or by bytes | 128, in order | D190 |

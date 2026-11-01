@@ -108,6 +108,22 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage)"
+spec = ["08-engine.md §6.2", "D190", "I230"]
+status = "partial"
+tests = [
+    "hyperstor_engine::shard::tests::freed_extents_wait_for_reads_in_flight",
+    "hyperstor_engine::shard::tests::held_extents_follow_the_oldest_read",
+    "hyperstor_engine::shard::tests::nothing_is_deferred_under_a_read",
+    "hyperstor_engine::shard::tests::reads_in_flight_against_a_model",
+    "hyperstor_reactor::file::tests::reads_land_in_the_buffer",
+    "hyperstor_daemon::shard_cell::tests::reads_past_the_limit_wait_in_order",
+    "cluster::a_slow_read_holds_no_reactor",
+    "cluster::a_read_past_the_timeout_is_served_from_a_member",
+    "cluster::reads_in_flight_get_whole_writes",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"

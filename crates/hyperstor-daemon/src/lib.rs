@@ -36,8 +36,8 @@ use hyperstor_client::volume::{
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
-    BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev, Namespace, ObjKey,
-    Op, OpError, OpList, UringDev,
+    AlignedBuf, BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev,
+    Namespace, ObjKey, Op, OpError, OpList, ReadPlan, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
@@ -196,6 +196,9 @@ pub struct NodeConfig {
     /// How long a commit round's writes and flush may take before the
     /// device is failed (I199); zero: [`IO_TIMEOUT`].
     pub io_timeout: Duration,
+    /// How long a read may wait for the device before the primary serves
+    /// it from a member (D190); zero: [`READ_TIMEOUT`].
+    pub read_timeout: Duration,
     /// Test hook: devices whose commits take longer without holding their
     /// reactor (04-decisions.md D92, I199).
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
@@ -242,6 +245,15 @@ const TCP_ONLY_AFTER: Duration = Duration::from_secs(5);
 /// went down; now the reactor goes on, and this ends the wait. Linux gives
 /// an NVMe command 30 s before it aborts and retries it.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a read may wait for the device (D190): past it, the read is
+/// abandoned and the primary serves it from a member, as it drops a
+/// replica that doesn't answer in [`REPL_TIMEOUT`].
+pub const READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Reads in a row past [`READ_TIMEOUT`] that fail the device (D190): one
+/// can be a burst of load, several in a row a device that stopped.
+const READ_TIMEOUTS_TO_FAIL: u32 = 3;
 
 /// How long a PG this device has left must stay clean, at one epoch,
 /// before the device deletes its copy (D177): a map change back within it
@@ -359,6 +371,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
         };
+        let read_timeout = match cfg.read_timeout {
+            Duration::ZERO => READ_TIMEOUT,
+            t => t,
+        };
         let opened = Opening(Some(opening.clone()));
         threads.push(
             std::thread::Builder::new()
@@ -393,6 +409,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
                         *st.ping_faults.borrow_mut() = ping_faults;
                         st.io_timeout.set(io_timeout);
+                        st.read_timeout.set(read_timeout);
                         st.kind.set(kind);
                         let l = TcpListener::from_std(sh.listener);
                         let udp = if no_udp {
@@ -478,6 +495,10 @@ struct ShardState {
     dev: Arc<dyn BlockDev>,
     /// `NodeConfig::io_timeout`, resolved.
     io_timeout: Cell<Duration>,
+    /// `NodeConfig::read_timeout`, resolved.
+    read_timeout: Cell<Duration>,
+    /// Reads in a row that took over `read_timeout` (D190).
+    read_timeouts: Cell<u32>,
     /// What the device is, reported with its space (D178).
     kind: Cell<hyperstor_meta::DeviceKind>,
     /// The test hook of `NodeConfig::commit_delays`.
@@ -1006,6 +1027,8 @@ impl ShardState {
             shard: shard_cell::ShardCell::new(shard),
             dev,
             io_timeout: Cell::new(IO_TIMEOUT),
+            read_timeout: Cell::new(READ_TIMEOUT),
+            read_timeouts: Cell::new(0),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
             commit_delays: RefCell::new(None),
             ping_faults: RefCell::new(None),
@@ -1765,13 +1788,19 @@ impl ShardState {
                     metrics::ShardMetrics::add(&self.metrics.push_bytes, payload.len() as u64);
                     self.push_kv(h.req, to, key, payload, tx.clone()).await
                 }
+                // Reads wait for the device off the connection's loop, so a
+                // connection has many in flight (D190); each answer goes by
+                // its request id.
                 Msg::Read { to, key, off, len } => {
-                    let arrived = std::time::Instant::now();
-                    let (m, p) = self.read(to, key, off, len).await;
-                    self.metrics.read_latency.observe(arrived.elapsed());
-                    metrics::ShardMetrics::add(&self.metrics.reads, 1);
-                    metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
-                    reply(&m, &p);
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let arrived = std::time::Instant::now();
+                        let (m, p) = me.read(to, key, off, len).await;
+                        me.metrics.read_latency.observe(arrived.elapsed());
+                        metrics::ShardMetrics::add(&me.metrics.reads, 1);
+                        metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
                 }
                 // Cut off from the map service (test hook): its messages
                 // don't arrive.
@@ -1810,12 +1839,15 @@ impl ShardState {
                     off,
                     len,
                 } => {
-                    let arrived = std::time::Instant::now();
-                    let (m, p) = self.read_at(to, key, layers, off, len, true).await;
-                    self.metrics.read_latency.observe(arrived.elapsed());
-                    metrics::ShardMetrics::add(&self.metrics.reads, 1);
-                    metrics::ShardMetrics::add(&self.metrics.read_bytes, p.len() as u64);
-                    reply(&m, &p);
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let arrived = std::time::Instant::now();
+                        let (m, p) = me.read_at(to, key, layers, off, len, true).await;
+                        me.metrics.read_latency.observe(arrived.elapsed());
+                        metrics::ShardMetrics::add(&me.metrics.reads, 1);
+                        metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
                 }
                 Msg::Sources {
                     to,
@@ -1900,6 +1932,24 @@ impl ShardState {
                         self.resume(&okey);
                     }
                     reply(&Msg::ExecOk, &[]);
+                }
+                Msg::ReadCopy {
+                    to,
+                    key,
+                    layers,
+                    off,
+                    len,
+                } => {
+                    // Off the connection's loop, as it may wait for writes
+                    // queued before it (D190).
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = match layers {
+                            Some(l) => me.read_at_as(to, key, l, off, len, true, false).await,
+                            None => me.read_as(to, key, off, len, false).await,
+                        };
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
                 }
                 Msg::Fetch { to, key } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
@@ -2431,9 +2481,26 @@ impl ShardState {
         len: u64,
         data: bool,
     ) -> (Msg, Vec<u8>) {
-        if let Err(m) = self.check(&to, true).await {
-            return (m, Vec::new());
-        }
+        self.read_at_as(to, key, layers, off, len, data, true).await
+    }
+
+    /// [`Self::read_at`] by the primary, or by a member for the primary
+    /// ([`Msg::ReadCopy`], D190).
+    #[allow(clippy::too_many_arguments)]
+    async fn read_at_as(
+        &self,
+        to: Target,
+        key: WireKey,
+        layers: Vec<(u32, u64, u64)>,
+        off: u64,
+        len: u64,
+        data: bool,
+        primary: bool,
+    ) -> (Msg, Vec<u8>) {
+        let pg = match self.read_check(&to, primary).await {
+            Ok(p) => p,
+            Err(m) => return (m, Vec::new()),
+        };
         self.shard.idle().await;
         let Ok(keyed) = self.layer_keys(&to, &key, &layers) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
@@ -2457,7 +2524,9 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        let r = self.shard.get().await.read_layered(&keys, off, len);
+        let r = self
+            .device_read(|sh| sh.read_layered_begin(&keys, off, len))
+            .await;
         let data = match r {
             Ok(b) => b.to_vec(),
             Err(EngineError::NotFound) => vec![0; len as usize],
@@ -2467,8 +2536,18 @@ impl ShardState {
                     Vec::new(),
                 );
             }
+            Err(e) if primary && timed_out(&e) => {
+                let m = Msg::ReadCopy {
+                    to,
+                    key,
+                    layers: Some(layers),
+                    off,
+                    len,
+                };
+                return self.read_elsewhere(&pg, m, &e).await;
+            }
             Err(e) => {
-                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) {
+                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) && !timed_out(&e) {
                     self.failed.set(true);
                 }
                 return (err(Code::Io, &self.map(), e.to_string()), Vec::new());
@@ -4909,17 +4988,30 @@ impl ShardState {
     }
 
     async fn read(&self, to: Target, key: WireKey, off: u64, len: u64) -> (Msg, Vec<u8>) {
-        let pg = match self.check(&to, true).await {
+        self.read_as(to, key, off, len, true).await
+    }
+
+    /// [`Self::read`] by the primary, or by a member for the primary
+    /// ([`Msg::ReadCopy`], D190).
+    async fn read_as(
+        &self,
+        to: Target,
+        key: WireKey,
+        off: u64,
+        len: u64,
+        primary: bool,
+    ) -> (Msg, Vec<u8>) {
+        let pg = match self.read_check(&to, primary).await {
             Ok(p) => p,
             Err(m) => return (m, Vec::new()),
         };
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let mut r = self.shard.get().await.read(&okey, off, len);
+        let mut r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
         // A block that fails its checksum (09-replication.md §8.2): this copy
         // is replaced by a member's, and the read served from it.
-        if matches!(r, Err(EngineError::Checksum { .. })) {
+        if primary && matches!(r, Err(EngineError::Checksum { .. })) {
             self.damaged.borrow_mut().insert(okey.clone());
             let members: Vec<u32> = pg
                 .acting
@@ -4929,7 +5021,7 @@ impl ShardState {
                 .collect();
             for m in members {
                 if self.repair_own(to, &okey, m).await {
-                    r = self.shard.get().await.read(&okey, off, len);
+                    r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
                     break;
                 }
             }
@@ -4954,8 +5046,18 @@ impl ShardState {
                     Vec::new(),
                 );
             }
+            Err(e) if primary && timed_out(&e) => {
+                let m = Msg::ReadCopy {
+                    to,
+                    key,
+                    layers: None,
+                    off,
+                    len,
+                };
+                return self.read_elsewhere(&pg, m, &e).await;
+            }
             Err(e) => {
-                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) {
+                if matches!(e, EngineError::Io(_) | EngineError::Poisoned) && !timed_out(&e) {
                     self.failed.set(true);
                 }
                 return (err(Code::Io, &self.map(), e.to_string()), Vec::new());
@@ -4968,6 +5070,142 @@ impl ShardState {
             data,
         )
     }
+
+    /// The PG check of a read: the primary's own, or, for a member asked by
+    /// the primary ([`Msg::ReadCopy`], D190), that this device holds a copy
+    /// in the PG's acting set of a replicated pool, with every write queued
+    /// before the request applied.
+    async fn read_check(&self, to: &Target, primary: bool) -> Result<PgInfo, Msg> {
+        if primary {
+            return self.check(to, true).await;
+        }
+        let pg = self.check(to, false).await?;
+        let replicated = self.map().pools.get(&to.pool).map(|p| p.kind)
+            == Some(hyperstor_meta::PoolKind::Replicated);
+        if !replicated || !pg.acting.contains(&self.me) {
+            return Err(err(Code::Unavailable, &self.map(), "no copy to read here"));
+        }
+        self.drained().await;
+        Ok(pg)
+    }
+
+    /// A read this device didn't answer within the read timeout (`e`),
+    /// served from another acting member's copy (D190); `Unavailable`,
+    /// which clients retry, when none answers in time either.
+    async fn read_elsewhere(&self, pg: &PgInfo, m: Msg, e: &EngineError) -> (Msg, Vec<u8>) {
+        let replicated = m
+            .target()
+            .and_then(|t| self.map().pools.get(&t.pool).map(|p| p.kind))
+            == Some(hyperstor_meta::PoolKind::Replicated);
+        let members: Vec<u32> = pg
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| replicated && *d != self.me && *d != NO_DEVICE)
+            .collect();
+        for d in members {
+            let Some(addr) = self.map().device_addr(d) else {
+                continue;
+            };
+            let Ok(conn) = self.peer(addr).await else {
+                continue;
+            };
+            if let Ok((r @ (Msg::ReadOk { .. } | Msg::ReadAtOk { .. }), p)) =
+                conn.call_within(&m, &[], self.read_timeout.get()).await
+            {
+                metrics::ShardMetrics::add(&self.metrics.reads_elsewhere, 1);
+                return (r, p);
+            }
+        }
+        (
+            err(
+                Code::Unavailable,
+                &self.map(),
+                format!("{e}, and no member answered"),
+            ),
+            Vec::new(),
+        )
+    }
+
+    /// Makes a read planned with the shard by `plan` (D190): its device
+    /// reads go on the reactor's ring when the device has a descriptor, so
+    /// the reactor goes on meanwhile, and commits may begin and end; the
+    /// shard holds the extents the read uses until it ends. At most
+    /// [`shard_cell::MAX_READS`] are in flight, the rest wait in turn. A
+    /// read that waits for the device past the read timeout is abandoned
+    /// ([`timed_out`]), and [`READ_TIMEOUTS_TO_FAIL`] in a row fail the
+    /// device. Memory and test devices read in their own calls, holding the
+    /// reactor as before.
+    async fn device_read(
+        &self,
+        plan: impl FnOnce(&mut hyperstor_engine::Shard) -> Result<ReadPlan, EngineError>,
+    ) -> Result<AlignedBuf, EngineError> {
+        let _slot = self.shard.read_slot().await;
+        let mut plan = plan(&mut *self.shard.get_mut().await)?;
+        let buf = plan.take_buf();
+        if plan.ios().is_empty() {
+            return plan.finish(buf);
+        }
+        let ios = plan.ios().to_vec();
+        let delay = self
+            .commit_delays
+            .borrow()
+            .as_ref()
+            .map_or(Duration::ZERO, |d| d.reads(self.me));
+        let io = async {
+            if !delay.is_zero() {
+                sleep(delay).await;
+            }
+            match self.dev.raw_fd() {
+                // SAFETY: as for a commit's writes (`write_round`): the
+                // descriptor is the device's, open while this reactor runs,
+                // and the kernel holds its own reference to the file once a
+                // read starts, so a read abandoned on the timeout below never
+                // reaches another file.
+                Some(fd) => unsafe { hyperstor_reactor::file::read_into(fd, buf, &ios) }.await,
+                None => {
+                    let mut buf = buf;
+                    for &(off, at, n) in &ios {
+                        self.dev.read(off, &mut buf[at..at + n])?;
+                    }
+                    Ok(buf)
+                }
+            }
+        };
+        let limit = self.read_timeout.get();
+        let r = hyperstor_reactor::time::timeout(limit, io).await;
+        // Abandoned or not, what the read gets no longer matters.
+        self.shard.end_read(&plan);
+        match r {
+            Ok(r) => {
+                self.read_timeouts.set(0);
+                plan.finish(r?)
+            }
+            Err(_) => {
+                metrics::ShardMetrics::add(&self.metrics.read_timeouts, 1);
+                let n = self.read_timeouts.get() + 1;
+                self.read_timeouts.set(n);
+                if n >= READ_TIMEOUTS_TO_FAIL && !self.failed.get() {
+                    eprintln!(
+                        "hyperstord: device {} failed: {n} reads in a row took over {} ms",
+                        self.me,
+                        limit.as_millis()
+                    );
+                    self.failed.set(true);
+                }
+                Err(EngineError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("the device took over {} ms to read", limit.as_millis()),
+                )))
+            }
+        }
+    }
+}
+
+/// Whether a read was abandoned on the read timeout (D190), which alone
+/// doesn't fail the device.
+fn timed_out(e: &EngineError) -> bool {
+    matches!(e, EngineError::Io(io) if io.kind() == std::io::ErrorKind::TimedOut)
 }
 
 /// Decrements a PG's count of unanswered writes when dropped.

@@ -66,6 +66,8 @@ struct Cluster {
     pings: Arc<hyperstor_daemon::faults::Pings>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
+    /// Read timeout given to restarted nodes (D190); zero: the default.
+    read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
 }
@@ -218,6 +220,7 @@ impl Cluster {
                     push_part_bytes: TEST_PART_BYTES,
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
+                    read_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     partitions: Some(partitions.clone()),
@@ -264,6 +267,7 @@ impl Cluster {
             commit_delays,
             pings,
             io_timeout: std::time::Duration::ZERO,
+            read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
         }
     }
@@ -300,6 +304,7 @@ impl Cluster {
             push_part_bytes: TEST_PART_BYTES,
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
+            read_timeout: self.read_timeout,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             partitions: Some(self.partitions.clone()),
@@ -2824,6 +2829,206 @@ fn a_hung_device_fails_after_the_io_timeout() {
         assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
     });
     c.commit_delays.set(2000, Duration::ZERO);
+    c.stop();
+}
+
+/// D190: a device whose reads take 1 s each, under the read timeout,
+/// holds no reactor while they wait: its node is never seen down, and the
+/// reads return what was written.
+#[test]
+fn a_slow_read_holds_no_reactor() {
+    use std::time::{Duration, Instant};
+    let c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        for v in 1..=4 {
+            cl.write(POOL, v, 0, pattern(300 + v as u64, 4 * CHUNK as usize))
+                .await
+                .unwrap();
+        }
+    });
+    c.commit_delays.set_reads(0, Duration::from_secs(1));
+    let (took, downs) = with_client(meta, 6, |cl| async move {
+        let t = Instant::now();
+        let readers: Vec<_> = (1..=4u128)
+            .map(|v| {
+                let cl = cl.clone();
+                spawn(async move {
+                    for _ in 0..2 {
+                        let got = cl.read(POOL, v, 0, 4 * CHUNK as u64).await.unwrap();
+                        assert!(
+                            got == pattern(300 + v as u64, 4 * CHUNK as usize),
+                            "volume {v}"
+                        );
+                    }
+                })
+            })
+            .collect();
+        let mut downs = 0;
+        while readers.iter().any(|r| !r.is_finished()) {
+            cl.refresh_map().await.unwrap();
+            if !cl.map().nodes[&0].up {
+                downs += 1;
+            }
+            hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
+        }
+        for r in readers {
+            r.await;
+        }
+        (t.elapsed(), downs)
+    });
+    c.commit_delays.set_reads(0, Duration::ZERO);
+    assert!(
+        took >= Duration::from_secs(1),
+        "the delay applied: {took:?}"
+    );
+    assert_eq!(downs, 0, "node 0 was seen down while its device read");
+    with_client(meta, 7, |cl| async move {
+        assert!(cl.map().nodes[&0].up);
+        assert!(cl.map().failed.is_empty(), "no device failed");
+    });
+    c.stop();
+}
+
+/// D190: a read that waits for its device past the read timeout is served
+/// from a member's copy; the device fails only on the third in a row, and
+/// is placed elsewhere while its node stays up.
+#[test]
+fn a_read_past_the_timeout_is_served_from_a_member() {
+    use std::time::{Duration, Instant};
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move { wait_all_up(&cl).await });
+    // Node 2 again, with a short read timeout.
+    c.kill(2);
+    with_client(meta, 6, |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+    });
+    // Past the map service's hold on a node it marked down (D149).
+    std::thread::sleep(Duration::from_secs(3));
+    c.read_timeout = Duration::from_millis(300);
+    c.restart(2);
+    const CHUNKS: u64 = 16;
+    let d = pattern(97, (CHUNKS * CHUNK as u64) as usize);
+    with_client(meta, 7, {
+        let d = d.clone();
+        |cl| async move {
+            wait_all_up(&cl).await;
+            wait_backfilled(&cl).await;
+            cl.write(POOL, 1, 0, d).await.unwrap();
+        }
+    });
+    c.commit_delays.set_reads(2000, Duration::from_secs(60));
+    with_client(meta, 8, move |cl| async move {
+        // A chunk whose primary is device 2000: its read times out.
+        let block = |i: u64| d[(i * CHUNK as u64) as usize..][..4096].to_vec();
+        let mut slow = None;
+        for i in 0..CHUNKS {
+            let t = Instant::now();
+            let got = cl.read(POOL, 1, i * CHUNK as u64, 4096).await.unwrap();
+            assert!(got == block(i), "chunk {i}");
+            if t.elapsed() >= Duration::from_millis(300) {
+                slow = Some(i);
+                break;
+            }
+        }
+        let i = slow.expect("a chunk whose primary is device 2000");
+        hyperstor_reactor::time::sleep(Duration::from_secs(1)).await;
+        cl.refresh_map().await.unwrap();
+        assert!(
+            !cl.map().failed.contains(&2000),
+            "one read past the timeout fails no device"
+        );
+        // Twice more in a row.
+        for _ in 0..2 {
+            let got = cl.read(POOL, 1, i * CHUNK as u64, 4096).await.unwrap();
+            assert!(got == block(i), "served from a member");
+        }
+        wait_map(&cl, "device 2000 failed", |m| m.failed.contains(&2000)).await;
+        assert!(
+            cl.map().nodes[&2].up,
+            "the node is up; only its device failed"
+        );
+        wait_backfilled(&cl).await;
+        assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
+    });
+    c.commit_delays.set_reads(2000, Duration::ZERO);
+    c.stop();
+}
+
+/// D190: reads in flight while their blocks are overwritten again and
+/// again get one write whole: the extents a read planned are not reused
+/// until it ends. The reads go through `ReadAt`, which answers a checksum
+/// error rather than repairing the copy (as `Read` does), so a read of
+/// reused blocks fails.
+#[test]
+fn reads_in_flight_get_whole_writes() {
+    use std::time::Duration;
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    const LEN: usize = 64 << 10;
+    with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        cl.write(POOL, 1, 0, vec![1; LEN]).await.unwrap();
+    });
+    for d in [0, 1000, 2000] {
+        c.commit_delays.set_reads(d, Duration::from_millis(50));
+    }
+    with_client(meta, 6, |cl| async move {
+        let done = std::rc::Rc::new(std::cell::Cell::new(false));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (cl, done) = (cl.clone(), done.clone());
+                spawn(async move {
+                    let mut seen = 0;
+                    while !done.get() {
+                        let got = cl
+                            .read_at(POOL, 1, &[(0, 0, 0)], 0, LEN as u64)
+                            .await
+                            .unwrap();
+                        assert!(
+                            got.iter().all(|b| *b == got[0]) && got[0] >= 1,
+                            "a read got parts of several writes"
+                        );
+                        seen += 1;
+                    }
+                    seen
+                })
+            })
+            .collect();
+        for v in 2..=100u8 {
+            cl.write(POOL, 1, 0, vec![v; LEN]).await.unwrap();
+            // And elsewhere, to take the extents freed.
+            cl.write(POOL, 2, 0, vec![v; LEN]).await.unwrap();
+            hyperstor_reactor::time::sleep(Duration::from_millis(2)).await;
+        }
+        done.set(true);
+        let mut seen = 0;
+        for r in readers {
+            seen += r.await;
+        }
+        assert!(seen >= 8, "{seen} reads");
+    });
+    for d in [0, 1000, 2000] {
+        c.commit_delays.set_reads(d, Duration::ZERO);
+    }
     c.stop();
 }
 

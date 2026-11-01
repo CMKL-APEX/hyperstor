@@ -490,6 +490,17 @@ pub enum Msg {
         pool: u32,
         pg: u32,
     },
+    /// Primary to a member of a replicated PG: the read its own device
+    /// didn't answer in time, from the member's copy (04-decisions.md
+    /// D190). `layers` as in [`Msg::ReadAt`], answered as it is; without,
+    /// as [`Msg::Read`] is.
+    ReadCopy {
+        to: Target,
+        key: WireKey,
+        layers: Option<Vec<(u32, u64, u64)>>,
+        off: u64,
+        len: u64,
+    },
     /// Follower to the map service's leader: what only the leader knows,
     /// for a follower's `GetStatus` (I197).
     LeaderState,
@@ -720,6 +731,7 @@ mod kind {
     pub const DEVICE_KIND: u16 = 76;
     pub const PG_SPLIT: u16 = 77;
     pub const CACHE_RELEASE: u16 = 78;
+    pub const READ_COPY: u16 = 79;
     pub const ERROR: u16 = 99;
 }
 
@@ -744,6 +756,7 @@ impl Msg {
             | Msg::Quiesced { to, .. }
             | Msg::Read { to, .. }
             | Msg::ReadAt { to, .. }
+            | Msg::ReadCopy { to, .. }
             | Msg::Release { to, .. }
             | Msg::Repl { to, .. }
             | Msg::ReplExec { to, .. }
@@ -805,6 +818,7 @@ impl Msg {
             Msg::DeviceKind { .. } => DEVICE_KIND,
             Msg::PgSplit { .. } => PG_SPLIT,
             Msg::CacheRelease { .. } => CACHE_RELEASE,
+            Msg::ReadCopy { .. } => READ_COPY,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
@@ -1087,6 +1101,21 @@ impl Msg {
             }
             Msg::CacheRelease { pool, pg } => {
                 e.u32(*pool).u32(*pg);
+            }
+            Msg::ReadCopy {
+                to,
+                key,
+                layers,
+                off,
+                len,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                e.bool(layers.is_some());
+                if let Some(l) = layers {
+                    layers_enc(e, l);
+                }
+                e.u64(*off).u64(*len);
             }
             Msg::MemberSlow {
                 reporter,
@@ -1416,6 +1445,17 @@ impl Msg {
             CACHE_RELEASE => Msg::CacheRelease {
                 pool: d.u32()?,
                 pg: d.u32()?,
+            },
+            READ_COPY => Msg::ReadCopy {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                layers: if d.bool()? {
+                    Some(layers_dec(&mut d)?)
+                } else {
+                    None
+                },
+                off: d.u64()?,
+                len: d.u64()?,
             },
             MEMBER_SLOW => Msg::MemberSlow {
                 reporter: d.u32()?,
@@ -2089,6 +2129,28 @@ mod tests {
                 device: 2001,
             },
             Msg::CacheRelease { pool: 3, pg: 12 },
+            Msg::ReadCopy {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"c".to_vec(),
+                    version: 0,
+                },
+                layers: Some(vec![(2, 0, 5)]),
+                off: 4096,
+                len: 8192,
+            },
+            Msg::ReadCopy {
+                to,
+                key: WireKey {
+                    ns: 1,
+                    name: b"o".to_vec(),
+                    version: 3,
+                },
+                layers: None,
+                off: 0,
+                len: 4096,
+            },
             Msg::MemberSlow {
                 reporter: 1000,
                 pool: 1,

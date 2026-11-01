@@ -348,6 +348,53 @@ pub struct Shard {
     checkpoints: u64,
     commits: u64,
     records: u64,
+    /// Reads in flight on the device ([`Shard::read_begin`]), by the
+    /// generation they began in: extents freed since may still be read,
+    /// so they wait in `held` until those reads end (D190).
+    reads: BTreeMap<u64, usize>,
+    read_gen: u64,
+    /// Extents freed while reads were in flight, by the generation they
+    /// were freed in.
+    held: std::collections::VecDeque<(u64, Vec<(u64, u64)>)>,
+}
+
+/// A read planned by [`Shard::read_begin`]: the device reads to make into
+/// its buffer, then [`ReadPlan::finish`] checks their checksums. The shard
+/// keeps the extents it reads until [`Shard::read_end`].
+pub struct ReadPlan {
+    generation: u64,
+    out: AlignedBuf,
+    lb0: u64,
+    /// (byte offset on the device, offset in `out`, length) of each run.
+    ios: Vec<(u64, usize, usize)>,
+    crcs: Vec<(u64, u32)>,
+}
+
+impl ReadPlan {
+    /// The device reads to make, as (byte offset on the device, offset in
+    /// the buffer, length); empty when every block was a hole or in
+    /// memory.
+    pub fn ios(&self) -> &[(u64, usize, usize)] {
+        &self.ios
+    }
+
+    /// Takes the buffer the reads land in, for a caller that hands it to
+    /// the device and gives it back to [`ReadPlan::finish`].
+    pub fn take_buf(&mut self) -> AlignedBuf {
+        std::mem::replace(&mut self.out, AlignedBuf::zeroed(0))
+    }
+
+    /// The data, once the device reads into `buf` are done, with every
+    /// block read from the device checked against its CRC.
+    pub fn finish(self, buf: AlignedBuf) -> Result<AlignedBuf, EngineError> {
+        for &(lb, crc) in &self.crcs {
+            let at = ((lb - self.lb0) as usize) * BLOCK;
+            if crc32c(&buf[at..at + BLOCK]) != crc {
+                return Err(EngineError::Checksum { lblock: lb });
+            }
+        }
+        Ok(buf)
+    }
 }
 
 fn random_u32() -> u32 {
@@ -455,6 +502,9 @@ impl Shard {
             checkpoints: 0,
             commits: 0,
             records: 0,
+            reads: BTreeMap::new(),
+            read_gen: 0,
+            held: Default::default(),
         };
         if let Some(c) = &sup.ckpt {
             sh.load_checkpoint(c)?;
@@ -886,9 +936,7 @@ impl Shard {
             self.tail_lsn += round.nblocks;
             self.records += 1;
         }
-        for (s, n) in round.freed {
-            self.alloc.free(s, n);
-        }
+        self.free_after_reads(round.freed);
         Ok(round.results)
     }
 
@@ -1192,7 +1240,10 @@ impl Shard {
                     let lb = off / BLOCK as u64;
                     let n = (data.len() / BLOCK) as u64;
                     let crcs: Vec<u32> = data.chunks(BLOCK).map(crc32c).collect();
+                    // Never under a read in flight, which may have
+                    // planned the old data from the device (D190).
                     let deferred = data.len() < self.defer_max
+                        && self.reads.is_empty()
                         && self.index.objects.get(&key).is_some_and(|o| {
                             o.all_mapped(lb, n)
                                 && (0..n).all(|i| match o.lookup(lb + i) {
@@ -1784,30 +1835,128 @@ impl Shard {
 
     /// Reads `[off, off + len)` of an object. Holes read as zeros; every
     /// mapped block's checksum is verified.
+    /// The device reads hold the caller's thread, and end before anything
+    /// else can change the shard.
     pub fn read(&self, key: &ObjKey, off: u64, len: u64) -> Result<AlignedBuf, EngineError> {
+        let plan = self.plan_object(key, off, len)?;
+        self.read_through(plan)
+    }
+
+    /// Plans a read of `[off, off + len)` of an object, for a caller that
+    /// makes the device reads itself (on a reactor's ring) and then calls
+    /// [`Shard::read_end`] and [`ReadPlan::finish`].
+    pub fn read_begin(
+        &mut self,
+        key: &ObjKey,
+        off: u64,
+        len: u64,
+    ) -> Result<ReadPlan, EngineError> {
+        let plan = self.plan_object(key, off, len)?;
+        Ok(self.track(plan))
+    }
+
+    fn plan_object(&self, key: &ObjKey, off: u64, len: u64) -> Result<ReadPlan, EngineError> {
         self.check()?;
         if !off.is_multiple_of(BLOCK as u64) || !len.is_multiple_of(BLOCK as u64) {
             return Err(EngineError::Unaligned);
         }
         let o = self.index.objects.get(key).ok_or(EngineError::NotFound)?;
-        self.read_object(o, off, len)
-    }
-
-    fn read_object(&self, o: &Object, off: u64, len: u64) -> Result<AlignedBuf, EngineError> {
-        self.read_with(off, len, |lb| match o.lookup(lb) {
+        Ok(self.plan_read(off, len, |lb| match o.lookup(lb) {
             Loc::Mapped { pblock, crc } => Some((pblock, crc)),
             Loc::Hole => None,
-        })
+        }))
     }
 
-    /// Reads `[off, off + len)` with `locate` saying where each logical
-    /// block is (physical block and CRC; none: a hole), checking CRCs.
-    fn read_with(
+    /// A read planned by [`Shard::read_begin`] or
+    /// [`Shard::read_layered_begin`] has ended, or was abandoned: what it
+    /// read no longer matters, so extents freed since it began can be
+    /// reused once older reads end too.
+    pub fn read_end(&mut self, plan: &ReadPlan) {
+        if plan.ios.is_empty() {
+            return;
+        }
+        let Some(n) = self.reads.get_mut(&plan.generation) else {
+            return;
+        };
+        *n -= 1;
+        if *n == 0 {
+            self.reads.remove(&plan.generation);
+        }
+        // Extents freed in generation g may be read by reads begun in g or
+        // before.
+        let oldest = self.reads.keys().next().copied().unwrap_or(u64::MAX);
+        while self.held.front().is_some_and(|(g, _)| *g < oldest) {
+            let (_, freed) = self.held.pop_front().expect("checked above");
+            for (s, n) in freed {
+                self.alloc.free(s, n);
+            }
+        }
+    }
+
+    /// Reads in flight on the device.
+    pub fn reads_in_flight(&self) -> usize {
+        self.reads.values().sum()
+    }
+
+    /// Blocks freed but held for reads in flight.
+    pub fn held_blocks(&self) -> u64 {
+        self.held
+            .iter()
+            .flat_map(|(_, f)| f.iter().map(|(_, n)| *n))
+            .sum()
+    }
+
+    /// Frees extents now, or once the reads in flight that may use them
+    /// end.
+    fn free_after_reads(&mut self, freed: Vec<(u64, u64)>) {
+        if self.reads.is_empty() {
+            for (s, n) in freed {
+                self.alloc.free(s, n);
+            }
+        } else if !freed.is_empty() {
+            self.held.push_back((self.read_gen, freed));
+            self.read_gen += 1;
+        }
+    }
+
+    fn track(&mut self, mut plan: ReadPlan) -> ReadPlan {
+        plan.generation = self.read_gen;
+        if !plan.ios.is_empty() {
+            *self.reads.entry(self.read_gen).or_default() += 1;
+        }
+        plan
+    }
+
+    /// Makes a planned read's device reads in this call, holding the
+    /// caller's thread.
+    fn read_through(&self, mut plan: ReadPlan) -> Result<AlignedBuf, EngineError> {
+        let mut buf = plan.take_buf();
+        let r = {
+            let mut reads: Vec<(u64, &mut [u8])> = Vec::with_capacity(plan.ios.len());
+            let mut rest: &mut [u8] = &mut buf;
+            let mut at = 0;
+            for &(dev_off, buf_off, len) in &plan.ios {
+                let (_, tail) = rest.split_at_mut(buf_off - at);
+                let (head, tail) = tail.split_at_mut(len);
+                reads.push((dev_off, head));
+                rest = tail;
+                at = buf_off + len;
+            }
+            self.dev.read_batch(&mut reads)
+        };
+        r?;
+        plan.finish(buf)
+    }
+
+    /// Plans reading `[off, off + len)` with `locate` saying where each
+    /// logical block is (physical block and CRC; none: a hole). Blocks
+    /// whose deferred write is still in memory are copied now.
+    fn plan_read(
         &self,
         off: u64,
         len: u64,
         locate: impl Fn(u64) -> Option<(u64, u32)>,
-    ) -> Result<AlignedBuf, EngineError> {
+    ) -> ReadPlan {
         let mut out = AlignedBuf::zeroed(len as usize);
         let lb0 = off / BLOCK as u64;
         let n = len / BLOCK as u64;
@@ -1830,27 +1979,23 @@ impl Shard {
                 }
             }
         }
-        if !ranges.is_empty() {
-            let mut reads: Vec<(u64, &mut [u8])> = Vec::with_capacity(ranges.len());
-            let mut rest: &mut [u8] = &mut out;
-            let mut at = lb0;
-            for &(l, p, c) in &ranges {
-                let skip = ((l - at) as usize) * BLOCK;
-                let (_, tail) = rest.split_at_mut(skip);
-                let (head, tail) = tail.split_at_mut(c as usize * BLOCK);
-                reads.push((p * BLOCK as u64, head));
-                rest = tail;
-                at = l + c;
-            }
-            self.dev.read_batch(&mut reads)?;
-            for (lb, crc) in crcs {
-                let at = ((lb - lb0) as usize) * BLOCK;
-                if crc32c(&out[at..at + BLOCK]) != crc {
-                    return Err(EngineError::Checksum { lblock: lb });
-                }
-            }
+        let ios = ranges
+            .iter()
+            .map(|&(l, p, c)| {
+                (
+                    p * BLOCK as u64,
+                    ((l - lb0) as usize) * BLOCK,
+                    c as usize * BLOCK,
+                )
+            })
+            .collect();
+        ReadPlan {
+            generation: 0,
+            out,
+            lb0,
+            ios,
+            crcs,
         }
-        Ok(out)
     }
 
     pub fn stat(&self, key: &ObjKey) -> Option<ObjStat> {
@@ -2213,6 +2358,22 @@ impl Shard {
         off: u64,
         len: u64,
     ) -> Result<AlignedBuf, EngineError> {
+        let plan = self.plan_layered(layers, off, len)?;
+        self.read_through(plan)
+    }
+
+    /// Plans [`Shard::read_layered`], as [`Shard::read_begin`] does.
+    pub fn read_layered_begin(
+        &mut self,
+        layers: &[ObjKey],
+        off: u64,
+        len: u64,
+    ) -> Result<ReadPlan, EngineError> {
+        let plan = self.plan_layered(layers, off, len)?;
+        Ok(self.track(plan))
+    }
+
+    fn plan_layered(&self, layers: &[ObjKey], off: u64, len: u64) -> Result<ReadPlan, EngineError> {
         self.check()?;
         if !off.is_multiple_of(BLOCK as u64) || !len.is_multiple_of(BLOCK as u64) {
             return Err(EngineError::Unaligned);
@@ -2224,12 +2385,12 @@ impl Shard {
         if objs.is_empty() {
             return Err(EngineError::NotFound);
         }
-        self.read_with(off, len, |lb| {
+        Ok(self.plan_read(off, len, |lb| {
             objs.iter().find_map(|o| match o.lookup(lb) {
                 Loc::Mapped { pblock, crc } => Some((pblock, crc)),
                 Loc::Hole => None,
             })
-        })
+        }))
     }
 
     /// For each block of `[off, off + len)`, the index in `layers` of the
@@ -2676,6 +2837,199 @@ mod tests {
         for i in 0..40 {
             let r = sh.read(&key(i), 0, BLOCK as u64).unwrap();
             assert!(r.iter().all(|b| *b == i as u8));
+        }
+    }
+
+    fn small_shard(blocks: u64) -> Shard {
+        let region = Region {
+            start: 0,
+            blocks,
+            log_blocks: 64,
+        };
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(blocks * BLOCK as u64));
+        Shard::format(dev.clone(), region, 7, 0).unwrap();
+        Shard::open(dev, region, 7, 0).unwrap()
+    }
+
+    fn put(sh: &mut Shard, k: &ObjKey, off: u64, data: Vec<u8>) {
+        sh.commit(vec![OpList {
+            key: k.clone(),
+            ops: vec![Op::Write { off, data }],
+        }])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .unwrap();
+    }
+
+    /// Makes a planned read's device reads now, as a ring would.
+    fn complete(sh: &Shard, plan: &mut ReadPlan) -> AlignedBuf {
+        let mut buf = plan.take_buf();
+        for &(dev_off, at, len) in plan.ios() {
+            sh.dev.read(dev_off, &mut buf[at..at + len]).unwrap();
+        }
+        buf
+    }
+
+    /// D190: an extent freed while a read that may use it is in flight
+    /// isn't reused until the read ends, so the read gets what it planned.
+    #[test]
+    fn freed_extents_wait_for_reads_in_flight() {
+        let mut sh = small_shard(512);
+        sh.set_defer_max(0);
+        let a = key(1);
+        put(&mut sh, &a, 0, vec![1; 8 * BLOCK]);
+        let mut plan = sh.read_begin(&a, 0, 8 * BLOCK as u64).unwrap();
+        assert_eq!(sh.reads_in_flight(), 1);
+        let free = sh.stats().free_blocks;
+        // Overwritten elsewhere: its old blocks are freed, and held.
+        put(&mut sh, &a, 0, vec![2; 8 * BLOCK]);
+        assert_eq!(sh.held_blocks(), 8);
+        // Everything else free is taken and written over.
+        let rest = sh.stats().free_blocks - 32;
+        for i in 0..rest / 8 {
+            put(&mut sh, &key(100 + i), 0, vec![3; 8 * BLOCK]);
+        }
+        let buf = complete(&sh, &mut plan);
+        sh.read_end(&plan);
+        let got = plan.finish(buf).unwrap();
+        assert!(got.iter().all(|b| *b == 1), "the read got what it planned");
+        assert_eq!(sh.held_blocks(), 0);
+        assert_eq!(sh.reads_in_flight(), 0);
+        assert!(sh.stats().free_blocks + rest / 8 * 8 >= free);
+        assert!(
+            sh.read(&a, 0, BLOCK as u64)
+                .unwrap()
+                .iter()
+                .all(|b| *b == 2)
+        );
+    }
+
+    /// D190: a read ended out of order frees only what no older read may
+    /// still use.
+    #[test]
+    fn held_extents_follow_the_oldest_read() {
+        let mut sh = small_shard(512);
+        sh.set_defer_max(0);
+        let (a, b) = (key(1), key(2));
+        put(&mut sh, &a, 0, vec![1; 4 * BLOCK]);
+        put(&mut sh, &b, 0, vec![1; 4 * BLOCK]);
+        let old = sh.read_begin(&a, 0, 4 * BLOCK as u64).unwrap();
+        put(&mut sh, &a, 0, vec![2; 4 * BLOCK]);
+        let new = sh.read_begin(&b, 0, 4 * BLOCK as u64).unwrap();
+        put(&mut sh, &b, 0, vec![2; 4 * BLOCK]);
+        assert_eq!(sh.held_blocks(), 8);
+        sh.read_end(&new);
+        assert_eq!(sh.held_blocks(), 8, "the older read may use both");
+        sh.read_end(&old);
+        assert_eq!(sh.held_blocks(), 0);
+    }
+
+    /// D190: a write isn't deferred onto blocks while a read is in flight:
+    /// the read may have planned their old data from the device.
+    #[test]
+    fn nothing_is_deferred_under_a_read() {
+        let mut sh = small_shard(512);
+        sh.set_defer_max(DEFER_MAX);
+        let a = key(1);
+        put(&mut sh, &a, 0, vec![1; 4 * BLOCK]);
+        let plan = sh.read_begin(&a, 0, 4 * BLOCK as u64).unwrap();
+        put(&mut sh, &a, 0, vec![2; BLOCK]);
+        assert_eq!(sh.pending_blocks(), 0, "redirected");
+        sh.read_end(&plan);
+        put(&mut sh, &a, BLOCK as u64, vec![3; BLOCK]);
+        assert_eq!(sh.pending_blocks(), 1, "deferred again");
+    }
+
+    /// D190, against a model: reads begun at random, completed late and
+    /// ended in any order while objects are overwritten, deleted and
+    /// written, each get the content they began with; once all end, no
+    /// space is lost.
+    #[test]
+    fn reads_in_flight_against_a_model() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+        for seed in 0..20u64 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let mut sh = small_shard(1024);
+            sh.set_defer_max(if seed % 2 == 0 { 0 } else { DEFER_MAX });
+            let used = |sh: &Shard| {
+                sh.ckpt
+                    .as_ref()
+                    .map_or(0, |c| c.runs.iter().map(|r| r.1).sum::<u64>())
+                    + sh.pages
+                        .values()
+                        .flat_map(|p| &p.runs)
+                        .map(|r| r.1)
+                        .sum::<u64>()
+            };
+            let free0 = sh.stats().free_blocks + used(&sh);
+            let mut model: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+            let mut reads: Vec<(ReadPlan, Vec<u8>)> = Vec::new();
+            let mut fill = 0u8;
+            for _ in 0..300 {
+                let k = rng.random_range(0..6u64);
+                match rng.random_range(0..10) {
+                    0..=3 => {
+                        fill = fill.wrapping_add(1);
+                        let blocks = rng.random_range(1..=4usize);
+                        let off = rng.random_range(0..4u64) * BLOCK as u64;
+                        put(&mut sh, &key(k), off, vec![fill; blocks * BLOCK]);
+                        let m = model.entry(k).or_default();
+                        let end = off as usize + blocks * BLOCK;
+                        if m.len() < end {
+                            m.resize(end, 0);
+                        }
+                        m[off as usize..end].fill(fill);
+                    }
+                    4 => {
+                        sh.commit(vec![OpList {
+                            key: key(k),
+                            ops: vec![Op::Delete],
+                        }])
+                        .unwrap();
+                        model.remove(&k);
+                    }
+                    5..=7 => {
+                        if let Some(m) = model.get(&k) {
+                            let len = m.len().div_ceil(BLOCK) * BLOCK;
+                            let plan = sh.read_begin(&key(k), 0, len as u64).unwrap();
+                            let mut want = m.clone();
+                            want.resize(len, 0);
+                            reads.push((plan, want));
+                        }
+                    }
+                    _ => {
+                        if !reads.is_empty() {
+                            let (mut plan, want) =
+                                reads.swap_remove(rng.random_range(0..reads.len()));
+                            let buf = complete(&sh, &mut plan);
+                            sh.read_end(&plan);
+                            assert_eq!(plan.finish(buf).unwrap()[..], want[..], "seed {seed}");
+                        }
+                    }
+                }
+            }
+            for (mut plan, want) in reads.drain(..) {
+                let buf = complete(&sh, &mut plan);
+                sh.read_end(&plan);
+                assert_eq!(plan.finish(buf).unwrap()[..], want[..], "seed {seed}");
+            }
+            assert_eq!(sh.held_blocks(), 0);
+            for k in model.keys().copied().collect::<Vec<_>>() {
+                sh.commit(vec![OpList {
+                    key: key(k),
+                    ops: vec![Op::Delete],
+                }])
+                .unwrap();
+            }
+            sh.checkpoint().unwrap();
+            sh.apply_deferred().unwrap();
+            assert_eq!(
+                sh.stats().free_blocks + used(&sh),
+                free0,
+                "seed {seed}: no space lost"
+            );
         }
     }
 }

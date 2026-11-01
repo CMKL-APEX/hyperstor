@@ -65,6 +65,10 @@ pub struct ShardMetrics {
     /// Times the reactor's thread was held for [`crate::STALL`] or more,
     /// which delays every ping it answers (I188).
     pub stalls: AtomicU64,
+    /// Reads abandoned on the read timeout (D190).
+    pub read_timeouts: AtomicU64,
+    /// Of those, reads a member's copy answered for the primary (D190).
+    pub reads_elsewhere: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -145,6 +149,17 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "counter",
         "Times the reactor's thread was held 100 ms or more, delaying every request and ping it serves.",
         &|m| vec![("", g(&m.stalls))],
+    );
+    family(
+        "hyperstor_read_timeouts_total",
+        "counter",
+        "Reads that waited for the device past the read timeout, and of those, the ones a member's copy answered.",
+        &|m| {
+            vec![
+                ("abandoned", g(&m.read_timeouts)),
+                ("from_member", g(&m.reads_elsewhere)),
+            ]
+        },
     );
     family(
         "hyperstor_scrub_objects_total",
@@ -288,7 +303,10 @@ mod tests {
         ));
         assert!(t.contains("hyperstor_device_free_bytes{node=\"4\",device=\"4001\"} 1073741824\n"));
         assert!(t.contains("hyperstor_reactor_stalls_total{node=\"4\",device=\"4001\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 14);
+        assert!(t.contains(
+            "hyperstor_read_timeouts_total{node=\"4\",device=\"4001\",kind=\"from_member\"} 0\n"
+        ));
+        assert_eq!(t.matches("# TYPE ").count(), 15);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {
