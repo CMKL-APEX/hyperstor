@@ -1,10 +1,10 @@
 title = "Fullness thresholds: D27 revised, D182, D183"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-01
-updated = 2026-11-01
+updated = 2026-11-02
 milestone = "HS2"
-branch = "check/g46-hold"
+branch = "board/fullness-done"
 prs = [128, 133, 136, 139, 142, 144, 149]
-now = "All merged (#133, #136, #139, #142, #144) and on the pilot since 2026-11-01 (main #145). G46 measured for Linux 6.8: holds up to 300 s cost a guest a warning only; --hold-full default raised to 300 s (D183 revised)"
-next = "glidex refusing new disks on a full datastore; G46 for the newest kernel and Windows when at hand"
+now = "Merged and deployed: hyperstor (#128–#149) on all three pilot hosts since 2026-11-01 (main 209fef5, --hold-full 300 s), and glidex #241 (S30: a full pool refuses new disks, the controller waits with reason DatastoreFull) on the prism cluster since 2026-11-02"
+next = "G46 for the newest kernel and Windows when such guests are at hand"
