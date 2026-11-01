@@ -1706,6 +1706,7 @@ dependencies = [
  "hyperstor-pki",
  "io-uring",
  "libc",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

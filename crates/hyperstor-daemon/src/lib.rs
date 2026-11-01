@@ -422,6 +422,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().committer());
                         spawn(st.deadlines.clone().ticker());
                         spawn(st.clone().follow_map());
+                        spawn(st.clone().splitter());
                         spawn(st.clone().heartbeat(node, all_open));
                         spawn(st.clone().space());
                         if !peer_timeout.is_zero() {
@@ -523,6 +524,10 @@ struct ShardState {
     lease_until: Cell<Option<std::time::Instant>>,
     /// PGs fenced by the map service, with the map epoch that lifts each.
     fenced: RefCell<HashMap<(u32, u32), u64>>,
+    /// PGs paused while this device splits them, until the map flips them
+    /// (24-pools-and-devices.md §27.5, D187), with the PG epoch the split
+    /// was last reported at (0: not yet).
+    splitting: RefCell<HashMap<(u32, u32), u64>>,
     /// Writes accepted as primary and not yet answered, per PG.
     pg_inflight: RefCell<HashMap<(u32, u32), u32>>,
     /// The test hook of `NodeConfig::meta_blocked`.
@@ -561,12 +566,14 @@ struct ShardState {
     /// PGs this device has peered as primary (I61): the PG epoch, and
     /// whether peering is done (`false`: a request is peering it now).
     peered: RefCell<HashMap<(u32, u32), (u64, bool)>>,
-    /// Cache-pool PGs (D45), with the epoch this device last served each
-    /// at. Serving one at a new epoch, or for the first time since start,
-    /// first drops what this device holds of it: the copy may be older
+    /// Cache-pool PGs (D45, D188), with the generation this device last
+    /// served each at, as kept on the device ([`cache_gens_key`]). Serving
+    /// one at another generation first drops what this device holds of
+    /// it: a member joined without the data, so this copy may be older
     /// than writes made elsewhere meanwhile, and a cache may lose data but
-    /// must never serve stale data.
-    cache_epochs: RefCell<HashMap<(u32, u32), u64>>,
+    /// must never serve stale data. A split, its moves (backfilled) and a
+    /// restart leave the generation, and so the data.
+    cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
 }
@@ -806,8 +813,13 @@ fn wire_key(k: &ObjKey) -> WireKey {
 /// the PG's epoch when the map has the PG, `me` is in neither its `up`
 /// nor its `acting` set, and the PG is clean, `acting` being `up` with
 /// every member live; 0 for a PG of a deleted pool (D181); `None`
-/// otherwise. A PG the map lacks is left alone.
+/// otherwise. A PG the map lacks is left alone, and so is everything on a
+/// device the map no longer has: a removed device's data is left as it is
+/// (D186).
 fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
+    if !map.devices.contains_key(&me) {
+        return None;
+    }
     // A deleted pool's PGs are nobody's (D181): epoch 0, which stays.
     if map.deleted_pools.contains(&pool) {
         return Some(0);
@@ -816,6 +828,65 @@ fn is_stray(map: &ClusterMap, me: u32, pool: u32, pg: u32) -> Option<u64> {
     let member = p.up.contains(&me) || p.acting.contains(&me);
     let clean = !p.acting.is_empty() && p.acting == p.up && p.acting.iter().all(|d| map.live(*d));
     (!member && clean).then_some(p.epoch)
+}
+
+/// The lists that split PG `pool`.`pg` of a shard for a pool of
+/// `pg_count` PGs, twice the count it was split from
+/// (24-pools-and-devices.md §27.5, D173): each object of the PG that
+/// belongs to its new sibling under `pg_count` moves to that PG's key,
+/// whole and without a copy (`Op::Take`). Empty once it is split, so a
+/// split cut short by a crash is finished by asking again. An object
+/// whose new key already holds one is dropped instead: a device that
+/// missed a split and catches up may have been sent the newer copy by
+/// backfill (in a split itself the new key is empty, the PG not yet
+/// routed to).
+pub fn split_lists(sh: &hyperstor_engine::Shard, pool: u32, pg: u32, pg_count: u32) -> Vec<OpList> {
+    sh.list_pg(pool, pg)
+        .into_iter()
+        .filter_map(|k| {
+            let to = hyperstor_placement::key_pg(k.ns as u8, &k.name, pg_count);
+            if to == pg {
+                return None;
+            }
+            let dst = ObjKey {
+                pg: to,
+                ..k.clone()
+            };
+            Some(if sh.stat(&dst).is_some() {
+                OpList {
+                    key: k,
+                    ops: vec![Op::Delete],
+                }
+            } else {
+                OpList {
+                    key: dst,
+                    ops: vec![Op::Take(k)],
+                }
+            })
+        })
+        .collect()
+}
+
+/// The object that keeps, on a device, the generation it last served each
+/// cache PG at (D188), as a key–value table: outside every pool, so no
+/// split, backfill or stray sweep touches it.
+fn cache_gens_key() -> ObjKey {
+    ObjKey::new(u32::MAX, 0, Namespace::Internal, b"cache-gens".to_vec(), 0)
+}
+
+fn cache_gen_name(pool: u32, pg: u32) -> Vec<u8> {
+    [pool.to_be_bytes(), pg.to_be_bytes()].concat()
+}
+
+/// The list that records generation `generation` for cache PG `pool`.`pg`.
+fn cache_gen_list(pool: u32, pg: u32, generation: u64) -> OpList {
+    OpList {
+        key: cache_gens_key(),
+        ops: vec![Op::KvPut(
+            cache_gen_name(pool, pg),
+            generation.to_le_bytes().to_vec(),
+        )],
+    }
 }
 
 fn engine_key(to: &Target, k: &WireKey) -> Result<ObjKey, ()> {
@@ -893,6 +964,9 @@ impl ShardState {
                     d.addr,
                     addr.map_or("?".into(), |a| a.to_string())
                 ),
+                None if map.removed_devices.contains(&me) => format!(
+                    "device {me}: removed from the map (hyperstorctl device remove): drop its --shard; its data is left as it was"
+                ),
                 None => format!(
                     "device {me}: not in the map: add it first (hyperstorctl device add --node {node} --address {}), or check --shard",
                     addr.map_or("ADDR".into(), |a| a.to_string())
@@ -951,6 +1025,7 @@ impl ShardState {
             required: RefCell::new(std::collections::HashSet::new()),
             lease_until: Cell::new(None),
             fenced: RefCell::new(HashMap::new()),
+            splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
@@ -967,7 +1042,7 @@ impl ShardState {
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
-            cache_epochs: RefCell::new(HashMap::new()),
+            cache_gens: RefCell::new(HashMap::new()),
             metrics,
         }))
     }
@@ -1172,6 +1247,184 @@ impl ShardState {
         }
     }
 
+    /// Splits the PGs the map marks (24-pools-and-devices.md §27.5, D187)
+    /// that this device is in the acting set of: pauses each, lets the
+    /// requests in flight finish, moves its objects that belong to its new
+    /// sibling, and reports it at the PG's epoch (again if the epoch
+    /// moves); the PG stays paused until the map stops marking it, so no
+    /// request finds a moved object missing. And whenever a pool's count
+    /// or its flipped PGs change, moves what this device holds by an older
+    /// count, so a device that missed a split catches up before it serves
+    /// its PGs again.
+    async fn splitter(self: Rc<Self>) {
+        // Each pool's count and flipped PGs when last caught up with.
+        let mut seen: HashMap<u32, (u32, BTreeSet<u32>)> = HashMap::new();
+        loop {
+            sleep(Duration::from_millis(100)).await;
+            if self.cut_off() {
+                continue;
+            }
+            let map = self.map();
+            self.splitting.borrow_mut().retain(|(pool, pg), _| {
+                map.pools
+                    .get(pool)
+                    .and_then(|p| p.split.as_ref())
+                    .is_some_and(|s| s.marked.contains(pg))
+            });
+            for p in map.pools.values() {
+                let done = p.split.as_ref().map(|s| s.done.clone()).unwrap_or_default();
+                // Every PG held the first time; then the PGs flipped since.
+                let flipped: Option<Vec<u32>> = match seen.get(&p.id) {
+                    None => None,
+                    Some((n, was)) if *n == p.pg_count => {
+                        Some(done.difference(was).copied().collect())
+                    }
+                    Some((n, was)) => Some((0..*n).filter(|pg| !was.contains(pg)).collect()),
+                };
+                let changed = flipped.as_ref().is_none_or(|f| !f.is_empty());
+                if !changed || self.catch_up(p, flipped).await {
+                    seen.insert(p.id, (p.pg_count, done));
+                }
+                let Some(s) = &p.split else { continue };
+                for &pg in &s.marked {
+                    let Some(info) = map.pg(p.id, pg) else {
+                        continue;
+                    };
+                    let k = (p.id, pg);
+                    if !info.acting.contains(&self.me)
+                        || self.splitting.borrow().get(&k) == Some(&info.epoch)
+                    {
+                        continue;
+                    }
+                    self.splitting.borrow_mut().entry(k).or_insert(0);
+                    if !self.split_pg(p.id, pg, p.pg_count * 2).await {
+                        continue;
+                    }
+                    let r = self
+                        .client
+                        .call_meta(&Msg::PgSplit {
+                            pool: p.id,
+                            pg,
+                            pg_epoch: info.epoch,
+                            device: self.me,
+                        })
+                        .await;
+                    if matches!(r, Ok((Msg::Noted { .. }, _)))
+                        && let Some(e) = self.splitting.borrow_mut().get_mut(&k)
+                    {
+                        *e = info.epoch;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Moves the objects of PG `pool`.`pg` that belong to another PG under
+    /// `pg_count` there, once the requests in flight for it are answered.
+    /// Whether every move committed.
+    async fn split_pg(&self, pool: u32, pg: u32, pg_count: u32) -> bool {
+        while self
+            .pg_inflight
+            .borrow()
+            .get(&(pool, pg))
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            sleep(Duration::from_millis(1)).await;
+        }
+        let lists = split_lists(&*self.shard.get().await, pool, pg, pg_count);
+        if lists.is_empty() {
+            return true;
+        }
+        let n = lists.len();
+        // A cache pool's new PGs hold its objects, moved: they take its
+        // generation, so they keep them (D188).
+        let mut gens = Vec::new();
+        if self.map().pools.get(&pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache) {
+            let generation = self.cache_gen(pool, pg).await;
+            let to: BTreeSet<u32> = lists
+                .iter()
+                .map(|l| l.key.pg)
+                .filter(|p| *p != pg)
+                .collect();
+            for t in to {
+                self.cache_gens.borrow_mut().insert((pool, t), generation);
+                gens.push(cache_gen_list(pool, t, generation));
+            }
+        }
+        let waits: Vec<_> = lists
+            .into_iter()
+            .chain(gens)
+            .map(|l| self.enqueue(l))
+            .collect();
+        let mut ok = true;
+        for w in waits {
+            ok &= w.await.is_ok();
+        }
+        eprintln!(
+            "hyperstord: device {}: PG {pool}.{pg} split, {n} object(s) moved",
+            self.me
+        );
+        ok
+    }
+
+    /// The generation this device last served cache PG `pool`.`pg` at
+    /// (D188): kept on the device, so a restart keeps it; 0 if never.
+    async fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
+        if let Some(g) = self.cache_gens.borrow().get(&(pool, pg)) {
+            return *g;
+        }
+        let kept = self
+            .shard
+            .get()
+            .await
+            .kv_get(&cache_gens_key(), &cache_gen_name(pool, pg))
+            .and_then(|v| v.try_into().ok())
+            .map_or(0, u64::from_le_bytes);
+        self.cache_gens.borrow_mut().insert((pool, pg), kept);
+        kept
+    }
+
+    /// Moves what this device holds of `p` by an older PG count to the PG
+    /// it belongs to now, pausing each PG that has some (the marked ones
+    /// are the split's own): of every PG it holds, or of `only`. Whether
+    /// it all committed.
+    async fn catch_up(&self, p: &hyperstor_meta::PoolInfo, only: Option<Vec<u32>>) -> bool {
+        let n = p.pg_count;
+        let marked = p
+            .split
+            .as_ref()
+            .map(|s| s.marked.clone())
+            .unwrap_or_default();
+        let held: Vec<u32> = self
+            .shard
+            .get()
+            .await
+            .held_pgs()
+            .into_iter()
+            .filter(|&(pool, pg)| {
+                pool == p.id
+                    && !marked.contains(&pg)
+                    && only.as_ref().is_none_or(|o| o.contains(&pg))
+            })
+            .map(|(_, pg)| pg)
+            .collect();
+        let mut ok = true;
+        for pg in held {
+            let flipped = pg >= n || p.split.as_ref().is_some_and(|s| s.done.contains(&pg));
+            let count = if flipped { n * 2 } else { n };
+            if split_lists(&*self.shard.get().await, p.id, pg, count).is_empty() {
+                continue;
+            }
+            let k = (p.id, pg);
+            self.splitting.borrow_mut().insert(k, 0);
+            ok &= self.split_pg(p.id, pg, count).await;
+            self.splitting.borrow_mut().remove(&k);
+        }
+        ok
+    }
+
     async fn accept(self: Rc<Self>, l: TcpListener) {
         loop {
             match l.accept().await {
@@ -1209,24 +1462,31 @@ impl ShardState {
         {
             return Err(err(Code::Unavailable, &map, "PG fenced for a map change"));
         }
+        // Retried by clients, as for a fence: the split is short.
+        if self.splitting.borrow().contains_key(&(to.pool, to.pg)) {
+            return Err(err(Code::Unavailable, &map, "PG splitting"));
+        }
         if map.pools.get(&to.pool).map(|p| p.kind) == Some(hyperstor_meta::PoolKind::Cache)
-            && let Some(pg) = map.pg(to.pool, to.pg)
-            && self.cache_epochs.borrow().get(&(to.pool, to.pg)) != Some(&pg.epoch)
+            && map.pg(to.pool, to.pg).is_some()
         {
-            self.cache_epochs
-                .borrow_mut()
-                .insert((to.pool, to.pg), pg.epoch);
-            // Committed here, after anything already queued and before this
-            // request goes on: reads don't pass through the queue.
-            let keys = self.shard.get().await.list_pg(to.pool, to.pg);
-            self.queue.borrow_mut().extend(keys.into_iter().map(|k| {
-                let list = OpList {
-                    key: k,
-                    ops: vec![Op::Delete],
-                };
-                (list, oneshot().0)
-            }));
-            self.commit_queued().await;
+            let k = (to.pool, to.pg);
+            let generation = map.cache_gen(to.pool, to.pg);
+            if self.cache_gen(to.pool, to.pg).await != generation {
+                self.cache_gens.borrow_mut().insert(k, generation);
+                // Committed here, after anything already queued and before
+                // this request goes on: reads don't pass through the queue.
+                let keys = self.shard.get().await.list_pg(to.pool, to.pg);
+                self.queue.borrow_mut().extend(
+                    keys.into_iter()
+                        .map(|k| OpList {
+                            key: k,
+                            ops: vec![Op::Delete],
+                        })
+                        .chain([cache_gen_list(to.pool, to.pg, generation)])
+                        .map(|list| (list, oneshot().0)),
+                );
+                self.commit_queued().await;
+            }
         }
         let Some(pg) = map.pg(to.pool, to.pg) else {
             if map.deleted_pools.contains(&to.pool) {
@@ -4802,6 +5062,10 @@ mod tests {
             Some(0),
             "a deleted pool's"
         );
+        // A removed device keeps what it holds (D186).
+        let mut removed = m.clone();
+        removed.remove_device(a);
+        assert_eq!(is_stray(&removed, a, 1, pg), None, "a removed device's");
         // Backfilling to `a` (up isn't acting): `b` keeps its copy, as does
         // the member leaving up but still acting.
         m.pgs.get_mut(&(1, pg)).unwrap().up[0] = a;
@@ -4812,6 +5076,117 @@ mod tests {
         // A member down: a copy elsewhere may be needed back.
         m.nodes.get_mut(&(members[1] / 1000)).unwrap().up = false;
         assert_eq!(is_stray(&m, b, 1, pg), None, "a member down");
+    }
+
+    /// §27.5, D173: splitting a PG moves each object that belongs to its
+    /// new sibling (by `key_pg`, as clients route) to the sibling's key,
+    /// data, attributes and key–value table with it; the others stay;
+    /// asking again finds nothing to do.
+    #[test]
+    fn a_pg_splits_into_itself_and_its_sibling() {
+        use super::{BlockDev, DeviceConfig, MemDev, Namespace, ObjKey, Op, OpList, split_lists};
+        use hyperstor_placement::key_pg;
+        use std::sync::Arc;
+        let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(64 << 20));
+        hyperstor_engine::format(
+            &dev,
+            &DeviceConfig {
+                device_id: 1,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut sh = hyperstor_engine::open(&dev).unwrap().1.pop().unwrap();
+        let (pool, old, new) = (1, 8, 16);
+        // Volume chunks (lineage, chunk, branch) and named objects, all of
+        // PG 3 under 8 PGs.
+        let mut keys = Vec::new();
+        for i in 0u64..4000 {
+            let (ns, name) = if i % 3 == 0 {
+                (Namespace::Meta, format!("header-{i}").into_bytes())
+            } else {
+                let mut n = (i as u128 * 7919).to_be_bytes().to_vec();
+                n.extend_from_slice(&(i * 13).to_be_bytes());
+                if i % 3 == 2 {
+                    n.extend_from_slice(&2u32.to_be_bytes());
+                }
+                (Namespace::Vol, n)
+            };
+            if key_pg(ns as u8, &name, old) == 3 {
+                keys.push(ObjKey::new(pool, 3, ns, name, i % 2));
+            }
+        }
+        for k in &keys {
+            let ops = vec![
+                Op::Write {
+                    off: 0,
+                    data: vec![k.name[0]; 4096],
+                },
+                Op::SetAttr(b"a".to_vec(), k.name.clone()),
+                Op::KvPut(b"k".to_vec(), k.name.clone()),
+            ];
+            sh.commit(vec![OpList {
+                key: k.clone(),
+                ops,
+            }])
+            .unwrap();
+        }
+        // A newer copy at one new key already (backfill to a device that
+        // missed the split): the old one is dropped, not moved over it.
+        let newer = keys
+            .iter()
+            .find(|k| key_pg(k.ns as u8, &k.name, new) != 3)
+            .unwrap()
+            .clone();
+        let at = ObjKey {
+            pg: 3 + old,
+            ..newer.clone()
+        };
+        let ops = vec![
+            Op::Write {
+                off: 0,
+                data: vec![7; 4096],
+            },
+            Op::SetAttr(b"a".to_vec(), newer.name.clone()),
+            Op::KvPut(b"k".to_vec(), newer.name.clone()),
+        ];
+        sh.commit(vec![OpList { key: at, ops }]).unwrap();
+        let lists = split_lists(&sh, pool, 3, new);
+        let moved = lists.len();
+        assert!(
+            moved > keys.len() / 4 && moved < keys.len() * 3 / 4,
+            "{moved} of {}",
+            keys.len()
+        );
+        // Each a move to the sibling, but the one dropped in PG 3.
+        assert!(
+            lists
+                .iter()
+                .all(|l| l.key.pg == 3 + old || (l.key == newer && l.ops == [Op::Delete]))
+        );
+        for r in sh.commit(lists).unwrap() {
+            r.unwrap();
+        }
+        assert!(split_lists(&sh, pool, 3, new).is_empty(), "split already");
+        for k in &keys {
+            let to = key_pg(k.ns as u8, &k.name, new);
+            assert!(to == 3 || to == 3 + old);
+            let at = ObjKey {
+                pg: to,
+                ..k.clone()
+            };
+            let other = ObjKey {
+                pg: 3 + old - to + 3,
+                ..k.clone()
+            };
+            assert!(sh.stat(&other).is_none(), "{k:?} in one PG only");
+            let fill = if *k == newer { 7 } else { k.name[0] };
+            assert_eq!(sh.read(&at, 0, 4096).unwrap()[0], fill);
+            assert_eq!(sh.attrs(&at).unwrap()[&b"a"[..]], k.name);
+            assert_eq!(sh.kv_get(&at, b"k"), Some(&k.name[..]));
+        }
+        assert_eq!(sh.list_pg(pool, 3 + old).len(), moved);
     }
 
     /// D168: hyperstord formats a blank file, never a blank block device;

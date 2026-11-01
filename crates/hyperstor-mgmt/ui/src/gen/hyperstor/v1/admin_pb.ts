@@ -2080,7 +2080,7 @@ export type Operation = Message<"hyperstor.v1.Operation"> & {
   id: string;
 
   /**
-   * "drain", "flatten", "purge" or "delete-pool".
+   * "drain", "flatten", "purge", "delete-pool" or "remove-device".
    *
    * @generated from field: string kind = 2;
    */
@@ -2143,7 +2143,7 @@ export type OperationJson = {
   id?: string;
 
   /**
-   * "drain", "flatten", "purge" or "delete-pool".
+   * "drain", "flatten", "purge", "delete-pool" or "remove-device".
    *
    * @generated from field: string kind = 2;
    */
@@ -2765,8 +2765,8 @@ export const OperationService: GenService<{
     output: typeof WatchOperationResponseSchema;
   },
   /**
-   * Stops an operation and undoes what it can (a drain brings the
-   * devices back in). Write.
+   * Stops an operation and undoes what it can (a drain or a device's
+   * removal brings the devices back in). Write.
    *
    * @generated from rpc hyperstor.v1.OperationService.CancelOperation
    */

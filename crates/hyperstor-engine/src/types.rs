@@ -123,6 +123,13 @@ pub enum Op {
     /// the two. Merges a deleted snapshot's chunk version into the next
     /// newer one (04-decisions.md D104). `src` must be another object.
     Absorb(ObjKey),
+    /// Becomes object `src`, which is removed: its blocks, size,
+    /// attributes and key–value table move here without copying, in a
+    /// logged record whose size doesn't depend on what `src` holds. What
+    /// this object held before is dropped; a missing `src` changes
+    /// nothing. Moves an object to its PG's new key when the PG splits
+    /// (24-pools-and-devices.md §27.5). `src` must be another object.
+    Take(ObjKey),
 }
 
 /// An atomic list of operations on one object.
@@ -152,7 +159,7 @@ pub enum OpError {
     NoSpace,
     #[error("operation list too large for one log record")]
     TooLarge,
-    #[error("an object can't absorb itself")]
+    #[error("an object can't absorb or take itself")]
     SelfAbsorb,
 }
 

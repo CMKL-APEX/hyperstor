@@ -326,6 +326,44 @@ PATH --id D` on the node's host, then one more `--shard
 192.0.2.21:9102=PATH:0` in the node's options (which a later installer
 run rewrites).
 
+## Removing a device
+
+A device leaves once its data has moved (D175, D186):
+
+```sh
+hyperstorctl device remove --device 1001 --dry-run   # what would move; nothing changes
+hyperstorctl device remove --device 1001 --wait 3600
+```
+
+The device is taken out at once, and its PGs move to the other devices
+of their pools, under the backfill budget. An operation follows them;
+once no PG lists the device, the map service removes it from the map,
+and the node with it if it was the node's last device. Neither id is
+given again. `hyperstorctl op cancel --id ID` before then brings the
+device back in.
+
+It is refused when a pool using the device would be left with fewer
+failure domains (hosts, by default) than its copies. `--force` allows
+it: the pool keeps fewer copies until a device in another domain is
+added, but never fewer than its `min`. It is refused, forced or not,
+when a device taking the data would pass 95% full. `--dry-run` shows
+the PGs that move, the pools left short and each receiving device's
+space after. Through `hyperstor-mgmt` it needs a fresh login (step-up).
+
+Then drop the device from its node, on the node's host:
+
+```sh
+sudo hyperstor-install install --node 1 --remove-device 1001
+```
+
+The installer checks that the map no longer has the device (on a host
+with the administrator's certificate), records it in `install.conf`
+so later runs leave its `--shard` out too, and restarts the node
+without it. A node started by hand with a removed device's `--shard`
+stops, saying so. The device's data is left as it was; wipe it
+separately. A node's last device leaves the map with the node:
+uninstall the storage role there instead.
+
 ## Device classes
 
 Each node reports what its devices are: `nvme`, `ssd`, `hdd`, or `file`
@@ -386,6 +424,42 @@ give more if many devices are to come. Volumes go to it with
 `create-volume --pool P`. Kinds appear once every running node
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
+
+## Splitting a pool's PGs
+
+A pool's PG count doubles in place (D173): each PG splits into itself and
+a new one, with no data copied.
+
+```sh
+hyperstorctl pool set --pool 1 --pgs 128 --wait 600
+```
+
+The map service splits a few PGs at a time, the clean ones. Each PG's
+devices pause its I/O for a moment, move the objects that now belong to
+the new PG to its keys, and report; once all have, clients use the new
+PG (D187). Volumes stay attached and writes go on, retried over each
+pause. `hyperstorctl pools` shows how far it has got. The new PGs start
+on their parents' devices; then, whenever every PG of the pool is clean,
+the map service places a few more on their own devices, and they move
+under the backfill budget, until all are placed. A cache pool keeps its data
+through all of it: its new PGs are copied to their devices, not started
+empty, and a restart doesn't empty its devices either (D188). A split is refused for
+any count but twice the pool's, while one runs, and until the last
+one's PGs have moved. A device that was down during the
+split catches up when it returns.
+
+The map service also splits on its own (D184): when a pool's devices
+call for at least twice its PGs (about 100 per device, counting copies),
+typically after devices were added, it doubles the count, one pool at a
+time and only while every PG is clean. Its log names each split. To keep
+a pool's count as set:
+
+```sh
+hyperstorctl pool set --pool 1 --autoscale off
+```
+
+`hyperstorctl pools` lists the pools with it off; `pool create` takes
+`--autoscale off` too.
 
 ## Deleting a pool
 

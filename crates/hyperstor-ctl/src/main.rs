@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -28,13 +28,18 @@
 //!   (D27, D182), or set one or more of them;
 //! - `pool create --name N --classes C[,C...] [--kind replicated|cache]
 //!   [--copies N] [--min N] [--pgs N] [--chunk BYTES] [--domain
-//!   device|host|rack] [--force]`: make a pool on devices of those classes
-//!   (D171); PGs, unless given, about 100 per device per copy;
+//!   device|host|rack] [--autoscale on|off] [--force]`: make a pool on
+//!   devices of those classes (D171); PGs, unless given, about 100 per
+//!   device per copy, doubled as devices are added unless `--autoscale
+//!   off` (D184);
 //! - `pool set --pool P [--classes C[,C...]|any] [--name N] [--domain
-//!   device|host|rack] [--force]`: place pool P's PGs on devices of those
-//!   classes only, or on every device (D164), with a copy per device,
-//!   host or rack; or rename it; `--force` allows classes of hard disks
-//!   and flash both (D172);
+//!   device|host|rack] [--pgs N [--wait SECS]] [--autoscale on|off]
+//!   [--force]`: place pool P's
+//!   PGs on devices of those classes only, or on every device (D164),
+//!   with a copy per device, host or rack; or rename it; or split its PGs
+//!   to N, twice as many, PG by PG (D173, D187), with `--wait` until it
+//!   is done; `--force` allows classes of hard disks and flash both
+//!   (D172);
 //! - `pool add-device --pool P --device D [--force]`, `pool remove-device
 //!   --pool P --device D`: let pool P use one more device, beyond its
 //!   classes, or stop using one of them (D180);
@@ -48,6 +53,12 @@
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
+//! - `device remove --device D [--dry-run] [--force] [--wait SECS]`:
+//!   take device D out and, once its PGs have moved, remove it from the
+//!   map, with its node if it was the last (D175, D186); `--dry-run`
+//!   shows what would move, the pools left short of copies and the space
+//!   after; `--force` lets pools keep fewer copies than their size, never
+//!   than their min;
 //! - `volumes [--pool P]`: the pool's volumes; `create-volume --size S
 //!   [--pool P] [--name N] [--id ID]` (S in bytes, or with K, M, G or T)
 //!   and `delete-volume --id ID [--force]` (04-decisions.md D77, D80);
@@ -146,7 +157,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -214,6 +225,8 @@ struct Args {
     /// `trash settings`: the grace period, and what a full pool does.
     grace: Option<u64>,
     on_full: Option<String>,
+    /// `pool create`, `pool set`: the autoscaler on or off (D184).
+    autoscale: Option<bool>,
     /// `audit list`: how far back (seconds), whose, which operation, how many.
     since: Option<u64>,
     principal: Option<String>,
@@ -295,6 +308,7 @@ fn main() {
         new_id: None,
         grace: None,
         on_full: None,
+        autoscale: None,
         since: None,
         principal: None,
         op: None,
@@ -449,6 +463,11 @@ fn main() {
                 Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
                 _ => usage(),
             },
+            "--autoscale" => match it.next().map(String::as_str) {
+                Some("on") => a.autoscale = Some(true),
+                Some("off") => a.autoscale = Some(false),
+                _ => usage(),
+            },
             "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "weight" | "full-ratios" | "drain"
             | "clone-volume" | "rollback-volume" | "flatten-volume" | "expand-volume"
@@ -474,7 +493,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "device" => matches!(sub, Some("add" | "class")),
+                    "device" => matches!(sub, Some("add" | "remove" | "class")),
                     "pool" => {
                         matches!(
                             sub,
@@ -502,14 +521,19 @@ fn main() {
     let create = cmd == "pool create";
     let set = cmd == "pool set";
     if (set
-        && (a.pool.is_none() || (a.classes.is_none() && a.name.is_empty() && a.domain.is_none())))
+        && (a.pool.is_none()
+            || (a.classes.is_none()
+                && a.name.is_empty()
+                && a.domain.is_none()
+                && a.pgs.is_none()
+                && a.autoscale.is_none())))
         || (create && (a.name.is_empty() || a.classes.is_none() || a.pool.is_some()))
-        || (!set && !create && (a.classes.is_some() || a.domain.is_some()))
+        || (!set && !create && (a.classes.is_some() || a.domain.is_some() || a.autoscale.is_some()))
         || (!create
             && (a.kind.is_some()
                 || a.copies.is_some()
                 || a.min.is_some()
-                || a.pgs.is_some()
+                || (a.pgs.is_some() && !set)
                 || a.chunk.is_some()))
     {
         usage();
@@ -534,8 +558,13 @@ fn main() {
     if !device_add
         && !device_class
         && !pool_device
-        && (cmd == "out" || cmd == "in" || cmd == "drain" || cmd == "weight")
+        && (cmd == "out"
+            || cmd == "in"
+            || cmd == "drain"
+            || cmd == "weight"
+            || cmd == "device remove")
             == (a.device.is_none() && a.node.is_none())
+        || (cmd == "device remove" && a.node.is_some())
         || (cmd == "drain" && a.node.is_none())
         || (cmd == "weight") != (a.weight.is_some() && a.device.is_some() && a.node.is_none())
     {
@@ -637,7 +666,7 @@ fn main() {
         }));
     }
     if (cmd == "token create") != a.role.is_some()
-        || (a.dry_run && cmd != "drain" && cmd != "pool delete")
+        || (a.dry_run && cmd != "drain" && cmd != "pool delete" && cmd != "device remove")
         || (cmd == "pool delete" && a.pool.is_none())
         || (a.ttl != 0 && cmd != "token create")
         || (needs_id && a.id.is_none())
@@ -658,7 +687,8 @@ fn main() {
             && cmd != "pool set"
             && cmd != "pool create"
             && cmd != "pool add-device"
-            && cmd != "pool delete")
+            && cmd != "pool delete"
+            && cmd != "device remove")
     {
         usage();
     }
@@ -1163,6 +1193,7 @@ where
                     domain: a.domain.clone(),
                     classes,
                     force: a.force,
+                    autoscale: a.autoscale,
                     ..Default::default()
                 })
                 .await;
@@ -1218,6 +1249,8 @@ where
                     name: (!a.name.is_empty()).then(|| a.name.clone()),
                     domain: a.domain.clone(),
                     force: a.force,
+                    pg_count: a.pgs,
+                    autoscale: a.autoscale,
                     ..Default::default()
                 })
                 .await;
@@ -1225,6 +1258,12 @@ where
                 Ok(r) => {
                     let r = r.into_owned();
                     let mut what = Vec::new();
+                    if let Some(n) = a.pgs {
+                        what.push(format!("splits to {n} PGs"));
+                    }
+                    if let Some(on) = a.autoscale {
+                        what.push(format!("autoscale {}", if on { "on" } else { "off" }));
+                    }
                     if every_device {
                         what.push("places on every device".to_string());
                     } else if !classes.is_empty() {
@@ -1250,6 +1289,27 @@ where
                         eprintln!(
                             "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
                         );
+                    }
+                    // --wait: until the split is done (D187).
+                    if let (Some(n), Some(secs)) = (a.pgs, a.wait) {
+                        let deadline = Instant::now() + Duration::from_secs(secs.into());
+                        loop {
+                            let s = status().await?;
+                            let p = s.pools.iter().find(|p| p.id == pool);
+                            if let Some(p) = p {
+                                if p.splitting {
+                                    println!("{} of {} PGs split", p.split_done, p.pg_count);
+                                } else if p.pg_count >= n {
+                                    println!("pool {pool} has {} PGs", p.pg_count);
+                                    break;
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                eprintln!("hyperstorctl: pool {pool} still splitting");
+                                return Ok(Next::Exit(1));
+                            }
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
                     }
                     Next::Exit(0)
                 }
@@ -1457,6 +1517,64 @@ where
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
+            }
+        }
+        "device remove" => {
+            let device = a.device.expect("checked with the arguments");
+            let r = client
+                .remove_device(pb::RemoveDeviceRequest {
+                    device,
+                    dry_run: a.dry_run,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await;
+            let r = match r {
+                Ok(r) => r.into_owned(),
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            };
+            show(a, &r, || {
+                let mut t = moves_text(&r.moves);
+                for p in &r.short_pools {
+                    t.push_str(&format!(
+                        "pool {} keeps {} of its {} copies, for want of failure domains\n",
+                        p.pool, p.copies, p.size
+                    ));
+                }
+                for f in &r.fill {
+                    t.push_str(&format!(
+                        "device {} {} after\n",
+                        f.device,
+                        fill_text(f.used_bytes, f.total_bytes)
+                    ));
+                }
+                match r.operation.as_option() {
+                    Some(op) => t.push_str(&format!(
+                        "device {device} out; it leaves the map once its PGs have moved: operation {} (hyperstorctl op watch --id {})\n",
+                        op.id, op.id
+                    )),
+                    None => t.push_str(&format!(
+                        "dry run: {} PG(s) would move off device {device}; nothing changed\n",
+                        r.moves.len()
+                    )),
+                }
+                t
+            });
+            match (r.operation.as_option(), a.wait) {
+                (Some(op), Some(_)) => follow(&ops, op.id.clone(), a).await?,
+                _ => Next::Exit(0),
             }
         }
         "out" | "in" => {

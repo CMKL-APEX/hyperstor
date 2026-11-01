@@ -40,6 +40,13 @@ pub enum Work {
         /// The PGs that move: (pool, PG).
         pgs: Vec<(u32, u32)>,
     },
+    /// A device out, followed until no PG lives on it, then removed from
+    /// the map (24-pools-and-devices.md §27.2.5, D186).
+    RemoveDevice {
+        device: u32,
+        /// The PGs that move: (pool, PG).
+        pgs: Vec<(u32, u32)>,
+    },
     /// A clone made independent of its parents.
     Flatten {
         #[serde(with = "hex_id")]
@@ -78,6 +85,7 @@ impl Work {
             Work::Flatten { .. } => "flatten",
             Work::Purge { .. } => "purge",
             Work::DeletePool { .. } => "delete-pool",
+            Work::RemoveDevice { .. } => "remove-device",
         }
     }
 }
@@ -334,6 +342,15 @@ mod tests {
         };
         ops.put(&p).unwrap();
         assert_eq!(ops.get("p").unwrap().unwrap(), p);
+        let r = Op {
+            work: Work::RemoveDevice {
+                device: 3001,
+                pgs: vec![(1, 4), (0, 2)],
+            },
+            ..op("r", now, State::Running, 0)
+        };
+        ops.put(&r).unwrap();
+        assert_eq!(ops.get("r").unwrap().unwrap(), r);
         assert_eq!(
             ops.get("b").unwrap().unwrap().work,
             op("b", 0, State::Done, 0).work

@@ -65,9 +65,75 @@ pub struct PoolInfo {
     /// from it (D180).
     pub added: BTreeSet<u32>,
     pub removed: BTreeSet<u32>,
+    /// The PGs placed on their own (D173): a PG at or past it is placed
+    /// as its parent ([`PoolInfo::placed_as`]), so a PG a split made stays
+    /// on its parent's devices until this rises past it. `pg_count` but
+    /// after a split, until it has risen.
+    pub placement: u32,
+    /// A split under way (D187): the count doubles PG by PG.
+    pub split: Option<Split>,
+    /// Whether the map service doubles the PG count as devices are added
+    /// (D174, D184).
+    pub autoscale: bool,
+}
+
+/// A pool's split under way (24-pools-and-devices.md §27.5, D187): to
+/// twice `pg_count` PGs, PG by PG. A marked PG's members move the objects
+/// of its new sibling (`pg + pg_count`) to its keys and report it; once
+/// all have, it flips: the sibling joins the map on the PG's devices,
+/// and keys go to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Split {
+    /// PGs being split now.
+    pub marked: BTreeSet<u32>,
+    /// PGs split: their siblings are in the map.
+    pub done: BTreeSet<u32>,
 }
 
 impl PoolInfo {
+    /// The pool's PGs: `0..pg_count`, and the siblings of the PGs a split
+    /// under way has flipped.
+    pub fn pgs(&self) -> impl Iterator<Item = u32> + '_ {
+        let n = self.pg_count;
+        (0..n).chain(
+            self.split
+                .iter()
+                .flat_map(move |s| s.done.iter().map(move |p| p + n)),
+        )
+    }
+
+    /// The PG whose placement PG `pg` takes (D173): itself below the
+    /// placement count, else its parent, the PG it was split from. Raising
+    /// the count by k moves k PGs to their own devices and no other.
+    pub fn placed_as(&self, pg: u32) -> u32 {
+        let full = if self.split.is_some() {
+            self.pg_count * 2
+        } else {
+            self.pg_count
+        };
+        if pg < self.placement || full < 2 {
+            pg
+        } else {
+            pg - full / 2
+        }
+    }
+
+    /// The PG of a stored key (24-pools-and-devices.md §27.5): by
+    /// [`hyperstor_placement::key_pg`], under twice the count for a key
+    /// whose PG a split under way has flipped.
+    pub fn pg_of_key(&self, ns: u8, name: &[u8]) -> u32 {
+        let Some(s) = &self.split else {
+            return hyperstor_placement::key_pg(ns, name, self.pg_count);
+        };
+        let q = hyperstor_placement::key_pg(ns, name, self.pg_count * 2);
+        let parent = q % self.pg_count;
+        if q != parent && !s.done.contains(&parent) {
+            parent
+        } else {
+            q
+        }
+    }
+
     /// Whether the pool may place on `device` (D164, D180): of one of its
     /// classes (any, without classes) or added to it, and not removed.
     /// Whether the device is in, weighted and not a hard disk for `.meta`
@@ -145,6 +211,20 @@ pub struct ClusterMap {
     /// them. Why: clients, the host read cache and copies on devices that
     /// were down name data by pool id.
     pub deleted_pools: BTreeSet<u32>,
+    /// The ids of removed devices and nodes (24-pools-and-devices.md
+    /// §27.2.5, D186): never given again. Why: a device's id is in its
+    /// superblock and a node's in its devices' ids; one given again would
+    /// let an old device or host pass for the new one.
+    pub removed_devices: BTreeSet<u32>,
+    pub removed_nodes: BTreeSet<u32>,
+    /// Each cache PG's generation (D188), where it isn't 0: it moves when
+    /// a member joins without the PG's data, and a device drops what it
+    /// holds of a PG whose generation isn't the one it last served.
+    pub cache_gens: BTreeMap<(u32, u32), u64>,
+    /// Cache PGs the next [`ClusterMap::recompute`] backfills if it moves
+    /// them, rather than starting their new members empty (D188); empty
+    /// after it, and not in the encoding.
+    pub keep_acting: BTreeSet<(u32, u32)>,
     /// The fullness thresholds every device is held to (04-decisions.md
     /// D27, D182).
     pub full_ratios: FullRatios,
@@ -332,7 +412,15 @@ impl ClusterMap {
     pub fn add_device(&mut self, node: u32, addr: SocketAddr, class: &str) -> Option<u32> {
         let on_node = || self.devices.values().filter(|d| d.node == node);
         let shard = on_node().map(|d| d.shard + 1).max().unwrap_or(0);
-        let id = on_node().map(|d| d.id + 1).max().unwrap_or(node * 1000);
+        let gone = self
+            .removed_devices
+            .range(node * 1000..node * 1000 + 1000)
+            .map(|d| d + 1);
+        let id = on_node()
+            .map(|d| d.id + 1)
+            .chain(gone)
+            .max()
+            .unwrap_or(node * 1000);
         if id >= node * 1000 + 1000 {
             return None;
         }
@@ -474,8 +562,123 @@ impl ClusterMap {
             return false;
         }
         self.pgs.retain(|(pool, _), _| *pool != id);
+        self.cache_gens.retain(|(pool, _), _| *pool != id);
         self.deleted_pools.insert(id);
         self.recompute();
+        true
+    }
+
+    /// The id a new node gets: after every node's, removed ones' too
+    /// (D186).
+    pub fn next_node_id(&self) -> u32 {
+        let nodes = self.nodes.keys().next_back().map_or(0, |n| n + 1);
+        let removed = self.removed_nodes.last().map_or(0, |n| n + 1);
+        nodes.max(removed)
+    }
+
+    /// Removes device `id` from the map, keeping its id as removed, and
+    /// its node with it if that was the node's last device (D186); the
+    /// epoch moves. Whether the device was there, and whether its node
+    /// went too.
+    pub fn remove_device(&mut self, id: u32) -> Option<bool> {
+        let node = self.devices.remove(&id)?.node;
+        self.removed_devices.insert(id);
+        for set in [
+            &mut self.auto_out,
+            &mut self.failed,
+            &mut self.fixed_weights,
+            &mut self.fixed_classes,
+        ] {
+            set.remove(&id);
+        }
+        self.kinds.remove(&id);
+        for p in self.pools.values_mut() {
+            p.added.remove(&id);
+            p.removed.remove(&id);
+        }
+        let last = !self.devices.values().any(|d| d.node == node);
+        if last {
+            self.nodes.remove(&node);
+            self.removed_nodes.insert(node);
+        }
+        self.recompute();
+        Some(last)
+    }
+
+    /// Starts doubling pool `pool`'s PG count (24-pools-and-devices.md
+    /// §27.5, D187): nothing moves until PGs are marked. The epoch moves.
+    pub fn start_split(&mut self, pool: u32) -> Result<(), String> {
+        let p = self.pools.get_mut(&pool).ok_or(format!("no pool {pool}"))?;
+        if p.split.is_some() {
+            return Err(format!("pool {pool} is splitting already"));
+        }
+        if p.placement < p.pg_count {
+            return Err(format!(
+                "pool {pool}'s last split is still moving its new PGs ({} of {} placed)",
+                p.placement, p.pg_count
+            ));
+        }
+        if p.pg_count >= 1 << 16 {
+            return Err(format!("pool {pool} has {} PGs, the most", p.pg_count));
+        }
+        p.split = Some(Split::default());
+        self.epoch += 1;
+        Ok(())
+    }
+
+    /// Marks PG `pg` of a splitting pool to split: its epoch moves, so its
+    /// members' reports name this marking. Whether it was marked now.
+    pub fn mark_split(&mut self, pool: u32, pg: u32) -> bool {
+        let Some(p) = self.pools.get_mut(&pool) else {
+            return false;
+        };
+        let n = p.pg_count;
+        let Some(s) = p.split.as_mut() else {
+            return false;
+        };
+        if pg >= n || s.done.contains(&pg) || !s.marked.insert(pg) {
+            return false;
+        }
+        self.epoch += 1;
+        if let Some(i) = self.pgs.get_mut(&(pool, pg)) {
+            i.epoch = self.epoch;
+        }
+        true
+    }
+
+    /// Flips a marked PG whose members have all split it: its sibling
+    /// `pg + pg_count` joins the map with the PG's `acting` and `up`, both
+    /// at a new epoch, so requests by the old routing are told to retry.
+    /// The last flip doubles `pg_count` and ends the split; the placement
+    /// count stays (D173). Whether it flipped.
+    pub fn flip_split(&mut self, pool: u32, pg: u32) -> bool {
+        let Some(p) = self.pools.get_mut(&pool) else {
+            return false;
+        };
+        let n = p.pg_count;
+        let Some(s) = p.split.as_mut() else {
+            return false;
+        };
+        if !s.marked.remove(&pg) {
+            return false;
+        }
+        s.done.insert(pg);
+        let last = s.done.len() as u32 == n;
+        if last {
+            p.pg_count = n * 2;
+            p.split = None;
+        }
+        self.epoch += 1;
+        let epoch = self.epoch;
+        if let Some(i) = self.pgs.get_mut(&(pool, pg)) {
+            i.epoch = epoch;
+            let sibling = i.clone();
+            self.pgs.insert((pool, pg + n), sibling);
+            // Its objects are the parent's, moved: the same generation.
+            if let Some(g) = self.cache_gens.get(&(pool, pg)).copied() {
+                self.cache_gens.insert((pool, pg + n), g);
+            }
+        }
         true
     }
 
@@ -585,8 +788,8 @@ impl ClusterMap {
                 &devs_in
             };
             let topo = Topology::new(&rule, devs);
-            for pg in 0..p.pg_count {
-                let members = topo.place(pg);
+            for pg in p.pgs().collect::<Vec<_>>() {
+                let members = topo.place(p.placed_as(pg));
                 let old = self.pgs.get(&(p.id, pg)).cloned();
                 let up: Vec<u32> = match p.kind {
                     PoolKind::Replicated | PoolKind::Cache => members,
@@ -607,10 +810,25 @@ impl ClusterMap {
                 };
                 let acting = match &old {
                     None => up.clone(),
-                    // Cache pools (D45): no backfill and no recovery; the
-                    // acting set is always where placement wants it, and a
-                    // new member starts empty.
-                    Some(_) if p.kind == PoolKind::Cache => up.clone(),
+                    // Cache pools (D45): no recovery; the acting set is
+                    // where placement wants it, and a new member starts
+                    // empty. But a PG the placement count moves after a
+                    // split, and one still being filled since, keeps its
+                    // live members while the new ones are backfilled
+                    // (D188).
+                    Some(o) if p.kind == PoolKind::Cache => {
+                        let fill = self.keep_acting.contains(&(p.id, pg)) || o.acting != o.up;
+                        let kept: Vec<u32> =
+                            o.acting.iter().copied().filter(|d| self.live(*d)).collect();
+                        if !fill
+                            || kept.is_empty()
+                            || (kept.len() == up.len() && up.iter().all(|d| kept.contains(d)))
+                        {
+                            up.clone()
+                        } else {
+                            kept
+                        }
+                    }
                     // Never had a copy (the pool was made before any host
                     // joined): nothing to keep, so start where placement
                     // wants it, as a new PG does.
@@ -632,11 +850,29 @@ impl ClusterMap {
                             // returns. Starting it again empty would let
                             // backfill wipe the members when they return.
                             o.acting.clone()
+                        } else if p.kind == PoolKind::Replicated
+                            && kept.len() == up.len()
+                            && up.iter().all(|d| kept.contains(d))
+                        {
+                            // The same copies in another order: nothing to
+                            // backfill, which is what would otherwise make
+                            // `acting` be `up`; placement's primary leads.
+                            up.clone()
                         } else {
                             kept
                         }
                     }
                 };
+                // A cache member that joins without the data moves the PG's
+                // generation, so devices drop what they held of it (D188).
+                if p.kind == PoolKind::Cache
+                    && let Some(o) = &old
+                    && acting
+                        .iter()
+                        .any(|d| *d != NO_DEVICE && !o.acting.contains(d))
+                {
+                    *self.cache_gens.entry((p.id, pg)).or_default() += 1;
+                }
                 let e = self.pgs.entry((p.id, pg)).or_insert(PgInfo {
                     epoch: self.epoch,
                     acting: Vec::new(),
@@ -649,6 +885,31 @@ impl ClusterMap {
                 }
             }
         }
+        self.keep_acting.clear();
+    }
+
+    /// Takes `device` out of the acting set of each PG whose `up` it has
+    /// left and that backfills nothing: placement found no other failure
+    /// domain for its copy (a forced removal, 24-pools-and-devices.md
+    /// §27.2.5), so no backfill would ever make `acting` be `up`. Returns
+    /// how many PGs changed; the epoch moves if any did.
+    pub fn release(&mut self, device: u32) -> usize {
+        let epoch = self.epoch + 1;
+        let mut n = 0;
+        for pg in self.pgs.values_mut() {
+            if pg.acting.contains(&device)
+                && !pg.up.contains(&device)
+                && pg.backfilling().next().is_none()
+            {
+                pg.acting = pg.up.clone();
+                pg.epoch = epoch;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.epoch = epoch;
+        }
+        n
     }
 
     /// Records that `device` has a full copy of a PG (09-replication.md §8.5). It
@@ -809,6 +1070,12 @@ impl ClusterMap {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
 
+    /// A cache PG's generation (D188): 0 until a member first joins it
+    /// without the data.
+    pub fn cache_gen(&self, pool: u32, pg: u32) -> u64 {
+        self.cache_gens.get(&(pool, pg)).copied().unwrap_or(0)
+    }
+
     pub fn pg(&self, pool: u32, pg: u32) -> Option<&PgInfo> {
         self.pgs.get(&(pool, pg))
     }
@@ -824,10 +1091,23 @@ impl ClusterMap {
         // interval and the failed ones, 4 the weights an operator set, 5
         // devices' kinds and the classes an operator set, 6 class sets, 7
         // a pool's devices added and removed, 8 deleted pools' ids, 9
-        // fullness ratios other than the defaults and devices past
-        // `backfillfull`; a map without them keeps the older format, which
-        // nodes from before them read.
+        // removed devices' and nodes' ids, 10 pools' placement counts,
+        // autoscale and splits, 11 cache PGs' generations, 12 fullness
+        // ratios other than the defaults and devices past `backfillfull`;
+        // a map without them keeps the older format, which nodes from
+        // before them read. Why 12 after 11: the feature branch's 9-11 ran
+        // on the pilot before main's fullness took 9 (I216).
         let format = if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+            12
+        } else if !self.cache_gens.is_empty() {
+            11
+        } else if self
+            .pools
+            .values()
+            .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
+        {
+            10
+        } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
             9
         } else if !self.deleted_pools.is_empty() {
             8
@@ -962,6 +1242,35 @@ impl ClusterMap {
             }
         }
         if format >= 9 {
+            for set in [&self.removed_devices, &self.removed_nodes] {
+                e.u32(set.len() as u32);
+                for id in set {
+                    e.u32(*id);
+                }
+            }
+        }
+        if format >= 10 {
+            // Every pool, in order: its placement count, autoscale and
+            // split.
+            for p in self.pools.values() {
+                e.u32(p.placement).bool(p.autoscale).bool(p.split.is_some());
+                if let Some(s) = &p.split {
+                    for set in [&s.marked, &s.done] {
+                        e.u32(set.len() as u32);
+                        for pg in set {
+                            e.u32(*pg);
+                        }
+                    }
+                }
+            }
+        }
+        if format >= 11 {
+            e.u32(self.cache_gens.len() as u32);
+            for (&(pool, pg), &g) in &self.cache_gens {
+                e.u32(pool).u32(pg).u64(g);
+            }
+        }
+        if format >= 12 {
             let r = &self.full_ratios;
             e.u16(r.nearfull).u16(r.backfillfull).u16(r.full);
             e.u32(self.backfillfull.len() as u32);
@@ -975,7 +1284,7 @@ impl ClusterMap {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=9).contains(&v) {
+        if !(1..=12).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1049,6 +1358,9 @@ impl ClusterMap {
                     classes,
                     added: BTreeSet::new(),
                     removed: BTreeSet::new(),
+                    placement: pg_count,
+                    split: None,
+                    autoscale: true,
                 },
             );
         }
@@ -1118,6 +1430,28 @@ impl ClusterMap {
             m.deleted_pools = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         if v >= 9 {
+            m.removed_devices = d.seq(4, |d| d.u32())?.into_iter().collect();
+            m.removed_nodes = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 10 {
+            for p in m.pools.values_mut() {
+                p.placement = d.u32()?;
+                p.autoscale = d.bool()?;
+                if d.bool()? {
+                    p.split = Some(Split {
+                        marked: d.seq(4, |d| d.u32())?.into_iter().collect(),
+                        done: d.seq(4, |d| d.u32())?.into_iter().collect(),
+                    });
+                }
+            }
+        }
+        if v >= 11 {
+            for _ in 0..d.u32()? {
+                let k = (d.u32()?, d.u32()?);
+                m.cache_gens.insert(k, d.u64()?);
+            }
+        }
+        if v >= 12 {
             m.full_ratios = FullRatios {
                 nearfull: d.u16()?,
                 backfillfull: d.u16()?,
@@ -1148,6 +1482,9 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         classes: Vec::new(),
         added: BTreeSet::new(),
         removed: BTreeSet::new(),
+        placement: pg_count,
+        split: None,
+        autoscale: true,
     }
 }
 
@@ -1275,6 +1612,7 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 if !p.pg_count.is_power_of_two() {
                     return Err(bad("pgs must be a power of two"));
                 }
+                p.placement = p.pg_count;
                 map.add_pool(p);
             }
             _ => return Err(bad("unknown line")),
@@ -1368,6 +1706,9 @@ mod tests {
             classes: Vec::new(),
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 32,
+            split: None,
+            autoscale: true,
         });
         m.recompute();
         m
@@ -1463,14 +1804,251 @@ mod tests {
         assert_eq!(back.next_pool_id(), top + 1);
     }
 
-    /// D27, D182: fullness ratios other than the defaults are kept in
-    /// format 9, and only then.
+    /// D187: a split marks PGs, then flips each: its sibling joins the
+    /// map on the PG's devices, keys go to it by the doubled count, others
+    /// stay with their parent; the last flip doubles the count, and the
+    /// placement count stays, so nothing moves. Format 10 while it runs.
     #[test]
-    fn full_ratios_round_trip_in_format_9_only_when_set() {
+    fn a_split_flips_pg_by_pg_then_doubles_the_count() {
+        let mut m = map();
+        let n = m.pools[&1].pg_count;
+        assert!(!m.mark_split(1, 0), "not splitting");
+        m.start_split(1).unwrap();
+        assert!(m.start_split(1).is_err());
+        assert_eq!(m.encode()[..4], 10u32.to_le_bytes());
+        let before = m.clone();
+        let names: Vec<Vec<u8>> = (0..500u32).map(|i| i.to_be_bytes().to_vec()).collect();
+        let routed = |m: &ClusterMap| -> Vec<u32> {
+            names.iter().map(|k| m.pools[&1].pg_of_key(3, k)).collect()
+        };
+        assert_eq!(routed(&m), routed(&before));
+        assert!(m.mark_split(1, 5) && !m.mark_split(1, 5));
+        assert!(m.pgs[&(1, 5)].epoch > before.pgs[&(1, 5)].epoch);
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        assert_eq!(routed(&m), routed(&before), "marked, not flipped");
+        assert!(!m.flip_split(1, 6), "not marked");
+        assert!(m.flip_split(1, 5));
+        let (pg, sib) = (&m.pgs[&(1, 5)], &m.pgs[&(1, 5 + n)]);
+        assert_eq!((pg.up.clone(), pg.epoch), (sib.up.clone(), sib.epoch));
+        assert!(m.pools[&1].pgs().any(|p| p == 5 + n));
+        for (k, (now, was)) in names
+            .iter()
+            .zip(routed(&m).into_iter().zip(routed(&before)))
+        {
+            let full = hyperstor_placement::key_pg(3, k, n * 2);
+            if was == 5 {
+                assert_eq!(now, full, "PG 5 flipped: by the doubled count");
+            } else {
+                assert_eq!(now, was, "the others by their parent");
+            }
+        }
+        m.recompute();
+        assert_eq!(
+            m.pgs[&(1, 5 + n)].up,
+            m.pgs[&(1, 5)].up,
+            "placed with its parent"
+        );
+        for pg in 0..n {
+            if pg != 5 {
+                assert!(m.mark_split(1, pg) && m.flip_split(1, pg));
+            }
+        }
+        let p = &m.pools[&1];
+        assert_eq!(
+            (p.pg_count, p.placement, p.split.is_none()),
+            (n * 2, n, true)
+        );
+        m.recompute();
+        for pg in 0..n {
+            assert_eq!(m.pgs[&(1, pg + n)].up, m.pgs[&(1, pg)].up);
+        }
+        assert_eq!(
+            m.encode()[..4],
+            10u32.to_le_bytes(),
+            "placement count below"
+        );
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        let full: Vec<u32> = names
+            .iter()
+            .map(|k| hyperstor_placement::key_pg(3, k, n * 2))
+            .collect();
+        assert_eq!(routed(&m), full);
+    }
+
+    /// D173: after a split, a PG at or past the placement count is placed
+    /// as its parent; raising the count by k places k more on their own
+    /// and moves no other PG.
+    #[test]
+    fn raising_the_placement_count_moves_only_the_pgs_it_passes() {
+        let mut m = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        m.add_pool(replicated_pool(1, "rbd", 3, 16));
+        m.recompute();
+        m.start_split(1).unwrap();
+        for pg in 0..16 {
+            assert!(m.mark_split(1, pg) && m.flip_split(1, pg));
+        }
+        m.recompute();
+        assert!(m.start_split(1).unwrap_err().contains("still moving"));
+        let up = |m: &ClusterMap| -> Vec<Vec<u32>> {
+            (0..32).map(|pg| m.pgs[&(1, pg)].up.clone()).collect()
+        };
+        let before = up(&m);
+        for pg in 16..32 {
+            assert_eq!(before[pg], before[pg - 16], "on its parent's devices");
+        }
+        m.pools.get_mut(&1).unwrap().placement = 20;
+        m.recompute();
+        let after = up(&m);
+        let moved: Vec<usize> = (0..32).filter(|&pg| after[pg] != before[pg]).collect();
+        assert!(moved.iter().all(|pg| (16..20).contains(pg)), "{moved:?}");
+        assert!(!moved.is_empty(), "eight hosts: some move");
+        m.pools.get_mut(&1).unwrap().placement = 32;
+        m.recompute();
+        assert_ne!(
+            m.encode()[..4],
+            10u32.to_le_bytes(),
+            "all placed: format 10 no more"
+        );
+    }
+
+    /// D188: a cache PG's generation moves when a member joins it without
+    /// the data (a device out), not when it is split or flipped, and a new
+    /// PG takes its parent's; a cache PG the placement count moves keeps
+    /// its old member while the new one is backfilled. Format 11.
+    #[test]
+    fn cache_generations_move_only_when_a_member_starts_empty() {
+        let mut m = ClusterMap::new(7);
+        for n in 0..8 {
+            let a: SocketAddr = format!("127.0.0.1:{}", 7000 + n).parse().unwrap();
+            m.add_node(n, &[a], 0);
+        }
+        let mut cache = replicated_pool(3, "kv", 1, 16);
+        cache.kind = PoolKind::Cache;
+        cache.min_size = 1;
+        m.add_pool(cache);
+        m.recompute();
+        assert!(m.cache_gens.is_empty());
+        // A device out: its cache PGs start empty elsewhere.
+        let (k, d) = m
+            .pgs
+            .iter()
+            .find(|(k, _)| k.0 == 3)
+            .map(|(k, i)| (*k, i.acting[0]))
+            .unwrap();
+        m.set_in(d, false);
+        m.recompute();
+        assert_eq!(m.cache_gen(k.0, k.1), 1);
+        assert_eq!(m.encode()[..4], 11u32.to_le_bytes());
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+        m.set_in(d, true);
+        m.recompute();
+        let gens = m.cache_gens.clone();
+        // A split: marking and flipping move no generation; the new PGs
+        // take their parents'.
+        m.start_split(3).unwrap();
+        for pg in 0..16 {
+            assert!(m.mark_split(3, pg) && m.flip_split(3, pg));
+        }
+        for pg in 0..16 {
+            assert_eq!(m.cache_gen(3, pg + 16), m.cache_gen(3, pg));
+            assert_eq!(gens.get(&(3, pg)).copied().unwrap_or(0), m.cache_gen(3, pg));
+        }
+        // The placement count rising: the moved PGs keep their member and
+        // backfill the new one; no generation moves.
+        let before = m.clone();
+        m.pools.get_mut(&3).unwrap().placement = 24;
+        m.keep_acting.extend((16..24).map(|pg| (3, pg)));
+        m.recompute();
+        assert!(m.keep_acting.is_empty());
+        let mut filling = 0;
+        for pg in 16..24 {
+            let (was, now) = (&before.pgs[&(3, pg)], &m.pgs[&(3, pg)]);
+            if now.up != was.up {
+                assert_eq!(now.acting, was.acting, "PG {pg} keeps its copy");
+                filling += 1;
+            }
+            assert_eq!(m.cache_gen(3, pg), before.cache_gen(3, pg));
+        }
+        assert!(filling > 0);
+        // Filled: the new member joins; still no generation moves.
+        for pg in 16..24 {
+            let i = m.pgs[&(3, pg)].clone();
+            for d in i.backfilling().collect::<Vec<_>>() {
+                assert!(m.backfill_done(3, pg, m.pgs[&(3, pg)].epoch, d));
+            }
+            assert_eq!(m.pgs[&(3, pg)].acting, m.pgs[&(3, pg)].up);
+            assert_eq!(m.cache_gen(3, pg), before.cache_gen(3, pg));
+        }
+        // A recompute after leaves them be.
+        let settled = m.clone();
+        m.recompute();
+        assert_eq!(m.cache_gens, settled.cache_gens);
+    }
+
+    /// A PG whose acting set holds `up`'s devices in another order takes
+    /// `up`'s: nothing is left to backfill, which is what would otherwise
+    /// make them equal, and a removal or drain waiting for `acting` = `up`
+    /// would wait for ever.
+    #[test]
+    fn acting_takes_ups_order_when_it_holds_the_same_copies() {
+        let mut m = map();
+        let k = *m.pgs.keys().find(|k| k.0 == 1).unwrap();
+        let pg = m.pgs.get_mut(&k).unwrap();
+        pg.acting.rotate_left(1);
+        assert_ne!(pg.acting, pg.up);
+        m.recompute();
+        let pg = &m.pgs[&k];
+        assert_eq!(pg.acting, pg.up);
+    }
+
+    /// D186: a removed device leaves the map, its node with its last
+    /// device; both ids are kept, in format 9 only once there is one, and
+    /// never given again.
+    #[test]
+    fn removed_devices_and_nodes_keep_their_ids() {
+        let mut m = map();
+        assert_ne!(m.encode()[..4], 9u32.to_le_bytes());
+        let node = *m.nodes.keys().next_back().unwrap();
+        let mut ids: Vec<u32> = m
+            .devices
+            .values()
+            .filter(|d| d.node == node)
+            .map(|d| d.id)
+            .collect();
+        ids.sort();
+        let top = *ids.last().unwrap();
+        m.pools.get_mut(&1).unwrap().added.insert(top);
+        let epoch = m.epoch;
+        assert_eq!(m.remove_device(top), Some(ids.len() == 1));
+        assert_eq!(m.remove_device(top), None, "only once");
+        assert!(m.epoch > epoch && !m.pools[&1].added.contains(&top));
+        assert!(m.pgs.values().all(|p| !p.up.contains(&top)));
+        assert_eq!(m.encode()[..4], 9u32.to_le_bytes());
+        let a: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        assert_eq!(m.add_device(node, a, "nvme"), Some(top + 1), "not again");
+        assert_eq!(m.remove_device(top + 1), Some(false));
+        for &d in &ids[..ids.len() - 1] {
+            assert!(m.remove_device(d).is_some());
+        }
+        assert!(!m.nodes.contains_key(&node) && m.removed_nodes.contains(&node));
+        assert_eq!(m.next_node_id(), node + 1);
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.next_node_id(), node + 1);
+    }
+
+    /// D27, D182: fullness ratios other than the defaults are kept in
+    /// format 12, and only then.
+    #[test]
+    fn full_ratios_round_trip_in_format_12_only_when_set() {
         let mut m = map();
         assert_ne!(
             m.encode()[..4],
-            9u32.to_le_bytes(),
+            12u32.to_le_bytes(),
             "defaults: older format"
         );
         assert_eq!(m.full_ratios.check(), Ok(()));
@@ -1479,13 +2057,13 @@ mod tests {
             backfillfull: 700,
             full: 805,
         };
-        assert_eq!(m.encode()[..4], 9u32.to_le_bytes());
+        assert_eq!(m.encode()[..4], 12u32.to_le_bytes());
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
         m.full_ratios = FullRatios::default();
         m.backfillfull.insert(2);
         assert_eq!(
             m.encode()[..4],
-            9u32.to_le_bytes(),
+            12u32.to_le_bytes(),
             "a device past backfillfull"
         );
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
@@ -1793,6 +2371,9 @@ mod tests {
             classes: Vec::new(),
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 32,
+            split: None,
+            autoscale: true,
         });
         m.recompute();
         let before = m.clone();

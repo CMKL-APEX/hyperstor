@@ -472,6 +472,16 @@ pub enum Msg {
         device: u32,
         kind: u8,
     },
+    /// Storage node to map service: `device` has split PG `pool`.`pg`,
+    /// marked to split at `pg_epoch`: its objects that belong to the PG's
+    /// new sibling are under the sibling's keys (24-pools-and-devices.md
+    /// §27.5, D187). Answered `Noted`.
+    PgSplit {
+        pool: u32,
+        pg: u32,
+        pg_epoch: u64,
+        device: u32,
+    },
     /// Follower to the map service's leader: what only the leader knows,
     /// for a follower's `GetStatus` (I197).
     LeaderState,
@@ -700,6 +710,7 @@ mod kind {
     pub const LEADER_STATE: u16 = 74;
     pub const LEADER_STATE_OK: u16 = 75;
     pub const DEVICE_KIND: u16 = 76;
+    pub const PG_SPLIT: u16 = 77;
     pub const ERROR: u16 = 99;
 }
 
@@ -783,6 +794,7 @@ impl Msg {
             Msg::DeviceFailed { .. } => DEVICE_FAILED,
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
             Msg::DeviceKind { .. } => DEVICE_KIND,
+            Msg::PgSplit { .. } => PG_SPLIT,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
@@ -1054,6 +1066,14 @@ impl Msg {
             }
             Msg::DeviceKind { device, kind } => {
                 e.u32(*device).u8(*kind);
+            }
+            Msg::PgSplit {
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            } => {
+                e.u32(*pool).u32(*pg).u64(*pg_epoch).u32(*device);
             }
             Msg::MemberSlow {
                 reporter,
@@ -1373,6 +1393,12 @@ impl Msg {
             DEVICE_KIND => Msg::DeviceKind {
                 device: d.u32()?,
                 kind: d.u8()?,
+            },
+            PG_SPLIT => Msg::PgSplit {
+                pool: d.u32()?,
+                pg: d.u32()?,
+                pg_epoch: d.u64()?,
+                device: d.u32()?,
             },
             MEMBER_SLOW => Msg::MemberSlow {
                 reporter: d.u32()?,
@@ -2038,6 +2064,12 @@ mod tests {
             Msg::DeviceKind {
                 device: 2001,
                 kind: 1,
+            },
+            Msg::PgSplit {
+                pool: 1,
+                pg: 9,
+                pg_epoch: 77,
+                device: 2001,
             },
             Msg::MemberSlow {
                 reporter: 1000,

@@ -13,7 +13,7 @@
 //! A volume is identified by a 128-bit id, chosen by the caller (glidex:
 //! its disk's UUID) or drawn at random; its name is shown, not unique.
 
-use crate::{BLOCK, Client, ClientError, NS_META, Route, cache, object_pg, random_u64};
+use crate::{BLOCK, Client, ClientError, NS_META, Route, cache, random_u64};
 use hyperstor_codec::{Dec, Enc};
 use hyperstor_map::META_POOL;
 use hyperstor_proto::{
@@ -1390,13 +1390,13 @@ impl Client {
                 return;
             }
             let map = self.map();
-            let Some(pg_count) = map.pools.get(&META_POOL).map(|p| p.pg_count) else {
+            let Some(meta) = map.pools.get(&META_POOL) else {
                 continue;
             };
             let mut by_primary: HashMap<std::net::SocketAddr, Vec<(Rc<Attached>, u32, u64)>> =
                 HashMap::new();
             for a in live {
-                let pg = object_pg(&header_key(a.volume.borrow().id), pg_count);
+                let pg = meta.pg_of_key(NS_META, &header_key(a.volume.borrow().id));
                 if let Some(info) = map.pg(META_POOL, pg)
                     && let Some(addr) = info.primary().and_then(|d| map.device_addr(d))
                 {

@@ -112,6 +112,8 @@ impl Group {
             seed.add_node(n as u32, &[*a], 0);
         }
         let mut pool = replicated_pool(POOL, "vol", 3, 64);
+        // The test's PG count is its own: no autoscaler (D184).
+        pool.autoscale = false;
         pool.chunk_size = CHUNK;
         seed.add_pool(pool);
         seed.recompute();

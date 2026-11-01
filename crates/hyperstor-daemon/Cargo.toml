@@ -10,12 +10,13 @@ repository.workspace = true
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-engine = { path = "../hyperstor-engine" }
 hyperstor-meta = { path = "../hyperstor-meta" }
+# Which PG a key belongs to, when a PG splits (24-pools-and-devices.md §27.5).
+hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 
 [dev-dependencies]
 rand.workspace = true
-hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-rpc = { path = "../hyperstor-rpc" }
 tempfile = "3"
 

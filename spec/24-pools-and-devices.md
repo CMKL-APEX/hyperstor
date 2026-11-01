@@ -134,6 +134,8 @@ running node has reported, so older nodes can still read it.
 
 #### 27.2.5 Removing a device
 
+Built (I224, I226, D186).
+
 1. `hyperstorctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
    PGs move to the other devices of their pools.
@@ -149,7 +151,7 @@ running node has reported, so older nodes can still read it.
 3. When no PG lists the device in `up` or `acting`, the map service
    removes it from the map, and the installer (or the operator) removes
    its `--shard` and restarts the node. A node whose last device goes is
-   removed with it.
+   removed with it. Neither id is given again (D186).
 4. The device's data is left as it is; wiping it is a separate step.
 
 ### 27.3 Pools
@@ -259,6 +261,11 @@ isn't checked against the pools that use its class.
 
 ### 27.5 PG count
 
+Built (I218–I221): the engine's move, a device's split, the protocol
+and `pool set --pgs`, the placement count rising, and the autoscaler
+(D184). Clients switch to a split PG's sibling PG by PG (D187). Merges
+(stage 6) come when needed.
+
 - **Target:** about 100 PGs per device the pool may use (§5.1), counting
   each copy. A pool on 6 devices with 3 copies wants about 200 PGs, so
   256; the same pool on 60 devices, 2,048.
@@ -283,10 +290,11 @@ isn't checked against the pools that use its class.
 - **Merging** (halving) is the reverse and more delicate: two PGs' members
   must first agree, which needs both on the same devices. It comes
   later, and only by the operator (D174).
-- **Who decides** (D174): the map service doubles a pool's count
-  when its PGs per device pass twice the target, at most one pool at a
-  time, and never while the cluster is degraded. `pool set --pgs N`
-  does it by hand; `--autoscale off` stops it per pool.
+- **Who decides** (D174, D184): the map service doubles a pool's count
+  when its devices call for at least twice its PGs (about 100 per
+  device, counting copies), at most one pool at a time, and never while
+  the cluster is degraded. `pool set --pgs N` does it by hand;
+  `--autoscale off` stops it per pool.
 
 ### 27.6 Safety and operations
 

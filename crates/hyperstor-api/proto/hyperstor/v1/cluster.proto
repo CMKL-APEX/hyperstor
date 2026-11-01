@@ -37,6 +37,17 @@ service ClusterService {
   // until the node runs it (restarted with one more --shard). Write.
   rpc AddDevice(AddDeviceRequest) returns (AddDeviceResponse);
 
+  // Removes a device (24-pools-and-devices.md §27.2.5, 04-decisions.md
+  // D175, D186): it is taken out, and an operation follows its PGs off it,
+  // then removes it from the map, with its node if it was the node's last;
+  // neither id is given again, and the device's data is left as it is.
+  // Refused when a pool using it would keep fewer copies than its min, or,
+  // unless forced, than its size, for want of failure domains, and when a
+  // device that takes its data would pass 95% full. dry_run changes
+  // nothing. Cancelling the operation brings the device back in. Write,
+  // with step-up.
+  rpc RemoveDevice(RemoveDeviceRequest) returns (RemoveDeviceResponse);
+
   // Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
   // follow the device's kind again (04-decisions.md D178). A class holds
   // devices of one kind, and a class named after a kind only that kind.
@@ -44,10 +55,13 @@ service ClusterService {
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
-  // (D164) or failure domain, and PGs move to match, or its name. Refused
-  // for .meta, when its devices would span fewer failure domains than the
-  // pool's copies, when they mix hard disks and flash unless forced
-  // (D172), and for a name another pool has. Write.
+  // (D164) or failure domain, and PGs move to match, or its name; or
+  // doubles its PG count, splitting its PGs in place, a few at a time,
+  // each paused briefly (§27.5, D173, D187). Refused for .meta, when its
+  // devices would span fewer failure domains than the pool's copies, when
+  // they mix hard disks and flash unless forced (D172), for a name another
+  // pool has, and for a count that isn't twice the pool's or while it
+  // splits. Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
   // Adds a device to a pool beyond its classes, or removes one of them
@@ -331,6 +345,15 @@ message Pool {
   string fullness = 16;
   // The device that set it, when not "ok".
   optional uint32 fullest_device = 17 [json_name = "fullest_device"];
+  // A split under way (D187): to twice pg_count, with this many PGs split.
+  uint32 split_done = 18 [json_name = "split_done"];
+  // Whether the map service doubles its PG count as devices are added
+  // (D174, D184): when they call for at least twice as many.
+  bool autoscale = 19;
+  // The PGs placement goes by (D173): below pg_count after a split, until
+  // the new PGs move to their own devices.
+  uint32 placement_count = 20 [json_name = "placement_count"];
+  bool splitting = 21;
 }
 
 // Each PG is counted once, under its worst state.
@@ -468,6 +491,9 @@ message CreatePoolRequest {
   repeated string classes = 8;
   // Allow classes of hard disks and flash both (D172).
   bool force = 9;
+  // Whether the map service doubles its PG count as devices are added
+  // (04-decisions.md D174, D184); absent: on.
+  optional bool autoscale = 10;
 }
 
 message CreatePoolResponse {
@@ -509,6 +535,10 @@ message SetPoolRequest {
   // Place on every device, as pools made before class sets do (D171);
   // classes must then be empty.
   bool every_device = 6 [json_name = "every_device"];
+  // Twice the pool's PG count: the pool splits (D187).
+  optional uint32 pg_count = 7 [json_name = "pg_count"];
+  // Turns the autoscaler on or off for the pool (D174, D184).
+  optional bool autoscale = 8;
 }
 
 message SetPoolResponse {
@@ -542,6 +572,41 @@ message SetDeviceClassResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   string class = 2;
+}
+
+message RemoveDeviceRequest {
+  uint32 device = 1;
+  // Work out what would move and change nothing.
+  bool dry_run = 2 [json_name = "dry_run"];
+  // Let pools keep fewer copies than their size, never fewer than their
+  // min.
+  bool force = 3;
+}
+
+message RemoveDeviceResponse {
+  // Absent for a dry run.
+  Operation operation = 1;
+  // The PGs that move (or would), with their acting sets before and after.
+  repeated PgMove moves = 2;
+  // Pools left with fewer failure domains than copies (forced).
+  repeated ShortPool short_pools = 3 [json_name = "short_pools"];
+  // The devices that take data, with their space after.
+  repeated DeviceFill fill = 4;
+}
+
+message ShortPool {
+  uint32 pool = 1;
+  // The copies it keeps.
+  uint32 copies = 2;
+  // The copies it should keep.
+  uint32 size = 3;
+}
+
+message DeviceFill {
+  uint32 device = 1;
+  // Bytes used once the moved PGs are on it.
+  uint64 used_bytes = 2 [json_name = "used_bytes"];
+  uint64 total_bytes = 3 [json_name = "total_bytes"];
 }
 
 message AddDeviceResponse {

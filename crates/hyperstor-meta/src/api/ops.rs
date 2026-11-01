@@ -206,7 +206,62 @@ impl Runner {
                             return;
                         }
                     }
-                    me.drain(&op, node, &devices, &pgs).await
+                    let done = format!("node {node} drained: no PG lives on it");
+                    me.follow_out(&op, &devices, &pgs, &format!("node {node}"), Some(done))
+                        .await;
+                }
+                Work::RemoveDevice { device, pgs } => {
+                    // As for a drain: taking it out again is a no-op if it
+                    // was, and it was forced or checked when it started; a
+                    // device the map no longer has was removed, which the
+                    // finish below finds.
+                    if resumed {
+                        let (reply, rx) = oneshot();
+                        let sent = me.tx.send(Admin::RemoveDevice {
+                            device,
+                            force: true,
+                            dry_run: false,
+                            reply,
+                        });
+                        if sent.is_err() || rx.recv().await.is_none() {
+                            me.forget(&id);
+                            return;
+                        }
+                    }
+                    let what = format!("device {device}");
+                    if me.follow_out(&op, &[device], &pgs, &what, None).await {
+                        let (reply, rx) = oneshot();
+                        let r = match me.tx.send(Admin::FinishRemoval { device, reply }) {
+                            Ok(()) => rx.recv().await,
+                            Err(_) => None,
+                        };
+                        // Done once the published map, which clients and
+                        // the installer read, lacks it (it is fenced first).
+                        if let Some(Ok(Some((_, epoch)))) = &r {
+                            let t = std::time::Instant::now();
+                            while t.elapsed() < Duration::from_secs(10) {
+                                let (reply, rx) = oneshot();
+                                if me.tx.send(Admin::Published(reply)).is_err() {
+                                    break;
+                                }
+                                match rx.recv().await {
+                                    Some((map, ..)) if map.epoch < *epoch => {}
+                                    _ => break,
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        }
+                        let done = match &r {
+                            Some(Ok(Some((true, _)))) => format!(
+                                "device {device} removed from the map, and node {} with it",
+                                device / 1000
+                            ),
+                            _ => format!("device {device} removed from the map"),
+                        };
+                        let r =
+                            r.map(|r| r.map(|_| ()).map_err(|e| (crate::VolumeFault::InUse, e)));
+                        me.finish(&op, r, done).await;
+                    }
                 }
                 Work::Flatten { volume } => {
                     let (reply, rx) = oneshot();
@@ -288,6 +343,7 @@ impl Runner {
         let rpc = match op.work {
             Work::Flatten { .. } => "FlattenVolume",
             Work::DeletePool { .. } => "DeletePool",
+            Work::RemoveDevice { .. } => "RemoveDevice",
             _ => "PurgeFromTrash",
         };
         audit(
@@ -416,33 +472,57 @@ impl Runner {
         }
     }
 
-    /// Follows a drain every half second until every moved PG is clean of
-    /// the node's devices and settled (`acting` = `up`); stops when the
-    /// operation is cancelled, and fails if the devices come back in.
-    async fn drain(&self, op: &Op, node: u32, devices: &[u32], pgs: &[(u32, u32)]) {
+    /// Follows a drain or a removal every half second until every moved PG
+    /// is clean of `devices` and settled (`acting` = `up`); stops when the
+    /// operation is cancelled, and fails it if the devices come back in.
+    /// Then marks it done with `done`, or, without, returns true and leaves
+    /// it running for the caller to finish.
+    async fn follow_out(
+        &self,
+        op: &Op,
+        devices: &[u32],
+        pgs: &[(u32, u32)],
+        what: &str,
+        done: Option<String>,
+    ) -> bool {
         // The drain is fenced and then published: until the published map
         // has the devices out, it's in progress, not undone.
         let mut seen_out = false;
         loop {
+            // A removal: any later change to the map (a weight, a node
+            // coming back) can leave a PG listing the device with nothing
+            // to backfill; it is let go each time (D186).
+            if done.is_none() {
+                for &device in devices {
+                    let (reply, rx) = oneshot();
+                    if self.tx.send(Admin::Release { device, reply }).is_ok() {
+                        let _ = rx.recv().await;
+                    }
+                }
+            }
             let id = op.id.clone();
             let Ok(Some(now)) = self.store(move |s| s.get(&id)).await else {
-                return;
+                return false;
             };
             if !now.running() {
-                return;
+                return false;
             }
             let (reply, rx) = oneshot();
             if self.tx.send(Admin::Published(reply)).is_err() {
-                return;
+                return false;
             }
             let Some((map, ..)) = rx.recv().await else {
-                return;
+                return false;
             };
-            let any_in = map.devices.values().any(|d| d.node == node && d.up_in);
+            let any_in = devices
+                .iter()
+                .any(|d| map.devices.get(d).is_some_and(|d| d.up_in));
             let back_in = seen_out && any_in;
             seen_out |= !any_in;
+            // A deleted pool's PGs live nowhere.
             let left = pgs
                 .iter()
+                .filter(|k| map.pools.contains_key(&k.0))
                 .filter(|k| {
                     map.pgs.get(k).is_none_or(|pg| {
                         pg.acting != pg.up || pg.acting.iter().any(|d| devices.contains(d))
@@ -450,6 +530,7 @@ impl Runner {
                 })
                 .count() as u32;
             let id = op.id.clone();
+            let (what, done) = (what.to_string(), done.clone());
             let r = self
                 .store(move |s| {
                     s.update(&id, |o| {
@@ -459,22 +540,28 @@ impl Runner {
                         o.done = o.total - left.min(o.total);
                         if back_in {
                             o.state = State::Failed;
-                            o.message = format!("node {node}'s devices were brought back in");
+                            o.message = format!("{what}: brought back in");
                             o.finished_unix = now_unix();
                         } else if left == 0 && seen_out {
-                            o.state = State::Done;
-                            o.message = format!("node {node} drained: no PG lives on it");
-                            o.finished_unix = now_unix();
+                            if let Some(done) = &done {
+                                o.state = State::Done;
+                                o.message = done.clone();
+                                o.finished_unix = now_unix();
+                            }
                         } else {
-                            o.message = format!("{left} PG(s) still moving off node {node}");
+                            o.message = format!("{left} PG(s) still moving off {what}");
                         }
                     })
                 })
                 .await;
             match r {
-                Ok(Some(o)) if o.running() => {}
+                Ok(Some(o)) if o.running() => {
+                    if left == 0 && seen_out {
+                        return true;
+                    }
+                }
                 // Finished, gone, or no longer the leader's to write.
-                _ => return,
+                _ => return false,
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }

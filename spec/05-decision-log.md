@@ -1028,3 +1028,41 @@ stall a ping's TCP connection for the minimum retransmission timeout
 | 151 | Which port a device answers pings on: its TCP port's number (recommended), or a ping port per node in the map | Its TCP port's number | D185 |
 | 152 | How a node pings peers that don't answer UDP yet: both ways per peer until it first answers over UDP (recommended), or UDP once every node reports a version that has it | Both ways per peer | D185 |
 
+## Removing a device (2026-11-01)
+
+Building `RemoveDevice` (stage 4), one point the design in
+24-pools-and-devices.md §27.2.5 left open. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 153 | What happens to a node whose last device is removed: it leaves the map with it, and the map keeps removed device and node ids so none is given again (recommended); or it stays in the map, empty, until a later `node remove` | It leaves; ids kept | D186 |
+
+## Splitting PGs (2026-11-01)
+
+Starting stage 5 (24-pools-and-devices.md §27.5, D173), two points the
+design left open. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 154 | When clients start using a split PG's sibling: PG by PG, each once every member has split it, the map holding a set of split PGs per pool (recommended); or the whole pool at once, devices translating requests until every PG is split | PG by PG | D187 |
+| 155 | How stage 5 is cut: four pull requests (the engine's move and a device's split; the map's split state, protocol and `pool set --pgs`; the placement count rising; the autoscaler) (recommended), or two | Four | D187 |
+
+## The autoscaler (2026-11-01)
+
+Building stage 5d (D174), two points. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 156 | D174's trigger, "when its PGs per device pass twice the target", reads reversed (doubling raises PGs per device; adding devices lowers them): double when the devices call for at least twice the pool's count (recommended), or as written | Twice the count | D184 |
+| 157 | Whether the autoscaler is on for pools that exist when a cluster upgrades: on for every pool, the trial's pools sized so they don't split (recommended); on for new pools only; off by default | On for every pool | D184 |
+
+## Cache data across splits (2026-11-01)
+
+Before rolling stages 4 and 5 to the pilot, whose cache pool the
+autoscaler would split three times. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 158 | Whether a cache pool keeps its data across a split: build it before the rollout (recommended); roll out with the cache pool's autoscale off and build it later; leave it off | Build it first | D188 |
+| 159 | Which pieces: a generation per cache PG, backfill for the PGs a split moves, and the generation kept on each device so a restart keeps data too (recommended); the first two only | All three | D188 |

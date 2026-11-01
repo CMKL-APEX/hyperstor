@@ -712,6 +712,10 @@ pub fn status(
                 mixed_kinds: crate::mixes_disks_and_flash(map, p),
                 added_devices: p.added.iter().copied().collect(),
                 removed_devices: p.removed.iter().copied().collect(),
+                placement_count: p.placement,
+                splitting: p.split.is_some(),
+                split_done: p.split.as_ref().map_or(0, |s| s.done.len() as u32),
+                autoscale: p.autoscale,
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -1157,6 +1161,7 @@ impl ClusterService for Api {
             domain,
             classes,
             force: req.force,
+            autoscale: req.autoscale.unwrap_or(true),
         };
         let (reply, rx) = oneshot();
         self.tx
@@ -1228,6 +1233,12 @@ impl ClusterService for Api {
         if let Some(d) = req.domain {
             target.push_str(&format!(" domain={d}"));
         }
+        if let Some(n) = req.pg_count {
+            target.push_str(&format!(" pgs={n}"));
+        }
+        if let Some(a) = req.autoscale {
+            target.push_str(&format!(" autoscale={}", if a { "on" } else { "off" }));
+        }
         if force {
             target.push_str(" force");
         }
@@ -1255,10 +1266,17 @@ impl ClusterService for Api {
             classes: (req.every_device || !classes.is_empty()).then_some(classes),
             name: req.name.map(str::to_string),
             domain,
+            pg_count: req.pg_count,
+            autoscale: req.autoscale,
         };
-        if change.classes.is_none() && change.name.is_none() && change.domain.is_none() {
+        if change.classes.is_none()
+            && change.name.is_none()
+            && change.domain.is_none()
+            && change.pg_count.is_none()
+            && change.autoscale.is_none()
+        {
             return Err(bad(
-                "nothing to change: give classes, a name or a domain".into()
+                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
             ));
         }
         let (reply, rx) = oneshot();
@@ -1416,6 +1434,116 @@ impl ClusterService for Api {
             )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
+    }
+
+    async fn remove_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RemoveDeviceRequest>,
+    ) -> ServiceResult<pb::RemoveDeviceResponse> {
+        let (device, dry_run, force) = (req.device, req.dry_run, req.force);
+        let target = format!("device {device}{}", if force { " force" } else { "" });
+        // A dry run only reads.
+        let who = self.authorize(&ctx, "RemoveDevice", &target, !dry_run)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::RemoveDevice {
+                device,
+                force,
+                dry_run,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        if !dry_run && let Some(Err(e)) = &r {
+            audit(&who, "RemoveDevice", &target, &format!("failed: {e}"));
+        }
+        let removal = match r {
+            Some(Ok(r)) => r,
+            Some(Err(e)) if e.starts_with("no device") => {
+                return Err(meta_error(e, ConnectError::not_found, "not_found"));
+            }
+            Some(Err(e)) => {
+                return Err(meta_error(
+                    e,
+                    ConnectError::failed_precondition,
+                    "device_conflict",
+                ));
+            }
+            None => return Err(ConnectError::unavailable("map service stopped")),
+        };
+        let mut out = pb::RemoveDeviceResponse {
+            moves: removal
+                .moves
+                .iter()
+                .map(|m| pb::PgMove {
+                    pool: m.pool,
+                    pg: m.pg,
+                    before: m.before.clone(),
+                    after: m.after.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            short_pools: removal
+                .short
+                .iter()
+                .map(|&(pool, copies, size)| pb::ShortPool {
+                    pool,
+                    copies,
+                    size: size as u32,
+                    ..Default::default()
+                })
+                .collect(),
+            fill: removal
+                .space
+                .iter()
+                .map(|&(device, used_bytes, total_bytes)| pb::DeviceFill {
+                    device,
+                    used_bytes,
+                    total_bytes,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        if dry_run {
+            return Ok(out.into());
+        }
+        // The device is out: an operation follows its PGs off it, then
+        // removes it from the map (D186).
+        let n = removal.moves.len();
+        let op = self
+            .admin
+            .runner
+            .create(
+                crate::operations::Work::RemoveDevice {
+                    device,
+                    pgs: removal.moves.iter().map(|m| (m.pool, m.pg)).collect(),
+                },
+                target.clone(),
+                n as u32,
+                format!("{n} PG(s) to move off device {device}"),
+                who.clone(),
+            )
+            .await;
+        audit(
+            &who,
+            "RemoveDevice",
+            &target,
+            &match &op {
+                Ok(o) => format!(
+                    "ok, {n} PG(s) move, {} pool(s) short, operation {} started",
+                    removal.short.len(),
+                    o.id
+                ),
+                Err(e) => format!("failed: {e:?}"),
+            },
+        );
+        match op {
+            Ok(o) => out.operation = buffa::MessageField::some(ops::op_pb(&o)),
+            Err(e) => return Err(self.store_error(e).await),
+        }
+        Ok(out.into())
     }
 
     async fn set_pool_device(

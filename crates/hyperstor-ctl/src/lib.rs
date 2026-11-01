@@ -52,6 +52,16 @@ fn gib(b: Option<u64>) -> String {
     })
 }
 
+/// A device's space after a removal: used of total, and the share.
+pub fn fill_text(used: u64, total: u64) -> String {
+    format!(
+        "{} of {} used ({:.0}%)",
+        gib(Some(used)),
+        gib(Some(total)),
+        used as f64 * 100.0 / total.max(1) as f64
+    )
+}
+
 pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -123,6 +133,28 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
             o,
             "! classes hold hard disks and flash (set with --force): writes wait for the slowest copy"
         );
+    }
+    // Splits (D173, D187), and the autoscaler (D184; not for .meta).
+    for p in &s.pools {
+        if !p.autoscale && p.id != 0 {
+            let _ = writeln!(o, "pool {}: autoscale off", p.id);
+        }
+        if p.splitting {
+            let _ = writeln!(
+                o,
+                "pool {} splitting to {} PGs: {} of {} split",
+                p.id,
+                p.pg_count * 2,
+                p.split_done,
+                p.pg_count
+            );
+        } else if p.placement_count != 0 && p.placement_count < p.pg_count {
+            let _ = writeln!(
+                o,
+                "pool {}: its {} PGs are placed as {}: the new ones are on their parents' devices",
+                p.id, p.pg_count, p.placement_count
+            );
+        }
     }
     o
 }
@@ -302,6 +334,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.SetFullRatios", "full-ratios"),
     ("ClusterService.AddDevice", "device add"),
+    ("ClusterService.RemoveDevice", "device remove"),
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),

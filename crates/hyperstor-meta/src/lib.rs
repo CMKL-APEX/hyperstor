@@ -46,6 +46,8 @@ pub struct NewPool {
     pub classes: Vec<String>,
     /// Allow classes of hard disks and flash both (D172).
     pub force: bool,
+    /// Whether the map service grows its PG count (D174, D184).
+    pub autoscale: bool,
 }
 
 /// What `SetPool` changes (24-pools-and-devices.md §27.3.2); `None`
@@ -57,6 +59,11 @@ pub struct PoolChange {
     pub name: Option<String>,
     /// PGs move, as for the classes.
     pub domain: Option<hyperstor_placement::Domain>,
+    /// Twice the PG count: the pool splits (24-pools-and-devices.md
+    /// §27.5, D187).
+    pub pg_count: Option<u32>,
+    /// Whether the map service grows its PG count (D174, D184).
+    pub autoscale: Option<bool>,
 }
 
 pub enum Admin {
@@ -149,6 +156,29 @@ pub enum Admin {
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
+    /// Takes a device out to remove it (24-pools-and-devices.md §27.2.5,
+    /// D175), or with `dry_run` only works out what that would do.
+    RemoveDevice {
+        device: u32,
+        force: bool,
+        dry_run: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Removal, String>>,
+    },
+    /// Takes a device being removed out of the acting set of each PG that
+    /// has nothing left to backfill but still lists it
+    /// ([`ClusterMap::release`]); nothing for a device that is in. Replies
+    /// with how many PGs changed.
+    Release {
+        device: u32,
+        reply: hyperstor_reactor::chan::OneSender<usize>,
+    },
+    /// Removes a device that no PG lists from the map, its node with it if
+    /// it was the last (D186). Replies with whether the node went, and the
+    /// working map's epoch; `None` if the map hasn't the device.
+    FinishRemoval {
+        device: u32,
+        reply: hyperstor_reactor::chan::OneSender<Result<Option<(bool, u64)>, String>>,
+    },
     /// Deletes a pool from the map (D176, D181), once the caller has seen
     /// it hold nothing. Replies with the working map's epoch.
     DeletePool {
@@ -224,6 +254,24 @@ pub enum Admin {
         reply: hyperstor_reactor::chan::OneSender<Result<Vec<PgMove>, String>>,
     },
 }
+
+/// What removing a device does, or would (24-pools-and-devices.md
+/// §27.2.5): the PGs that move, the pools left with fewer failure domains
+/// than copies (pool, domains, copies), and the devices that take data,
+/// with their bytes used after and their size.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Removal {
+    pub moves: Vec<PgMove>,
+    pub short: Vec<(u32, u32, u8)>,
+    pub space: Vec<(u32, u64, u64)>,
+}
+
+/// Each marked PG's split reports: the PG epoch they name, and who sent
+/// them (D187).
+type SplitReports = HashMap<(u32, u32), (u64, BTreeSet<u32>)>;
+
+/// PGs of one pool split at a time (D187): each pauses its I/O briefly.
+pub const SPLITS_AT_ONCE: usize = 4;
 
 /// A PG a drain moves: its acting set before, where it goes after.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +526,9 @@ pub struct Meta {
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
     kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
+    /// Members' reports of marked PGs split (D187): the PG epoch they name
+    /// and who reported.
+    split_reports: RefCell<SplitReports>,
     /// A follower's last [`LeaderView`] from the leader, and when.
     leader_view: RefCell<Option<(Instant, LeaderView)>>,
     /// When each node was last granted a non-zero lease.
@@ -663,6 +714,7 @@ impl Meta {
             space: RefCell::new(BTreeMap::new()),
             fullness: RefCell::new(BTreeMap::new()),
             kind_reports: RefCell::new(BTreeMap::new()),
+            split_reports: RefCell::new(HashMap::new()),
             leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
             fencing: RefCell::new(std::collections::HashSet::new()),
@@ -1205,7 +1257,7 @@ impl Meta {
                 ));
             }
         }
-        let id = map.nodes.keys().next_back().map_or(0, |n| n + 1);
+        let id = map.next_node_id();
         // Weight 0 until each device reports its capacity (D158), so
         // nothing is placed by a guess.
         for d in map.add_node(id, addrs, rack) {
@@ -1347,15 +1399,27 @@ impl Meta {
             classes,
             name,
             domain,
+            pg_count,
+            autoscale,
         } = change;
-        if classes.is_none() && name.is_none() && domain.is_none() {
-            return Err("nothing to change: give classes, a name or a domain".into());
+        if classes.is_none()
+            && name.is_none()
+            && domain.is_none()
+            && pg_count.is_none()
+            && autoscale.is_none()
+        {
+            return Err(
+                "nothing to change: give classes, a name, a domain, a PG count or autoscale".into(),
+            );
         }
         let mut map = self.map.borrow_mut();
         let Some(info) = map.pools.get(&pool).cloned() else {
             return Err(format!("no pool {pool}"));
         };
         let mut wanted = info.clone();
+        if let Some(a) = autoscale {
+            wanted.autoscale = a;
+        }
         if let Some(mut classes) = classes {
             classes.sort();
             classes.dedup();
@@ -1371,10 +1435,31 @@ impl Meta {
             }
             wanted.name = name;
         }
+        if let Some(n) = pg_count {
+            if info.split.is_some() {
+                return Err(format!(
+                    "pool {pool} is splitting to {} PGs already",
+                    info.pg_count * 2
+                ));
+            }
+            if n != info.pg_count * 2 {
+                return Err(format!(
+                    "pool {pool} has {} PGs: a split doubles them, to {}",
+                    info.pg_count,
+                    info.pg_count * 2
+                ));
+            }
+        }
         let mixed = check_class_set(&map, &wanted, force)?;
         if wanted != info {
             map.pools.insert(pool, wanted);
             map.recompute();
+        }
+        if pg_count.is_some() {
+            map.start_split(pool)?;
+            drop(map);
+            self.advance_splits();
+            return Ok((self.map.borrow().epoch, mixed));
         }
         Ok((map.epoch, mixed))
     }
@@ -1398,6 +1483,7 @@ impl Meta {
             domain,
             mut classes,
             force,
+            autoscale,
         } = new;
         classes.sort();
         classes.dedup();
@@ -1435,6 +1521,9 @@ impl Meta {
             classes,
             added: BTreeSet::new(),
             removed: BTreeSet::new(),
+            placement: 0,
+            split: None,
+            autoscale,
         };
         let eligible = map
             .devices
@@ -1443,6 +1532,7 @@ impl Meta {
             .count();
         let mixed = check_class_set(&map, &info, force)?;
         info.pg_count = pg_count.unwrap_or_else(|| default_pg_count(eligible, size));
+        info.placement = info.pg_count;
         let pgs = info.pg_count;
         map.add_pool(info);
         map.recompute();
@@ -1557,6 +1647,135 @@ impl Meta {
             *map = after;
         }
         Ok(moves)
+    }
+
+    /// Takes `device` out so its PGs move off it, to remove it
+    /// (24-pools-and-devices.md §27.2.5, D175); with `dry_run` changes
+    /// nothing. Refused when a pool using it would keep fewer copies than
+    /// its `min`, or (unless `force`) fewer than its `size`, for want of
+    /// failure domains, and when a device that takes its data would pass
+    /// the map's `full` ratio (D27), by the primaries' PG usage (D155) and
+    /// the devices' space reports.
+    pub fn remove_device(
+        &self,
+        device: u32,
+        force: bool,
+        dry_run: bool,
+    ) -> Result<Removal, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(dev) = map.devices.get(&device).cloned() else {
+            return Err(format!("no device {device}"));
+        };
+        let mut after = map.clone();
+        if after.set_in(device, false) == Some(true) {
+            after.recompute();
+        }
+        let mut short = Vec::new();
+        for p in map.pools.values().filter(|p| p.uses(&dev)) {
+            let (before, left) = (domains(&map, p), domains(&after, p));
+            if left >= before || left >= p.size as usize {
+                continue;
+            }
+            if left < p.min_size as usize {
+                return Err(format!(
+                    "without device {device}, pool {} would keep {left} copies, fewer than its min of {}",
+                    p.id, p.min_size
+                ));
+            }
+            if !force {
+                return Err(format!(
+                    "without device {device}, pool {} would keep {left} of its {} copies; --force allows it",
+                    p.id, p.size
+                ));
+            }
+            short.push((p.id, left as u32, p.size));
+        }
+        let mut moves = Vec::new();
+        let mut gains: BTreeMap<u32, u64> = BTreeMap::new();
+        let usage = self.usage.borrow();
+        for (k, was) in &map.pgs {
+            let Some(now) = after.pgs.get(k) else {
+                continue;
+            };
+            if now.up != was.acting {
+                moves.push(PgMove {
+                    pool: k.0,
+                    pg: k.1,
+                    before: was.acting.clone(),
+                    after: now.up.clone(),
+                });
+            }
+            // A copy's bytes: an EC shard holds 1/k of them.
+            let bytes = usage
+                .get(k)
+                .map_or(0, |&(_, b)| match map.pools[&k.0].kind {
+                    PoolKind::Ec { k, .. } => b / k.max(1) as u64,
+                    _ => b,
+                });
+            for d in now.up.iter().filter(|d| !was.acting.contains(d)) {
+                *gains.entry(*d).or_default() += bytes;
+            }
+        }
+        drop(usage);
+        let reports = self.space.borrow();
+        let mut space = Vec::new();
+        let full = map.full_ratios.full;
+        for (&d, &gain) in &gains {
+            let Some(&(total, free)) = reports.get(&d) else {
+                continue;
+            };
+            let used = total.saturating_sub(free) + gain;
+            if used > FullRatios::limit(total, full) {
+                return Err(format!(
+                    "device {d} would be {:.0}% full with device {device}'s data, past {:.1}%: it has nowhere to go",
+                    used as f64 * 100.0 / total.max(1) as f64,
+                    full as f64 / 10.0
+                ));
+            }
+            space.push((d, used, total));
+        }
+        if !dry_run {
+            if map.set_in(device, false) == Some(true) {
+                map.recompute();
+            }
+            map.release(device);
+        }
+        Ok(Removal {
+            moves,
+            short,
+            space,
+        })
+    }
+
+    /// Removes `device` from the map once it is out and no PG lists it in
+    /// `up` or `acting`, and its node with it if it was the last; both ids
+    /// are kept (D186). `None` if the map hasn't the device (removed
+    /// already).
+    pub fn finish_removal(&self, device: u32) -> Result<Option<(bool, u64)>, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(d) = map.devices.get(&device) else {
+            return Ok(None);
+        };
+        if d.up_in {
+            return Err(format!("device {device} was brought back in"));
+        }
+        if let Some((k, _)) = map
+            .pgs
+            .iter()
+            .find(|(_, p)| p.up.contains(&device) || p.acting.contains(&device))
+        {
+            return Err(format!("PG {}.{} still lists device {device}", k.0, k.1));
+        }
+        let gone = map.remove_device(device).unwrap_or(false);
+        self.space.borrow_mut().remove(&device);
+        self.kind_reports.borrow_mut().remove(&device);
+        Ok(Some((gone, map.epoch)))
     }
 
     /// Answers the cluster API's requests (`api`), which arrive from its
@@ -1739,6 +1958,26 @@ impl Meta {
                 Admin::DeletePool { pool, reply } => {
                     let _ = reply.send(self.delete_pool(pool));
                 }
+                Admin::RemoveDevice {
+                    device,
+                    force,
+                    dry_run,
+                    reply,
+                } => {
+                    let _ = reply.send(self.remove_device(device, force, dry_run));
+                }
+                Admin::Release { device, reply } => {
+                    let mut map = self.map.borrow_mut();
+                    let out = map.devices.get(&device).is_some_and(|d| !d.up_in);
+                    let _ = reply.send(if out && self.leads() {
+                        map.release(device)
+                    } else {
+                        0
+                    });
+                }
+                Admin::FinishRemoval { device, reply } => {
+                    let _ = reply.send(self.finish_removal(device));
+                }
                 Admin::CreatePool { new, reply } => {
                     let _ = reply.send(self.create_pool(new));
                 }
@@ -1839,6 +2078,157 @@ impl Meta {
             if self.may_change_roles() && self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
             }
+            if self.may_change_roles() {
+                self.advance_splits();
+                self.autoscale();
+            }
+        }
+    }
+
+    /// Moves splits on (24-pools-and-devices.md §27.5, D187): flips each
+    /// marked PG every member of whose acting set has reported it split at
+    /// its epoch, and marks more PGs, the clean ones, up to
+    /// [`SPLITS_AT_ONCE`] per pool. The last flip doubles the count. Then,
+    /// once every PG of a split pool is clean, places [`SPLITS_AT_ONCE`]
+    /// more of its new PGs on their own devices (D173), so they move a
+    /// few at a time, under the backfill budget.
+    pub fn advance_splits(&self) {
+        if !self.leads() {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        let moving: Vec<u32> = map
+            .pools
+            .values()
+            .filter(|p| p.split.is_none() && p.placement < p.pg_count)
+            .map(|p| p.id)
+            .collect();
+        let mut placed = false;
+        for pool in moving {
+            let clean = map.pgs.iter().filter(|(k, _)| k.0 == pool).all(|(_, i)| {
+                !i.acting.is_empty()
+                    && i.acting == i.up
+                    && i.acting.iter().all(|d| *d != NO_DEVICE && map.live(*d))
+            });
+            if clean && let Some(p) = map.pools.get_mut(&pool) {
+                let from = p.placement;
+                p.placement = (p.placement + SPLITS_AT_ONCE as u32).min(p.pg_count);
+                // A cache pool's PGs that move are backfilled, so the
+                // move loses nothing (D188).
+                if p.kind == PoolKind::Cache {
+                    let to = p.placement;
+                    map.keep_acting.extend((from..to).map(|pg| (pool, pg)));
+                }
+                placed = true;
+            }
+        }
+        if placed {
+            map.recompute();
+        }
+        let splitting: Vec<u32> = map
+            .pools
+            .values()
+            .filter(|p| p.split.is_some())
+            .map(|p| p.id)
+            .collect();
+        for pool in splitting {
+            let marked = map.pools[&pool]
+                .split
+                .as_ref()
+                .map(|s| s.marked.clone())
+                .unwrap_or_default();
+            for pg in marked {
+                let Some(info) = map.pgs.get(&(pool, pg)) else {
+                    continue;
+                };
+                let members: Vec<u32> = info
+                    .acting
+                    .iter()
+                    .copied()
+                    .filter(|d| *d != NO_DEVICE)
+                    .collect();
+                let all = self
+                    .split_reports
+                    .borrow()
+                    .get(&(pool, pg))
+                    .is_some_and(|(e, by)| {
+                        *e == info.epoch && members.iter().all(|d| by.contains(d))
+                    });
+                if !members.is_empty() && all && map.flip_split(pool, pg) {
+                    self.split_reports.borrow_mut().remove(&(pool, pg));
+                }
+            }
+            let Some(p) = map.pools.get(&pool) else {
+                continue;
+            };
+            let Some(s) = &p.split else {
+                continue;
+            };
+            let clean = |pg: u32| {
+                map.pgs.get(&(pool, pg)).is_some_and(|i| {
+                    !i.acting.is_empty()
+                        && i.acting == i.up
+                        && i.acting.iter().all(|d| map.live(*d))
+                })
+            };
+            let next: Vec<u32> = (0..p.pg_count)
+                .filter(|pg| !s.marked.contains(pg) && !s.done.contains(pg) && clean(*pg))
+                .take(SPLITS_AT_ONCE.saturating_sub(s.marked.len()))
+                .collect();
+            for pg in next {
+                map.mark_split(pool, pg);
+            }
+        }
+    }
+
+    /// The autoscaler (D174, D184): starts splitting the first pool, but
+    /// `.meta`, whose devices call for at least twice its PG count, while
+    /// none splits or is moving its new PGs and every PG is clean, so one
+    /// pool at a time and never while the cluster is degraded. Pools with
+    /// autoscale off are left alone.
+    pub fn autoscale(&self) {
+        if !self.leads() {
+            return;
+        }
+        let mut map = self.map.borrow_mut();
+        if map
+            .pools
+            .values()
+            .any(|p| p.split.is_some() || p.placement < p.pg_count)
+        {
+            return;
+        }
+        let clean = map.pgs.values().all(|i| {
+            !i.acting.is_empty()
+                && i.acting == i.up
+                && i.acting.iter().all(|d| *d != NO_DEVICE && map.live(*d))
+        });
+        if !clean {
+            return;
+        }
+        let grow = map.pools.values().find_map(|p| {
+            if p.id == META_POOL || !p.autoscale {
+                return None;
+            }
+            let devices = map
+                .devices
+                .values()
+                .filter(|d| d.up_in && d.weight > 0.0 && p.uses(d))
+                .count();
+            autoscale_wants(devices, p.size, p.pg_count).then_some((p.id, p.pg_count, devices))
+        });
+        if let Some((pool, n, devices)) = grow
+            && map.start_split(pool).is_ok()
+        {
+            eprintln!(
+                "hyperstor-meta: pool {pool} splits to {} PGs: its {devices} devices call for about {} (D184)",
+                n * 2,
+                target_pgs(devices, map.pools[&pool].size)
+            );
+        }
+        drop(map);
+        if grow.is_some() {
+            self.advance_splits();
         }
     }
 
@@ -2210,6 +2600,7 @@ impl Meta {
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
                     | Msg::DeviceKind { .. }
+                    | Msg::PgSplit { .. }
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
@@ -2278,10 +2669,20 @@ impl Meta {
                 pg_epoch,
                 device,
             }) => {
-                let ok = self
+                // A marked PG's acting set only shrinks until it flips
+                // (D187): a member that joined would hold the PG without
+                // what moved to its sibling. Backfill tries again after.
+                let marked = self
                     .map
-                    .borrow_mut()
-                    .backfill_done(pool, pg, pg_epoch, device);
+                    .borrow()
+                    .pools
+                    .get(&pool)
+                    .is_some_and(|p| p.split.as_ref().is_some_and(|s| s.marked.contains(&pg)));
+                let ok = !marked
+                    && self
+                        .map
+                        .borrow_mut()
+                        .backfill_done(pool, pg, pg_epoch, device);
                 let epoch = self.map.borrow().epoch;
                 if ok {
                     Msg::BackfillOk { map_epoch: epoch }
@@ -2324,6 +2725,29 @@ impl Meta {
                         .collect(),
                     flapping: v.flapping.into_iter().collect(),
                     space: v.space.iter().map(|(&d, &(t, f))| (d, t, f)).collect(),
+                }
+            }
+            Ok(Msg::PgSplit {
+                pool,
+                pg,
+                pg_epoch,
+                device,
+            }) => {
+                {
+                    // A report from before the PG's last change is stale;
+                    // a newer one starts the count again.
+                    let mut r = self.split_reports.borrow_mut();
+                    let e = r.entry((pool, pg)).or_default();
+                    if pg_epoch > e.0 {
+                        *e = (pg_epoch, BTreeSet::new());
+                    }
+                    if pg_epoch == e.0 {
+                        e.1.insert(device);
+                    }
+                }
+                self.advance_splits();
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
                 }
             }
             Ok(Msg::DeviceKind { device, kind }) => {
@@ -2506,21 +2930,12 @@ fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<boo
             what()
         ));
     }
-    let domains: BTreeSet<u32> = map
-        .devices
-        .values()
-        .filter(|d| d.up_in && pool.uses(d))
-        .map(|d| match pool.domain {
-            Domain::Device => d.id,
-            Domain::Host => d.node,
-            Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
-        })
-        .collect();
-    if domains.len() < pool.size as usize {
+    let domains = domains(map, pool);
+    if domains < pool.size as usize {
         return Err(format!(
             "the devices of classes {} span {} {}(s); pool {} keeps {} copies",
             what(),
-            domains.len(),
+            domains,
             match pool.domain {
                 Domain::Device => "device",
                 Domain::Host => "host",
@@ -2531,6 +2946,35 @@ fn check_class_set(map: &ClusterMap, pool: &PoolInfo, force: bool) -> Result<boo
         ));
     }
     Ok(mixed)
+}
+
+/// How many failure domains, at `pool`'s level, its devices in placement
+/// span: at most this many copies of a PG can be placed.
+fn domains(map: &ClusterMap, pool: &PoolInfo) -> usize {
+    use hyperstor_placement::Domain;
+    map.devices
+        .values()
+        .filter(|d| d.up_in && pool.uses(d))
+        .map(|d| match pool.domain {
+            Domain::Device => d.id,
+            Domain::Host => d.node,
+            Domain::Rack => map.nodes.get(&d.node).map_or(0, |n| n.rack),
+        })
+        .collect::<BTreeSet<u32>>()
+        .len()
+}
+
+/// About 100 PGs per device a pool may use, counting each copy
+/// (24-pools-and-devices.md §27.5): what its devices call for.
+pub fn target_pgs(devices: usize, copies: u8) -> u32 {
+    (devices * 100 / copies.max(1) as usize) as u32
+}
+
+/// Whether the autoscaler doubles a pool of `pg_count` PGs on `devices`
+/// devices (D184): when they call for at least twice as many, up to
+/// 65,536.
+pub fn autoscale_wants(devices: usize, copies: u8, pg_count: u32) -> bool {
+    pg_count < 1 << 16 && target_pgs(devices, copies) >= pg_count.saturating_mul(2)
 }
 
 /// The PG count a new pool gets when none is given (24-pools-and-devices.md
@@ -2805,6 +3249,7 @@ mod tests {
             domain: hyperstor_placement::Domain::Host,
             classes: classes.iter().map(|c| c.to_string()).collect(),
             force: false,
+            autoscale: true,
         };
         assert!(
             meta.create_pool(new("fast", &[]))
@@ -3027,6 +3472,267 @@ mod tests {
 
     /// A drain's dry run changes nothing and says what a drain moves; the
     /// drain takes every device of the node out.
+    /// §27.5, D187: a split marks clean PGs, at most `SPLITS_AT_ONCE`;
+    /// a marked PG flips once every member of its acting set has reported
+    /// it split at its epoch (a report at an older epoch doesn't count),
+    /// and refuses a member joining by backfill until then; the last flip
+    /// doubles the count.
+    #[test]
+    fn splits_flip_pgs_once_every_member_reports() {
+        use hyperstor_proto::Msg;
+        let meta = Meta::new(map());
+        let n = meta.map.borrow().pools[&1].pg_count;
+        let change = |pg_count| PoolChange {
+            pg_count: Some(pg_count),
+            ..Default::default()
+        };
+        assert!(
+            meta.set_pool(1, change(n + 1), false)
+                .unwrap_err()
+                .contains("doubles")
+        );
+        meta.set_pool(1, change(n * 2), false).unwrap();
+        assert!(
+            meta.set_pool(1, change(n * 2), false)
+                .unwrap_err()
+                .contains("already")
+        );
+        let marked = || {
+            meta.map.borrow().pools[&1]
+                .split
+                .as_ref()
+                .map(|s| s.marked.clone())
+        };
+        let first = marked().unwrap();
+        assert_eq!(first.len(), SPLITS_AT_ONCE);
+        let report = |pg: u32, device: u32, pg_epoch: u64| {
+            meta.handle(Ok(Msg::PgSplit {
+                pool: 1,
+                pg,
+                pg_epoch,
+                device,
+            }))
+        };
+        let pg = *first.iter().next().unwrap();
+        let info = meta.map.borrow().pgs[&(1, pg)].clone();
+        // Backfill to it is refused while it is marked.
+        assert!(matches!(
+            meta.handle(Ok(Msg::BackfillDone {
+                pool: 1,
+                pg,
+                pg_epoch: info.epoch,
+                device: 9999,
+            })),
+            Msg::Error { .. }
+        ));
+        for (i, d) in info.acting.iter().enumerate() {
+            assert!(
+                marked().unwrap().contains(&pg),
+                "flipped before every member"
+            );
+            // A report at an older epoch first: not counted.
+            report(pg, *d, info.epoch - 1);
+            if i + 1 < info.acting.len() {
+                report(pg, *d, info.epoch);
+            }
+        }
+        assert!(marked().unwrap().contains(&pg));
+        report(pg, *info.acting.last().unwrap(), info.epoch);
+        let m = meta.map.borrow().clone();
+        let s = m.pools[&1].split.as_ref().unwrap();
+        assert!(s.done.contains(&pg) && !s.marked.contains(&pg));
+        assert_eq!(s.marked.len(), SPLITS_AT_ONCE, "the next one marked");
+        assert_eq!(m.pgs[&(1, pg + n)].acting, info.acting);
+        // Every other PG, by every member.
+        while let Some(marked) = marked() {
+            for pg in marked {
+                let i = meta.map.borrow().pgs[&(1, pg)].clone();
+                for d in &i.acting {
+                    report(pg, *d, i.epoch);
+                }
+            }
+        }
+        let p = meta.map.borrow().pools[&1].clone();
+        assert_eq!((p.pg_count, p.placement, p.split), (n * 2, n, None));
+        // The new PGs move a few at a time (D173), only while the pool's
+        // PGs are all clean; no split until they have.
+        assert!(
+            meta.set_pool(1, change(n * 4), false)
+                .unwrap_err()
+                .contains("still moving")
+        );
+        let placement = || meta.map.borrow().pools[&1].placement;
+        let settle = || {
+            for (k, pg) in meta.map.borrow_mut().pgs.iter_mut() {
+                if k.0 == 1 {
+                    pg.acting = pg.up.clone();
+                }
+            }
+        };
+        settle();
+        meta.advance_splits();
+        assert_eq!(placement(), n + SPLITS_AT_ONCE as u32);
+        // Unclean: wait.
+        {
+            let mut m = meta.map.borrow_mut();
+            let pg = m.pgs.get_mut(&(1, 0)).unwrap();
+            pg.acting.rotate_left(1);
+        }
+        meta.advance_splits();
+        assert_eq!(placement(), n + SPLITS_AT_ONCE as u32);
+        while placement() < n * 2 {
+            settle();
+            meta.advance_splits();
+        }
+        meta.set_pool(1, change(n * 4), false).unwrap();
+    }
+
+    /// D174, D184: the autoscaler splits the first pool whose devices
+    /// call for at least twice its PGs, one pool at a time, not while a PG
+    /// is unclean, never `.meta` nor a pool with autoscale off.
+    #[test]
+    fn the_autoscaler_grows_one_pool_at_a_time() {
+        assert!(autoscale_wants(8, 3, 64) && !autoscale_wants(3, 3, 64));
+        assert!(!autoscale_wants(1 << 20, 1, 1 << 16), "at most 65,536");
+        let splitting = |meta: &Meta| -> Vec<u32> {
+            meta.map
+                .borrow()
+                .pools
+                .values()
+                .filter(|p| p.split.is_some())
+                .map(|p| p.id)
+                .collect()
+        };
+        let meta = Meta::new(map());
+        // Eight devices call for about 266 PGs of pool 1's 64; one PG
+        // unclean: nothing.
+        meta.map
+            .borrow_mut()
+            .pgs
+            .get_mut(&(2, 0))
+            .unwrap()
+            .acting
+            .rotate_left(1);
+        meta.autoscale();
+        assert!(splitting(&meta).is_empty());
+        meta.map
+            .borrow_mut()
+            .pgs
+            .get_mut(&(2, 0))
+            .unwrap()
+            .acting
+            .rotate_right(1);
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [1]);
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [1], "one pool at a time");
+        // With autoscale off, pool 2 instead.
+        let meta = Meta::new(map());
+        let off = PoolChange {
+            autoscale: Some(false),
+            ..Default::default()
+        };
+        meta.set_pool(1, off, false).unwrap();
+        meta.autoscale();
+        assert_eq!(splitting(&meta), [2]);
+        assert!(!meta.map.borrow().pools[&1].autoscale);
+    }
+
+    /// §27.2.5, D175, D186: a device is taken out to be removed unless a
+    /// device taking its data would pass the `full` ratio, or a pool would keep
+    /// fewer copies than its `min` (or, unforced, its `size`); it leaves
+    /// the map once no PG lists it, its node with its last device, and
+    /// neither id is given again.
+    #[test]
+    fn devices_are_removed_once_no_pg_lists_them() {
+        let mut m = map();
+        m.pools.get_mut(&2).unwrap().min_size = 2;
+        let meta = Meta::new(m);
+        assert!(
+            meta.remove_device(9, false, true)
+                .unwrap_err()
+                .contains("no device 9")
+        );
+        // Every device 94% full, and every PG of pool 1 holding 20 bytes:
+        // the devices that take device 3001's PGs would pass 95%.
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (1000, 60));
+        }
+        let pgs: Vec<(u32, u32, u64)> = (0..64).map(|pg| (1, pg, 20)).collect();
+        meta.note_usage(0, false, &pgs);
+        let before = meta.map.borrow().clone();
+        let e = meta.remove_device(3001, true, false).unwrap_err();
+        assert!(e.contains("% full with device 3001's data"), "{e}");
+        assert_eq!(*meta.map.borrow(), before, "refused, even forced");
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (1000, 500));
+        }
+        let dry = meta.remove_device(3001, false, true).unwrap();
+        assert_eq!(*meta.map.borrow(), before, "a dry run changes nothing");
+        assert!(dry.short.is_empty() && !dry.moves.is_empty());
+        assert!(
+            dry.space
+                .iter()
+                .all(|&(_, used, total)| used >= 520 && total == 1000)
+        );
+        assert_eq!(meta.remove_device(3001, false, false).unwrap(), dry);
+        let after = meta.map.borrow().clone();
+        assert!(!after.devices[&3001].up_in);
+        assert!(after.pgs.values().all(|pg| !pg.up.contains(&3001)));
+        // Not while a PG still lists it, nor once it is back in.
+        if after.pgs.values().any(|pg| pg.acting.contains(&3001)) {
+            assert!(
+                meta.finish_removal(3001)
+                    .unwrap_err()
+                    .contains("still lists")
+            );
+        }
+        let settle = || {
+            for pg in meta.map.borrow_mut().pgs.values_mut() {
+                pg.acting = pg.up.clone();
+            }
+        };
+        settle();
+        meta.set_device_in(3001, true).unwrap();
+        assert!(meta.finish_removal(3001).unwrap_err().contains("back in"));
+        meta.set_device_in(3001, false).unwrap();
+        settle();
+        assert_eq!(meta.finish_removal(3001).unwrap().map(|r| r.0), Some(false));
+        assert_eq!(meta.finish_removal(3001).unwrap(), None, "removed already");
+        assert!(meta.map.borrow().removed_devices.contains(&3001));
+        // With node 2 out, node 3's last device spans the third host of
+        // pools that keep 3 copies.
+        meta.drain(2, false).unwrap();
+        settle();
+        let e = meta.remove_device(3000, false, true).unwrap_err();
+        assert!(e.contains("would keep 2 of its 3 copies; --force"), "{e}");
+        let forced = meta.remove_device(3000, true, false).unwrap();
+        assert_eq!(forced.short, vec![(1, 2, 3), (2, 2, 3)]);
+        // Nothing is backfilled to a PG left short: device 3000 leaves its
+        // acting set at once, or it never would.
+        assert!(
+            meta.map
+                .borrow()
+                .pgs
+                .values()
+                .all(|p| !p.acting.contains(&3000))
+        );
+        assert_eq!(meta.finish_removal(3000).unwrap().map(|r| r.0), Some(true));
+        let m = meta.map.borrow().clone();
+        assert!(!m.nodes.contains_key(&3) && m.removed_nodes.contains(&3));
+        // Below a pool's min, not even forced: with device 1001 out, node
+        // 1 goes with device 1000.
+        meta.set_device_in(1001, false).unwrap();
+        let e = meta.remove_device(1000, true, true).unwrap_err();
+        assert!(e.contains("fewer than its min of 2"), "{e}");
+        let a: SocketAddr = "127.0.0.1:7999".parse().unwrap();
+        assert_eq!(
+            meta.add_node(0, &[a]).unwrap(),
+            4,
+            "node 3's id isn't given again"
+        );
+    }
+
     #[test]
     fn drains_move_every_pg_off_the_node() {
         let meta = Meta::new(map());
@@ -3080,6 +3786,9 @@ mod tests {
             classes: Vec::new(),
             added: Default::default(),
             removed: Default::default(),
+            placement: 32,
+            split: None,
+            autoscale: true,
         });
         m.recompute();
         m

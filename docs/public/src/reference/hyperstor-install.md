@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--path P] [--id D] [--force-format]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
 ```
 
 | Command | Does |
@@ -57,6 +57,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--id D` | | `format-device`: its device id (`N × 1000 + i`, as `hyperstorctl device add` gave it) |
 | `--force-format` | off | `format-device` and `--device`: format over another system's signature |
 | `--device PATH` | | `install`: add the block device PATH (by `/dev/disk/by-id/`) to this host's node `--node N`, while the cluster runs (D167): checked for another system's data first, registered with the map service, formatted, given to the service user by a udev rule, and kept in `install.conf`, so later runs keep it. Repeatable. Needs the administrator's certificate (a map service host) |
+| `--remove-device ID` | | `install`: drop device ID, which `hyperstorctl device remove` has taken out of the map, from this host's node (D186): kept in `install.conf`, so this run and later ones leave out its `--shard`, and the node is restarted without it. Refused while the map still has the device (checked with the administrator's certificate; without it, the installer says it couldn't check), and for a node's last device. The device's data is left as it is. Repeatable |
 | `--device-address IP:PORT` | the node's next free port | `--device`: where the device is served (one device at a time) |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later

@@ -9,7 +9,7 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Operation, OperationJson } from "./admin_pb";
+import type { Operation, OperationJson, PgMove, PgMoveJson } from "./admin_pb";
 import { file_hyperstor_v1_admin } from "./admin_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -17,7 +17,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/cluster.proto.
  */
 export const file_hyperstor_v1_cluster: GenFile = /*@__PURE__*/
-  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIrEBCglUcmFzaEl0ZW0SDAoEa2luZBgBIAEoCRIKCgJpZBgCIAEoCRINCgVlcG9jaBgDIAEoBBIMCgRuYW1lGAQgASgJEgwKBHBvb2wYBSABKA0SDAoEc2l6ZRgGIAEoBBIiCgx0cmFzaGVkX3VuaXgYByABKARSDHRyYXNoZWRfdW5peBIeCgpwdXJnZV91bml4GAggASgEUgpwdXJnZV91bml4Eg0KBWdyb3VwGAkgASgJIiAKEExpc3RUcmFzaFJlcXVlc3QSDAoEcG9vbBgBIAEoDSI7ChFMaXN0VHJhc2hSZXNwb25zZRImCgVpdGVtcxgBIAMoCzIXLmh5cGVyc3Rvci52MS5UcmFzaEl0ZW0iUQoXUmVzdG9yZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBARIMCgRuYW1lGAMgASgJQggKBl9lcG9jaCJAChhSZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJBChVQdXJnZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBAUIICgZfZXBvY2giRAoWUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIicKF0dldFRyYXNoU2V0dGluZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0iZwoXU2V0VHJhc2hTZXR0aW5nc1JlcXVlc3QSDAoEcG9vbBgBIAEoDRIkCg1ncmFjZV9zZWNvbmRzGAIgASgEUg1ncmFjZV9zZWNvbmRzEhgKB29uX2Z1bGwYAyABKAlSB29uX2Z1bGwiXQoNVHJhc2hTZXR0aW5ncxIMCgRwb29sGAEgASgNEiQKDWdyYWNlX3NlY29uZHMYAiABKARSDWdyYWNlX3NlY29uZHMSGAoHb25fZnVsbBgDIAEoCVIHb25fZnVsbCJJChhHZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyJJChhTZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyISChBHZXRTdGF0dXNSZXF1ZXN0IrMCChFHZXRTdGF0dXNSZXNwb25zZRIeCgpjbHVzdGVyX2lkGAEgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAIgASgEEiQKBmhlYWx0aBgDIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSJQoHcmVhc29ucxgEIAMoCzIULmh5cGVyc3Rvci52MS5SZWFzb24SIQoFbm9kZXMYBSADKAsyEi5oeXBlcnN0b3IudjEuTm9kZRIhCgVwb29scxgGIAMoCzISLmh5cGVyc3Rvci52MS5Qb29sEiAKC21hcF9hZGRyZXNzGAcgASgJUgttYXBfYWRkcmVzcxI6CgtmdWxsX3JhdGlvcxgIIAEoCzIYLmh5cGVyc3Rvci52MS5GdWxsUmF0aW9zUgtmdWxsX3JhdGlvcyJCCgpGdWxsUmF0aW9zEhAKCG5lYXJmdWxsGAEgASgBEhQKDGJhY2tmaWxsZnVsbBgCIAEoARIMCgRmdWxsGAMgASgBIjsKBlJlYXNvbhIjCgVsZXZlbBgBIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSDAoEdGV4dBgCIAEoCSKQAQoETm9kZRIKCgJpZBgBIAEoDRIMCgRyYWNrGAIgASgNEgoKAnVwGAMgASgIEiUKB2RldmljZXMYBCADKAsyFC5oeXBlcnN0b3IudjEuRGV2aWNlEikKDWxhc3RfaGVhcmRfbXMYBSABKARIAFINbGFzdF9oZWFyZF9tc4gBAUIQCg5fbGFzdF9oZWFyZF9tcyKoAgoGRGV2aWNlEgoKAmlkGAEgASgNEgwKBGFkZHIYAiABKAkSFAoFdXBfaW4YAyABKAhSBXVwX2luEg4KBndlaWdodBgEIAEoARINCgVjbGFzcxgFIAEoCRIlCgt0b3RhbF9ieXRlcxgGIAEoBEgAUgt0b3RhbF9ieXRlc4gBARIjCgpmcmVlX2J5dGVzGAcgASgESAFSCmZyZWVfYnl0ZXOIAQESIgoMd2VpZ2h0X2ZpeGVkGAggASgIUgx3ZWlnaHRfZml4ZWQSDAoEa2luZBgJIAEoCRIgCgtjbGFzc19maXhlZBgKIAEoCFILY2xhc3NfZml4ZWQSEAoIZnVsbG5lc3MYCyABKAlCDgoMX3RvdGFsX2J5dGVzQg0KC19mcmVlX2J5dGVzIokECgRQb29sEgoKAmlkGAEgASgNEgwKBG5hbWUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRzaXplGAQgASgNEhoKCG1pbl9zaXplGAUgASgNUghtaW5fc2l6ZRIaCghwZ19jb3VudBgGIAEoDVIIcGdfY291bnQSHgoKY2h1bmtfc2l6ZRgHIAEoDVIKY2h1bmtfc2l6ZRIOCgZkb21haW4YCCABKAkSIwoDcGdzGAkgASgLMhYuaHlwZXJzdG9yLnYxLlBnQ291bnRzEiUKC3RvdGFsX2J5dGVzGAogASgESABSC3RvdGFsX2J5dGVziAEBEiMKCmZyZWVfYnl0ZXMYCyABKARIAVIKZnJlZV9ieXRlc4gBARIPCgdjbGFzc2VzGAwgAygJEiAKC21peGVkX2tpbmRzGA0gASgIUgttaXhlZF9raW5kcxIkCg1hZGRlZF9kZXZpY2VzGA4gAygNUg1hZGRlZF9kZXZpY2VzEigKD3JlbW92ZWRfZGV2aWNlcxgPIAMoDVIPcmVtb3ZlZF9kZXZpY2VzEhAKCGZ1bGxuZXNzGBAgASgJEisKDmZ1bGxlc3RfZGV2aWNlGBEgASgNSAJSDmZ1bGxlc3RfZGV2aWNliAEBQg4KDF90b3RhbF9ieXRlc0INCgtfZnJlZV9ieXRlc0IRCg9fZnVsbGVzdF9kZXZpY2UiUgoIUGdDb3VudHMSDQoFY2xlYW4YASABKA0SEAoIZGVncmFkZWQYAiABKA0SEwoLYmFja2ZpbGxpbmcYAyABKA0SEAoIaW5hY3RpdmUYBCABKA0iNgoOTGlzdFBnc1JlcXVlc3QSDAoEcG9vbBgBIAEoDRIPCgJwZxgCIAEoDUgAiAEBQgUKA19wZyIwCg9MaXN0UGdzUmVzcG9uc2USHQoDcGdzGAEgAygLMhAuaHlwZXJzdG9yLnYxLlBnIkkKAlBnEgwKBHBvb2wYASABKA0SCgoCcGcYAiABKA0SDQoFZXBvY2gYAyABKAQSDgoGYWN0aW5nGAQgAygNEgoKAnVwGAUgAygNInkKEEdldFBnR3JpZFJlcXVlc3QSDAoEcG9vbBgBIAEoDRIgCgtzaW5jZV9lcG9jaBgCIAEoBFILc2luY2VfZXBvY2gSJQoLc2luY2VfdXNhZ2UYAyABKARIAFILc2luY2VfdXNhZ2WIAQFCDgoMX3NpbmNlX3VzYWdlIsIBChFHZXRQZ0dyaWRSZXNwb25zZRINCgVlcG9jaBgBIAEoBBIRCgl1bmNoYW5nZWQYAiABKAgSDgoGc3RhdGVzGAMgASgMEiQKDXVzYWdlX3ZlcnNpb24YBCABKARSDXVzYWdlX3ZlcnNpb24SKAoPdXNhZ2VfdW5jaGFuZ2VkGAUgASgIUg91c2FnZV91bmNoYW5nZWQSDQoFdXNhZ2UYBiABKAwSHAoJbWF4X2J5dGVzGAcgASgEUgltYXhfYnl0ZXMiOgoSU2V0RGV2aWNlSW5SZXF1ZXN0Eg4KBmRldmljZRgBIAEoDRIUCgV1cF9pbhgCIAEoCFIFdXBfaW4iMwoTU2V0RGV2aWNlSW5SZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaCJIChZTZXREZXZpY2VXZWlnaHRSZXF1ZXN0Eg4KBmRldmljZRgBIAEoDRITCgZ3ZWlnaHQYAiABKAFIAIgBAUIJCgdfd2VpZ2h0IkcKF1NldERldmljZVdlaWdodFJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEg4KBndlaWdodBgCIAEoASKCAQoUU2V0RnVsbFJhdGlvc1JlcXVlc3QSFQoIbmVhcmZ1bGwYASABKAFIAIgBARIZCgxiYWNrZmlsbGZ1bGwYAiABKAFIAYgBARIRCgRmdWxsGAMgASgBSAKIAQFCCwoJX25lYXJmdWxsQg8KDV9iYWNrZmlsbGZ1bGxCBwoFX2Z1bGwiXwoVU2V0RnVsbFJhdGlvc1Jlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEigKBnJhdGlvcxgCIAEoCzIYLmh5cGVyc3Rvci52MS5GdWxsUmF0aW9zIk8KEEFkZERldmljZVJlcXVlc3QSDAoEbm9kZRgBIAEoDRIPCgdhZGRyZXNzGAIgASgJEhIKBWNsYXNzGAMgASgJSACIAQFCCAoGX2NsYXNzIo0CChFDcmVhdGVQb29sUmVxdWVzdBIMCgRuYW1lGAEgASgJEgwKBGtpbmQYAiABKAkSDAoEc2l6ZRgDIAEoDRIfCghtaW5fc2l6ZRgEIAEoDUgAUghtaW5fc2l6ZYgBARIfCghwZ19jb3VudBgFIAEoDUgBUghwZ19jb3VudIgBARIjCgpjaHVua19zaXplGAYgASgNSAJSCmNodW5rX3NpemWIAQESEwoGZG9tYWluGAcgASgJSAOIAQESDwoHY2xhc3NlcxgIIAMoCRINCgVmb3JjZRgJIAEoCEILCglfbWluX3NpemVCCwoJX3BnX2NvdW50Qg0KC19jaHVua19zaXplQgkKB19kb21haW4ifgoSQ3JlYXRlUG9vbFJlc3BvbnNlEgwKBHBvb2wYASABKA0SGgoIcGdfY291bnQYAiABKA1SCHBnX2NvdW50EhwKCW1hcF9lcG9jaBgDIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAQgASgIUgttaXhlZF9raW5kcyJKChFEZWxldGVQb29sUmVxdWVzdBIMCgRwb29sGAEgASgNEhgKB2RyeV9ydW4YAiABKAhSB2RyeV9ydW4SDQoFZm9yY2UYAyABKAgihQEKEkRlbGV0ZVBvb2xSZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaBIlCgd2b2x1bWVzGAIgAygLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZRIqCglvcGVyYXRpb24YAyABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIp4BCg5TZXRQb29sUmVxdWVzdBIMCgRwb29sGAEgASgNEg8KB2NsYXNzZXMYAiADKAkSDQoFZm9yY2UYAyABKAgSEQoEbmFtZRgEIAEoCUgAiAEBEhMKBmRvbWFpbhgFIAEoCUgBiAEBEiIKDGV2ZXJ5X2RldmljZRgGIAEoCFIMZXZlcnlfZGV2aWNlQgcKBV9uYW1lQgkKB19kb21haW4iUQoPU2V0UG9vbFJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAIgASgIUgttaXhlZF9raW5kcyJTChRTZXRQb29sRGV2aWNlUmVxdWVzdBIMCgRwb29sGAEgASgNEg4KBmRldmljZRgCIAEoDRIOCgZtZW1iZXIYAyABKAgSDQoFZm9yY2UYBCABKAgiVwoVU2V0UG9vbERldmljZVJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAIgASgIUgttaXhlZF9raW5kcyJFChVTZXREZXZpY2VDbGFzc1JlcXVlc3QSDgoGZGV2aWNlGAEgASgNEhIKBWNsYXNzGAIgASgJSACIAQFCCAoGX2NsYXNzIkUKFlNldERldmljZUNsYXNzUmVzcG9uc2USHAoJbWFwX2Vwb2NoGAEgASgEUgltYXBfZXBvY2gSDQoFY2xhc3MYAiABKAkiQQoRQWRkRGV2aWNlUmVzcG9uc2USDgoGZGV2aWNlGAEgASgNEhwKCW1hcF9lcG9jaBgCIAEoBFIJbWFwX2Vwb2NoIoABCgZWb2x1bWUSCgoCaWQYASABKAkSDAoEcG9vbBgCIAEoDRIMCgRzaXplGAMgASgEEgwKBG5hbWUYBCABKAkSDQoFc3RhdGUYBSABKAkSDwoHdmVyc2lvbhgGIAEoBBIgCgthdHRhY2hlZF9ieRgHIAEoCVILYXR0YWNoZWRfYnkiIgoSTGlzdFZvbHVtZXNSZXF1ZXN0EgwKBHBvb2wYASABKA0iPAoTTGlzdFZvbHVtZXNSZXNwb25zZRIlCgd2b2x1bWVzGAEgAygLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJLChNDcmVhdGVWb2x1bWVSZXF1ZXN0EgwKBHBvb2wYASABKA0SDAoEc2l6ZRgCIAEoBBIMCgRuYW1lGAMgASgJEgoKAmlkGAQgASgJIjwKFENyZWF0ZVZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiMAoTRGVsZXRlVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVmb3JjZRgCIAEoCCIvChNFeHBhbmRWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBHNpemUYAiABKAQiPAoURXhwYW5kVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSI2ChREZWxldGVWb2x1bWVSZXNwb25zZRIeCgpwdXJnZV91bml4GAEgASgEUgpwdXJnZV91bml4IkUKCFNuYXBzaG90Eg0KBWVwb2NoGAEgASgEEgwKBG5hbWUYAiABKAkSDQoFZ3JvdXAYAyABKAkSDQoFc3RhdGUYBCABKAkiIgoUTGlzdFNuYXBzaG90c1JlcXVlc3QSCgoCaWQYASABKAkiQgoVTGlzdFNuYXBzaG90c1Jlc3BvbnNlEikKCXNuYXBzaG90cxgBIAMoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCIxChVDcmVhdGVTbmFwc2hvdFJlcXVlc3QSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCSJCChZDcmVhdGVTbmFwc2hvdFJlc3BvbnNlEigKCHNuYXBzaG90GAEgASgLMhYuaHlwZXJzdG9yLnYxLlNuYXBzaG90IjIKFURlbGV0ZVNuYXBzaG90UmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBCI4ChZEZWxldGVTbmFwc2hvdFJlc3BvbnNlEh4KCnB1cmdlX3VuaXgYASABKARSCnB1cmdlX3VuaXgiVQoSQ2xvbmVWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWVwb2NoGAIgASgEEgwKBG5hbWUYAyABKAkSFgoGbmV3X2lkGAQgASgJUgZuZXdfaWQiOwoTQ2xvbmVWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIjIKFVJvbGxiYWNrVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBCI+ChZSb2xsYmFja1ZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiIgoURmxhdHRlblZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkiaQoVRmxhdHRlblZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUSKgoJb3BlcmF0aW9uGAIgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbiI3ChpDcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBILCgNpZHMYASADKAkSDAoEbmFtZRgCIAEoCSJDCgtHcm91cE1lbWJlchIKCgJpZBgBIAEoCRIoCghzbmFwc2hvdBgCIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCJYChtDcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USDQoFZ3JvdXAYASABKAkSKgoHbWVtYmVycxgCIAMoCzIZLmh5cGVyc3Rvci52MS5Hcm91cE1lbWJlciIrChpEZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBINCgVncm91cBgBIAEoCSI9ChtEZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCpSCgZIZWFsdGgSFgoSSEVBTFRIX1VOU1BFQ0lGSUVEEAASDQoJSEVBTFRIX09LEAESDwoLSEVBTFRIX1dBUk4QAhIQCgxIRUFMVEhfRVJST1IQAyp/CgdQZ1N0YXRlEhgKFFBHX1NUQVRFX1VOU1BFQ0lGSUVEEAASEgoOUEdfU1RBVEVfQ0xFQU4QARIVChFQR19TVEFURV9ERUdSQURFRBACEhgKFFBHX1NUQVRFX0JBQ0tGSUxMSU5HEAMSFQoRUEdfU1RBVEVfSU5BQ1RJVkUQBDLBEAoOQ2x1c3RlclNlcnZpY2USTAoJR2V0U3RhdHVzEh4uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuR2V0U3RhdHVzUmVzcG9uc2USRgoHTGlzdFBncxIcLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVxdWVzdBodLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVzcG9uc2USTAoJR2V0UGdHcmlkEh4uaHlwZXJzdG9yLnYxLkdldFBnR3JpZFJlcXVlc3QaHy5oeXBlcnN0b3IudjEuR2V0UGdHcmlkUmVzcG9uc2USUgoLU2V0RGV2aWNlSW4SIC5oeXBlcnN0b3IudjEuU2V0RGV2aWNlSW5SZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVzcG9uc2USXgoPU2V0RGV2aWNlV2VpZ2h0EiQuaHlwZXJzdG9yLnYxLlNldERldmljZVdlaWdodFJlcXVlc3QaJS5oeXBlcnN0b3IudjEuU2V0RGV2aWNlV2VpZ2h0UmVzcG9uc2USWAoNU2V0RnVsbFJhdGlvcxIiLmh5cGVyc3Rvci52MS5TZXRGdWxsUmF0aW9zUmVxdWVzdBojLmh5cGVyc3Rvci52MS5TZXRGdWxsUmF0aW9zUmVzcG9uc2USTAoJQWRkRGV2aWNlEh4uaHlwZXJzdG9yLnYxLkFkZERldmljZVJlcXVlc3QaHy5oeXBlcnN0b3IudjEuQWRkRGV2aWNlUmVzcG9uc2USWwoOU2V0RGV2aWNlQ2xhc3MSIy5oeXBlcnN0b3IudjEuU2V0RGV2aWNlQ2xhc3NSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlNldERldmljZUNsYXNzUmVzcG9uc2USRgoHU2V0UG9vbBIcLmh5cGVyc3Rvci52MS5TZXRQb29sUmVxdWVzdBodLmh5cGVyc3Rvci52MS5TZXRQb29sUmVzcG9uc2USWAoNU2V0UG9vbERldmljZRIiLmh5cGVyc3Rvci52MS5TZXRQb29sRGV2aWNlUmVxdWVzdBojLmh5cGVyc3Rvci52MS5TZXRQb29sRGV2aWNlUmVzcG9uc2USTwoKQ3JlYXRlUG9vbBIfLmh5cGVyc3Rvci52MS5DcmVhdGVQb29sUmVxdWVzdBogLmh5cGVyc3Rvci52MS5DcmVhdGVQb29sUmVzcG9uc2USTwoKRGVsZXRlUG9vbBIfLmh5cGVyc3Rvci52MS5EZWxldGVQb29sUmVxdWVzdBogLmh5cGVyc3Rvci52MS5EZWxldGVQb29sUmVzcG9uc2USUgoLTGlzdFZvbHVtZXMSIC5oeXBlcnN0b3IudjEuTGlzdFZvbHVtZXNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVzcG9uc2USVQoMQ3JlYXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuQ3JlYXRlVm9sdW1lUmVzcG9uc2USVQoMRGVsZXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuRGVsZXRlVm9sdW1lUmVzcG9uc2USVQoMRXhwYW5kVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkV4cGFuZFZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuRXhwYW5kVm9sdW1lUmVzcG9uc2USWAoNTGlzdFNuYXBzaG90cxIiLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVxdWVzdBojLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVzcG9uc2USWwoOQ3JlYXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuQ3JlYXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVzcG9uc2USWwoORGVsZXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuRGVsZXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVzcG9uc2USUgoLQ2xvbmVWb2x1bWUSIC5oeXBlcnN0b3IudjEuQ2xvbmVWb2x1bWVSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVzcG9uc2USWwoOUm9sbGJhY2tWb2x1bWUSIy5oeXBlcnN0b3IudjEuUm9sbGJhY2tWb2x1bWVSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVzcG9uc2USWAoNRmxhdHRlblZvbHVtZRIiLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVxdWVzdBojLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVzcG9uc2USagoTQ3JlYXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USagoTRGVsZXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2Uy4gMKDFRyYXNoU2VydmljZRJMCglMaXN0VHJhc2gSHi5oeXBlcnN0b3IudjEuTGlzdFRyYXNoUmVxdWVzdBofLmh5cGVyc3Rvci52MS5MaXN0VHJhc2hSZXNwb25zZRJhChBSZXN0b3JlRnJvbVRyYXNoEiUuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXNwb25zZRJbCg5QdXJnZUZyb21UcmFzaBIjLmh5cGVyc3Rvci52MS5QdXJnZUZyb21UcmFzaFJlcXVlc3QaJC5oeXBlcnN0b3IudjEuUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRJhChBHZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXNwb25zZRJhChBTZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXNwb25zZWIGcHJvdG8z", [file_hyperstor_v1_admin]);
+  fileDesc("ChpoeXBlcnN0b3IvdjEvY2x1c3Rlci5wcm90bxIMaHlwZXJzdG9yLnYxIrEBCglUcmFzaEl0ZW0SDAoEa2luZBgBIAEoCRIKCgJpZBgCIAEoCRINCgVlcG9jaBgDIAEoBBIMCgRuYW1lGAQgASgJEgwKBHBvb2wYBSABKA0SDAoEc2l6ZRgGIAEoBBIiCgx0cmFzaGVkX3VuaXgYByABKARSDHRyYXNoZWRfdW5peBIeCgpwdXJnZV91bml4GAggASgEUgpwdXJnZV91bml4Eg0KBWdyb3VwGAkgASgJIiAKEExpc3RUcmFzaFJlcXVlc3QSDAoEcG9vbBgBIAEoDSI7ChFMaXN0VHJhc2hSZXNwb25zZRImCgVpdGVtcxgBIAMoCzIXLmh5cGVyc3Rvci52MS5UcmFzaEl0ZW0iUQoXUmVzdG9yZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBARIMCgRuYW1lGAMgASgJQggKBl9lcG9jaCJAChhSZXN0b3JlRnJvbVRyYXNoUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJBChVQdXJnZUZyb21UcmFzaFJlcXVlc3QSCgoCaWQYASABKAkSEgoFZXBvY2gYAiABKARIAIgBAUIICgZfZXBvY2giRAoWUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIicKF0dldFRyYXNoU2V0dGluZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0iZwoXU2V0VHJhc2hTZXR0aW5nc1JlcXVlc3QSDAoEcG9vbBgBIAEoDRIkCg1ncmFjZV9zZWNvbmRzGAIgASgEUg1ncmFjZV9zZWNvbmRzEhgKB29uX2Z1bGwYAyABKAlSB29uX2Z1bGwiXQoNVHJhc2hTZXR0aW5ncxIMCgRwb29sGAEgASgNEiQKDWdyYWNlX3NlY29uZHMYAiABKARSDWdyYWNlX3NlY29uZHMSGAoHb25fZnVsbBgDIAEoCVIHb25fZnVsbCJJChhHZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyJJChhTZXRUcmFzaFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuVHJhc2hTZXR0aW5ncyISChBHZXRTdGF0dXNSZXF1ZXN0IrMCChFHZXRTdGF0dXNSZXNwb25zZRIeCgpjbHVzdGVyX2lkGAEgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAIgASgEEiQKBmhlYWx0aBgDIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSJQoHcmVhc29ucxgEIAMoCzIULmh5cGVyc3Rvci52MS5SZWFzb24SIQoFbm9kZXMYBSADKAsyEi5oeXBlcnN0b3IudjEuTm9kZRIhCgVwb29scxgGIAMoCzISLmh5cGVyc3Rvci52MS5Qb29sEiAKC21hcF9hZGRyZXNzGAcgASgJUgttYXBfYWRkcmVzcxI6CgtmdWxsX3JhdGlvcxgIIAEoCzIYLmh5cGVyc3Rvci52MS5GdWxsUmF0aW9zUgtmdWxsX3JhdGlvcyJCCgpGdWxsUmF0aW9zEhAKCG5lYXJmdWxsGAEgASgBEhQKDGJhY2tmaWxsZnVsbBgCIAEoARIMCgRmdWxsGAMgASgBIjsKBlJlYXNvbhIjCgVsZXZlbBgBIAEoDjIULmh5cGVyc3Rvci52MS5IZWFsdGgSDAoEdGV4dBgCIAEoCSKQAQoETm9kZRIKCgJpZBgBIAEoDRIMCgRyYWNrGAIgASgNEgoKAnVwGAMgASgIEiUKB2RldmljZXMYBCADKAsyFC5oeXBlcnN0b3IudjEuRGV2aWNlEikKDWxhc3RfaGVhcmRfbXMYBSABKARIAFINbGFzdF9oZWFyZF9tc4gBAUIQCg5fbGFzdF9oZWFyZF9tcyKoAgoGRGV2aWNlEgoKAmlkGAEgASgNEgwKBGFkZHIYAiABKAkSFAoFdXBfaW4YAyABKAhSBXVwX2luEg4KBndlaWdodBgEIAEoARINCgVjbGFzcxgFIAEoCRIlCgt0b3RhbF9ieXRlcxgGIAEoBEgAUgt0b3RhbF9ieXRlc4gBARIjCgpmcmVlX2J5dGVzGAcgASgESAFSCmZyZWVfYnl0ZXOIAQESIgoMd2VpZ2h0X2ZpeGVkGAggASgIUgx3ZWlnaHRfZml4ZWQSDAoEa2luZBgJIAEoCRIgCgtjbGFzc19maXhlZBgKIAEoCFILY2xhc3NfZml4ZWQSEAoIZnVsbG5lc3MYCyABKAlCDgoMX3RvdGFsX2J5dGVzQg0KC19mcmVlX2J5dGVzIvkECgRQb29sEgoKAmlkGAEgASgNEgwKBG5hbWUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRzaXplGAQgASgNEhoKCG1pbl9zaXplGAUgASgNUghtaW5fc2l6ZRIaCghwZ19jb3VudBgGIAEoDVIIcGdfY291bnQSHgoKY2h1bmtfc2l6ZRgHIAEoDVIKY2h1bmtfc2l6ZRIOCgZkb21haW4YCCABKAkSIwoDcGdzGAkgASgLMhYuaHlwZXJzdG9yLnYxLlBnQ291bnRzEiUKC3RvdGFsX2J5dGVzGAogASgESABSC3RvdGFsX2J5dGVziAEBEiMKCmZyZWVfYnl0ZXMYCyABKARIAVIKZnJlZV9ieXRlc4gBARIPCgdjbGFzc2VzGAwgAygJEiAKC21peGVkX2tpbmRzGA0gASgIUgttaXhlZF9raW5kcxIkCg1hZGRlZF9kZXZpY2VzGA4gAygNUg1hZGRlZF9kZXZpY2VzEigKD3JlbW92ZWRfZGV2aWNlcxgPIAMoDVIPcmVtb3ZlZF9kZXZpY2VzEhAKCGZ1bGxuZXNzGBAgASgJEisKDmZ1bGxlc3RfZGV2aWNlGBEgASgNSAJSDmZ1bGxlc3RfZGV2aWNliAEBEh4KCnNwbGl0X2RvbmUYEiABKA1SCnNwbGl0X2RvbmUSEQoJYXV0b3NjYWxlGBMgASgIEigKD3BsYWNlbWVudF9jb3VudBgUIAEoDVIPcGxhY2VtZW50X2NvdW50EhEKCXNwbGl0dGluZxgVIAEoCEIOCgxfdG90YWxfYnl0ZXNCDQoLX2ZyZWVfYnl0ZXNCEQoPX2Z1bGxlc3RfZGV2aWNlIlIKCFBnQ291bnRzEg0KBWNsZWFuGAEgASgNEhAKCGRlZ3JhZGVkGAIgASgNEhMKC2JhY2tmaWxsaW5nGAMgASgNEhAKCGluYWN0aXZlGAQgASgNIjYKDkxpc3RQZ3NSZXF1ZXN0EgwKBHBvb2wYASABKA0SDwoCcGcYAiABKA1IAIgBAUIFCgNfcGciMAoPTGlzdFBnc1Jlc3BvbnNlEh0KA3BncxgBIAMoCzIQLmh5cGVyc3Rvci52MS5QZyJJCgJQZxIMCgRwb29sGAEgASgNEgoKAnBnGAIgASgNEg0KBWVwb2NoGAMgASgEEg4KBmFjdGluZxgEIAMoDRIKCgJ1cBgFIAMoDSJ5ChBHZXRQZ0dyaWRSZXF1ZXN0EgwKBHBvb2wYASABKA0SIAoLc2luY2VfZXBvY2gYAiABKARSC3NpbmNlX2Vwb2NoEiUKC3NpbmNlX3VzYWdlGAMgASgESABSC3NpbmNlX3VzYWdliAEBQg4KDF9zaW5jZV91c2FnZSLCAQoRR2V0UGdHcmlkUmVzcG9uc2USDQoFZXBvY2gYASABKAQSEQoJdW5jaGFuZ2VkGAIgASgIEg4KBnN0YXRlcxgDIAEoDBIkCg11c2FnZV92ZXJzaW9uGAQgASgEUg11c2FnZV92ZXJzaW9uEigKD3VzYWdlX3VuY2hhbmdlZBgFIAEoCFIPdXNhZ2VfdW5jaGFuZ2VkEg0KBXVzYWdlGAYgASgMEhwKCW1heF9ieXRlcxgHIAEoBFIJbWF4X2J5dGVzIjoKElNldERldmljZUluUmVxdWVzdBIOCgZkZXZpY2UYASABKA0SFAoFdXBfaW4YAiABKAhSBXVwX2luIjMKE1NldERldmljZUluUmVzcG9uc2USHAoJbWFwX2Vwb2NoGAEgASgEUgltYXBfZXBvY2giSAoWU2V0RGV2aWNlV2VpZ2h0UmVxdWVzdBIOCgZkZXZpY2UYASABKA0SEwoGd2VpZ2h0GAIgASgBSACIAQFCCQoHX3dlaWdodCJHChdTZXREZXZpY2VXZWlnaHRSZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaBIOCgZ3ZWlnaHQYAiABKAEiggEKFFNldEZ1bGxSYXRpb3NSZXF1ZXN0EhUKCG5lYXJmdWxsGAEgASgBSACIAQESGQoMYmFja2ZpbGxmdWxsGAIgASgBSAGIAQESEQoEZnVsbBgDIAEoAUgCiAEBQgsKCV9uZWFyZnVsbEIPCg1fYmFja2ZpbGxmdWxsQgcKBV9mdWxsIl8KFVNldEZ1bGxSYXRpb3NSZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaBIoCgZyYXRpb3MYAiABKAsyGC5oeXBlcnN0b3IudjEuRnVsbFJhdGlvcyJPChBBZGREZXZpY2VSZXF1ZXN0EgwKBG5vZGUYASABKA0SDwoHYWRkcmVzcxgCIAEoCRISCgVjbGFzcxgDIAEoCUgAiAEBQggKBl9jbGFzcyKzAgoRQ3JlYXRlUG9vbFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIMCgRraW5kGAIgASgJEgwKBHNpemUYAyABKA0SHwoIbWluX3NpemUYBCABKA1IAFIIbWluX3NpemWIAQESHwoIcGdfY291bnQYBSABKA1IAVIIcGdfY291bnSIAQESIwoKY2h1bmtfc2l6ZRgGIAEoDUgCUgpjaHVua19zaXpliAEBEhMKBmRvbWFpbhgHIAEoCUgDiAEBEg8KB2NsYXNzZXMYCCADKAkSDQoFZm9yY2UYCSABKAgSFgoJYXV0b3NjYWxlGAogASgISASIAQFCCwoJX21pbl9zaXplQgsKCV9wZ19jb3VudEINCgtfY2h1bmtfc2l6ZUIJCgdfZG9tYWluQgwKCl9hdXRvc2NhbGUifgoSQ3JlYXRlUG9vbFJlc3BvbnNlEgwKBHBvb2wYASABKA0SGgoIcGdfY291bnQYAiABKA1SCHBnX2NvdW50EhwKCW1hcF9lcG9jaBgDIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAQgASgIUgttaXhlZF9raW5kcyJKChFEZWxldGVQb29sUmVxdWVzdBIMCgRwb29sGAEgASgNEhgKB2RyeV9ydW4YAiABKAhSB2RyeV9ydW4SDQoFZm9yY2UYAyABKAgihQEKEkRlbGV0ZVBvb2xSZXNwb25zZRIcCgltYXBfZXBvY2gYASABKARSCW1hcF9lcG9jaBIlCgd2b2x1bWVzGAIgAygLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZRIqCglvcGVyYXRpb24YAyABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIvIBCg5TZXRQb29sUmVxdWVzdBIMCgRwb29sGAEgASgNEg8KB2NsYXNzZXMYAiADKAkSDQoFZm9yY2UYAyABKAgSEQoEbmFtZRgEIAEoCUgAiAEBEhMKBmRvbWFpbhgFIAEoCUgBiAEBEiIKDGV2ZXJ5X2RldmljZRgGIAEoCFIMZXZlcnlfZGV2aWNlEh8KCHBnX2NvdW50GAcgASgNSAJSCHBnX2NvdW50iAEBEhYKCWF1dG9zY2FsZRgIIAEoCEgDiAEBQgcKBV9uYW1lQgkKB19kb21haW5CCwoJX3BnX2NvdW50QgwKCl9hdXRvc2NhbGUiUQoPU2V0UG9vbFJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAIgASgIUgttaXhlZF9raW5kcyJTChRTZXRQb29sRGV2aWNlUmVxdWVzdBIMCgRwb29sGAEgASgNEg4KBmRldmljZRgCIAEoDRIOCgZtZW1iZXIYAyABKAgSDQoFZm9yY2UYBCABKAgiVwoVU2V0UG9vbERldmljZVJlc3BvbnNlEhwKCW1hcF9lcG9jaBgBIAEoBFIJbWFwX2Vwb2NoEiAKC21peGVkX2tpbmRzGAIgASgIUgttaXhlZF9raW5kcyJFChVTZXREZXZpY2VDbGFzc1JlcXVlc3QSDgoGZGV2aWNlGAEgASgNEhIKBWNsYXNzGAIgASgJSACIAQFCCAoGX2NsYXNzIkUKFlNldERldmljZUNsYXNzUmVzcG9uc2USHAoJbWFwX2Vwb2NoGAEgASgEUgltYXBfZXBvY2gSDQoFY2xhc3MYAiABKAkiTgoTUmVtb3ZlRGV2aWNlUmVxdWVzdBIOCgZkZXZpY2UYASABKA0SGAoHZHJ5X3J1bhgCIAEoCFIHZHJ5X3J1bhINCgVmb3JjZRgDIAEoCCLKAQoUUmVtb3ZlRGV2aWNlUmVzcG9uc2USKgoJb3BlcmF0aW9uGAEgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhIjCgVtb3ZlcxgCIAMoCzIULmh5cGVyc3Rvci52MS5QZ01vdmUSOQoLc2hvcnRfcG9vbHMYAyADKAsyFy5oeXBlcnN0b3IudjEuU2hvcnRQb29sUgtzaG9ydF9wb29scxImCgRmaWxsGAQgAygLMhguaHlwZXJzdG9yLnYxLkRldmljZUZpbGwiNwoJU2hvcnRQb29sEgwKBHBvb2wYASABKA0SDgoGY29waWVzGAIgASgNEgwKBHNpemUYAyABKA0iXgoKRGV2aWNlRmlsbBIOCgZkZXZpY2UYASABKA0SHgoKdXNlZF9ieXRlcxgCIAEoBFIKdXNlZF9ieXRlcxIgCgt0b3RhbF9ieXRlcxgDIAEoBFILdG90YWxfYnl0ZXMiQQoRQWRkRGV2aWNlUmVzcG9uc2USDgoGZGV2aWNlGAEgASgNEhwKCW1hcF9lcG9jaBgCIAEoBFIJbWFwX2Vwb2NoIoABCgZWb2x1bWUSCgoCaWQYASABKAkSDAoEcG9vbBgCIAEoDRIMCgRzaXplGAMgASgEEgwKBG5hbWUYBCABKAkSDQoFc3RhdGUYBSABKAkSDwoHdmVyc2lvbhgGIAEoBBIgCgthdHRhY2hlZF9ieRgHIAEoCVILYXR0YWNoZWRfYnkiIgoSTGlzdFZvbHVtZXNSZXF1ZXN0EgwKBHBvb2wYASABKA0iPAoTTGlzdFZvbHVtZXNSZXNwb25zZRIlCgd2b2x1bWVzGAEgAygLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSJLChNDcmVhdGVWb2x1bWVSZXF1ZXN0EgwKBHBvb2wYASABKA0SDAoEc2l6ZRgCIAEoBBIMCgRuYW1lGAMgASgJEgoKAmlkGAQgASgJIjwKFENyZWF0ZVZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiMAoTRGVsZXRlVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVmb3JjZRgCIAEoCCIvChNFeHBhbmRWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBHNpemUYAiABKAQiPAoURXhwYW5kVm9sdW1lUmVzcG9uc2USJAoGdm9sdW1lGAEgASgLMhQuaHlwZXJzdG9yLnYxLlZvbHVtZSI2ChREZWxldGVWb2x1bWVSZXNwb25zZRIeCgpwdXJnZV91bml4GAEgASgEUgpwdXJnZV91bml4IkUKCFNuYXBzaG90Eg0KBWVwb2NoGAEgASgEEgwKBG5hbWUYAiABKAkSDQoFZ3JvdXAYAyABKAkSDQoFc3RhdGUYBCABKAkiIgoUTGlzdFNuYXBzaG90c1JlcXVlc3QSCgoCaWQYASABKAkiQgoVTGlzdFNuYXBzaG90c1Jlc3BvbnNlEikKCXNuYXBzaG90cxgBIAMoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCIxChVDcmVhdGVTbmFwc2hvdFJlcXVlc3QSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCSJCChZDcmVhdGVTbmFwc2hvdFJlc3BvbnNlEigKCHNuYXBzaG90GAEgASgLMhYuaHlwZXJzdG9yLnYxLlNuYXBzaG90IjIKFURlbGV0ZVNuYXBzaG90UmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBCI4ChZEZWxldGVTbmFwc2hvdFJlc3BvbnNlEh4KCnB1cmdlX3VuaXgYASABKARSCnB1cmdlX3VuaXgiVQoSQ2xvbmVWb2x1bWVSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWVwb2NoGAIgASgEEgwKBG5hbWUYAyABKAkSFgoGbmV3X2lkGAQgASgJUgZuZXdfaWQiOwoTQ2xvbmVWb2x1bWVSZXNwb25zZRIkCgZ2b2x1bWUYASABKAsyFC5oeXBlcnN0b3IudjEuVm9sdW1lIjIKFVJvbGxiYWNrVm9sdW1lUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVlcG9jaBgCIAEoBCI+ChZSb2xsYmFja1ZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUiIgoURmxhdHRlblZvbHVtZVJlcXVlc3QSCgoCaWQYASABKAkiaQoVRmxhdHRlblZvbHVtZVJlc3BvbnNlEiQKBnZvbHVtZRgBIAEoCzIULmh5cGVyc3Rvci52MS5Wb2x1bWUSKgoJb3BlcmF0aW9uGAIgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbiI3ChpDcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBILCgNpZHMYASADKAkSDAoEbmFtZRgCIAEoCSJDCgtHcm91cE1lbWJlchIKCgJpZBgBIAEoCRIoCghzbmFwc2hvdBgCIAEoCzIWLmh5cGVyc3Rvci52MS5TbmFwc2hvdCJYChtDcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USDQoFZ3JvdXAYASABKAkSKgoHbWVtYmVycxgCIAMoCzIZLmh5cGVyc3Rvci52MS5Hcm91cE1lbWJlciIrChpEZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBINCgVncm91cBgBIAEoCSI9ChtEZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2USHgoKcHVyZ2VfdW5peBgBIAEoBFIKcHVyZ2VfdW5peCpSCgZIZWFsdGgSFgoSSEVBTFRIX1VOU1BFQ0lGSUVEEAASDQoJSEVBTFRIX09LEAESDwoLSEVBTFRIX1dBUk4QAhIQCgxIRUFMVEhfRVJST1IQAyp/CgdQZ1N0YXRlEhgKFFBHX1NUQVRFX1VOU1BFQ0lGSUVEEAASEgoOUEdfU1RBVEVfQ0xFQU4QARIVChFQR19TVEFURV9ERUdSQURFRBACEhgKFFBHX1NUQVRFX0JBQ0tGSUxMSU5HEAMSFQoRUEdfU1RBVEVfSU5BQ1RJVkUQBDKYEQoOQ2x1c3RlclNlcnZpY2USTAoJR2V0U3RhdHVzEh4uaHlwZXJzdG9yLnYxLkdldFN0YXR1c1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuR2V0U3RhdHVzUmVzcG9uc2USRgoHTGlzdFBncxIcLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVxdWVzdBodLmh5cGVyc3Rvci52MS5MaXN0UGdzUmVzcG9uc2USTAoJR2V0UGdHcmlkEh4uaHlwZXJzdG9yLnYxLkdldFBnR3JpZFJlcXVlc3QaHy5oeXBlcnN0b3IudjEuR2V0UGdHcmlkUmVzcG9uc2USUgoLU2V0RGV2aWNlSW4SIC5oeXBlcnN0b3IudjEuU2V0RGV2aWNlSW5SZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLlNldERldmljZUluUmVzcG9uc2USXgoPU2V0RGV2aWNlV2VpZ2h0EiQuaHlwZXJzdG9yLnYxLlNldERldmljZVdlaWdodFJlcXVlc3QaJS5oeXBlcnN0b3IudjEuU2V0RGV2aWNlV2VpZ2h0UmVzcG9uc2USWAoNU2V0RnVsbFJhdGlvcxIiLmh5cGVyc3Rvci52MS5TZXRGdWxsUmF0aW9zUmVxdWVzdBojLmh5cGVyc3Rvci52MS5TZXRGdWxsUmF0aW9zUmVzcG9uc2USTAoJQWRkRGV2aWNlEh4uaHlwZXJzdG9yLnYxLkFkZERldmljZVJlcXVlc3QaHy5oeXBlcnN0b3IudjEuQWRkRGV2aWNlUmVzcG9uc2USVQoMUmVtb3ZlRGV2aWNlEiEuaHlwZXJzdG9yLnYxLlJlbW92ZURldmljZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuUmVtb3ZlRGV2aWNlUmVzcG9uc2USWwoOU2V0RGV2aWNlQ2xhc3MSIy5oeXBlcnN0b3IudjEuU2V0RGV2aWNlQ2xhc3NSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlNldERldmljZUNsYXNzUmVzcG9uc2USRgoHU2V0UG9vbBIcLmh5cGVyc3Rvci52MS5TZXRQb29sUmVxdWVzdBodLmh5cGVyc3Rvci52MS5TZXRQb29sUmVzcG9uc2USWAoNU2V0UG9vbERldmljZRIiLmh5cGVyc3Rvci52MS5TZXRQb29sRGV2aWNlUmVxdWVzdBojLmh5cGVyc3Rvci52MS5TZXRQb29sRGV2aWNlUmVzcG9uc2USTwoKQ3JlYXRlUG9vbBIfLmh5cGVyc3Rvci52MS5DcmVhdGVQb29sUmVxdWVzdBogLmh5cGVyc3Rvci52MS5DcmVhdGVQb29sUmVzcG9uc2USTwoKRGVsZXRlUG9vbBIfLmh5cGVyc3Rvci52MS5EZWxldGVQb29sUmVxdWVzdBogLmh5cGVyc3Rvci52MS5EZWxldGVQb29sUmVzcG9uc2USUgoLTGlzdFZvbHVtZXMSIC5oeXBlcnN0b3IudjEuTGlzdFZvbHVtZXNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RWb2x1bWVzUmVzcG9uc2USVQoMQ3JlYXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkNyZWF0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuQ3JlYXRlVm9sdW1lUmVzcG9uc2USVQoMRGVsZXRlVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkRlbGV0ZVZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuRGVsZXRlVm9sdW1lUmVzcG9uc2USVQoMRXhwYW5kVm9sdW1lEiEuaHlwZXJzdG9yLnYxLkV4cGFuZFZvbHVtZVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuRXhwYW5kVm9sdW1lUmVzcG9uc2USWAoNTGlzdFNuYXBzaG90cxIiLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVxdWVzdBojLmh5cGVyc3Rvci52MS5MaXN0U25hcHNob3RzUmVzcG9uc2USWwoOQ3JlYXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuQ3JlYXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkNyZWF0ZVNuYXBzaG90UmVzcG9uc2USWwoORGVsZXRlU25hcHNob3QSIy5oeXBlcnN0b3IudjEuRGVsZXRlU25hcHNob3RSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkRlbGV0ZVNuYXBzaG90UmVzcG9uc2USUgoLQ2xvbmVWb2x1bWUSIC5oeXBlcnN0b3IudjEuQ2xvbmVWb2x1bWVSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkNsb25lVm9sdW1lUmVzcG9uc2USWwoOUm9sbGJhY2tWb2x1bWUSIy5oeXBlcnN0b3IudjEuUm9sbGJhY2tWb2x1bWVSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlJvbGxiYWNrVm9sdW1lUmVzcG9uc2USWAoNRmxhdHRlblZvbHVtZRIiLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVxdWVzdBojLmh5cGVyc3Rvci52MS5GbGF0dGVuVm9sdW1lUmVzcG9uc2USagoTQ3JlYXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5DcmVhdGVHcm91cFNuYXBzaG90UmVzcG9uc2USagoTRGVsZXRlR3JvdXBTbmFwc2hvdBIoLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVxdWVzdBopLmh5cGVyc3Rvci52MS5EZWxldGVHcm91cFNuYXBzaG90UmVzcG9uc2Uy4gMKDFRyYXNoU2VydmljZRJMCglMaXN0VHJhc2gSHi5oeXBlcnN0b3IudjEuTGlzdFRyYXNoUmVxdWVzdBofLmh5cGVyc3Rvci52MS5MaXN0VHJhc2hSZXNwb25zZRJhChBSZXN0b3JlRnJvbVRyYXNoEiUuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlJlc3RvcmVGcm9tVHJhc2hSZXNwb25zZRJbCg5QdXJnZUZyb21UcmFzaBIjLmh5cGVyc3Rvci52MS5QdXJnZUZyb21UcmFzaFJlcXVlc3QaJC5oeXBlcnN0b3IudjEuUHVyZ2VGcm9tVHJhc2hSZXNwb25zZRJhChBHZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkdldFRyYXNoU2V0dGluZ3NSZXNwb25zZRJhChBTZXRUcmFzaFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlNldFRyYXNoU2V0dGluZ3NSZXNwb25zZWIGcHJvdG8z", [file_hyperstor_v1_admin]);
 
 /**
  * Something in the trash: a volume (with its snapshots), or a snapshot
@@ -1140,6 +1140,34 @@ export type Pool = Message<"hyperstor.v1.Pool"> & {
    * @generated from field: optional uint32 fullest_device = 17 [json_name = "fullest_device"];
    */
   fullestDevice?: number | undefined;
+
+  /**
+   * A split under way (D187): to twice pg_count, with this many PGs split.
+   *
+   * @generated from field: uint32 split_done = 18 [json_name = "split_done"];
+   */
+  splitDone: number;
+
+  /**
+   * Whether the map service doubles its PG count as devices are added
+   * (D174, D184): when they call for at least twice as many.
+   *
+   * @generated from field: bool autoscale = 19;
+   */
+  autoscale: boolean;
+
+  /**
+   * The PGs placement goes by (D173): below pg_count after a split, until
+   * the new PGs move to their own devices.
+   *
+   * @generated from field: uint32 placement_count = 20 [json_name = "placement_count"];
+   */
+  placementCount: number;
+
+  /**
+   * @generated from field: bool splitting = 21;
+   */
+  splitting: boolean;
 };
 
 /**
@@ -1257,6 +1285,34 @@ export type PoolJson = {
    * @generated from field: optional uint32 fullest_device = 17 [json_name = "fullest_device"];
    */
   fullest_device?: number;
+
+  /**
+   * A split under way (D187): to twice pg_count, with this many PGs split.
+   *
+   * @generated from field: uint32 split_done = 18 [json_name = "split_done"];
+   */
+  split_done?: number;
+
+  /**
+   * Whether the map service doubles its PG count as devices are added
+   * (D174, D184): when they call for at least twice as many.
+   *
+   * @generated from field: bool autoscale = 19;
+   */
+  autoscale?: boolean;
+
+  /**
+   * The PGs placement goes by (D173): below pg_count after a split, until
+   * the new PGs move to their own devices.
+   *
+   * @generated from field: uint32 placement_count = 20 [json_name = "placement_count"];
+   */
+  placement_count?: number;
+
+  /**
+   * @generated from field: bool splitting = 21;
+   */
+  splitting?: boolean;
 };
 
 /**
@@ -2035,6 +2091,14 @@ export type CreatePoolRequest = Message<"hyperstor.v1.CreatePoolRequest"> & {
    * @generated from field: bool force = 9;
    */
   force: boolean;
+
+  /**
+   * Whether the map service doubles its PG count as devices are added
+   * (04-decisions.md D174, D184); absent: on.
+   *
+   * @generated from field: optional bool autoscale = 10;
+   */
+  autoscale?: boolean | undefined;
 };
 
 /**
@@ -2101,6 +2165,14 @@ export type CreatePoolRequestJson = {
    * @generated from field: bool force = 9;
    */
   force?: boolean;
+
+  /**
+   * Whether the map service doubles its PG count as devices are added
+   * (04-decisions.md D174, D184); absent: on.
+   *
+   * @generated from field: optional bool autoscale = 10;
+   */
+  autoscale?: boolean;
 };
 
 /**
@@ -2329,6 +2401,20 @@ export type SetPoolRequest = Message<"hyperstor.v1.SetPoolRequest"> & {
    * @generated from field: bool every_device = 6 [json_name = "every_device"];
    */
   everyDevice: boolean;
+
+  /**
+   * Twice the pool's PG count: the pool splits (D187).
+   *
+   * @generated from field: optional uint32 pg_count = 7 [json_name = "pg_count"];
+   */
+  pgCount?: number | undefined;
+
+  /**
+   * Turns the autoscaler on or off for the pool (D174, D184).
+   *
+   * @generated from field: optional bool autoscale = 8;
+   */
+  autoscale?: boolean | undefined;
 };
 
 /**
@@ -2375,6 +2461,20 @@ export type SetPoolRequestJson = {
    * @generated from field: bool every_device = 6 [json_name = "every_device"];
    */
   every_device?: boolean;
+
+  /**
+   * Twice the pool's PG count: the pool splits (D187).
+   *
+   * @generated from field: optional uint32 pg_count = 7 [json_name = "pg_count"];
+   */
+  pg_count?: number;
+
+  /**
+   * Turns the autoscaler on or off for the pool (D174, D184).
+   *
+   * @generated from field: optional bool autoscale = 8;
+   */
+  autoscale?: boolean;
 };
 
 /**
@@ -2614,6 +2714,242 @@ export const SetDeviceClassResponseSchema: GenMessage<SetDeviceClassResponse, {j
   messageDesc(file_hyperstor_v1_cluster, 41);
 
 /**
+ * @generated from message hyperstor.v1.RemoveDeviceRequest
+ */
+export type RemoveDeviceRequest = Message<"hyperstor.v1.RemoveDeviceRequest"> & {
+  /**
+   * @generated from field: uint32 device = 1;
+   */
+  device: number;
+
+  /**
+   * Work out what would move and change nothing.
+   *
+   * @generated from field: bool dry_run = 2 [json_name = "dry_run"];
+   */
+  dryRun: boolean;
+
+  /**
+   * Let pools keep fewer copies than their size, never fewer than their
+   * min.
+   *
+   * @generated from field: bool force = 3;
+   */
+  force: boolean;
+};
+
+/**
+ * @generated from message hyperstor.v1.RemoveDeviceRequest
+ */
+export type RemoveDeviceRequestJson = {
+  /**
+   * @generated from field: uint32 device = 1;
+   */
+  device?: number;
+
+  /**
+   * Work out what would move and change nothing.
+   *
+   * @generated from field: bool dry_run = 2 [json_name = "dry_run"];
+   */
+  dry_run?: boolean;
+
+  /**
+   * Let pools keep fewer copies than their size, never fewer than their
+   * min.
+   *
+   * @generated from field: bool force = 3;
+   */
+  force?: boolean;
+};
+
+/**
+ * Describes the message hyperstor.v1.RemoveDeviceRequest.
+ * Use `create(RemoveDeviceRequestSchema)` to create a new message.
+ */
+export const RemoveDeviceRequestSchema: GenMessage<RemoveDeviceRequest, {jsonType: RemoveDeviceRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 42);
+
+/**
+ * @generated from message hyperstor.v1.RemoveDeviceResponse
+ */
+export type RemoveDeviceResponse = Message<"hyperstor.v1.RemoveDeviceResponse"> & {
+  /**
+   * Absent for a dry run.
+   *
+   * @generated from field: hyperstor.v1.Operation operation = 1;
+   */
+  operation?: Operation | undefined;
+
+  /**
+   * The PGs that move (or would), with their acting sets before and after.
+   *
+   * @generated from field: repeated hyperstor.v1.PgMove moves = 2;
+   */
+  moves: PgMove[];
+
+  /**
+   * Pools left with fewer failure domains than copies (forced).
+   *
+   * @generated from field: repeated hyperstor.v1.ShortPool short_pools = 3 [json_name = "short_pools"];
+   */
+  shortPools: ShortPool[];
+
+  /**
+   * The devices that take data, with their space after.
+   *
+   * @generated from field: repeated hyperstor.v1.DeviceFill fill = 4;
+   */
+  fill: DeviceFill[];
+};
+
+/**
+ * @generated from message hyperstor.v1.RemoveDeviceResponse
+ */
+export type RemoveDeviceResponseJson = {
+  /**
+   * Absent for a dry run.
+   *
+   * @generated from field: hyperstor.v1.Operation operation = 1;
+   */
+  operation?: OperationJson;
+
+  /**
+   * The PGs that move (or would), with their acting sets before and after.
+   *
+   * @generated from field: repeated hyperstor.v1.PgMove moves = 2;
+   */
+  moves?: PgMoveJson[];
+
+  /**
+   * Pools left with fewer failure domains than copies (forced).
+   *
+   * @generated from field: repeated hyperstor.v1.ShortPool short_pools = 3 [json_name = "short_pools"];
+   */
+  short_pools?: ShortPoolJson[];
+
+  /**
+   * The devices that take data, with their space after.
+   *
+   * @generated from field: repeated hyperstor.v1.DeviceFill fill = 4;
+   */
+  fill?: DeviceFillJson[];
+};
+
+/**
+ * Describes the message hyperstor.v1.RemoveDeviceResponse.
+ * Use `create(RemoveDeviceResponseSchema)` to create a new message.
+ */
+export const RemoveDeviceResponseSchema: GenMessage<RemoveDeviceResponse, {jsonType: RemoveDeviceResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 43);
+
+/**
+ * @generated from message hyperstor.v1.ShortPool
+ */
+export type ShortPool = Message<"hyperstor.v1.ShortPool"> & {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+
+  /**
+   * The copies it keeps.
+   *
+   * @generated from field: uint32 copies = 2;
+   */
+  copies: number;
+
+  /**
+   * The copies it should keep.
+   *
+   * @generated from field: uint32 size = 3;
+   */
+  size: number;
+};
+
+/**
+ * @generated from message hyperstor.v1.ShortPool
+ */
+export type ShortPoolJson = {
+  /**
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+
+  /**
+   * The copies it keeps.
+   *
+   * @generated from field: uint32 copies = 2;
+   */
+  copies?: number;
+
+  /**
+   * The copies it should keep.
+   *
+   * @generated from field: uint32 size = 3;
+   */
+  size?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.ShortPool.
+ * Use `create(ShortPoolSchema)` to create a new message.
+ */
+export const ShortPoolSchema: GenMessage<ShortPool, {jsonType: ShortPoolJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 44);
+
+/**
+ * @generated from message hyperstor.v1.DeviceFill
+ */
+export type DeviceFill = Message<"hyperstor.v1.DeviceFill"> & {
+  /**
+   * @generated from field: uint32 device = 1;
+   */
+  device: number;
+
+  /**
+   * Bytes used once the moved PGs are on it.
+   *
+   * @generated from field: uint64 used_bytes = 2 [json_name = "used_bytes"];
+   */
+  usedBytes: bigint;
+
+  /**
+   * @generated from field: uint64 total_bytes = 3 [json_name = "total_bytes"];
+   */
+  totalBytes: bigint;
+};
+
+/**
+ * @generated from message hyperstor.v1.DeviceFill
+ */
+export type DeviceFillJson = {
+  /**
+   * @generated from field: uint32 device = 1;
+   */
+  device?: number;
+
+  /**
+   * Bytes used once the moved PGs are on it.
+   *
+   * @generated from field: uint64 used_bytes = 2 [json_name = "used_bytes"];
+   */
+  used_bytes?: string;
+
+  /**
+   * @generated from field: uint64 total_bytes = 3 [json_name = "total_bytes"];
+   */
+  total_bytes?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.DeviceFill.
+ * Use `create(DeviceFillSchema)` to create a new message.
+ */
+export const DeviceFillSchema: GenMessage<DeviceFill, {jsonType: DeviceFillJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_cluster, 45);
+
+/**
  * @generated from message hyperstor.v1.AddDeviceResponse
  */
 export type AddDeviceResponse = Message<"hyperstor.v1.AddDeviceResponse"> & {
@@ -2656,7 +2992,7 @@ export type AddDeviceResponseJson = {
  * Use `create(AddDeviceResponseSchema)` to create a new message.
  */
 export const AddDeviceResponseSchema: GenMessage<AddDeviceResponse, {jsonType: AddDeviceResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 42);
+  messageDesc(file_hyperstor_v1_cluster, 46);
 
 /**
  * @generated from message hyperstor.v1.Volume
@@ -2769,7 +3105,7 @@ export type VolumeJson = {
  * Use `create(VolumeSchema)` to create a new message.
  */
 export const VolumeSchema: GenMessage<Volume, {jsonType: VolumeJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 43);
+  messageDesc(file_hyperstor_v1_cluster, 47);
 
 /**
  * @generated from message hyperstor.v1.ListVolumesRequest
@@ -2796,7 +3132,7 @@ export type ListVolumesRequestJson = {
  * Use `create(ListVolumesRequestSchema)` to create a new message.
  */
 export const ListVolumesRequestSchema: GenMessage<ListVolumesRequest, {jsonType: ListVolumesRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 44);
+  messageDesc(file_hyperstor_v1_cluster, 48);
 
 /**
  * @generated from message hyperstor.v1.ListVolumesResponse
@@ -2823,7 +3159,7 @@ export type ListVolumesResponseJson = {
  * Use `create(ListVolumesResponseSchema)` to create a new message.
  */
 export const ListVolumesResponseSchema: GenMessage<ListVolumesResponse, {jsonType: ListVolumesResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 45);
+  messageDesc(file_hyperstor_v1_cluster, 49);
 
 /**
  * @generated from message hyperstor.v1.CreateVolumeRequest
@@ -2892,7 +3228,7 @@ export type CreateVolumeRequestJson = {
  * Use `create(CreateVolumeRequestSchema)` to create a new message.
  */
 export const CreateVolumeRequestSchema: GenMessage<CreateVolumeRequest, {jsonType: CreateVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 46);
+  messageDesc(file_hyperstor_v1_cluster, 50);
 
 /**
  * @generated from message hyperstor.v1.CreateVolumeResponse
@@ -2919,7 +3255,7 @@ export type CreateVolumeResponseJson = {
  * Use `create(CreateVolumeResponseSchema)` to create a new message.
  */
 export const CreateVolumeResponseSchema: GenMessage<CreateVolumeResponse, {jsonType: CreateVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 47);
+  messageDesc(file_hyperstor_v1_cluster, 51);
 
 /**
  * @generated from message hyperstor.v1.DeleteVolumeRequest
@@ -2962,7 +3298,7 @@ export type DeleteVolumeRequestJson = {
  * Use `create(DeleteVolumeRequestSchema)` to create a new message.
  */
 export const DeleteVolumeRequestSchema: GenMessage<DeleteVolumeRequest, {jsonType: DeleteVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 48);
+  messageDesc(file_hyperstor_v1_cluster, 52);
 
 /**
  * @generated from message hyperstor.v1.ExpandVolumeRequest
@@ -3003,7 +3339,7 @@ export type ExpandVolumeRequestJson = {
  * Use `create(ExpandVolumeRequestSchema)` to create a new message.
  */
 export const ExpandVolumeRequestSchema: GenMessage<ExpandVolumeRequest, {jsonType: ExpandVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 49);
+  messageDesc(file_hyperstor_v1_cluster, 53);
 
 /**
  * @generated from message hyperstor.v1.ExpandVolumeResponse
@@ -3030,7 +3366,7 @@ export type ExpandVolumeResponseJson = {
  * Use `create(ExpandVolumeResponseSchema)` to create a new message.
  */
 export const ExpandVolumeResponseSchema: GenMessage<ExpandVolumeResponse, {jsonType: ExpandVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 50);
+  messageDesc(file_hyperstor_v1_cluster, 54);
 
 /**
  * @generated from message hyperstor.v1.DeleteVolumeResponse
@@ -3061,7 +3397,7 @@ export type DeleteVolumeResponseJson = {
  * Use `create(DeleteVolumeResponseSchema)` to create a new message.
  */
 export const DeleteVolumeResponseSchema: GenMessage<DeleteVolumeResponse, {jsonType: DeleteVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 51);
+  messageDesc(file_hyperstor_v1_cluster, 55);
 
 /**
  * @generated from message hyperstor.v1.Snapshot
@@ -3132,7 +3468,7 @@ export type SnapshotJson = {
  * Use `create(SnapshotSchema)` to create a new message.
  */
 export const SnapshotSchema: GenMessage<Snapshot, {jsonType: SnapshotJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 52);
+  messageDesc(file_hyperstor_v1_cluster, 56);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsRequest
@@ -3163,7 +3499,7 @@ export type ListSnapshotsRequestJson = {
  * Use `create(ListSnapshotsRequestSchema)` to create a new message.
  */
 export const ListSnapshotsRequestSchema: GenMessage<ListSnapshotsRequest, {jsonType: ListSnapshotsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 53);
+  messageDesc(file_hyperstor_v1_cluster, 57);
 
 /**
  * @generated from message hyperstor.v1.ListSnapshotsResponse
@@ -3190,7 +3526,7 @@ export type ListSnapshotsResponseJson = {
  * Use `create(ListSnapshotsResponseSchema)` to create a new message.
  */
 export const ListSnapshotsResponseSchema: GenMessage<ListSnapshotsResponse, {jsonType: ListSnapshotsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 54);
+  messageDesc(file_hyperstor_v1_cluster, 58);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotRequest
@@ -3227,7 +3563,7 @@ export type CreateSnapshotRequestJson = {
  * Use `create(CreateSnapshotRequestSchema)` to create a new message.
  */
 export const CreateSnapshotRequestSchema: GenMessage<CreateSnapshotRequest, {jsonType: CreateSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 55);
+  messageDesc(file_hyperstor_v1_cluster, 59);
 
 /**
  * @generated from message hyperstor.v1.CreateSnapshotResponse
@@ -3254,7 +3590,7 @@ export type CreateSnapshotResponseJson = {
  * Use `create(CreateSnapshotResponseSchema)` to create a new message.
  */
 export const CreateSnapshotResponseSchema: GenMessage<CreateSnapshotResponse, {jsonType: CreateSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 56);
+  messageDesc(file_hyperstor_v1_cluster, 60);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotRequest
@@ -3291,7 +3627,7 @@ export type DeleteSnapshotRequestJson = {
  * Use `create(DeleteSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteSnapshotRequestSchema: GenMessage<DeleteSnapshotRequest, {jsonType: DeleteSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 57);
+  messageDesc(file_hyperstor_v1_cluster, 61);
 
 /**
  * @generated from message hyperstor.v1.DeleteSnapshotResponse
@@ -3322,7 +3658,7 @@ export type DeleteSnapshotResponseJson = {
  * Use `create(DeleteSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteSnapshotResponseSchema: GenMessage<DeleteSnapshotResponse, {jsonType: DeleteSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 58);
+  messageDesc(file_hyperstor_v1_cluster, 62);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeRequest
@@ -3387,7 +3723,7 @@ export type CloneVolumeRequestJson = {
  * Use `create(CloneVolumeRequestSchema)` to create a new message.
  */
 export const CloneVolumeRequestSchema: GenMessage<CloneVolumeRequest, {jsonType: CloneVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 59);
+  messageDesc(file_hyperstor_v1_cluster, 63);
 
 /**
  * @generated from message hyperstor.v1.CloneVolumeResponse
@@ -3414,7 +3750,7 @@ export type CloneVolumeResponseJson = {
  * Use `create(CloneVolumeResponseSchema)` to create a new message.
  */
 export const CloneVolumeResponseSchema: GenMessage<CloneVolumeResponse, {jsonType: CloneVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 60);
+  messageDesc(file_hyperstor_v1_cluster, 64);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeRequest
@@ -3451,7 +3787,7 @@ export type RollbackVolumeRequestJson = {
  * Use `create(RollbackVolumeRequestSchema)` to create a new message.
  */
 export const RollbackVolumeRequestSchema: GenMessage<RollbackVolumeRequest, {jsonType: RollbackVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 61);
+  messageDesc(file_hyperstor_v1_cluster, 65);
 
 /**
  * @generated from message hyperstor.v1.RollbackVolumeResponse
@@ -3478,7 +3814,7 @@ export type RollbackVolumeResponseJson = {
  * Use `create(RollbackVolumeResponseSchema)` to create a new message.
  */
 export const RollbackVolumeResponseSchema: GenMessage<RollbackVolumeResponse, {jsonType: RollbackVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 62);
+  messageDesc(file_hyperstor_v1_cluster, 66);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeRequest
@@ -3505,7 +3841,7 @@ export type FlattenVolumeRequestJson = {
  * Use `create(FlattenVolumeRequestSchema)` to create a new message.
  */
 export const FlattenVolumeRequestSchema: GenMessage<FlattenVolumeRequest, {jsonType: FlattenVolumeRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 63);
+  messageDesc(file_hyperstor_v1_cluster, 67);
 
 /**
  * @generated from message hyperstor.v1.FlattenVolumeResponse
@@ -3550,7 +3886,7 @@ export type FlattenVolumeResponseJson = {
  * Use `create(FlattenVolumeResponseSchema)` to create a new message.
  */
 export const FlattenVolumeResponseSchema: GenMessage<FlattenVolumeResponse, {jsonType: FlattenVolumeResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 64);
+  messageDesc(file_hyperstor_v1_cluster, 68);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotRequest
@@ -3587,7 +3923,7 @@ export type CreateGroupSnapshotRequestJson = {
  * Use `create(CreateGroupSnapshotRequestSchema)` to create a new message.
  */
 export const CreateGroupSnapshotRequestSchema: GenMessage<CreateGroupSnapshotRequest, {jsonType: CreateGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 65);
+  messageDesc(file_hyperstor_v1_cluster, 69);
 
 /**
  * @generated from message hyperstor.v1.GroupMember
@@ -3624,7 +3960,7 @@ export type GroupMemberJson = {
  * Use `create(GroupMemberSchema)` to create a new message.
  */
 export const GroupMemberSchema: GenMessage<GroupMember, {jsonType: GroupMemberJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 66);
+  messageDesc(file_hyperstor_v1_cluster, 70);
 
 /**
  * @generated from message hyperstor.v1.CreateGroupSnapshotResponse
@@ -3665,7 +4001,7 @@ export type CreateGroupSnapshotResponseJson = {
  * Use `create(CreateGroupSnapshotResponseSchema)` to create a new message.
  */
 export const CreateGroupSnapshotResponseSchema: GenMessage<CreateGroupSnapshotResponse, {jsonType: CreateGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 67);
+  messageDesc(file_hyperstor_v1_cluster, 71);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotRequest
@@ -3692,7 +4028,7 @@ export type DeleteGroupSnapshotRequestJson = {
  * Use `create(DeleteGroupSnapshotRequestSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotRequestSchema: GenMessage<DeleteGroupSnapshotRequest, {jsonType: DeleteGroupSnapshotRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 68);
+  messageDesc(file_hyperstor_v1_cluster, 72);
 
 /**
  * @generated from message hyperstor.v1.DeleteGroupSnapshotResponse
@@ -3723,7 +4059,7 @@ export type DeleteGroupSnapshotResponseJson = {
  * Use `create(DeleteGroupSnapshotResponseSchema)` to create a new message.
  */
 export const DeleteGroupSnapshotResponseSchema: GenMessage<DeleteGroupSnapshotResponse, {jsonType: DeleteGroupSnapshotResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_cluster, 69);
+  messageDesc(file_hyperstor_v1_cluster, 73);
 
 /**
  * @generated from enum hyperstor.v1.Health
@@ -3894,6 +4230,24 @@ export const ClusterService: GenService<{
     output: typeof AddDeviceResponseSchema;
   },
   /**
+   * Removes a device (24-pools-and-devices.md §27.2.5, 04-decisions.md
+   * D175, D186): it is taken out, and an operation follows its PGs off it,
+   * then removes it from the map, with its node if it was the node's last;
+   * neither id is given again, and the device's data is left as it is.
+   * Refused when a pool using it would keep fewer copies than its min, or,
+   * unless forced, than its size, for want of failure domains, and when a
+   * device that takes its data would pass 95% full. dry_run changes
+   * nothing. Cancelling the operation brings the device back in. Write,
+   * with step-up.
+   *
+   * @generated from rpc hyperstor.v1.ClusterService.RemoveDevice
+   */
+  removeDevice: {
+    methodKind: "unary";
+    input: typeof RemoveDeviceRequestSchema;
+    output: typeof RemoveDeviceResponseSchema;
+  },
+  /**
    * Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
    * follow the device's kind again (04-decisions.md D178). A class holds
    * devices of one kind, and a class named after a kind only that kind.
@@ -3908,10 +4262,13 @@ export const ClusterService: GenService<{
   },
   /**
    * Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
-   * (D164) or failure domain, and PGs move to match, or its name. Refused
-   * for .meta, when its devices would span fewer failure domains than the
-   * pool's copies, when they mix hard disks and flash unless forced
-   * (D172), and for a name another pool has. Write.
+   * (D164) or failure domain, and PGs move to match, or its name; or
+   * doubles its PG count, splitting its PGs in place, a few at a time,
+   * each paused briefly (§27.5, D173, D187). Refused for .meta, when its
+   * devices would span fewer failure domains than the pool's copies, when
+   * they mix hard disks and flash unless forced (D172), for a name another
+   * pool has, and for a count that isn't twice the pool's or while it
+   * splits. Write.
    *
    * @generated from rpc hyperstor.v1.ClusterService.SetPool
    */

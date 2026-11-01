@@ -767,29 +767,45 @@ impl Shard {
             return Ok(None);
         };
         let first = records.iter().position(|r| r.group == last).unwrap();
+        // Each block a record mapped: (record, object, logical block,
+        // physical block). A later `Take` moves an object's blocks to
+        // another key, so its entries follow; the object it replaces had
+        // its blocks freed.
+        let mut maps: Vec<(usize, ObjKey, u64, u64)> = Vec::new();
         for (i, rec) in records.iter().enumerate().skip(first) {
             for l in &rec.lists {
-                let Some(o) = self.index.objects.get(&l.key) else {
-                    continue;
-                };
                 for op in &l.ops {
-                    let ROp::Map { lb, pblock, crcs } = op else {
-                        continue;
-                    };
-                    for k in 0..crcs.len() as u64 {
-                        let Loc::Mapped { pblock: pb, crc } = o.lookup(lb + k) else {
-                            continue;
-                        };
-                        if pb != pblock + k || fx.pending.contains_key(&pb) {
-                            continue;
+                    match op {
+                        ROp::Map { lb, pblock, crcs } => {
+                            for k in 0..crcs.len() as u64 {
+                                maps.push((i, l.key.clone(), lb + k, pblock + k));
+                            }
                         }
-                        let mut buf = AlignedBuf::zeroed(BLOCK);
-                        self.dev.read(pb * BLOCK as u64, &mut buf)?;
-                        if crc32c(&buf) != crc {
-                            return Ok(Some(i));
+                        ROp::Take(src) => {
+                            maps.retain(|m| m.1 != l.key);
+                            for m in maps.iter_mut().filter(|m| m.1 == *src) {
+                                m.1 = l.key.clone();
+                            }
                         }
+                        _ => {}
                     }
                 }
+            }
+        }
+        for (i, key, lb, pblock) in maps {
+            let Some(o) = self.index.objects.get(&key) else {
+                continue;
+            };
+            let Loc::Mapped { pblock: pb, crc } = o.lookup(lb) else {
+                continue;
+            };
+            if pb != pblock || fx.pending.contains_key(&pb) {
+                continue;
+            }
+            let mut buf = AlignedBuf::zeroed(BLOCK);
+            self.dev.read(pb * BLOCK as u64, &mut buf)?;
+            if crc32c(&buf) != crc {
+                return Ok(Some(i));
             }
         }
         Ok(None)
@@ -942,6 +958,21 @@ impl Shard {
         match r {
             Err(EngineError::NoSpace) => self.abandon_checkpoint(),
             r => r?,
+        }
+        // A `Take` names its source, not what it holds: replayed over pages
+        // of a checkpoint written on either side of it, it couldn't tell
+        // which state they hold. So no checkpoint is in progress when one
+        // is logged: replay then starts before it, over pages that are all
+        // older, or after it.
+        if self.fuzzy.is_some()
+            && lists
+                .iter()
+                .any(|l| l.ops.iter().any(|o| matches!(o, Op::Take(_))))
+        {
+            match self.checkpoint_inner() {
+                Err(EngineError::NoSpace) => self.abandon_checkpoint(),
+                r => r?,
+            }
         }
         // A stalled checkpoint can't move the log's head: a round takes at
         // most what the ring has left.
@@ -1098,13 +1129,16 @@ impl Shard {
                     }
                     mutates = true;
                 }
-                Op::Absorb(src) if *src == key => return Err(OpError::SelfAbsorb),
+                Op::Absorb(src) | Op::Take(src) if *src == key => {
+                    return Err(OpError::SelfAbsorb);
+                }
                 Op::Delete
                 | Op::Truncate(_)
                 | Op::KvDel(_)
                 | Op::KvDelRange(..)
                 | Op::RmAttr(_)
-                | Op::Absorb(_) => mutates = true,
+                | Op::Absorb(_)
+                | Op::Take(_) => mutates = true,
                 _ => {
                     mutates = true;
                     grows = true;
@@ -1139,12 +1173,14 @@ impl Shard {
             rops.push(rop);
         };
         // Whether the object exists at this point of the list: `Delete`
-        // ends it and any other changing operation (re)creates it.
+        // ends it, `Take` of a missing source changes nothing, and any
+        // other changing operation (re)creates it.
         let mut alive = cur != 0;
         for op in list.ops {
             match &op {
                 Op::AssertRevision(_) | Op::AssertExists | Op::AssertAbsent => {}
                 Op::Delete => alive = false,
+                Op::Take(src) => alive |= self.index.objects.contains_key(src),
                 _ => alive = true,
             }
             match op {
@@ -1242,6 +1278,11 @@ impl Shard {
                 Op::KvDel(k) => step(&mut self.index, fx, ROp::KvDel(k), &mut rops),
                 Op::KvDelRange(a, b) => step(&mut self.index, fx, ROp::KvDelRange(a, b), &mut rops),
                 Op::Delete => step(&mut self.index, fx, ROp::Delete, &mut rops),
+                Op::Take(src) => {
+                    if self.index.objects.contains_key(&src) {
+                        step(&mut self.index, fx, ROp::Take(src), &mut rops);
+                    }
+                }
                 Op::Absorb(src) => {
                     let Some(s) = self.index.objects.get(&src) else {
                         continue;
