@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-01
 milestone = "HS2"
 branch = "check/g46-hold"
-prs = [128, 133, 136, 139, 142, 144]
+prs = [128, 133, 136, 139, 142, 144, 149]
 now = "All merged (#133, #136, #139, #142, #144) and on the pilot since 2026-11-01 (main #145). G46 measured for Linux 6.8: holds up to 300 s cost a guest a warning only; --hold-full default raised to 300 s (D183 revised)"
 next = "glidex refusing new disks on a full datastore; G46 for the newest kernel and Windows when at hand"
