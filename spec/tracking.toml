@@ -501,16 +501,10 @@ spec = ["10-volumes.md §10.1"]
 status = "planned"
 
 [[milestone.item]]
-what = "hyperstor's side of the glidex driver: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
-spec = ["16-glidex.md §17", "D122", "D123", "I167"]
+what = "The glidex hyperstor driver (glidex #177): create, delete, expand, stage through hyperstor-vhost, images as golden snapshots and clones; hyperstor's side: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume"
+spec = ["16-glidex.md §17", "D79", "D118", "D122", "D123", "I167"]
 status = "done"
 tests = ["enroll::a_management_client_enrolls_and_manages_volumes"]
-
-[[milestone.item]]
-what = "The glidex hyperstor driver (glidex #177): create, delete, expand, stage through hyperstor-vhost, images as golden snapshots and clones"
-spec = ["16-glidex.md §17", "D79", "D118"]
-status = "done"
-tests = ["enroll::a_management_client_enrolls_and_manages_volumes", "vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
 [[milestone.item]]
 what = "Metering of hyperstor disks in glidex"
