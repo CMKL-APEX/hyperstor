@@ -584,6 +584,45 @@ impl ClusterMap {
         Ok(changed || was != fixed)
     }
 
+    /// Replaces `device`'s endpoints (D215): each on a network of the map
+    /// that carries data, a usable address, none twice. Whether they
+    /// changed; the epoch moves when they did.
+    pub fn set_endpoints(
+        &mut self,
+        device: u32,
+        endpoints: Vec<(String, SocketAddr)>,
+    ) -> Result<bool, String> {
+        if !self.devices.contains_key(&device) {
+            return Err(format!("no device {device}"));
+        }
+        for (i, (net, a)) in endpoints.iter().enumerate() {
+            match self.networks.get(net) {
+                None => return Err(format!("no network {net}")),
+                Some(n) if n.kind == NetKind::Control => {
+                    return Err(format!("network {net} carries no data"));
+                }
+                Some(_) => {}
+            }
+            if a.ip().is_unspecified() || a.port() == 0 {
+                return Err(format!("{a}: not an address a reactor can listen on"));
+            }
+            if endpoints[..i].iter().any(|(n, x)| n == net && x == a) {
+                return Err(format!("{net} {a} is given twice"));
+            }
+        }
+        let old = self.endpoints.get(&device).cloned().unwrap_or_default();
+        if old == endpoints {
+            return Ok(false);
+        }
+        if endpoints.is_empty() {
+            self.endpoints.remove(&device);
+        } else {
+            self.endpoints.insert(device, endpoints);
+        }
+        self.epoch += 1;
+        Ok(true)
+    }
+
     /// Adds the `.meta` pool (06-metadata.md §4.2) if the map lacks it:
     /// replicated, three copies (fewer on smaller clusters), 256 PGs.
     /// Whether it was added; the caller recomputes.
@@ -2028,6 +2067,41 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(m.endpoints, seed.endpoints);
         assert_eq!(m.pgs, pgs);
         assert!(!m.merge_new(&seed));
+        // Set through the API (D215): replaced, checked, the epoch moving
+        // only on a change.
+        let a: SocketAddr = "192.0.2.20:9100".parse().unwrap();
+        let e = m.epoch;
+        assert!(m.set_endpoints(0, vec![("ib".into(), a)]).unwrap());
+        assert_eq!(
+            (m.endpoints[&0].clone(), m.epoch),
+            (vec![("ib".into(), a)], e + 1)
+        );
+        assert!(!m.set_endpoints(0, vec![("ib".into(), a)]).unwrap());
+        assert_eq!(m.epoch, e + 1);
+        assert!(
+            m.set_endpoints(9, vec![])
+                .unwrap_err()
+                .contains("no device")
+        );
+        assert!(
+            m.set_endpoints(0, vec![("eth".into(), a)])
+                .unwrap_err()
+                .contains("no network")
+        );
+        assert!(
+            m.set_endpoints(0, vec![("mgmt".into(), a)])
+                .unwrap_err()
+                .contains("no data")
+        );
+        let any: SocketAddr = "0.0.0.0:9100".parse().unwrap();
+        assert!(m.set_endpoints(0, vec![("ib".into(), any)]).is_err());
+        assert!(
+            m.set_endpoints(0, vec![("ib".into(), a), ("ib".into(), a)])
+                .unwrap_err()
+                .contains("twice")
+        );
+        assert!(m.set_endpoints(0, vec![]).unwrap());
+        assert!(!m.endpoints.contains_key(&0));
         m.remove_device(1).unwrap();
         assert!(!m.endpoints.contains_key(&1));
     }

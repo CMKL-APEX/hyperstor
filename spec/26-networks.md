@@ -14,6 +14,8 @@ the reconciler runs in the map service's leader, as a module that can
 move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
+D215–D217 (points 178–180) settle how endpoints are chosen and kept,
+and who routes by source.
 G47–G53 are the host checks they rest on. Built so far (HS19, branch
 `feat/fabric`; 01-implementation-notes.md I233–I238): networks and
 endpoints in the cluster file and the map, nodes and clients reaching
@@ -21,7 +23,7 @@ devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired. It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
-## 29. Networks (D203–D213)
+## 29. Networks (D203–D217)
 
 ### 29.1 Goal and scope
 
@@ -164,8 +166,19 @@ port on its own NUMA node.
   the reactor checks checksums and runs the engine on every chunk.
 - **Source addresses.** Outgoing connections bind the endpoint's address
   as their source. With several ports in one subnet, the host must also
-  route by source (G47); the installer checks it and refuses to bind
-  endpoints on a host where it doesn't hold.
+  route by source (G47). The installer checks it (D216): it warns about
+  an endpoint address without a rule of its own, and fails when the
+  port filters reverse paths strictly, where connections would fail;
+  loose filtering only costs the spread over ports. The rules are the
+  host network owner's to add (D217): glidex's netd on glidex hosts,
+  the operator (netplan) elsewhere.
+- **Who picks endpoints (D215).** The installer proposes them from the
+  host's topology (the closest ports to each device, by this ranking,
+  on the cluster's data networks) and keeps them in the map through the
+  cluster API, again on every run, so they follow the host's ports. A
+  node's own certificate may set only its own devices' endpoints;
+  `admin` and `mgmt` may set any. The cluster file's `endpoint` lines
+  stay, for endpoints written by hand.
 - **Clients** rank their own ports the same way: by closeness to the
   client reactor's CPU, and for `libhyperstor-gpu` to the GPU whose
   buffer is read or written (12-gpu.md §12.1).
