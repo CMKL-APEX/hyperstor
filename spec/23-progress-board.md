@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 0 | 17 |
+| 6 | 0 | 0 | 17 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Networks: several ports, path choice, the fabric reconciler and claims (HS19 design)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `spec/networks` | 26-networks.md: D203–D213 settled (reconciler in the leader, glidex's topology reader, any orchestrator claims, lending while idle by default), G47–G53 open | The PR's merge; then glidex's topology crate with port facts (a glidex change) and stage 1 | 2026-11-02 |
 | **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `s3/decisions`, [#151](https://github.com/CMKL-APEX/hyperstor/pull/151) | Points 128–137 settled as D191–D199, and HS11 designed (25-kv-ranges.md §28; points 169–172 settled as D200–D202): one-row atomic changes, range objects found through a root in .meta, splits past 64 MiB and merges by each range's primary with the copied half frozen | Build HS11 in four stages: AssertKv in the engine; hyperstor-kv without splits; splits and merges in hyperstord; the deletion queue | 2026-11-01 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `investigate/mib-reads`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145), [#152](https://github.com/CMKL-APEX/hyperstor/pull/152) | Stage 2 (D190) installed on the pilot and load-tested: 4 KiB reads at QD32 3.7× faster, no holds or silences; 1 MiB reads were slower only because pool 1 had moved onto two NVMe devices, now removed from it (02-benchmarks.md, 2026-11-01) | Why 1 MiB reads lose throughput above QD1 when a synthetic test does not; node 0's 170 ms process-wide pause; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes) | 2026-11-01 |
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
@@ -83,6 +84,7 @@ against the tests.
 | HS16 | Sites and replication between clusters | 0 | 0 | 0 |
 | HS17 | Global namespace and federation | 0 | 0 | 0 |
 | HS18 | Pools and devices at run time | 14 | 2 | 0 |
+| HS19 | Networks | 0 | 0 | 5 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |

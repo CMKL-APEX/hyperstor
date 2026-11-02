@@ -77,8 +77,13 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   retries.
 - **Several ports.** A node with more than one RDMA port (or several
   NICs, one per NUMA node) lists each as its own address. A reactor
-  uses the port on its own NUMA node.
-- **Port roles and traffic classes** (D31):
+  uses the port on its own NUMA node. Replaced by D207
+  (26-networks.md §29.5): each reactor lists endpoints ranked by
+  closeness to its device, and senders choose among them per I/O
+  (26-networks.md §29.6).
+- **Port roles and traffic classes** (D31; amended by roles as leases
+  from the fabric reconciler, D209, and the per-host GPU NIC default,
+  D211, in 26-networks.md §29.8 and §29.10):
   - each port has a role, `storage`, `compute` or `converged`. The
     installer proposes `compute` for ports that sit under the same PCIe
     switch as a GPU, and `storage` for the others; the operator
