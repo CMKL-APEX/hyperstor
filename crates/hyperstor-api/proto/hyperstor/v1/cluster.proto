@@ -125,6 +125,14 @@ service ClusterService {
   // them no more: a long operation (D120). Write.
   rpc FlattenVolume(FlattenVolumeRequest) returns (FlattenVolumeResponse);
 
+  // Copies a volume, or one of its snapshots, into a new volume in
+  // another pool (10-volumes.md §10.6, D214): a long operation. Write.
+  rpc CopyVolume(CopyVolumeRequest) returns (CopyVolumeResponse);
+
+  // Moves a detached volume without snapshots to another pool, keeping
+  // its id (D214): a long operation. Write.
+  rpc MoveVolume(MoveVolumeRequest) returns (MoveVolumeResponse);
+
   // Snapshots several volumes at one moment (a consistency group).
   // Write.
   rpc CreateGroupSnapshot(CreateGroupSnapshotRequest) returns (CreateGroupSnapshotResponse);
@@ -792,6 +800,39 @@ message FlattenVolumeResponse {
   // The volume as it is when the flatten starts.
   Volume volume = 1;
   // The flatten, which runs in the background (04-decisions.md D120).
+  Operation operation = 2;
+}
+
+message CopyVolumeRequest {
+  // The volume copied.
+  string id = 1;
+  // Its snapshot at this epoch; 0: its head, which needs it detached.
+  uint64 epoch = 2;
+  // The pool the copy goes to.
+  uint32 pool = 3;
+  // The copy's name; empty: the volume's.
+  string name = 4;
+  // The copy's id, 32 hexadecimal digits; empty: drawn at random.
+  string new_id = 5 [json_name = "new_id"];
+}
+
+message CopyVolumeResponse {
+  // The volume copied, as it is when the copy starts.
+  Volume volume = 1;
+  // The copy's id: it is listed while it fills, held by the copy.
+  string new_id = 2 [json_name = "new_id"];
+  Operation operation = 3;
+}
+
+message MoveVolumeRequest {
+  string id = 1;
+  // The pool it moves to.
+  uint32 pool = 2;
+}
+
+message MoveVolumeResponse {
+  // The volume as it is when the move starts.
+  Volume volume = 1;
   Operation operation = 2;
 }
 

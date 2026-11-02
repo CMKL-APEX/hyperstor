@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["hyperstor_client",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.99.1/core/default/trait.Default.html\" title=\"trait core::default::Default\">Default</a> for <a class=\"struct\" href=\"hyperstor_client/copy/struct.Progress.html\" title=\"struct hyperstor_client::copy::Progress\">Progress</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.99.1/core/default/trait.Default.html\" title=\"trait core::default::Default\">Default</a> for <a class=\"struct\" href=\"hyperstor_client/cache/struct.Stats.html\" title=\"struct hyperstor_client::cache::Stats\">Stats</a>",0]]],["hyperstor_reactor",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.99.1/core/default/trait.Default.html\" title=\"trait core::default::Default\">Default</a> for <a class=\"struct\" href=\"hyperstor_reactor/struct.Slowest.html\" title=\"struct hyperstor_reactor::Slowest\">Slowest</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[603,306]}

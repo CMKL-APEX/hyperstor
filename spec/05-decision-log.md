@@ -1136,6 +1136,16 @@ Then the decisions drafted with the spec, asked for review:
 |---|---|---|---|
 | 176 | D206–D213 as drafted: control apart from data, endpoints by closeness, two loops, roles as leases with lending `off` by default (recommended; or `idle`, or `always`), health per network, the GPU NIC default per host, pairing at VM start, placement not weighing speed | Lending `idle` by default; the rest as recommended | D206–D213 |
 
+## Copies and moves between pools (2026-11-02)
+
+The owner asked whether volumes can be moved or copied between pools:
+only by hand (`read-volume` into a file, `write-volume` out of it), with
+the volume detached. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 177 | What a copy reads: a snapshot, or the head of a detached volume (recommended); the head only, detached; or a snapshot it takes itself. Whether a move keeps the id: copy only for now (recommended), or `--move` keeping it. How data travels: through the map service's leader (recommended), or node to node. Snapshots: one point in time (recommended), or carried over | A snapshot or a detached head; a move keeping the id too; through the leader; one point in time | D214 |
+
 ## Networks: endpoints and routing (2026-11-02)
 
 Three questions the first implementation left open (01-implementation-notes.md

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["channel","oneshot"],"struct":["OneReceiver","OneSender","Receiver","Sender"]};

@@ -8,6 +8,7 @@
 pub use hyperstor_rpc as rpc;
 
 pub mod cache;
+pub mod copy;
 pub mod snapshot;
 pub mod trash;
 pub mod volume;
