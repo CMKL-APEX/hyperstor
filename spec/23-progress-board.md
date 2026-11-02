@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 1 | 17 |
+| 6 | 0 | 0 | 18 |
 
 ## In progress
 
@@ -30,15 +30,14 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader | Merge #159 once CI passes; then the web UI's buttons; live moves of attached volumes later | 2026-11-02 |
+None.
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
 | **Fullness thresholds: D27 revised, D182, D183** (`fullness`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `board/fullness-done`, [#128](https://github.com/CMKL-APEX/hyperstor/pull/128), [#133](https://github.com/CMKL-APEX/hyperstor/pull/133), [#136](https://github.com/CMKL-APEX/hyperstor/pull/136), [#139](https://github.com/CMKL-APEX/hyperstor/pull/139), [#142](https://github.com/CMKL-APEX/hyperstor/pull/142), [#144](https://github.com/CMKL-APEX/hyperstor/pull/144), [#149](https://github.com/CMKL-APEX/hyperstor/pull/149) | 2026-11-02 |
+| **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | 2026-11-02 |
 | **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `main`, [#147](https://github.com/CMKL-APEX/hyperstor/pull/147) | 2026-11-01 |
 | **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `main`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106), [#113](https://github.com/CMKL-APEX/hyperstor/pull/113), [#114](https://github.com/CMKL-APEX/hyperstor/pull/114), [#116](https://github.com/CMKL-APEX/hyperstor/pull/116), [#117](https://github.com/CMKL-APEX/hyperstor/pull/117), [#118](https://github.com/CMKL-APEX/hyperstor/pull/118), [#119](https://github.com/CMKL-APEX/hyperstor/pull/119), [#120](https://github.com/CMKL-APEX/hyperstor/pull/120), [#121](https://github.com/CMKL-APEX/hyperstor/pull/121), [#123](https://github.com/CMKL-APEX/hyperstor/pull/123), [#124](https://github.com/CMKL-APEX/hyperstor/pull/124), [#125](https://github.com/CMKL-APEX/hyperstor/pull/125), [#126](https://github.com/CMKL-APEX/hyperstor/pull/126), [#127](https://github.com/CMKL-APEX/hyperstor/pull/127), [#130](https://github.com/CMKL-APEX/hyperstor/pull/130), [#131](https://github.com/CMKL-APEX/hyperstor/pull/131), [#132](https://github.com/CMKL-APEX/hyperstor/pull/132), [#137](https://github.com/CMKL-APEX/hyperstor/pull/137), [#138](https://github.com/CMKL-APEX/hyperstor/pull/138), [#140](https://github.com/CMKL-APEX/hyperstor/pull/140), [#141](https://github.com/CMKL-APEX/hyperstor/pull/141), [#143](https://github.com/CMKL-APEX/hyperstor/pull/143) | 2026-11-01 |
 | **Public docs caught up with the implementation (November)** (`docs-catch-up-nov`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | — | `docs/catch-up-nov`, [#148](https://github.com/CMKL-APEX/hyperstor/pull/148) | 2026-11-01 |
