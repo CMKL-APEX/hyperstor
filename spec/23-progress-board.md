@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 0 | 20 |
+| 7 | 0 | 1 | 20 |
 
 ## In progress
 
@@ -31,7 +31,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin` | Proposal drafted (28-scrub.md §31): settings per pool in the map, step-up to weaken, each PG's last scrub through Raft, health checks, scrub on demand and after recovery | The owner's review of points 183–189; then build: settings and reports first, the UI after | 2026-11-03 |
 
 ## Done
 

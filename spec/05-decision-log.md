@@ -1168,3 +1168,19 @@ recommendation:
 |---|---|---|---|
 | 181 | Scope: views first, the Advisor and moving primaries later (recommended); views and the Advisor; or everything with moving primaries. Heat: operations per second with bytes in detail (recommended), bytes, or a toggle. Top volumes per PG now (recommended) or later. Drive telemetry: service time and SMART (recommended), service time only, or every log page | Views and the Advisor, no moving primaries yet; operations per second; top 5 volumes per PG; service time and SMART | D218, D219, D220, D222 |
 | 182 | How `hyperstord`, running unprivileged, reads SMART logs, which need `CAP_SYS_ADMIN`: a small socket-activated root helper (recommended); the installer's root timer writing files; sysfs only for now; or the capability on `hyperstord` | The root helper | D221 |
+
+## Scrub settings and reports (2026-11-03)
+
+After issue #158 and the pilot's repair, the owner asked for scrub's
+settings in the API and CLI, and for scrub reports, with data safety
+first (28-scrub.md §31). Open, with a recommendation:
+
+| # | Point | Options | Recommendation |
+|---|---|---|---|
+| 183 | Where scrub's settings live | (a) per pool, in the map, with the flags removed; (b) cluster-wide, in the map; (c) per pool, with node flags overriding | (a), D224: pools differ, and flags drift apart across hosts |
+| 184 | Hole repair's default | (a) `repair`; (b) `report`, turned on per pool | (a), D225: the pilot replaced 292 copies with none showing up again; `report` leaves clones reading zeros |
+| 185 | Guarding changes that weaken scrub | (a) step-up and a reason, audited, and a health warning while they last; (b) an ordinary write, audited; (c) no way to turn scrub off at all | (a), D226: deliberate and visible, without forbidding a test pool from scrubbing less |
+| 186 | Where each PG's last scrub is kept | (a) replicated through Raft, batched once a minute; (b) the leader's memory, as load reports are; (c) on each device, sent with heartbeats | (a), D227: "last read" must survive failover; (b) makes every failover look like no scrub ever ran |
+| 187 | Health checks | (a) overdue, reduced, skipped and unrepairable damage, as in §31.5; (b) only unrepairable damage and inconsistency, as now | (a), D228 |
+| 188 | Scrub on demand | (a) an operation over the API and CLI; (b) none: wait for the schedule | (a), D229 |
+| 189 | Scrub after recovery | (a) a light pass with the hole check within an hour of a push; (b) nothing extra; (c) a deep pass | (a), D230: it catches copy-path bugs early, and a deep pass reads every block for a check that digests already make |

@@ -1,0 +1,10 @@
+title = "Scrub settings and reports in the API, CLI and UI (D224–D230)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-03
+updated = 2026-11-03
+milestone = "AD3"
+branch = "spec/scrub-admin"
+prs = []
+now = "Proposal drafted (28-scrub.md §31): settings per pool in the map, step-up to weaken, each PG's last scrub through Raft, health checks, scrub on demand and after recovery"
+next = "The owner's review of points 183–189; then build: settings and reports first, the UI after"
