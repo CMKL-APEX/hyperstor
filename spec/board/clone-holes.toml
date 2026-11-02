@@ -5,6 +5,6 @@ started = 2026-11-02
 updated = 2026-11-02
 milestone = "HS4"
 branch = "feat/hole-digest"
-prs = [162]
+prs = [162, 163]
 now = "#162 merged and on the pilot (771cf2d). Scrub now checks which blocks copies hold (D218, I247): copies holding zeros where another has holes are reported, and with hyperstord --hole-repair replaced by the copy with the holes, whatever the vote"
 next = "Deploy and run the dry run on the pilot (scrub without --hole-repair), report the counts, then turn the repair on"
