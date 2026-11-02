@@ -1246,21 +1246,33 @@ impl ShardState {
 
     /// Logs and counts each time this reactor's thread is held for
     /// [`STALL`] or more (I188): a 10 ms timer that fires late. Whatever
-    /// held it also delayed every ping it should have answered.
+    /// held it also delayed every ping it should have answered. The log
+    /// says where the time went (I232): the thread on a CPU, waiting for
+    /// one or off it, and the reactor's longest task poll and kernel call.
     async fn stall_watch(self: Rc<Self>) {
         const TICK: Duration = Duration::from_millis(10);
+        // Read again on every tick, one pread each.
+        let sched = std::fs::File::open("/proc/thread-self/schedstat").ok();
+        let mut before = sched.as_ref().and_then(thread_sched);
+        hyperstor_reactor::take_slowest();
         loop {
             let t = std::time::Instant::now();
             sleep(TICK).await;
-            let late = t.elapsed().saturating_sub(TICK);
+            let window = t.elapsed();
+            let now = sched.as_ref().and_then(thread_sched);
+            let slowest = hyperstor_reactor::take_slowest();
+            let late = window.saturating_sub(TICK);
             if late >= STALL {
                 metrics::ShardMetrics::add(&self.metrics.stalls, 1);
+                let sched = before.zip(now).map(|(b, n)| (n.0 - b.0, n.1 - b.1));
                 eprintln!(
-                    "hyperstord: device {}: reactor held {} ms",
+                    "hyperstord: device {}: reactor held {} ms: {}",
                     self.me,
-                    late.as_millis()
+                    late.as_millis(),
+                    held_by(window, sched, &slowest)
                 );
             }
+            before = now;
         }
     }
 
@@ -5261,6 +5273,53 @@ impl ShardState {
     }
 }
 
+/// This thread's time on a CPU and waiting for one, from
+/// `/proc/thread-self/schedstat` (nanoseconds, then the count of slices).
+fn thread_sched(f: &std::fs::File) -> Option<(Duration, Duration)> {
+    use std::os::unix::fs::FileExt;
+    let mut buf = [0u8; 64];
+    let n = f.read_at(&mut buf, 0).ok()?;
+    parse_sched(std::str::from_utf8(&buf[..n]).ok()?)
+}
+
+fn parse_sched(s: &str) -> Option<(Duration, Duration)> {
+    let mut it = s.split_whitespace().map(|v| v.parse::<u64>().ok());
+    Some((
+        Duration::from_nanos(it.next()??),
+        Duration::from_nanos(it.next()??),
+    ))
+}
+
+/// Where a reactor's time went in a `window` it was held: on a CPU,
+/// waiting for one (the host ran something else) or off one (asleep, a
+/// page fault or a call into the kernel that blocked), then its longest
+/// task poll, by where the task was spawned, and its longest kernel call.
+fn held_by(
+    window: Duration,
+    sched: Option<(Duration, Duration)>,
+    slowest: &hyperstor_reactor::Slowest,
+) -> String {
+    let ms = |d: Duration| d.as_millis();
+    let mut out = match sched {
+        Some((run, wait)) => format!(
+            "on a CPU {} ms, waiting for one {} ms, off one {} ms; ",
+            ms(run),
+            ms(wait),
+            ms(window.saturating_sub(run + wait))
+        ),
+        None => String::new(),
+    };
+    if let Some((d, site)) = slowest.poll {
+        out += &format!(
+            "longest poll {} ms, of a task spawned at {}:{}; ",
+            ms(d),
+            site.file(),
+            site.line()
+        );
+    }
+    out + &format!("longest io_uring_enter {} ms", ms(slowest.enter))
+}
+
 /// Whether a read was abandoned on the read timeout (D190), which alone
 /// doesn't fail the device.
 fn timed_out(e: &EngineError) -> bool {
@@ -5324,6 +5383,50 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// I232: a held reactor's log tells a busy thread from one the host
+    /// didn't run, from this thread's own schedstat.
+    #[test]
+    fn a_hold_says_where_the_time_went() {
+        use super::{held_by, parse_sched, thread_sched};
+        use std::time::{Duration, Instant};
+        let ms = Duration::from_millis;
+        assert_eq!(
+            parse_sched("3424870 1000000 7\n"),
+            Some((Duration::from_nanos(3424870), ms(1)))
+        );
+        assert_eq!(parse_sched(""), None);
+        let site = std::panic::Location::caller();
+        let slowest = hyperstor_reactor::Slowest {
+            poll: Some((ms(2), site)),
+            enter: ms(1),
+        };
+        assert_eq!(
+            held_by(ms(180), Some((ms(5), ms(160))), &slowest),
+            format!(
+                "on a CPU 5 ms, waiting for one 160 ms, off one 15 ms; \
+                 longest poll 2 ms, of a task spawned at {}:{}; longest io_uring_enter 1 ms",
+                site.file(),
+                site.line()
+            )
+        );
+        assert_eq!(
+            held_by(ms(180), None, &Default::default()),
+            "longest io_uring_enter 0 ms"
+        );
+        // Asleep, then busy: the thread's own times tell them apart.
+        let f = std::fs::File::open("/proc/thread-self/schedstat").unwrap();
+        let a = thread_sched(&f).unwrap();
+        std::thread::sleep(ms(50));
+        let b = thread_sched(&f).unwrap();
+        let t = Instant::now();
+        while t.elapsed() < ms(50) {
+            std::hint::spin_loop();
+        }
+        let c = thread_sched(&f).unwrap();
+        assert!(b.0 - a.0 < ms(10), "asleep: {a:?} {b:?}");
+        assert!(c.0 - b.0 + (c.1 - b.1) >= ms(45), "busy: {b:?} {c:?}");
+    }
 
     /// D177: a copy is a stray only off both sets of a PG that is clean
     /// with every member live; a PG the map lacks is left alone.

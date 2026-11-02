@@ -15,7 +15,7 @@ move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
 G47–G53 are the host checks they rest on. Built so far (HS19, branch
-`feat/fabric`; 01-implementation-notes.md I232–I237): networks and
+`feat/fabric`; 01-implementation-notes.md I233–I238): networks and
 endpoints in the cluster file and the map, nodes and clients reaching
 devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired. It builds on 13-protocol.md §13.2 (networks and transports in
@@ -354,7 +354,7 @@ port on the 100 GbE bond, with no RDMA work.
 ### 29.13 Host checks
 
 - **G47. Several ports in one subnet** (D207). Seen on the pilot's GPU
-  hosts (01-implementation-notes.md I236): no rules by source, so the
+  hosts (01-implementation-notes.md I237): no rules by source, so the
   risk is real; the measurement with and without rules is open. On a host with several
   IPoIB ports in one subnet: with `arp_ignore=1`, `arp_announce=2` and a
   routing rule per source address, does each reactor's traffic leave by

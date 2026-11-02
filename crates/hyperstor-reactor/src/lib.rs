@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::panic::Location;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -101,16 +102,38 @@ impl Wake for TaskWaker {
 
 type Task = Pin<Box<dyn Future<Output = ()>>>;
 
+/// Where a task was spawned, to name it when it holds the thread.
+type Site = &'static Location<'static>;
+
+/// The longest the reactor on this thread spent in one place since the
+/// last [`take_slowest`]: what to blame when its thread is held.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Slowest {
+    /// The longest poll of one task, and where that task was spawned.
+    pub poll: Option<(std::time::Duration, Site)>,
+    /// The longest `io_uring_enter`. It waits for completions too, so
+    /// only one longer than the soonest timer means it was held:
+    /// submitting work the kernel runs inline.
+    pub enter: std::time::Duration,
+}
+
+/// Takes, and starts afresh, what [`Slowest`] has seen on this thread's
+/// reactor.
+pub fn take_slowest() -> Slowest {
+    current().slowest.take()
+}
+
 pub(crate) struct Inner {
     ring: RefCell<IoUring>,
     ops: RefCell<Vec<Option<OpSlot>>>,
     free_ops: RefCell<Vec<usize>>,
-    tasks: RefCell<Vec<Option<Task>>>,
+    tasks: RefCell<Vec<Option<(Task, Site)>>>,
     free_tasks: RefCell<Vec<usize>>,
     shared: Arc<Shared>,
     efd_buf: RefCell<Box<[u8; 8]>>,
     /// Operations submitted but not yet completed (abandoned ones included).
     in_flight: Cell<usize>,
+    slowest: Cell<Slowest>,
 }
 
 thread_local! {
@@ -159,6 +182,7 @@ impl Inner {
             }),
             efd_buf: RefCell::new(Box::new([0; 8])),
             in_flight: Cell::new(0),
+            slowest: Cell::new(Slowest::default()),
         });
         inner.arm_eventfd();
         Ok(inner)
@@ -251,7 +275,7 @@ impl Inner {
         n
     }
 
-    fn spawn_task(&self, fut: Task) -> usize {
+    fn spawn_task(&self, fut: Task, site: Site) -> usize {
         let id = match self.free_tasks.borrow_mut().pop() {
             Some(i) => i,
             None => {
@@ -260,13 +284,14 @@ impl Inner {
                 t.len() - 1
             }
         };
-        self.tasks.borrow_mut()[id] = Some(fut);
+        self.tasks.borrow_mut()[id] = Some((fut, site));
         self.shared.push(id);
         id
     }
 
     fn poll_task(&self, id: usize) {
-        let Some(mut fut) = self.tasks.borrow_mut().get_mut(id).and_then(Option::take) else {
+        let Some((mut fut, site)) = self.tasks.borrow_mut().get_mut(id).and_then(Option::take)
+        else {
             return; // already finished, or a stale wake-up
         };
         let waker = Waker::from(Arc::new(TaskWaker {
@@ -274,9 +299,25 @@ impl Inner {
             shared: self.shared.clone(),
         }));
         let mut cx = Context::from_waker(&waker);
-        match fut.as_mut().poll(&mut cx) {
+        let t = std::time::Instant::now();
+        let r = fut.as_mut().poll(&mut cx);
+        let took = t.elapsed();
+        let mut s = self.slowest.get();
+        if s.poll.is_none_or(|(d, _)| took > d) {
+            s.poll = Some((took, site));
+            self.slowest.set(s);
+        }
+        match r {
             Poll::Ready(()) => self.free_tasks.borrow_mut().push(id),
-            Poll::Pending => self.tasks.borrow_mut()[id] = Some(fut),
+            Poll::Pending => self.tasks.borrow_mut()[id] = Some((fut, site)),
+        }
+    }
+
+    fn note_enter(&self, took: std::time::Duration) {
+        let mut s = self.slowest.get();
+        if took > s.enter {
+            s.enter = took;
+            self.slowest.set(s);
         }
     }
 }
@@ -367,23 +408,28 @@ impl<T> JoinHandle<T> {
 }
 
 /// Spawns a task on the current reactor.
+#[track_caller]
 pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
 where
     F: Future + 'static,
 {
+    let site = Location::caller();
     let state = Rc::new(RefCell::new((None, None::<Waker>)));
     let st = state.clone();
-    current().spawn_task(Box::pin(async move {
-        let v = fut.await;
-        let w = {
-            let mut s = st.borrow_mut();
-            s.0 = Some(v);
-            s.1.take()
-        };
-        if let Some(w) = w {
-            w.wake();
-        }
-    }));
+    current().spawn_task(
+        Box::pin(async move {
+            let v = fut.await;
+            let w = {
+                let mut s = st.borrow_mut();
+                s.0 = Some(v);
+                s.1.take()
+            };
+            if let Some(w) = w {
+                w.wake();
+            }
+        }),
+        site,
+    );
     JoinHandle { state }
 }
 
@@ -404,6 +450,7 @@ pub async fn yield_now() {
 
 /// Runs `fut` on a new reactor on this thread, with everything it spawns,
 /// until `fut` completes. Tasks still running then are dropped.
+#[track_caller]
 pub fn block_on<F: Future + 'static>(fut: F) -> F::Output
 where
     F::Output: 'static,
@@ -440,11 +487,13 @@ where
         {
             let ring = inner.ring.borrow_mut();
             let idle = inner.shared.ready.lock().unwrap().is_empty();
+            let t = std::time::Instant::now();
             let r = if idle && (spin.is_zero() || last_activity.elapsed() >= spin) {
                 ring.submit_and_wait(1)
             } else {
                 ring.submit()
             };
+            inner.note_enter(t.elapsed());
             match r {
                 Ok(_) => {}
                 Err(e) if e.raw_os_error() == Some(libc::EINTR) => {}
@@ -459,7 +508,7 @@ where
     // Drop the remaining tasks while the reactor is still current (their
     // operations unregister themselves), then wait out operations still
     // in the kernel so no buffer is freed under it.
-    let tasks: Vec<Task> = inner.tasks.borrow_mut().drain(..).flatten().collect();
+    let tasks: Vec<(Task, Site)> = inner.tasks.borrow_mut().drain(..).flatten().collect();
     drop(tasks);
     while inner.in_flight.get() > 0 {
         {
@@ -532,6 +581,29 @@ mod tests {
             });
             crate::time::sleep(std::time::Duration::from_millis(20)).await;
             stop.set(true);
+        });
+    }
+
+    #[test]
+    fn the_longest_poll_is_named_by_where_its_task_was_spawned() {
+        block_on(async {
+            take_slowest();
+            let line = line!() + 1;
+            let h = spawn(async { std::thread::sleep(std::time::Duration::from_millis(30)) });
+            spawn(async {}).await;
+            h.await;
+            let s = take_slowest();
+            let (took, site) = s.poll.unwrap();
+            assert!(took >= std::time::Duration::from_millis(30), "{s:?}");
+            assert_eq!((site.file(), site.line()), (file!(), line), "{s:?}");
+            // Waiting for a timer is time in io_uring_enter, not a poll.
+            crate::time::sleep(std::time::Duration::from_millis(20)).await;
+            let s = take_slowest();
+            assert!(s.enter >= std::time::Duration::from_millis(15), "{s:?}");
+            assert!(
+                s.poll.unwrap().0 < std::time::Duration::from_millis(15),
+                "{s:?}"
+            );
         });
     }
 

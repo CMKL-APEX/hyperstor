@@ -247,9 +247,15 @@ its peers wait. Each storage node logs:
 - `device D open in N ms` when it starts. A node is marked up only once
   every device of it is open, so a slow open delays the node but doesn't
   make it flap.
-- `device D: reactor held N ms` when the thread serving a device is held
-  100 ms or more, and `device D: a commit of N list(s) took N ms` when a
+- `device D: reactor held N ms: ...` when the thread serving a device is
+  held 100 ms or more, and `device D: a commit of N list(s) took N ms` when a
   commit is the cause. These count in `hyperstor_reactor_stalls_total`.
+  The rest of the line says where the time went: the thread on a CPU,
+  waiting for one (the host was running something else), or off one
+  (asleep, or blocked in the kernel); then the longest single task poll,
+  with the source line that started the task, and the longest call into
+  io_uring. A long poll points at that task; a long wait for a CPU, or
+  both of a node's devices held at once, points at the host.
 - `device D: a commit of N list(s) waited N ms for the device` when the
   device took 100 ms or more to write and flush a commit. The thread goes
   on serving meanwhile, so this alone doesn't make a node flap; requests
