@@ -4,11 +4,13 @@
 //! reconciler's decisions. Hosts are read through glidex's topology crate
 //! (D204).
 
+#[cfg(feature = "host")]
 pub mod endpoints;
 pub mod model;
 pub mod path;
 pub mod reconcile;
+#[cfg(feature = "host")]
 pub mod routing;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod tests;

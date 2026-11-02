@@ -69,7 +69,8 @@ Device `DEV` is also served at `IP:PORT`, on network `NETWORK`. Give the
 device's node and the network first. A device may have several
 endpoints, on one network or several; its node's `hyperstord` listens on
 each (`--endpoint`), and a node or client on that network reaches the
-device there instead of at its address.
+device there instead of at its address, spreading its requests over the
+device's endpoints on that network.
 
 ```text
 network mgmt control subnet 203.0.113.0/24

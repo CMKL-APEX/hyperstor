@@ -1640,12 +1640,14 @@ name = "hyperstor-client"
 version = "0.1.0"
 dependencies = [
  "hyperstor-codec",
+ "hyperstor-fabric",
  "hyperstor-map",
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
  "hyperstor-rpc",
  "libc",
+ "rand 0.9.5",
  "thiserror 2.0.21",
 ]
 
@@ -1682,6 +1684,7 @@ version = "0.1.0"
 dependencies = [
  "hyperstor-client",
  "hyperstor-engine",
+ "hyperstor-fabric",
  "hyperstor-meta",
  "hyperstor-placement",
  "hyperstor-proto",

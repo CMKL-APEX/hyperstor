@@ -180,6 +180,8 @@ pub struct Client {
     /// §29.5, D207): a device is reached at its endpoint on the first it
     /// has one on, else at its address.
     networks: RefCell<Vec<String>>,
+    /// For choosing among a device's endpoints.
+    rng: RefCell<rand::rngs::SmallRng>,
 }
 
 /// `label` cut to [`hyperstor_proto::LABEL_MAX`] bytes, at a character
@@ -227,6 +229,7 @@ impl Client {
             instance: random_u64().max(1),
             lease_label: RefCell::new(String::new()),
             networks: RefCell::new(Vec::new()),
+            rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
         c.refresh_map().await?;
         Ok(c)
@@ -242,10 +245,25 @@ impl Client {
         *self.networks.borrow_mut() = networks;
     }
 
-    /// Where to reach `device` in `map`: its endpoint on this client's
-    /// first network that has one, else its address.
+    /// Where to reach `device` in `map` for one request: among its
+    /// endpoints on this client's first network that has any, by two
+    /// random choices taking the one with fewer requests outstanding
+    /// (D208); else its address.
     pub fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
-        map.device_addr_on(device, &self.networks.borrow())
+        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        if addrs.len() < 2 {
+            return addrs.first().copied();
+        }
+        let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
+            .iter()
+            .map(|a| hyperstor_fabric::path::PathLoad {
+                weight: 1.0,
+                bytes_in_flight: self.conns.pending(*a) as u64,
+                rtt_us: 0,
+            })
+            .collect();
+        let i = hyperstor_fabric::path::choose(&loads, &mut *self.rng.borrow_mut())?;
+        Some(addrs[i])
     }
 
     /// The label recorded with the leases this client takes from now on

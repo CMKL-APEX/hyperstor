@@ -1242,6 +1242,25 @@ impl ClusterMap {
         self.devices.get(&device).map(|d| d.addr)
     }
 
+    /// Every address a sender on `networks` may reach `device` at (D207,
+    /// D208): its endpoints on the first of them it has endpoints on, else
+    /// its address alone. Empty for a device the map doesn't have.
+    pub fn device_addrs_on(&self, device: u32, networks: &[String]) -> Vec<SocketAddr> {
+        if let Some(eps) = self.endpoints.get(&device) {
+            for n in networks {
+                let on: Vec<SocketAddr> = eps
+                    .iter()
+                    .filter(|(net, _)| net == n)
+                    .map(|(_, a)| *a)
+                    .collect();
+                if !on.is_empty() {
+                    return on;
+                }
+            }
+        }
+        self.device_addr(device).into_iter().collect()
+    }
+
     /// Address of the reactor serving `device` for a sender on `networks`
     /// (D207): its first endpoint on one of them, in the sender's order,
     /// else its address. A sender on no named network uses the address.
@@ -1975,6 +1994,13 @@ pool 1 v replicated size 2 min 1 pgs 8
             Some(a("203.0.113.10:9100"))
         );
         assert_eq!(m.device_addr_on(7, &ib), None);
+        // Every endpoint on the first network with any, for choosing.
+        assert_eq!(
+            m.device_addrs_on(0, &["eth".into(), "ib".into()]),
+            vec![a("192.0.2.10:9100"), a("192.0.2.11:9100")]
+        );
+        assert_eq!(m.device_addrs_on(1000, &ib), vec![a("203.0.113.11:9100")]);
+        assert!(m.device_addrs_on(7, &ib).is_empty());
     }
 
     #[test]

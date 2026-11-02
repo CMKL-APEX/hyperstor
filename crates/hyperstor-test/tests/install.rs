@@ -357,9 +357,10 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     };
     let (code, out) = ctl(&["status", "--wait", "30"]);
     assert_eq!(code, Some(0), "{out}");
-    let (code, out) = ctl(&["io-test", "--mib", "8"]);
+    let (code, out) = ctl(&["io-test", "--mib", "64"]);
     assert_eq!(code, Some(0), "{out}");
-    // Sessions to every node's endpoint, from the primaries replicating.
+    // Sessions to every node's endpoint, from the primaries replicating:
+    // 16 chunks over 32 PGs, so every node is a replica of some.
     let want: std::collections::BTreeSet<u16> = (0..3).map(|n| base + 8 + n).collect();
     let seen = established_on([127, 0, 0, 2]);
     for p in &mut procs {

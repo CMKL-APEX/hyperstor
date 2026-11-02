@@ -850,13 +850,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; path choice is built)"
+what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests)"
 spec = ["26-networks.md §29.6", "26-networks.md §29.7", "D208", "D210", "G53"]
 status = "partial"
 tests = [
     "hyperstor_fabric::tests::a_path_without_weight_is_never_chosen",
     "hyperstor_fabric::tests::equal_load_follows_weights",
     "hyperstor_fabric::tests::load_spreads_without_herding",
+    "endpoints::a_devices_endpoints_share_its_requests",
 ]
 
 [[milestone.item]]

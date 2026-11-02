@@ -38,6 +38,11 @@ fn established_on(ip: [u8; 4]) -> BTreeSet<u16> {
 /// sessions afterwards. The client is on `fast` if `client`, the nodes if
 /// `nodes`.
 fn run(client: bool, nodes: bool, copies: u8) -> (BTreeSet<u16>, BTreeSet<u16>) {
+    run_with(client, nodes, copies, 1)
+}
+
+/// [`run`] with `per` endpoints on `fast` for each device.
+fn run_with(client: bool, nodes: bool, copies: u8, per: u16) -> (BTreeSet<u16>, BTreeSet<u16>) {
     let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let meta_addr = meta_l.local_addr().unwrap();
     let mut map = ClusterMap::new(1);
@@ -53,13 +58,17 @@ fn run(client: bool, nodes: bool, copies: u8) -> (BTreeSet<u16>, BTreeSet<u16>) 
     let mut ports = BTreeSet::new();
     for n in 0..3u32 {
         let main = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let ep = std::net::TcpListener::bind("127.0.0.2:0").unwrap();
-        let ep_addr = ep.local_addr().unwrap();
-        ports.insert(ep_addr.port());
+        let eps: Vec<std::net::TcpListener> = (0..per)
+            .map(|_| std::net::TcpListener::bind("127.0.0.2:0").unwrap())
+            .collect();
+        let addrs: Vec<SocketAddr> = eps.iter().map(|l| l.local_addr().unwrap()).collect();
+        ports.extend(addrs.iter().map(|a| a.port()));
         map.add_node(n, &[main.local_addr().unwrap()], 0);
-        map.endpoints
-            .insert(n * 1000, vec![("fast".into(), ep_addr)]);
-        specs.push((n, main, ep));
+        map.endpoints.insert(
+            n * 1000,
+            addrs.iter().map(|a| ("fast".to_string(), *a)).collect(),
+        );
+        specs.push((n, main, eps));
     }
     let mut pool = replicated_pool(POOL, "vol", copies, 16);
     pool.min_size = 1;
@@ -92,9 +101,9 @@ fn run(client: bool, nodes: bool, copies: u8) -> (BTreeSet<u16>, BTreeSet<u16>) 
     };
     let handles: Vec<NodeHandle> = specs
         .into_iter()
-        .map(|(n, main, ep)| {
+        .map(|(n, main, eps)| {
             start(NodeConfig {
-                endpoints: vec![(n * 1000, ep)],
+                endpoints: eps.into_iter().map(|l| (n * 1000, l)).collect(),
                 networks: networks(nodes),
                 push_part_bytes: 0,
                 stray_grace: Duration::ZERO,
@@ -130,11 +139,21 @@ fn run(client: bool, nodes: bool, copies: u8) -> (BTreeSet<u16>, BTreeSet<u16>) 
                 hyperstor_reactor::time::sleep(Duration::from_millis(100)).await;
                 cl.refresh_map().await.unwrap();
             }
-            // 16 chunks over 16 PGs: every device leads some.
-            for v in 1..=8u128 {
+            // 32 chunks over 16 PGs: every device leads some. Then small
+            // writes at once, so a device's endpoints share the load.
+            for v in 1..=16u128 {
                 let data = vec![v as u8; 2 * CHUNK as usize];
                 cl.write(POOL, v, 0, data.clone()).await.unwrap();
                 assert_eq!(cl.read(POOL, v, 0, data.len() as u64).await.unwrap(), data);
+            }
+            let hs: Vec<_> = (0..64u64)
+                .map(|i| {
+                    let cl = cl.clone();
+                    spawn(async move { cl.write(POOL, 9, i * 4096, vec![1; 4096]).await.unwrap() })
+                })
+                .collect();
+            for h in hs {
+                h.await;
             }
             established_on([127, 0, 0, 2])
         })
@@ -162,6 +181,15 @@ fn a_client_on_a_network_uses_its_endpoints() {
 #[test]
 fn nodes_on_a_network_replicate_over_its_endpoints() {
     let (ports, seen) = run(false, true, 3);
+    assert!(ports.is_subset(&seen), "{ports:?} not all in {seen:?}");
+}
+
+/// A device with two endpoints on the network: requests to it go over
+/// both, chosen per request (D208).
+#[test]
+fn a_devices_endpoints_share_its_requests() {
+    let (ports, seen) = run_with(true, true, 3, 2);
+    assert_eq!(ports.len(), 6);
     assert!(ports.is_subset(&seen), "{ports:?} not all in {seen:?}");
 }
 

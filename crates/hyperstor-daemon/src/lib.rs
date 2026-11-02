@@ -516,6 +516,8 @@ struct ShardState {
     io_timeout: Cell<Duration>,
     /// The data networks this node sends on (D207).
     networks: RefCell<Vec<String>>,
+    /// For choosing among a peer's endpoints (D208).
+    path_rng: RefCell<rand::rngs::SmallRng>,
     /// `NodeConfig::read_timeout`, resolved.
     read_timeout: Cell<Duration>,
     /// Reads in a row that took over `read_timeout` (D190).
@@ -1049,6 +1051,9 @@ impl ShardState {
             dev,
             io_timeout: Cell::new(IO_TIMEOUT),
             networks: RefCell::new(Vec::new()),
+            path_rng: RefCell::new(rand::SeedableRng::seed_from_u64(
+                hyperstor_client::random_u64(),
+            )),
             read_timeout: Cell::new(READ_TIMEOUT),
             read_timeouts: Cell::new(0),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
@@ -1664,10 +1669,24 @@ impl ShardState {
         Ok(self.pings.get(addr).await?)
     }
 
-    /// Where to reach `device`: its endpoint on this node's first network
-    /// that has one, else its address (D207).
+    /// Where to reach `device` for one request: among its endpoints on
+    /// this node's first network that has any, by two random choices on
+    /// requests outstanding (D207, D208); else its address.
     fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
-        map.device_addr_on(device, &self.networks.borrow())
+        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        if addrs.len() < 2 {
+            return addrs.first().copied();
+        }
+        let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
+            .iter()
+            .map(|a| hyperstor_fabric::path::PathLoad {
+                weight: 1.0,
+                bytes_in_flight: self.peers.pending(*a) as u64,
+                rtt_us: 0,
+            })
+            .collect();
+        let i = hyperstor_fabric::path::choose(&loads, &mut *self.path_rng.borrow_mut())?;
+        Some(addrs[i])
     }
 
     /// Refuses a peer the partitions test hook cuts this node from.
