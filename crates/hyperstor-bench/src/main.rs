@@ -377,6 +377,8 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 })
                 .collect();
             start(NodeConfig {
+                endpoints: Vec::new(),
+                networks: Vec::new(),
                 push_part_bytes: 0,
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
@@ -545,6 +547,8 @@ fn adminload_suite(secs: f64) {
         .enumerate()
         .map(|(n, l)| {
             start(NodeConfig {
+                endpoints: Vec::new(),
+                networks: Vec::new(),
                 push_part_bytes: 0,
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
@@ -1330,6 +1334,8 @@ fn failover_suite() {
                 .enumerate()
                 .map(|(n, l)| {
                     Some(start(NodeConfig {
+                        endpoints: Vec::new(),
+                        networks: Vec::new(),
                         push_part_bytes: 0,
                         stray_grace: std::time::Duration::ZERO,
                         io_timeout: std::time::Duration::ZERO,
@@ -1450,6 +1456,8 @@ fn rejoin_suite() {
         });
         let node = |n: u32, device: DeviceSpec, l: std::net::TcpListener| {
             start(NodeConfig {
+                endpoints: Vec::new(),
+                networks: Vec::new(),
                 push_part_bytes: 0,
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,

@@ -110,3 +110,29 @@ notice under load). The map service needs one TCP port reachable from
 all of them, and its members one more between themselves. Pick ports
 and firewall rules accordingly, and keep the storage network isolated
 (see [Running a cluster](index.md)).
+
+### Several networks
+
+A host with several network ports (a management port, and fast storage
+or InfiniBand ports) can carry reads, writes and replication on the
+fast ones and keep the rest on the management network:
+
+- Declare the networks in the [cluster file](../reference/cluster-file.md#network),
+  each `control`, `data` or `both`.
+- Give each device one or more `endpoint` lines on a data network. The
+  device's own address (on its `node` line) stays where the map service
+  and pings reach it.
+- Install as usual. Each storage node then also listens on its devices'
+  endpoints, and reaches the other nodes at their endpoints on the data
+  networks it has endpoints on.
+- Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
+  for VM disks. A client on no network uses devices' addresses.
+
+Put each endpoint on a port close to its device: on the same PCIe switch
+or, failing that, the same CPU socket. With several ports in one subnet
+(InfiniBand ports often are), Linux sends from every address through
+one of them unless each address has a routing rule of its own; add
+those, or traffic leaves by one port.
+
+Choosing endpoints for you, from the host's topology, and moving traffic
+between ports as load changes are planned.

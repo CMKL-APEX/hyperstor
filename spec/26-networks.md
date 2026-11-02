@@ -14,7 +14,11 @@ the reconciler runs in the map service's leader, as a module that can
 move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
-G47–G53 are the host checks they rest on. It builds on 13-protocol.md §13.2 (networks and transports in
+G47–G53 are the host checks they rest on. Built so far (HS19, branch
+`feat/fabric`; 01-implementation-notes.md I232–I237): networks and
+endpoints in the cluster file and the map, nodes and clients reaching
+devices at their endpoints, and in `hyperstor-fabric` the ranking by
+closeness, path choice and the reconciler's decisions, not yet wired. It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D213)

@@ -217,6 +217,8 @@ impl Cluster {
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    endpoints: Vec::new(),
+                    networks: Vec::new(),
                     push_part_bytes: TEST_PART_BYTES,
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
@@ -301,6 +303,8 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            endpoints: Vec::new(),
+            networks: Vec::new(),
             push_part_bytes: TEST_PART_BYTES,
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,

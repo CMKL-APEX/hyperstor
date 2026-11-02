@@ -1094,6 +1094,11 @@ struct NodePlan {
     /// others are files in the data directory.
     paths: Vec<Option<String>>,
     admin: String,
+    /// Its devices' endpoints in the cluster file (26-networks.md §29.5,
+    /// D207): `hyperstord --endpoint`.
+    endpoints: Vec<(u32, std::net::SocketAddr)>,
+    /// The data networks it has endpoints on, by name: `--networks`.
+    networks: Vec<String>,
 }
 
 /// The plan for `s`: the all-in-one trial cluster, or this host's part of
@@ -1250,6 +1255,8 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
                     ids: vec![n * 1000],
                     paths: vec![None],
                     admin: format!("127.0.0.1:{}", s.admin_port + n as u16),
+                    endpoints: Vec::new(),
+                    networks: Vec::new(),
                 })
                 .collect(),
         };
@@ -1318,12 +1325,34 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         }
         devs.sort_by_key(|d| d.shard);
         let ip = devs[0].addr.ip();
+        let endpoints: Vec<(u32, std::net::SocketAddr, &str)> = devs
+            .iter()
+            .flat_map(|d| {
+                map.endpoints
+                    .get(&d.id)
+                    .into_iter()
+                    .flatten()
+                    .map(|(net, a)| (d.id, *a, net.as_str()))
+            })
+            .collect();
         nodes.push(NodePlan {
             n,
             shards: devs.iter().map(|d| d.addr).collect(),
             ids: devs.iter().map(|d| d.id).collect(),
             paths: vec![None; devs.len()],
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
+            endpoints: endpoints.iter().map(|(d, a, _)| (*d, *a)).collect(),
+            // The data networks it has endpoints on: it can reach others'
+            // there too.
+            networks: map
+                .networks
+                .iter()
+                .filter(|(name, n)| {
+                    n.kind != hyperstor_meta::NetKind::Control
+                        && endpoints.iter().any(|(_, _, net)| net == name)
+                })
+                .map(|(name, _)| name.clone())
+                .collect(),
         });
     }
     // The dashboard reads every node's metrics: its first address's IP,
@@ -1402,6 +1431,8 @@ fn joined_storage_plan(s: &Settings) -> Plan {
             ids: (0..s.reactors).map(|i| n * 1000 + i).collect(),
             paths: vec![None; s.reactors as usize],
             admin: std::net::SocketAddr::new(ip, s.admin_port).to_string(),
+            endpoints: Vec::new(),
+            networks: Vec::new(),
         }],
         metrics: Vec::new(),
     }
@@ -1805,13 +1836,24 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                 format!("--shard {named}{a}={file}:{size}")
             })
             .collect();
+        // Endpoints and networks only when the cluster file has them, so
+        // other installs' options stay as they were.
+        let mut more: Vec<String> = node
+            .endpoints
+            .iter()
+            .map(|(d, a)| format!(" --endpoint {d}={a}"))
+            .collect();
+        if !node.networks.is_empty() {
+            more.push(format!(" --networks {}", node.networks.join(",")));
+        }
         out.push((
             format!("/etc/hyperstor/node-{n}.env"),
             format!(
-                "HS_ARGS=--node {n} --meta {} {} --admin {}\n",
+                "HS_ARGS=--node {n} --meta {} {} --admin {}{}\n",
                 p.map,
                 shards.join(" "),
-                node.admin
+                node.admin,
+                more.concat()
             ),
             0o644,
         ));
@@ -3151,6 +3193,46 @@ mod tests {
             "{rules}"
         );
         assert!(!rules.contains("extra.img"), "files need no rule");
+    }
+
+    /// D207: a node serves the endpoints the cluster file gives its
+    /// devices and reaches others on the data networks it has endpoints
+    /// on; a node without endpoints gets neither option.
+    #[test]
+    fn endpoints_and_networks_come_from_the_cluster_file() {
+        let cluster = "cluster 9\n\
+                       network mgmt control subnet 192.0.2.0/24\n\
+                       network ib data trusted ib fe80:0000:0000:0000\n\
+                       node 0 rack 0 192.0.2.1:9100 192.0.2.1:9101\n\
+                       endpoint 0 ib 198.51.100.1:9100\n\
+                       endpoint 1 ib 198.51.100.2:9101\n\
+                       node 1 rack 0 192.0.2.2:9100\n\
+                       pool 1 vol replicated size 1 min 1 pgs 8 domain host\n";
+        let env = |node: u32| {
+            let mut s = Settings::defaults();
+            s.role = "storage".into();
+            s.node = Some(node);
+            s.map = "192.0.2.9:8849".into();
+            let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+            let f = files(&s, &p);
+            f.iter()
+                .find(|x| x.0 == format!("/etc/hyperstor/node-{node}.env"))
+                .unwrap()
+                .1
+                .clone()
+        };
+        let e = env(0);
+        assert!(
+            e.trim_end().ends_with(
+                " --endpoint 0=198.51.100.1:9100 --endpoint 1=198.51.100.2:9101 --networks ib"
+            ),
+            "{e}"
+        );
+        let e = env(1);
+        assert!(
+            !e.contains("--endpoint") && !e.contains("--networks"),
+            "{e}"
+        );
     }
 
     /// D186: a removed device has no `--shard`, whether the cluster file

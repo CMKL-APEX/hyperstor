@@ -827,19 +827,47 @@ id = "HS19"
 title = "Networks"
 
 [[milestone.item]]
-what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1)"
+what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; to come: endpoints chosen from the host's topology)"
 spec = ["26-networks.md §29.4", "26-networks.md §29.5", "D204", "D206", "D207", "G47", "G48", "G49"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::endpoints_nearest_first_two_bound_per_network",
+    "hyperstor_fabric::tests::endpoints_only_on_ports_storage_may_use",
+    "hyperstor_fabric::tests::one_port_hosts_use_it_for_everything",
+    "hyperstor_fabric::tests::fabrics_differ_by_subnet_manager",
+    "hyperstor_fabric::tests::addresses_are_matched_by_subnet",
+    "hyperstor_map::network_tests::networks_and_endpoints_round_trip_in_format_14_only_when_set",
+    "hyperstor_map::network_tests::a_sender_takes_an_endpoint_on_its_networks_else_the_address",
+    "hyperstor_map::network_tests::cluster_file_networks_are_checked",
+    "hyperstor_map::network_tests::merged_and_removed_endpoints",
+    "endpoints::a_client_on_a_network_uses_its_endpoints",
+    "endpoints::nodes_on_a_network_replicate_over_its_endpoints",
+    "endpoints::nobody_on_the_network_leaves_its_endpoints_idle",
+    "endpoints::without_a_shared_network_the_address_is_used",
+    "hyperstor_install::tests::endpoints_and_networks_come_from_the_cluster_file",
+    "install::storage_nodes_replicate_over_endpoints_from_the_cluster_file",
+]
 
 [[milestone.item]]
-what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2)"
+what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; path choice is built)"
 spec = ["26-networks.md §29.6", "26-networks.md §29.7", "D208", "D210", "G53"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::a_path_without_weight_is_never_chosen",
+    "hyperstor_fabric::tests::equal_load_follows_weights",
+    "hyperstor_fabric::tests::load_spreads_without_herding",
+]
 
 [[milestone.item]]
-what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3)"
+what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built)"
 spec = ["26-networks.md §29.8", "D203", "D209", "G52"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::an_idle_rail_is_lent_after_the_dwell_and_revoked_on_traffic",
+    "hyperstor_fabric::tests::a_claim_takes_a_rail_back_and_keeps_it",
+    "hyperstor_fabric::tests::lending_off_never_lends",
+    "hyperstor_fabric::tests::reconciler_invariants_hold_under_random_load",
+]
 
 [[milestone.item]]
 what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4)"

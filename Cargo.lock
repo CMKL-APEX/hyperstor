@@ -1372,6 +1372,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-topology"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=d84390924f8acfd262618db922a71bde85df3b85#d84390924f8acfd262618db922a71bde85df3b85"
+dependencies = [
+ "nix",
+ "serde",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1691,6 +1700,14 @@ dependencies = [
  "libc",
  "rand 0.9.5",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hyperstor-fabric"
+version = "0.1.0"
+dependencies = [
+ "glidex-topology",
+ "rand 0.9.5",
 ]
 
 [[package]]
