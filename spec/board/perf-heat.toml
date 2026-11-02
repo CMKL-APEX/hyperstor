@@ -5,6 +5,6 @@ started = 2026-11-02
 updated = 2026-11-02
 milestone = "AD3"
 branch = "fix/perf-drive-sysfs"
-prs = [164]
+prs = [164, 166]
 now = "#164 merged and deployed to the pilot (10c687c): heat, service time, the Advisor work; NVMe drives showed no temperature, link or SMART (multipath sysfs, device permissions), fixed in I251"
 next = "Merge the fix and redeploy; then G54 and G55 on the pilot NVMe drives, the Advisor's thresholds from real load"
