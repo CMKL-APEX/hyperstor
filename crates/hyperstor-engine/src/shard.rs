@@ -2329,6 +2329,22 @@ impl Shard {
             .is_some_and(|o| o.all_mapped(lb, 1))
     }
 
+    /// The blocks object `key` holds, as (first block, count) in order,
+    /// contiguous ones merged; none if it doesn't exist. What isn't in
+    /// them is a hole, which a layered read passes through (issue #158).
+    pub fn held_runs(&self, key: &ObjKey) -> Option<Vec<(u64, u64)>> {
+        let o = self.index.objects.get(key)?;
+        let mut out: Vec<(u64, u64)> = Vec::new();
+        for (lb, _, crcs) in o.blocks.runs() {
+            let n = crcs.len() as u64;
+            match out.last_mut() {
+                Some((l, c)) if *l + *c == lb => *c += n,
+                _ => out.push((lb, n)),
+            }
+        }
+        Some(out)
+    }
+
     /// The versions of the object `key` names (every version of its pool,
     /// PG, namespace and name), oldest first.
     pub fn versions(&self, key: &ObjKey) -> Vec<u64> {

@@ -135,6 +135,14 @@ members, as long as there are at least `min_size` of them. Below
   takes it in parts the same way, holding the object's lock so the
   member's copy can't change between parts; a copy left half replaced
   stays marked damaged, so reads go to repair (I182).
+- **Holes are copied as holes** (I243, issue #158). A whole object sent
+  by backfill, refill, peering or repair lists the blocks it holds and
+  carries only theirs. A hole isn't zeros: in a volume's version, a read
+  passes through it to the older versions and to a clone's parent
+  (08-engine.md §7.2). Copies made densely, as they were before, held
+  zeros there, and a clone served from one read zeros where its parent
+  has data. A node that can't take the list refuses such an object, and
+  it is sent again once that node is upgraded.
 
 ### 8.6 Erasure-coded pools (D6)
 

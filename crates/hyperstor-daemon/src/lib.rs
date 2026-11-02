@@ -3518,11 +3518,24 @@ impl ShardState {
     /// member between two lists serves no one the half-copied object.
     fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
         let mut first = vec![Op::Delete];
-        if !obj.data.is_empty() {
-            first.push(Op::Write {
+        match obj.runs {
+            // Each run where it was: the holes stay holes (issue #158).
+            Some(runs) => {
+                let mut at = 0;
+                for (lb, n) in runs {
+                    let len = n as usize * 4096;
+                    first.push(Op::Write {
+                        off: lb * 4096,
+                        data: obj.data[at..at + len].to_vec(),
+                    });
+                    at += len;
+                }
+            }
+            None if !obj.data.is_empty() => first.push(Op::Write {
                 off: 0,
                 data: obj.data,
-            });
+            }),
+            None => {}
         }
         first.push(Op::Truncate(obj.size));
         first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
@@ -4448,10 +4461,7 @@ impl ShardState {
         let limit = self.push_part_bytes.get();
         let sh = self.shard.borrow();
         let st = sh.stat(key)?;
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
+        let (data, runs) = held_data(&sh, key, st.size)?;
         let attrs = sh
             .attrs(key)
             .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -4486,6 +4496,7 @@ impl ShardState {
             data,
             attrs,
             kv: rest.next().unwrap_or_default(),
+            runs,
         };
         let mut out = vec![(
             Msg::PushObject {
@@ -4523,13 +4534,14 @@ impl ShardState {
             };
             return Some((m, Vec::new()));
         };
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
+        let (data, runs) = held_data(&sh, key, st.size)?;
         if legacy {
             // A node from before whole objects (a rolling upgrade): data
-            // only, as before.
+            // only, as before. It would fill holes with zeros, so an
+            // object with holes waits until it is upgraded (issue #158).
+            if runs.is_some() {
+                return None;
+            }
             let m = Msg::Push {
                 to,
                 key: wire_key(key),
@@ -4545,6 +4557,7 @@ impl ShardState {
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(key, b"", None, usize::MAX),
+            runs,
         };
         let m = Msg::PushObject {
             to,
@@ -5036,7 +5049,7 @@ impl ShardState {
                 hyperstor_proto::encode_pairs(&kv),
             );
         }
-        let Ok(data) = sh.read(&okey, 0, st.size.div_ceil(4096) * 4096) else {
+        let Some((data, runs)) = held_data(&sh, &okey, st.size) else {
             return (
                 err(
                     Code::Checksum,
@@ -5048,12 +5061,13 @@ impl ShardState {
         };
         let obj = WireObject {
             size: st.size,
-            data: data.to_vec(),
+            data,
             attrs: sh
                 .attrs(&okey)
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv,
+            runs,
         };
         (Msg::FetchPartOk { found: true, next }, encode_object(&obj))
     }
@@ -5335,6 +5349,27 @@ impl Drop for InflightGuard {
             *n = n.saturating_sub(1);
         }
     }
+}
+
+/// An object's data to send and, if it has holes, the runs it holds.
+type HeldData = (Vec<u8>, Option<Vec<(u64, u64)>>);
+
+/// The data of `key` (of `size` bytes) to send whole: every block from
+/// the start if it has no holes, as before; otherwise the blocks it holds
+/// alone, with their runs ([`WireObject::runs`]). Sent dense, a version's
+/// holes would arrive as zeros and hide what its older versions and its
+/// parent hold (issue #158). None if a read fails its checksums.
+fn held_data(sh: &hyperstor_engine::Shard, key: &ObjKey, size: u64) -> Option<HeldData> {
+    let blocks = size.div_ceil(4096);
+    let runs = sh.held_runs(key)?;
+    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
+        return Some((sh.read(key, 0, blocks * 4096).ok()?.to_vec(), None));
+    }
+    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
+    for (lb, n) in &runs {
+        data.extend_from_slice(&sh.read(key, lb * 4096, n * 4096).ok()?);
+    }
+    Some((data, Some(runs)))
 }
 
 /// Entries of `key`'s table from `from` on, up to about `limit` bytes (at
