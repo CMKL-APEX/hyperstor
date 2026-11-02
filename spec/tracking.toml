@@ -823,6 +823,35 @@ tests = [
 ]
 
 [[milestone]]
+id = "HS19"
+title = "Networks"
+
+[[milestone.item]]
+what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1)"
+spec = ["26-networks.md §29.4", "26-networks.md §29.5", "D204", "D206", "D207", "G47", "G48", "G49"]
+status = "planned"
+
+[[milestone.item]]
+what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2)"
+spec = ["26-networks.md §29.6", "26-networks.md §29.7", "D208", "D210", "G53"]
+status = "planned"
+
+[[milestone.item]]
+what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3)"
+spec = ["26-networks.md §29.8", "D203", "D209", "G52"]
+status = "planned"
+
+[[milestone.item]]
+what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4)"
+spec = ["26-networks.md §29.9", "D205"]
+status = "planned"
+
+[[milestone.item]]
+what = "RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5)"
+spec = ["26-networks.md §29.10", "D211", "D212", "G50", "G51"]
+status = "planned"
+
+[[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
 
