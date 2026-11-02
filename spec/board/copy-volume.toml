@@ -5,5 +5,6 @@ started = 2026-11-02
 updated = 2026-11-02
 milestone = "HS4"
 branch = "feat/copy-volume"
+prs = [159]
 now = "Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader"
-next = "Pull request, then the web UI's buttons; live moves of attached volumes later"
+next = "Merge #159 once CI passes; then the web UI's buttons; live moves of attached volumes later"
