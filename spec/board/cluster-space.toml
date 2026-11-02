@@ -1,0 +1,10 @@
+title = "The cluster's raw space in hyperstorctl status and the web UI"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-11-02
+updated = 2026-11-02
+milestone = "AD3"
+branch = "feat/cluster-space"
+prs = [157]
+now = "Built (I246): status prints the raw space free and total over the devices in; the Overview page shows it as a bar"
+next = "Review and merge, then deploy to the pilot"

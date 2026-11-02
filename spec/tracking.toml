@@ -1210,7 +1210,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages"
+what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages"
 spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193", "I197"]
 status = "done"
 tests = [
@@ -1221,6 +1221,9 @@ tests = [
     # browser::the_pages_show_the_cluster, tracked earlier; a follower's
     # answer also by join::map_service_members_join_the_first.
     "hyperstor_meta::tests::a_follower_asks_the_leader_for_its_view",
+    # Status's raw space line; also by manage::status_and_tables and, the
+    # Overview page's bar, browser::the_pages_show_the_cluster.
+    "hyperstor_ctl::tests::status_text_sums_the_space_of_devices_in",
 ]
 
 [[milestone.item]]

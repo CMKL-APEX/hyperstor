@@ -183,6 +183,7 @@ health  warn
   warn  1 node(s) down: 2
   warn  pool vol: 64 PG(s) degraded
 nodes   2 up of 3; devices 3 in of 3
+space   171.6G free of 189.0G raw (9% used)
 POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INACTIVE
 1    vol          replicated    3   2    64  4096K      0       64         0        0
 ```
