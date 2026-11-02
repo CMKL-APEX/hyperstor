@@ -46,6 +46,8 @@ test("the pages show the cluster", async ({ page }) => {
   await expect(page.getByTestId("pg-grid-1-inactive")).toContainText("0 inactive");
   // Shaded by usage once the primaries have reported (D155).
   await expect(page.getByTestId("pg-grid-1-usage")).toContainText("the fullest PG", { timeout: 20_000 });
+  // The raw space of the devices in, summed (D156).
+  await expect(page.getByTestId("cluster-space")).toContainText(/free of \d/, { timeout: 20_000 });
   await page.getByRole("link", { name: "Nodes" }).click();
   // Devices are numbered by node: 0, 1000, 2000.
   for (const d of [0, 1000, 2000]) await expect(page.getByTestId(`device-${d}`)).toContainText("in");
@@ -188,6 +190,38 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   await dialog.getByRole("button", { name: "Remove" }).click();
   await expect(page.getByText(/Removing device 2001: operation [0-9a-f]{16}/)).toBeVisible();
   await expect(added).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("the load and the drives are shown", async ({ page }) => {
+  await logIn(page, "ann");
+  // Every device's last minute once it has reported (D218, D220).
+  await page.getByRole("link", { name: "Nodes" }).click();
+  for (const d of [0, 1000, 2000]) await expect(page.getByTestId(`perf-${d}`)).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("perf-1000").click();
+  const panel = page.getByTestId("device-panel-1000");
+  await expect(panel).toContainText("a file: no drive to read");
+  await expect(panel.getByRole("img", { name: "Requests per second (as primary)" })).toBeVisible();
+  await expect(panel.getByText("hyperstorctl perf --device 1000")).toBeVisible();
+  // The grid's load views (D219), with their command.
+  await page.getByRole("link", { name: "Pools" }).click();
+  await page.getByTestId("pool-1").getByRole("button", { name: "PGs" }).click();
+  await page.getByTestId("grid-view-reads").click();
+  await expect(page.getByTestId("pg-grid-1-heat")).toContainText("reads");
+  await expect(page.getByText("hyperstorctl pg-grid --pool 1 --heat read")).toBeVisible();
+  await page.getByTestId("grid-view-writes").click();
+  await expect(page.getByTestId("pg-grid-1-heat")).toContainText("writes");
+  // Busiest volumes, and moving one, with its command (D214).
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByText("Busiest volumes now")).toBeVisible();
+  await page.getByRole("button", { name: "Move to pool" }).first().click();
+  await expect(page.getByRole("dialog")).toContainText(/hyperstorctl move-volume --id [0-9a-f]+ --pool \d+ --wait 3600/);
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  // The Overview's load, and the Advisor (D222).
+  await page.getByRole("link", { name: "Overview" }).click();
+  await expect(page.getByTestId("load")).toContainText("requests / s");
+  await page.getByRole("link", { name: "Advisor" }).first().click();
+  await expect(page.getByTestId("findings")).toBeVisible();
+  await expect(page.getByText("hyperstorctl advise")).toBeVisible();
 });
 
 test("the trash restores and purges", async ({ page }) => {

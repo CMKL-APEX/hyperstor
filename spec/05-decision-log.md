@@ -1156,3 +1156,15 @@ I238, I239). Asked, with options and a recommendation:
 | 178 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D215 |
 | 179 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D216 |
 | 180 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D217 |
+
+## Load and drives (2026-11-02)
+
+The owner asked how to see read and write hot spots, whether tracking
+them costs performance, which drive metrics to collect, and for a UI to
+find what to optimize (27-performance.md §30). Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 181 | Scope: views first, the Advisor and moving primaries later (recommended); views and the Advisor; or everything with moving primaries. Heat: operations per second with bytes in detail (recommended), bytes, or a toggle. Top volumes per PG now (recommended) or later. Drive telemetry: service time and SMART (recommended), service time only, or every log page | Views and the Advisor, no moving primaries yet; operations per second; top 5 volumes per PG; service time and SMART | D218, D219, D220, D222 |
+| 182 | How `hyperstord`, running unprivileged, reads SMART logs, which need `CAP_SYS_ADMIN`: a small socket-activated root helper (recommended); the installer's root timer writing files; sysfs only for now; or the capability on `hyperstord` | The root helper | D221 |

@@ -9,6 +9,7 @@ import Overview from "./pages/Overview";
 import Nodes from "./pages/Nodes";
 import Pools from "./pages/Pools";
 import Volumes from "./pages/Volumes";
+import Advisor from "./pages/Advisor";
 import Operations from "./pages/Operations";
 import Members from "./pages/Members";
 import Security from "./pages/Security";
@@ -50,6 +51,7 @@ const PAGES = [
   ["/nodes", "Nodes"],
   ["/pools", "Pools"],
   ["/volumes", "Volumes"],
+  ["/advisor", "Advisor"],
   ["/trash", "Trash"],
   ["/operations", "Operations"],
   ["/members", "Members"],
@@ -95,6 +97,7 @@ function Shell() {
           <Route path="/nodes" element={<Nodes />} />
           <Route path="/pools" element={<Pools />} />
           <Route path="/volumes" element={<Volumes />} />
+          <Route path="/advisor" element={<Advisor />} />
           <Route path="/trash" element={<Trash />} />
           <Route path="/operations" element={<Operations />} />
           <Route path="/members" element={<Members />} />
