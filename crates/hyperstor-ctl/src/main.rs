@@ -53,7 +53,7 @@
 //!   let it follow the device's kind again (D178);
 //! - `device endpoints --device D --endpoints NET=ADDR,...|none`: set a
 //!   device's endpoints on the cluster's data networks, replacing them
-//!   (26-networks.md §29.5, D214); the installer keeps its own node's;
+//!   (26-networks.md §29.5, D215); the installer keeps its own node's;
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;

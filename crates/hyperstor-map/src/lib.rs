@@ -584,7 +584,7 @@ impl ClusterMap {
         Ok(changed || was != fixed)
     }
 
-    /// Replaces `device`'s endpoints (D214): each on a network of the map
+    /// Replaces `device`'s endpoints (D215): each on a network of the map
     /// that carries data, a usable address, none twice. Whether they
     /// changed; the epoch moves when they did.
     pub fn set_endpoints(
@@ -2067,7 +2067,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(m.endpoints, seed.endpoints);
         assert_eq!(m.pgs, pgs);
         assert!(!m.merge_new(&seed));
-        // Set through the API (D214): replaced, checked, the epoch moving
+        // Set through the API (D215): replaced, checked, the epoch moving
         // only on a change.
         let a: SocketAddr = "192.0.2.20:9100".parse().unwrap();
         let e = m.epoch;

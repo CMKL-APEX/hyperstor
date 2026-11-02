@@ -1143,6 +1143,6 @@ I238, I239). Asked, with options and a recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 177 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D214 |
-| 178 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D215 |
-| 179 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D216 |
+| 178 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D215 |
+| 179 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D216 |
+| 180 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D217 |

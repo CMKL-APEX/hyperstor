@@ -166,7 +166,7 @@ pub struct Device {
     pub addr: std::net::SocketAddr,
 }
 
-/// Endpoints the installer proposes (D214): for each device, its nearest
+/// Endpoints the installer proposes (D215): for each device, its nearest
 /// `per_network` up ports on each data network ([`rank`], every port that
 /// isn't a bond's member taken as storage's), at the device's own port
 /// number, leaving out its own address. A bond's members share its

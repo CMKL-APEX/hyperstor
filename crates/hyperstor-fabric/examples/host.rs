@@ -87,7 +87,7 @@ fn main() {
             );
         }
     }
-    // What the installer would propose (D214), at port 9100, for a
+    // What the installer would propose (D215), at port 9100, for a
     // device on each NVMe drive.
     let devices: Vec<Device> = host
         .pci

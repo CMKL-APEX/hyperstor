@@ -360,7 +360,7 @@ fn storage_hosts_join_with_tokens() {
         &["token", "create", "--role", "node"],
     );
     assert!(r.code == 4 && r.has("(permission_denied)"), "{}", r.out);
-    // D214: a node's certificate sets its own devices' endpoints, and no
+    // D215: a node's certificate sets its own devices' endpoints, and no
     // other node's; the administrator any.
     let ep = format!("fast=127.0.0.2:{}", base + 23);
     let r = ctl(

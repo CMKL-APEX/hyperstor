@@ -230,7 +230,7 @@ pub enum Admin {
         class: Option<String>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, String), String>>,
     },
-    /// Replaces a device's endpoints (D214). Replies with the working
+    /// Replaces a device's endpoints (D215). Replies with the working
     /// map's epoch.
     SetEndpoints {
         device: u32,
@@ -1372,7 +1372,7 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
-    /// Replaces a device's endpoints (D214). Returns the working map's
+    /// Replaces a device's endpoints (D215). Returns the working map's
     /// epoch.
     pub fn set_endpoints(
         &self,

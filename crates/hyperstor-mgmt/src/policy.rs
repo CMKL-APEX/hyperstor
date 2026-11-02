@@ -56,7 +56,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetFullRatios", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
     ("ClusterService.SetDeviceClass", Group::Operate, false),
-    // A device's endpoints (D214): where its traffic goes.
+    // A device's endpoints (D215): where its traffic goes.
     ("ClusterService.SetEndpoints", Group::Operate, false),
     // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),

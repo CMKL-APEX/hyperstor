@@ -9,7 +9,7 @@ use glidex_topology::net::NetPort;
 use std::net::IpAddr;
 use std::path::Path;
 
-/// Whether reverse-path filtering is strict on `port` (D215): the larger
+/// Whether reverse-path filtering is strict on `port` (D216): the larger
 /// of `all`'s and the port's own `rp_filter` under `proc` (`/proc` on a
 /// host) is 1. Strict filtering drops packets that arrive on a port other
 /// than the one the reply would leave by, so an endpoint without its own

@@ -1099,7 +1099,7 @@ impl ClusterService for Api {
                 .join(", ")
         );
         let who = self.authorize_as(&ctx, "SetEndpoints", &target, Need::Identity)?;
-        // D214: admin and mgmt any device's; a node's certificate only its
+        // D215: admin and mgmt any device's; a node's certificate only its
         // own devices' (`node * 1000` to `node * 1000 + 999`), so a host
         // can't redirect another's traffic. The local socket is root's.
         if self.cluster.is_some() && ctx.extensions().get::<LocalPeer>().is_none() {

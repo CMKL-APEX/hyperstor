@@ -4519,7 +4519,7 @@ export const ClusterService: GenService<{
     output: typeof SetDeviceClassResponseSchema;
   },
   /**
-   * Sets a device's endpoints (26-networks.md §29.5, D214), replacing
+   * Sets a device's endpoints (26-networks.md §29.5, D215), replacing
    * them; none: its address alone. Each is on a data network of the map.
    * The installer sets its node's on every run. A node's own certificate
    * may set only its own devices'; admin and mgmt any device's.

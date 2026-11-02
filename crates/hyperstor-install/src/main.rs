@@ -129,7 +129,7 @@ struct Settings {
     /// `loopback` over plain HTTP (an SSH tunnel).
     mgmt_listen: String,
     /// `auto`: propose this host's endpoints and keep them in the map
-    /// (D214); `off`: leave the map's as they are (set by hand).
+    /// (D215); `off`: leave the map's as they are (set by hand).
     endpoints: String,
     /// The operator's own web certificate's directory (`web.crt`,
     /// `web.key`, kept current by their ACME client, D109); empty: the
@@ -841,7 +841,7 @@ fn check(root: &Path, s: &Settings) -> bool {
                 ),
             );
         } else {
-            // D215: strict reverse-path filtering drops what arrives on the
+            // D216: strict reverse-path filtering drops what arrives on the
             // "wrong" port, so connections fail: that fails the check.
             // Loose or none only costs the spread over ports: a warning.
             let strict: Vec<String> = missing
@@ -1704,7 +1704,7 @@ fn renew_node(root: &Path, real: bool, s: &Settings) {
     }
 }
 
-/// D214: proposes this host's nodes' endpoints from its topology and
+/// D215: proposes this host's nodes' endpoints from its topology and
 /// keeps them in the map, through the cluster API this host joined with
 /// its node's certificate (or the administrator's). Each run: the map's
 /// data networks, the closest two ports per network for each device,

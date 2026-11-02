@@ -6,5 +6,5 @@ updated = 2026-11-02
 milestone = "HS19"
 branch = "feat/fabric-endpoints"
 prs = [154, 156, 161]
-now = "#156 merged (endpoints, per-request choice, hyperstor-fabric, routing check; glidex #250 merged). On feat/fabric-endpoints: D214 (the installer proposes endpoints from the topology and keeps them in the map through SetEndpoints, a node only its own), D215 (strict rp_filter fails the check), D216 (netplan example; glidex netd issue)"
+now = "#156 merged (endpoints, per-request choice, hyperstor-fabric, routing check; glidex #250 merged). On feat/fabric-endpoints: D215 (the installer proposes endpoints from the topology and keeps them in the map through SetEndpoints, a node only its own), D216 (strict rp_filter fails the check), D217 (netplan example; glidex netd issue)"
 next = "Its review and merge; then the reconciler in the leader (stage 3), health per network (stage 2)"
