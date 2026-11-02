@@ -124,6 +124,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned"
+spec = ["I232"]
+status = "done"
+tests = [
+    "hyperstor_reactor::tests::the_longest_poll_is_named_by_where_its_task_was_spawned",
+    "hyperstor_daemon::tests::a_hold_says_where_the_time_went",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
