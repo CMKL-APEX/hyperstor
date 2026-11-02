@@ -7,4 +7,4 @@ milestone = "AD3"
 branch = "feat/perf-heat"
 prs = [164, 166]
 now = "Merged (#164, fix #166) and deployed to the pilot (386cd13): heat, service time, sysfs and SMART on its NVMe drives, the Advisor"
-next = "G54 and G55 on the pilot NVMe drives; the Advisor's thresholds from real load (I248)"
+next = "G54 measured on the pilot (no stall); G55 on the pilot NVMe drives; the Advisor's thresholds from real load (I248)"
