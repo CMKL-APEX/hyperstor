@@ -41,10 +41,10 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, DAMAGED, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW, Looked, Msg,
-    Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp, block_crcs,
-    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
-    encode_object, encode_ops, verify_crcs,
+    Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
+    Looked, Msg, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp,
+    block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
+    encode_frame, encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
@@ -182,6 +182,10 @@ pub struct NodeConfig {
     /// Test hook: answer `Digests` as a node from before digests does
     /// ("unsupported request"), as in a rolling upgrade.
     pub no_digests: bool,
+    /// Scrub repairs copies that hold blocks of zeros where another copy
+    /// has holes, from the copy with the holes (D218). Off, it only
+    /// reports them: the dry run.
+    pub hole_repair: bool,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -370,6 +374,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
+        let hole_repair = cfg.hole_repair;
         let push_part_bytes = match cfg.push_part_bytes {
             0 => PUSH_PART_BYTES,
             n => n,
@@ -417,6 +422,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
+                        st.hole_repair.set(hole_repair);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.commit_delays.borrow_mut() = commit_delays;
@@ -578,6 +584,8 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
+    /// `NodeConfig::hole_repair`.
+    hole_repair: Cell<bool>,
     /// `NodeConfig::push_part_bytes`, resolved.
     push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
@@ -1078,6 +1086,7 @@ impl ShardState {
             splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
+            hole_repair: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
@@ -2050,6 +2059,13 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.digests(to, deep).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
+                }
+                Msg::Holds { to } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.holds(to).await;
                         let _ = tx.send(encode_frame(req, &m, &p));
                     });
                 }
@@ -3615,6 +3631,41 @@ impl ShardState {
         (Msg::DigestsOk, encode_digests(&entries))
     }
 
+    /// Which blocks this node holds of each object of a PG (D218), once
+    /// every commit queued so far is done, as [`Self::digests`].
+    async fn holds(&self, to: Target) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
+            return (m, Vec::new());
+        }
+        self.drained().await;
+        let entries: Vec<_> = self
+            .local_holds(to.pool, to.pg)
+            .await
+            .into_iter()
+            .map(|(k, h)| (wire_key(&k), h))
+            .collect();
+        (Msg::HoldsOk, encode_holds(&entries))
+    }
+
+    /// [`Self::holds`] of this device, from the index, in batches of
+    /// [`DIGEST_BATCH`] objects with a yield between.
+    async fn local_holds(&self, pool: u32, pg: u32) -> Vec<(ObjKey, HeldBlocks)> {
+        let keys = self.shard.get().await.list_pg(pool, pg);
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in keys.chunks(DIGEST_BATCH) {
+            {
+                let sh = self.shard.get().await;
+                for k in batch {
+                    if let Some((digest, blocks)) = sh.held(k) {
+                        out.push((k.clone(), HeldBlocks { digest, blocks }));
+                    }
+                }
+            }
+            hyperstor_reactor::yield_now().await;
+        }
+        out
+    }
+
     /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
     /// found damaged. In batches of [`DIGEST_BATCH`] objects with a yield
     /// between (I183), and a large object's digest in parts (I188), so
@@ -4675,6 +4726,50 @@ impl ShardState {
         Some(out)
     }
 
+    /// Every acting member's [`Self::holds`] of a PG, this device's first;
+    /// `None` if a member can't answer, or is from before `Holds`: the
+    /// check is skipped until every member has it.
+    async fn member_holds(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+    ) -> Option<Vec<HashMap<ObjKey, HeldBlocks>>> {
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let mut theirs = Vec::new();
+        for d in &info.acting {
+            if *d == self.me {
+                continue;
+            }
+            let conn = self.peer(self.addr_of(&map, *d)?).await.ok()?;
+            match conn
+                .call_within(&Msg::Holds { to }, &[], CALL_TIMEOUT)
+                .await
+            {
+                Ok((Msg::HoldsOk, p)) => theirs.push(
+                    decode_holds(&p)
+                        .ok()?
+                        .into_iter()
+                        .filter_map(|(k, h)| Some((engine_key(&to, &k).ok()?, h)))
+                        .collect::<HashMap<_, _>>(),
+                ),
+                _ => return None,
+            }
+        }
+        self.drained().await;
+        let mine = self.local_holds(pool, pg).await.into_iter().collect();
+        let mut out = vec![mine];
+        out.extend(theirs);
+        Some(out)
+    }
+
     /// Light scrub of one PG: compares every member's digests. Keys that
     /// differ are checked again after a pause, since a write in flight can
     /// make copies differ for a moment. A difference that persists is
@@ -4690,9 +4785,11 @@ impl ShardState {
         };
         let all: BTreeSet<ObjKey> = first.iter().flat_map(|m| m.keys().cloned()).collect();
         metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
-        let suspects = differing(&first, &mut all.into_iter());
+        let suspects = differing(&first, &mut all.iter().cloned());
+        let agreeing: BTreeSet<ObjKey> = all.difference(&suspects).cloned().collect();
+        let undecided = self.scrub_holes(pool, pg, info, &agreeing).await;
         if suspects.is_empty() {
-            self.report_scrub(pool, pg, 0).await;
+            self.report_scrub(pool, pg, undecided).await;
             return;
         }
         sleep(Duration::from_millis(200)).await;
@@ -4718,7 +4815,7 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
-        let mut unresolved = 0;
+        let mut unresolved = undecided;
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
             let v = match verdict(&row(&second, &key)) {
@@ -4735,24 +4832,8 @@ impl ShardState {
             match v {
                 Verdict::Agree | Verdict::Pull { .. } => {}
                 Verdict::Repair(members) => {
-                    let mut ok = true;
-                    for m in members {
-                        let Some(addr) = map.device_addr(others[m - 1]) else {
-                            ok = false;
-                            continue;
-                        };
-                        let Ok(conn) = self.peer(addr).await else {
-                            ok = false;
-                            continue;
-                        };
-                        self.drained().await;
-                        let Some(parts) = self.push_parts(to, &key, false) else {
-                            ok = false;
-                            continue;
-                        };
-                        ok &= push_all(&conn, parts).await;
-                    }
-                    if ok {
+                    let devices: Vec<u32> = members.iter().map(|m| others[m - 1]).collect();
+                    if self.push_to(to, &key, &devices).await {
                         metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
                     }
                 }
@@ -4768,6 +4849,152 @@ impl ShardState {
             }
         }
         self.report_scrub(pool, pg, unresolved).await;
+    }
+
+    /// Pushes this device's copy of `key` to each of `devices`; whether
+    /// every push landed.
+    async fn push_to(&self, to: Target, key: &ObjKey, devices: &[u32]) -> bool {
+        let map = self.map();
+        let mut ok = true;
+        for d in devices {
+            let Some(addr) = map.device_addr(*d) else {
+                ok = false;
+                continue;
+            };
+            let Ok(conn) = self.peer(addr).await else {
+                ok = false;
+                continue;
+            };
+            self.drained().await;
+            let Some(parts) = self.push_parts(to, key, false) else {
+                ok = false;
+                continue;
+            };
+            ok &= push_all(&conn, parts).await;
+        }
+        ok
+    }
+
+    /// Scrub's check of holes (D218), on the objects whose copies' digests
+    /// agree: they hold the same data, but a copy may hold blocks of zeros
+    /// where another has holes, which a volume's version reads through to
+    /// its older versions and its parent (issue #158). Only a dense copy,
+    /// as pushes made before I243, does that, so the copy holding the
+    /// fewest blocks is right, whatever the vote. Checked again after a
+    /// pause, as [`Self::scrub_pg`] does. Reported, and repaired only with
+    /// `--hole-repair`. Returns how many objects it couldn't decide.
+    async fn scrub_holes(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+        agreeing: &BTreeSet<ObjKey>,
+    ) -> u32 {
+        let differing = |h: &[HashMap<ObjKey, HeldBlocks>],
+                         keys: &mut dyn Iterator<Item = &ObjKey>| {
+            keys.filter(|k| {
+                let row: Option<Vec<&HeldBlocks>> = h.iter().map(|m| m.get(*k)).collect();
+                row.is_some_and(|r| r.iter().any(|x| x.digest != r[0].digest))
+            })
+            .cloned()
+            .collect::<BTreeSet<ObjKey>>()
+        };
+        let Some(first) = self.member_holds(pool, pg, info).await else {
+            return 0;
+        };
+        let suspects = differing(&first, &mut agreeing.iter());
+        if suspects.is_empty() {
+            return 0;
+        }
+        sleep(Duration::from_millis(200)).await;
+        if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
+            return 0;
+        }
+        let (Some(digests), Some(second)) = (
+            self.member_digests(pool, pg, info, false).await,
+            self.member_holds(pool, pg, info).await,
+        ) else {
+            return 0;
+        };
+        let still: BTreeSet<ObjKey> = suspects
+            .into_iter()
+            .filter(|k| verdict(&row(&digests, k)) == Verdict::Agree)
+            .collect();
+        let bad = differing(&second, &mut still.iter());
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let others: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me)
+            .collect();
+        let repair = self.hole_repair.get();
+        let mut undecided = 0;
+        for key in bad {
+            metrics::ShardMetrics::add(&self.metrics.scrub_holes, 1);
+            let held: Vec<HeldBlocks> = second.iter().map(|m| m[&key]).collect();
+            let win = (0..held.len()).min_by_key(|i| held[*i].blocks).unwrap_or(0);
+            let device = |i: usize| if i == 0 { self.me } else { others[i - 1] };
+            // Copies holding as few blocks, but others: neither is a dense
+            // copy of the other, so don't guess.
+            if held
+                .iter()
+                .any(|h| h.blocks == held[win].blocks && h.digest != held[win].digest)
+            {
+                metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
+                undecided += 1;
+                eprintln!(
+                    "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                     hold as many blocks but different ones; left as is",
+                    hex(&key.name),
+                    key.version
+                );
+                continue;
+            }
+            let fix: Vec<usize> = (0..held.len())
+                .filter(|i| held[*i].digest != held[win].digest)
+                .collect();
+            eprintln!(
+                "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                 hold blocks of zeros where device {}'s copy has holes ({} blocks against \
+                 {:?}); {}",
+                hex(&key.name),
+                key.version,
+                device(win),
+                held[win].blocks,
+                fix.iter()
+                    .map(|i| (device(*i), held[*i].blocks))
+                    .collect::<Vec<_>>(),
+                if repair {
+                    "repairing from it"
+                } else {
+                    "report only (--hole-repair is off)"
+                }
+            );
+            if !repair {
+                continue;
+            }
+            // Pull the copy with the holes first; then it is this copy.
+            if win != 0 && !self.repair_own(to, &key, device(win)).await {
+                continue;
+            }
+            let push: Vec<u32> = fix
+                .into_iter()
+                .filter(|i| *i != 0 && *i != win)
+                .map(device)
+                .collect();
+            if self.push_to(to, &key, &push).await {
+                metrics::ShardMetrics::add(&self.metrics.scrub_holes_repaired, 1);
+            }
+        }
+        undecided
     }
 
     /// Tells the map service how many objects of a PG its last scrub left
@@ -5349,6 +5576,11 @@ impl Drop for InflightGuard {
             *n = n.saturating_sub(1);
         }
     }
+}
+
+/// `b` in lowercase hex, for logs.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// An object's data to send and, if it has holes, the runs it holds.

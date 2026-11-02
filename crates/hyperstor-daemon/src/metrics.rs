@@ -60,6 +60,10 @@ pub struct ShardMetrics {
     pub scrub_unresolved: AtomicU64,
     /// Objects a deep scrub found with a block that failed its CRC.
     pub scrub_damaged: AtomicU64,
+    /// Objects whose copies held blocks of zeros where another copy had
+    /// holes (D218), and those repaired from the copy with the holes.
+    pub scrub_holes: AtomicU64,
+    pub scrub_holes_repaired: AtomicU64,
     /// Objects a new primary pushed to members while peering (I61).
     pub peer_pushes: AtomicU64,
     /// Times the reactor's thread was held for [`crate::STALL`] or more,
@@ -164,7 +168,7 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
     family(
         "hyperstor_scrub_objects_total",
         "counter",
-        "Scrub and peering: objects compared across copies, those whose copies differed by outcome, those a deep scrub found damaged, and those a new primary pushed while peering.",
+        "Scrub and peering: objects compared across copies, those whose copies differed by outcome, those a deep scrub found damaged, those whose copies held zeros where another had holes and those of them repaired, and those a new primary pushed while peering.",
         &|m| {
             vec![
                 ("compared", g(&m.scrub_objects)),
@@ -172,6 +176,8 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
                 ("repaired", g(&m.scrub_repaired)),
                 ("unresolved", g(&m.scrub_unresolved)),
                 ("damaged", g(&m.scrub_damaged)),
+                ("holes", g(&m.scrub_holes)),
+                ("holes_repaired", g(&m.scrub_holes_repaired)),
                 ("peering", g(&m.peer_pushes)),
             ]
         },

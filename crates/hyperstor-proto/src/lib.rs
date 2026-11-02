@@ -349,6 +349,16 @@ pub enum Msg {
     },
     /// The digests, in the payload ([`encode_digests`]).
     DigestsOk,
+    /// Primary to a member, for scrub: list which blocks you hold of each
+    /// object of the PG (D218). Copies whose digests agree hold the same
+    /// data; they may still differ in blocks of zeros one holds and
+    /// another has as holes, which reads through to a volume's older
+    /// versions and its parent (issue #158).
+    Holds {
+        to: Target,
+    },
+    /// The blocks held, in the payload ([`encode_holds`]).
+    HoldsOk,
     /// Primary to map service: `device` now has every object of the PG and
     /// may join its acting set.
     BackfillDone {
@@ -732,6 +742,8 @@ mod kind {
     pub const PG_SPLIT: u16 = 77;
     pub const CACHE_RELEASE: u16 = 78;
     pub const READ_COPY: u16 = 79;
+    pub const HOLDS: u16 = 80;
+    pub const HOLDS_OK: u16 = 81;
     pub const ERROR: u16 = 99;
 }
 
@@ -740,6 +752,7 @@ impl Msg {
     pub fn target(&self) -> Option<&Target> {
         match self {
             Msg::Digests { to, .. }
+            | Msg::Holds { to }
             | Msg::DropVersions { to, .. }
             | Msg::Exec { to, .. }
             | Msg::Fetch { to, .. }
@@ -819,6 +832,8 @@ impl Msg {
             Msg::PgSplit { .. } => PG_SPLIT,
             Msg::CacheRelease { .. } => CACHE_RELEASE,
             Msg::ReadCopy { .. } => READ_COPY,
+            Msg::Holds { .. } => HOLDS,
+            Msg::HoldsOk => HOLDS_OK,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
@@ -861,6 +876,7 @@ impl Msg {
                 | Msg::ReplOk { .. }
                 | Msg::PushOk
                 | Msg::DigestsOk
+                | Msg::HoldsOk
                 | Msg::HeartbeatOk { .. }
                 | Msg::FenceOk
                 | Msg::MapPushOk
@@ -907,7 +923,7 @@ impl Msg {
             } => {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
-            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::ExecOk => {}
+            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::HoldsOk | Msg::ExecOk => {}
             Msg::Exec { to, key } | Msg::PushObject { to, key } | Msg::PushKv { to, key } => {
                 to.enc(e);
                 key.enc(e);
@@ -940,6 +956,7 @@ impl Msg {
                 to.enc(e);
                 e.u8(u8::from(*deep));
             }
+            Msg::Holds { to } => to.enc(e),
             Msg::Heartbeat { node } => {
                 e.u32(*node);
             }
@@ -1358,6 +1375,10 @@ impl Msg {
                 deep: d.u8()? != 0,
             },
             DIGESTS_OK => Msg::DigestsOk,
+            HOLDS => Msg::Holds {
+                to: Target::dec(&mut d)?,
+            },
+            HOLDS_OK => Msg::HoldsOk,
             HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
             HEARTBEAT_OK => Msg::HeartbeatOk {
                 map_epoch: d.u64()?,
@@ -1631,6 +1652,39 @@ pub fn encode_digests(entries: &[(WireKey, u64)]) -> Vec<u8> {
 pub fn decode_digests(payload: &[u8]) -> Result<Vec<(WireKey, u64)>, DecodeError> {
     let mut d = Dec::new(payload);
     let v = d.seq(1 + 4 + 8 + 8, |d| Ok((WireKey::dec(d)?, d.u64()?)))?;
+    d.finish()?;
+    Ok(v)
+}
+
+/// What a copy holds of one object ([`Msg::HoldsOk`]): a digest of which
+/// blocks it holds, and how many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldBlocks {
+    pub digest: u64,
+    pub blocks: u64,
+}
+
+/// The payload of [`Msg::HoldsOk`]: each object's key and what it holds.
+pub fn encode_holds(entries: &[(WireKey, HeldBlocks)]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.seq(entries, |e, (k, h)| {
+        k.enc(e);
+        e.u64(h.digest).u64(h.blocks);
+    });
+    e.into_vec()
+}
+
+pub fn decode_holds(payload: &[u8]) -> Result<Vec<(WireKey, HeldBlocks)>, DecodeError> {
+    let mut d = Dec::new(payload);
+    let v = d.seq(1 + 4 + 8 + 16, |d| {
+        Ok((
+            WireKey::dec(d)?,
+            HeldBlocks {
+                digest: d.u64()?,
+                blocks: d.u64()?,
+            },
+        ))
+    })?;
     d.finish()?;
     Ok(v)
 }
@@ -2069,6 +2123,8 @@ mod tests {
             },
             Msg::Digests { to, deep: true },
             Msg::DigestsOk,
+            Msg::Holds { to },
+            Msg::HoldsOk,
             Msg::Heartbeat { node: 3 },
             Msg::HeartbeatOk {
                 map_epoch: 4,
@@ -2412,6 +2468,18 @@ mod tests {
             ..sparse.clone()
         };
         assert!(decode_object(&encode_object(&short)).is_err());
+        let holds = vec![(
+            WireKey {
+                ns: 1,
+                name: b"c".to_vec(),
+                version: 2,
+            },
+            HeldBlocks {
+                digest: 9,
+                blocks: 3,
+            },
+        )];
+        assert_eq!(decode_holds(&encode_holds(&holds)).unwrap(), holds);
         // A flipped data byte is refused.
         let at = enc.len() - 40;
         enc[at] ^= 1;

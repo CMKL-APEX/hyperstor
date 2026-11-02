@@ -19,6 +19,9 @@
 //! (19-administration.md §23.3).
 //! `--scrub-hours N` compares the copies of each PG this node is primary
 //! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
+//! `--hole-repair`: scrub repairs copies that hold blocks of zeros where
+//! another copy has holes, from the copy with the holes (04-decisions.md
+//! D218); without it, scrub only logs and counts them.
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
 //! `--read-timeout-ms N`: a read that waits longer for its device is
@@ -40,7 +43,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--hole-repair] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
         );
         std::process::exit(2)
     };
@@ -195,6 +198,7 @@ fn main() {
                 * 3600,
         ),
         no_digests: false,
+        hole_repair: args.iter().any(|a| a == "--hole-repair"),
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());
