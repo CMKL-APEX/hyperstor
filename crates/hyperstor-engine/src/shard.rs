@@ -2345,6 +2345,19 @@ impl Shard {
         Some(out)
     }
 
+    /// A digest of which blocks object `key` holds, and how many (D218):
+    /// copies with equal [`Shard::digest`]s that differ here differ only in
+    /// blocks of zeros one holds where another has a hole. From the index.
+    pub fn held(&self, key: &ObjKey) -> Option<(u64, u64)> {
+        let mut h = Fnv::new();
+        let mut blocks = 0;
+        for (lb, n) in self.held_runs(key)? {
+            h.u64(lb).u64(n);
+            blocks += n;
+        }
+        Some((h.0, blocks))
+    }
+
     /// The versions of the object `key` names (every version of its pool,
     /// PG, namespace and name), oldest first.
     pub fn versions(&self, key: &ObjKey) -> Vec<u64> {

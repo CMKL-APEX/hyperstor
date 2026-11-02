@@ -70,6 +70,8 @@ struct Cluster {
     read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
+    /// Scrub's hole repair on every node (D218).
+    hole_repair: bool,
 }
 
 impl Cluster {
@@ -138,6 +140,33 @@ impl Cluster {
         scrub: std::time::Duration,
         down_out: std::time::Duration,
         grace: std::time::Duration,
+    ) -> Cluster {
+        Self::start_opts(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            grace,
+            false,
+        )
+    }
+
+    /// As [`Self::start_graced`]; with `hole_repair`, scrub repairs copies
+    /// holding zeros where another has holes (D218).
+    #[allow(clippy::too_many_arguments)]
+    fn start_opts(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+        hole_repair: bool,
     ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
@@ -251,6 +280,7 @@ impl Cluster {
                     defer_max: None,
                     scrub_interval: scrub,
                     no_digests: false,
+                    hole_repair,
                 }))
             })
             .collect();
@@ -271,6 +301,7 @@ impl Cluster {
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
+            hole_repair,
         }
     }
 
@@ -322,6 +353,7 @@ impl Cluster {
             defer_max: None,
             scrub_interval: self.scrub,
             no_digests,
+            hole_repair: self.hole_repair,
         }));
     }
 
@@ -3657,6 +3689,206 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
         }
     }
     let _ = ids;
+}
+
+/// Scrub finds copies of a clone's versions that hold zeros where
+/// another copy has holes, as pushes from before I243 made them (D218),
+/// and only reports them without `--hole-repair`.
+#[test]
+fn scrub_reports_zeros_where_a_copy_has_holes() {
+    scrub_holes(false);
+}
+
+/// With `--hole-repair`, scrub replaces such copies with the one that
+/// has the holes, even when it is outvoted, and the clone reads its
+/// parent's data again wherever it is served from (D218).
+#[test]
+fn scrub_repairs_zeros_where_a_copy_has_holes() {
+    scrub_holes(true);
+}
+
+fn scrub_holes(repair: bool) {
+    use hyperstor_proto::{Msg, Target, block_crcs, decode_holds};
+    let c = Cluster::start_opts(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+        DOWN_OUT,
+        std::time::Duration::ZERO,
+        repair,
+    );
+    let meta = c.meta_addr;
+    let size = 2 * CHUNK as u64;
+    let parent = pattern(61, size as usize);
+    let block = |i: u64| pattern(70 + i, 4096);
+    // The clone writes block 1 + i of chunk i.
+    let at = |i: u64| i * CHUNK as u64 + 4096 * (1 + i);
+    let mut model = parent.clone();
+    for i in 0..2 {
+        model[at(i) as usize..at(i) as usize + 4096].copy_from_slice(&block(i));
+    }
+    let p = parent.clone();
+    let (lineage, k) = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "image").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, p).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        for i in 0..2 {
+            ka.write(at(i), block(i)).await.unwrap();
+        }
+        ka.detach().await.unwrap();
+        wait_backfilled(&cl).await;
+        (v.lineage, k.id)
+    });
+    // Zeros written behind the primary's back into the clone's versions,
+    // where they have holes: chunk 0 on one replica, chunk 1 on the
+    // primary and a replica, so that its one good copy is outvoted.
+    with_client(meta, 6, move |cl| async move {
+        let m = cl.map();
+        for i in 0..2u64 {
+            let pg = pg_of(lineage, i, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: m.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let conn = |d: u32| {
+                let addr = m.device_addr(d).unwrap();
+                async move { hyperstor_rpc::Conn::connect(addr).await.unwrap() }
+            };
+            let (reply, p) = conn(info.acting[0])
+                .await
+                .call(&Msg::Holds { to }, &[])
+                .await
+                .unwrap();
+            assert_eq!(reply, Msg::HoldsOk);
+            let chunk = chunk_name(lineage, i);
+            let key = decode_holds(&p)
+                .unwrap()
+                .into_iter()
+                .find(|(k, h)| k.name.starts_with(&chunk) && k.name != chunk && h.blocks == 1)
+                .expect("the clone's version of the chunk")
+                .0;
+            let zeros = vec![0u8; 4096 * (1 + i as usize)];
+            let damaged = if i == 0 {
+                vec![info.acting[1]]
+            } else {
+                vec![info.acting[0], info.acting[1]]
+            };
+            for d in damaged {
+                let (reply, _) = conn(d)
+                    .await
+                    .call(
+                        &Msg::Repl {
+                            to,
+                            seq: 0,
+                            key: key.clone(),
+                            off: 0,
+                            crcs: block_crcs(&zeros),
+                        },
+                        &zeros,
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(reply, Msg::ReplOk { .. }), "{reply:?}");
+            }
+        }
+    });
+    let count = |f: fn(&hyperstor_daemon::metrics::ShardMetrics) -> u64| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| f(m))
+            .sum()
+    };
+    let holes = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let fixed = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes_repaired
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    let want = |n: u64| {
+        if repair {
+            count(fixed) >= n
+        } else {
+            count(holes) >= n
+        }
+    };
+    while !want(2) {
+        assert!(
+            t.elapsed().as_secs() < 20,
+            "scrub found {} and repaired {}",
+            count(holes),
+            count(fixed)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !repair {
+        // Another pass or two: still only reported.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert_eq!(count(fixed), 0, "repaired without --hole-repair");
+    }
+    let m = model.clone();
+    let read = with_client(meta, 7, move |cl| async move {
+        let ka = cl.attach(k).await.unwrap();
+        let got = ka.read(0, size).await.unwrap();
+        ka.detach().await.unwrap();
+        got == m
+    });
+    if repair {
+        assert!(read, "the repaired clone reads its parent's data");
+    }
+    let (map, devs) = c.stop();
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let pool = &map.pools[&POOL];
+    for i in 0..2u64 {
+        let pg = pg_of(lineage, i, pool.pg_count);
+        let info = map.pg(POOL, pg).unwrap();
+        let chunk = chunk_name(lineage, i);
+        let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk.clone(), 0);
+        let mut hi = chunk.clone();
+        hi.extend_from_slice(&[0xff; 5]);
+        let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+        let keys: Vec<ObjKey> = shards[&info.acting[0]]
+            .list(&lo, &hi)
+            .into_iter()
+            .filter(|k| k.name != chunk)
+            .collect();
+        assert_eq!(keys.len(), 1, "one clone version of chunk {i}");
+        let held: Vec<u64> = info
+            .acting
+            .iter()
+            .map(|d| shards[d].held(&keys[0]).unwrap().1)
+            .collect();
+        if repair {
+            assert!(held.iter().all(|b| *b == 1), "chunk {i}: {held:?}");
+        } else {
+            assert!(
+                held.iter().any(|b| *b > 1),
+                "chunk {i} left as is: {held:?}"
+            );
+        }
+    }
 }
 
 /// A clone written while a node is away keeps its holes on every copy

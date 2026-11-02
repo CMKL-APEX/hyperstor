@@ -396,10 +396,12 @@ tests = [
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["09-replication.md §8.5", "I58", "I60", "I104", "I105"]
+spec = ["09-replication.md §8.5", "I58", "I60", "I104", "I105", "D218", "I247"]
 status = "done"
 tests = [
     "cluster::scrub_repairs_a_copy_the_others_outvote",
+    "cluster::scrub_reports_zeros_where_a_copy_has_holes",
+    "cluster::scrub_repairs_zeros_where_a_copy_has_holes",
     "cluster::scrub_repairs_an_outvoted_primary_and_reports_what_it_cant",
     "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
     "hyperstor_daemon::tests::scrub_repairs_only_from_a_majority",

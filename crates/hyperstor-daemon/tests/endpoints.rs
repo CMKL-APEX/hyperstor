@@ -126,6 +126,7 @@ fn run_with(client: bool, nodes: bool, copies: u8, per: u16) -> (BTreeSet<u16>, 
                 defer_max: None,
                 scrub_interval: Duration::ZERO,
                 no_digests: false,
+                hole_repair: false,
             })
         })
         .collect();

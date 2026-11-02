@@ -143,6 +143,12 @@ members, as long as there are at least `min_size` of them. Below
   zeros there, and a clone served from one read zeros where its parent
   has data. A node that can't take the list refuses such an object, and
   it is sent again once that node is upgraded.
+- **Scrub checks held blocks** (D218, I247). For objects whose digests
+  agree, scrub also compares which blocks each copy holds. Copies that
+  differ there hold zeros where another has holes, from a dense copy made
+  before I243; the copy with the fewest blocks replaces them, whatever the
+  majority, with `hyperstord --hole-repair`. Without it, scrub only logs
+  and counts them.
 
 ### 8.6 Erasure-coded pools (D6)
 
