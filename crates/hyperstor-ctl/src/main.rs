@@ -163,7 +163,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -248,6 +248,8 @@ struct Args {
     sparse: bool,
     /// `pg-grid`: each PG's usage too.
     usage: bool,
+    /// `pg-grid --heat`: writes (true) or reads.
+    heat: Option<bool>,
     /// `weight`: the weight to set, or `None` for `auto` (D158).
     weight: Option<Option<f64>>,
     /// `full-ratios`: nearfull, backfillfull and full, as percentages
@@ -327,6 +329,7 @@ fn main() {
         offset: 0,
         sparse: false,
         usage: false,
+        heat: None,
         weight: None,
         ratios: [None; 3],
         address: None,
@@ -365,6 +368,11 @@ fn main() {
             "--ttl" => a.ttl = num(it.next()),
             "--dry-run" => a.dry_run = true,
             "--usage" => a.usage = true,
+            "--heat" => match it.next().map(String::as_str) {
+                Some("read") => a.heat = Some(false),
+                Some("write") => a.heat = Some(true),
+                _ => usage(),
+            },
             "--serial" => a.serial = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--file" => a.file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--out" => a.out = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -479,10 +487,11 @@ fn main() {
                 Some("off") => a.autoscale = Some(false),
                 _ => usage(),
             },
-            "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in" | "weight" | "full-ratios" | "drain"
-            | "clone-volume" | "rollback-volume" | "flatten-volume" | "expand-volume"
-            | "write-volume" | "read-volume" | "enroll" | "copy-volume" | "move-volume"
+            "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "perf" | "top-volumes"
+            | "advise" | "volumes" | "create-volume" | "delete-volume" | "io-test" | "out"
+            | "in" | "weight" | "full-ratios" | "drain" | "clone-volume" | "rollback-volume"
+            | "flatten-volume" | "expand-volume" | "write-volume" | "read-volume" | "enroll"
+            | "copy-volume" | "move-volume"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
@@ -581,6 +590,7 @@ fn main() {
             || cmd == "weight"
             || cmd == "device remove")
             == (a.device.is_none() && a.node.is_none())
+        && !(cmd == "perf" && a.node.is_none())
         || (cmd == "device remove" && a.node.is_some())
         || (cmd == "drain" && a.node.is_none())
         || (cmd == "weight") != (a.weight.is_some() && a.device.is_some() && a.node.is_none())
@@ -632,8 +642,10 @@ fn main() {
     );
     if (needs_epoch != a.epoch.is_some() && !may_epoch)
         || ((a.grace.is_some() || a.on_full.is_some()) && cmd != "trash settings")
-        || ((a.since.is_some() || a.principal.is_some() || a.op.is_some() || a.limit.is_some())
-            && cmd != "audit list")
+        || ((a.since.is_some() || a.principal.is_some() || a.op.is_some()) && cmd != "audit list")
+        || (a.limit.is_some() && !matches!(cmd.as_str(), "audit list" | "top-volumes"))
+        || (a.heat.is_some() && cmd != "pg-grid")
+        || (a.heat.is_some() && a.usage)
         || (a.retention_days.is_some() && cmd != "audit settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
@@ -1030,6 +1042,65 @@ where
                 .await?
                 .into_owned();
             show(a, &r, || pgs_text(&r));
+            Next::Exit(0)
+        }
+        "pg-grid" if a.heat.is_some() => {
+            let s = status().await?;
+            let Some(pool) = first_pool(&s) else {
+                eprintln!("hyperstorctl: the cluster has no pools");
+                return Ok(Next::Exit(1));
+            };
+            let r = client
+                .get_pg_heat(pb::GetPgHeatRequest {
+                    pool,
+                    pg: a.pg,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || pg_heat_text(pool, a.heat == Some(true), &r));
+            Next::Exit(0)
+        }
+        "perf" => {
+            let r = client
+                .list_device_perf(pb::ListDevicePerfRequest {
+                    device: a.device,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            match (a.device, r.devices.first()) {
+                (Some(d), None) => {
+                    eprintln!("hyperstorctl: device {d} hasn't reported to the leader");
+                    Next::Exit(1)
+                }
+                (Some(_), Some(d)) => {
+                    show(a, &r, || device_perf_text(d));
+                    Next::Exit(0)
+                }
+                (None, _) => {
+                    show(a, &r, || perf_text(&r));
+                    Next::Exit(0)
+                }
+            }
+        }
+        "top-volumes" => {
+            let r = client
+                .list_top_volumes(pb::ListTopVolumesRequest {
+                    limit: a.limit.unwrap_or(0),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || volume_heat_text(&r.volumes));
+            Next::Exit(0)
+        }
+        "advise" => {
+            let r = client
+                .list_findings(pb::ListFindingsRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || findings_text(&r));
             Next::Exit(0)
         }
         "pg-grid" => {

@@ -1,0 +1,13 @@
+[package]
+name = "hyperstor-smart"
+description = "hyperstor-smart: the root helper that reads NVMe drives' health logs for hyperstord (27-performance.md §30.3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

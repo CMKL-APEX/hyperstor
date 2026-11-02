@@ -291,6 +291,288 @@ pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
     o
 }
 
+/// `hyperstorctl pg-grid --heat read|write` (D216): a digit per PG for
+/// its requests per second, 1 for the quietest PG that served any to 9
+/// for the busiest, linear; `.` for none.
+pub fn pg_heat_text(pool: u32, write: bool, r: &pb::GetPgHeatResponse) -> String {
+    let ops = if write { &r.write_ops } else { &r.read_ops };
+    let max = ops.iter().copied().fold(0f32, f32::max);
+    let total: f32 = ops.iter().sum();
+    let mut o = format!(
+        "pool {pool}, {} per PG on its primary: 1 least to 9 most (the busiest {max:.0}/s, all {total:.0}/s)  . none\n",
+        if write { "writes" } else { "reads" },
+    );
+    for (i, row) in ops.chunks(64).enumerate() {
+        let cells: String = row
+            .iter()
+            .map(|&x| {
+                if x <= 0.0 || max <= 0.0 {
+                    '.'
+                } else {
+                    char::from(b'1' + ((x / max * 8.0).round() as u8).min(8))
+                }
+            })
+            .collect();
+        let _ = writeln!(o, "{:>6}  {cells}", i * 64);
+    }
+    if !r.top.is_empty() {
+        o.push_str(&volume_heat_text(&r.top));
+    }
+    o
+}
+
+/// Volumes by their load: requests and MiB per second.
+pub fn volume_heat_text(v: &[pb::VolumeHeat]) -> String {
+    let mut o = format!(
+        "{:<32}  {:<20} {:>4} {:>10} {:>8}\n",
+        "ID", "NAME", "POOL", "REQUESTS/S", "MIB/S"
+    );
+    for x in v {
+        let _ = writeln!(
+            o,
+            "{:<32}  {:<20} {:>4} {:>10.0} {:>8.1}",
+            if x.id.is_empty() { "-" } else { &x.id },
+            x.name,
+            x.pool,
+            x.ops,
+            x.bytes / f32::from(1u16 << 10) / 1024.0
+        );
+    }
+    o
+}
+
+/// The time under which a share `q` of I/Os completed, from bucket counts
+/// (under 16, 32, ... 65536 µs, then slower: `max`).
+pub fn quantile_us(buckets: &[u32], max: u32, q: f64) -> u32 {
+    const B: [u32; 13] = [
+        16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+    ];
+    let n: u64 = buckets.iter().map(|x| u64::from(*x)).sum();
+    if n == 0 {
+        return 0;
+    }
+    let want = ((n as f64) * q).ceil().max(1.0) as u64;
+    let mut seen = 0;
+    for (i, c) in buckets.iter().enumerate() {
+        seen += u64::from(*c);
+        if seen >= want {
+            return B.get(i).copied().unwrap_or(max).min(max.max(1));
+        }
+    }
+    max
+}
+
+/// A device's last `n` samples merged: requests/s, bytes/s, the reads' and
+/// commits' p99 and most in flight.
+fn last(d: &pb::DevicePerf, n: usize) -> (f32, f32, f32, u32, u32, u32) {
+    let s: Vec<&pb::PerfSample> = d.samples.iter().rev().take(n).collect();
+    if s.is_empty() {
+        return (0.0, 0.0, 0.0, 0, 0, 0);
+    }
+    let k = s.len() as f32;
+    let avg = |f: &dyn Fn(&pb::PerfSample) -> f32| s.iter().map(|x| f(x)).sum::<f32>() / k;
+    let merge = |f: &dyn Fn(&pb::PerfSample) -> Option<&pb::ServiceTime>| {
+        let mut b = vec![0u32; 14];
+        let mut max = 0;
+        for x in &s {
+            if let Some(t) = f(x) {
+                for (a, c) in b.iter_mut().zip(&t.buckets) {
+                    *a += c;
+                }
+                max = max.max(t.max_us);
+            }
+        }
+        quantile_us(&b, max, 0.99)
+    };
+    (
+        avg(&|x| x.read_ops),
+        avg(&|x| x.write_ops),
+        avg(&|x| x.read_bytes + x.write_bytes),
+        merge(&|x| x.reads.as_option()),
+        merge(&|x| x.commits.as_option()),
+        s.iter().map(|x| x.inflight_max).max().unwrap_or(0),
+    )
+}
+
+fn us(v: u32) -> String {
+    if v == 0 {
+        "-".into()
+    } else if v >= 1000 {
+        format!("{:.1}ms", f64::from(v) / 1000.0)
+    } else {
+        format!("{v}us")
+    }
+}
+
+/// `hyperstorctl perf`: each device over the last minute.
+pub fn perf_text(r: &pb::ListDevicePerfResponse) -> String {
+    let mut o = format!(
+        "{:<6} {:>4} {:<5} {:>8} {:>8} {:>7} {:>9} {:>9} {:>8} {:>6} {:>5}\n",
+        "DEVICE",
+        "NODE",
+        "KIND",
+        "READS/S",
+        "WRITES/S",
+        "MIB/S",
+        "READ P99",
+        "SYNC P99",
+        "INFLIGHT",
+        "TEMP",
+        "WEAR"
+    );
+    for d in &r.devices {
+        let (rd, wr, by, rp, cp, inf) = last(d, 12);
+        let dr = d.drive.as_option();
+        let temp = dr
+            .and_then(|x| {
+                x.temperature_c
+                    .or(x.smart.as_option().map(|s| s.temperature_c))
+            })
+            .map_or("-".into(), |t| format!("{t:.0}C"));
+        let wear = dr
+            .and_then(|x| x.smart.as_option())
+            .map_or("-".into(), |s| format!("{}%", s.percentage_used));
+        let _ = writeln!(
+            o,
+            "{:<6} {:>4} {:<5} {:>8.0} {:>8.0} {:>7.1} {:>9} {:>9} {:>8} {:>6} {:>5}",
+            d.device,
+            d.node,
+            d.kind,
+            rd,
+            wr,
+            by / 1048576.0,
+            us(rp),
+            us(cp),
+            inf,
+            temp,
+            wear
+        );
+    }
+    o
+}
+
+/// `hyperstorctl perf --device D`: its drive, then each 5-s window.
+pub fn device_perf_text(d: &pb::DevicePerf) -> String {
+    let mut o = format!("device {} on node {}, {}\n", d.device, d.node, d.kind);
+    if let Some(x) = d.drive.as_option() {
+        if !x.model.is_empty() {
+            let _ = writeln!(o, "drive     {} (firmware {})", x.model, x.firmware);
+        }
+        if let (Some(w), Some(wm), Some(s), Some(sm)) = (
+            x.link_width,
+            x.link_width_max,
+            x.link_speed,
+            x.link_speed_max,
+        ) {
+            let _ = writeln!(
+                o,
+                "link      x{w} at {s:.1} GT/s (can do x{wm} at {sm:.1} GT/s)"
+            );
+        }
+        if x.numa_node >= 0 {
+            let _ = writeln!(
+                o,
+                "numa      drive on node {}, reactor on node {}",
+                x.numa_node, x.reactor_numa_node
+            );
+        }
+        let _ = writeln!(
+            o,
+            "cache     {}",
+            if x.write_cache {
+                "volatile write cache"
+            } else {
+                "no volatile write cache"
+            }
+        );
+        match x.smart.as_option() {
+            Some(s) => {
+                let _ = writeln!(
+                    o,
+                    "smart     {:.0} C (warning {:.0}, critical {:.0}); {}% used, spare {}% (threshold {}%); {} media errors; critical warning {:#04x}",
+                    s.temperature_c,
+                    s.warning_threshold_c,
+                    s.critical_threshold_c,
+                    s.percentage_used,
+                    s.available_spare,
+                    s.spare_threshold,
+                    s.media_errors,
+                    s.critical_warning
+                );
+                let _ = writeln!(
+                    o,
+                    "          {:.1} TB written, {:.1} TB read, {} h powered on, {} unsafe shutdowns; throttled {} s and {} s",
+                    s.bytes_written as f64 / 1e12,
+                    s.bytes_read as f64 / 1e12,
+                    s.power_on_hours,
+                    s.unsafe_shutdowns,
+                    s.throttle_seconds.first().copied().unwrap_or(0),
+                    s.throttle_seconds.get(1).copied().unwrap_or(0)
+                );
+            }
+            None if !x.smart_note.is_empty() => {
+                let _ = writeln!(o, "smart     none: {}", x.smart_note);
+            }
+            None => {}
+        }
+        if let Some(t) = x.temperature_c {
+            let _ = writeln!(o, "temp      {t:.1} C (hwmon)");
+        }
+    }
+    let _ = writeln!(
+        o,
+        "{:<8} {:>8} {:>8} {:>7} {:>9} {:>9} {:>9} {:>9} {:>8}",
+        "AGO",
+        "READS/S",
+        "WRITES/S",
+        "MIB/S",
+        "READ P50",
+        "READ P99",
+        "SYNC P50",
+        "SYNC P99",
+        "INFLIGHT"
+    );
+    let newest = d.samples.last().map_or(0, |x| x.unix_ms);
+    for x in d.samples.iter().rev().take(24) {
+        let (r, c) = (x.reads.as_option(), x.commits.as_option());
+        let _ = writeln!(
+            o,
+            "{:<8} {:>8.0} {:>8.0} {:>7.1} {:>9} {:>9} {:>9} {:>9} {:>8}",
+            format!("{}s", (newest - x.unix_ms) / 1000),
+            x.read_ops,
+            x.write_ops,
+            (x.read_bytes + x.write_bytes) / 1048576.0,
+            us(r.map_or(0, |t| t.p50_us)),
+            us(r.map_or(0, |t| t.p99_us)),
+            us(c.map_or(0, |t| t.p50_us)),
+            us(c.map_or(0, |t| t.p99_us)),
+            x.inflight_max
+        );
+    }
+    o
+}
+
+/// `hyperstorctl advise`: the Advisor's findings.
+pub fn findings_text(r: &pb::ListFindingsResponse) -> String {
+    if r.findings.is_empty() {
+        return "nothing to suggest: no device, drive or volume stands out\n".into();
+    }
+    let mut o = String::new();
+    for f in &r.findings {
+        let _ = writeln!(
+            o,
+            "[{}] {}  ({}, rule {})",
+            f.severity, f.title, f.subject, f.rule
+        );
+        let _ = writeln!(o, "    seen: {}", f.evidence);
+        let _ = writeln!(o, "    do:   {}", f.action);
+        if !f.command.is_empty() {
+            let _ = writeln!(o, "    $ {}", f.command);
+        }
+    }
+    o
+}
+
 /// A pool's volumes: id, name, size and state.
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
@@ -338,6 +620,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.GetStatus", "status, nodes, pools"),
     ("ClusterService.ListPgs", "pgs"),
     ("ClusterService.GetPgGrid", "pg-grid"),
+    ("ClusterService.GetPgHeat", "pg-grid --heat"),
+    ("ClusterService.ListDevicePerf", "perf"),
+    ("ClusterService.ListTopVolumes", "top-volumes"),
+    ("ClusterService.ListFindings", "advise"),
     ("ClusterService.SetDeviceIn", "out, in"),
     ("ClusterService.SetDeviceWeight", "weight"),
     ("ClusterService.SetFullRatios", "full-ratios"),
@@ -759,6 +1045,134 @@ pub fn to_yaml(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn heat_shows_a_digit_per_pg_and_the_busiest_volumes() {
+        let r = pb::GetPgHeatResponse {
+            read_ops: vec![0.0, 10.0, 80.0, 40.0],
+            write_ops: vec![0.0; 4],
+            top: vec![pb::VolumeHeat {
+                id: "ab".into(),
+                name: "db".into(),
+                pool: 1,
+                ops: 70.0,
+                bytes: 2.0 * 1048576.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let t = pg_heat_text(1, false, &r);
+        assert!(t.contains("     0  .295\n"), "{t}");
+        assert!(t.contains("the busiest 80/s, all 130/s"), "{t}");
+        assert!(t.contains("db") && t.contains("2.0"), "{t}");
+        assert!(pg_heat_text(1, true, &r).contains("     0  ....\n"));
+    }
+
+    #[test]
+    fn quantiles_merge_buckets() {
+        let mut b = vec![0u32; 14];
+        b[2] = 98;
+        b[9] = 2;
+        assert_eq!(quantile_us(&b, 5000, 0.5), 64);
+        assert_eq!(quantile_us(&b, 5000, 0.99), 5000, "capped at the max");
+        assert_eq!(quantile_us(&[0; 14], 0, 0.99), 0);
+    }
+
+    #[test]
+    fn perf_and_findings_read_as_tables() {
+        let svc = |b: usize| {
+            let mut buckets = vec![0u32; 14];
+            buckets[b] = 10;
+            buckets
+        };
+        let d = pb::DevicePerf {
+            device: 1002,
+            node: 1,
+            kind: "nvme".into(),
+            samples: vec![pb::PerfSample {
+                unix_ms: 5000,
+                window_ms: 5000,
+                read_ops: 120.0,
+                write_ops: 30.0,
+                read_bytes: 1048576.0,
+                write_bytes: 0.0,
+                reads: buffa::MessageField::some(pb::ServiceTime {
+                    count: 10,
+                    p50_us: 64,
+                    p99_us: 64,
+                    max_us: 60,
+                    buckets: svc(2),
+                    ..Default::default()
+                }),
+                commits: buffa::MessageField::some(pb::ServiceTime {
+                    count: 10,
+                    p50_us: 2048,
+                    p99_us: 2048,
+                    max_us: 1900,
+                    buckets: svc(7),
+                    ..Default::default()
+                }),
+                inflight_max: 7,
+                ..Default::default()
+            }],
+            drive: buffa::MessageField::some(pb::Drive {
+                model: "M".into(),
+                temperature_c: Some(41.0),
+                link_width: Some(2),
+                link_width_max: Some(4),
+                link_speed: Some(8.0),
+                link_speed_max: Some(16.0),
+                numa_node: 1,
+                smart: buffa::MessageField::some(pb::Smart {
+                    percentage_used: 3,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let r = pb::ListDevicePerfResponse {
+            devices: vec![d.clone()],
+            ..Default::default()
+        };
+        let t = perf_text(&r);
+        assert!(
+            t.contains("1002") && t.contains("nvme") && t.contains("120"),
+            "{t}"
+        );
+        assert!(
+            t.contains("60us") && t.contains("1.9ms") && t.contains("41C") && t.contains("3%"),
+            "{t}"
+        );
+        let t = device_perf_text(&d);
+        assert!(
+            t.contains("link      x2 at 8.0 GT/s (can do x4 at 16.0 GT/s)"),
+            "{t}"
+        );
+        assert!(t.contains("3% used"), "{t}");
+        let f = pb::ListFindingsResponse {
+            findings: vec![pb::Finding {
+                rule: "pcie-link".into(),
+                severity: "warn".into(),
+                subject: "device 1002".into(),
+                title: "T".into(),
+                evidence: "E".into(),
+                action: "A".into(),
+                command: "hyperstorctl perf --device 1002".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let t = findings_text(&f);
+        assert!(
+            t.starts_with("[warn] T  (device 1002, rule pcie-link)\n"),
+            "{t}"
+        );
+        assert!(t.contains("    $ hyperstorctl perf --device 1002"), "{t}");
+        assert!(
+            findings_text(&pb::ListFindingsResponse::default()).starts_with("nothing to suggest")
+        );
+    }
+
     use super::*;
 
     fn status(degraded: bool) -> pb::GetStatusResponse {

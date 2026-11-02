@@ -1844,6 +1844,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-smart"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "hyperstor-test"
 version = "0.1.0"
 dependencies = [
