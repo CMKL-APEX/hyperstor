@@ -1042,8 +1042,10 @@ StandardInput=socket
 StandardOutput=socket
 StandardError=journal
 RuntimeMaxSec=30
-# The log needs CAP_SYS_ADMIN and nothing else.
+# The log needs CAP_SYS_ADMIN and nothing else. Without CAP_DAC_OVERRIDE,
+# root opens the shard devices (hyperstor's, mode 0660) through the group.
 CapabilityBoundingSet=CAP_SYS_ADMIN
+SupplementaryGroups=hyperstor
 NoNewPrivileges=yes
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX

@@ -8,7 +8,7 @@ numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
 
 Status: **built** (2026-11-02, branch `feat/perf-heat`;
-01-implementation-notes.md I247–I248). D218–D222 are settled with the
+01-implementation-notes.md I247–I248, I251). D218–D222 are settled with the
 owner (points 181–182 of [05-decision-log.md](05-decision-log.md)). G54
 and G55 are the host checks they rest on. It builds on the metrics of
 15-operations.md §16 and 19-administration.md §23.3 (D58, D59), the PG
@@ -74,7 +74,8 @@ The NVMe SMART / health log (Get Log Page 02h) needs `CAP_SYS_ADMIN`
 - systemd's `hyperstor-smart.socket` (`/run/hyperstor-smart/smart.sock`,
   mode 0660, group `hyperstor`, `Accept=yes`) starts one short root
   process per request, with no network, a read-only system and no
-  capability but `CAP_SYS_ADMIN`.
+  capability but `CAP_SYS_ADMIN`, in the `hyperstor` group to open the
+  shard devices (theirs, mode 0660; I251).
 - A request is `health PATH`; it answers only for a path a storage node's
   `--shard` names on this host, and only for an NVMe namespace. It
   issues Get Log Page and Identify Controller (for the warning and
