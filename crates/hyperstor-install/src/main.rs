@@ -794,6 +794,53 @@ fn check(root: &Path, s: &Settings) -> bool {
             note(Level::Ok, "vhost", format!("for {}", users.join(", ")));
         }
     }
+
+    // Endpoints in one subnet on several ports need routing by source
+    // (26-networks.md §29.5, D207, G47). Only when this host's node has
+    // endpoints in the installed cluster file.
+    let endpoints: Vec<std::net::IpAddr> = s
+        .node
+        .and_then(|n| {
+            let text = fs::read_to_string(root.join("etc/hyperstor/cluster.txt")).ok()?;
+            let map = hyperstor_meta::parse_cluster(&text).ok()?;
+            Some(
+                map.endpoints
+                    .iter()
+                    .filter(|(d, _)| **d / 1000 == n)
+                    .flat_map(|(_, eps)| eps.iter().map(|(_, a)| a.ip()))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    if !endpoints.is_empty() {
+        let rules: String = ["-4", "-6"]
+            .iter()
+            .filter_map(|f| Command::new("ip").args([f, "rule", "show"]).output().ok())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .collect();
+        let host = glidex_topology::Host::read();
+        let missing = hyperstor_fabric::routing::unrouted(&host.ports, &endpoints, &rules);
+        if missing.is_empty() {
+            note(
+                Level::Ok,
+                "routing",
+                format!(
+                    "{} endpoint address(es) leave by their own ports",
+                    endpoints.len()
+                ),
+            );
+        } else {
+            let list: Vec<String> = missing.iter().map(|a| a.to_string()).collect();
+            note(
+                Level::Warn,
+                "routing",
+                format!(
+                    "{} share a subnet with other ports and have no rule of their own: traffic from them leaves by one port (add `ip rule add from ADDR lookup TABLE` with a route by that port)",
+                    list.join(", ")
+                ),
+            );
+        }
+    }
     worst == Level::Fail
 }
 

@@ -132,7 +132,8 @@ Put each endpoint on a port close to its device: on the same PCIe switch
 or, failing that, the same CPU socket. With several ports in one subnet
 (InfiniBand ports often are), Linux sends from every address through
 one of them unless each address has a routing rule of its own; add
-those, or traffic leaves by one port.
+those, or traffic leaves by one port; `hyperstor-install check` warns
+about endpoints without one.
 
 Choosing endpoints for you, from the host's topology, and moving traffic
 between ports as load changes are planned.

@@ -836,6 +836,7 @@ tests = [
     "hyperstor_fabric::tests::one_port_hosts_use_it_for_everything",
     "hyperstor_fabric::tests::fabrics_differ_by_subnet_manager",
     "hyperstor_fabric::tests::addresses_are_matched_by_subnet",
+    "hyperstor_fabric::tests::several_ports_in_one_subnet_need_rules_by_source",
     "hyperstor_map::network_tests::networks_and_endpoints_round_trip_in_format_14_only_when_set",
     "hyperstor_map::network_tests::a_sender_takes_an_endpoint_on_its_networks_else_the_address",
     "hyperstor_map::network_tests::cluster_file_networks_are_checked",

@@ -6,5 +6,5 @@ updated = 2026-11-02
 milestone = "HS19"
 branch = "feat/fabric"
 prs = [154]
-now = "Spec merged (#154). hyperstor-fabric: endpoints ranked by closeness, path choice per I/O, the reconciler's decisions, on glidex-topology (glidex feat/fabric-topology); checked on a GPU host's real tree"
-next = "Stage 1's wiring: networks in the cluster file, endpoints in the map, reactors binding them; glidex's PR merged and repinned"
+now = "Spec merged (#154). Stage 1 first part on feat/fabric: networks and endpoints in the cluster file and map (format 14), hyperstord --endpoint/--networks from the installer, clients and hyperstor-vhost --networks, the routing check; hyperstor-fabric: ranking by closeness, path choice, the reconciler's decisions; glidex-topology in glidex #250"
+next = "The owner's review of the PR and glidex #250 (then repin glidex); the installer proposing endpoints from the topology; stage 2 (several endpoints per device chosen per I/O, health per network)"

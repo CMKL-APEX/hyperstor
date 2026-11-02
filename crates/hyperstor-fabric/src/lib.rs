@@ -8,6 +8,7 @@ pub mod endpoints;
 pub mod model;
 pub mod path;
 pub mod reconcile;
+pub mod routing;
 
 #[cfg(test)]
 mod tests;

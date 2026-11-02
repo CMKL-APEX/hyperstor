@@ -1716,9 +1716,11 @@ version = "0.1.0"
 dependencies = [
  "connectrpc",
  "glidex-tls",
+ "glidex-topology",
  "http",
  "hyperstor-api",
  "hyperstor-engine",
+ "hyperstor-fabric",
  "hyperstor-meta",
  "hyperstor-pki",
  "io-uring",

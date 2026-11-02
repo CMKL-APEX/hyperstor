@@ -525,3 +525,26 @@ fn addresses_are_matched_by_subnet() {
     assert!(!in_subnet(ip("192.0.2.1"), ip("2001:db8::"), 32));
     assert!(in_subnet(ip("10.1.2.3"), ip("0.0.0.0"), 0));
 }
+
+#[test]
+fn several_ports_in_one_subnet_need_rules_by_source() {
+    use crate::routing::unrouted;
+    let host = hgx();
+    let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+    let eps = [ip("192.0.2.10"), ip("192.0.2.11"), ip("203.0.113.10")];
+    // Four InfiniBand ports in one subnet, no rules: both endpoints there
+    // need one; the management port is alone in its subnet.
+    assert_eq!(unrouted(&host.ports, &eps, ""), vec![eps[0], eps[1]]);
+    let rules = "0:\tfrom all lookup local\n100:\tfrom 192.0.2.10 lookup 100\n\
+                 32766:\tfrom all lookup main\n";
+    assert_eq!(unrouted(&host.ports, &eps, rules), vec![eps[1]]);
+    // A rule for 192.0.2.1 doesn't cover 192.0.2.10's prefix match.
+    let rules = "100:\tfrom 192.0.2.1 lookup 100\n";
+    assert_eq!(unrouted(&host.ports, &eps[..1], rules), vec![eps[0]]);
+    // One port per subnet: nothing needed.
+    let mut one = host.ports.clone();
+    one.retain(|p| p.name != "ib1" && p.name != "ib2" && p.name != "ib3");
+    assert!(unrouted(&one, &eps, "").is_empty());
+    // An address this host doesn't have: not this host's to route.
+    assert!(unrouted(&host.ports, &[ip("198.51.100.99")], "").is_empty());
+}
