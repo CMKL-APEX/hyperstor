@@ -149,7 +149,8 @@ fn storage_hosts_join_with_tokens() {
     // No storage node yet: they join.
     std::fs::write(
         &file,
-        "cluster 11\npool 1 vol replicated size 3 min 2 pgs 32 domain host\n",
+        "cluster 11\nnetwork fast data subnet 127.0.0.0/8\n\
+         pool 1 vol replicated size 3 min 2 pgs 32 domain host\n",
     )
     .unwrap();
     let meta_root = s.path("meta-host");
@@ -359,6 +360,60 @@ fn storage_hosts_join_with_tokens() {
         &["token", "create", "--role", "node"],
     );
     assert!(r.code == 4 && r.has("(permission_denied)"), "{}", r.out);
+    // D214: a node's certificate sets its own devices' endpoints, and no
+    // other node's; the administrator any.
+    let ep = format!("fast=127.0.0.2:{}", base + 23);
+    let r = ctl(
+        &bin,
+        &api,
+        &node_tls,
+        &["device", "endpoints", "--device", "0", "--endpoints", &ep],
+    );
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = ctl(
+        &bin,
+        &api,
+        &node_tls,
+        &[
+            "device",
+            "endpoints",
+            "--device",
+            "1000",
+            "--endpoints",
+            &ep,
+        ],
+    );
+    assert!(r.code == 1 && r.has("only its own node"), "{}", r.out);
+    let nodes = ctl(&bin, &api, &pki, &["nodes", "--json"]).ok();
+    assert!(nodes.has(&ep[5..]) && nodes.has("fast"), "{}", nodes.out);
+    let r = ctl(
+        &bin,
+        &api,
+        &pki,
+        &[
+            "device",
+            "endpoints",
+            "--device",
+            "0",
+            "--endpoints",
+            "none",
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = ctl(
+        &bin,
+        &api,
+        &pki,
+        &[
+            "device",
+            "endpoints",
+            "--device",
+            "0",
+            "--endpoints",
+            "slow=127.0.0.2:1",
+        ],
+    );
+    assert!(r.code == 1 && r.has("no network slow"), "{}", r.out);
 
     // The joins' certificates are listed, by serial; revoking node 1's
     // refuses it from then on.

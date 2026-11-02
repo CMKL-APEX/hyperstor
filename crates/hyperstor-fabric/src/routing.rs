@@ -7,6 +7,30 @@
 use crate::model::in_subnet;
 use glidex_topology::net::NetPort;
 use std::net::IpAddr;
+use std::path::Path;
+
+/// Whether reverse-path filtering is strict on `port` (D215): the larger
+/// of `all`'s and the port's own `rp_filter` under `proc` (`/proc` on a
+/// host) is 1. Strict filtering drops packets that arrive on a port other
+/// than the one the reply would leave by, so an endpoint without its own
+/// rule loses connections, not just bandwidth. Loose (2) or off (0) only
+/// loses the spread over ports.
+pub fn rp_filter_strict(proc: &Path, port: &str) -> bool {
+    let read = |name: &str| {
+        std::fs::read_to_string(proc.join(format!("sys/net/ipv4/conf/{name}/rp_filter")))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    read("all").max(read(port)) == 1
+}
+
+/// The port an address is on, among `ports`.
+pub fn port_of(ports: &[NetPort], ip: IpAddr) -> Option<&NetPort> {
+    ports
+        .iter()
+        .find(|p| p.addresses.iter().any(|a| a.addr == ip))
+}
 
 /// The endpoint addresses in `endpoints` that need a rule of their own and
 /// have none in `rules` (the output of `ip rule show`, both families): those

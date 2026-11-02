@@ -17,5 +17,8 @@ rand.workspace = true
 default = ["host"]
 host = ["dep:glidex-topology"]
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

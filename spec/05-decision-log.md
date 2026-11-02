@@ -1135,3 +1135,14 @@ Then the decisions drafted with the spec, asked for review:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 176 | D206–D213 as drafted: control apart from data, endpoints by closeness, two loops, roles as leases with lending `off` by default (recommended; or `idle`, or `always`), health per network, the GPU NIC default per host, pairing at VM start, placement not weighing speed | Lending `idle` by default; the rest as recommended | D206–D213 |
+
+## Networks: endpoints and routing (2026-11-02)
+
+Three questions the first implementation left open (01-implementation-notes.md
+I238, I239). Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 177 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D214 |
+| 178 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D215 |
+| 179 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D216 |

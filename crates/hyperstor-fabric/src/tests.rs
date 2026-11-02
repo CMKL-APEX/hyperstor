@@ -548,3 +548,101 @@ fn several_ports_in_one_subnet_need_rules_by_source() {
     // An address this host doesn't have: not this host's to route.
     assert!(unrouted(&host.ports, &[ip("198.51.100.99")], "").is_empty());
 }
+
+#[test]
+fn strict_reverse_path_filtering_is_the_larger_of_all_and_the_port() {
+    use crate::routing::{port_of, rp_filter_strict};
+    let dir = tempfile::tempdir().unwrap();
+    let set = |name: &str, v: &str| {
+        let d = dir.path().join(format!("sys/net/ipv4/conf/{name}"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("rp_filter"), v).unwrap();
+    };
+    // Unreadable: off.
+    assert!(!rp_filter_strict(dir.path(), "ib0"));
+    set("all", "2\n");
+    set("ib0", "1\n");
+    set("ib1", "0\n");
+    // max(2, 1) = 2: loose wins.
+    assert!(!rp_filter_strict(dir.path(), "ib0"));
+    set("all", "0\n");
+    assert!(rp_filter_strict(dir.path(), "ib0"));
+    assert!(!rp_filter_strict(dir.path(), "ib1"));
+    set("all", "1\n");
+    assert!(rp_filter_strict(dir.path(), "ib1"));
+    let host = hgx();
+    let ip = "192.0.2.11".parse().unwrap();
+    assert_eq!(
+        port_of(&host.ports, ip).map(|p| p.name.as_str()),
+        Some("ib1")
+    );
+}
+
+#[test]
+fn the_installer_proposes_the_nearest_ports_of_each_device() {
+    use crate::endpoints::{Device, propose};
+    let host = hgx();
+    let addr = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+    let devices = [
+        Device {
+            id: 0,
+            pci: Some("0000:03:00.0".into()),
+            addr: addr("203.0.113.10:9100"),
+        },
+        Device {
+            id: 1,
+            pci: Some("0000:83:00.0".into()),
+            addr: addr("203.0.113.10:9101"),
+        },
+        // Unknown place: ranked by name.
+        Device {
+            id: 2,
+            pci: None,
+            addr: addr("192.0.2.10:9102"),
+        },
+    ];
+    let p = propose(&host, &devices, &networks(), 2);
+    // Each drive's two InfiniBand ports, at its own port number; the
+    // bonded Ethernet port on its data network too; never the
+    // management network (control).
+    assert_eq!(
+        p[&0],
+        vec![
+            ("ib".to_string(), addr("192.0.2.10:9100")),
+            ("ib".to_string(), addr("192.0.2.11:9100")),
+            ("eth100".to_string(), addr("198.51.100.10:9100")),
+        ]
+    );
+    assert_eq!(
+        p[&1][..2],
+        [
+            ("ib".to_string(), addr("192.0.2.12:9101")),
+            ("ib".to_string(), addr("192.0.2.13:9101"))
+        ]
+    );
+    // A device already listening on one of the ports doesn't get it again.
+    assert!(p[&2].iter().all(|(_, a)| a.ip() != devices[2].addr.ip()));
+    assert_eq!(p[&2].iter().filter(|(n, _)| n == "ib").count(), 2);
+}
+
+#[test]
+fn a_block_device_leads_to_its_pci_function_through_md() {
+    use crate::endpoints::pci_of_block;
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let sys = dir.path();
+    let mk = |rel: &str| std::fs::create_dir_all(sys.join(rel)).unwrap();
+    let link = |at: &str, to: &str| {
+        std::fs::create_dir_all(sys.join(at).parent().unwrap()).unwrap();
+        symlink(sys.join(to), sys.join(at)).unwrap();
+    };
+    let nvme = "devices/pci0000:00/0000:00:01.1/0000:01:00.0/0000:09:00.0/nvme/nvme0/nvme0n1";
+    mk(&format!("{nvme}/nvme0n1p2"));
+    mk("devices/virtual/block/md0/slaves/nvme0n1p2");
+    link("dev/block/259:2", &format!("{nvme}/nvme0n1p2"));
+    link("dev/block/9:0", "devices/virtual/block/md0");
+    link("class/block/nvme0n1p2", &format!("{nvme}/nvme0n1p2"));
+    assert_eq!(pci_of_block(sys, 259, 2).as_deref(), Some("0000:09:00.0"));
+    assert_eq!(pci_of_block(sys, 9, 0).as_deref(), Some("0000:09:00.0"));
+    assert_eq!(pci_of_block(sys, 8, 0), None);
+}

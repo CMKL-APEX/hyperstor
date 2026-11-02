@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -51,6 +51,9 @@
 //!   operation;
 //! - `device class --device D --class C|auto`: set a device's class, or
 //!   let it follow the device's kind again (D178);
+//! - `device endpoints --device D --endpoints NET=ADDR,...|none`: set a
+//!   device's endpoints on the cluster's data networks, replacing them
+//!   (26-networks.md §29.5, D214); the installer keeps its own node's;
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -158,7 +161,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -199,6 +202,8 @@ fn random_u64() -> u64 {
 }
 
 struct Args {
+    /// `device endpoints`: `NET=ADDR,...` or `none`.
+    endpoints: Option<String>,
     json: bool,
     yaml: bool,
     role: Option<String>,
@@ -286,6 +291,7 @@ fn main() {
     let mut token_file = None;
     let mut mgmt_ca = None;
     let mut a = Args {
+        endpoints: None,
         json: false,
         yaml: false,
         role: None,
@@ -397,6 +403,7 @@ fn main() {
             "--node" => a.node = Some(num(it.next())),
             "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--class" => a.class = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--endpoints" => a.endpoints = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--classes" => a.classes = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--kind" => a.kind = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--copies" => a.copies = Some(num(it.next())),
@@ -499,7 +506,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "device" => matches!(sub, Some("add" | "remove" | "class")),
+                    "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
                     "pool" => {
                         matches!(
                             sub,
@@ -521,6 +528,7 @@ fn main() {
     // takes the last two.
     let device_add = cmd == "device add";
     let device_class = cmd == "device class";
+    let device_endpoints = cmd == "device endpoints";
     // pool set takes a pool and what to change (classes, a name, a
     // domain), pool create a name and classes; nothing else takes classes
     // or a domain, and only pool create its other options.
@@ -564,11 +572,14 @@ fn main() {
         || device_class != (a.device.is_some() && a.class.is_some() && a.node.is_none())
         || (!device_add && a.address.is_some())
         || (!device_add && !device_class && a.class.is_some())
+        || device_endpoints != (a.device.is_some() && a.endpoints.is_some() && a.node.is_none())
+        || (!device_endpoints && a.endpoints.is_some())
     {
         usage();
     }
     if !device_add
         && !device_class
+        && !device_endpoints
         && !pool_device
         && (cmd == "out"
             || cmd == "in"
@@ -1448,6 +1459,58 @@ where
                     if matches!(
                         e.code,
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "device endpoints" => {
+            let (Some(device), Some(given)) = (a.device, a.endpoints.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let mut endpoints = Vec::new();
+            if given != "none" {
+                for e in given.split(',').filter(|e| !e.is_empty()) {
+                    let Some((network, address)) = e.split_once('=') else {
+                        eprintln!("hyperstorctl: --endpoints: {e:?} isn't NET=ADDR");
+                        return Ok(Next::Exit(2));
+                    };
+                    endpoints.push(pb::Endpoint {
+                        network: network.to_string(),
+                        address: address.to_string(),
+                        ..Default::default()
+                    });
+                }
+            }
+            let n = endpoints.len();
+            let r = client
+                .set_endpoints(pb::SetEndpointsRequest {
+                    device,
+                    endpoints,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "device {device}: {n} endpoint(s) (map epoch {}); its node listens on them once restarted with --endpoint",
+                        r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound
+                            | connectrpc::ErrorCode::InvalidArgument
+                            | connectrpc::ErrorCode::PermissionDenied
                     ) =>
                 {
                     eprintln!(

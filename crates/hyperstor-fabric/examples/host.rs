@@ -6,7 +6,7 @@
 //! `cargo run --release -p hyperstor-fabric --example host`
 
 use glidex_topology::Host;
-use hyperstor_fabric::endpoints::rank;
+use hyperstor_fabric::endpoints::{Device, propose, rank};
 use hyperstor_fabric::model::{NetMatch, Network, NetworkKind, Role, Transport};
 use std::collections::BTreeMap;
 
@@ -85,6 +85,31 @@ fn main() {
                 e.closeness,
                 if e.bound { "  bound" } else { "" }
             );
+        }
+    }
+    // What the installer would propose (D214), at port 9100, for a
+    // device on each NVMe drive.
+    let devices: Vec<Device> = host
+        .pci
+        .iter()
+        .filter(|f| f.class_id.trim_start_matches("0x").starts_with("0108"))
+        .enumerate()
+        .map(|(i, f)| Device {
+            id: i as u32,
+            pci: Some(f.address.clone()),
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], 9100)),
+        })
+        .collect();
+    let proposed = propose(&host, &devices, &networks, 2);
+    for d in &devices {
+        println!("Proposed for NVMe {}:", d.pci.as_deref().unwrap_or("?"));
+        for (n, a) in proposed.get(&d.id).into_iter().flatten() {
+            let port = host
+                .ports
+                .iter()
+                .find(|p| p.addresses.iter().any(|x| x.addr == a.ip()))
+                .map_or("?", |p| p.name.as_str());
+            println!("  {n:<28} {a} ({port})");
         }
     }
 }

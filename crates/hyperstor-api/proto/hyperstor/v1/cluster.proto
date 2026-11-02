@@ -54,6 +54,12 @@ service ClusterService {
   // Pools limited to classes move PGs as it changes. Write.
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
+  // Sets a device's endpoints (26-networks.md §29.5, D214), replacing
+  // them; none: its address alone. Each is on a data network of the map.
+  // The installer sets its node's on every run. A node's own certificate
+  // may set only its own devices'; admin and mgmt any device's.
+  rpc SetEndpoints(SetEndpointsRequest) returns (SetEndpointsResponse);
+
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
   // (D164) or failure domain, and PGs move to match, or its name; or
   // doubles its PG count, splitting its PGs in place, a few at a time,
@@ -254,6 +260,8 @@ message GetStatusResponse {
   string map_address = 7 [json_name = "map_address"];
   // The fullness thresholds devices are held to (04-decisions.md D27, D182).
   FullRatios full_ratios = 8 [json_name = "full_ratios"];
+  // The cluster's networks (26-networks.md §29.3).
+  repeated Network networks = 9;
 }
 
 // Percentages of a device's data area, to a tenth of a percent: past
@@ -306,6 +314,8 @@ message Device {
   // "nearfull", "backfillfull" or "full"; empty before a report reaches
   // the leader.
   string fullness = 11;
+  // Its endpoints on other networks (D207).
+  repeated Endpoint endpoints = 12;
 }
 
 message Pool {
@@ -575,6 +585,33 @@ message SetDeviceClassRequest {
   uint32 device = 1;
   // The class to keep; absent: follow the device's kind again.
   optional string class = 2;
+}
+
+// Where a device's reactor also listens, on a network (D207).
+message Endpoint {
+  string network = 1;
+  // IP:PORT.
+  string address = 2;
+}
+
+// A network of the cluster (26-networks.md §29.3, D206).
+message Network {
+  string name = 1;
+  // "control", "data" or "both".
+  string kind = 2;
+  bool trusted = 3;
+  // How a port is recognised as on it: "subnet IP/LEN" or "ib PREFIX".
+  string matches = 4;
+}
+
+message SetEndpointsRequest {
+  uint32 device = 1;
+  repeated Endpoint endpoints = 2;
+}
+
+message SetEndpointsResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
 }
 
 message SetDeviceClassResponse {

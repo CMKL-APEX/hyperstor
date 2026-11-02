@@ -102,3 +102,112 @@ pub fn rank(
     }
     out
 }
+
+/// A PCI address (`0000:0c:00.0`).
+fn is_pci_address(s: &str) -> bool {
+    let b = s.as_bytes();
+    let hex = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_hexdigit);
+    b.len() == 12
+        && hex(0..4)
+        && b[4] == b':'
+        && hex(5..7)
+        && b[7] == b':'
+        && hex(8..10)
+        && b[10] == b'.'
+        && b[11].is_ascii_digit()
+}
+
+/// The block device (major, minor) `path` is, or the file system it is on
+/// lives on.
+pub fn block_of_path(path: &std::path::Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let m = std::fs::metadata(path).ok()?;
+    let dev = if m.file_type().is_block_device() {
+        m.rdev()
+    } else {
+        m.dev()
+    };
+    // Linux's dev_t: 12 bits of major at 8, the rest at 32; minor around it.
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    Some((major as u32, minor as u32))
+}
+
+/// The PCI function behind block device `major:minor` under `sys`: the
+/// last PCI address in its sysfs path; for a virtual one (md, dm), that
+/// of its first member (`slaves/`), followed down.
+pub fn pci_of_block(sys: &std::path::Path, major: u32, minor: u32) -> Option<String> {
+    let mut dir = std::fs::canonicalize(sys.join(format!("dev/block/{major}:{minor}"))).ok()?;
+    for _ in 0..8 {
+        let found = dir
+            .components()
+            .rev()
+            .filter_map(|c| c.as_os_str().to_str())
+            .find(|c| is_pci_address(c))
+            .map(str::to_string);
+        if found.is_some() {
+            return found;
+        }
+        let first = std::fs::read_dir(dir.join("slaves"))
+            .ok()?
+            .flatten()
+            .map(|e| e.file_name())
+            .min()?;
+        dir = std::fs::canonicalize(sys.join("class/block").join(first)).ok()?;
+    }
+    None
+}
+
+/// A device for [`propose`]: its id, the PCI function it is on (if known)
+/// and the address its reactor already listens on.
+pub struct Device {
+    pub id: u32,
+    pub pci: Option<String>,
+    pub addr: std::net::SocketAddr,
+}
+
+/// Endpoints the installer proposes (D214): for each device, its nearest
+/// `per_network` up ports on each data network ([`rank`], every port that
+/// isn't a bond's member taken as storage's), at the device's own port
+/// number, leaving out its own address. A bond's members share its
+/// address, so the bond counts once.
+pub fn propose(
+    host: &Host,
+    devices: &[Device],
+    networks: &[Network],
+    per_network: usize,
+) -> BTreeMap<u32, Vec<(String, std::net::SocketAddr)>> {
+    let roles: BTreeMap<String, Role> = host
+        .ports
+        .iter()
+        .map(|p| (p.name.clone(), Role::Storage))
+        .collect();
+    let mut out = BTreeMap::new();
+    for d in devices {
+        let mut eps: Vec<(String, std::net::SocketAddr)> = Vec::new();
+        for net in networks.iter().filter(|n| n.kind.carries_data()) {
+            let mut taken = 0;
+            for e in rank(
+                host,
+                d.pci.as_deref().unwrap_or(""),
+                std::slice::from_ref(net),
+                &roles,
+                usize::MAX,
+            ) {
+                let a = std::net::SocketAddr::new(e.addr, d.addr.port());
+                if taken == per_network
+                    || e.addr == d.addr.ip()
+                    || eps.iter().any(|(n, x)| *n == net.name && *x == a)
+                {
+                    continue;
+                }
+                eps.push((net.name.clone(), a));
+                taken += 1;
+            }
+        }
+        if !eps.is_empty() {
+            out.insert(d.id, eps);
+        }
+    }
+    out
+}
