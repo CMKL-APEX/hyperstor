@@ -37,7 +37,10 @@ fn status_and_tables() {
     );
     let t = c.ctl(&["status"]).ok();
     assert!(
-        t.has("health  ok") && t.has("nodes   3 up of 3; devices 3 in of 3"),
+        t.has("health  ok")
+            && t.has("nodes   3 up of 3; devices 3 in of 3")
+            && t.has(" raw (")
+            && !t.has("not reported"),
         "{}",
         t.out
     );

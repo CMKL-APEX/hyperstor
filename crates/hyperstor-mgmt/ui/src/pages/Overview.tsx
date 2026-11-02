@@ -86,6 +86,12 @@ export default function Overview() {
   const m = rates.data;
   const used = m && m.data ? m.used / m.data : 0;
   const devices = s?.nodes.flatMap((n) => n.devices) ?? [];
+  // Raw space of the devices in, from their reports to the leader (D156);
+  // none on another member.
+  const reported = devices.filter((d) => d.upIn && d.totalBytes != null && d.freeBytes != null);
+  const raw = reported.length
+    ? reported.reduce((a, d) => ({ total: a.total + d.totalBytes!, free: a.free + d.freeBytes! }), { total: 0n, free: 0n })
+    : undefined;
   const pgs = s?.pools.reduce(
     (a, p) => ({
       clean: a.clean + (p.pgs?.clean ?? 0),
@@ -163,6 +169,10 @@ export default function Overview() {
             tone={used >= 0.95 ? "error" : used >= 0.85 ? "warn" : undefined}
           />
           <Tile value={m ? `${m.up} of ${m.all}` : "–"} label="nodes with metrics" />
+        </div>
+        <div className="mt-4 max-w-md">
+          <div className="text-xs text-slate-500 mb-1">raw space of the devices in, before copies</div>
+          <Space total={raw?.total} free={raw?.free} testId="cluster-space" />
         </div>
         {used >= 0.85 && (
           <p className="mt-3 text-sm text-amber-700">
