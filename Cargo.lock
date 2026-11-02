@@ -1711,6 +1711,7 @@ version = "0.1.0"
 dependencies = [
  "glidex-topology",
  "rand 0.9.5",
+ "tempfile",
 ]
 
 [[package]]
@@ -1841,6 +1842,13 @@ dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hyperstor-smart"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

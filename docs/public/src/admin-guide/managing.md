@@ -183,6 +183,7 @@ health  warn
   warn  1 node(s) down: 2
   warn  pool vol: 64 PG(s) degraded
 nodes   2 up of 3; devices 3 in of 3
+space   171.6G free of 189.0G raw (9% used)
 POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INACTIVE
 1    vol          replicated    3   2    64  4096K      0       64         0        0
 ```
@@ -411,6 +412,41 @@ each phase. A mismatch or an error exits with status 1. It is a quick
 end-to-end check; for measurements use
 [`hyperstor-bench`](benchmarking.md).
 
+## Load and drives
+
+```sh
+hyperstorctl pg-grid --pool 1 --heat read   # a digit per PG: reads per second
+hyperstorctl pg-grid --pool 1 --heat write --pg 7   # and that PG's busiest volumes
+hyperstorctl top-volumes                    # volumes sending most requests now
+hyperstorctl perf                           # each device's last minute
+hyperstorctl perf --device 1002             # its drive and 5-s windows
+hyperstorctl advise                         # what stands out, and what to do
+```
+
+Every 5 s each storage device tells the map service's leader what its
+PGs served as primary, with the volumes that sent most of it, how long
+the device itself took for reads and commits, and, every 30 s, what its
+drive says of itself: temperature, PCIe link, NUMA node and, for NVMe
+drives, the SMART health log (wear, spare, media errors, time
+throttled). The leader keeps 15 minutes in memory, so these commands
+ask it (from another member they fail with `not_leader`); longer history
+is in [Prometheus and Grafana](#prometheus-and-grafana).
+
+The web UI shows the same: the PG grid's **Reads** and **Writes** views
+on the Pools page, a sortable matrix of every device and a panel per
+device on the Nodes page (charts, a heatmap of service time, and I/Os in
+flight against p99, where a drive's knee shows), the busiest volumes
+with a **Move to pool** action on the Volumes page, and the **Advisor**
+page. The Advisor's findings say what was seen, from which numbers, and
+what to do, with the command; it changes nothing itself. Its rules are
+in the [design](https://github.com/CMKL-APEX/hyperstor/blob/main/spec/27-performance.md).
+
+`hyperstord` runs unprivileged, so the SMART log, which the kernel lets
+only `CAP_SYS_ADMIN` read, comes from
+[`hyperstor-smart`](../reference/hyperstor-smart.md), a root helper the
+installer sets up on storage hosts. File-backed devices have no drive to
+read; they report their service time only.
+
 ## Metrics
 
 Each storage node started with `--admin ADDR` (the installer uses
@@ -436,7 +472,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_write_errors_total` | Client writes answered with an error |
 | `hyperstor_reactor_stalls_total` | Times a device's reactor was held 100 ms or more (each is logged with its length, and a slow commit with what it committed). Pings wait meanwhile, so stalls near the peer timeout (300 ms) can get a node reported silent |
 | `hyperstor_read_timeouts_total` | Reads that waited for their device past the read timeout (2 s, `hyperstord --read-timeout-ms`), by `kind`: `abandoned`, and `from_member` for those another copy answered. Three in a row fail the device |
-| `hyperstor_scrub_objects_total{kind}` | Scrub on the PGs a device leads: objects `compared`, those whose copies differed (`inconsistent`), then `repaired` or `unresolved` (no majority: look at the log). `damaged`: objects of this device whose deep scrub found a bad checksum. `peering`: objects a new primary pushed before it served (see [Failures and recovery](failures.md#scrub)) |
+| `hyperstor_scrub_objects_total{kind}` | Scrub on the PGs a device leads: objects `compared`, those whose copies differed (`inconsistent`), then `repaired` or `unresolved` (no majority: look at the log). `damaged`: objects of this device whose deep scrub found a bad checksum. `holes`: objects whose copies held zeros where another copy had holes; `holes_repaired`: those replaced with `--hole-repair`. `peering`: objects a new primary pushed before it served (see [Failures and recovery](failures.md#scrub)) |
 | `hyperstor_device_objects` | Objects on the device |
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |
 | `hyperstor_log_used_bytes`, `hyperstor_log_bytes` | Log in use since the last checkpoint, and its size |

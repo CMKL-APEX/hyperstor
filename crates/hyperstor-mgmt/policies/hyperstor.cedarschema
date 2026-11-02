@@ -23,6 +23,18 @@ namespace Hyperstor {
   action "ClusterService.GetPgGrid" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.GetPgHeat" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListDevicePerf" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListTopVolumes" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ListFindings" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.ListVolumes" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -57,6 +69,9 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetDeviceClass" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.SetEndpoints" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "NodeService.DrainNode" in [Action::"operate"] appliesTo {

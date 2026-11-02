@@ -13,6 +13,8 @@
 //! receiver before it touches the data.
 
 use hyperstor_codec::{Dec, DecodeError, Enc, crc32c};
+
+pub mod perf;
 use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
@@ -349,6 +351,16 @@ pub enum Msg {
     },
     /// The digests, in the payload ([`encode_digests`]).
     DigestsOk,
+    /// Primary to a member, for scrub: list which blocks you hold of each
+    /// object of the PG (D223). Copies whose digests agree hold the same
+    /// data; they may still differ in blocks of zeros one holds and
+    /// another has as holes, which reads through to a volume's older
+    /// versions and its parent (issue #158).
+    Holds {
+        to: Target,
+    },
+    /// The blocks held, in the payload ([`encode_holds`]).
+    HoldsOk,
     /// Primary to map service: `device` now has every object of the PG and
     /// may join its acting set.
     BackfillDone {
@@ -451,6 +463,11 @@ pub enum Msg {
         device: u32,
         full: bool,
         pgs: Vec<(u32, u32, u64)>,
+    },
+    /// Storage device to map service: its load and its drive's state
+    /// every 5 s (27-performance.md §30, D218). Answered `Noted`.
+    PerfReport {
+        report: perf::PerfReport,
     },
     /// Answer to `PgUsage`: how many PGs the map service now holds from
     /// `device`. Another number than the sender's asks for a full report.
@@ -732,6 +749,9 @@ mod kind {
     pub const PG_SPLIT: u16 = 77;
     pub const CACHE_RELEASE: u16 = 78;
     pub const READ_COPY: u16 = 79;
+    pub const PERF_REPORT: u16 = 80;
+    pub const HOLDS: u16 = 81;
+    pub const HOLDS_OK: u16 = 82;
     pub const ERROR: u16 = 99;
 }
 
@@ -740,6 +760,7 @@ impl Msg {
     pub fn target(&self) -> Option<&Target> {
         match self {
             Msg::Digests { to, .. }
+            | Msg::Holds { to }
             | Msg::DropVersions { to, .. }
             | Msg::Exec { to, .. }
             | Msg::Fetch { to, .. }
@@ -819,12 +840,15 @@ impl Msg {
             Msg::PgSplit { .. } => PG_SPLIT,
             Msg::CacheRelease { .. } => CACHE_RELEASE,
             Msg::ReadCopy { .. } => READ_COPY,
+            Msg::Holds { .. } => HOLDS,
+            Msg::HoldsOk => HOLDS_OK,
             Msg::LeaderState => LEADER_STATE,
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
+            Msg::PerfReport { .. } => PERF_REPORT,
             Msg::PgUsageOk { .. } => PG_USAGE_OK,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
@@ -861,6 +885,7 @@ impl Msg {
                 | Msg::ReplOk { .. }
                 | Msg::PushOk
                 | Msg::DigestsOk
+                | Msg::HoldsOk
                 | Msg::HeartbeatOk { .. }
                 | Msg::FenceOk
                 | Msg::MapPushOk
@@ -907,7 +932,7 @@ impl Msg {
             } => {
                 e.u16(*version).u64(*node).u64(*map_epoch);
             }
-            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::ExecOk => {}
+            Msg::Ping | Msg::Pong | Msg::PushOk | Msg::DigestsOk | Msg::HoldsOk | Msg::ExecOk => {}
             Msg::Exec { to, key } | Msg::PushObject { to, key } | Msg::PushKv { to, key } => {
                 to.enc(e);
                 key.enc(e);
@@ -940,6 +965,7 @@ impl Msg {
                 to.enc(e);
                 e.u8(u8::from(*deep));
             }
+            Msg::Holds { to } => to.enc(e),
             Msg::Heartbeat { node } => {
                 e.u32(*node);
             }
@@ -1145,6 +1171,7 @@ impl Msg {
             Msg::PgUsageOk { known } => {
                 e.u32(*known);
             }
+            Msg::PerfReport { report } => report.encode(e),
             Msg::LeaderState => {}
             Msg::LeaderStateOk {
                 heard,
@@ -1358,6 +1385,10 @@ impl Msg {
                 deep: d.u8()? != 0,
             },
             DIGESTS_OK => Msg::DigestsOk,
+            HOLDS => Msg::Holds {
+                to: Target::dec(&mut d)?,
+            },
+            HOLDS_OK => Msg::HoldsOk,
             HEARTBEAT => Msg::Heartbeat { node: d.u32()? },
             HEARTBEAT_OK => Msg::HeartbeatOk {
                 map_epoch: d.u64()?,
@@ -1478,6 +1509,9 @@ impl Msg {
                 pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
             },
             PG_USAGE_OK => Msg::PgUsageOk { known: d.u32()? },
+            PERF_REPORT => Msg::PerfReport {
+                report: perf::PerfReport::decode(&mut d)?,
+            },
             LEADER_STATE => Msg::LeaderState,
             LEADER_STATE_OK => Msg::LeaderStateOk {
                 heard: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
@@ -1631,6 +1665,39 @@ pub fn encode_digests(entries: &[(WireKey, u64)]) -> Vec<u8> {
 pub fn decode_digests(payload: &[u8]) -> Result<Vec<(WireKey, u64)>, DecodeError> {
     let mut d = Dec::new(payload);
     let v = d.seq(1 + 4 + 8 + 8, |d| Ok((WireKey::dec(d)?, d.u64()?)))?;
+    d.finish()?;
+    Ok(v)
+}
+
+/// What a copy holds of one object ([`Msg::HoldsOk`]): a digest of which
+/// blocks it holds, and how many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldBlocks {
+    pub digest: u64,
+    pub blocks: u64,
+}
+
+/// The payload of [`Msg::HoldsOk`]: each object's key and what it holds.
+pub fn encode_holds(entries: &[(WireKey, HeldBlocks)]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.seq(entries, |e, (k, h)| {
+        k.enc(e);
+        e.u64(h.digest).u64(h.blocks);
+    });
+    e.into_vec()
+}
+
+pub fn decode_holds(payload: &[u8]) -> Result<Vec<(WireKey, HeldBlocks)>, DecodeError> {
+    let mut d = Dec::new(payload);
+    let v = d.seq(1 + 4 + 8 + 16, |d| {
+        Ok((
+            WireKey::dec(d)?,
+            HeldBlocks {
+                digest: d.u64()?,
+                blocks: d.u64()?,
+            },
+        ))
+    })?;
     d.finish()?;
     Ok(v)
 }
@@ -1853,6 +1920,14 @@ pub struct WireObject {
     pub data: Vec<u8>,
     pub attrs: Vec<(Vec<u8>, Vec<u8>)>,
     pub kv: Vec<(Vec<u8>, Vec<u8>)>,
+    /// For an object with holes, the blocks it holds, as (first block,
+    /// count) in order; `data` is theirs alone, back to back. None: `data`
+    /// is every block from the start. A hole isn't zeros: a volume's
+    /// version reads its older versions and its parent's through it
+    /// (08-engine.md §7.2, issue #158). Encoded last and only when
+    /// present, so an object without holes is what older nodes decode,
+    /// and they refuse one with holes rather than fill them.
+    pub runs: Option<Vec<(u64, u64)>>,
 }
 
 pub fn encode_object(o: &WireObject) -> Vec<u8> {
@@ -1863,6 +1938,11 @@ pub fn encode_object(o: &WireObject) -> Vec<u8> {
     e.bytes(&o.data);
     enc_pairs(&mut e, &o.attrs);
     enc_pairs(&mut e, &o.kv);
+    if let Some(runs) = &o.runs {
+        e.seq(runs, |e, (lb, n)| {
+            e.u64(*lb).u64(*n);
+        });
+    }
     e.into_vec()
 }
 
@@ -1878,11 +1958,27 @@ pub fn decode_object(b: &[u8]) -> Result<WireObject, DecodeError> {
             value: 0,
         });
     }
+    let attrs = dec_pairs(&mut d)?;
+    let kv = dec_pairs(&mut d)?;
+    let runs = if d.remaining() > 0 {
+        let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+        let held: u64 = runs.iter().map(|(_, n)| *n).sum();
+        if held.checked_mul(4096) != Some(data.len() as u64) {
+            return Err(DecodeError::Invalid {
+                field: "object runs",
+                value: held,
+            });
+        }
+        Some(runs)
+    } else {
+        None
+    };
     let o = WireObject {
         size,
         data,
-        attrs: dec_pairs(&mut d)?,
-        kv: dec_pairs(&mut d)?,
+        attrs,
+        kv,
+        runs,
     };
     d.finish()?;
     Ok(o)
@@ -2040,6 +2136,8 @@ mod tests {
             },
             Msg::Digests { to, deep: true },
             Msg::DigestsOk,
+            Msg::Holds { to },
+            Msg::HoldsOk,
             Msg::Heartbeat { node: 3 },
             Msg::HeartbeatOk {
                 map_epoch: 4,
@@ -2169,6 +2267,47 @@ mod tests {
                 pgs: vec![(1, 2, 4096), (1, 3, 0)],
             },
             Msg::PgUsageOk { known: 2 },
+            Msg::PerfReport {
+                report: perf::PerfReport {
+                    device: 1001,
+                    window_ms: 5000,
+                    pgs: vec![perf::PgHeat {
+                        pool: 1,
+                        pg: 7,
+                        reads: 40,
+                        writes: 9,
+                        read_bytes: 40 << 12,
+                        write_bytes: 9 << 12,
+                        top: vec![(1 << 100, 0, 30, 30 << 12), (5, 2, 19, 19 << 12)],
+                    }],
+                    service: vec![perf::Service {
+                        op: perf::Service::COMMIT,
+                        count: 3,
+                        bytes: 1 << 20,
+                        buckets: [0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        max_us: 120,
+                    }],
+                    inflight_max: 17,
+                    drive: Some(perf::Drive {
+                        model: "M".into(),
+                        firmware: "F".into(),
+                        temperature_mc: Some(41850),
+                        link: Some((4, 4, 80, 80)),
+                        numa: (1, 0),
+                        write_cache: true,
+                        smart: Some(perf::Smart {
+                            temperature_k: 315,
+                            percentage_used: 3,
+                            throttle_seconds: [12, 0],
+                            ..Default::default()
+                        }),
+                        smart_note: String::new(),
+                    }),
+                },
+            },
+            Msg::PerfReport {
+                report: perf::PerfReport::default(),
+            },
             Msg::LeaderState,
             Msg::LeaderStateOk {
                 heard: vec![(0, 40), (1, 1200)],
@@ -2366,9 +2505,35 @@ mod tests {
             data: vec![3; 8192],
             attrs: vec![(b"v".to_vec(), b"1".to_vec())],
             kv: vec![(b"x".to_vec(), b"y".to_vec())],
+            runs: None,
         };
         let mut enc = encode_object(&o);
         assert_eq!(decode_object(&enc).unwrap(), o);
+        // With holes: the blocks held, and their data alone.
+        let sparse = WireObject {
+            size: 5 * 4096,
+            data: vec![4; 2 * 4096],
+            runs: Some(vec![(1, 1), (4, 1)]),
+            ..o.clone()
+        };
+        assert_eq!(decode_object(&encode_object(&sparse)).unwrap(), sparse);
+        let short = WireObject {
+            runs: Some(vec![(1, 3)]),
+            ..sparse.clone()
+        };
+        assert!(decode_object(&encode_object(&short)).is_err());
+        let holds = vec![(
+            WireKey {
+                ns: 1,
+                name: b"c".to_vec(),
+                version: 2,
+            },
+            HeldBlocks {
+                digest: 9,
+                blocks: 3,
+            },
+        )];
+        assert_eq!(decode_holds(&encode_holds(&holds)).unwrap(), holds);
         // A flipped data byte is refused.
         let at = enc.len() - 40;
         enc[at] ^= 1;

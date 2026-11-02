@@ -5,6 +5,8 @@ import { useRef } from "react";
 import { cluster, metrics, type NodeMetrics } from "../api";
 import { Health } from "../gen/hyperstor/v1/cluster_pb";
 import { PgGrid } from "../PgGrid";
+import { Link } from "react-router-dom";
+import { Findings, Sparkline, fmtRate, fmtUs, recent, useDevicePerf } from "../perf";
 import { Card, ErrorText, Pill, Space, fmtBytes, usePoll } from "../ui";
 
 export const healthTone = (h: Health) =>
@@ -86,6 +88,12 @@ export default function Overview() {
   const m = rates.data;
   const used = m && m.data ? m.used / m.data : 0;
   const devices = s?.nodes.flatMap((n) => n.devices) ?? [];
+  // Raw space of the devices in, from their reports to the leader (D156);
+  // none on another member.
+  const reported = devices.filter((d) => d.upIn && d.totalBytes != null && d.freeBytes != null);
+  const raw = reported.length
+    ? reported.reduce((a, d) => ({ total: a.total + d.totalBytes!, free: a.free + d.freeBytes! }), { total: 0n, free: 0n })
+    : undefined;
   const pgs = s?.pools.reduce(
     (a, p) => ({
       clean: a.clean + (p.pgs?.clean ?? 0),
@@ -148,6 +156,7 @@ export default function Overview() {
           ))}
         </div>
       </Card>
+      <LoadCard />
       <Card title="I/O and space">
         <ErrorText error={rates.error} />
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -164,6 +173,10 @@ export default function Overview() {
           />
           <Tile value={m ? `${m.up} of ${m.all}` : "–"} label="nodes with metrics" />
         </div>
+        <div className="mt-4 max-w-md">
+          <div className="text-xs text-slate-500 mb-1">raw space of the devices in, before copies</div>
+          <Space total={raw?.total} free={raw?.free} testId="cluster-space" />
+        </div>
         {used >= 0.85 && (
           <p className="mt-3 text-sm text-amber-700">
             Devices are {(100 * used).toFixed(0)} % used; writes will fail when they fill.
@@ -171,5 +184,39 @@ export default function Overview() {
         )}
       </Card>
     </>
+  );
+}
+
+/** The last 15 minutes of the whole cluster's requests from the leader's
+ * reports (D218), and the Advisor's top findings. */
+function LoadCard() {
+  const { data, error } = useDevicePerf();
+  // Each device's windows, summed by 5-s step.
+  const steps = new Map<number, number>();
+  for (const d of data ?? []) {
+    for (const x of d.samples) {
+      const t = Math.round(Number(x.unixMs) / 5000);
+      steps.set(t, (steps.get(t) ?? 0) + x.readOps + x.writeOps);
+    }
+  }
+  const series = [...steps.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  const now = (data ?? []).map((d) => recent(d));
+  const ops = now.reduce((a, r) => a + r.ops, 0);
+  const worst = Math.max(0, ...now.map((r) => Math.max(r.readP99, r.commitP99)));
+  return (
+    <Card title="Load" actions={<Link to="/advisor" className="text-sm text-sky-700 dark:text-sky-300 hover:underline">Advisor</Link>}>
+      <ErrorText error={error} />
+      <div className="flex flex-wrap items-center gap-6" data-testid="load">
+        <Tile value={data ? fmtRate(ops) : "–"} label="requests / s, last minute" />
+        <Tile value={data ? fmtUs(worst) : "–"} label="slowest device p99" />
+        <div>
+          <Sparkline values={series} width={240} height={40} label="requests per second, 15 minutes" />
+          <div className="text-xs text-slate-500">requests / s, 15 minutes</div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <Findings limit={3} compact />
+      </div>
+    </Card>
   );
 }

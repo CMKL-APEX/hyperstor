@@ -25,7 +25,9 @@
 #![allow(clippy::result_large_err)]
 
 pub mod diag;
+pub mod drive;
 pub mod faults;
+pub mod heat;
 pub mod metrics;
 mod shard_cell;
 
@@ -41,10 +43,10 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, DAMAGED, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW, Looked, Msg,
-    Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp, block_crcs,
-    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
-    encode_object, encode_ops, verify_crcs,
+    Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
+    Looked, Msg, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp,
+    block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
+    encode_frame, encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
@@ -182,6 +184,10 @@ pub struct NodeConfig {
     /// Test hook: answer `Digests` as a node from before digests does
     /// ("unsupported request"), as in a rolling upgrade.
     pub no_digests: bool,
+    /// Scrub repairs copies that hold blocks of zeros where another copy
+    /// has holes, from the copy with the holes (D223). Off, it only
+    /// reports them: the dry run.
+    pub hole_repair: bool,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -269,6 +275,9 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
+
+/// How often a device reports its load to the leader (D218).
+const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -370,6 +379,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
+        let hole_repair = cfg.hole_repair;
         let push_part_bytes = match cfg.push_part_bytes {
             0 => PUSH_PART_BYTES,
             n => n,
@@ -400,6 +410,17 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     hyperstor_reactor::set_spin(spin);
                     let may_format = sh.device.formats_itself();
                     let kind = sh.device.kind();
+                    // A block device's drive is read for the leader (D220).
+                    let drive_path = match &sh.device {
+                        DeviceSpec::File { path, .. }
+                            if std::fs::metadata(path).is_ok_and(|m| {
+                                std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type())
+                            }) =>
+                        {
+                            Some(path.clone())
+                        }
+                        _ => None,
+                    };
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -417,6 +438,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
+                        st.hole_repair.set(hole_repair);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.commit_delays.borrow_mut() = commit_delays;
@@ -477,6 +499,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             .and_then(|v| v.parse().ok())
                             .map_or(Duration::from_secs(30), Duration::from_millis);
                         spawn(st.clone().usage(every));
+                        // Every 5 s (HS_PERF_MS for tests).
+                        *st.drive.borrow_mut() =
+                            Some(drive::watch(sh.device_id, drive_path, cpu));
+                        let every = std::env::var("HS_PERF_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .map_or(PERF_EVERY, Duration::from_millis);
+                        spawn(st.clone().perf(every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -578,6 +608,8 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
+    /// `NodeConfig::hole_repair`.
+    hole_repair: Cell<bool>,
     /// `NodeConfig::push_part_bytes`, resolved.
     push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
@@ -620,6 +652,10 @@ struct ShardState {
     cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
+    /// This window's load, for the leader (`perf`, D218).
+    heat: heat::Heat,
+    /// The drive's latest reading (`drive::watch`), if it has one.
+    drive: RefCell<Option<Arc<std::sync::Mutex<Option<hyperstor_proto::perf::Drive>>>>>,
 }
 
 /// Coarse deadlines for the I/O path: one ticker per reactor wakes them
@@ -1078,6 +1114,7 @@ impl ShardState {
             splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
+            hole_repair: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
@@ -1094,6 +1131,8 @@ impl ShardState {
             blocked,
             cache_gens: RefCell::new(HashMap::new()),
             metrics,
+            heat: heat::Heat::default(),
+            drive: RefCell::new(None),
         }))
     }
 
@@ -1195,6 +1234,7 @@ impl ShardState {
         if writes.is_empty() {
             return Ok(());
         }
+        let commit_bytes: u64 = writes.iter().map(|(_, b)| b.len() as u64).sum();
         let delay = self
             .commit_delays
             .borrow()
@@ -1218,7 +1258,15 @@ impl ShardState {
             }
         };
         let limit = self.io_timeout.get();
-        match hyperstor_reactor::time::timeout(limit, io).await {
+        self.heat.begin();
+        let began = std::time::Instant::now();
+        let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::COMMIT,
+            began.elapsed(),
+            commit_bytes,
+        );
+        match r {
             Ok(r) => r,
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -1787,6 +1835,13 @@ impl ShardState {
                 Msg::Write { to, key, off, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.writes, 1);
                     metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
+                    self.heat.request(
+                        to.pool,
+                        to.pg,
+                        heat::volume_of(&key.name),
+                        true,
+                        payload.len() as u64,
+                    );
                     self.write(h.req, instance, to, key, off, crcs, payload, tx.clone())
                         .await;
                 }
@@ -1864,9 +1919,11 @@ impl ShardState {
                 // its request id.
                 Msg::Read { to, key, off, len } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read(to, key, off, len).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -1911,9 +1968,11 @@ impl ShardState {
                     len,
                 } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read_at(to, key, layers, off, len, true).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -2050,6 +2109,13 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.digests(to, deep).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
+                }
+                Msg::Holds { to } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.holds(to).await;
                         let _ = tx.send(encode_frame(req, &m, &p));
                     });
                 }
@@ -3518,11 +3584,24 @@ impl ShardState {
     /// member between two lists serves no one the half-copied object.
     fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
         let mut first = vec![Op::Delete];
-        if !obj.data.is_empty() {
-            first.push(Op::Write {
+        match obj.runs {
+            // Each run where it was: the holes stay holes (issue #158).
+            Some(runs) => {
+                let mut at = 0;
+                for (lb, n) in runs {
+                    let len = n as usize * 4096;
+                    first.push(Op::Write {
+                        off: lb * 4096,
+                        data: obj.data[at..at + len].to_vec(),
+                    });
+                    at += len;
+                }
+            }
+            None if !obj.data.is_empty() => first.push(Op::Write {
                 off: 0,
                 data: obj.data,
-            });
+            }),
+            None => {}
         }
         first.push(Op::Truncate(obj.size));
         first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
@@ -3600,6 +3679,41 @@ impl ShardState {
             .map(|(k, d)| (wire_key(&k), d))
             .collect();
         (Msg::DigestsOk, encode_digests(&entries))
+    }
+
+    /// Which blocks this node holds of each object of a PG (D223), once
+    /// every commit queued so far is done, as [`Self::digests`].
+    async fn holds(&self, to: Target) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
+            return (m, Vec::new());
+        }
+        self.drained().await;
+        let entries: Vec<_> = self
+            .local_holds(to.pool, to.pg)
+            .await
+            .into_iter()
+            .map(|(k, h)| (wire_key(&k), h))
+            .collect();
+        (Msg::HoldsOk, encode_holds(&entries))
+    }
+
+    /// [`Self::holds`] of this device, from the index, in batches of
+    /// [`DIGEST_BATCH`] objects with a yield between.
+    async fn local_holds(&self, pool: u32, pg: u32) -> Vec<(ObjKey, HeldBlocks)> {
+        let keys = self.shard.get().await.list_pg(pool, pg);
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in keys.chunks(DIGEST_BATCH) {
+            {
+                let sh = self.shard.get().await;
+                for k in batch {
+                    if let Some((digest, blocks)) = sh.held(k) {
+                        out.push((k.clone(), HeldBlocks { digest, blocks }));
+                    }
+                }
+            }
+            hyperstor_reactor::yield_now().await;
+        }
+        out
     }
 
     /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
@@ -4073,6 +4187,49 @@ impl ShardState {
         }
     }
 
+    /// Reports this device's load, and its drive when there is a new
+    /// reading, to the map service every `every` (D218): best effort, a
+    /// lost report is a lost window.
+    async fn perf(self: Rc<Self>, every: Duration) {
+        let mut last = std::time::Instant::now();
+        let mut sent_drive: Option<hyperstor_proto::perf::Drive> = None;
+        let mut since_drive = u32::MAX;
+        loop {
+            sleep(every).await;
+            let (pgs, service, inflight_max) = self.heat.take();
+            let window_ms = last.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            last = std::time::Instant::now();
+            if self.cut_off() {
+                continue;
+            }
+            // The drive when it changed, and at least every 30 s, so a new
+            // leader has it soon.
+            let now = self
+                .drive
+                .borrow()
+                .as_ref()
+                .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
+            since_drive = since_drive.saturating_add(window_ms);
+            let drive = match now {
+                Some(d) if sent_drive.as_ref() != Some(&d) || since_drive >= 30_000 => {
+                    since_drive = 0;
+                    sent_drive = Some(d.clone());
+                    Some(d)
+                }
+                _ => None,
+            };
+            let report = hyperstor_proto::perf::PerfReport {
+                device: self.me,
+                window_ms,
+                pgs,
+                service,
+                inflight_max,
+                drive,
+            };
+            let _ = self.client.call_meta(&Msg::PerfReport { report }).await;
+        }
+    }
+
     /// The bytes this device's copy of a PG holds, summed a slice of the
     /// index at a time so that I/O waits behind none of it for long.
     async fn pg_bytes(&self, pool: u32, pg: u32) -> u64 {
@@ -4448,10 +4605,7 @@ impl ShardState {
         let limit = self.push_part_bytes.get();
         let sh = self.shard.borrow();
         let st = sh.stat(key)?;
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
+        let (data, runs) = held_data(&sh, key, st.size)?;
         let attrs = sh
             .attrs(key)
             .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -4486,6 +4640,7 @@ impl ShardState {
             data,
             attrs,
             kv: rest.next().unwrap_or_default(),
+            runs,
         };
         let mut out = vec![(
             Msg::PushObject {
@@ -4523,13 +4678,14 @@ impl ShardState {
             };
             return Some((m, Vec::new()));
         };
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
+        let (data, runs) = held_data(&sh, key, st.size)?;
         if legacy {
             // A node from before whole objects (a rolling upgrade): data
-            // only, as before.
+            // only, as before. It would fill holes with zeros, so an
+            // object with holes waits until it is upgraded (issue #158).
+            if runs.is_some() {
+                return None;
+            }
             let m = Msg::Push {
                 to,
                 key: wire_key(key),
@@ -4545,6 +4701,7 @@ impl ShardState {
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(key, b"", None, usize::MAX),
+            runs,
         };
         let m = Msg::PushObject {
             to,
@@ -4662,6 +4819,50 @@ impl ShardState {
         Some(out)
     }
 
+    /// Every acting member's [`Self::holds`] of a PG, this device's first;
+    /// `None` if a member can't answer, or is from before `Holds`: the
+    /// check is skipped until every member has it.
+    async fn member_holds(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+    ) -> Option<Vec<HashMap<ObjKey, HeldBlocks>>> {
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let mut theirs = Vec::new();
+        for d in &info.acting {
+            if *d == self.me {
+                continue;
+            }
+            let conn = self.peer(self.addr_of(&map, *d)?).await.ok()?;
+            match conn
+                .call_within(&Msg::Holds { to }, &[], CALL_TIMEOUT)
+                .await
+            {
+                Ok((Msg::HoldsOk, p)) => theirs.push(
+                    decode_holds(&p)
+                        .ok()?
+                        .into_iter()
+                        .filter_map(|(k, h)| Some((engine_key(&to, &k).ok()?, h)))
+                        .collect::<HashMap<_, _>>(),
+                ),
+                _ => return None,
+            }
+        }
+        self.drained().await;
+        let mine = self.local_holds(pool, pg).await.into_iter().collect();
+        let mut out = vec![mine];
+        out.extend(theirs);
+        Some(out)
+    }
+
     /// Light scrub of one PG: compares every member's digests. Keys that
     /// differ are checked again after a pause, since a write in flight can
     /// make copies differ for a moment. A difference that persists is
@@ -4677,9 +4878,11 @@ impl ShardState {
         };
         let all: BTreeSet<ObjKey> = first.iter().flat_map(|m| m.keys().cloned()).collect();
         metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
-        let suspects = differing(&first, &mut all.into_iter());
+        let suspects = differing(&first, &mut all.iter().cloned());
+        let agreeing: BTreeSet<ObjKey> = all.difference(&suspects).cloned().collect();
+        let undecided = self.scrub_holes(pool, pg, info, &agreeing).await;
         if suspects.is_empty() {
-            self.report_scrub(pool, pg, 0).await;
+            self.report_scrub(pool, pg, undecided).await;
             return;
         }
         sleep(Duration::from_millis(200)).await;
@@ -4705,7 +4908,7 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
-        let mut unresolved = 0;
+        let mut unresolved = undecided;
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
             let v = match verdict(&row(&second, &key)) {
@@ -4722,24 +4925,8 @@ impl ShardState {
             match v {
                 Verdict::Agree | Verdict::Pull { .. } => {}
                 Verdict::Repair(members) => {
-                    let mut ok = true;
-                    for m in members {
-                        let Some(addr) = map.device_addr(others[m - 1]) else {
-                            ok = false;
-                            continue;
-                        };
-                        let Ok(conn) = self.peer(addr).await else {
-                            ok = false;
-                            continue;
-                        };
-                        self.drained().await;
-                        let Some(parts) = self.push_parts(to, &key, false) else {
-                            ok = false;
-                            continue;
-                        };
-                        ok &= push_all(&conn, parts).await;
-                    }
-                    if ok {
+                    let devices: Vec<u32> = members.iter().map(|m| others[m - 1]).collect();
+                    if self.push_to(to, &key, &devices).await {
                         metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
                     }
                 }
@@ -4755,6 +4942,152 @@ impl ShardState {
             }
         }
         self.report_scrub(pool, pg, unresolved).await;
+    }
+
+    /// Pushes this device's copy of `key` to each of `devices`; whether
+    /// every push landed.
+    async fn push_to(&self, to: Target, key: &ObjKey, devices: &[u32]) -> bool {
+        let map = self.map();
+        let mut ok = true;
+        for d in devices {
+            let Some(addr) = map.device_addr(*d) else {
+                ok = false;
+                continue;
+            };
+            let Ok(conn) = self.peer(addr).await else {
+                ok = false;
+                continue;
+            };
+            self.drained().await;
+            let Some(parts) = self.push_parts(to, key, false) else {
+                ok = false;
+                continue;
+            };
+            ok &= push_all(&conn, parts).await;
+        }
+        ok
+    }
+
+    /// Scrub's check of holes (D223), on the objects whose copies' digests
+    /// agree: they hold the same data, but a copy may hold blocks of zeros
+    /// where another has holes, which a volume's version reads through to
+    /// its older versions and its parent (issue #158). Only a dense copy,
+    /// as pushes made before I243, does that, so the copy holding the
+    /// fewest blocks is right, whatever the vote. Checked again after a
+    /// pause, as [`Self::scrub_pg`] does. Reported, and repaired only with
+    /// `--hole-repair`. Returns how many objects it couldn't decide.
+    async fn scrub_holes(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+        agreeing: &BTreeSet<ObjKey>,
+    ) -> u32 {
+        let differing = |h: &[HashMap<ObjKey, HeldBlocks>],
+                         keys: &mut dyn Iterator<Item = &ObjKey>| {
+            keys.filter(|k| {
+                let row: Option<Vec<&HeldBlocks>> = h.iter().map(|m| m.get(*k)).collect();
+                row.is_some_and(|r| r.iter().any(|x| x.digest != r[0].digest))
+            })
+            .cloned()
+            .collect::<BTreeSet<ObjKey>>()
+        };
+        let Some(first) = self.member_holds(pool, pg, info).await else {
+            return 0;
+        };
+        let suspects = differing(&first, &mut agreeing.iter());
+        if suspects.is_empty() {
+            return 0;
+        }
+        sleep(Duration::from_millis(200)).await;
+        if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
+            return 0;
+        }
+        let (Some(digests), Some(second)) = (
+            self.member_digests(pool, pg, info, false).await,
+            self.member_holds(pool, pg, info).await,
+        ) else {
+            return 0;
+        };
+        let still: BTreeSet<ObjKey> = suspects
+            .into_iter()
+            .filter(|k| verdict(&row(&digests, k)) == Verdict::Agree)
+            .collect();
+        let bad = differing(&second, &mut still.iter());
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let others: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me)
+            .collect();
+        let repair = self.hole_repair.get();
+        let mut undecided = 0;
+        for key in bad {
+            metrics::ShardMetrics::add(&self.metrics.scrub_holes, 1);
+            let held: Vec<HeldBlocks> = second.iter().map(|m| m[&key]).collect();
+            let win = (0..held.len()).min_by_key(|i| held[*i].blocks).unwrap_or(0);
+            let device = |i: usize| if i == 0 { self.me } else { others[i - 1] };
+            // Copies holding as few blocks, but others: neither is a dense
+            // copy of the other, so don't guess.
+            if held
+                .iter()
+                .any(|h| h.blocks == held[win].blocks && h.digest != held[win].digest)
+            {
+                metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
+                undecided += 1;
+                eprintln!(
+                    "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                     hold as many blocks but different ones; left as is",
+                    hex(&key.name),
+                    key.version
+                );
+                continue;
+            }
+            let fix: Vec<usize> = (0..held.len())
+                .filter(|i| held[*i].digest != held[win].digest)
+                .collect();
+            eprintln!(
+                "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                 hold blocks of zeros where device {}'s copy has holes ({} blocks against \
+                 {:?}); {}",
+                hex(&key.name),
+                key.version,
+                device(win),
+                held[win].blocks,
+                fix.iter()
+                    .map(|i| (device(*i), held[*i].blocks))
+                    .collect::<Vec<_>>(),
+                if repair {
+                    "repairing from it"
+                } else {
+                    "report only (--hole-repair is off)"
+                }
+            );
+            if !repair {
+                continue;
+            }
+            // Pull the copy with the holes first; then it is this copy.
+            if win != 0 && !self.repair_own(to, &key, device(win)).await {
+                continue;
+            }
+            let push: Vec<u32> = fix
+                .into_iter()
+                .filter(|i| *i != 0 && *i != win)
+                .map(device)
+                .collect();
+            if self.push_to(to, &key, &push).await {
+                metrics::ShardMetrics::add(&self.metrics.scrub_holes_repaired, 1);
+            }
+        }
+        undecided
     }
 
     /// Tells the map service how many objects of a PG its last scrub left
@@ -5036,7 +5369,7 @@ impl ShardState {
                 hyperstor_proto::encode_pairs(&kv),
             );
         }
-        let Ok(data) = sh.read(&okey, 0, st.size.div_ceil(4096) * 4096) else {
+        let Some((data, runs)) = held_data(&sh, &okey, st.size) else {
             return (
                 err(
                     Code::Checksum,
@@ -5048,12 +5381,13 @@ impl ShardState {
         };
         let obj = WireObject {
             size: st.size,
-            data: data.to_vec(),
+            data,
             attrs: sh
                 .attrs(&okey)
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv,
+            runs,
         };
         (Msg::FetchPartOk { found: true, next }, encode_object(&obj))
     }
@@ -5244,7 +5578,15 @@ impl ShardState {
             }
         };
         let limit = self.read_timeout.get();
+        let read_bytes: u64 = ios.iter().map(|&(_, _, n)| n as u64).sum();
+        self.heat.begin();
+        let began = std::time::Instant::now();
         let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::READ,
+            began.elapsed(),
+            read_bytes,
+        );
         // Abandoned or not, what the read gets no longer matters.
         self.shard.end_read(&plan);
         match r {
@@ -5335,6 +5677,32 @@ impl Drop for InflightGuard {
             *n = n.saturating_sub(1);
         }
     }
+}
+
+/// `b` in lowercase hex, for logs.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// An object's data to send and, if it has holes, the runs it holds.
+type HeldData = (Vec<u8>, Option<Vec<(u64, u64)>>);
+
+/// The data of `key` (of `size` bytes) to send whole: every block from
+/// the start if it has no holes, as before; otherwise the blocks it holds
+/// alone, with their runs ([`WireObject::runs`]). Sent dense, a version's
+/// holes would arrive as zeros and hide what its older versions and its
+/// parent hold (issue #158). None if a read fails its checksums.
+fn held_data(sh: &hyperstor_engine::Shard, key: &ObjKey, size: u64) -> Option<HeldData> {
+    let blocks = size.div_ceil(4096);
+    let runs = sh.held_runs(key)?;
+    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
+        return Some((sh.read(key, 0, blocks * 4096).ok()?.to_vec(), None));
+    }
+    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
+    for (lb, n) in &runs {
+        data.extend_from_slice(&sh.read(key, lb * 4096, n * 4096).ok()?);
+    }
+    Some((data, Some(runs)))
 }
 
 /// Entries of `key`'s table from `from` on, up to about `limit` bytes (at

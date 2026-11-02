@@ -42,6 +42,10 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.GetStatus", Group::Read, false),
     ("ClusterService.ListPgs", Group::Read, false),
     ("ClusterService.GetPgGrid", Group::Read, false),
+    ("ClusterService.GetPgHeat", Group::Read, false),
+    ("ClusterService.ListDevicePerf", Group::Read, false),
+    ("ClusterService.ListTopVolumes", Group::Read, false),
+    ("ClusterService.ListFindings", Group::Read, false),
     ("ClusterService.ListVolumes", Group::Read, false),
     ("ClusterService.ListSnapshots", Group::Read, false),
     ("TrashService.ListTrash", Group::Read, false),
@@ -56,6 +60,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetFullRatios", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
     ("ClusterService.SetDeviceClass", Group::Operate, false),
+    // A device's endpoints (D215): where its traffic goes.
+    ("ClusterService.SetEndpoints", Group::Operate, false),
     // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),
     ("NodeService.DrainNode", Group::Operate, false),

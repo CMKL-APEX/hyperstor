@@ -19,6 +19,24 @@ service ClusterService {
   // nothing but the epoch while the map is still at `since_epoch`. Read.
   rpc GetPgGrid(GetPgGridRequest) returns (GetPgGridResponse);
 
+  // Load and drives (27-performance.md §30, D218-D222). Only the leader
+  // has them: another member answers unavailable (not_leader).
+
+  // One pool's requests per PG over the last window, as its primaries
+  // reported them; with `pg`, that PG's top volumes too. Read.
+  rpc GetPgHeat(GetPgHeatRequest) returns (GetPgHeatResponse);
+
+  // Each device's last 15 minutes (5-s windows) of requests and device
+  // service time, and its drive; with `device`, that one only. Read.
+  rpc ListDevicePerf(ListDevicePerfRequest) returns (ListDevicePerfResponse);
+
+  // The volumes sending most requests now, summed over their PGs. Read.
+  rpc ListTopVolumes(ListTopVolumesRequest) returns (ListTopVolumesResponse);
+
+  // The Advisor's findings: what the load and the drives suggest doing,
+  // with the numbers behind each. Nothing is done for you. Read.
+  rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse);
+
   // Takes a device out of placement, so its PGs move elsewhere, or brings
   // it back in. Write.
   rpc SetDeviceIn(SetDeviceInRequest) returns (SetDeviceInResponse);
@@ -53,6 +71,12 @@ service ClusterService {
   // devices of one kind, and a class named after a kind only that kind.
   // Pools limited to classes move PGs as it changes. Write.
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
+
+  // Sets a device's endpoints (26-networks.md §29.5, D215), replacing
+  // them; none: its address alone. Each is on a data network of the map.
+  // The installer sets its node's on every run. A node's own certificate
+  // may set only its own devices'; admin and mgmt any device's.
+  rpc SetEndpoints(SetEndpointsRequest) returns (SetEndpointsResponse);
 
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
   // (D164) or failure domain, and PGs move to match, or its name; or
@@ -262,6 +286,8 @@ message GetStatusResponse {
   string map_address = 7 [json_name = "map_address"];
   // The fullness thresholds devices are held to (04-decisions.md D27, D182).
   FullRatios full_ratios = 8 [json_name = "full_ratios"];
+  // The cluster's networks (26-networks.md §29.3).
+  repeated Network networks = 9;
 }
 
 // Percentages of a device's data area, to a tenth of a percent: past
@@ -314,6 +340,8 @@ message Device {
   // "nearfull", "backfillfull" or "full"; empty before a report reaches
   // the leader.
   string fullness = 11;
+  // Its endpoints on other networks (D207).
+  repeated Endpoint endpoints = 12;
 }
 
 message Pool {
@@ -585,6 +613,33 @@ message SetDeviceClassRequest {
   optional string class = 2;
 }
 
+// Where a device's reactor also listens, on a network (D207).
+message Endpoint {
+  string network = 1;
+  // IP:PORT.
+  string address = 2;
+}
+
+// A network of the cluster (26-networks.md §29.3, D206).
+message Network {
+  string name = 1;
+  // "control", "data" or "both".
+  string kind = 2;
+  bool trusted = 3;
+  // How a port is recognised as on it: "subnet IP/LEN" or "ib PREFIX".
+  string matches = 4;
+}
+
+message SetEndpointsRequest {
+  uint32 device = 1;
+  repeated Endpoint endpoints = 2;
+}
+
+message SetEndpointsResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+}
+
 message SetDeviceClassResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
@@ -822,4 +877,142 @@ message DeleteGroupSnapshotRequest {
 message DeleteGroupSnapshotResponse {
   // When the trash purges them, unless restored first (Unix seconds).
   uint64 purge_unix = 1 [json_name = "purge_unix"];
+}
+
+message GetPgHeatRequest {
+  uint32 pool = 1;
+  // Also this PG's top volumes.
+  optional uint32 pg = 2;
+}
+
+message GetPgHeatResponse {
+  // Per PG, PG n at index n: requests and bytes per second over its last
+  // window (0: none, or not reported in the last 20 s).
+  repeated float read_ops = 1 [json_name = "read_ops"];
+  repeated float write_ops = 2 [json_name = "write_ops"];
+  repeated float read_bytes = 3 [json_name = "read_bytes"];
+  repeated float write_bytes = 4 [json_name = "write_bytes"];
+  // The device that reported each PG; absent for none.
+  repeated uint32 primaries = 5;
+  // The asked PG's top volumes, most requests first.
+  repeated VolumeHeat top = 6;
+}
+
+message VolumeHeat {
+  // The volume, if it is still there.
+  string id = 1;
+  string name = 2;
+  uint32 pool = 3;
+  // Requests and bytes per second (a lower bound: each PG counts only its
+  // top few volumes).
+  float ops = 4;
+  float bytes = 5;
+}
+
+message ListDevicePerfRequest {
+  optional uint32 device = 1;
+}
+
+message ListDevicePerfResponse {
+  repeated DevicePerf devices = 1;
+}
+
+message DevicePerf {
+  uint32 device = 1;
+  uint32 node = 2;
+  // nvme, ssd, hdd or file.
+  string kind = 3;
+  // Oldest first, 5 s apart.
+  repeated PerfSample samples = 4;
+  Drive drive = 5;
+}
+
+message PerfSample {
+  uint64 unix_ms = 1 [json_name = "unix_ms"];
+  uint32 window_ms = 2 [json_name = "window_ms"];
+  // Client requests its PGs served as primary, per second.
+  float read_ops = 3 [json_name = "read_ops"];
+  float write_ops = 4 [json_name = "write_ops"];
+  float read_bytes = 5 [json_name = "read_bytes"];
+  float write_bytes = 6 [json_name = "write_bytes"];
+  // The device's own reads and commits.
+  ServiceTime reads = 7;
+  ServiceTime commits = 8;
+  uint32 inflight_max = 9 [json_name = "inflight_max"];
+}
+
+message ServiceTime {
+  uint32 count = 1;
+  uint64 bytes = 2;
+  uint32 p50_us = 3 [json_name = "p50_us"];
+  uint32 p99_us = 4 [json_name = "p99_us"];
+  uint32 max_us = 5 [json_name = "max_us"];
+  // Counts per bucket: under 16, 32, ... 65536 us, then slower.
+  repeated uint32 buckets = 6;
+}
+
+message Drive {
+  string model = 1;
+  string firmware = 2;
+  optional float temperature_c = 3 [json_name = "temperature_c"];
+  // PCIe lanes and GT/s, now and at most.
+  optional uint32 link_width = 4 [json_name = "link_width"];
+  optional uint32 link_width_max = 5 [json_name = "link_width_max"];
+  optional float link_speed = 6 [json_name = "link_speed"];
+  optional float link_speed_max = 7 [json_name = "link_speed_max"];
+  // The drive's NUMA node and its reactor's; -1 unknown.
+  int32 numa_node = 8 [json_name = "numa_node"];
+  int32 reactor_numa_node = 9 [json_name = "reactor_numa_node"];
+  bool write_cache = 10 [json_name = "write_cache"];
+  Smart smart = 11;
+  // Why there is no SMART.
+  string smart_note = 12 [json_name = "smart_note"];
+}
+
+message Smart {
+  uint32 critical_warning = 1 [json_name = "critical_warning"];
+  float temperature_c = 2 [json_name = "temperature_c"];
+  uint32 available_spare = 3 [json_name = "available_spare"];
+  uint32 spare_threshold = 4 [json_name = "spare_threshold"];
+  uint32 percentage_used = 5 [json_name = "percentage_used"];
+  uint64 bytes_read = 6 [json_name = "bytes_read"];
+  uint64 bytes_written = 7 [json_name = "bytes_written"];
+  uint64 power_on_hours = 8 [json_name = "power_on_hours"];
+  uint64 unsafe_shutdowns = 9 [json_name = "unsafe_shutdowns"];
+  uint64 media_errors = 10 [json_name = "media_errors"];
+  uint32 warning_temp_minutes = 11 [json_name = "warning_temp_minutes"];
+  uint32 critical_temp_minutes = 12 [json_name = "critical_temp_minutes"];
+  repeated uint32 throttle_seconds = 13 [json_name = "throttle_seconds"];
+  float warning_threshold_c = 14 [json_name = "warning_threshold_c"];
+  float critical_threshold_c = 15 [json_name = "critical_threshold_c"];
+}
+
+message ListTopVolumesRequest {
+  // At most this many; 0: 20.
+  uint32 limit = 1;
+}
+
+message ListTopVolumesResponse {
+  repeated VolumeHeat volumes = 1;
+}
+
+message ListFindingsRequest {}
+
+message ListFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message Finding {
+  // The rule that found it: slow-device, hot-primary, hot-volume,
+  // pcie-link, numa, drive-critical, media-errors, wear, thermal.
+  string rule = 1;
+  // info, warn or error.
+  string severity = 2;
+  // What it is about: "device 1002", "volume ...".
+  string subject = 3;
+  string title = 4;
+  string evidence = 5;
+  string action = 6;
+  // A command that does it; empty if none.
+  string command = 7;
 }

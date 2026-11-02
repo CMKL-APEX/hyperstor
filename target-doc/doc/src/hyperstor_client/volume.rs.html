@@ -1398,7 +1398,7 @@
 <a href=#1398 id=1398 data-nosnippet>1398</a>            <span class="kw">for </span>a <span class="kw">in </span>live {
 <a href=#1399 id=1399 data-nosnippet>1399</a>                <span class="kw">let </span>pg = meta.pg_of_key(NS_META, <span class="kw-2">&amp;</span>header_key(a.volume.borrow().id));
 <a href=#1400 id=1400 data-nosnippet>1400</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(info) = map.pg(META_POOL, pg)
-<a href=#1401 id=1401 data-nosnippet>1401</a>                    &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(addr) = info.primary().and_then(|d| map.device_addr(d))
+<a href=#1401 id=1401 data-nosnippet>1401</a>                    &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(addr) = info.primary().and_then(|d| <span class="self">self</span>.addr_of(<span class="kw-2">&amp;</span>map, d))
 <a href=#1402 id=1402 data-nosnippet>1402</a>                {
 <a href=#1403 id=1403 data-nosnippet>1403</a>                    by_primary
 <a href=#1404 id=1404 data-nosnippet>1404</a>                        .entry(addr)
