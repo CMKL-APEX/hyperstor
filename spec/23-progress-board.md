@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 1 | 17 |
+| 8 | 0 | 2 | 17 |
 
 ## In progress
 
@@ -34,6 +34,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `feat/perf-heat`, [#164](https://github.com/CMKL-APEX/hyperstor/pull/164) | Built and tested (D218–D222, I247–I248): per-PG heat and top volumes, device service time, sysfs and SMART through hyperstor-smart, the leader's 15 minutes, CLI and web UI views, the Advisor | Merge #164 once CI passes; then on the pilot: G54 and G55 on its NVMe drives, the Advisor's thresholds from real load | 2026-11-02 |
 | **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader | Merge #159 once CI passes; then the web UI's buttons; live moves of attached volumes later | 2026-11-02 |
 
 ## Done
@@ -92,5 +93,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 11 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 12 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

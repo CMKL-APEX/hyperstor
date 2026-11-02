@@ -1,7 +1,10 @@
 // Storage nodes and their devices: state, last heartbeat; take a device
 // out and in, set its weight and class, add and remove devices, drain a
-// node (operators).
+// node (operators). Below, each device's load and drive (D220): the
+// matrix of the last minute, and one device's 15 minutes when picked.
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { DeviceMatrix, DevicePanel, useDevicePerf } from "../perf";
 import { cluster, nodes as nodeApi } from "../api";
 import type { PgMove } from "../gen/hyperstor/v1/admin_pb";
 import type { RemoveDeviceResponse } from "../gen/hyperstor/v1/cluster_pb";
@@ -74,6 +77,7 @@ export default function Nodes() {
   };
 
   return (
+    <>
     <Card
       title="Nodes and devices"
       actions={can("operate") && <Button onClick={() => setPending({ kind: "add" })}>Add device</Button>}
@@ -279,5 +283,28 @@ export default function Nodes() {
         </ActionDialog>
       )}
     </Card>
+    <DevicePerfCard />
+    </>
+  );
+}
+
+/** Every device's last minute; a picked one's panel (also from the
+ * Advisor's links, `?device=D`). */
+function DevicePerfCard() {
+  const [params, setParams] = useSearchParams();
+  const picked = params.get("device") == null ? null : Number(params.get("device"));
+  const { data, error } = useDevicePerf();
+  const pick = (d: number | null) => setParams(d == null ? {} : { device: String(d) });
+  return (
+    <>
+      <Card title="Device performance (last minute)">
+        <ErrorText error={error} />
+        <DeviceMatrix devices={data ?? []} picked={picked} onPick={(d) => pick(picked === d ? null : d)} />
+        <p className="text-xs text-slate-500 mt-2">
+          Requests its PGs served as primary; read and commit p99 are the device's own time. Click a device for its drive and 15 minutes; longer history is in Grafana.
+        </p>
+      </Card>
+      {picked != null && <DevicePanel device={picked} onClose={() => pick(null)} />}
+    </>
   );
 }
