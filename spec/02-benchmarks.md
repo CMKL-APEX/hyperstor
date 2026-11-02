@@ -1502,3 +1502,49 @@ HS_BENCH_SECS=10 hyperstor-bench cluster mem
    while the two A runs at QD1 differ by 5 %.
 2. On a real device the counting is a smaller share still: a 4 KiB write
    here takes 140 µs on memory, and a flush to flash adds its own.
+
+## 2026-11-02: reading the SMART log under load (G54)
+
+Whether reading a drive's SMART / health log (27-performance.md §30.3)
+stalls its I/O. The pilot, main at 386cd13 installed on every host; pool
+3 (`nvme`, two copies) on its two NVMe drives (Samsung PM1733,
+MZWLJ3T8HBLS, PCIe 4.0 x4, one on each of two hosts). From node 0's host,
+a 16 GiB scratch volume in pool 3, filled with random data, read 4 KiB at
+random at QD32 through the client library with its read cache off; ten
+2-minute phases, alternately quiet and with both drives' logs read once a
+second through `hyperstor-smart` (Get Log Page 02h and Identify
+Controller), the second drive's over ssh. The volume was deleted after.
+
+```sh
+HS_POLL='sudo hyperstor-smart health DRIVE0 && ssh HOST1 sudo hyperstor-smart health DRIVE1' \
+HS_BENCH_SECS=120 HS_PHASES=10 HS_GIB=16 hyperstor-bench smartpoll MAP_ADDR 3
+```
+
+| Phase | ops/s | p50 µs | p99 µs | p99.9 µs | max µs |
+|---|---|---|---|---|---|
+| quiet | 49548 | 648 | 1092 | 1215 | 6143 |
+| polled | 49982 | 627 | 1100 | 1218 | 7405 |
+| quiet | 49680 | 626 | 1115 | 2723 | 6274 |
+| polled | 49490 | 651 | 1107 | 2836 | 6142 |
+| quiet | 49501 | 636 | 1147 | 3026 | 6493 |
+| polled | 49745 | 631 | 1141 | 3007 | 8309 |
+| quiet | 49745 | 636 | 1126 | 3012 | 5921 |
+| polled | 49496 | 636 | 1146 | 3009 | 6298 |
+| quiet | 46410 | 690 | 1229 | 3051 | 8995 |
+| polled | 49146 | 626 | 1156 | 3009 | 7942 |
+
+600 polls in all, none failed. Each drive served 23,000–26,000 reads a
+second, its own read p99 (the leader's service time, §30.2) in the
+bucket up to 512 µs in the last, polled, phase.
+
+**Findings.**
+
+1. No stall: polled and quiet phases are the same within their spread
+   (p99 1100–1156 µs polled, 1092–1229 µs quiet; p99.9 and the max move
+   together across both). Polling every 30 s, the default, is 30 times
+   less often than this.
+2. Request latency here is mostly the network and replication, not the
+   drive (p50 about 640 µs at QD32, the drive's about a tenth of it). A
+   pause shorter than about 1 ms per poll would hide in it; the max per
+   phase, 6–9 ms either way, bounds a longer one. Checked for this model
+   and firmware only (EPK9GB5Q); G54 stays open for other drives.
