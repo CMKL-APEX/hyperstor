@@ -1499,6 +1499,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
             data: Vec::new(),
             attrs: Vec::new(),
             kv: vec![(b"stray".to_vec(), b"entry".to_vec())],
+            runs: None,
         };
         let (reply, _) = conn
             .call(
@@ -3652,6 +3653,109 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
         }
     }
     let _ = ids;
+}
+
+/// A clone written while a node is away keeps its holes on every copy
+/// recovery makes (issue #158): the blocks it never wrote still read
+/// its parent's, wherever the PG is served from. Pushes used to send an
+/// object dense, so the copies they made held zeros there.
+#[test]
+fn a_refilled_clone_keeps_its_holes() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let chunks = 4u64;
+    let size = chunks * CHUNK as u64;
+    let parent = pattern(41, size as usize);
+    let p = parent.clone();
+    let (lineage, k) = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "image").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, p).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        (v.lineage, k.id)
+    });
+    c.kill(3);
+    // While node 3 is away, the clone writes one block of each chunk: its
+    // versions are new objects, mostly holes, that node 3 lacks.
+    let block = |i: u64| pattern(50 + i, 4096);
+    let at = |i: u64| i * CHUNK as u64 + 4096 * (1 + i);
+    with_client(meta, 6, move |cl| async move {
+        let ka = cl.attach(k).await.unwrap();
+        for i in 0..chunks {
+            ka.write(at(i), block(i)).await.unwrap();
+        }
+        ka.detach().await.unwrap();
+        wait_backfilled(&cl).await;
+    });
+    c.restart(3);
+    let mut model = parent.clone();
+    for i in 0..chunks {
+        model[at(i) as usize..at(i) as usize + 4096].copy_from_slice(&block(i));
+    }
+    let m = model.clone();
+    with_client(meta, 7, move |cl| async move {
+        wait_all_up(&cl).await;
+        wait_backfilled(&cl).await;
+        let ka = cl.attach(k).await.unwrap();
+        let got = ka.read(0, size).await.unwrap();
+        let wrong: Vec<usize> = (0..m.len() / 4096)
+            .filter(|b| got[b * 4096..(b + 1) * 4096] != m[b * 4096..(b + 1) * 4096])
+            .collect();
+        let zeros = (wrong.iter())
+            .filter(|b| got[*b * 4096..(*b + 1) * 4096].iter().all(|x| *x == 0))
+            .count();
+        assert!(
+            wrong.is_empty(),
+            "the clone reads {} blocks wrong, {zeros} of them zeros",
+            wrong.len()
+        );
+        ka.detach().await.unwrap();
+    });
+    let (map, devs) = c.stop();
+    // Every copy holds the same blocks of every version: the clone's
+    // versions only the block written, whichever copy serves the PG.
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let pool = &map.pools[&POOL];
+    let blocks = CHUNK as u64 / 4096;
+    let mut clone_versions = 0;
+    for chunk in 0..chunks {
+        let pg = pg_of(lineage, chunk, pool.pg_count);
+        let info = map.pg(POOL, pg).unwrap();
+        assert_eq!(info.acting, info.up, "PG {pg} still backfilling");
+        let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(lineage, chunk), 0);
+        let mut hi = chunk_name(lineage, chunk);
+        hi.extend_from_slice(&[0xff; 5]);
+        let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+        let first = &shards[&info.acting[0]];
+        for key in first.list(&lo, &hi) {
+            let held = |sh: &hyperstor_engine::Shard| -> Vec<u64> {
+                (0..blocks).filter(|lb| sh.holds(&key, *lb)).collect()
+            };
+            let want = held(first);
+            if want.len() as u64 != blocks {
+                assert_eq!(want, vec![1 + chunk], "{key:?}");
+                clone_versions += 1;
+            }
+            for d in &info.acting {
+                assert_eq!(
+                    held(&shards[d]),
+                    want,
+                    "device {d} holds other blocks of {key:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(clone_versions, chunks, "one clone version per chunk");
 }
 
 /// A snapshot of a volume whose holder doesn't answer (it stopped
