@@ -70,13 +70,14 @@ use std::process::Command;
 
 const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
-const BINARIES: [&str; 6] = [
+const BINARIES: [&str; 7] = [
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
     "hyperstor-mgmt",
     "hyperstor-authd",
     "hyperstor-vhost",
+    "hyperstor-smart",
 ];
 
 /// Where `hyperstor-vhost`'s sockets and state file are (its unit's
@@ -971,6 +972,56 @@ UMask=0077
 Also=hyperstor-authd.socket
 ";
 
+// The NVMe health reader for storage nodes (D221): root, one process per
+// connection, answering only the hyperstor group, for the devices the
+// nodes' options name.
+const SMART_SOCKET: &str = "\
+# Written by hyperstor-install.
+[Unit]
+Description=Hyperstor NVMe health reader socket
+Documentation=https://github.com/CMKL-APEX/hyperstor
+
+[Socket]
+ListenStream=/run/hyperstor-smart/smart.sock
+SocketUser=root
+SocketGroup=hyperstor
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+";
+
+const SMART_SERVICE: &str = "\
+# Written by hyperstor-install. One instance per request.
+[Unit]
+Description=Hyperstor NVMe health reader (reads drives' SMART logs for hyperstord)
+Documentation=https://github.com/CMKL-APEX/hyperstor
+
+[Service]
+ExecStart=/usr/local/bin/hyperstor-smart --serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=30
+# The log needs CAP_SYS_ADMIN and nothing else.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+";
+
 // The PAM service hyperstor-mgmt names (Debian and Ubuntu's includes).
 const PAM_SERVICE: &str = "\
 # /etc/pam.d/hyperstor: people's logins to hyperstor-mgmt (D99).
@@ -1825,6 +1876,16 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             NODE_UNIT.replace("DATA_DIR", data),
             0o644,
         ));
+        out.push((
+            "/etc/systemd/system/hyperstor-smart.socket".to_string(),
+            SMART_SOCKET.to_string(),
+            0o644,
+        ));
+        out.push((
+            "/etc/systemd/system/hyperstor-smart@.service".to_string(),
+            SMART_SERVICE.to_string(),
+            0o644,
+        ));
     }
     if let Some(v) = &p.vhost {
         let mut args = format!("--meta {} --dir {VHOST_DIR}", p.map);
@@ -2000,6 +2061,12 @@ fn units(p: &Plan) -> Vec<String> {
             p.nodes
                 .iter()
                 .map(|n| format!("hyperstord@{}.service", n.n)),
+        )
+        // Socket-activated, a process per request (D221).
+        .chain(
+            p.nodes
+                .first()
+                .map(|_| "hyperstor-smart.socket".to_string()),
         )
         .chain(
             p.vhost
@@ -2329,6 +2396,10 @@ fn install(
         }
         if path.ends_with("hyperstord@.service") {
             service_units_changed.push("hyperstord");
+        }
+        // Its service runs per request, so only the socket restarts.
+        if path.ends_with("hyperstor-smart.socket") {
+            restart.push("hyperstor-smart.socket".into());
         }
         // Restarting it keeps its VMs' disks (D143).
         if path.ends_with("hyperstor-vhost.service") || path.ends_with("vhost.env") {
@@ -3089,6 +3160,9 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
                 all.push(format!("hyperstord@{n}.service"));
             }
         }
+        if under(root, "/etc/systemd/system/hyperstor-smart.socket").exists() {
+            all.push("hyperstor-smart.socket".into());
+        }
         all.push("hyperstor-renew.timer".into());
         let mut args = vec!["disable", "--now"];
         args.extend(all.iter().map(String::as_str));
@@ -3101,6 +3175,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-mgmt.service".to_string(),
         "/etc/systemd/system/hyperstor-authd.socket".to_string(),
         "/etc/systemd/system/hyperstor-authd.service".to_string(),
+        "/etc/systemd/system/hyperstor-smart.socket".to_string(),
+        "/etc/systemd/system/hyperstor-smart@.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),

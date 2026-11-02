@@ -18,6 +18,7 @@ members = [
     "crates/hyperstor-proto",
     "crates/hyperstor-reactor",
     "crates/hyperstor-rpc",
+    "crates/hyperstor-smart",
     "crates/hyperstor-test",
     "crates/hyperstor-ublk",
     "crates/hyperstor-vhost",

@@ -1208,6 +1208,32 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Load and drives: per-PG requests and top volumes from primaries, each device's service time and in flight, drives' sysfs and NVMe SMART (through hyperstor-smart), kept by the leader 15 minutes; pg-grid --heat, perf, top-volumes and advise; the PG grid's Reads and Writes views, the device matrix and panel, busiest volumes with Move to pool, and the Advisor in the web UI"
+spec = ["27-performance.md §30", "D218", "D219", "D220", "D221", "D222", "I247", "I248"]
+status = "done"
+tests = [
+    "hyperstor_proto::perf::tests::quantiles_come_from_the_buckets",
+    "hyperstor_daemon::heat::tests::chunk_names_give_their_volume",
+    "hyperstor_daemon::heat::tests::the_sketch_keeps_the_heaviest_volumes",
+    "hyperstor_daemon::heat::tests::a_window_is_taken_and_the_next_starts",
+    "hyperstor_daemon::drive::tests::a_health_log_is_parsed",
+    "hyperstor_daemon::drive::tests::sysfs_says_what_the_drive_is",
+    "hyperstor_daemon::drive::tests::hex_and_link_speeds_parse",
+    "hyperstor_meta::perf::tests::reports_keep_fifteen_minutes_and_the_newest_pg_windows",
+    "hyperstor_meta::perf::tests::volumes_are_summed_across_their_pgs",
+    "hyperstor_meta::perf::tests::the_advisor_names_a_slow_device_a_hot_primary_and_a_hot_volume",
+    "hyperstor_meta::perf::tests::the_advisor_reads_the_drives",
+    "hyperstor_ctl::tests::heat_shows_a_digit_per_pg_and_the_busiest_volumes",
+    "hyperstor_ctl::tests::quantiles_merge_buckets",
+    "hyperstor_ctl::tests::perf_and_findings_read_as_tables",
+    "hyperstor_smart::nvme::tests::the_command_has_the_kernels_layout",
+    "hyperstor_smart::tests::the_nodes_options_name_the_devices",
+    "hyperstor_smart::tests::only_configured_nvme_namespaces_are_read",
+    "perf::the_leader_shows_where_the_load_is",
+    "browser::the_load_and_the_drives_are_shown",
+]
+
+[[milestone.item]]
 what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages"
 spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193", "I197"]
 status = "done"

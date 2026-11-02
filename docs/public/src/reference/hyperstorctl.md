@@ -4,7 +4,7 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write]
 ```
 
 | Command | Does |
@@ -14,6 +14,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive, and its usable free and total space (GiB, after copies or erasure coding) |
 | `pgs` | One pool's PGs with their acting and up sets; `--pg N` for one PG |
 | `pg-grid` | One pool's PG states, a character per PG, 64 to a line: `.` clean, `d` degraded, `b` backfilling, `X` inactive; with `--usage`, also a digit per PG for the data on its primary, `0` least to `9` most |
+| `perf` | Each device over the last minute: requests per second its PGs served as primary, MiB/s, the device's own read and commit (write and flush) p99, the most I/Os it had in flight, its drive's temperature and wear. With `--device D`, that device's drive (model, firmware, PCIe link, NUMA node, write cache, SMART) and its last two minutes, 5 s a line. Asks the map service's leader, which keeps 15 minutes; exit 1 for a device that hasn't reported |
+| `top-volumes` | The volumes sending most requests now, summed over their PGs (at most `--limit`, default 20): requests and MiB per second |
+| `advise` | The Advisor's findings: a slow device, a device carrying a hot spot, a hot volume (with the `move-volume` that would move it to an NVMe pool), and what drives say of themselves (critical warnings, media errors, wear, heat, a PCIe link below its width or speed, a drive on another NUMA node than its reactor), each with the numbers behind it and what to do. It changes nothing |
 | `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
 | `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
 | `delete-volume` | Moves volume `--id` (with its snapshots) to the trash, where it stays for its pool's grace period (a day by default); refused while it is attached, unless `--force`. Prints when it will be purged |
@@ -79,10 +82,11 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
 | `--sparse` | off | `write-volume`: skip blocks of zeros |
 | `--usage` | off | `pg-grid`: each PG's data too (the map service's leader answers) |
+| `--heat read\|write` | | `pg-grid`: instead of states, a digit per PG for its reads or writes per second over the last 5 s, `1` least to `9` most, `.` none; with `--pg N`, that PG's top volumes too (the leader answers) |
 | `--pool P` | the first data pool | The pool for `pgs`, `pg-grid`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers); the pool `copy-volume` and `move-volume` go to (required) |
-| `--pg N` | every PG | `pgs`: only this PG of the pool |
+| `--pg N` | every PG | `pgs`: only this PG of the pool. `pg-grid --heat`: also this PG's top volumes |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
-| `--device D` | | The device for `out`, `in`, `weight`, `device remove`, `pool add-device` and `pool remove-device` |
+| `--device D` | | The device for `out`, `in`, `weight`, `device remove`, `pool add-device`, `pool remove-device` and `perf` |
 | `--weight W\|auto` | | `weight`: the weight to keep (0 or more; 0 places nothing on the device), or `auto` |
 | `--nearfull PCT` | 85 | `full-ratios`: where a device warns |
 | `--backfillfull PCT` | 90 | `full-ratios`: past it, a device takes no backfill |
@@ -111,7 +115,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--since AGO` | | `audit list`: only records from the last `AGO`: `30m`, `2h`, `7d`, or seconds |
 | `--principal P` | | `audit list`: only records whose principal contains `P` (`user:ann`, `/admin/`) |
 | `--op OP` | | `audit list`: only records of operation `OP` (`CreateVolume`) |
-| `--limit N` | 100 | `audit list`: at most `N` records |
+| `--limit N` | 100 | `audit list`: at most `N` records. `top-volumes`: at most `N` volumes (default 20) |
 | `--retention-days N` | 365 | `audit settings`: keep records `N` days; 0 keeps them forever |
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters. `pool create`, `pool set`, `pool add-device`: allow hard disks with flash. `pool delete`: delete the pool's volumes, snapshots and trash first. `device remove`: let pools keep fewer copies than their size, never fewer than their `min` |
 | `--role R` | | `token create`: `node`, `meta`, or `mgmt` (for a management service, such as glidex's, enrolling with `enroll`) |

@@ -38,6 +38,7 @@ use std::sync::Arc;
 mod admin;
 mod audit;
 mod ops;
+mod perf;
 mod trash;
 pub use admin::{Signing, parse_token};
 
@@ -910,6 +911,73 @@ impl ClusterService for Api {
             }
         }
         Ok(r.into())
+    }
+
+    async fn get_pg_heat(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetPgHeatRequest>,
+    ) -> ServiceResult<pb::GetPgHeatResponse> {
+        self.authorize(&ctx, "GetPgHeat", &format!("pool {}", req.pool), false)?;
+        let (p, map) = self.perf_view().await?;
+        let mut r = perf::pg_heat(&p, &map, req.pool)?;
+        if let Some(pg) = req.pg {
+            let top = perf::pg_top(&p, req.pool, pg);
+            let names = self.volumes_of(top.iter().map(|t| t.0).collect()).await;
+            r.top = top
+                .into_iter()
+                .map(|(k, ops, bytes)| perf::volume_heat(k, ops, bytes, &names))
+                .collect();
+        }
+        Ok(r.into())
+    }
+
+    async fn list_device_perf(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListDevicePerfRequest>,
+    ) -> ServiceResult<pb::ListDevicePerfResponse> {
+        let target = req
+            .device
+            .map_or("all devices".into(), |d| format!("device {d}"));
+        self.authorize(&ctx, "ListDevicePerf", &target, false)?;
+        let (p, map) = self.perf_view().await?;
+        Ok(perf::device_perf(&p, &map, req.device).into())
+    }
+
+    async fn list_top_volumes(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListTopVolumesRequest>,
+    ) -> ServiceResult<pb::ListTopVolumesResponse> {
+        self.authorize(&ctx, "ListTopVolumes", "volumes", false)?;
+        let (p, _) = self.perf_view().await?;
+        let top = p.top_volumes(perf::top_limit(req.limit));
+        let names = self
+            .volumes_of(top.iter().map(|t| (t.0, t.1)).collect())
+            .await;
+        Ok(pb::ListTopVolumesResponse {
+            volumes: top
+                .into_iter()
+                .map(|(l, b, ops, bytes)| perf::volume_heat((l, b), ops, bytes, &names))
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_findings(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::ListFindingsRequest>,
+    ) -> ServiceResult<pb::ListFindingsResponse> {
+        self.authorize(&ctx, "ListFindings", "cluster", false)?;
+        let f = self.advise().await?;
+        Ok(pb::ListFindingsResponse {
+            findings: f.iter().map(perf::finding_pb).collect(),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn set_device_in(

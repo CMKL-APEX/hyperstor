@@ -49,5 +49,6 @@
   - [hyperstor-install](reference/hyperstor-install.md)
   - [hyperstor-mgmt](reference/hyperstor-mgmt.md)
   - [hyperstor-authd](reference/hyperstor-authd.md)
+  - [hyperstor-smart](reference/hyperstor-smart.md)
   - [Cluster API](reference/cluster-api.md)
   - [Client API](reference/client-api.md)

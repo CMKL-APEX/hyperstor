@@ -13,6 +13,8 @@
 //! receiver before it touches the data.
 
 use hyperstor_codec::{Dec, DecodeError, Enc, crc32c};
+
+pub mod perf;
 use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
@@ -452,6 +454,11 @@ pub enum Msg {
         full: bool,
         pgs: Vec<(u32, u32, u64)>,
     },
+    /// Storage device to map service: its load and its drive's state
+    /// every 5 s (27-performance.md §30, D218). Answered `Noted`.
+    PerfReport {
+        report: perf::PerfReport,
+    },
     /// Answer to `PgUsage`: how many PGs the map service now holds from
     /// `device`. Another number than the sender's asks for a full report.
     PgUsageOk {
@@ -732,6 +739,7 @@ mod kind {
     pub const PG_SPLIT: u16 = 77;
     pub const CACHE_RELEASE: u16 = 78;
     pub const READ_COPY: u16 = 79;
+    pub const PERF_REPORT: u16 = 80;
     pub const ERROR: u16 = 99;
 }
 
@@ -825,6 +833,7 @@ impl Msg {
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
+            Msg::PerfReport { .. } => PERF_REPORT,
             Msg::PgUsageOk { .. } => PG_USAGE_OK,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
@@ -1145,6 +1154,7 @@ impl Msg {
             Msg::PgUsageOk { known } => {
                 e.u32(*known);
             }
+            Msg::PerfReport { report } => report.encode(e),
             Msg::LeaderState => {}
             Msg::LeaderStateOk {
                 heard,
@@ -1478,6 +1488,9 @@ impl Msg {
                 pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
             },
             PG_USAGE_OK => Msg::PgUsageOk { known: d.u32()? },
+            PERF_REPORT => Msg::PerfReport {
+                report: perf::PerfReport::decode(&mut d)?,
+            },
             LEADER_STATE => Msg::LeaderState,
             LEADER_STATE_OK => Msg::LeaderStateOk {
                 heard: d.seq(12, |d| Ok((d.u32()?, d.u64()?)))?,
@@ -2198,6 +2211,47 @@ mod tests {
                 pgs: vec![(1, 2, 4096), (1, 3, 0)],
             },
             Msg::PgUsageOk { known: 2 },
+            Msg::PerfReport {
+                report: perf::PerfReport {
+                    device: 1001,
+                    window_ms: 5000,
+                    pgs: vec![perf::PgHeat {
+                        pool: 1,
+                        pg: 7,
+                        reads: 40,
+                        writes: 9,
+                        read_bytes: 40 << 12,
+                        write_bytes: 9 << 12,
+                        top: vec![(1 << 100, 0, 30, 30 << 12), (5, 2, 19, 19 << 12)],
+                    }],
+                    service: vec![perf::Service {
+                        op: perf::Service::COMMIT,
+                        count: 3,
+                        bytes: 1 << 20,
+                        buckets: [0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        max_us: 120,
+                    }],
+                    inflight_max: 17,
+                    drive: Some(perf::Drive {
+                        model: "M".into(),
+                        firmware: "F".into(),
+                        temperature_mc: Some(41850),
+                        link: Some((4, 4, 80, 80)),
+                        numa: (1, 0),
+                        write_cache: true,
+                        smart: Some(perf::Smart {
+                            temperature_k: 315,
+                            percentage_used: 3,
+                            throttle_seconds: [12, 0],
+                            ..Default::default()
+                        }),
+                        smart_note: String::new(),
+                    }),
+                },
+            },
+            Msg::PerfReport {
+                report: perf::PerfReport::default(),
+            },
             Msg::LeaderState,
             Msg::LeaderStateOk {
                 heard: vec![(0, 40), (1, 1200)],

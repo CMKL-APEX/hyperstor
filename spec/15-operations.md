@@ -54,6 +54,7 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-gpu` | `libhyperstor-gpu` and the two interposers (`cdylib`) |
 | `hyperstor-ctl` | `hyperstorctl` |
 | `hyperstor-ublk` | `hyperstor-ublk`: a volume as a ublk block device (D95) |
+| `hyperstor-smart` | `hyperstor-smart`: the root helper that reads NVMe drives' health logs for `hyperstord` (27-performance.md §30.3, D221) |
 | `hyperstor-kv` | the transactional key–value store (08-engine.md §7.5) |
 | `hyperstor-s3` | the S3 gateway (14-s3.md §14) |
 | `glidex-raftstore` (in the glidex repository) | the Raft store shared with glidex's control plane (D20), a pinned git dependency |
@@ -64,6 +65,10 @@ management service and UI (§23.7), and people's access (§23.9).
   `hyperstor-vhost.service`, `hyperstor-gw.service`, and
   `hyperstor-mgmt.service` when standalone (19-administration.md §23.4). All run as the
   `hyperstor` user.
+- `hyperstor-smart.socket` on storage hosts starts `hyperstor-smart`
+  (root, `CAP_SYS_ADMIN` only, a process per request) for the NVMe
+  health logs `hyperstord` can't read itself (27-performance.md §30.3,
+  D221).
 - `glidex-stord` (root) hands over devices, as on the netd pattern:
   - sets ownership of the NVMe generic character devices, the block
     devices of the other back end, and the RDMA devices;
