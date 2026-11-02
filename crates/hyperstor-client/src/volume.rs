@@ -1100,6 +1100,33 @@ pub enum Take {
 }
 
 impl Client {
+    /// Releases `lease` on volume `id`'s header, as [`Attached::detach`]
+    /// does, for a lease no attachment of this client holds (a trashed
+    /// volume's). A lease that is already gone is no error.
+    pub(crate) async fn release_lease(&self, id: u128, lease: u64) -> Result<(), ClientError> {
+        let key = header_key(id);
+        let r = self
+            .to_primary(
+                META_POOL,
+                Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                },
+                lease,
+                &[],
+                &|to, key| Msg::LeaseRelease { to, key },
+            )
+            .await;
+        match r {
+            Ok((Msg::LeaseOk { .. }, _)) => Ok(()),
+            Err(ClientError::Server {
+                code: Code::Fenced, ..
+            }) => Ok(()),
+            Ok((m, _)) => Err(unexpected(m)),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Attaches volume `id` read-write: takes its lease, refused with
     /// [`ClientError::LeaseHeld`] while another instance holds it.
     pub async fn attach(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {

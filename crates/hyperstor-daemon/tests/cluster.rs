@@ -4857,6 +4857,32 @@ fn the_trash_keeps_what_it_holds_until_purged() {
     c.stop();
 }
 
+/// A forced trash (D54, D80) of an attached volume preempts its holder and
+/// leaves no lease on the trashed header, so it purges (I252: the lease
+/// taken to preempt used to stay, and every purge was refused).
+#[test]
+fn a_volume_trashed_while_attached_purges() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "busy")
+            .await
+            .unwrap();
+        let holder = Client::connect(meta, 6).await.unwrap();
+        let a = holder.attach(v.id).await.unwrap();
+        a.write(0, pattern(3, 8192)).await.unwrap();
+        cl.trash_volume(v.id, true).await.unwrap();
+        let t = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(t.state, hyperstor_client::volume::VolumeState::Trashed);
+        assert_eq!(t.holder, None, "the lease taken to preempt is released");
+        assert!(a.write(0, pattern(4, 8192)).await.is_err(), "fenced");
+        cl.purge_volume(v.id).await.unwrap();
+        assert!(cl.volume(v.id).await.unwrap().is_none());
+    });
+    c.stop();
+}
+
 /// D148: members write a day's audit records to their own numbered parts,
 /// starting the next when one is full and a new one after a restart; a
 /// read merges the parts, and a day from before parts, newest first and a
