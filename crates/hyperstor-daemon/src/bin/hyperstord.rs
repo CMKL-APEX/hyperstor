@@ -173,6 +173,7 @@ fn main() {
         read_timeout,
         commit_delays: None,
         pings: None,
+        older: None,
         partitions: None,
         node_id: node,
         meta,

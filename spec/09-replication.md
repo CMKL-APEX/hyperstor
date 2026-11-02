@@ -148,7 +148,10 @@ members, as long as there are at least `min_size` of them. Below
   differ there hold zeros where another has holes, from a dense copy made
   before I243; the copy with the fewest blocks replaces them, whatever the
   majority, with `hyperstord --hole-repair`. Without it, scrub only logs
-  and counts them.
+  and counts them. A PG whose check is skipped (a member doesn't answer
+  or is from before `Holds`, or the PG changes while checking) is logged
+  with the reason and counted (I253), so a pass that found nothing can be
+  told from one that didn't look.
 
 ### 8.6 Erasure-coded pools (D6)
 

@@ -153,6 +153,13 @@ holes, and counts it under `kind="holes"`. With `hyperstord
 the majority (`kind="holes_repaired"`). Run without it first, to see how
 many objects would change.
 
+A PG whose holes scrub couldn't check is logged (`holes not checked`, with
+the reason) and counted under
+`hyperstor_scrub_pgs_total{kind="holes_unchecked"}`: a member didn't
+answer, runs a version from before the check, or the PG changed while
+checking. A pass that found no holes but counted unchecked PGs hasn't
+looked at them; they are checked on a later pass.
+
 ## A storage node is cut off from the map service
 
 A node that can reach clients but not the map service keeps serving until

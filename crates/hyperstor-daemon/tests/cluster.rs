@@ -64,6 +64,8 @@ struct Cluster {
     commit_delays: Arc<hyperstor_daemon::faults::CommitDelays>,
     /// Pings that fail (D185).
     pings: Arc<hyperstor_daemon::faults::Pings>,
+    /// Message kinds nodes don't know, as an older build.
+    older: Arc<hyperstor_daemon::faults::Older>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
     /// Read timeout given to restarted nodes (D190); zero: the default.
@@ -240,6 +242,7 @@ impl Cluster {
         let partitions = Arc::new(hyperstor_daemon::faults::Partitions::default());
         let commit_delays = Arc::new(hyperstor_daemon::faults::CommitDelays::default());
         let pings = Arc::new(hyperstor_daemon::faults::Pings::default());
+        let older = Arc::new(hyperstor_daemon::faults::Older::default());
         let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
@@ -254,6 +257,7 @@ impl Cluster {
                     read_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
+                    older: Some(older.clone()),
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -298,6 +302,7 @@ impl Cluster {
             faulty,
             commit_delays,
             pings,
+            older,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
@@ -342,6 +347,7 @@ impl Cluster {
             read_timeout: self.read_timeout,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
+            older: Some(self.older.clone()),
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -3696,7 +3702,7 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
 /// and only reports them without `--hole-repair`.
 #[test]
 fn scrub_reports_zeros_where_a_copy_has_holes() {
-    scrub_holes(false);
+    scrub_holes(false, false);
 }
 
 /// With `--hole-repair`, scrub replaces such copies with the one that
@@ -3704,10 +3710,18 @@ fn scrub_reports_zeros_where_a_copy_has_holes() {
 /// parent's data again wherever it is served from (D223).
 #[test]
 fn scrub_repairs_zeros_where_a_copy_has_holes() {
-    scrub_holes(true);
+    scrub_holes(true, false);
 }
 
-fn scrub_holes(repair: bool) {
+/// While a member of the PG is from before `Holds`, scrub can't check its
+/// holes: it counts and logs the PG as unchecked rather than passing it
+/// as clean, and checks it once the member answers.
+#[test]
+fn scrub_counts_pgs_whose_holes_it_cannot_check() {
+    scrub_holes(false, true);
+}
+
+fn scrub_holes(repair: bool, older: bool) {
     use hyperstor_proto::{Msg, Target, block_crcs, decode_holds};
     let c = Cluster::start_opts(
         4,
@@ -3746,11 +3760,29 @@ fn scrub_holes(repair: bool) {
         wait_backfilled(&cl).await;
         (v.lineage, k.id)
     });
+    // Without `Holds` on any node (`older`), scrub can't check a PG's
+    // holes, from before the zeros below are written.
+    let holds = Msg::Holds {
+        to: Target {
+            pool: POOL,
+            pg: 0,
+            map_epoch: 0,
+            pg_epoch: 0,
+            lease: 0,
+        },
+    }
+    .kind();
+    let forget = older.then(|| c.older.clone());
     // Zeros written behind the primary's back into the clone's versions,
     // where they have holes: chunk 0 on one replica, chunk 1 on the
     // primary and a replica, so that its one good copy is outvoted.
     with_client(meta, 6, move |cl| async move {
         let m = cl.map();
+        let conn = |d: u32| {
+            let addr = m.device_addr(d).unwrap();
+            async move { hyperstor_rpc::Conn::connect(addr).await.unwrap() }
+        };
+        let mut plants = Vec::new();
         for i in 0..2u64 {
             let pg = pg_of(lineage, i, m.pools[&POOL].pg_count);
             let info = m.pg(POOL, pg).unwrap();
@@ -3760,10 +3792,6 @@ fn scrub_holes(repair: bool) {
                 map_epoch: m.epoch,
                 pg_epoch: info.epoch,
                 lease: 0,
-            };
-            let conn = |d: u32| {
-                let addr = m.device_addr(d).unwrap();
-                async move { hyperstor_rpc::Conn::connect(addr).await.unwrap() }
             };
             let (reply, p) = conn(info.acting[0])
                 .await
@@ -3778,12 +3806,20 @@ fn scrub_holes(repair: bool) {
                 .find(|(k, h)| k.name.starts_with(&chunk) && k.name != chunk && h.blocks == 1)
                 .expect("the clone's version of the chunk")
                 .0;
-            let zeros = vec![0u8; 4096 * (1 + i as usize)];
             let damaged = if i == 0 {
                 vec![info.acting[1]]
             } else {
                 vec![info.acting[0], info.acting[1]]
             };
+            plants.push((i, to, key, damaged));
+        }
+        if let Some(f) = &forget {
+            for n in 0..4 {
+                f.set(n, holds, true);
+            }
+        }
+        for (i, to, key, damaged) in plants {
+            let zeros = vec![0u8; 4096 * (1 + i as usize)];
             for d in damaged {
                 let (reply, _) = conn(d)
                     .await
@@ -3818,6 +3854,21 @@ fn scrub_holes(repair: bool) {
         m.scrub_holes_repaired
             .load(std::sync::atomic::Ordering::Relaxed)
     };
+    let unchecked = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes_unchecked
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    if older {
+        let t = std::time::Instant::now();
+        while count(unchecked) < 2 {
+            assert!(t.elapsed().as_secs() < 20, "no PG counted as unchecked");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(count(holes), 0, "holes checked without Holds");
+        for n in 0..4 {
+            c.older.set(n, holds, false);
+        }
+    }
     let t = std::time::Instant::now();
     let want = |n: u64| {
         if repair {

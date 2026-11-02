@@ -64,6 +64,9 @@ pub struct ShardMetrics {
     /// holes (D223), and those repaired from the copy with the holes.
     pub scrub_holes: AtomicU64,
     pub scrub_holes_repaired: AtomicU64,
+    /// PGs whose check of holes scrub skipped: a member didn't answer
+    /// `Holds` or is from before it, or the PG changed while checking.
+    pub scrub_holes_unchecked: AtomicU64,
     /// Objects a new primary pushed to members while peering (I61).
     pub peer_pushes: AtomicU64,
     /// Times the reactor's thread was held for [`crate::STALL`] or more,
@@ -181,6 +184,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
                 ("peering", g(&m.peer_pushes)),
             ]
         },
+    );
+    family(
+        "hyperstor_scrub_pgs_total",
+        "counter",
+        "Scrub: PGs whose check of holes was skipped, because a member didn't answer or the PG changed while checking.",
+        &|m| vec![("holes_unchecked", g(&m.scrub_holes_unchecked))],
     );
     family(
         "hyperstor_device_objects",
@@ -312,7 +321,10 @@ mod tests {
         assert!(t.contains(
             "hyperstor_read_timeouts_total{node=\"4\",device=\"4001\",kind=\"from_member\"} 0\n"
         ));
-        assert_eq!(t.matches("# TYPE ").count(), 15);
+        assert!(t.contains(
+            "hyperstor_scrub_pgs_total{node=\"4\",device=\"4001\",kind=\"holes_unchecked\"} 0\n"
+        ));
+        assert_eq!(t.matches("# TYPE ").count(), 16);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {
