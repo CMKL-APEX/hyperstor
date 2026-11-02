@@ -12,7 +12,7 @@ glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164a
 hyperstor-engine = { path = "../hyperstor-engine" }
 # The host's ports, to check routing by source for endpoints (D207, G47).
 hyperstor-fabric = { path = "../hyperstor-fabric" }
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "d84390924f8acfd262618db922a71bde85df3b85" }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "7e47d6ca10a77ac1b2e85392d9b0ce2abf7f5d0c" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-pki = { path = "../hyperstor-pki" }
 # Joining and renewing over the cluster API (spec/19-administration.md §23.4.2).

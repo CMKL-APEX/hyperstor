@@ -1374,7 +1374,7 @@ dependencies = [
 [[package]]
 name = "glidex-topology"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=d84390924f8acfd262618db922a71bde85df3b85#d84390924f8acfd262618db922a71bde85df3b85"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=7e47d6ca10a77ac1b2e85392d9b0ce2abf7f5d0c#7e47d6ca10a77ac1b2e85392d9b0ce2abf7f5d0c"
 dependencies = [
  "nix",
  "serde",
