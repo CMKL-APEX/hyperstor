@@ -1866,6 +1866,14 @@ pub struct WireObject {
     pub data: Vec<u8>,
     pub attrs: Vec<(Vec<u8>, Vec<u8>)>,
     pub kv: Vec<(Vec<u8>, Vec<u8>)>,
+    /// For an object with holes, the blocks it holds, as (first block,
+    /// count) in order; `data` is theirs alone, back to back. None: `data`
+    /// is every block from the start. A hole isn't zeros: a volume's
+    /// version reads its older versions and its parent's through it
+    /// (08-engine.md §7.2, issue #158). Encoded last and only when
+    /// present, so an object without holes is what older nodes decode,
+    /// and they refuse one with holes rather than fill them.
+    pub runs: Option<Vec<(u64, u64)>>,
 }
 
 pub fn encode_object(o: &WireObject) -> Vec<u8> {
@@ -1876,6 +1884,11 @@ pub fn encode_object(o: &WireObject) -> Vec<u8> {
     e.bytes(&o.data);
     enc_pairs(&mut e, &o.attrs);
     enc_pairs(&mut e, &o.kv);
+    if let Some(runs) = &o.runs {
+        e.seq(runs, |e, (lb, n)| {
+            e.u64(*lb).u64(*n);
+        });
+    }
     e.into_vec()
 }
 
@@ -1891,11 +1904,27 @@ pub fn decode_object(b: &[u8]) -> Result<WireObject, DecodeError> {
             value: 0,
         });
     }
+    let attrs = dec_pairs(&mut d)?;
+    let kv = dec_pairs(&mut d)?;
+    let runs = if d.remaining() > 0 {
+        let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+        let held: u64 = runs.iter().map(|(_, n)| *n).sum();
+        if held.checked_mul(4096) != Some(data.len() as u64) {
+            return Err(DecodeError::Invalid {
+                field: "object runs",
+                value: held,
+            });
+        }
+        Some(runs)
+    } else {
+        None
+    };
     let o = WireObject {
         size,
         data,
-        attrs: dec_pairs(&mut d)?,
-        kv: dec_pairs(&mut d)?,
+        attrs,
+        kv,
+        runs,
     };
     d.finish()?;
     Ok(o)
@@ -2420,9 +2449,23 @@ mod tests {
             data: vec![3; 8192],
             attrs: vec![(b"v".to_vec(), b"1".to_vec())],
             kv: vec![(b"x".to_vec(), b"y".to_vec())],
+            runs: None,
         };
         let mut enc = encode_object(&o);
         assert_eq!(decode_object(&enc).unwrap(), o);
+        // With holes: the blocks held, and their data alone.
+        let sparse = WireObject {
+            size: 5 * 4096,
+            data: vec![4; 2 * 4096],
+            runs: Some(vec![(1, 1), (4, 1)]),
+            ..o.clone()
+        };
+        assert_eq!(decode_object(&encode_object(&sparse)).unwrap(), sparse);
+        let short = WireObject {
+            runs: Some(vec![(1, 3)]),
+            ..sparse.clone()
+        };
+        assert!(decode_object(&encode_object(&short)).is_err());
         // A flipped data byte is refused.
         let at = enc.len() - 40;
         enc[at] ^= 1;
