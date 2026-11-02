@@ -60,12 +60,15 @@ pub fn from_sysfs(sys: &Path, path: &Path, cpu: Option<usize>) -> Drive {
         return d;
     }
     d.write_cache = read(&block.join("queue/write_cache")).is_some_and(|w| w == "write back");
-    // A namespace's `device` is its controller (NVMe) or its SCSI device.
-    let dev = block.join("device");
-    d.model = read(&dev.join("model")).unwrap_or_default();
-    d.firmware = read(&dev.join("firmware_rev"))
-        .or_else(|| read(&dev.join("rev")))
+    // A namespace's `device` is its controller (NVMe) or its SCSI device;
+    // with native NVMe multipath it is the subsystem, and the controllers
+    // (`nvmeN`) are under it: the first one has the hwmon and the PCI link.
+    let sub = block.join("device");
+    d.model = read(&sub.join("model")).unwrap_or_default();
+    d.firmware = read(&sub.join("firmware_rev"))
+        .or_else(|| read(&sub.join("rev")))
         .unwrap_or_default();
+    let dev = controller(&sub).unwrap_or(sub);
     if let Some(n) = read(&dev.join("numa_node")).and_then(|n| n.parse().ok()) {
         d.numa.0 = n;
     }
@@ -95,6 +98,22 @@ pub fn from_sysfs(sys: &Path, path: &Path, cpu: Option<usize>) -> Drive {
         d.numa.0 = n;
     }
     d
+}
+
+/// The first controller under an NVMe subsystem's sysfs directory, if
+/// `sub` is one.
+fn controller(sub: &Path) -> Option<PathBuf> {
+    let mut names: Vec<String> = std::fs::read_dir(sub)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.strip_prefix("nvme")
+                .is_some_and(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    names.sort();
+    names.first().map(|n| sub.join(n))
 }
 
 fn le(b: &[u8], at: usize, n: usize) -> u64 {
@@ -279,6 +298,41 @@ mod tests {
         assert_eq!(d.link, Some((2, 4, 80, 160)));
         assert_eq!(d.numa, (1, 0));
         assert!(d.write_cache);
+        // Native multipath: the namespace hangs off the subsystem, which has
+        // the model; the controller under it has the rest.
+        w("class/block/nvme8n1/queue/write_cache", "write through");
+        w("class/block/nvme8n1/device/model", "Big Drive 7.68TB");
+        w("class/block/nvme8n1/device/firmware_rev", "4.5.6");
+        w("class/block/nvme8n1/device/nvme8n1/dev", "259:1");
+        w("class/block/nvme8n1/device/nvme8/numa_node", "0");
+        w(
+            "class/block/nvme8n1/device/nvme8/hwmon6/temp1_input",
+            "38850",
+        );
+        w(
+            "class/block/nvme8n1/device/nvme8/device/current_link_width",
+            "4",
+        );
+        w(
+            "class/block/nvme8n1/device/nvme8/device/max_link_width",
+            "4",
+        );
+        for s in ["current", "max"] {
+            w(
+                &format!("class/block/nvme8n1/device/nvme8/device/{s}_link_speed"),
+                "16.0 GT/s PCIe",
+            );
+        }
+        std::fs::write(dev.join("nvme8n1"), b"").unwrap();
+        let m = from_sysfs(&root, &dev.join("nvme8n1"), Some(3));
+        assert_eq!(
+            (m.model.as_str(), m.firmware.as_str()),
+            ("Big Drive 7.68TB", "4.5.6")
+        );
+        assert_eq!(m.temperature_mc, Some(38850));
+        assert_eq!(m.link, Some((4, 4, 160, 160)));
+        assert_eq!(m.numa, (0, 0));
+        assert!(!m.write_cache);
         // A file has none of it.
         let f = from_sysfs(&root, &root.join("nothing.img"), None);
         assert_eq!((f.model.as_str(), f.link, f.numa), ("", None, (-1, -1)));

@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 2 | 17 |
+| 9 | 0 | 1 | 17 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/perf-drive-sysfs`, [#164](https://github.com/CMKL-APEX/hyperstor/pull/164), [#166](https://github.com/CMKL-APEX/hyperstor/pull/166) | #164 merged and deployed to the pilot (10c687c): heat, service time, the Advisor work; NVMe drives showed no temperature, link or SMART (multipath sysfs, device permissions), fixed in I251 | Merge the fix and redeploy; then G54 and G55 on the pilot NVMe drives, the Advisor's thresholds from real load | 2026-11-02 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-endpoints`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161) | #156 merged (endpoints, per-request choice, hyperstor-fabric, routing check; glidex #250 merged). On feat/fabric-endpoints: D215 (the installer proposes endpoints from the topology and keeps them in the map through SetEndpoints, a node only its own), D216 (strict rp_filter fails the check), D217 (netplan example; glidex netd issue) | Its review and merge; then the reconciler in the leader (stage 3), health per network (stage 2) | 2026-11-02 |
 | **The cluster's raw space in hyperstorctl status and the web UI** (`cluster-space`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/cluster-space`, [#157](https://github.com/CMKL-APEX/hyperstor/pull/157) | Built (I246): status prints the raw space free and total over the devices in; the Overview page shows it as a bar | Review and merge, then deploy to the pilot | 2026-11-02 |
 | **Recovery keeps a clone's holes (issue #158)** (`clone-holes`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS4 | `feat/hole-digest`, [#162](https://github.com/CMKL-APEX/hyperstor/pull/162), [#163](https://github.com/CMKL-APEX/hyperstor/pull/163) | #162 merged and on the pilot (771cf2d). Scrub now checks which blocks copies hold (D223, I249): copies holding zeros where another has holes are reported, and with hyperstord --hole-repair replaced by the copy with the holes, whatever the vote | Deploy and run the dry run on the pilot (scrub without --hole-repair), report the counts, then turn the repair on | 2026-11-02 |
@@ -34,7 +35,6 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `feat/perf-heat`, [#164](https://github.com/CMKL-APEX/hyperstor/pull/164) | Built and tested (D218–D222, I247–I248): per-PG heat and top volumes, device service time, sysfs and SMART through hyperstor-smart, the leader's 15 minutes, CLI and web UI views, the Advisor | Merge #164 once CI passes; then on the pilot: G54 and G55 on its NVMe drives, the Advisor's thresholds from real load | 2026-11-02 |
 | **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader | Merge #159 once CI passes; then the web UI's buttons; live moves of attached volumes later | 2026-11-02 |
 
 ## Done
