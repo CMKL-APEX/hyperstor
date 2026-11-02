@@ -2345,7 +2345,7 @@ impl Shard {
         Some(out)
     }
 
-    /// A digest of which blocks object `key` holds, and how many (D218):
+    /// A digest of which blocks object `key` holds, and how many (D223):
     /// copies with equal [`Shard::digest`]s that differ here differ only in
     /// blocks of zeros one holds where another has a hole. From the index.
     pub fn held(&self, key: &ObjKey) -> Option<(u64, u64)> {

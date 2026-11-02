@@ -15,6 +15,7 @@ pub mod fullness;
 pub mod health;
 pub mod mgmt_store;
 pub mod operations;
+pub mod perf;
 pub mod replica;
 pub mod settings;
 pub mod store;
@@ -255,6 +256,15 @@ pub enum Admin {
         pool: u32,
         since: u64,
         reply: hyperstor_reactor::chan::OneSender<Result<PoolUsage, String>>,
+    },
+    /// The devices' load and drives as the leader holds them (D218), with
+    /// the published map; only the leader has them.
+    Perf(hyperstor_reactor::chan::OneSender<Result<(perf::Perf, ClusterMap), String>>),
+    /// The volumes whose chunks are under these (lineage, branch) pairs,
+    /// as (id, name, pool), for naming the load's top volumes.
+    VolumesOf {
+        keys: Vec<(u128, u32)>,
+        reply: hyperstor_reactor::chan::OneSender<Vec<(perf::VolumeKey, perf::VolumeName)>>,
     },
     /// How long the leader has failed to commit map changes, if it has.
     Uncommitted(hyperstor_reactor::chan::OneSender<Option<Duration>>),
@@ -508,6 +518,27 @@ async fn run_snap_op(
     })
 }
 
+/// The volume whose chunks are under `lineage`'s `branch`: the lineage's
+/// own volume for branch 0 (if it still is on it), else the branch's
+/// recorded owner.
+async fn volume_of(
+    c: &std::rc::Rc<hyperstor_client::Client>,
+    lineage: u128,
+    branch: u32,
+) -> Option<Volume> {
+    let id = if branch == 0 {
+        lineage
+    } else {
+        c.branches(lineage)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|b| b.branch == branch)?
+            .volume
+    };
+    c.volume(id).await.ok().flatten()
+}
+
 /// Why a volume operation failed, for the API's error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeFault {
@@ -614,6 +645,8 @@ pub struct Meta {
     /// Bumped with every change to `usage`, from the wall clock's
     /// nanoseconds, so a new leader's versions don't repeat an old one's.
     usage_version: Cell<u64>,
+    /// The devices' load and drives (D218): the leader's, in memory only.
+    perf: RefCell<perf::Perf>,
 }
 
 /// PGs whose last scrub left objects unresolved, with how many.
@@ -783,6 +816,7 @@ impl Meta {
             inconsistent: RefCell::new(BTreeMap::new()),
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
+            perf: RefCell::new(perf::Perf::default()),
         })
     }
 
@@ -1999,6 +2033,30 @@ impl Meta {
                 Admin::PgUsage { pool, since, reply } => {
                     let _ = reply.send(self.pool_usage(pool, since));
                 }
+                Admin::Perf(reply) => {
+                    let _ = reply.send(if self.leads() {
+                        Ok((
+                            self.perf.borrow().clone(),
+                            (*self.published.borrow()).clone(),
+                        ))
+                    } else {
+                        Err(self.not_leader())
+                    });
+                }
+                Admin::VolumesOf { keys, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let mut out = Vec::new();
+                        if let Ok(c) = c.await {
+                            for (lineage, branch) in keys {
+                                if let Some(v) = volume_of(&c, lineage, branch).await {
+                                    out.push(((lineage, branch), (v.id, v.name, v.pool)));
+                                }
+                            }
+                        }
+                        let _ = reply.send(out);
+                    });
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -2703,7 +2761,8 @@ impl Meta {
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
-                    | Msg::PgUsage { .. })
+                    | Msg::PgUsage { .. }
+                    | Msg::PerfReport { .. })
             )
         {
             return Msg::Error {
@@ -2794,6 +2853,12 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            Ok(Msg::PerfReport { report }) => {
+                self.perf.borrow_mut().note(report);
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
             Ok(Msg::PgUsage { device, full, pgs }) => Msg::PgUsageOk {
                 known: self.note_usage(device, full, &pgs),
             },

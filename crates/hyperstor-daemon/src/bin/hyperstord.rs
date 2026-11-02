@@ -21,7 +21,7 @@
 //! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
 //! `--hole-repair`: scrub repairs copies that hold blocks of zeros where
 //! another copy has holes, from the copy with the holes (04-decisions.md
-//! D218); without it, scrub only logs and counts them.
+//! D223); without it, scrub only logs and counts them.
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
 //! `--read-timeout-ms N`: a read that waits longer for its device is

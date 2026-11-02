@@ -61,7 +61,7 @@ pub struct ShardMetrics {
     /// Objects a deep scrub found with a block that failed its CRC.
     pub scrub_damaged: AtomicU64,
     /// Objects whose copies held blocks of zeros where another copy had
-    /// holes (D218), and those repaired from the copy with the holes.
+    /// holes (D223), and those repaired from the copy with the holes.
     pub scrub_holes: AtomicU64,
     pub scrub_holes_repaired: AtomicU64,
     /// Objects a new primary pushed to members while peering (I61).

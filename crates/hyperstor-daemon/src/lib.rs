@@ -25,7 +25,9 @@
 #![allow(clippy::result_large_err)]
 
 pub mod diag;
+pub mod drive;
 pub mod faults;
+pub mod heat;
 pub mod metrics;
 mod shard_cell;
 
@@ -183,7 +185,7 @@ pub struct NodeConfig {
     /// ("unsupported request"), as in a rolling upgrade.
     pub no_digests: bool,
     /// Scrub repairs copies that hold blocks of zeros where another copy
-    /// has holes, from the copy with the holes (D218). Off, it only
+    /// has holes, from the copy with the holes (D223). Off, it only
     /// reports them: the dry run.
     pub hole_repair: bool,
     /// Test hook: while set, this node neither reaches the map service nor
@@ -273,6 +275,9 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
+
+/// How often a device reports its load to the leader (D218).
+const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -405,6 +410,17 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     hyperstor_reactor::set_spin(spin);
                     let may_format = sh.device.formats_itself();
                     let kind = sh.device.kind();
+                    // A block device's drive is read for the leader (D220).
+                    let drive_path = match &sh.device {
+                        DeviceSpec::File { path, .. }
+                            if std::fs::metadata(path).is_ok_and(|m| {
+                                std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type())
+                            }) =>
+                        {
+                            Some(path.clone())
+                        }
+                        _ => None,
+                    };
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -483,6 +499,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             .and_then(|v| v.parse().ok())
                             .map_or(Duration::from_secs(30), Duration::from_millis);
                         spawn(st.clone().usage(every));
+                        // Every 5 s (HS_PERF_MS for tests).
+                        *st.drive.borrow_mut() =
+                            Some(drive::watch(sh.device_id, drive_path, cpu));
+                        let every = std::env::var("HS_PERF_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .map_or(PERF_EVERY, Duration::from_millis);
+                        spawn(st.clone().perf(every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -628,6 +652,10 @@ struct ShardState {
     cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
+    /// This window's load, for the leader (`perf`, D218).
+    heat: heat::Heat,
+    /// The drive's latest reading (`drive::watch`), if it has one.
+    drive: RefCell<Option<Arc<std::sync::Mutex<Option<hyperstor_proto::perf::Drive>>>>>,
 }
 
 /// Coarse deadlines for the I/O path: one ticker per reactor wakes them
@@ -1103,6 +1131,8 @@ impl ShardState {
             blocked,
             cache_gens: RefCell::new(HashMap::new()),
             metrics,
+            heat: heat::Heat::default(),
+            drive: RefCell::new(None),
         }))
     }
 
@@ -1204,6 +1234,7 @@ impl ShardState {
         if writes.is_empty() {
             return Ok(());
         }
+        let commit_bytes: u64 = writes.iter().map(|(_, b)| b.len() as u64).sum();
         let delay = self
             .commit_delays
             .borrow()
@@ -1227,7 +1258,15 @@ impl ShardState {
             }
         };
         let limit = self.io_timeout.get();
-        match hyperstor_reactor::time::timeout(limit, io).await {
+        self.heat.begin();
+        let began = std::time::Instant::now();
+        let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::COMMIT,
+            began.elapsed(),
+            commit_bytes,
+        );
+        match r {
             Ok(r) => r,
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -1796,6 +1835,13 @@ impl ShardState {
                 Msg::Write { to, key, off, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.writes, 1);
                     metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
+                    self.heat.request(
+                        to.pool,
+                        to.pg,
+                        heat::volume_of(&key.name),
+                        true,
+                        payload.len() as u64,
+                    );
                     self.write(h.req, instance, to, key, off, crcs, payload, tx.clone())
                         .await;
                 }
@@ -1873,9 +1919,11 @@ impl ShardState {
                 // its request id.
                 Msg::Read { to, key, off, len } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read(to, key, off, len).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -1920,9 +1968,11 @@ impl ShardState {
                     len,
                 } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read_at(to, key, layers, off, len, true).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -3631,7 +3681,7 @@ impl ShardState {
         (Msg::DigestsOk, encode_digests(&entries))
     }
 
-    /// Which blocks this node holds of each object of a PG (D218), once
+    /// Which blocks this node holds of each object of a PG (D223), once
     /// every commit queued so far is done, as [`Self::digests`].
     async fn holds(&self, to: Target) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, false).await {
@@ -4134,6 +4184,49 @@ impl ShardState {
                 _ => true,
             };
             sent = now;
+        }
+    }
+
+    /// Reports this device's load, and its drive when there is a new
+    /// reading, to the map service every `every` (D218): best effort, a
+    /// lost report is a lost window.
+    async fn perf(self: Rc<Self>, every: Duration) {
+        let mut last = std::time::Instant::now();
+        let mut sent_drive: Option<hyperstor_proto::perf::Drive> = None;
+        let mut since_drive = u32::MAX;
+        loop {
+            sleep(every).await;
+            let (pgs, service, inflight_max) = self.heat.take();
+            let window_ms = last.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            last = std::time::Instant::now();
+            if self.cut_off() {
+                continue;
+            }
+            // The drive when it changed, and at least every 30 s, so a new
+            // leader has it soon.
+            let now = self
+                .drive
+                .borrow()
+                .as_ref()
+                .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
+            since_drive = since_drive.saturating_add(window_ms);
+            let drive = match now {
+                Some(d) if sent_drive.as_ref() != Some(&d) || since_drive >= 30_000 => {
+                    since_drive = 0;
+                    sent_drive = Some(d.clone());
+                    Some(d)
+                }
+                _ => None,
+            };
+            let report = hyperstor_proto::perf::PerfReport {
+                device: self.me,
+                window_ms,
+                pgs,
+                service,
+                inflight_max,
+                drive,
+            };
+            let _ = self.client.call_meta(&Msg::PerfReport { report }).await;
         }
     }
 
@@ -4875,7 +4968,7 @@ impl ShardState {
         ok
     }
 
-    /// Scrub's check of holes (D218), on the objects whose copies' digests
+    /// Scrub's check of holes (D223), on the objects whose copies' digests
     /// agree: they hold the same data, but a copy may hold blocks of zeros
     /// where another has holes, which a volume's version reads through to
     /// its older versions and its parent (issue #158). Only a dense copy,
@@ -5485,7 +5578,15 @@ impl ShardState {
             }
         };
         let limit = self.read_timeout.get();
+        let read_bytes: u64 = ios.iter().map(|&(_, _, n)| n as u64).sum();
+        self.heat.begin();
+        let began = std::time::Instant::now();
         let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::READ,
+            began.elapsed(),
+            read_bytes,
+        );
         // Abandoned or not, what the read gets no longer matters.
         self.shard.end_read(&plan);
         match r {

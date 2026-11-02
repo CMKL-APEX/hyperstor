@@ -1472,3 +1472,33 @@ Findings:
    QD4 bounds the 1 MiB runs. Still to measure for G48: connected mode,
    several clients, the 8 ports at once (which needs G47's routing
    rules), and a host port on the 100 GbE bond.
+
+## 2026-11-02: load reports (D218–D220)
+
+Whether counting per-PG requests, top volumes and device service time
+(27-performance.md §30.2) costs I/O. Host **dev-2** (Linux 6.8.0), shared
+with other sessions (load average 3–5 of 256 CPUs). A is main at bac050d,
+B this branch (`feat/perf-heat`), both release builds; a whole cluster in
+one process on memory devices, where the counting is the largest share
+of a request's cost. A, B, A, B back to back, 10 s per test:
+
+```sh
+HS_BENCH_SECS=10 hyperstor-bench cluster mem
+```
+
+| Test | A ops/s | B ops/s | A p99 µs | B p99 µs |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 7088, 6743 | 7012, 6895 | 162, 209 | 175, 167 |
+| 4 KiB random writes, QD32 | 24151, 23976 | 23917, 23677 | 2986, 3022 | 3030, 3055 |
+| 4 KiB random reads, QD1 | 17217, 17135 | 17236, 17063 | 71, 72 | 77, 72 |
+| 4 KiB random reads, QD32 | 51426, 51387 | 51357, 51164 | 1400, 1402 | 1405, 1408 |
+| 1 MiB writes, QD4 | 567, 566 | 575, 578 | 11760, 11541 | 11213, 11598 |
+| 1 MiB reads, QD4 | 1534, 1504 | 1553, 1516 | 4118, 4110 | 3995, 4123 |
+
+**Findings.**
+
+1. No difference beyond the runs' own spread. The largest, 4 KiB writes
+   at QD32, is 1.1 % fewer operations (23,797 against 24,064 on average),
+   while the two A runs at QD1 differ by 5 %.
+2. On a real device the counting is a smaller share still: a 4 KiB write
+   here takes 140 µs on memory, and a flush to flash adds its own.

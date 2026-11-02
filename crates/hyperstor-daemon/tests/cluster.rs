@@ -70,7 +70,7 @@ struct Cluster {
     read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
-    /// Scrub's hole repair on every node (D218).
+    /// Scrub's hole repair on every node (D223).
     hole_repair: bool,
 }
 
@@ -155,7 +155,7 @@ impl Cluster {
     }
 
     /// As [`Self::start_graced`]; with `hole_repair`, scrub repairs copies
-    /// holding zeros where another has holes (D218).
+    /// holding zeros where another has holes (D223).
     #[allow(clippy::too_many_arguments)]
     fn start_opts(
         nodes: u32,
@@ -3692,7 +3692,7 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
 }
 
 /// Scrub finds copies of a clone's versions that hold zeros where
-/// another copy has holes, as pushes from before I243 made them (D218),
+/// another copy has holes, as pushes from before I243 made them (D223),
 /// and only reports them without `--hole-repair`.
 #[test]
 fn scrub_reports_zeros_where_a_copy_has_holes() {
@@ -3701,7 +3701,7 @@ fn scrub_reports_zeros_where_a_copy_has_holes() {
 
 /// With `--hole-repair`, scrub replaces such copies with the one that
 /// has the holes, even when it is outvoted, and the clone reads its
-/// parent's data again wherever it is served from (D218).
+/// parent's data again wherever it is served from (D223).
 #[test]
 fn scrub_repairs_zeros_where_a_copy_has_holes() {
     scrub_holes(true);
