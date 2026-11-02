@@ -491,6 +491,116 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
     });
 }
 
+/// Host check G54 (27-performance.md §30.7): does reading the SMART log
+/// stall I/O? On an installed cluster, creates a scratch volume of
+/// `HS_GIB` GiB (default 8) in `pool`, fills it, and reads 4 KiB at random
+/// at queue depth `HS_QD` (default 32) through `HS_PHASES` phases (default
+/// 6) of `secs` each, alternately quiet and with `HS_POLL` (a shell
+/// command, such as `hyperstor-smart health PATH` for each drive) run every
+/// `HS_POLL_MS` (default 1000). One row per phase; the volume is deleted at
+/// the end. The read cache is off, so every read reaches a drive.
+fn smart_poll_suite(meta: std::net::SocketAddr, pool: u32, secs: f64) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let env = |k: &str, d: u64| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    let (gib, qd, phases, every) = (
+        env("HS_GIB", 8),
+        env("HS_QD", 32) as usize,
+        env("HS_PHASES", 6),
+        env("HS_POLL_MS", 1000),
+    );
+    let poll = std::env::var("HS_POLL").expect("HS_POLL: the command that reads the logs");
+    hyperstor_reactor::block_on(async move {
+        let cl = hyperstor_client::Client::connect(meta, hyperstor_client::random_u64())
+            .await
+            .unwrap();
+        cl.set_read_cache_bytes(0);
+        let size = gib << 30;
+        let v = cl
+            .create_volume(pool, size, None, "g54-scratch")
+            .await
+            .unwrap();
+        let a = cl.attach(v.id).await.unwrap();
+        eprintln!("volume {:032x}: filling {gib} GiB", v.id);
+        let mut rng = SmallRng::seed_from_u64(54);
+        for off in (0..size).step_by(4 << 20) {
+            let mut data = vec![0u8; 4 << 20];
+            rng.fill(&mut data[..]);
+            a.write(off, data).await.unwrap();
+        }
+        header();
+        for phase in 0..phases {
+            let polling = phase % 2 == 1;
+            let stop = Arc::new(AtomicBool::new(false));
+            let poller = polling.then(|| {
+                let (stop, poll) = (stop.clone(), poll.clone());
+                std::thread::spawn(move || {
+                    // Polls, and how many failed: a failure is counted, not
+                    // fatal, so the volume is still deleted at the end.
+                    let (mut n, mut failed) = (0u64, 0u64);
+                    while !stop.load(Ordering::Relaxed) {
+                        let t = Instant::now();
+                        let ok = std::process::Command::new("sh")
+                            .args(["-c", &poll])
+                            .stdout(std::process::Stdio::null())
+                            .status()
+                            .is_ok_and(|s| s.success());
+                        n += 1;
+                        failed += u64::from(!ok);
+                        std::thread::sleep(
+                            Duration::from_millis(every).saturating_sub(t.elapsed()),
+                        );
+                    }
+                    (n, failed)
+                })
+            });
+            let lats = Rc::new(RefCell::new(Vec::new()));
+            let t = Instant::now();
+            let hs: Vec<_> = (0..qd)
+                .map(|w| {
+                    let (a, lats) = (a.clone(), lats.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let mut rng = SmallRng::seed_from_u64(phase * 1000 + w as u64);
+                        while t.elapsed().as_secs_f64() < secs {
+                            let off = rng.random_range(0..size / 4096) * 4096;
+                            let s = Instant::now();
+                            std::hint::black_box(a.read(off, 4096).await.unwrap());
+                            lats.borrow_mut().push(s.elapsed());
+                        }
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.await;
+            }
+            let elapsed = t.elapsed();
+            stop.store(true, Ordering::Relaxed);
+            let (polls, failed) = poller.map_or((0, 0), |p| p.join().unwrap());
+            let mut l = Lat(std::mem::take(&mut *lats.borrow_mut()));
+            let n = l.0.len() as u64;
+            let (p999, max) = (
+                l.pct(0.999),
+                l.0.last().map_or(0.0, |d| d.as_secs_f64() * 1e6),
+            );
+            let name = if polling {
+                format!("4 KiB random reads, QD{qd}, polled ({polls} polls, {failed} failed)")
+            } else {
+                format!("4 KiB random reads, QD{qd}, quiet")
+            };
+            row(&name, n, elapsed, 4096, &mut l);
+            eprintln!("{name}: p99.9 {p999:.0} µs, max {max:.0} µs");
+        }
+        a.detach().await.unwrap();
+        cl.delete_volume(v.id).await.unwrap();
+    });
+}
+
 /// Host check G17 (19-administration.md §23.3, D58), first part: does load on
 /// the cluster API move client I/O latency? A map service with its API and
 /// three storage nodes on memory devices run in this process; the client
@@ -1764,6 +1874,15 @@ fn main() {
         Some("adminload") => {
             // hyperstor-bench adminload (G17)
             adminload_suite(secs);
+        }
+        Some("smartpoll") => {
+            // hyperstor-bench smartpoll <map service address> <pool> (G54)
+            let meta = args
+                .get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("map service address");
+            let pool = args.get(3).and_then(|p| p.parse().ok()).expect("pool");
+            smart_poll_suite(meta, pool, secs);
         }
         Some("remote") => {
             // hyperstor-bench remote <map service address>

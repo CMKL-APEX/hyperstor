@@ -151,6 +151,9 @@ shown (every 5 s; findings every 10 s).
   second for ten minutes and compare the read p99 with and without.
   Some drives serve a log page by pausing I/O; if one does, poll it less
   often or not at all for that model. Every 30 s is the default.
+  Measured 2026-11-02 on the pilot's Samsung PM1733 drives (02-benchmarks.md):
+  read every second for 10 minutes under 50,000 random reads a second, no
+  change in p99 or p99.9; other models are open.
 - **G55. Service time sees what the drive does.** On an NVMe drive
   filled to 90 % and written sustainedly, the commit p99 and the
   heatmap show garbage collection as the drive's own tools (`nvme
