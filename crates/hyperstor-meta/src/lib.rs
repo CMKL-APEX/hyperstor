@@ -230,6 +230,13 @@ pub enum Admin {
         class: Option<String>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, String), String>>,
     },
+    /// Replaces a device's endpoints (D215). Replies with the working
+    /// map's epoch.
+    SetEndpoints {
+        device: u32,
+        endpoints: Vec<(String, SocketAddr)>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Appends a device to a node (D167). Replies with the device's id
     /// and the working map's epoch.
     AddDevice {
@@ -1395,6 +1402,21 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Replaces a device's endpoints (D215). Returns the working map's
+    /// epoch.
+    pub fn set_endpoints(
+        &self,
+        device: u32,
+        endpoints: Vec<(String, SocketAddr)>,
+    ) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.set_endpoints(device, endpoints)?;
+        Ok(map.epoch)
+    }
+
     /// Deletes pool `pool` (24-pools-and-devices.md §27.3.4; D176, D181):
     /// it leaves the map at once, its id kept so none is given again, and
     /// each device deletes what it holds of it. The caller checks first
@@ -2058,6 +2080,13 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_class(device, class.as_deref()));
+                }
+                Admin::SetEndpoints {
+                    device,
+                    endpoints,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_endpoints(device, endpoints));
                 }
                 Admin::AddDevice {
                     node,

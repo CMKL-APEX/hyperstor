@@ -689,6 +689,17 @@ pub fn status(
                         weight_fixed: map.fixed_weights.contains(&d.id),
                         kind: map.kinds.get(&d.id).map_or("", |k| k.name()).into(),
                         class_fixed: map.fixed_classes.contains(&d.id),
+                        endpoints: map
+                            .endpoints
+                            .get(&d.id)
+                            .into_iter()
+                            .flatten()
+                            .map(|(n, a)| pb::Endpoint {
+                                network: n.clone(),
+                                address: a.to_string(),
+                                ..Default::default()
+                            })
+                            .collect(),
                         ..Default::default()
                     })
                     .collect(),
@@ -730,6 +741,17 @@ pub fn status(
             .collect(),
         map_address: map_address.to_string(),
         full_ratios: full_ratios(&map.full_ratios).into(),
+        networks: map
+            .networks
+            .iter()
+            .map(|(name, n)| pb::Network {
+                name: name.clone(),
+                kind: n.kind.name().into(),
+                trusted: n.trusted,
+                matches: n.matches.clone(),
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -1053,6 +1075,97 @@ impl ClusterService for Api {
             }
             .into()),
             Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_endpoints(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetEndpointsRequest>,
+    ) -> ServiceResult<pb::SetEndpointsResponse> {
+        let device = req.device;
+        let given: Vec<(String, String)> = req
+            .endpoints
+            .iter()
+            .map(|e| (e.network.to_string(), e.address.to_string()))
+            .collect();
+        let target = format!(
+            "device {device} endpoints [{}]",
+            given
+                .iter()
+                .map(|(n, a)| format!("{n} {a}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let who = self.authorize_as(&ctx, "SetEndpoints", &target, Need::Identity)?;
+        // D215: admin and mgmt any device's; a node's certificate only its
+        // own devices' (`node * 1000` to `node * 1000 + 999`), so a host
+        // can't redirect another's traffic. The local socket is root's.
+        if self.cluster.is_some() && ctx.extensions().get::<LocalPeer>().is_none() {
+            let id = ctx
+                .peer_certs()
+                .and_then(|c| c.first())
+                .and_then(|leaf| hyperstor_pki::identity_of(leaf));
+            let allowed = match &id {
+                Some(i) if i.role.may_administer() => true,
+                Some(i) if i.role == hyperstor_pki::Role::Node => {
+                    i.id.parse::<u32>().ok() == Some(device / 1000)
+                }
+                _ => false,
+            };
+            if !allowed {
+                let e = with_reason(
+                    ConnectError::permission_denied(format!(
+                        "{who} may set only its own node's devices' endpoints"
+                    )),
+                    "permission_denied",
+                );
+                refused(&who, "SetEndpoints", &target, &e);
+                return Err(e);
+            }
+        }
+        let endpoints = given
+            .iter()
+            .map(|(n, a)| {
+                a.parse::<SocketAddr>()
+                    .map(|a| (n.clone(), a))
+                    .map_err(|_| admin::invalid(format!("{a}: not IP:PORT"), "invalid_argument"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetEndpoints {
+                device,
+                endpoints,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetEndpoints",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetEndpointsResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }

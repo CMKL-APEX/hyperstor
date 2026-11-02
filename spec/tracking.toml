@@ -847,7 +847,7 @@ id = "HS19"
 title = "Networks"
 
 [[milestone.item]]
-what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; to come: endpoints chosen from the host's topology)"
+what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; the installer proposing endpoints from the host's topology and keeping them in the map)"
 spec = ["26-networks.md §29.4", "26-networks.md §29.5", "D204", "D206", "D207", "G47", "G48", "G49"]
 status = "partial"
 tests = [
@@ -857,6 +857,9 @@ tests = [
     "hyperstor_fabric::tests::fabrics_differ_by_subnet_manager",
     "hyperstor_fabric::tests::addresses_are_matched_by_subnet",
     "hyperstor_fabric::tests::several_ports_in_one_subnet_need_rules_by_source",
+    "hyperstor_fabric::tests::strict_reverse_path_filtering_is_the_larger_of_all_and_the_port",
+    "hyperstor_fabric::tests::the_installer_proposes_the_nearest_ports_of_each_device",
+    "hyperstor_fabric::tests::a_block_device_leads_to_its_pci_function_through_md",
     "hyperstor_map::network_tests::networks_and_endpoints_round_trip_in_format_14_only_when_set",
     "hyperstor_map::network_tests::a_sender_takes_an_endpoint_on_its_networks_else_the_address",
     "hyperstor_map::network_tests::cluster_file_networks_are_checked",

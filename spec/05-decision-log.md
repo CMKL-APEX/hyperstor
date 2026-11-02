@@ -1145,3 +1145,14 @@ the volume detached. Asked, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 177 | What a copy reads: a snapshot, or the head of a detached volume (recommended); the head only, detached; or a snapshot it takes itself. Whether a move keeps the id: copy only for now (recommended), or `--move` keeping it. How data travels: through the map service's leader (recommended), or node to node. Snapshots: one point in time (recommended), or carried over | A snapshot or a detached head; a move keeping the id too; through the leader; one point in time | D214 |
+
+## Networks: endpoints and routing (2026-11-02)
+
+Three questions the first implementation left open (01-implementation-notes.md
+I238, I239). Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 178 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D215 |
+| 179 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D216 |
+| 180 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D217 |

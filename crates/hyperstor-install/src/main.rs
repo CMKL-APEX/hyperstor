@@ -68,7 +68,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 6] = [
     "hyperstor-meta",
@@ -128,6 +128,9 @@ struct Settings {
     /// Where people reach mgmt (D110): `all` addresses over HTTPS, or
     /// `loopback` over plain HTTP (an SSH tunnel).
     mgmt_listen: String,
+    /// `auto`: propose this host's endpoints and keep them in the map
+    /// (D215); `off`: leave the map's as they are (set by hand).
+    endpoints: String,
     /// The operator's own web certificate's directory (`web.crt`,
     /// `web.key`, kept current by their ACME client, D109); empty: the
     /// cluster CA's (D108).
@@ -169,6 +172,7 @@ impl Settings {
             admin_port: 8853,
             mgmt_port: 8852,
             mgmt_listen: "all".into(),
+            endpoints: "auto".into(),
             web_tls: String::new(),
             tailscale_cert: false,
             vhost: false,
@@ -237,6 +241,7 @@ impl Settings {
                 "admin_port" => self.admin_port = v.parse().unwrap_or(self.admin_port),
                 "mgmt_port" => self.mgmt_port = v.parse().unwrap_or(self.mgmt_port),
                 "mgmt_listen" => self.mgmt_listen = v.to_string(),
+                "endpoints" => self.endpoints = v.to_string(),
                 "web_tls" => self.web_tls = v.to_string(),
                 "tailscale_cert" => self.tailscale_cert = v == "true",
                 "vhost" => self.vhost = v == "true",
@@ -285,6 +290,10 @@ impl Settings {
             String::new()
         } else {
             format!("removed_devices = {}\n", self.removed_devices)
+        } + &if self.endpoints == "auto" {
+            String::new()
+        } else {
+            format!("endpoints = {}\n", self.endpoints)
         }
     }
 }
@@ -444,6 +453,7 @@ fn main() {
             "--admin-port" => "admin_port",
             "--mgmt-port" => "mgmt_port",
             "--mgmt-listen" => "mgmt_listen",
+            "--endpoints" => "endpoints",
             "--web-tls" => "web_tls",
             _ => usage(),
         };
@@ -456,6 +466,7 @@ fn main() {
             }
             "role" => matches!(v.as_str(), "meta" | "storage" | "both" | "vhost"),
             "mgmt_listen" => matches!(v.as_str(), "all" | "loopback"),
+            "endpoints" => matches!(v.as_str(), "auto" | "off"),
             // Empty: back to the cluster CA's certificate.
             "web_tls" => v.is_empty() || v.starts_with('/'),
             "node" => v.parse::<u32>().is_ok(),
@@ -830,15 +841,39 @@ fn check(root: &Path, s: &Settings) -> bool {
                 ),
             );
         } else {
+            // D216: strict reverse-path filtering drops what arrives on the
+            // "wrong" port, so connections fail: that fails the check.
+            // Loose or none only costs the spread over ports: a warning.
+            let strict: Vec<String> = missing
+                .iter()
+                .filter(|a| {
+                    hyperstor_fabric::routing::port_of(&host.ports, **a).is_some_and(|p| {
+                        hyperstor_fabric::routing::rp_filter_strict(Path::new("/proc"), &p.name)
+                    })
+                })
+                .map(|a| a.to_string())
+                .collect();
             let list: Vec<String> = missing.iter().map(|a| a.to_string()).collect();
-            note(
-                Level::Warn,
-                "routing",
-                format!(
-                    "{} share a subnet with other ports and have no rule of their own: traffic from them leaves by one port (add `ip rule add from ADDR lookup TABLE` with a route by that port)",
-                    list.join(", ")
-                ),
-            );
+            let how = "add `ip rule add from ADDR lookup TABLE` with a route by that port";
+            if strict.is_empty() {
+                note(
+                    Level::Warn,
+                    "routing",
+                    format!(
+                        "{} share a subnet with other ports and have no rule of their own: traffic from them leaves by one port ({how})",
+                        list.join(", ")
+                    ),
+                );
+            } else {
+                note(
+                    Level::Fail,
+                    "routing",
+                    format!(
+                        "{} share a subnet with other ports, have no rule of their own, and their ports filter reverse paths strictly (rp_filter 1): connections to them will fail ({how}, or set rp_filter to 2)",
+                        strict.join(", ")
+                    ),
+                );
+            }
         }
     }
     worst == Level::Fail
@@ -1669,6 +1704,145 @@ fn renew_node(root: &Path, real: bool, s: &Settings) {
     }
 }
 
+/// D215: proposes this host's nodes' endpoints from its topology and
+/// keeps them in the map, through the cluster API this host joined with
+/// its node's certificate (or the administrator's). Each run: the map's
+/// data networks, the closest two ports per network for each device,
+/// `SetEndpoints` where the map differs, and `--endpoint` and
+/// `--networks` for `hyperstord`. Nothing without data networks; a
+/// warning when the API can't be reached (the node keeps what the
+/// cluster file gives it).
+fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
+    if s.join.is_empty() || p.nodes.is_empty() || s.endpoints == "off" {
+        return;
+    }
+    let dir = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let who = ["node", "admin"]
+        .into_iter()
+        .find(|w| dir.join(format!("{w}.crt")).exists());
+    let Some(who) = who else { return };
+    let tls = || {
+        hyperstor_pki::client_config(
+            &read(&format!("{who}.crt")),
+            &read(&format!("{who}.key")),
+            &read("root.crt"),
+        )
+    };
+    let Ok(t) = tls() else { return };
+    let status = api_call(&s.join, t, |c| async move {
+        hyperstor_api::ClusterServiceClient::new(c.0, c.1)
+            .get_status(hyperstor_api::GetStatusRequest::default())
+            .await
+            .map(|r| r.into_owned())
+    });
+    let status = match status {
+        Ok(st) => st,
+        Err(e) => {
+            eprintln!(
+                "hyperstor-install: endpoints: reading the map through {}: {e}",
+                s.join
+            );
+            return;
+        }
+    };
+    let networks: Vec<hyperstor_fabric::model::Network> = status
+        .networks
+        .iter()
+        .filter_map(|n| {
+            hyperstor_fabric::model::Network::from_parts(&n.name, &n.kind, n.trusted, &n.matches)
+        })
+        .filter(|n| n.kind.carries_data())
+        .collect();
+    if networks.is_empty() {
+        return;
+    }
+    let host = glidex_topology::Host::read();
+    let data = under(root, &s.data_dir);
+    for node in &mut p.nodes {
+        let files = node.paths.iter().filter(|p| p.is_none()).count();
+        let devices: Vec<hyperstor_fabric::endpoints::Device> = node
+            .ids
+            .iter()
+            .zip(&node.shards)
+            .enumerate()
+            .map(|(i, (id, addr))| {
+                // Its block device, or the data directory its file goes in.
+                let path = match node.paths.get(i).cloned().flatten() {
+                    Some(dev) => PathBuf::from(dev),
+                    None if files == 1 => data.join(format!("node-{}.img", node.n)),
+                    None => data.join(format!("node-{}-{i}.img", node.n)),
+                };
+                let path = if path.exists() { path } else { data.clone() };
+                let pci = hyperstor_fabric::endpoints::block_of_path(&path).and_then(|(a, b)| {
+                    hyperstor_fabric::endpoints::pci_of_block(Path::new("/sys"), a, b)
+                });
+                hyperstor_fabric::endpoints::Device {
+                    id: *id,
+                    pci,
+                    addr: *addr,
+                }
+            })
+            .collect();
+        let proposed = hyperstor_fabric::endpoints::propose(&host, &devices, &networks, 2);
+        for d in &devices {
+            let want = proposed.get(&d.id).cloned().unwrap_or_default();
+            let have: Vec<(String, std::net::SocketAddr)> = status
+                .nodes
+                .iter()
+                .flat_map(|n| n.devices.iter())
+                .filter(|x| x.id == d.id)
+                .flat_map(|x| x.endpoints.iter())
+                .filter_map(|e| Some((e.network.clone(), e.address.parse().ok()?)))
+                .collect();
+            if want != have {
+                let Ok(t) = tls() else { return };
+                let endpoints = want
+                    .iter()
+                    .map(|(n, a)| hyperstor_api::Endpoint {
+                        network: n.clone(),
+                        address: a.to_string(),
+                        ..Default::default()
+                    })
+                    .collect();
+                let id = d.id;
+                let r = api_call(&s.join, t, |c| async move {
+                    hyperstor_api::ClusterServiceClient::new(c.0, c.1)
+                        .set_endpoints(hyperstor_api::SetEndpointsRequest {
+                            device: id,
+                            endpoints,
+                            ..Default::default()
+                        })
+                        .await
+                        .map(|r| r.into_owned())
+                });
+                match r {
+                    Ok(_) => println!(
+                        "Device {id}'s endpoints: {}.",
+                        if want.is_empty() {
+                            "none".to_string()
+                        } else {
+                            want.iter()
+                                .map(|(n, a)| format!("{a} on {n}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ),
+                    Err(e) => eprintln!("hyperstor-install: endpoints of device {id}: {e}"),
+                }
+            }
+            for (net, a) in want {
+                if !node.endpoints.contains(&(d.id, a)) {
+                    node.endpoints.push((d.id, a));
+                }
+                if !node.networks.contains(&net) {
+                    node.networks.push(net);
+                }
+            }
+        }
+    }
+}
+
 /// One call to the cluster API at `addr` over TLS, on a small runtime.
 fn api_call<T, F>(
     addr: &str,
@@ -2131,6 +2305,7 @@ fn install(
     if real && unsafe { libc::geteuid() } != 0 {
         fail("installing to / needs root: run it with sudo (or use --root DIR)");
     }
+    keep_endpoints(root, s, &mut p);
     if real {
         println!("Checking the host:");
         if check(root, s) {

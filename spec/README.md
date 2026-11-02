@@ -32,7 +32,7 @@ documents cite them by number.
 | [12-gpu.md](12-gpu.md) | §12 | GPU-direct storage behind cuFile and hipFile, in VMs, alongside NCCL and RCCL |
 | [13-protocol.md](13-protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
 | [14-s3.md](14-s3.md) | §14 | The S3 gateway and S3 over RDMA |
-| [26-networks.md](26-networks.md) | §29 | Hosts with several network ports: networks and endpoints, control apart from data, path choice per I/O, health per network, the fabric reconciler, claims by orchestrators, GPU-direct pairing (designed; D203–D213 settled) |
+| [26-networks.md](26-networks.md) | §29 | Hosts with several network ports: networks and endpoints, control apart from data, path choice per I/O, health per network, the fabric reconciler, claims by orchestrators, GPU-direct pairing (designed, first stages built; D203–D217 settled) |
 | [22-nfs.md](22-nfs.md) | §26 | NFSv4.1/4.2 and pNFS for unmodified clients: the metadata server, files layouts, data servers in the storage nodes, stripe groups, fencing, failover (investigation; D127, D129, D130 settled) |
 | [15-operations.md](15-operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
 | [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |

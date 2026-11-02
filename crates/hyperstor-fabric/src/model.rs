@@ -80,6 +80,37 @@ pub enum Lending {
     Always,
 }
 
+impl Network {
+    /// A network as the map and the API give it: kind `control`, `data`
+    /// or `both`; `matches` `subnet IP/LEN` or `ib PREFIX`.
+    pub fn from_parts(name: &str, kind: &str, trusted: bool, matches: &str) -> Option<Network> {
+        let kind = match kind {
+            "control" => NetworkKind::Control,
+            "data" => NetworkKind::Data,
+            "both" => NetworkKind::Both,
+            _ => return None,
+        };
+        let matches = match matches.split_once(' ')? {
+            ("subnet", cidr) => {
+                let (ip, len) = cidr.split_once('/')?;
+                NetMatch::Subnet {
+                    net: ip.parse().ok()?,
+                    prefix: len.parse().ok()?,
+                }
+            }
+            ("ib", prefix) => NetMatch::IbSubnet(prefix.to_string()),
+            _ => return None,
+        };
+        Some(Network {
+            name: name.to_string(),
+            kind,
+            trusted,
+            transports: vec![Transport::Tcp],
+            matches,
+        })
+    }
+}
+
 /// Whether `addr` is in `net/prefix`.
 pub fn in_subnet(addr: IpAddr, net: IpAddr, prefix: u8) -> bool {
     match (addr, net) {
