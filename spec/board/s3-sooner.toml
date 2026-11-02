@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-03
 milestone = "HS11"
 branch = "feat/kv-assert"
-prs = [151]
+prs = [151, 175]
 now = "HS11 stage 1 built (I255): AssertKv compares a key's exact bytes (D194 revised, point 190), and a sized lookup gives a table's bytes, kept by the engine as it changes. Decisions D191–D202 and the design (25-kv-ranges.md §28) are on main (#151)"
 next = "Review and merge stage 1; then stage 2, hyperstor-kv without splits: key encoding, the root, tables, rows, scans, the routing cache"
