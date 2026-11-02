@@ -92,8 +92,10 @@ impl Client {
         };
         let r = self.trash_held(id, held.as_deref()).await;
         if let Some(h) = held {
-            // Renewals stop: the header is no longer active.
-            h.lost.set(true);
+            // Renewals stop, and the lease taken to preempt goes: left on
+            // the trashed header, it would refuse the purge. If the release
+            // is lost, the purge releases it (`purge_volume`).
+            let _ = h.detach().await;
             self.attached.borrow_mut().remove(&id);
         }
         r
@@ -198,11 +200,18 @@ impl Client {
     /// Deletes trashed volume `id` and its data for good (or finishes a
     /// delete that stopped half-way).
     pub async fn purge_volume(self: &Rc<Self>, id: u128) -> Result<(), ClientError> {
-        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let mut v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
         if v.state == VolumeState::Active {
             return Err(ClientError::Refused(format!(
                 "volume {id:032x} isn't in the trash"
             )));
+        }
+        // No one can attach a trashed volume: a lease on it was left by a
+        // forced trash whose release was lost (or made before it released
+        // one), and is released here.
+        if let Some(lease) = v.holder {
+            self.release_lease(id, lease).await?;
+            v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
         }
         self.delete_held(v, None).await
     }
