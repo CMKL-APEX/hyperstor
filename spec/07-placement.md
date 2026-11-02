@@ -10,6 +10,11 @@ Chunks to PGs, PGs to devices, rebalancing. Part of the hyperstor design; sectio
 - The chunk's PG is `pg = hash64(lineage, chunk_index) mod pg_count` (D21).
   `pg_count` is a power of two, chosen when the pool is created (default:
   enough for about 100 PGs per device in the pool's device class).
+- A named object (a `.meta` header, a directory, S3 data, a KV range)
+  goes to `pg = hash64(fnv1a64(name), 0) mod pg_count`: its name's FNV-1a
+  hash stands in for the lineage, with chunk 0, through the same `hash64`
+  (`hyperstor_placement::object_pg`). One hash for chunks and names means
+  one pinned test and one split rule; there is no second name hash.
 - **Later:** doubling `pg_count` splits each PG in two. Because the hash
   is reduced by `mod 2^n`, the chunks of PG `p` go to `p` or
   `p + 2^n`, and the split happens on the devices that already hold them.
