@@ -217,6 +217,8 @@ pub struct NodeConfig {
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
     /// Test hook: pings that fail (D185).
     pub pings: Option<Arc<faults::Pings>>,
+    /// Test hook: message kinds nodes don't know, as an older build.
+    pub older: Option<Arc<faults::Older>>,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
@@ -391,6 +393,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         };
         let commit_delays = cfg.commit_delays.clone();
         let ping_faults = cfg.pings.clone();
+        let older = cfg.older.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
@@ -441,6 +444,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.hole_repair.set(hole_repair);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
+                        *st.older.borrow_mut() = older.map(|o| (node, o));
                         *st.commit_delays.borrow_mut() = commit_delays;
                         let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
                         *st.ping_faults.borrow_mut() = ping_faults;
@@ -637,6 +641,8 @@ struct ShardState {
     quiesce: RefCell<HashMap<ObjKey, Quiesce>>,
     /// The test hook of `NodeConfig::partitions`, with this node's id.
     partitions: RefCell<Option<(u32, Arc<faults::Partitions>)>>,
+    /// The test hook of `NodeConfig::older`, with this node's id.
+    older: RefCell<Option<(u32, Arc<faults::Older>)>>,
     /// Objects the last scrub of each PG left unresolved, as reported.
     inconsistent: RefCell<HashMap<(u32, u32), u32>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
@@ -1125,6 +1131,7 @@ impl ShardState {
             failure_reported: Cell::new(false),
             inconsistent: RefCell::new(HashMap::new()),
             partitions: RefCell::new(None),
+            older: RefCell::new(None),
             watches: RefCell::new(HashMap::new()),
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
@@ -1808,6 +1815,14 @@ impl ShardState {
                 let _ = s.shutdown();
                 return;
             };
+            // An older build can't decode a kind it doesn't know, and
+            // drops the connection as above.
+            if let Some((node, o)) = &*self.older.borrow()
+                && o.unknown(*node, h.kind)
+            {
+                let _ = s.shutdown();
+                return;
+            }
             let reply = |m: &Msg, p: &[u8]| {
                 let _ = tx.send(encode_frame(h.req, m, p));
             };
@@ -4820,14 +4835,14 @@ impl ShardState {
     }
 
     /// Every acting member's [`Self::holds`] of a PG, this device's first;
-    /// `None` if a member can't answer, or is from before `Holds`: the
+    /// why not if a member can't answer, or is from before `Holds`: the
     /// check is skipped until every member has it.
     async fn member_holds(
         &self,
         pool: u32,
         pg: u32,
         info: &PgInfo,
-    ) -> Option<Vec<HashMap<ObjKey, HeldBlocks>>> {
+    ) -> Result<Vec<HashMap<ObjKey, HeldBlocks>>, String> {
         let map = self.map();
         let to = Target {
             pool,
@@ -4841,26 +4856,38 @@ impl ShardState {
             if *d == self.me {
                 continue;
             }
-            let conn = self.peer(self.addr_of(&map, *d)?).await.ok()?;
+            let addr = self
+                .addr_of(&map, *d)
+                .ok_or_else(|| format!("device {d} has no address in the map"))?;
+            let conn = self
+                .peer(addr)
+                .await
+                .map_err(|e| format!("device {d} can't be reached: {e}"))?;
             match conn
                 .call_within(&Msg::Holds { to }, &[], CALL_TIMEOUT)
                 .await
             {
                 Ok((Msg::HoldsOk, p)) => theirs.push(
                     decode_holds(&p)
-                        .ok()?
+                        .map_err(|e| format!("device {d}'s answer is malformed: {e}"))?
                         .into_iter()
                         .filter_map(|(k, h)| Some((engine_key(&to, &k).ok()?, h)))
                         .collect::<HashMap<_, _>>(),
                 ),
-                _ => return None,
+                Ok((m, _)) => {
+                    return Err(format!(
+                        "device {d} answered kind {}, not HoldsOk (from before Holds?)",
+                        m.kind()
+                    ));
+                }
+                Err(e) => return Err(format!("device {d} didn't answer: {e}")),
             }
         }
         self.drained().await;
         let mine = self.local_holds(pool, pg).await.into_iter().collect();
         let mut out = vec![mine];
         out.extend(theirs);
-        Some(out)
+        Ok(out)
     }
 
     /// Light scrub of one PG: compares every member's digests. Keys that
@@ -4992,8 +5019,16 @@ impl ShardState {
             .cloned()
             .collect::<BTreeSet<ObjKey>>()
         };
-        let Some(first) = self.member_holds(pool, pg, info).await else {
-            return 0;
+        // A skipped check is logged, so a pass that found nothing can be
+        // told from one that didn't look.
+        let skip = |why: &str| {
+            metrics::ShardMetrics::add(&self.metrics.scrub_holes_unchecked, 1);
+            eprintln!("hyperstord: scrub: pool {pool} PG {pg}: holes not checked: {why}");
+            0
+        };
+        let first = match self.member_holds(pool, pg, info).await {
+            Ok(h) => h,
+            Err(e) => return skip(&e),
         };
         let suspects = differing(&first, &mut agreeing.iter());
         if suspects.is_empty() {
@@ -5001,13 +5036,14 @@ impl ShardState {
         }
         sleep(Duration::from_millis(200)).await;
         if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
-            return 0;
+            return skip("the PG changed while checking");
         }
-        let (Some(digests), Some(second)) = (
-            self.member_digests(pool, pg, info, false).await,
-            self.member_holds(pool, pg, info).await,
-        ) else {
-            return 0;
+        let Some(digests) = self.member_digests(pool, pg, info, false).await else {
+            return skip("a member didn't answer for digests on the second look");
+        };
+        let second = match self.member_holds(pool, pg, info).await {
+            Ok(h) => h,
+            Err(e) => return skip(&e),
         };
         let still: BTreeSet<ObjKey> = suspects
             .into_iter()
