@@ -176,6 +176,12 @@ pub struct Client {
     /// volume held (D153): `hyperstor-vhost` names its node, tools
     /// themselves.
     lease_label: RefCell<String>,
+    /// The data networks this client is on, in order (26-networks.md
+    /// §29.5, D207): a device is reached at its endpoint on the first it
+    /// has one on, else at its address.
+    networks: RefCell<Vec<String>>,
+    /// For choosing among a device's endpoints.
+    rng: RefCell<rand::rngs::SmallRng>,
 }
 
 /// `label` cut to [`hyperstor_proto::LABEL_MAX`] bytes, at a character
@@ -222,6 +228,8 @@ impl Client {
             // blocklisted.
             instance: random_u64().max(1),
             lease_label: RefCell::new(String::new()),
+            networks: RefCell::new(Vec::new()),
+            rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
         c.refresh_map().await?;
         Ok(c)
@@ -229,6 +237,33 @@ impl Client {
 
     pub fn map(&self) -> Rc<ClusterMap> {
         self.map.borrow().clone()
+    }
+
+    /// The data networks this client reaches storage nodes on, in order
+    /// (D207); none: devices' addresses.
+    pub fn set_networks(&self, networks: Vec<String>) {
+        *self.networks.borrow_mut() = networks;
+    }
+
+    /// Where to reach `device` in `map` for one request: among its
+    /// endpoints on this client's first network that has any, by two
+    /// random choices taking the one with fewer requests outstanding
+    /// (D208); else its address.
+    pub fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
+        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        if addrs.len() < 2 {
+            return addrs.first().copied();
+        }
+        let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
+            .iter()
+            .map(|a| hyperstor_fabric::path::PathLoad {
+                weight: 1.0,
+                bytes_in_flight: self.conns.pending(*a) as u64,
+                rtt_us: 0,
+            })
+            .collect();
+        let i = hyperstor_fabric::path::choose(&loads, &mut *self.rng.borrow_mut())?;
+        Some(addrs[i])
     }
 
     /// The label recorded with the leases this client takes from now on
@@ -429,7 +464,7 @@ impl Client {
                 last = format!("PG {pool}.{pg} has no primary");
                 continue;
             };
-            let Some(addr) = map.device_addr(primary) else {
+            let Some(addr) = self.addr_of(&map, primary) else {
                 last = format!("device {primary} has no address");
                 continue;
             };

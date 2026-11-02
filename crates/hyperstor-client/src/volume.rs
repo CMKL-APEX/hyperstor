@@ -1398,7 +1398,7 @@ impl Client {
             for a in live {
                 let pg = meta.pg_of_key(NS_META, &header_key(a.volume.borrow().id));
                 if let Some(info) = map.pg(META_POOL, pg)
-                    && let Some(addr) = info.primary().and_then(|d| map.device_addr(d))
+                    && let Some(addr) = info.primary().and_then(|d| self.addr_of(&map, d))
                 {
                     by_primary
                         .entry(addr)

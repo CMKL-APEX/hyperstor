@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Path choice per request among a peer's endpoints (D208).
+hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
+rand.workspace = true
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-engine = { path = "../hyperstor-engine" }
 hyperstor-meta = { path = "../hyperstor-meta" }

@@ -1,10 +1,10 @@
-title = "Networks: several ports, path choice, the fabric reconciler and claims (HS19 design)"
+title = "Networks: several ports, path choice, the fabric reconciler and claims (HS19)"
 status = "active"
 owner = "Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH"
 started = 2026-11-02
 updated = 2026-11-02
 milestone = "HS19"
-branch = "spec/networks"
-prs = []
-now = "26-networks.md: D203–D213 settled (reconciler in the leader, glidex's topology reader, any orchestrator claims, lending while idle by default), G47–G53 open"
-next = "The PR's merge; then glidex's topology crate with port facts (a glidex change) and stage 1"
+branch = "feat/fabric"
+prs = [154, 156]
+now = "Spec merged (#154). On feat/fabric (#156): networks and endpoints in the cluster file and map (format 14), hyperstord --endpoint/--networks from the installer, clients and hyperstor-vhost --networks, a device's endpoints chosen per request, the routing check; hyperstor-fabric (ranking, path choice, the reconciler's decisions); G48 first measured (IPoIB 6-7x 1 GbE for 1 MiB I/O); glidex-topology from glidex #250 (merged)"
+next = "The owner's review of the PR and glidex #250 (then repin glidex); the installer proposing endpoints from the topology; stage 2 (several endpoints per device chosen per I/O, health per network)"
