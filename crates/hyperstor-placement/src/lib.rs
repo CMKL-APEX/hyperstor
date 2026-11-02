@@ -29,16 +29,6 @@ pub fn hash_words(words: &[u64]) -> u64 {
     mix64(h)
 }
 
-/// A stable 64-bit hash of bytes (FNV-1a, then mixed).
-pub fn hash_bytes(b: &[u8]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &x in b {
-        h ^= x as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    mix64(h)
-}
-
 /// The PG of chunk `chunk` of a lineage (D21). `pg_count` must be a power
 /// of two, so that doubling it later splits each PG in two (07-placement.md §5.1).
 pub fn pg_of(lineage: u128, chunk: u64, pg_count: u32) -> u32 {
@@ -50,17 +40,12 @@ pub fn pg_of(lineage: u128, chunk: u64, pg_count: u32) -> u32 {
     (h & (pg_count as u64 - 1)) as u32
 }
 
-/// The PG of a named object (S3 data, `.meta` headers, KV ranges).
-pub fn pg_of_name(name: &[u8], pg_count: u32) -> u32 {
-    assert!(
-        pg_count.is_power_of_two(),
-        "pg_count must be a power of two"
-    );
-    (hash_bytes(name) & (pg_count as u64 - 1)) as u32
-}
-
-/// The PG of a named object by an FNV-1a hash of its name: `.meta`
-/// headers, directories and the other objects clients name.
+/// The PG of a named object: `.meta` headers, directories, S3 data,
+/// KV ranges and the other objects clients name. FNV-1a of the name is
+/// taken as a lineage with chunk 0 and reduced by [`pg_of`], so names and
+/// chunks share one hash, and a doubled `pg_count` splits them the same
+/// way (07-placement.md §5.1). The one such function: every named object
+/// stored since HS1 was placed by it, so it must never change.
 pub fn object_pg(name: &[u8], pg_count: u32) -> u32 {
     // FNV-1a: the same on every client and version.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -391,8 +376,26 @@ mod tests {
         // Pinned values: placement must never change for a format version.
         assert_eq!(mix64(0), 0);
         assert_eq!(hash_words(&[1, 2, 3]), 0x7c26_edc8_f54b_2af2);
-        assert_eq!(hash_bytes(b"hyperstor"), 0x6e14_92ca_ff53_f0fc);
         assert_eq!(pg_of(42, 7, 1024), 835);
+    }
+
+    #[test]
+    fn named_objects_keep_their_pgs() {
+        // Pinned from main before the dead `pg_of_name` was removed: a
+        // named object's PG is `object_pg`'s, and must never change.
+        for (name, at64, at1024) in [
+            (&b"hyperstor"[..], 56, 120),
+            (b"", 26, 986),
+            (b"vol/1", 49, 241),
+            (&42u128.to_be_bytes()[..], 42, 938),
+        ] {
+            assert_eq!(object_pg(name, 64), at64, "{name:?}");
+            assert_eq!(object_pg(name, 1024), at1024, "{name:?}");
+        }
+        // A volume header's key (`hyperstor_client::volume::header_key`).
+        let header = format!("h/{:032x}", 42u128);
+        assert_eq!(object_pg(header.as_bytes(), 64), 49);
+        assert_eq!(object_pg(header.as_bytes(), 1024), 113);
     }
 
     #[test]
