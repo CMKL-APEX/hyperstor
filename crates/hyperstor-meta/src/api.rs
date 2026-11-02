@@ -1983,6 +1983,132 @@ impl ClusterService for Api {
         .into())
     }
 
+    async fn copy_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CopyVolumeRequest>,
+    ) -> ServiceResult<pb::CopyVolumeResponse> {
+        use crate::VolumeFault as F;
+        let id = parse_volume_id(req.id)?;
+        let new_id = if req.new_id.is_empty() {
+            parse_volume_id(&admin::random_hex(16))?
+        } else {
+            parse_volume_id(req.new_id)?
+        };
+        let epoch = (req.epoch != 0).then_some(req.epoch);
+        let target = match epoch {
+            Some(e) => format!("volume {id:032x} snapshot {e} to pool {}", req.pool),
+            None => format!("volume {id:032x} to pool {}", req.pool),
+        };
+        let who = self.authorize(&ctx, "CopyVolume", &target, true)?;
+        // Checked now, run as an operation (D214): it copies every block.
+        let v = self.active_volume(id).await?;
+        self.copy_target(req.pool).await?;
+        let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
+        match epoch {
+            Some(e) => {
+                if !v
+                    .snapshots
+                    .iter()
+                    .any(|s| s.epoch == e && !s.deleting && s.trashed_unix == 0)
+                {
+                    refuse(F::NotFound, format!("no snapshot at epoch {e}"))?;
+                }
+            }
+            None if v.holder.is_some() => refuse(
+                F::Attached,
+                format!(
+                    "volume {id:032x} is attached: copy one of its snapshots (--epoch), \
+                     or detach it"
+                ),
+            )?,
+            None => {}
+        }
+        if self.volume_any(new_id).await.is_ok() {
+            refuse(F::Exists, format!("volume {new_id:032x} exists"))?;
+        }
+        let name = if req.name.is_empty() {
+            v.name.clone()
+        } else {
+            req.name.to_string()
+        };
+        let op = self
+            .start_op(
+                &who,
+                "CopyVolume",
+                crate::operations::Work::Copy {
+                    volume: id,
+                    epoch,
+                    pool: req.pool,
+                    new_id,
+                    name,
+                },
+                target,
+                format!("copying {} to pool {}", v.name, req.pool),
+            )
+            .await?;
+        Ok(pb::CopyVolumeResponse {
+            volume: Some(volume_pb(&v)).into(),
+            new_id: format!("{new_id:032x}"),
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn move_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::MoveVolumeRequest>,
+    ) -> ServiceResult<pb::MoveVolumeResponse> {
+        use crate::VolumeFault as F;
+        let id = parse_volume_id(req.id)?;
+        let target = format!("volume {id:032x} to pool {}", req.pool);
+        let who = self.authorize(&ctx, "MoveVolume", &target, true)?;
+        let v = self.active_volume(id).await?;
+        self.copy_target(req.pool).await?;
+        let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
+        if v.pool == req.pool {
+            refuse(
+                F::Invalid,
+                format!("volume {id:032x} is in pool {} already", v.pool),
+            )?;
+        }
+        if v.holder.is_some() {
+            refuse(
+                F::Attached,
+                format!("volume {id:032x} is attached: detach it first"),
+            )?;
+        }
+        if !v.snapshots.is_empty() {
+            refuse(
+                F::InUse,
+                format!(
+                    "volume {id:032x} has snapshots (in the trash too): delete and purge \
+                     them first, or copy it instead"
+                ),
+            )?;
+        }
+        let op = self
+            .start_op(
+                &who,
+                "MoveVolume",
+                crate::operations::Work::Move {
+                    volume: id,
+                    pool: req.pool,
+                },
+                target,
+                format!("moving {} to pool {}", v.name, req.pool),
+            )
+            .await?;
+        Ok(pb::MoveVolumeResponse {
+            volume: Some(volume_pb(&v)).into(),
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn create_group_snapshot(
         &self,
         ctx: RequestContext,
@@ -2091,6 +2217,32 @@ impl Api {
     /// A snapshot operation (10-volumes.md §10.3, §10.4): authorized, run on
     /// the map service's reactor as a client of `.meta`, and audited if
     /// it changes anything.
+    /// Volume `id`, refused unless active (not in the trash, not being
+    /// deleted).
+    async fn active_volume(&self, id: u128) -> Result<crate::Volume, ConnectError> {
+        match self.volume_any(id).await? {
+            v if v.state == crate::VolumeState::Active => Ok(v),
+            _ => Err(with_reason(
+                ConnectError::not_found(format!("no volume {id:032x}")),
+                "not_found",
+            )),
+        }
+    }
+
+    /// Refuses pool `pool` as the target of a copy or move: unknown,
+    /// `.meta`, or past `full` (D27).
+    async fn copy_target(&self, pool: u32) -> Result<(), ConnectError> {
+        use crate::VolumeFault as F;
+        let (map, ..) = self.published().await?;
+        if pool == hyperstor_map::META_POOL || !map.pools.contains_key(&pool) {
+            return volume_result(Some(Err((F::NotFound, format!("no pool {pool}")))));
+        }
+        if let Some(why) = self.full_pools().await.remove(&pool) {
+            return volume_result(Some(Err((F::Full, why))));
+        }
+        Ok(())
+    }
+
     /// Volume `id`'s header, whatever its state.
     async fn volume_any(&self, id: u128) -> Result<crate::Volume, ConnectError> {
         let (reply, rx) = oneshot();

@@ -115,3 +115,33 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
 
   Backfill and recovery run as `bulk`; scrub below it. The class also
   sets the network traffic class (D31, 13-protocol.md §13.2).
+
+### 10.6 Copies and moves between pools
+
+A volume's pool is chosen when it is created; a clone stays in its
+parent's pool, since it shares its data. To change pools (D214):
+
+- **Copy** makes a new volume in another pool from a volume's snapshot,
+  while the volume stays in use, or from its head, which needs it
+  detached: the copy holds its lease meanwhile, so nothing writes it.
+  The new volume is flat (no snapshots, no parents), gets a new id or one
+  given, and is held while it fills, so no one uses it half-written. A
+  copy that fails or is cancelled deletes it.
+- **Move** keeps the volume's id, so whatever names it (a glidex disk)
+  needs no change. It needs the volume detached, without snapshots (in
+  the trash too), and with nothing reading through it; a clone is
+  flattened by it. The head is copied into lineage `id` of the new pool,
+  which no volume there uses: a lineage is named per pool, and a volume's
+  id is unique. Then one compare-and-set on the header, under the move's
+  lease, points the volume there, with a new incarnation for the read
+  cache (D102); the data left in the old pool is then deleted. What is
+  left behind is recorded in `.meta` (`m/{id}`) before the switch, so a
+  move that stops after it is finished when run again; one that stops
+  before it starts over.
+- Both are long operations of the map service's leader (D120): its
+  client reads and writes every block, 32 MiB in flight, skipping holes
+  and blocks of zeros, and records progress in MiB. Pools may differ in
+  chunk size: data is copied by offset. Both are cancellable; a move
+  stops only before its switch. Refused into a pool past `full` (D27).
+- Copying snapshots too, and moving a volume while attached (writes
+  mirrored to both pools until a switch-over), are left for later.

@@ -71,6 +71,11 @@
 //!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
 //!   `flatten-volume --id ID [--wait SECS]` (§10.4), which runs as an
 //!   operation (D121);
+//! - `copy-volume --id ID --pool P [--epoch E] [--name N] [--new-id ID]
+//!   [--wait SECS]` copies a volume (its head, detached, or its snapshot at
+//!   E) into a new volume in pool P, and `move-volume --id ID --pool P
+//!   [--wait SECS]` moves a detached volume without snapshots there,
+//!   keeping its id: operations (§10.6, D214);
 //! - `delete-volume`, `snapshot delete` and `snapshot group-delete` move
 //!   to the trash (D54): `trash list [--pool P]`; `trash restore --id ID
 //!   [--epoch E] [--name N]` brings a volume (or its snapshot at E) back,
@@ -158,7 +163,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -477,7 +482,7 @@ fn main() {
             "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
             | "delete-volume" | "io-test" | "out" | "in" | "weight" | "full-ratios" | "drain"
             | "clone-volume" | "rollback-volume" | "flatten-volume" | "expand-volume"
-            | "write-volume" | "read-volume" | "enroll"
+            | "write-volume" | "read-volume" | "enroll" | "copy-volume" | "move-volume"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
@@ -602,6 +607,8 @@ fn main() {
             | "clone-volume"
             | "rollback-volume"
             | "flatten-volume"
+            | "copy-volume"
+            | "move-volume"
             | "trash restore"
             | "trash purge"
             | "expand-volume"
@@ -614,7 +621,10 @@ fn main() {
         usage();
     }
     // A trashed snapshot, or the volume when there's no epoch.
-    let may_epoch = matches!(cmd.as_str(), "trash restore" | "trash purge");
+    let may_epoch = matches!(
+        cmd.as_str(),
+        "trash restore" | "trash purge" | "copy-volume"
+    );
     // The snapshot commands' own flags, and only theirs.
     let needs_epoch = matches!(
         cmd.as_str(),
@@ -627,7 +637,8 @@ fn main() {
         || (a.retention_days.is_some() && cmd != "audit settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
-        || (a.new_id.is_some() && cmd != "clone-volume")
+        || (a.new_id.is_some() && !matches!(cmd.as_str(), "clone-volume" | "copy-volume"))
+        || (matches!(cmd.as_str(), "copy-volume" | "move-volume") && a.pool.is_none())
     {
         usage();
     }
@@ -935,7 +946,8 @@ where
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
-        "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
+        "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume"
+        | "copy-volume" | "move-volume" => {
             let ops = OperationServiceClient::new(transport.clone(), config.clone());
             let next = if cmd.starts_with("trash") {
                 trash(TrashServiceClient::new(transport, config), cmd, a).await?
@@ -2121,6 +2133,59 @@ where
                 );
             }
             Next::Exit(0)
+        }
+        "copy-volume" => {
+            let r = client
+                .copy_volume(pb::CopyVolumeRequest {
+                    id: id(),
+                    epoch,
+                    pool: a.pool.unwrap_or_default(),
+                    name: a.name.clone(),
+                    new_id: a.new_id.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "volume {} copying to volume {} in pool {}: operation {} \
+                     (hyperstorctl op watch --id {})\n",
+                    id(),
+                    r.new_id,
+                    a.pool.unwrap_or_default(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            }
+        }
+        "move-volume" => {
+            let r = client
+                .move_volume(pb::MoveVolumeRequest {
+                    id: id(),
+                    pool: a.pool.unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "volume {} moving to pool {}: operation {} (hyperstorctl op watch --id {})\n",
+                    id(),
+                    a.pool.unwrap_or_default(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            }
         }
         _ => {
             let r = client

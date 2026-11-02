@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DELEGATES_ATTR","DIR_SHARDS","LEASE_ATTR"],"enum":["Take","VolumeState"],"fn":["decode_delegates","decode_holder","encode_delegates","encode_holder","header_deleting","header_key","header_version"],"struct":["Attached","Holder","Snapshot","Volume"]};

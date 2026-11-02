@@ -7,6 +7,7 @@ members = [
     "crates/hyperstor-ctl",
     "crates/hyperstor-daemon",
     "crates/hyperstor-engine",
+    "crates/hyperstor-fabric",
     "crates/hyperstor-install",
     "crates/hyperstor-bench",
     "crates/hyperstor-map",

@@ -39,6 +39,47 @@ number (`1002@192.0.2.21:9102`): one of the node's, `ID × 1000` to
 `ID × 1000 + 999`, and no two the same. A node whose device was removed
 keeps the others' numbers this way.
 
+## `network`
+
+```text
+network NAME control|data|both [trusted] subnet IP/LEN
+network NAME control|data|both [trusted] ib PREFIX
+```
+
+A network the cluster's hosts are on, for hosts with several ports.
+
+| Field | Meaning |
+|---|---|
+| `NAME` | The network's name, used by `endpoint` lines and `hyperstord --networks` |
+| `control`, `data`, `both` | What it carries: the map service, the API and heartbeats (`control`); reads, writes, replication and recovery (`data`); or everything (`both`) |
+| `trusted` | A dedicated storage network. Recorded for the data path's encryption, which will be on except on trusted networks; the data path isn't encrypted yet, on any network |
+| `subnet IP/LEN` | Ports with an address in this subnet are on it |
+| `ib PREFIX` | InfiniBand ports with this subnet prefix (four groups, `fe80:0000:0000:0000`) are on it |
+
+A cluster without `network` lines uses each device's address for
+everything, as before.
+
+## `endpoint`
+
+```text
+endpoint DEV NETWORK IP:PORT
+```
+
+Device `DEV` is also served at `IP:PORT`, on network `NETWORK`. Give the
+device's node and the network first. A device may have several
+endpoints, on one network or several; its node's `hyperstord` listens on
+each (`--endpoint`), and a node or client on that network reaches the
+device there instead of at its address, spreading its requests over the
+device's endpoints on that network.
+
+```text
+network mgmt control subnet 203.0.113.0/24
+network ib data trusted ib fe80:0000:0000:0000
+node 0 rack 0 203.0.113.10:9100
+endpoint 0 ib 192.0.2.10:9100
+endpoint 0 ib 192.0.2.11:9100
+```
+
 ## `pool`
 
 ```text
@@ -64,5 +105,6 @@ pool ID NAME KIND [OPTION VALUE ...]
 
 The map service refuses a file with a mistake and names the line:
 an unknown declaration or pool option, a value that isn't a number, a bad
-address, a `pgs` that isn't a power of two, or a `domain` other than
-`device`, `host` or `rack`.
+address, a `pgs` that isn't a power of two, a `domain` other than
+`device`, `host` or `rack`, a network given twice or with a bad subnet,
+or an endpoint for a device or network not given before it.

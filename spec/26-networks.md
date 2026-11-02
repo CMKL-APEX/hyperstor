@@ -14,7 +14,11 @@ the reconciler runs in the map service's leader, as a module that can
 move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
-G47–G53 are the host checks they rest on. It builds on 13-protocol.md §13.2 (networks and transports in
+G47–G53 are the host checks they rest on. Built so far (HS19, branch
+`feat/fabric`; 01-implementation-notes.md I233–I238): networks and
+endpoints in the cluster file and the map, nodes and clients reaching
+devices at their endpoints, and in `hyperstor-fabric` the ranking by
+closeness, path choice and the reconciler's decisions, not yet wired. It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D213)
@@ -349,12 +353,17 @@ port on the 100 GbE bond, with no RDMA work.
 
 ### 29.13 Host checks
 
-- **G47. Several ports in one subnet** (D207). On a host with several
+- **G47. Several ports in one subnet** (D207). Seen on the pilot's GPU
+  hosts (01-implementation-notes.md I237): no rules by source, so the
+  risk is real; the measurement with and without rules is open. On a host with several
   IPoIB ports in one subnet: with `arp_ignore=1`, `arp_announce=2` and a
   routing rule per source address, does each reactor's traffic leave by
   its own port? Measure per-port counters while 8 reactors send, with
   and without the rules.
-- **G48. TCP over IPoIB and 100 GbE** (D206, stage 1). With
+- **G48. TCP over IPoIB and 100 GbE** (D206, stage 1). First part
+  measured 2026-11-02 (02-benchmarks.md): one IPoIB port in datagram mode
+  gives 6–7 times 1 GbE for 1 MiB I/O and 3–4 times lower latency at
+  QD1, but one connection reaches about 0.8 GB/s; the rest is open. With
   `hyperstor-bench remote`: throughput and latency for 4 KiB and 1 MiB
   I/O over one HDR port in datagram and connected mode, over 8 ports,
   and over a host port on the 100 GbE bond, against 1 GbE.

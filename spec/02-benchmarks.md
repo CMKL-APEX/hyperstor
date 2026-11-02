@@ -1436,3 +1436,39 @@ with commits on both waiting as long: a process-wide pause like the
    QD1 (p99 16 ms), 85 at QD2 (p99 59 ms), 82–84 at QD4 (p50 46–48
    ms, p99 145–164 ms). Close to the earlier 91, with the same long
    tail from lost retransmits.
+
+## 2026-11-02: hyperstor's TCP over IPoIB against 1 GbE (G48, first part)
+
+Two of the pilot's HGX A100 hosts (2 × EPYC 7742, ConnectX-6 HDR
+InfiniBand at 200 Gb/s per port, IPoIB in datagram mode with MTU 2044,
+one subnet manager; and the 1 GbE LAN the pilot uses for everything).
+On one host, a temporary one-node cluster apart from the pilot:
+`hyperstor-meta` and `hyperstord --buffered` with its device on tmpfs
+(`/dev/shm`), a pool of one copy, so no drive and no replication is
+measured, only the client's path to the node. On the other,
+`HS_BENCH_SECS=10 hyperstor-bench remote MAP` (one client reactor),
+built from `feat/fabric`. The cluster listened on the 1 GbE address,
+then on an IPoIB address.
+
+| Test | 1 GbE ops/s | 1 GbE MB/s | 1 GbE p50/p99 µs | IPoIB ops/s | IPoIB MB/s | IPoIB p50/p99 µs | IPoIB, 4 reactors ops/s | MB/s |
+|---|---|---|---|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 2700 | 11.1 | 364 / 664 | 6874 | 28.2 | 125 / 266 | 4775 | 19.6 |
+| 4 KiB random writes, QD32 | 23086 | 94.6 | 1154 / 4036 | 23228 | 95.1 | 1117 / 4125 | 39715 | 162.7 |
+| 4 KiB random reads, QD1 | 2576 | 10.6 | 358 / 1600 | 9367 | 38.4 | 84 / 198 | 8615 | 35.3 |
+| 4 KiB random reads, QD32 | 22904 | 93.8 | 1113 / 4138 | 22002 | 90.1 | 1132 / 4230 | 34338 | 140.6 |
+| 1 MiB writes, QD4 | 112 | 117.3 | 35713 / 38846 | 693 | 726.5 | 5649 / 9007 | 927 | 972.4 |
+| 1 MiB reads, QD4 | 112 | 117.4 | 35672 / 38045 | 780 | 818.0 | 5488 / 9367 | 687 | 720.5 |
+
+Findings:
+1. **Large I/O: 6–7 times the 1 GbE path** (117 MB/s, its line rate,
+   against 730–970 MB/s), with no RDMA: stage 1 of HS19 alone pays.
+2. **Small I/O at QD1: 3–4 times lower latency** (4 KiB reads 84 µs at
+   p50 against 358 µs).
+3. **One connection over IPoIB is far below the port** (about 0.8 GB/s of
+   25 GB/s): datagram mode carries 2 KiB frames without offloads. QD32
+   at 4 KiB stays at the same 23k ops/s on both networks with one server
+   reactor, so the limit there is per connection or per reactor, not the
+   wire; four reactors take it to 34–40k. The client's single reactor at
+   QD4 bounds the 1 MiB runs. Still to measure for G48: connected mode,
+   several clients, the 8 ports at once (which needs G47's routing
+   rules), and a host port on the 100 GbE bond.
