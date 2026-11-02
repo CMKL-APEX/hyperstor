@@ -40,8 +40,38 @@ pub fn status_text(s: &pb::GetStatusResponse) -> String {
         devices.iter().filter(|d| d.up_in).count(),
         devices.len()
     );
+    let _ = writeln!(o, "space   {}", space_text(&devices));
     o.push_str(&pools_text(s));
     o
+}
+
+/// Raw space over the devices in placement, from their reports to the
+/// leader (D156): what is free before copies or erasure coding, which
+/// `pools` then gives per pool.
+fn space_text(devices: &[&pb::Device]) -> String {
+    let (mut free, mut total, mut missing) = (0u64, 0u64, 0usize);
+    for d in devices.iter().filter(|d| d.up_in) {
+        match (d.free_bytes, d.total_bytes) {
+            (Some(f), Some(t)) => {
+                free += f;
+                total += t;
+            }
+            _ => missing += 1,
+        }
+    }
+    if total == 0 {
+        return "- (devices report their space to the leader)".into();
+    }
+    let mut t = format!(
+        "{} free of {} raw ({:.0}% used)",
+        gib(Some(free)),
+        gib(Some(total)),
+        (total - free) as f64 * 100.0 / total as f64
+    );
+    if missing > 0 {
+        let _ = write!(t, "; {missing} device(s) not reported");
+    }
+    t
 }
 
 /// `hyperstorctl pools`.
@@ -785,11 +815,38 @@ mod tests {
         let t = status_text(&ok);
         assert!(t.contains("health  ok"), "{t}");
         assert!(t.contains("nodes   3 up of 3; devices 3 in of 3"), "{t}");
+        assert!(t.contains("space   - (devices report"), "{t}");
         let bad = status(true);
         assert!(!is_ok(&bad));
         let t = status_text(&bad);
         assert!(t.contains("health  warn"), "{t}");
         assert!(t.contains("warn  1 node(s) down: 2"), "{t}");
+    }
+
+    #[test]
+    fn status_text_sums_the_space_of_devices_in() {
+        let mut s = status(false);
+        let gib = 1u64 << 30;
+        for (i, d) in s.nodes.iter_mut().flat_map(|n| &mut n.devices).enumerate() {
+            match i {
+                0 => {
+                    d.total_bytes = Some(100 * gib);
+                    d.free_bytes = Some(75 * gib);
+                }
+                // Out: its space doesn't count.
+                1 => {
+                    d.up_in = false;
+                    d.total_bytes = Some(100 * gib);
+                    d.free_bytes = Some(100 * gib);
+                }
+                _ => {}
+            }
+        }
+        let t = status_text(&s);
+        assert!(
+            t.contains("space   75.0G free of 100.0G raw (25% used); 1 device(s) not reported"),
+            "{t}"
+        );
     }
 
     /// D55: every RPC in the protos has a command (or is called by the
