@@ -286,12 +286,12 @@ hyperstorctl in --node 3                # after the service
 
 `drain` prints each PG that moves, with its acting set before and where
 it goes. Removing a device, deleting a pool with `--force`, flattening
-a clone and purging from the trash are operations too, as is each purge
+a clone, copying or moving a volume and purging from the trash are operations too, as is each purge
 the map service makes when a grace period ends or a full pool purges
 its trash. The web UI's Operations page shows them. Operations are kept
 in the map service's replicated store, a week after they finish, and a
-new leader carries on with those still running. Only a drain and a
-device removal can be cancelled. `op watch` exits with status 1 if the
+new leader carries on with those still running. A drain, a device
+removal, a copy and a move can be cancelled. `op watch` exits with status 1 if the
 operation failed or was cancelled, for scripts.
 
 ## Revoking a certificate
@@ -336,6 +336,22 @@ attaches again. `write-volume` and `read-volume` copy a file into or
 out of a detached volume, such as a disk image.
 
 Deleting a volume or a snapshot moves it to [the trash](#the-trash).
+
+### Copying and moving between pools
+
+```sh
+hyperstorctl copy-volume --id ID --epoch E --pool 3 --name db-copy --wait 3600
+hyperstorctl move-volume --id ID --pool 3 --wait 3600
+```
+
+`copy-volume` makes a new volume in another pool from a volume's
+snapshot (`--epoch`), while the volume stays in use, or from its current
+data, which needs it detached. The copy is flat: no snapshots, no
+parents. `move-volume` moves a detached volume, keeping its id, so
+whatever names it (a glidex disk) needs no change; delete and purge its
+snapshots first, or copy it instead. Both copy every block that holds
+data through the map service's leader, and take the new pool's space
+for it; a move then deletes the data in the old pool.
 
 ## VM disks
 

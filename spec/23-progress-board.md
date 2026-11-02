@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 0 | 17 |
+| 6 | 0 | 1 | 17 |
 
 ## In progress
 
@@ -30,7 +30,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume` | Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader | Pull request, then the web UI's buttons; live moves of attached volumes later | 2026-11-02 |
 
 ## Done
 
@@ -65,7 +67,7 @@ against the tests.
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |
-| HS4 | Snapshots, clones and the host read cache | 4 | 1 | 0 |
+| HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
 | HS5b | Lower CPU cost per operation | 0 | 0 | 0 |
 | HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 0 |

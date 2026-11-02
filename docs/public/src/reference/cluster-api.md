@@ -51,7 +51,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -96,6 +96,8 @@ values are left out of answers.
 | `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone |
 | `RollbackVolume` | `{"id": "…", "epoch": "4"}` | `volume`; `failed_precondition` (`attached`) while attached |
 | `FlattenVolume` | `{"id": "…"}` | `volume` as it is now, and the `operation` that copies its data (follow it with `WatchOperation`) |
+| `CopyVolume` | `{"id": "…", "pool": 3}`, optionally `"epoch": "4"` (a snapshot; otherwise the head, which needs the volume detached), `"name"`, `"new_id"` | `volume` as it is now, `new_id` and the `operation` that copies it; `not_found` without the volume, snapshot or pool, `resource_exhausted` (`pool_full`) for a full pool, `failed_precondition` (`attached`) for an attached volume's head, `already_exists` for an id in use |
+| `MoveVolume` | `{"id": "…", "pool": 3}` | `volume` as it is now, and the `operation` that copies its data, switches pools and deletes what is left behind; `invalid_argument` for its own pool, `failed_precondition` (`attached`) while attached, (`in_use`) while it has snapshots, as for `CopyVolume` otherwise |
 | `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
 | `DeleteGroupSnapshot` | `{"group": "…"}` | `purge_unix`: its snapshots are in the trash |
 
@@ -135,9 +137,9 @@ values are left out of answers.
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
-| `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
+| `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |
-| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain or device removal brings the devices back in. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
+| `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain or device removal brings the devices back in; a cancelled copy deletes its new volume, and a move stops unless it has switched pools. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
 
 ```sh
 cd /etc/hyperstor/pki

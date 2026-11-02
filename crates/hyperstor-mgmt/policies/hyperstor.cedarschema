@@ -104,6 +104,12 @@ namespace Hyperstor {
   action "ClusterService.FlattenVolume" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.CopyVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.MoveVolume" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.CreateGroupSnapshot" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

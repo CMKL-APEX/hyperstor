@@ -338,6 +338,22 @@ pub enum SnapOp {
     Flatten {
         id: u128,
     },
+    /// Its snapshot at `epoch`, or its head, into new volume `new_id` of
+    /// `pool` (D214).
+    Copy {
+        id: u128,
+        epoch: Option<u64>,
+        pool: u32,
+        new_id: u128,
+        name: String,
+        progress: std::sync::Arc<hyperstor_client::copy::Progress>,
+    },
+    /// To `pool`, keeping its id (D214).
+    Move {
+        id: u128,
+        pool: u32,
+        progress: std::sync::Arc<hyperstor_client::copy::Progress>,
+    },
     Group {
         ids: Vec<u128>,
         name: String,
@@ -463,6 +479,20 @@ async fn run_snap_op(
             SnapDone::Volume(c.volume(id).await?.ok_or(ClientError::NoVolume(id))?)
         }
         SnapOp::Flatten { id } => SnapDone::Volume(c.flatten(id).await?),
+        SnapOp::Copy {
+            id,
+            epoch,
+            pool,
+            new_id,
+            name,
+            progress,
+        } => SnapDone::Volume(
+            c.copy_volume(id, epoch, pool, new_id, &name, &progress)
+                .await?,
+        ),
+        SnapOp::Move { id, pool, progress } => {
+            SnapDone::Volume(c.move_volume(id, pool, &progress).await?)
+        }
         SnapOp::Group { ids, name } => {
             let (g, s) = c.snapshot_group(&ids, &name).await?;
             SnapDone::Group(g, s)
