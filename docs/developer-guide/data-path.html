@@ -1,0 +1,474 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>The data path: reactor and engine - Hyperstor</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="User, administrator and developer documentation for Hyperstor">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-132cbc02.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-29a7d206.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Hyperstor</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/hyperstor" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/hyperstor/edit/main/docs/public/src/developer-guide/data-path.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="the-data-path-reactor-and-engine"><a class="header" href="#the-data-path-reactor-and-engine">The data path: reactor and engine</a></h1>
+<p>Each storage device is split into <strong>shards</strong>, and each shard is owned by
+one <strong>reactor</strong>: a thread pinned to a core, running Hyperstor’s own
+io_uring event loop. The shard’s engine, its network port, its
+replication and its recovery all run on that thread. Nothing on the data
+path takes a lock shared with another core.</p>
+<h2 id="the-reactor"><a class="header" href="#the-reactor">The reactor</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Aspect</th><th>As built</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td>Threading</td><td>One thread, one io_uring (1,024 entries), one FIFO task queue; futures are not <code>Send</code> and never leave their core</td><td>Shared-nothing, like Seastar: no locks, no cache-line bouncing between cores</td></tr>
+<tr><td>Buffers</td><td>Each I/O owns its buffer until its completion arrives; dropping a future sends an <code>AsyncCancel</code> and frees the buffer only on completion</td><td>io_uring may still write into a buffer after the future is gone</td></tr>
+<tr><td>Sockets</td><td>TCP <code>accept</code>, <code>connect</code>, <code>recv</code> and <code>send</code> as io_uring operations; UDP for peers’ pings; eventfds and Unix sockets for <code>hyperstor-vhost</code></td><td>One mechanism for disk and network</td></tr>
+<tr><td>Waking from other threads</td><td>A shared queue and an <code>eventfd</code> that always has a read armed</td><td>The control plane (map pushes, the API) can reach a reactor without a lock on the data path</td></tr>
+<tr><td>Polling</td><td>After each request the loop polls for 200 µs before sleeping in the kernel (<code>hyperstord --spin-us</code>)</td><td>Cuts QD1 latency by 15–23 % at little cost when idle; idle cores still sleep</td></tr>
+<tr><td>Timers</td><td>Short timers are io_uring timeouts; per-request deadlines (the 2 s replica timeout) use one 50 ms ticker per reactor</td><td>One io_uring timeout per write cost about 3 % of write throughput (<a href="performance.html#findings-that-changed-the-design">Performance</a>)</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Why not tokio, glommio, monoio or SPDK:</strong> see
+<a href="decisions.html#data-path-and-runtime">decisions</a>. In short, owning the
+loop lets disk I/O, sockets, and later RDMA completion queues and
+virtqueues be polled from one place, with no FFI on the data path and no
+devices taken away from the kernel.</p>
+<p>The reactor issues <code>uring_cmd</code> passthrough commands (the ublk front end
+uses them); NVMe passthrough through the same interface, zero-copy send
+and provided buffers are planned.</p>
+<p><strong>Stalls are counted.</strong> Each reactor runs a 10 ms timer; when it fires
+100 ms or more late, something held the thread, and the reactor logs it
+and counts it in <code>hyperstor_reactor_stalls_total</code>. Each device also logs how long it took
+to open, and any commit or in-place write that took that long. <strong>Why:</strong>
+a held reactor answers no pings, so its peers report its node silent; the
+log says which work held it.</p>
+<h3 id="waiting-for-the-device"><a class="header" href="#waiting-for-the-device">Waiting for the device</a></h3>
+<p>A reactor that waits for its device serves nothing else meanwhile, pings
+included: one slow flush got healthy nodes reported and marked down. So
+the engine is being made <strong>completion-driven</strong>: it plans an operation in
+memory, the reactor submits the device I/O on its own ring, and the
+operation finishes when the completions arrive. It comes in stages.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Stage</th><th>Status</th><th>What waits off the reactor’s thread</th></tr>
+</thead>
+<tbody>
+<tr><td>Commits</td><td>in progress: built for file and block devices</td><td>A commit round’s data and log writes and its flush. One round is in flight per shard; other requests to the shard wait for it, as before, since the index already shows the round</td></tr>
+<tr><td>Client reads</td><td>in progress: built for file and block devices</td><td>Reads and layered reads: up to 128 per device in flight, first come first served, and many per connection, so a write no longer waits behind a read on its connection</td></tr>
+<tr><td>Checkpoint slices, deferred in-place writes, recovery and scrub reads</td><td>planned</td><td>These still wait in the device’s own calls</td></tr>
+<tr><td>A commit planned while the last one flushes</td><td>maybe later</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<p>Memory devices and the test rig’s devices have no file descriptor and
+still complete in their own calls. On a cluster of three hosts at 15,000
+writes a second, no reactor was held 100 ms or more once commits waited
+off the thread; before, at that cluster’s ordinary load, one
+node’s flushes held its reactor for up to 205 ms.</p>
+<p>Two timeouts follow, since a hung device no longer stops its node’s pings
+and would otherwise hang unseen:</p>
+<ul>
+<li><strong>I/O timeout</strong> (30 s, <code>hyperstord --io-timeout-secs</code>, as Linux gives an
+NVMe command): a commit whose writes and flush take longer fails, and the
+device is failed and its PGs placed elsewhere, as after an I/O error. The
+node stays up.</li>
+<li><strong>Read timeout</strong> (2 s, <code>hyperstord --read-timeout-ms</code>): the primary
+abandons the read and asks the PG’s other acting copies, in turn, to
+answer from their own copies, once the writes queued before the read are
+applied there. If none answers in time, the client gets <code>Unavailable</code> and
+retries. Three timeouts in a row fail the device; a read in time resets
+the count.</li>
+</ul>
+<p><strong>Reads in flight and freed space.</strong> A read plans which physical blocks to
+read, then waits. If a commit meanwhile frees those blocks (an overwrite
+moved the data elsewhere) and a later write reuses them, the read would
+return the wrong data. So extents freed while reads are in flight are
+held, by generation, until every read begun before the free has ended;
+and while a read is in flight, a small overwrite is redirected rather
+than deferred in place (on hard disks). <strong>The cost:</strong> one counter per
+read, and space freed at most a read timeout late. A randomized test
+runs reads, writes and deletes begun and ended in any order against a
+model.</p>
+<h2 id="the-engine"><a class="header" href="#the-engine">The engine</a></h2>
+<p>The engine stores <strong>objects</strong>. An object has sparse data in 4 KiB
+blocks, a table of attributes, and an ordered key–value table. Volumes
+are made of chunk objects; volume headers, and later the key–value store,
+S3 and the filesystem, use the same objects in their own namespaces.</p>
+<h3 id="operation-lists"><a class="header" href="#operation-lists">Operation lists</a></h3>
+<p>A change is an <strong>operation list</strong>, applied atomically: all of it or none
+of it survives a crash. Operations include <code>Write</code>, <code>Zero</code>, <code>Truncate</code>,
+<code>SetAttr</code>, <code>KvPut</code>, <code>KvDelRange</code>, <code>Delete</code>, and asserts
+(<code>AssertRevision</code>, <code>AssertExists</code>, <code>AssertAbsent</code>) checked before the
+list applies. Asserts make compare-and-set possible, which the volume
+headers use. <code>Absorb</code> serves snapshot deletion: it hands the blocks an
+older version of a chunk holds, and a newer one lacks, to the newer one,
+then deletes the older, all in one log record and without copying any
+data. <code>Take</code> moves a whole object (blocks, attributes and key–value
+table) to a new key in one constant-size log record, which a PG split
+uses (<a href="replication.html#pg-counts-grow-by-splitting">placement</a>). Reads can
+go through <strong>layers</strong>: each block comes from the first of
+a list of objects (a chunk’s versions) that holds it, zeros if none
+does. Every change gets a revision from a counter that never
+repeats, so compare-and-set has no ABA problem.</p>
+<h3 id="on-device-format"><a class="header" href="#on-device-format">On-device format</a></h3>
+<pre><code class="language-text">device:  [superblock A][superblock B][shard 0][shard 1] ... [shard n]
+shard:   [super A][super B][log ring][data area]
+</code></pre>
+<ul>
+<li>The <strong>device superblock</strong>, in two copies, names the device (its id in
+the map), the cluster, the format version and three words of <strong>feature
+flags</strong>: <em>compatible</em> ones, which a build that doesn’t know them
+ignores; <em>read-only-compatible</em> ones, which it could only read past
+(and refuses, since no build opens a device read-only); and
+<em>incompatible</em> ones, which it refuses. Every format change from now on
+takes a flag, as in ext4 and XFS.</li>
+<li>The two shard superblocks alternate by sequence number, so a torn
+superblock write leaves the other one valid.</li>
+<li>The <strong>log ring</strong> is a sixteenth of the shard, between 1 MiB and 1 GiB.
+It holds whole-block records, each with a CRC32C seeded by a salt that
+changes on every open, so an old record left in the ring is never
+mistaken for a new one.</li>
+<li>The <strong>data area</strong> holds extents. Every 4 KiB block in an extent has its
+own CRC32C, kept in the index and carried on the wire unchanged from
+the client to the device and back.</li>
+</ul>
+<h3 id="whose-device-it-is"><a class="header" href="#whose-device-it-is">Whose device it is</a></h3>
+<p>Before a device is opened, <code>hyperstord</code> connects to the map service and
+reads the device superblock alone, before any log is replayed:</p>
+<ul>
+<li>The device id must be the one this reactor serves, and the cluster the
+map’s. A drive moved from another host or cluster, or two device paths
+swapped, is refused with what it holds, and never written. A superblock
+written before the cluster was recorded gets it recorded once, the second
+copy first, so a crash leaves the old or the new.</li>
+<li>Only a <strong>blank</strong> device is formatted: one where neither copy holds a
+Hyperstor superblock. A newer format version, a damaged superblock or a
+shard without one is refused, never formatted over.</li>
+<li><code>hyperstord</code> formats only files. Block devices are formatted by the
+installer, after it looks for other systems’ signatures (partition
+tables, filesystems, swap, LVM, md RAID, LUKS, Ceph BlueStore) in the
+device’s first and last 128 KiB, unless the operator forces it.</li>
+</ul>
+<p><strong>Why:</strong> the superblock recorded its device, but nothing read it; a
+swapped drive would have been replayed and served as this device’s data.
+Checking from the superblock alone keeps a refused device untouched.</p>
+<h3 id="redirect-on-write-and-deferral-for-hard-disks"><a class="header" href="#redirect-on-write-and-deferral-for-hard-disks">Redirect-on-write, and deferral for hard disks</a></h3>
+<p>On flash, every write goes to <strong>new</strong> extents, and the log record that
+commits it names them: data is written once. On hard disks
+(<code>hyperstord --hdd</code>), a small overwrite (under 64 KiB) of blocks an
+object already holds goes into the log record and is applied in place
+later, so the disk doesn’t seek to a new place for every small write.</p>
+<p><strong>Why:</strong> on flash, deferring writes data twice. Measured on the same
+drive, redirecting gave 1.6× the 4 KiB write throughput, and end to end
+19 % more throughput with a 2.6× lower p99 (<a href="performance.html">Performance</a>).</p>
+<h3 id="group-commit"><a class="header" href="#group-commit">Group commit</a></h3>
+<p>A per-reactor committer drains the queue of operation lists: it writes
+their new extents and one log record, issues <strong>one flush</strong> for the whole
+round, then acknowledges every list in it. At batch 32 the log costs
+about 128 bytes per update (257 B with checkpoints).</p>
+<h3 id="checkpoints"><a class="header" href="#checkpoints">Checkpoints</a></h3>
+<p>The index lives in memory and is written out by <strong>fuzzy checkpoints</strong>:
+starting when a quarter of the log is used, each commit round also writes
+64 KiB of the checkpoint (8× that past half), and the checkpoint must be
+done by three quarters. The superblock then names the new checkpoint and
+the log position after it.</p>
+<p><strong>Why fuzzy:</strong> writing the whole checkpoint at once stalled commits for
+8–13 ms at p99. In slices, commit p99 is 109 µs at the same throughput.</p>
+<p><strong>Paged.</strong> The index is cut into pages by key range, about 128 KiB each.
+Every change marks the page holding its key, and a checkpoint writes only
+the pages marked since the last one began, each to fresh blocks, then a
+directory of every page. A page that grows past its size is cut in two;
+one left empty is dropped, its range joining the page before.
+<strong>Why it is safe:</strong> a page that nothing changed since the last
+checkpoint began is still right as written then, and every change it
+lacks is in a page written now or in the log replayed after it. <strong>What it gains:</strong>
+checkpoint traffic follows the share of the index that changes, not its
+size: 2.4× less when a tenth of the chunks are written, 16× less for a
+hundredth. Uniform random writes touch every page and gain nothing.
+Recovery time is unchanged.</p>
+<h3 id="when-a-shard-fills"><a class="header" href="#when-a-shard-fills">When a shard fills</a></h3>
+<ul>
+<li><strong>Room for a checkpoint is kept.</strong> A change that would take the space a
+whole checkpoint needs is refused (no space), while one that only frees
+(delete, truncate, zero, absorb) goes through. A checkpoint that still
+finds no room is abandoned, not fatal, and runs again once room is
+back. <strong>Why:</strong> a checkpoint that failed used to poison the shard, so
+every volume on it got I/O errors instead of “no space”.</li>
+<li><strong>The <code>full</code> ratio</strong> (95 % by default, set cluster-wide in the map)
+refuses, from each commit round, a list that takes room past it: a new
+object, or a write to blocks an object doesn’t hold yet. Overwrites, and
+an existing object’s keys and attributes, go on, so volume leases and
+headers keep working on a full device. See
+<a href="replication.html#when-devices-fill">fullness</a>.</li>
+</ul>
+<h3 id="recovery"><a class="header" href="#recovery">Recovery</a></h3>
+<p>On open, the engine loads the checkpoint the newer superblock names,
+replays the log from there, and checks the data CRCs of the last commit
+group: a record whose data didn’t reach the media is dropped, with
+everything after it. Replay runs at about 270 MiB of log per second;
+opening takes about 0.3 s plus 4.5 ms per MiB replayed.</p>
+<h3 id="the-index"><a class="header" href="#the-index">The index</a></h3>
+<p>Each object’s block map starts as a list of <strong>runs</strong> (extents). When a
+chunk gets fragmented by random overwrites, it switches to a <strong>dense
+map</strong>: 8 bytes per block (a 32-bit physical block and its CRC), and back
+to runs when it compacts again.</p>
+<p><strong>Why:</strong> after random overwrites, run maps cost about 33 GiB of memory
+per TiB of data; dense maps cap it at 2 GiB per TiB. A copy-on-write
+B+tree on the device, which pages the index out of memory, is planned
+for when index memory calls for it; paged checkpoints already write only
+what changed (see <a href="decisions.html#the-index">decisions</a>). Snapshots don’t wait for it: they
+are versions of chunk objects (<a href="volumes.html#snapshots-and-clones">volumes</a>).</p>
+<h3 id="content-digests"><a class="header" href="#content-digests">Content digests</a></h3>
+<p>The engine can compute a 64-bit <strong>digest</strong> of each object from its index
+alone, reading no data: FNV-1a over its size, each non-zero block’s
+number and CRC32C, its attributes and its key–value table. Replication
+uses these digests for peering, delta recovery and light scrub
+(<a href="replication.html#peering-and-recovery-by-content-digests">replication</a>).
+Listing them costs about 0.5 µs per small object and 20–50 µs per 4 MiB
+chunk. An object’s digest is cached until it changes. A large one (an
+object with a key–value table of hundreds of MiB) is taken in parts of
+1 MiB with a yield between them, and digest lists and backfill compare in
+batches of 64 objects, so no PG holds the reactor for long; the digest
+is the same as taken at once, so nodes of both versions agree.</p>
+<h2 id="crash-testing"><a class="header" href="#crash-testing">Crash testing</a></h2>
+<p>The engine’s crash test runs random operation lists against a reference
+model (a sorted map in memory), and cuts the power at random device
+operations: blocks not yet flushed are randomly kept or lost, so writes
+are torn and reordered, and it cuts the power again during recovery.
+After each crash the recovered shard must equal the model after every
+acknowledged list plus some prefix of the ones in flight. 300 seeds run
+on every change (<code>HS_CRASH_SEEDS</code> sets more); a 5,000-seed run (30,000
+crashes) has passed.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/replication.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/replication.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

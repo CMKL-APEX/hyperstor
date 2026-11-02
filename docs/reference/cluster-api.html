@@ -1,0 +1,437 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Cluster API - Hyperstor</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="User, administrator and developer documentation for Hyperstor">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-132cbc02.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-29a7d206.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Hyperstor</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/hyperstor" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/hyperstor/edit/main/docs/public/src/reference/cluster-api.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="cluster-api"><a class="header" href="#cluster-api">Cluster API</a></h1>
+<p><code>hyperstor-meta --api ADDR</code> serves the cluster API, <code>hyperstor.v1</code>, which
+<a href="hyperstorctl.html"><code>hyperstorctl</code></a> uses. One service answers the
+<a href="https://connectrpc.com/docs/protocol">Connect protocol</a> (JSON or
+protobuf over HTTP/1.1 or HTTP/2), gRPC and gRPC-Web, so any of these
+work: <code>curl</code>, <code>grpcurl</code> (with the proto file), generated clients.</p>
+<p>The definitions are
+<a href="https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/cluster.proto"><code>cluster.proto</code></a>
+(<code>ClusterService</code>) and
+<a href="https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/admin.proto"><code>admin.proto</code></a>
+(<code>TokenService</code>, <code>CaService</code>, <code>NodeService</code>, <code>OperationService</code>), in
+<code>crates/hyperstor-api/proto/hyperstor/v1/</code>.</p>
+<h2 id="security"><a class="header" href="#security">Security</a></h2>
+<p>With <code>--api-tls</code>, the API speaks only TLS. Every call but <code>Join</code> needs
+a client certificate issued by the cluster’s CA, whose identity
+(<code>hyperstor://&lt;cluster&gt;/&lt;role&gt;/&lt;id&gt;</code>) decides what it may do:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Role</th><th>May</th></tr>
+</thead>
+<tbody>
+<tr><td><code>admin</code> (<code>hyperstorctl</code>), <code>mgmt</code></td><td>Everything</td></tr>
+<tr><td><code>node</code>, <code>meta</code></td><td>Read (<code>GetStatus</code>, <code>ListPgs</code>, <code>ListVolumes</code>, <code>ListTokens</code>, <code>GetOperation</code>, <code>ListOperations</code>, <code>DrainNode</code> with <code>dry_run</code>), and renew their own certificate</td></tr>
+<tr><td><code>host</code></td><td>Renew its own certificate; nothing else</td></tr>
+</tbody>
+</table>
+</div>
+<p>A certificate of another cluster is refused, and so is a revoked one:
+<code>RevokeCertificate</code> (<code>hyperstorctl cert revoke</code>) puts its serial on a
+list every map service member checks, on the API and between members,
+until the certificate would have expired. <code>hyperstor-install</code> makes
+the certificates in <code>/etc/hyperstor/pki</code>.</p>
+<p><strong>Joining.</strong> <code>Join</code> is the only call without a client certificate: a
+single-use token from <code>CreateToken</code> authorizes it. The joining host
+pins the cluster’s root by the fingerprint the token carries before it
+sends anything, and sends a certificate request for a key it keeps;
+the token decides the identity it gets. Tokens are kept in the map
+service’s replicated store, only their SHA-256, so they survive restarts
+and work through any member; the leader makes, uses and revokes them
+(another member refuses with <code>not_leader</code> and changes nothing). Before
+the map service has its first map, only its first member makes tokens,
+and only <code>meta</code> ones, for the other members to join.</p>
+<p><strong>Local socket.</strong> With <code>--api-socket</code>, the API is also served on a Unix
+socket (<code>/run/hyperstor-meta/api.sock</code> when installed). There the
+kernel names the caller: root, the service’s user and members of
+<code>hyperstor-admin</code> may do everything, others nothing. It is the way in
+when certificates are broken; its use is audited like any other.</p>
+<p>Without <code>--api-tls</code> the API is plain HTTP and accepts every request:
+only for loopback and tests.</p>
+<p><strong>Audit.</strong> Every change (<code>SetDeviceIn</code>, <code>SetDeviceWeight</code>, <code>SetFullRatios</code>, <code>AddDevice</code>, <code>RemoveDevice</code>, <code>SetDeviceClass</code>, <code>CreatePool</code>, <code>SetPool</code>, <code>SetPoolDevice</code>, <code>DeletePool</code>, <code>CreateVolume</code>, <code>ExpandVolume</code>, <code>DeleteVolume</code>, <code>CopyVolume</code>, <code>MoveVolume</code>, the snapshot calls but <code>ListSnapshots</code>, <code>CreateToken</code>, <code>RevokeToken</code>, <code>Join</code>, <code>RenewCertificate</code>, <code>RevokeCertificate</code>, <code>DrainNode</code>, <code>CancelOperation</code>) and every refused call is
+written as one JSON line on the map service’s standard error, which
+systemd keeps in the journal:</p>
+<pre><code class="language-sh">journalctl -u hyperstor-meta | grep '{"audit":1'
+</code></pre>
+<pre><code class="language-json">{"audit":1,"time":1792561403.512,"principal":"hyperstor://7311402/admin/local","op":"SetDeviceIn","target":"device 2 up_in=false","result":"ok, map epoch 5"}
+</code></pre>
+<p><strong>Rate limit.</strong> Each caller may make 200 calls per second, in bursts of
+up to 1000; more are refused with <code>resource_exhausted</code>.</p>
+<h2 id="calls"><a class="header" href="#calls">Calls</a></h2>
+<p>Each call is a <code>POST</code> to <code>/hyperstor.v1.&lt;Service&gt;/&lt;Method&gt;</code> with a
+JSON body. Field names are as in the proto file; fields with zero
+values are left out of answers.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Request</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GetStatus</code></td><td><code>{}</code></td><td><code>cluster_id</code>, <code>epoch</code>, <code>health</code> (<code>HEALTH_OK</code>, <code>HEALTH_WARN</code>, <code>HEALTH_ERROR</code>), <code>reasons</code>, <code>nodes</code> with their <code>devices</code> and <code>last_heard_ms</code> (time since the node’s last heartbeat; absent if none since the map service started, and from a member that isn’t the leader, which hears none: its answer then notes where the leader is), <code>pools</code> with PG counts, <code>map_address</code>, <code>full_ratios</code> (<code>nearfull</code>, <code>backfillfull</code>, <code>full</code>, in percent); each device’s and pool’s <code>fullness</code> (<code>ok</code>, <code>nearfull</code>, <code>backfillfull</code> for a device, <code>full</code>; empty before the devices report) and a pool’s <code>fullest_device</code></td></tr>
+<tr><td><code>ListPgs</code></td><td><code>{"pool": 1}</code></td><td><code>pgs</code>: <code>pool</code>, <code>pg</code>, <code>epoch</code>, <code>acting</code>, <code>up</code></td></tr>
+<tr><td><code>SetDeviceIn</code></td><td><code>{"device": 2, "up_in": false}</code></td><td><code>map_epoch</code> after the change</td></tr>
+<tr><td><code>SetDeviceWeight</code></td><td><code>{"device": 2, "weight": 0.5}</code>, or <code>{"device": 2}</code> to follow the device’s capacity again</td><td><code>map_epoch</code> after the change, and <code>weight</code> now; <code>invalid_argument</code> for a weight below 0</td></tr>
+<tr><td><code>SetFullRatios</code></td><td><code>{"full": 97}</code>, or any of <code>nearfull</code>, <code>backfillfull</code> and <code>full</code> (percentages); what isn’t given stays</td><td><code>map_epoch</code> after the change, and <code>ratios</code> now; <code>invalid_argument</code> unless each is between 50 and 99 and <code>nearfull</code> &lt; <code>backfillfull</code> &lt; <code>full</code></td></tr>
+<tr><td><code>AddDevice</code></td><td><code>{"node": 0, "address": "192.0.2.20:9102"}</code>, and <code>"class"</code> if not the node’s others’</td><td><code>device</code>, its id, and <code>map_epoch</code>; <code>not_found</code> without the node, <code>failed_precondition</code> (<code>device_conflict</code>) for an address in use, <code>invalid_argument</code> for an address a node can’t listen on or a bad class</td></tr>
+<tr><td><code>RemoveDevice</code></td><td><code>{"device": 2}</code>; <code>"dry_run": true</code> changes nothing; <code>"force": true</code> lets pools keep fewer copies than their size. Needs step-up through hyperstor-mgmt</td><td><code>moves</code> (each PG’s <code>before</code> and <code>after</code>), <code>short_pools</code> (<code>pool</code>, the <code>copies</code> it keeps, its <code>size</code>), <code>fill</code> (each device taking data: <code>device</code>, <code>used_bytes</code> after, <code>total_bytes</code>) and, unless a dry run, the <code>operation</code> that removes the device from the map once no PG lists it, with its node if it was the last; <code>not_found</code> without the device, <code>failed_precondition</code> (<code>device_conflict</code>) when a pool would keep fewer copies than its <code>min</code> (or, unforced, its size) or a device would pass 95% full</td></tr>
+<tr><td><code>SetDeviceClass</code></td><td><code>{"device": 2, "class": "fast"}</code>, or <code>{"device": 2}</code> to follow its kind again</td><td><code>map_epoch</code> and <code>class</code> now; <code>not_found</code> without the device, <code>failed_precondition</code> (<code>class_conflict</code>) for a device whose kind isn’t known or a class of another kind, <code>invalid_argument</code> for a bad class</td></tr>
+<tr><td><code>CreatePool</code></td><td><code>{"name": "fast", "kind": "replicated", "size": 3, "classes": ["nvme"]}</code>; optional <code>min_size</code>, <code>pg_count</code>, <code>chunk_size</code>, <code>domain</code>, <code>force</code>, <code>autoscale</code> (default on), and for a cache pool <code>cache_grace</code> (seconds a PG waits for a down node, default 60, up to 3600)</td><td><code>pool</code> (its id, never one a pool had), <code>pg_count</code>, <code>map_epoch</code>, <code>mixed_kinds</code>; <code>failed_precondition</code> (<code>pool_conflict</code>) for a name in use, too few failure domains or an unforced mix; <code>invalid_argument</code> for no classes, a bad name, kind, domain, copies, chunk or PG count</td></tr>
+<tr><td><code>SetPool</code></td><td><code>{"pool": 1, "classes": ["nvme", "ssd"]}</code>, <code>"every_device": true</code> for every device, <code>"domain": "rack"</code>, <code>"name": "fast"</code>; what isn’t given stays; <code>"force": true</code> to allow hard disks with flash; <code>"pg_count": 128</code>, twice the pool’s, splits its PGs; <code>"autoscale": false</code> stops the autoscaler for it; <code>"cache_grace": 300</code> sets a cache pool’s wait for a down node, 0 to 3600 seconds</td><td><code>map_epoch</code>, and <code>mixed_kinds</code> when the pool’s devices mix them; <code>not_found</code> without the pool, <code>failed_precondition</code> (<code>pool_conflict</code>) for <code>.meta</code>, a name in use, too few failure domains, or an unforced mix; <code>invalid_argument</code> for a bad class, name or domain, classes with <code>every_device</code>, or nothing to change. Each pool in <code>GetStatus</code> gives its <code>classes</code> and <code>mixed_kinds</code>, <code>splitting</code> with <code>split_done</code> PGs while it splits, <code>placement_count</code>, the PGs placement goes by (below <code>pg_count</code> after a split), <code>autoscale</code>, and <code>cache_grace</code>; a grace on another kind of pool or past 3600 is <code>failed_precondition</code></td></tr>
+<tr><td><code>SetPoolDevice</code></td><td><code>{"pool": 1, "device": 3001, "member": true}</code>: the pool uses the device beyond its classes; <code>"member": false</code> stops it using one; <code>"force": true</code> as for <code>SetPool</code></td><td><code>map_epoch</code> and <code>mixed_kinds</code>; <code>not_found</code> without the pool or the device, <code>failed_precondition</code> (<code>pool_conflict</code>) as for <code>SetPool</code>. Each pool in <code>GetStatus</code> gives its <code>added_devices</code> and <code>removed_devices</code></td></tr>
+<tr><td><code>DeletePool</code></td><td><code>{"pool": 3}</code>; <code>"dry_run": true</code> lists what it holds and deletes nothing; <code>"force": true</code> deletes that first, as an operation. Needs step-up through hyperstor-mgmt</td><td><code>map_epoch</code>, or for a dry run <code>volumes</code>: the pool’s volumes with those in the trash; forced, <code>volumes</code> and the <code>operation</code> deleting them and then the pool; <code>not_found</code> without the pool, <code>failed_precondition</code> (<code>pool_conflict</code>) for <code>.meta</code> and while the pool holds a volume. The pool leaves the map at once, its id is never given again, and devices delete its data</td></tr>
+<tr><td><code>ListVolumes</code></td><td><code>{"pool": 1}</code></td><td><code>volumes</code>: <code>id</code> (32 hex digits), <code>pool</code>, <code>size</code> (bytes), <code>name</code>, <code>state</code> (<code>active</code> or <code>deleting</code>; trashed volumes aren’t listed), <code>version</code>, <code>attached_by</code> (the client instance holding its lease, 16 hex digits; empty if none)</td></tr>
+<tr><td><code>CreateVolume</code></td><td><code>{"pool": 1, "size": "1073741824", "name": "disk-a"}</code>, optionally <code>"id"</code> (32 hex digits; else drawn at random)</td><td><code>volume</code></td></tr>
+<tr><td><code>ExpandVolume</code></td><td><code>{"id": "…", "size": "2147483648"}</code> (a multiple of 4096, not smaller than now)</td><td><code>volume</code>; <code>invalid_argument</code> for a smaller size</td></tr>
+<tr><td><code>DeleteVolume</code></td><td><code>{"id": "…"}</code>, optionally <code>"force": true</code> (delete it even if attached: the holder is blocklisted first)</td><td><code>purge_unix</code>: it is in the trash until then (<code>TrashService</code> below); <code>failed_precondition</code> while it is attached, without <code>force</code></td></tr>
+<tr><td><code>ListSnapshots</code></td><td><code>{"id": "…"}</code></td><td><code>snapshots</code>: <code>epoch</code>, <code>name</code>, <code>group</code> (32 hex digits, or empty), <code>state</code> (<code>active</code> or <code>deleting</code>)</td></tr>
+<tr><td><code>CreateSnapshot</code></td><td><code>{"id": "…", "name": "before-upgrade"}</code></td><td><code>snapshot</code>; <code>unavailable</code> if the volume’s client didn’t pause within 2 s</td></tr>
+<tr><td><code>DeleteSnapshot</code></td><td><code>{"id": "…", "epoch": "4"}</code></td><td><code>purge_unix</code>: to the trash; <code>failed_precondition</code> (<code>in_use</code>) while a clone or rollback depends on it</td></tr>
+<tr><td><code>CloneVolume</code></td><td><code>{"id": "…", "epoch": "4", "name": "copy"}</code>, optionally <code>"new_id"</code></td><td><code>volume</code>: the clone</td></tr>
+<tr><td><code>RollbackVolume</code></td><td><code>{"id": "…", "epoch": "4"}</code></td><td><code>volume</code>; <code>failed_precondition</code> (<code>attached</code>) while attached</td></tr>
+<tr><td><code>FlattenVolume</code></td><td><code>{"id": "…"}</code></td><td><code>volume</code> as it is now, and the <code>operation</code> that copies its data (follow it with <code>WatchOperation</code>)</td></tr>
+<tr><td><code>CopyVolume</code></td><td><code>{"id": "…", "pool": 3}</code>, optionally <code>"epoch": "4"</code> (a snapshot; otherwise the head, which needs the volume detached), <code>"name"</code>, <code>"new_id"</code></td><td><code>volume</code> as it is now, <code>new_id</code> and the <code>operation</code> that copies it; <code>not_found</code> without the volume, snapshot or pool, <code>resource_exhausted</code> (<code>pool_full</code>) for a full pool, <code>failed_precondition</code> (<code>attached</code>) for an attached volume’s head, <code>already_exists</code> for an id in use</td></tr>
+<tr><td><code>MoveVolume</code></td><td><code>{"id": "…", "pool": 3}</code></td><td><code>volume</code> as it is now, and the <code>operation</code> that copies its data, switches pools and deletes what is left behind; <code>invalid_argument</code> for its own pool, <code>failed_precondition</code> (<code>attached</code>) while attached, (<code>in_use</code>) while it has snapshots, as for <code>CopyVolume</code> otherwise</td></tr>
+<tr><td><code>CreateGroupSnapshot</code></td><td><code>{"ids": ["…", "…"], "name": "vm-7"}</code></td><td><code>group</code> and <code>members</code>: each <code>id</code> and its <code>snapshot</code></td></tr>
+<tr><td><code>DeleteGroupSnapshot</code></td><td><code>{"group": "…"}</code></td><td><code>purge_unix</code>: its snapshots are in the trash</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>AuditService</code> (the audit log in <code>.meta</code>, newest first):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Request</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ListAudit</code></td><td>optionally <code>since_unix</code>, <code>until_unix</code>, <code>principal</code> (contains), <code>op</code>, <code>limit</code> (default 100, at most 1000), <code>after</code> (a previous <code>next</code>)</td><td><code>records</code> (<code>time_ms</code>, <code>principal</code>, <code>op</code>, <code>target</code>, <code>result</code>) and <code>next</code>, empty when that was all. Administrators only</td></tr>
+<tr><td><code>AppendAudit</code></td><td><code>lines</code> (JSON audit records)</td><td><code>{}</code>. hyperstor-mgmt’s identity only</td></tr>
+<tr><td><code>GetAuditSettings</code></td><td><code>{}</code></td><td><code>settings</code>: <code>retention_days</code> (default 365; 0 forever)</td></tr>
+<tr><td><code>SetAuditSettings</code></td><td><code>{"retention_days": 30}</code></td><td><code>settings</code>. On the leader</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>TrashService</code> (deleted volumes and snapshots, kept for their pool’s grace period):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Request</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ListTrash</code></td><td><code>{"pool": 1}</code> (0: every pool)</td><td><code>items</code>: <code>kind</code> (<code>volume</code> or <code>snapshot</code>), <code>id</code>, <code>epoch</code>, <code>name</code>, <code>pool</code>, <code>size</code>, <code>trashed_unix</code>, <code>purge_unix</code>, <code>group</code></td></tr>
+<tr><td><code>RestoreFromTrash</code></td><td><code>{"id": "…"}</code>, optionally <code>"epoch"</code> (a snapshot) and <code>"name"</code></td><td><code>volume</code>; a volume whose name was taken comes back as <code>NAME-restored</code></td></tr>
+<tr><td><code>PurgeFromTrash</code></td><td><code>{"id": "…"}</code>, optionally <code>"epoch"</code></td><td>the <code>operation</code> that deletes its data; <code>failed_precondition</code> if it isn’t in the trash</td></tr>
+<tr><td><code>GetTrashSettings</code></td><td><code>{"pool": 1}</code></td><td><code>settings</code>: <code>pool</code>, <code>grace_seconds</code> (default 86400), <code>on_full</code> (<code>keep</code> or <code>purge</code>)</td></tr>
+<tr><td><code>SetTrashSettings</code></td><td><code>{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}</code></td><td><code>settings</code>. On the leader</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>TokenService</code>, <code>CaService</code>, <code>MapService</code>, <code>MemberService</code>, <code>NodeService</code> and <code>OperationService</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Request</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CreateToken</code></td><td><code>{"role": "node"}</code> (or <code>"meta"</code>, or <code>"mgmt"</code> with <code>"name"</code>: a management client such as glidex, 1–32 of a–z, 0–9 and -), optionally <code>"ttl_seconds"</code> (default 3600, at most a week)</td><td><code>token</code> (shown once), <code>info</code>, <code>api_address</code>. On the leader</td></tr>
+<tr><td><code>ListTokens</code></td><td><code>{}</code></td><td><code>tokens</code>: <code>id</code>, <code>role</code>, <code>expires_unix</code>, <code>used</code>, <code>revoked</code>, <code>created_by</code>, and a mgmt token’s <code>name</code></td></tr>
+<tr><td><code>RevokeToken</code></td><td><code>{"id": "…"}</code></td><td><code>{}</code></td></tr>
+<tr><td><code>Join</code></td><td><code>token</code>, <code>csr</code> (PEM); a storage host: <code>addresses</code> (one per reactor) and <code>rack</code>; a member: <code>member_id</code> and <code>member_ips</code>; a management client: nothing more</td><td><code>cluster_id</code>, <code>certificate</code> (chain), <code>root</code>, <code>identity</code> (the URI the certificate names); a storage host: <code>node</code>, <code>map_addresses</code>; a management client: <code>map_addresses</code> (it renews with <code>RenewCertificate</code>); a member: <code>intermediate</code>, <code>intermediate_key</code>, <code>cluster_file</code></td></tr>
+<tr><td><code>RenewCertificate</code></td><td><code>csr</code> (PEM)</td><td><code>certificate</code> for the caller’s own identity and addresses, <code>root</code></td></tr>
+<tr><td><code>ListCertificates</code></td><td><code>{}</code></td><td><code>certificates</code> the API issued (<code>serial</code>, <code>identity</code>, <code>not_after_unix</code>, <code>issued_unix</code>, <code>issued_by</code>, <code>revoked</code>) and <code>revoked</code> serials (<code>serial</code>, <code>until_unix</code>, <code>revoked_unix</code>, <code>revoked_by</code>)</td></tr>
+<tr><td><code>RevokeCertificate</code></td><td><code>{"serial": "…"}</code></td><td>the <code>revoked</code> entry. On the leader</td></tr>
+<tr><td><code>ListMembers</code> (<code>MemberService</code>)</td><td><code>{}</code></td><td><code>members</code> (<code>id</code>, <code>raft_address</code>, <code>map_address</code>, <code>voter</code>, <code>leader</code>), <code>me</code></td></tr>
+<tr><td><code>AddMember</code></td><td><code>id</code>, <code>raft_address</code>, <code>map_address</code></td><td><code>members</code>. On the leader; answers once the member votes</td></tr>
+<tr><td><code>RemoveMember</code></td><td><code>id</code>, optionally <code>force</code></td><td><code>members</code>. On the leader; refused below three voters without <code>force</code></td></tr>
+<tr><td><code>GetMapBackup</code> (<code>MapService</code>)</td><td><code>{}</code></td><td><code>backup</code> (bytes), <code>cluster_id</code>, <code>epoch</code>. Administrators only: it holds the token and certificate records</td></tr>
+<tr><td><code>DrainNode</code></td><td><code>{"node": 3}</code>, optionally <code>"dry_run": true</code></td><td><code>moves</code> (each PG’s <code>before</code> and <code>after</code>) and, unless a dry run, the <code>operation</code></td></tr>
+<tr><td><code>GetOperation</code></td><td><code>{"id": "…"}</code></td><td>the operation: <code>id</code>, <code>kind</code>, <code>target</code>, <code>state</code> (<code>OPERATION_STATE_RUNNING</code>, <code>_DONE</code>, <code>_FAILED</code>, <code>_CANCELLED</code>), <code>done</code> of <code>total</code>, <code>message</code>, times, <code>created_by</code></td></tr>
+<tr><td><code>ListOperations</code></td><td><code>{}</code></td><td><code>operations</code>, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service’s replicated store a week after they finish; a new leader carries on with those still running</td></tr>
+<tr><td><code>WatchOperation</code></td><td><code>{"id": "…"}</code></td><td>a stream: the operation now, then each change (and again every 2 s), ending once it has finished</td></tr>
+<tr><td><code>CancelOperation</code></td><td><code>{"id": "…"}</code></td><td>the operation; a cancelled drain or device removal brings the devices back in; a cancelled copy deletes its new volume, and a move stops unless it has switched pools. A flatten or a purge can’t be cancelled (<code>failed_precondition</code>, <code>not_cancellable</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-sh">cd /etc/hyperstor/pki
+curl -s --cacert root.crt --cert admin.crt --key admin.key \
+    -X POST -H 'Content-Type: application/json' -d '{}' \
+    https://127.0.0.1:8850/hyperstor.v1.ClusterService/GetStatus
+</code></pre>
+<pre><code class="language-json">{"cluster_id":"3","epoch":"2","health":"HEALTH_OK","nodes":[...],"pools":[...],"map_address":"127.0.0.1:8849"}
+</code></pre>
+<h2 id="errors"><a class="header" href="#errors">Errors</a></h2>
+<p>Errors are Connect errors, with an HTTP status and a JSON body. Each
+carries a <code>hyperstor.v1.ErrorInfo</code> detail whose <code>reason</code> is a stable
+word for scripts (the message is for people, and may change):</p>
+<pre><code class="language-json">{"code":"not_found","message":"no device 77","details":[{"type":"hyperstor.v1.ErrorInfo","value":"…"}]}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Code</th><th>Reason</th><th>When</th></tr>
+</thead>
+<tbody>
+<tr><td><code>not_found</code></td><td><code>not_found</code></td><td>No such device, pool, volume, node, token or operation</td></tr>
+<tr><td><code>already_exists</code></td><td><code>already_exists</code></td><td><code>CreateVolume</code> with the id of a volume that exists</td></tr>
+<tr><td><code>invalid_argument</code></td><td><code>invalid_argument</code>, <code>token_invalid</code>, <code>bad_request</code></td><td>A size that isn’t a positive multiple of 4096, a malformed id; a token that isn’t one, or is for another cluster; a certificate request that doesn’t parse</td></tr>
+<tr><td><code>unauthenticated</code></td><td><code>unauthenticated</code></td><td>No client certificate with a hyperstor identity</td></tr>
+<tr><td><code>permission_denied</code></td><td><code>permission_denied</code>, <code>wrong_cluster</code>, <code>revoked</code>, <code>token_used</code>, <code>token_expired</code>, <code>token_revoked</code></td><td>The certificate’s role or cluster doesn’t allow the call, or it is revoked; the token was used, has expired or was revoked</td></tr>
+<tr><td><code>failed_precondition</code></td><td><code>attached</code>, <code>in_use</code>, <code>no_ca</code>, <code>node_conflict</code>, <code>finished</code>, <code>not_cancellable</code></td><td><code>DeleteVolume</code> of a volume a client has attached (without <code>force</code>), or <code>RollbackVolume</code> of one; a snapshot something depends on, or an operation refused as things stand; this member can’t sign (no <code>--ca</code>); a joining host’s addresses belong to another node; the operation has finished, or isn’t a drain</td></tr>
+<tr><td><code>resource_exhausted</code></td><td><code>rate_limited</code>, <code>pool_full</code></td><td>The caller is over its rate limit; <code>CreateVolume</code>, <code>CloneVolume</code>, <code>CreateSnapshot</code> or <code>CreateGroupSnapshot</code> in a pool past <code>full</code></td></tr>
+<tr><td><code>unavailable</code></td><td><code>not_leader</code>, <code>not_formed</code>, <code>unavailable</code></td><td>This member isn’t the leader (the message names the leader’s map service address); the map service has no map yet (it has just started); the map service is stopping</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-the-answers-mean"><a class="header" href="#what-the-answers-mean">What the answers mean</a></h2>
+<ul>
+<li><strong>Reads</strong> (<code>GetStatus</code>, <code>ListPgs</code>) come from the published map: what
+storage nodes and clients see.</li>
+<li><strong><code>SetDeviceIn</code></strong>, <strong><code>SetDeviceWeight</code></strong>, <strong><code>SetFullRatios</code></strong> and <strong><code>AddDevice</code></strong> change the map service’s working map. The change is
+published once the devices losing roles have been fenced, usually
+within a second, and <code>GetStatus</code> then shows the PGs moving.</li>
+<li><strong>Health</strong> is <code>HEALTH_ERROR</code> when a PG can’t take writes (fewer copies
+than the pool’s <code>min</code>, or no primary), <code>HEALTH_WARN</code> while a node is
+down, a device is out, or PGs are degraded or backfilling, and
+<code>HEALTH_OK</code> otherwise. Each reason is listed. A node the map service
+hasn’t heard from since it started is also <code>HEALTH_WARN</code>: the map
+counts it up for a short grace period after a restart.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../reference/hyperstor-authd.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../reference/client-api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../reference/hyperstor-authd.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../reference/client-api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
