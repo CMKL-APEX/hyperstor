@@ -1566,6 +1566,7 @@ mod tests {
                 (DELEGATES_ATTR.to_vec(), encode_delegates(&[4, 6])),
             ],
             kv: vec![],
+            kv_bytes: None,
         };
         assert_eq!(decode(7, &l).unwrap(), v);
         // The trash's fields come last: 8 bytes of the volume's time, then

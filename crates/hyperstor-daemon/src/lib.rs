@@ -869,7 +869,10 @@ const DEEP_SCRUB_RATE: u64 = 64 << 20;
 /// none: the primary decides them).
 fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
     Some(match op {
-        WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. } => return None,
+        WireOp::AssertExists
+        | WireOp::AssertAbsent
+        | WireOp::AssertAttr { .. }
+        | WireOp::AssertKv { .. } => return None,
         WireOp::Touch => Op::Touch,
         WireOp::Write { off, data } => Op::Write { off, data },
         WireOp::Zero { off, len } => Op::Zero { off, len },
@@ -1915,8 +1918,9 @@ impl ShardState {
                     kv_from,
                     kv_to,
                     kv_limit,
+                    sized,
                 } => {
-                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit).await;
+                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit, sized).await;
                     reply(&m, &p);
                 }
                 Msg::PushObject { to, key } => {
@@ -3393,6 +3397,12 @@ impl ShardState {
                         ));
                     }
                 }
+                WireOp::AssertKv { key: k, value } if sh.kv_get(key, k) != value.as_deref() => {
+                    return Err(format!(
+                        "key {} is not as asserted",
+                        String::from_utf8_lossy(k)
+                    ));
+                }
                 _ => {}
             }
         }
@@ -3448,6 +3458,7 @@ impl ShardState {
         kv_from: Vec<u8>,
         kv_to: Option<Vec<u8>>,
         kv_limit: u32,
+        sized: bool,
     ) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, true).await {
             return (m, Vec::new());
@@ -3466,6 +3477,7 @@ impl ShardState {
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(&okey, &kv_from, kv_to.as_deref(), kv_limit as usize),
+            kv_bytes: sized.then_some(st.kv_bytes),
         };
         (Msg::LookupOk { found: true }, encode_looked(&looked))
     }

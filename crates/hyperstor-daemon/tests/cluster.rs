@@ -1414,6 +1414,125 @@ fn objects_change_atomically_and_every_copy_follows() {
     assert!(kv.contains(&b"c".to_vec()) && !kv.contains(&b"a".to_vec()));
 }
 
+/// Per-key assertions (04-decisions.md D194, 25-kv-ranges.md §28.2): an
+/// operation list may assert that a key of the object's table is absent
+/// or holds exact bytes; a list whose assertion fails changes nothing, and
+/// of writers racing to create the same key exactly one wins. A sized
+/// lookup also gives the table's bytes, kept as it changes; a plain one
+/// doesn't.
+#[test]
+fn keys_are_asserted_and_tables_sized() {
+    use hyperstor_client::{ClientError, NS_META};
+    use hyperstor_proto::{Code, WireOp as W};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let conflict = |r: Result<(), ClientError>| {
+        matches!(
+            r,
+            Err(ClientError::Server {
+                code: Code::Conflict,
+                ..
+            })
+        )
+    };
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let n = b"range/1".to_vec();
+            let put = |k: &str, v: &str| W::KvPut(k.as_bytes().to_vec(), v.as_bytes().to_vec());
+            let is = |k: &str, v: Option<&str>| W::AssertKv {
+                key: k.as_bytes().to_vec(),
+                value: v.map(|v| v.as_bytes().to_vec()),
+            };
+            // Absent, on an object that doesn't exist yet.
+            cl.exec(POOL, NS_META, &n, &[is("a", None), put("a", "1")])
+                .await
+                .unwrap();
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", None), put("b", "x")])
+                    .await
+            ));
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", Some("2")), put("b", "x")])
+                    .await
+            ));
+            // A prefix of the value isn't the value.
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", Some("")), put("b", "x")])
+                    .await
+            ));
+            cl.exec(
+                POOL,
+                NS_META,
+                &n,
+                &[is("a", Some("1")), put("a", "22"), put("c", "333")],
+            )
+            .await
+            .unwrap();
+            // Sixteen writers, each with its own connection, race to
+            // create the same key: exactly one wins.
+            let mut racers = Vec::new();
+            for i in 0..16u64 {
+                let cl = Client::connect(meta, 100 + i).await.unwrap();
+                let (n, ops) = (n.clone(), vec![is("d", None), put("d", &i.to_string())]);
+                racers.push(spawn(async move { cl.exec(POOL, NS_META, &n, &ops).await }));
+            }
+            let mut won = 0;
+            for r in racers {
+                match r.await {
+                    Ok(()) => won += 1,
+                    e => {
+                        let shown = format!("{e:?}");
+                        assert!(conflict(e), "{shown}");
+                    }
+                }
+            }
+            assert_eq!(won, 1, "one create wins");
+            let l = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 100)
+                .await
+                .unwrap()
+                .unwrap();
+            let keys: Vec<&[u8]> = l.kv.iter().map(|(k, _)| k.as_slice()).collect();
+            assert_eq!(
+                keys,
+                [b"a".as_slice(), b"c", b"d"],
+                "no failed list wrote b"
+            );
+            let bytes: u64 = l.kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            assert_eq!(l.kv_bytes, Some(bytes));
+            // Overwrites and deletes keep the count.
+            cl.exec(POOL, NS_META, &n, &[put("a", ""), W::KvDel(b"c".to_vec())])
+                .await
+                .unwrap();
+            let all = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 100)
+                .await
+                .unwrap()
+                .unwrap();
+            let bytes: u64 = all.kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            assert_eq!(all.kv.len(), 2, "a and d: {all:?}");
+            // The count is of the whole table, whatever the slice sent.
+            let l = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 0)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(l.kv.is_empty());
+            assert_eq!(l.kv_bytes, Some(bytes));
+            let plain = cl
+                .lookup(POOL, NS_META, &n, b"", None, 0)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(plain.kv_bytes, None);
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
 /// An object whose key–value table is larger than a push part is
 /// refilled in parts ([`hyperstor_proto::Msg::PushKv`]): every copy ends
 /// with the whole table. (A `.meta` audit day once outgrew the frame

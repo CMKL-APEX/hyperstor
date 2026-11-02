@@ -2003,6 +2003,7 @@ impl Shard {
             size: o.size,
             revision: o.revision,
             blocks: o.block_count(),
+            kv_bytes: o.kv_bytes,
         })
     }
 

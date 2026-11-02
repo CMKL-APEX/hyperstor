@@ -1168,3 +1168,13 @@ recommendation:
 |---|---|---|---|
 | 181 | Scope: views first, the Advisor and moving primaries later (recommended); views and the Advisor; or everything with moving primaries. Heat: operations per second with bytes in detail (recommended), bytes, or a toggle. Top volumes per PG now (recommended) or later. Drive telemetry: service time and SMART (recommended), service time only, or every log page | Views and the Advisor, no moving primaries yet; operations per second; top 5 volumes per PG; service time and SMART | D218, D219, D220, D222 |
 | 182 | How `hyperstord`, running unprivileged, reads SMART logs, which need `CAP_SYS_ADMIN`: a small socket-activated root helper (recommended); the installer's root timer writing files; sysfs only for now; or the capability on `hyperstord` | The root helper | D221 |
+
+## Per-key assertions, HS11 stage 1 (2026-11-03)
+
+Building D194's assertion: the only checksum in the code base is CRC32C,
+32 bits, with which a changed value would pass about once in four
+billion races. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 190 | What `AssertKv` compares: the exact value, sent back by the client (recommended); the value's CRC32C, as D194 read; or a new 64-bit hash | The exact value | D194 revised |
