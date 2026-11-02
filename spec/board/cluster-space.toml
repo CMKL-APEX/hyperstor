@@ -1,10 +1,10 @@
 title = "The cluster's raw space in hyperstorctl status and the web UI"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-11-02
 updated = 2026-11-02
 milestone = "AD3"
-branch = "feat/cluster-space"
+branch = "main"
 prs = [157]
-now = "Built (I246): status prints the raw space free and total over the devices in; the Overview page shows it as a bar"
-next = "Review and merge, then deploy to the pilot"
+now = "Merged (#157, 9d15f63) and on the pilot on all three hosts, leader last, health ok: status prints \"space   7465.7G free of 7530.0G raw (1% used)\"; the Overview page shows it as a bar (I246)"
+next = "Nothing open"
