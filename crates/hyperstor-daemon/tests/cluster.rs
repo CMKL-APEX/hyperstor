@@ -3693,6 +3693,176 @@ fn a_snapshot_whose_holder_doesnt_quiesce_is_abandoned() {
     c.stop();
 }
 
+/// Copies and moves between pools (10-volumes.md §10.6, D214): a snapshot
+/// copied while its volume is attached, the head once detached, a clone
+/// moved (flattened, so its parent's snapshot can go) and back, a move
+/// stopped after its switch and finished by running it again, and a
+/// cancelled copy, which leaves nothing. Each reads what its source did,
+/// and the data a move leaves behind is gone.
+#[test]
+fn volumes_copy_and_move_between_pools() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::copy::Progress;
+    use std::sync::atomic::Ordering;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    // Three chunks and a half: the last chunk partly used.
+    let size = 3 * CHUNK as u64 + CHUNK as u64 / 2;
+    with_client(meta, 5, move |cl| async move {
+        let len = size as usize;
+        let gone = |pool: u32, lineage: u128, branch: u32| {
+            let cl = cl.clone();
+            async move {
+                cl.sources(pool, lineage, &[(branch, 0, u64::MAX)], 0, size)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|s| s.0 == u32::MAX)
+            }
+        };
+        let listed = |pool: u32, id: u128| {
+            let cl = cl.clone();
+            async move {
+                cl.list_volumes(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|v| v.id == id)
+            }
+        };
+        let v = cl.create_volume(POOL, size, None, "v").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        // Data, a block of zeros written, and a hole.
+        let mut model = vec![0u8; len];
+        let a = pattern(1, CHUNK as usize + 8192);
+        va.write(0, a.clone()).await.unwrap();
+        model[..a.len()].copy_from_slice(&a);
+        va.write(2 * CHUNK as u64, vec![0; 4096]).await.unwrap();
+        let b = pattern(2, 16384);
+        va.write(size - 16384, b.clone()).await.unwrap();
+        model[len - 16384..].copy_from_slice(&b);
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        let at_s1 = model.clone();
+        let d = pattern(3, 8192);
+        va.write(4096, d.clone()).await.unwrap();
+        model[4096..12288].copy_from_slice(&d);
+
+        // A snapshot copies while the volume is attached; its head doesn't.
+        let p = Progress::default();
+        let c1 = cl
+            .copy_volume(v.id, Some(s1.epoch), CACHE_POOL, 11, "c1", &p)
+            .await
+            .unwrap();
+        assert_eq!((c1.pool, c1.lineage, c1.size), (CACHE_POOL, 11, size));
+        assert!(c1.snapshots.is_empty() && c1.chain.is_empty() && c1.holder.is_none());
+        assert_eq!(p.done.load(Ordering::Relaxed), size);
+        let c1a = cl.attach(11).await.unwrap();
+        assert!(
+            c1a.read(0, size).await.unwrap() == at_s1,
+            "the snapshot's copy"
+        );
+        c1a.detach().await.unwrap();
+        assert!(matches!(
+            cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        assert!(cl.volume(12).await.unwrap().is_none());
+        va.detach().await.unwrap();
+        cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p)
+            .await
+            .unwrap();
+        let c2a = cl.attach(12).await.unwrap();
+        assert!(c2a.read(0, size).await.unwrap() == model, "the head's copy");
+        c2a.detach().await.unwrap();
+        // Holes and zeros aren't written.
+        let src = cl
+            .sources(CACHE_POOL, 12, &[(0, 0, u64::MAX)], 0, size)
+            .await
+            .unwrap();
+        assert!(src[2 * CHUNK as usize / 4096].0 == u32::MAX, "zeros");
+        assert!(src[CHUNK as usize / 4096 + 2].0 == u32::MAX, "a hole");
+        assert!(listed(CACHE_POOL, 12).await && listed(POOL, v.id).await);
+
+        // A volume with snapshots doesn't move.
+        assert!(matches!(
+            cl.move_volume(v.id, CACHE_POOL, &p).await,
+            Err(ClientError::Refused(_))
+        ));
+        // A clone moves, flattened: its parent's snapshot can then go.
+        let k = cl.clone_snapshot(v.id, s1.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        let e = pattern(4, 8192);
+        ka.write(CHUNK as u64, e.clone()).await.unwrap();
+        let mut kmodel = at_s1.clone();
+        kmodel[CHUNK as usize..CHUNK as usize + 8192].copy_from_slice(&e);
+        assert!(matches!(
+            cl.move_volume(k.id, CACHE_POOL, &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        ka.detach().await.unwrap();
+        let km = cl.move_volume(k.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!((km.pool, km.lineage, km.branch), (CACHE_POOL, k.id, 0));
+        assert!(km.chain.is_empty() && km.incarnation != k.incarnation);
+        assert!(gone(POOL, v.lineage, k.branch).await, "the clone's branch");
+        assert!(listed(CACHE_POOL, k.id).await && !listed(POOL, k.id).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved");
+        ka.detach().await.unwrap();
+        cl.delete_snapshot(v.id, s1.epoch).await.unwrap();
+        // And back, into lineage k of the first pool.
+        let kb = cl.move_volume(k.id, POOL, &p).await.unwrap();
+        assert_eq!((kb.pool, kb.lineage), (POOL, k.id));
+        assert!(gone(CACHE_POOL, k.id, 0).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved back");
+        ka.detach().await.unwrap();
+        assert!(listed(POOL, k.id).await && !listed(CACHE_POOL, k.id).await);
+
+        // Stopped after its switch: the volume reads from its new pool,
+        // and running the move again clears the old one.
+        let p2 = Progress::default();
+        p2.stop_after_switch.store(true, Ordering::Relaxed);
+        assert!(cl.move_volume(v.id, CACHE_POOL, &p2).await.is_err());
+        let half = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(half.pool, CACHE_POOL);
+        assert!(!gone(POOL, v.id, 0).await, "not cleared yet");
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "after the switch");
+        va.detach().await.unwrap();
+        let vm = cl.move_volume(v.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(vm.pool, CACHE_POOL);
+        assert!(gone(POOL, v.id, 0).await, "cleared");
+        assert!(listed(CACHE_POOL, v.id).await && !listed(POOL, v.id).await);
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "finished");
+        va.detach().await.unwrap();
+
+        // A holder that stopped renewing (a former leader running the
+        // same move) is taken over once its lease runs out.
+        let w = cl.create_volume(POOL, size, None, "w").await.unwrap();
+        let wa = cl.attach(w.id).await.unwrap();
+        wa.write(0, a.clone()).await.unwrap();
+        wa.detach().await.unwrap();
+        let other = Client::connect(meta, 7).await.unwrap();
+        drop(other.attach(w.id).await.unwrap());
+        let wm = cl.move_volume(w.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(wm.pool, CACHE_POOL);
+        let wa = cl.attach(w.id).await.unwrap();
+        assert!(wa.read(0, a.len() as u64).await.unwrap() == a, "taken over");
+        wa.detach().await.unwrap();
+
+        // A cancelled copy leaves no volume.
+        let p3 = Progress::default();
+        p3.cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            cl.copy_volume(v.id, None, POOL, 13, "c3", &p3).await,
+            Err(ClientError::Refused(_))
+        ));
+        assert!(cl.volume(13).await.unwrap().is_none());
+    });
+    c.stop();
+}
+
 /// Random snapshot, clone, rollback, flatten and delete operations on a
 /// family of volumes, with writes in between, against a model: every
 /// head and every snapshot must read back what the model holds after

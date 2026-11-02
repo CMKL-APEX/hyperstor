@@ -76,6 +76,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.CloneVolume", Group::Store, false),
     ("ClusterService.RollbackVolume", Group::Store, true),
     ("ClusterService.FlattenVolume", Group::Store, false),
+    ("ClusterService.CopyVolume", Group::Store, false),
+    ("ClusterService.MoveVolume", Group::Store, false),
     ("ClusterService.DeleteGroupSnapshot", Group::Store, true),
     ("TrashService.PurgeFromTrash", Group::Store, true),
     ("TrashService.SetTrashSettings", Group::Store, true),

@@ -113,6 +113,7 @@ covered by tests that run on every change.
 |---|---|
 | Engine: chunk versions read through layers, and merged without copying | Done |
 | Snapshots, clones, rollback, flatten and snapshot deletion | Done |
+| Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hyperstorctl | Done |
 | Consistency groups | Done |
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
