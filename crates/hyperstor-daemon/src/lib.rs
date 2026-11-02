@@ -158,6 +158,13 @@ pub struct ShardSpec {
 
 pub struct NodeConfig {
     pub node_id: u32,
+    /// More listeners for devices' reactors, one per endpoint in the map
+    /// (26-networks.md §29.5, D207), as (device, listener).
+    pub endpoints: Vec<(u32, std::net::TcpListener)>,
+    /// The data networks this node sends on, in order (D206, D207): a
+    /// peer is reached at its endpoint on the first it has, else at its
+    /// device's address.
+    pub networks: Vec<String>,
     /// The map service's members (04-decisions.md D72): any one will do.
     pub meta: Vec<SocketAddr>,
     pub shards: Vec<ShardSpec>,
@@ -344,7 +351,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
     let mut all_metrics = Vec::new();
     // Devices still opening: the node heartbeats once none is (I188).
     let opening = Arc::new(std::sync::atomic::AtomicUsize::new(cfg.shards.len()));
+    let mut endpoints: std::collections::BTreeMap<u32, Vec<std::net::TcpListener>> =
+        std::collections::BTreeMap::new();
+    for (d, l) in cfg.endpoints {
+        endpoints.entry(d).or_default().push(l);
+    }
     for (i, sh) in cfg.shards.into_iter().enumerate() {
+        let more = endpoints.remove(&sh.device_id).unwrap_or_default();
+        let networks = cfg.networks.clone();
         let m = Arc::new(metrics::ShardMetrics::default());
         all_metrics.push((sh.device_id, m.clone()));
         let (tx, mut rx) = channel::<()>();
@@ -411,6 +425,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.io_timeout.set(io_timeout);
                         st.read_timeout.set(read_timeout);
                         st.kind.set(kind);
+                        *st.networks.borrow_mut() = networks;
                         let l = TcpListener::from_std(sh.listener);
                         let udp = if no_udp {
                             Err(std::io::Error::other("test hook"))
@@ -451,6 +466,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
                         spawn(st.clone().accept(l));
+                        // The same reactor answers on each endpoint (D207).
+                        for l in more {
+                            spawn(st.clone().accept(TcpListener::from_std(l)));
+                        }
                         spawn(st.clone().gauges());
                         // Every 30 s (HS_PG_USAGE_MS for tests).
                         let every = std::env::var("HS_PG_USAGE_MS")
@@ -495,6 +514,10 @@ struct ShardState {
     dev: Arc<dyn BlockDev>,
     /// `NodeConfig::io_timeout`, resolved.
     io_timeout: Cell<Duration>,
+    /// The data networks this node sends on (D207).
+    networks: RefCell<Vec<String>>,
+    /// For choosing among a peer's endpoints (D208).
+    path_rng: RefCell<rand::rngs::SmallRng>,
     /// `NodeConfig::read_timeout`, resolved.
     read_timeout: Cell<Duration>,
     /// Reads in a row that took over `read_timeout` (D190).
@@ -1027,6 +1050,10 @@ impl ShardState {
             shard: shard_cell::ShardCell::new(shard),
             dev,
             io_timeout: Cell::new(IO_TIMEOUT),
+            networks: RefCell::new(Vec::new()),
+            path_rng: RefCell::new(rand::SeedableRng::seed_from_u64(
+                hyperstor_client::random_u64(),
+            )),
             read_timeout: Cell::new(READ_TIMEOUT),
             read_timeouts: Cell::new(0),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
@@ -1615,7 +1642,7 @@ impl ShardState {
                 if m.get(&key) == mine {
                     continue;
                 }
-                let Some(addr) = map.device_addr(others[i - 1]) else {
+                let Some(addr) = self.addr_of(&map, others[i - 1]) else {
                     return false;
                 };
                 let Ok(conn) = self.peer(addr).await else {
@@ -1654,10 +1681,42 @@ impl ShardState {
         Ok(self.pings.get(addr).await?)
     }
 
+    /// Where to reach `device` for one request: among its endpoints on
+    /// this node's first network that has any, by two random choices on
+    /// requests outstanding (D207, D208); else its address.
+    fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
+        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        if addrs.len() < 2 {
+            return addrs.first().copied();
+        }
+        let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
+            .iter()
+            .map(|a| hyperstor_fabric::path::PathLoad {
+                weight: 1.0,
+                bytes_in_flight: self.peers.pending(*a) as u64,
+                rtt_us: 0,
+            })
+            .collect();
+        let i = hyperstor_fabric::path::choose(&loads, &mut *self.path_rng.borrow_mut())?;
+        Some(addrs[i])
+    }
+
     /// Refuses a peer the partitions test hook cuts this node from.
     fn partitioned(&self, addr: SocketAddr) -> Result<(), ClientError> {
         if let Some((node, p)) = &*self.partitions.borrow()
-            && let Some(d) = self.map().devices.values().find(|d| d.addr == addr)
+            && let Some(d) = {
+                let map = self.map();
+                map.devices
+                    .values()
+                    .find(|d| {
+                        d.addr == addr
+                            || map
+                                .endpoints
+                                .get(&d.id)
+                                .is_some_and(|e| e.iter().any(|(_, a)| *a == addr))
+                    })
+                    .cloned()
+            }
             && p.blocked(*node, d.node)
         {
             return Err(ClientError::Rpc(hyperstor_client::rpc::RpcError::Io(
@@ -2247,7 +2306,7 @@ impl ShardState {
             .filter(|d| **d != NO_DEVICE)
             .chain(required.iter())
         {
-            let Some(addr) = map.device_addr(*d) else {
+            let Some(addr) = self.addr_of(&map, *d) else {
                 return Err(err(Code::Unavailable, &map, "replica has no address"));
             };
             match self.peer(addr).await {
@@ -2265,7 +2324,7 @@ impl ShardState {
         }
         let mut fills = Vec::new();
         for d in filling.into_iter().filter(|d| !required.contains(d)) {
-            match map.device_addr(d) {
+            match self.addr_of(&map, d) {
                 Some(addr) => match self.peer(addr).await {
                     Ok(c) => fills.push((d, c)),
                     Err(_) => self.fill_failed(to.pool, to.pg, d),
@@ -4219,7 +4278,7 @@ impl ShardState {
 
     async fn backfill_once(&self, pool: u32, pg: u32, target: u32, pg_epoch: u64) -> bool {
         let map = self.map();
-        let Some(addr) = map.device_addr(target) else {
+        let Some(addr) = self.addr_of(&map, target) else {
             crate::diag!("addr {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target} has no address in map {}", map.epoch);
             return false;
         };
@@ -4561,7 +4620,7 @@ impl ShardState {
             if *d == self.me {
                 continue;
             }
-            let conn = self.peer(map.device_addr(*d)?).await.ok()?;
+            let conn = self.peer(self.addr_of(&map, *d)?).await.ok()?;
             // A deep scrub reads every block: it may take minutes, and
             // keepalive catches a peer that's gone. A light one answers
             // from the index.

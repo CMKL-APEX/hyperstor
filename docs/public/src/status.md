@@ -32,7 +32,7 @@ covered by tests that run on every change.
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
-| HS19: Networks | Planned |
+| HS19: Networks | In progress |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
@@ -152,9 +152,9 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1) | Planned |
-| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2) | Planned |
-| The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3) | Planned |
+| Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; to come: endpoints chosen from the host's topology) | In progress |
+| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests) | In progress |
+| The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built) | In progress |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4) | Planned |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
 

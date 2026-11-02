@@ -1,0 +1,21 @@
+[package]
+name = "hyperstor-fabric"
+description = "Networks and ports' roles, endpoints ranked by closeness, path choice per I/O, and the fabric reconciler (spec/26-networks.md §29)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The host's topology: NUMA nodes, the PCIe tree, network ports (D204).
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "7e47d6ca10a77ac1b2e85392d9b0ce2abf7f5d0c", optional = true }
+rand.workspace = true
+
+# `host`: reading hosts (endpoints ranked, routing checked). Without it,
+# what clients need on the data path: path choice and the model.
+[features]
+default = ["host"]
+host = ["dep:glidex-topology"]
+
+[lints]
+workspace = true

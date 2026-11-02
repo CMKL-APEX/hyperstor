@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 hyperstor-codec = { path = "../hyperstor-codec" }
+# Path choice per request among a device's endpoints (D208).
+hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
+rand.workspace = true
 hyperstor-map = { path = "../hyperstor-map" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }
