@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-01
 milestone = "HS0"
 branch = "bench/held-reactor-run"
-prs = [94, 97, 100, 129, 134, 145, 152, 155]
+prs = [94, 97, 100, 129, 134, 145, 152, 155, 165]
 now = "I232 installed on the pilot (aa6e347) and load-tested: no reactor held, so node 0's pause didn't recur; one 300 ms peer silence without a hold (02-benchmarks.md, 2026-11-02)"
 next = "Read the next held reactor's log line when node 0's pause comes back; why 1 MiB reads lose throughput above QD1; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes)"
