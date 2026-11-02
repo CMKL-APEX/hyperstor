@@ -1,0 +1,10 @@
+title = "Recovery keeps a clone's holes (issue #158)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-02
+updated = 2026-11-02
+milestone = "HS4"
+branch = "fix/clone-push-holes"
+prs = [162]
+now = "Fixed and reproduced (I243): pushed objects list the blocks they hold, so a copy made by backfill, refill, peering or repair keeps a volume version's holes; cluster::a_refilled_clone_keeps_its_holes read 3 blocks of zeros on main"
+next = "Merge on green CI and deploy to the pilot; then the owner's call on a digest that tells a zero block from a hole, so scrub finds copies made densely before"

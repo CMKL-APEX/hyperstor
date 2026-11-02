@@ -391,6 +391,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.CloneVolume", "clone-volume"),
     ("ClusterService.RollbackVolume", "rollback-volume"),
     ("ClusterService.FlattenVolume", "flatten-volume"),
+    ("ClusterService.CopyVolume", "copy-volume"),
+    ("ClusterService.MoveVolume", "move-volume"),
     ("ClusterService.CreateGroupSnapshot", "snapshot group"),
     (
         "ClusterService.DeleteGroupSnapshot",

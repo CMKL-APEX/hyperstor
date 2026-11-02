@@ -11,14 +11,15 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 0 | 17 |
+| 8 | 0 | 1 | 17 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Networks: several ports, path choice, the fabric reconciler and claims (HS19 design)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `spec/networks` | 26-networks.md: D203–D213 settled (reconciler in the leader, glidex's topology reader, any orchestrator claims, lending while idle by default), G47–G53 open | The PR's merge; then glidex's topology crate with port facts (a glidex change) and stage 1 | 2026-11-02 |
-| **The cluster's raw space in hyperstorctl status and the web UI** (`cluster-space`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/cluster-space`, [#157](https://github.com/CMKL-APEX/hyperstor/pull/157) | Built (I241): status prints the raw space free and total over the devices in; the Overview page shows it as a bar | Review and merge, then deploy to the pilot | 2026-11-02 |
+| **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156) | Spec merged (#154). On feat/fabric (#156): networks and endpoints in the cluster file and map (format 14), hyperstord --endpoint/--networks from the installer, clients and hyperstor-vhost --networks, a device's endpoints chosen per request, the routing check; hyperstor-fabric (ranking, path choice, the reconciler's decisions); G48 first measured (IPoIB 6-7x 1 GbE for 1 MiB I/O); glidex-topology from glidex #250 (merged) | The owner's review of the PR and glidex #250 (then repin glidex); the installer proposing endpoints from the topology; stage 2 (several endpoints per device chosen per I/O, health per network) | 2026-11-02 |
+| **The cluster's raw space in hyperstorctl status and the web UI** (`cluster-space`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `feat/cluster-space`, [#157](https://github.com/CMKL-APEX/hyperstor/pull/157) | Built (I246): status prints the raw space free and total over the devices in; the Overview page shows it as a bar | Review and merge, then deploy to the pilot | 2026-11-02 |
+| **Recovery keeps a clone's holes (issue #158)** (`clone-holes`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS4 | `fix/clone-push-holes`, [#162](https://github.com/CMKL-APEX/hyperstor/pull/162) | Fixed and reproduced (I243): pushed objects list the blocks they hold, so a copy made by backfill, refill, peering or repair keeps a volume version's holes; cluster::a_refilled_clone_keeps_its_holes read 3 blocks of zeros on main | Merge on green CI and deploy to the pilot; then the owner's call on a digest that tells a zero block from a hole, so scrub finds copies made densely before | 2026-11-02 |
 | **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `s3/decisions`, [#151](https://github.com/CMKL-APEX/hyperstor/pull/151) | Points 128–137 settled as D191–D199, and HS11 designed (25-kv-ranges.md §28; points 169–172 settled as D200–D202): one-row atomic changes, range objects found through a root in .meta, splits past 64 MiB and merges by each range's primary with the copied half frozen | Build HS11 in four stages: AssertKv in the engine; hyperstor-kv without splits; splits and merges in hyperstord; the deletion queue | 2026-11-01 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `feat/held-reactor-names`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145), [#152](https://github.com/CMKL-APEX/hyperstor/pull/152), [#155](https://github.com/CMKL-APEX/hyperstor/pull/155) | A held reactor logs where the time went (I232): its thread's CPU, run-queue wait and time off a CPU, the longest poll and the line that spawned its task, and the longest io_uring_enter | Install I232 on the pilot and name node 0's 170 ms pause; why 1 MiB reads lose throughput above QD1; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes) | 2026-11-01 |
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
@@ -31,7 +32,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | Built and tested (D214, I242): copy-volume (a snapshot, or a detached head) and move-volume (keeping the id) as operations of the leader | Merge #159 once CI passes; then the web UI's buttons; live moves of attached volumes later | 2026-11-02 |
 
 ## Done
 
@@ -66,7 +69,7 @@ against the tests.
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |
-| HS4 | Snapshots, clones and the host read cache | 4 | 1 | 0 |
+| HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
 | HS5b | Lower CPU cost per operation | 0 | 0 | 0 |
 | HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 0 |
@@ -85,7 +88,7 @@ against the tests.
 | HS16 | Sites and replication between clusters | 0 | 0 | 0 |
 | HS17 | Global namespace and federation | 0 | 0 | 0 |
 | HS18 | Pools and devices at run time | 14 | 2 | 0 |
-| HS19 | Networks | 0 | 0 | 5 |
+| HS19 | Networks | 0 | 3 | 2 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |

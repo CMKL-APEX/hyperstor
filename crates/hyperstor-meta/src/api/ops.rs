@@ -15,6 +15,7 @@ use crate::Admin;
 use crate::operations::{Op, Ops, State, Work};
 use crate::tokens::TokenError;
 use hyperstor_api::proto::hyperstor::v1 as pb;
+use hyperstor_client::copy::Progress;
 use hyperstor_reactor::chan::{Sender, oneshot};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -280,6 +281,41 @@ impl Runner {
                     )
                     .await;
                 }
+                Work::Copy {
+                    volume,
+                    epoch,
+                    pool,
+                    new_id,
+                    name,
+                } => {
+                    let progress = Arc::new(Progress::default());
+                    let snap = crate::SnapOp::Copy {
+                        id: volume,
+                        epoch,
+                        pool,
+                        new_id,
+                        name,
+                        progress: progress.clone(),
+                    };
+                    let r = me.follow_copy(&op, snap, &progress).await;
+                    let from = match epoch {
+                        Some(e) => format!("snapshot {e} of volume {volume:032x}"),
+                        None => format!("volume {volume:032x}"),
+                    };
+                    let done = format!("{from} copied to volume {new_id:032x} in pool {pool}");
+                    me.finish(&op, r, done).await;
+                }
+                Work::Move { volume, pool } => {
+                    let progress = Arc::new(Progress::default());
+                    let snap = crate::SnapOp::Move {
+                        id: volume,
+                        pool,
+                        progress: progress.clone(),
+                    };
+                    let r = me.follow_copy(&op, snap, &progress).await;
+                    let done = format!("volume {volume:032x} moved to pool {pool}");
+                    me.finish(&op, r, done).await;
+                }
                 Work::DeletePool { pool } => {
                     let r = me.delete_pool(&op, pool).await;
                     me.finish(&op, r, format!("pool {pool} deleted")).await;
@@ -312,6 +348,42 @@ impl Runner {
             .remove(id);
     }
 
+    /// Runs a copy or a move (D214), recording its progress in MiB every
+    /// second; once the operation is cancelled, the copy is told to stop.
+    /// None: the map service stopped.
+    async fn follow_copy(
+        &self,
+        op: &Op,
+        snap: crate::SnapOp,
+        progress: &Progress,
+    ) -> Option<Result<(), (crate::VolumeFault, String)>> {
+        use std::sync::atomic::Ordering;
+        let (reply, rx) = oneshot();
+        self.tx.send(Admin::Snapshots { op: snap, reply }).ok()?;
+        let mut done = std::pin::pin!(rx.recv());
+        loop {
+            if let Ok(r) = tokio::time::timeout(Duration::from_secs(1), &mut done).await {
+                return r.map(|r| r.map(|_| ()));
+            }
+            let mib = |a: &std::sync::atomic::AtomicU64| (a.load(Ordering::Relaxed) >> 20) as u32;
+            let (d, t) = (mib(&progress.done), mib(&progress.total));
+            let id = op.id.clone();
+            let now = self
+                .store(move |s| {
+                    s.update(&id, |o| {
+                        if o.running() && t > 0 {
+                            o.done = d;
+                            o.total = t;
+                        }
+                    })
+                })
+                .await;
+            if matches!(now, Ok(Some(o)) if !o.running()) {
+                progress.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Records how a flatten or purge ended (none: the map service stopped,
     /// and a new leader resumes it).
     async fn finish(
@@ -342,6 +414,8 @@ impl Runner {
         // Recorded under the call that started it, as the operation's.
         let rpc = match op.work {
             Work::Flatten { .. } => "FlattenVolume",
+            Work::Copy { .. } => "CopyVolume",
+            Work::Move { .. } => "MoveVolume",
             Work::DeletePool { .. } => "DeletePool",
             Work::RemoveDevice { .. } => "RemoveDevice",
             _ => "PurgeFromTrash",

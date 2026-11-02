@@ -413,7 +413,8 @@ enum OperationState {
 
 message Operation {
   string id = 1;
-  // "drain", "flatten", "purge", "delete-pool" or "remove-device".
+  // "drain", "flatten", "copy", "move", "purge", "delete-pool" or
+  // "remove-device".
   string kind = 2;
   // What it acts on, as "node 3".
   string target = 3;

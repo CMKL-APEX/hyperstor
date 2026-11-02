@@ -217,6 +217,8 @@ impl Cluster {
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    endpoints: Vec::new(),
+                    networks: Vec::new(),
                     push_part_bytes: TEST_PART_BYTES,
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
@@ -301,6 +303,8 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            endpoints: Vec::new(),
+            networks: Vec::new(),
             push_part_bytes: TEST_PART_BYTES,
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
@@ -1499,6 +1503,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
             data: Vec::new(),
             attrs: Vec::new(),
             kv: vec![(b"stray".to_vec(), b"entry".to_vec())],
+            runs: None,
         };
         let (reply, _) = conn
             .call(
@@ -3654,6 +3659,109 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
     let _ = ids;
 }
 
+/// A clone written while a node is away keeps its holes on every copy
+/// recovery makes (issue #158): the blocks it never wrote still read
+/// its parent's, wherever the PG is served from. Pushes used to send an
+/// object dense, so the copies they made held zeros there.
+#[test]
+fn a_refilled_clone_keeps_its_holes() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let chunks = 4u64;
+    let size = chunks * CHUNK as u64;
+    let parent = pattern(41, size as usize);
+    let p = parent.clone();
+    let (lineage, k) = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "image").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, p).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        (v.lineage, k.id)
+    });
+    c.kill(3);
+    // While node 3 is away, the clone writes one block of each chunk: its
+    // versions are new objects, mostly holes, that node 3 lacks.
+    let block = |i: u64| pattern(50 + i, 4096);
+    let at = |i: u64| i * CHUNK as u64 + 4096 * (1 + i);
+    with_client(meta, 6, move |cl| async move {
+        let ka = cl.attach(k).await.unwrap();
+        for i in 0..chunks {
+            ka.write(at(i), block(i)).await.unwrap();
+        }
+        ka.detach().await.unwrap();
+        wait_backfilled(&cl).await;
+    });
+    c.restart(3);
+    let mut model = parent.clone();
+    for i in 0..chunks {
+        model[at(i) as usize..at(i) as usize + 4096].copy_from_slice(&block(i));
+    }
+    let m = model.clone();
+    with_client(meta, 7, move |cl| async move {
+        wait_all_up(&cl).await;
+        wait_backfilled(&cl).await;
+        let ka = cl.attach(k).await.unwrap();
+        let got = ka.read(0, size).await.unwrap();
+        let wrong: Vec<usize> = (0..m.len() / 4096)
+            .filter(|b| got[b * 4096..(b + 1) * 4096] != m[b * 4096..(b + 1) * 4096])
+            .collect();
+        let zeros = (wrong.iter())
+            .filter(|b| got[*b * 4096..(*b + 1) * 4096].iter().all(|x| *x == 0))
+            .count();
+        assert!(
+            wrong.is_empty(),
+            "the clone reads {} blocks wrong, {zeros} of them zeros",
+            wrong.len()
+        );
+        ka.detach().await.unwrap();
+    });
+    let (map, devs) = c.stop();
+    // Every copy holds the same blocks of every version: the clone's
+    // versions only the block written, whichever copy serves the PG.
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let pool = &map.pools[&POOL];
+    let blocks = CHUNK as u64 / 4096;
+    let mut clone_versions = 0;
+    for chunk in 0..chunks {
+        let pg = pg_of(lineage, chunk, pool.pg_count);
+        let info = map.pg(POOL, pg).unwrap();
+        assert_eq!(info.acting, info.up, "PG {pg} still backfilling");
+        let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(lineage, chunk), 0);
+        let mut hi = chunk_name(lineage, chunk);
+        hi.extend_from_slice(&[0xff; 5]);
+        let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+        let first = &shards[&info.acting[0]];
+        for key in first.list(&lo, &hi) {
+            let held = |sh: &hyperstor_engine::Shard| -> Vec<u64> {
+                (0..blocks).filter(|lb| sh.holds(&key, *lb)).collect()
+            };
+            let want = held(first);
+            if want.len() as u64 != blocks {
+                assert_eq!(want, vec![1 + chunk], "{key:?}");
+                clone_versions += 1;
+            }
+            for d in &info.acting {
+                assert_eq!(
+                    held(&shards[d]),
+                    want,
+                    "device {d} holds other blocks of {key:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(clone_versions, chunks, "one clone version per chunk");
+}
+
 /// A snapshot of a volume whose holder doesn't answer (it stopped
 /// renewing and watching, but its lease stands) is abandoned after 2 s,
 /// and changes nothing (10-volumes.md §10.3).
@@ -3685,6 +3793,176 @@ fn a_snapshot_whose_holder_doesnt_quiesce_is_abandoned() {
         assert!(t.elapsed() >= std::time::Duration::from_secs(2));
         let after = other.volume(v.id).await.unwrap().unwrap();
         assert!(after.snapshots.is_empty() && after.head_epoch == v.head_epoch);
+    });
+    c.stop();
+}
+
+/// Copies and moves between pools (10-volumes.md §10.6, D214): a snapshot
+/// copied while its volume is attached, the head once detached, a clone
+/// moved (flattened, so its parent's snapshot can go) and back, a move
+/// stopped after its switch and finished by running it again, and a
+/// cancelled copy, which leaves nothing. Each reads what its source did,
+/// and the data a move leaves behind is gone.
+#[test]
+fn volumes_copy_and_move_between_pools() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::copy::Progress;
+    use std::sync::atomic::Ordering;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    // Three chunks and a half: the last chunk partly used.
+    let size = 3 * CHUNK as u64 + CHUNK as u64 / 2;
+    with_client(meta, 5, move |cl| async move {
+        let len = size as usize;
+        let gone = |pool: u32, lineage: u128, branch: u32| {
+            let cl = cl.clone();
+            async move {
+                cl.sources(pool, lineage, &[(branch, 0, u64::MAX)], 0, size)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|s| s.0 == u32::MAX)
+            }
+        };
+        let listed = |pool: u32, id: u128| {
+            let cl = cl.clone();
+            async move {
+                cl.list_volumes(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|v| v.id == id)
+            }
+        };
+        let v = cl.create_volume(POOL, size, None, "v").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        // Data, a block of zeros written, and a hole.
+        let mut model = vec![0u8; len];
+        let a = pattern(1, CHUNK as usize + 8192);
+        va.write(0, a.clone()).await.unwrap();
+        model[..a.len()].copy_from_slice(&a);
+        va.write(2 * CHUNK as u64, vec![0; 4096]).await.unwrap();
+        let b = pattern(2, 16384);
+        va.write(size - 16384, b.clone()).await.unwrap();
+        model[len - 16384..].copy_from_slice(&b);
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        let at_s1 = model.clone();
+        let d = pattern(3, 8192);
+        va.write(4096, d.clone()).await.unwrap();
+        model[4096..12288].copy_from_slice(&d);
+
+        // A snapshot copies while the volume is attached; its head doesn't.
+        let p = Progress::default();
+        let c1 = cl
+            .copy_volume(v.id, Some(s1.epoch), CACHE_POOL, 11, "c1", &p)
+            .await
+            .unwrap();
+        assert_eq!((c1.pool, c1.lineage, c1.size), (CACHE_POOL, 11, size));
+        assert!(c1.snapshots.is_empty() && c1.chain.is_empty() && c1.holder.is_none());
+        assert_eq!(p.done.load(Ordering::Relaxed), size);
+        let c1a = cl.attach(11).await.unwrap();
+        assert!(
+            c1a.read(0, size).await.unwrap() == at_s1,
+            "the snapshot's copy"
+        );
+        c1a.detach().await.unwrap();
+        assert!(matches!(
+            cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        assert!(cl.volume(12).await.unwrap().is_none());
+        va.detach().await.unwrap();
+        cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p)
+            .await
+            .unwrap();
+        let c2a = cl.attach(12).await.unwrap();
+        assert!(c2a.read(0, size).await.unwrap() == model, "the head's copy");
+        c2a.detach().await.unwrap();
+        // Holes and zeros aren't written.
+        let src = cl
+            .sources(CACHE_POOL, 12, &[(0, 0, u64::MAX)], 0, size)
+            .await
+            .unwrap();
+        assert!(src[2 * CHUNK as usize / 4096].0 == u32::MAX, "zeros");
+        assert!(src[CHUNK as usize / 4096 + 2].0 == u32::MAX, "a hole");
+        assert!(listed(CACHE_POOL, 12).await && listed(POOL, v.id).await);
+
+        // A volume with snapshots doesn't move.
+        assert!(matches!(
+            cl.move_volume(v.id, CACHE_POOL, &p).await,
+            Err(ClientError::Refused(_))
+        ));
+        // A clone moves, flattened: its parent's snapshot can then go.
+        let k = cl.clone_snapshot(v.id, s1.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        let e = pattern(4, 8192);
+        ka.write(CHUNK as u64, e.clone()).await.unwrap();
+        let mut kmodel = at_s1.clone();
+        kmodel[CHUNK as usize..CHUNK as usize + 8192].copy_from_slice(&e);
+        assert!(matches!(
+            cl.move_volume(k.id, CACHE_POOL, &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        ka.detach().await.unwrap();
+        let km = cl.move_volume(k.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!((km.pool, km.lineage, km.branch), (CACHE_POOL, k.id, 0));
+        assert!(km.chain.is_empty() && km.incarnation != k.incarnation);
+        assert!(gone(POOL, v.lineage, k.branch).await, "the clone's branch");
+        assert!(listed(CACHE_POOL, k.id).await && !listed(POOL, k.id).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved");
+        ka.detach().await.unwrap();
+        cl.delete_snapshot(v.id, s1.epoch).await.unwrap();
+        // And back, into lineage k of the first pool.
+        let kb = cl.move_volume(k.id, POOL, &p).await.unwrap();
+        assert_eq!((kb.pool, kb.lineage), (POOL, k.id));
+        assert!(gone(CACHE_POOL, k.id, 0).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved back");
+        ka.detach().await.unwrap();
+        assert!(listed(POOL, k.id).await && !listed(CACHE_POOL, k.id).await);
+
+        // Stopped after its switch: the volume reads from its new pool,
+        // and running the move again clears the old one.
+        let p2 = Progress::default();
+        p2.stop_after_switch.store(true, Ordering::Relaxed);
+        assert!(cl.move_volume(v.id, CACHE_POOL, &p2).await.is_err());
+        let half = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(half.pool, CACHE_POOL);
+        assert!(!gone(POOL, v.id, 0).await, "not cleared yet");
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "after the switch");
+        va.detach().await.unwrap();
+        let vm = cl.move_volume(v.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(vm.pool, CACHE_POOL);
+        assert!(gone(POOL, v.id, 0).await, "cleared");
+        assert!(listed(CACHE_POOL, v.id).await && !listed(POOL, v.id).await);
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "finished");
+        va.detach().await.unwrap();
+
+        // A holder that stopped renewing (a former leader running the
+        // same move) is taken over once its lease runs out.
+        let w = cl.create_volume(POOL, size, None, "w").await.unwrap();
+        let wa = cl.attach(w.id).await.unwrap();
+        wa.write(0, a.clone()).await.unwrap();
+        wa.detach().await.unwrap();
+        let other = Client::connect(meta, 7).await.unwrap();
+        drop(other.attach(w.id).await.unwrap());
+        let wm = cl.move_volume(w.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(wm.pool, CACHE_POOL);
+        let wa = cl.attach(w.id).await.unwrap();
+        assert!(wa.read(0, a.len() as u64).await.unwrap() == a, "taken over");
+        wa.detach().await.unwrap();
+
+        // A cancelled copy leaves no volume.
+        let p3 = Progress::default();
+        p3.cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            cl.copy_volume(v.id, None, POOL, 13, "c3", &p3).await,
+            Err(ClientError::Refused(_))
+        ));
+        assert!(cl.volume(13).await.unwrap().is_none());
     });
     c.stop();
 }

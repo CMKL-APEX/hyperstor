@@ -247,6 +247,57 @@ pub struct ClusterMap {
     /// Devices past `backfillfull`, from their space reports to the
     /// leader (D182): primaries start no backfill to them.
     pub backfillfull: BTreeSet<u32>,
+    /// The cluster's networks, by name (26-networks.md §29.3, D206).
+    pub networks: BTreeMap<String, NetworkDef>,
+    /// Devices' endpoints beyond `addr` (D207): the reactor listens on
+    /// each, as (network, address).
+    pub endpoints: BTreeMap<u32, Vec<(String, SocketAddr)>>,
+}
+
+/// What a network carries (D206).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetKind {
+    Control,
+    Data,
+    Both,
+}
+
+impl NetKind {
+    fn code(self) -> u8 {
+        match self {
+            NetKind::Control => 0,
+            NetKind::Data => 1,
+            NetKind::Both => 2,
+        }
+    }
+
+    fn from_code(c: u8) -> Option<NetKind> {
+        Some(match c {
+            0 => NetKind::Control,
+            1 => NetKind::Data,
+            2 => NetKind::Both,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NetKind::Control => "control",
+            NetKind::Data => "data",
+            NetKind::Both => "both",
+        }
+    }
+}
+
+/// A network of the cluster file (26-networks.md §29.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkDef {
+    pub kind: NetKind,
+    /// D25: plaintext after the handshake.
+    pub trusted: bool,
+    /// How a port is recognised as on it: `subnet 192.0.2.0/24` or
+    /// `ib fe80:0000:0000:0000`.
+    pub matches: String,
 }
 
 /// Fullness thresholds, in thousandths of a device's data region
@@ -610,6 +661,7 @@ impl ClusterMap {
             set.remove(&id);
         }
         self.kinds.remove(&id);
+        self.endpoints.remove(&id);
         for p in self.pools.values_mut() {
             p.added.remove(&id);
             p.removed.remove(&id);
@@ -739,10 +791,25 @@ impl ClusterMap {
                 added = true;
             }
         }
+        // Networks and endpoints (D206, D207) don't move data: new ones
+        // are added, without a recompute.
+        let mut more = false;
+        for (name, n) in &seed.networks {
+            if !self.networks.contains_key(name) {
+                self.networks.insert(name.clone(), n.clone());
+                more = true;
+            }
+        }
+        for (dev, eps) in &seed.endpoints {
+            if self.devices.contains_key(dev) && !self.endpoints.contains_key(dev) {
+                self.endpoints.insert(*dev, eps.clone());
+                more = true;
+            }
+        }
         if added {
             self.recompute();
         }
-        added
+        added || more
     }
 
     /// Whether `device` is in placement and its node up: it can serve.
@@ -1175,6 +1242,36 @@ impl ClusterMap {
         self.devices.get(&device).map(|d| d.addr)
     }
 
+    /// Every address a sender on `networks` may reach `device` at (D207,
+    /// D208): its endpoints on the first of them it has endpoints on, else
+    /// its address alone. Empty for a device the map doesn't have.
+    pub fn device_addrs_on(&self, device: u32, networks: &[String]) -> Vec<SocketAddr> {
+        if let Some(eps) = self.endpoints.get(&device) {
+            for n in networks {
+                let on: Vec<SocketAddr> = eps
+                    .iter()
+                    .filter(|(net, _)| net == n)
+                    .map(|(_, a)| *a)
+                    .collect();
+                if !on.is_empty() {
+                    return on;
+                }
+            }
+        }
+        self.device_addr(device).into_iter().collect()
+    }
+
+    /// Address of the reactor serving `device` for a sender on `networks`
+    /// (D207): its first endpoint on one of them, in the sender's order,
+    /// else its address. A sender on no named network uses the address.
+    pub fn device_addr_on(&self, device: u32, networks: &[String]) -> Option<SocketAddr> {
+        let eps = self.endpoints.get(&device);
+        networks
+            .iter()
+            .find_map(|n| eps?.iter().find(|(net, _)| net == n).map(|(_, a)| *a))
+            .or_else(|| self.device_addr(device))
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
@@ -1188,7 +1285,9 @@ impl ClusterMap {
         // before them read. Why 12 after 11: the feature branch's 9-11 ran
         // on the pilot before main's fullness took 9 (I216). 13: cache
         // pools' grace other than the default, and what they wait for.
-        let format = if !self.cache_held.is_empty()
+        let format = if !self.networks.is_empty() || !self.endpoints.is_empty() {
+            14
+        } else if !self.cache_held.is_empty()
             || !self.cache_released.is_empty()
             || self
                 .pools
@@ -1388,13 +1487,28 @@ impl ClusterMap {
                 }
             }
         }
+        if format >= 14 {
+            e.u32(self.networks.len() as u32);
+            for (name, n) in &self.networks {
+                e.str(name)
+                    .u8(n.kind.code())
+                    .bool(n.trusted)
+                    .str(&n.matches);
+            }
+            e.u32(self.endpoints.len() as u32);
+            for (d, eps) in &self.endpoints {
+                e.u32(*d).seq(eps, |e, (net, a)| {
+                    e.str(net).str(&a.to_string());
+                });
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=13).contains(&v) {
+        if !(1..=14).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1583,6 +1697,35 @@ impl ClusterMap {
                 .into_iter()
                 .collect();
         }
+        if v >= 14 {
+            for _ in 0..d.u32()? {
+                let name = d.str()?.to_string();
+                let c = d.u8()?;
+                let kind = NetKind::from_code(c).ok_or(DecodeError::Invalid {
+                    field: "network kind",
+                    value: c as u64,
+                })?;
+                let trusted = d.bool()?;
+                let matches = d.str()?.to_string();
+                m.networks.insert(
+                    name,
+                    NetworkDef {
+                        kind,
+                        trusted,
+                        matches,
+                    },
+                );
+            }
+            for _ in 0..d.u32()? {
+                let dev = d.u32()?;
+                let eps = d.seq(2, |d| {
+                    let net = d.str()?.to_string();
+                    let a = d.str()?.parse().map_err(|_| DecodeError::Utf8)?;
+                    Ok((net, a))
+                })?;
+                m.endpoints.insert(dev, eps);
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -1686,6 +1829,57 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                 let devices: Vec<(u32, SocketAddr)> = ids.into_iter().zip(addrs).collect();
                 map.add_node_ids(node, &devices, num(w[3])? as u32);
             }
+            // network NAME control|data|both [trusted] subnet CIDR | ib PREFIX
+            "network" if w.len() >= 5 => {
+                let kind = match w[2] {
+                    "control" => NetKind::Control,
+                    "data" => NetKind::Data,
+                    "both" => NetKind::Both,
+                    _ => return Err(bad("a network is control, data or both")),
+                };
+                let trusted = w[3] == "trusted";
+                let rest = &w[3 + usize::from(trusted)..];
+                let matches = match rest {
+                    ["subnet", cidr] => {
+                        let (ip, len) = cidr.split_once('/').ok_or_else(|| bad("subnet IP/LEN"))?;
+                        let ip: std::net::IpAddr = ip.parse().map_err(|_| bad("bad subnet"))?;
+                        let len: u8 = len.parse().map_err(|_| bad("bad subnet length"))?;
+                        if len > if ip.is_ipv4() { 32 } else { 128 } {
+                            return Err(bad("bad subnet length"));
+                        }
+                        format!("subnet {ip}/{len}")
+                    }
+                    ["ib", prefix] if prefix.split(':').count() == 4 => format!("ib {prefix}"),
+                    _ => return Err(bad("a network is matched by subnet CIDR or ib PREFIX")),
+                };
+                if map.networks.contains_key(w[1]) {
+                    return Err(bad("network given twice"));
+                }
+                map.networks.insert(
+                    w[1].to_string(),
+                    NetworkDef {
+                        kind,
+                        trusted,
+                        matches,
+                    },
+                );
+            }
+            // endpoint DEV NETWORK IP:PORT
+            "endpoint" if w.len() == 4 => {
+                let dev = num(w[1])? as u32;
+                if !map.devices.contains_key(&dev) {
+                    return Err(bad("no such device (give its node first)"));
+                }
+                if !map.networks.contains_key(w[2]) {
+                    return Err(bad("no such network (give it first)"));
+                }
+                let a: SocketAddr = w[3].parse().map_err(|_| bad("bad address"))?;
+                let eps = map.endpoints.entry(dev).or_default();
+                if eps.iter().any(|(n, x)| n == w[2] && *x == a) {
+                    return Err(bad("endpoint given twice"));
+                }
+                eps.push((w[2].to_string(), a));
+            }
             "pool" if w.len() >= 4 => {
                 if num(w[1])? as u32 == META_POOL {
                     return Err(bad("pool 0 is reserved for .meta"));
@@ -1746,6 +1940,97 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
     map.ensure_meta_pool();
     map.recompute();
     Ok(map)
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    const FILE: &str = "cluster 1
+network mgmt control subnet 203.0.113.0/24
+network ib data trusted ib fe80:0000:0000:0000
+node 0 rack 0 203.0.113.10:9100 203.0.113.10:9101
+endpoint 0 ib 192.0.2.10:9100
+endpoint 0 ib 192.0.2.11:9100
+endpoint 1 ib 192.0.2.12:9101
+node 1 rack 0 203.0.113.11:9100
+pool 1 v replicated size 2 min 1 pgs 8
+";
+
+    /// Networks and endpoints come from the cluster file, travel in format
+    /// 14, and a map without them keeps its older format.
+    #[test]
+    fn networks_and_endpoints_round_trip_in_format_14_only_when_set() {
+        let m = parse_cluster(FILE).unwrap();
+        assert_eq!(m.networks.len(), 2);
+        let ib = &m.networks["ib"];
+        assert_eq!((ib.kind, ib.trusted), (NetKind::Data, true));
+        assert_eq!(ib.matches, "ib fe80:0000:0000:0000");
+        assert_eq!(m.networks["mgmt"].matches, "subnet 203.0.113.0/24");
+        assert_eq!(m.endpoints[&0].len(), 2);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 14);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+        let mut plain = m.clone();
+        plain.networks.clear();
+        plain.endpoints.clear();
+        let b = plain.encode();
+        assert!(u32::from_le_bytes(b[..4].try_into().unwrap()) < 14);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), plain);
+    }
+
+    #[test]
+    fn a_sender_takes_an_endpoint_on_its_networks_else_the_address() {
+        let m = parse_cluster(FILE).unwrap();
+        let ib = vec!["ib".to_string()];
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert_eq!(m.device_addr_on(0, &ib), Some(a("192.0.2.10:9100")));
+        assert_eq!(m.device_addr_on(1, &ib), Some(a("192.0.2.12:9101")));
+        // No endpoint on the network, or no network: the device's address.
+        assert_eq!(m.device_addr_on(1000, &ib), Some(a("203.0.113.11:9100")));
+        assert_eq!(m.device_addr_on(0, &[]), Some(a("203.0.113.10:9100")));
+        assert_eq!(
+            m.device_addr_on(0, &["eth".into()]),
+            Some(a("203.0.113.10:9100"))
+        );
+        assert_eq!(m.device_addr_on(7, &ib), None);
+        // Every endpoint on the first network with any, for choosing.
+        assert_eq!(
+            m.device_addrs_on(0, &["eth".into(), "ib".into()]),
+            vec![a("192.0.2.10:9100"), a("192.0.2.11:9100")]
+        );
+        assert_eq!(m.device_addrs_on(1000, &ib), vec![a("203.0.113.11:9100")]);
+        assert!(m.device_addrs_on(7, &ib).is_empty());
+    }
+
+    #[test]
+    fn cluster_file_networks_are_checked() {
+        let bad = |extra: &str| parse_cluster(&format!("{FILE}{extra}\n")).unwrap_err();
+        assert!(bad("network x wan subnet 192.0.2.0/24").contains("control, data or both"));
+        assert!(bad("network x data subnet 192.0.2.0/33").contains("length"));
+        assert!(bad("network x data ib fe80::").contains("subnet CIDR or ib PREFIX"));
+        assert!(bad("network ib data subnet 192.0.2.0/24").contains("twice"));
+        assert!(bad("endpoint 5 ib 192.0.2.1:1").contains("no such device"));
+        assert!(bad("endpoint 0 eth 192.0.2.1:1").contains("no such network"));
+        assert!(bad("endpoint 0 ib 192.0.2.10:9100").contains("twice"));
+    }
+
+    /// A cluster file's new networks and endpoints reach a running map
+    /// without moving data; a removed device's endpoints go with it.
+    #[test]
+    fn merged_and_removed_endpoints() {
+        let seed = parse_cluster(FILE).unwrap();
+        let mut m = seed.clone();
+        m.networks.clear();
+        m.endpoints.clear();
+        let pgs = m.pgs.clone();
+        assert!(m.merge_new(&seed));
+        assert_eq!(m.endpoints, seed.endpoints);
+        assert_eq!(m.pgs, pgs);
+        assert!(!m.merge_new(&seed));
+        m.remove_device(1).unwrap();
+        assert!(!m.endpoints.contains_key(&1));
+    }
 }
 
 #[cfg(test)]

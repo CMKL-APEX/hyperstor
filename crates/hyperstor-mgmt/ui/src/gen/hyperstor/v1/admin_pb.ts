@@ -2080,7 +2080,8 @@ export type Operation = Message<"hyperstor.v1.Operation"> & {
   id: string;
 
   /**
-   * "drain", "flatten", "purge", "delete-pool" or "remove-device".
+   * "drain", "flatten", "copy", "move", "purge", "delete-pool" or
+   * "remove-device".
    *
    * @generated from field: string kind = 2;
    */
@@ -2143,7 +2144,8 @@ export type OperationJson = {
   id?: string;
 
   /**
-   * "drain", "flatten", "purge", "delete-pool" or "remove-device".
+   * "drain", "flatten", "copy", "move", "purge", "delete-pool" or
+   * "remove-device".
    *
    * @generated from field: string kind = 2;
    */
