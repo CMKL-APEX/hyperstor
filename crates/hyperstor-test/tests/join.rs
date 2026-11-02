@@ -384,8 +384,16 @@ fn storage_hosts_join_with_tokens() {
         ],
     );
     assert!(r.code == 1 && r.has("only its own node"), "{}", r.out);
-    let nodes = ctl(&bin, &api, &pki, &["nodes", "--json"]).ok();
-    assert!(nodes.has(&ep[5..]) && nodes.has("fast"), "{}", nodes.out);
+    // In the map once the change is published (fenced), a moment later.
+    let t = std::time::Instant::now();
+    loop {
+        let nodes = ctl(&bin, &api, &pki, &["nodes", "--json"]).ok();
+        if nodes.has(&ep[5..]) && nodes.has("fast") {
+            break;
+        }
+        assert!(t.elapsed().as_secs() < 10, "{}", nodes.out);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let r = ctl(
         &bin,
         &api,
