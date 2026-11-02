@@ -291,7 +291,7 @@ pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
     o
 }
 
-/// `hyperstorctl pg-grid --heat read|write` (D216): a digit per PG for
+/// `hyperstorctl pg-grid --heat read|write` (D219): a digit per PG for
 /// its requests per second, 1 for the quietest PG that served any to 9
 /// for the busiest, linear; `.` for none.
 pub fn pg_heat_text(pool: u32, write: bool, r: &pb::GetPgHeatResponse) -> String {

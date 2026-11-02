@@ -1,5 +1,5 @@
 //! A reactor's load, for the map service's leader (27-performance.md §30,
-//! D215, D216): what each PG served as primary in the window, with the
+//! D218, D219): what each PG served as primary in the window, with the
 //! volumes that sent most of it, and how long the device itself took for
 //! reads and commits. Plain additions on the reactor's own thread, with
 //! no atomic, lock or system call: [`Heat::take`] hands the window over

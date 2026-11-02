@@ -1,5 +1,5 @@
 //! What a storage device reports about its load and its drive
-//! (27-performance.md §30, D215–D219): the requests each PG it is primary
+//! (27-performance.md §30, D218–D222): the requests each PG it is primary
 //! of served, with the volumes that sent most of them; how long its own
 //! reads and commits took on the device; and, every 30 s, what the drive
 //! says of itself. Sent as [`crate::Msg::PerfReport`] every 5 s.

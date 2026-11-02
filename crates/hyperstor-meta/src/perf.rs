@@ -1,5 +1,5 @@
 //! The leader's view of the cluster's load (27-performance.md §30,
-//! D215–D219): each device's reports (`Msg::PerfReport`) kept in memory,
+//! D218–D222): each device's reports (`Msg::PerfReport`) kept in memory,
 //! the newest window of each PG and 15 minutes of each device at 5-s steps,
 //! and the Advisor's rules over them. Nothing is replicated or persisted:
 //! a new leader starts empty and fills within a window. History beyond 15
@@ -191,7 +191,7 @@ pub enum Severity {
     Error,
 }
 
-/// One of the Advisor's findings (D219): what was seen, on what, from
+/// One of the Advisor's findings (D222): what was seen, on what, from
 /// which numbers, and what to do. Nothing is done for the operator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
@@ -207,13 +207,18 @@ pub struct Finding {
     pub command: String,
 }
 
+/// A volume's chunks' (lineage, branch).
+pub type VolumeKey = (u128, u32);
+/// A volume's id, name and pool.
+pub type VolumeName = (u128, String, u32);
+
 /// What the rules look at beyond the reports.
 pub struct Context<'a> {
     /// Each device's kind ("nvme", "ssd", "hdd", "file"), for comparing a
     /// device with its peers.
     pub kinds: &'a BTreeMap<u32, String>,
     /// Volumes by (lineage, branch): id, name, pool.
-    pub volumes: &'a HashMap<(u128, u32), (u128, String, u32)>,
+    pub volumes: &'a HashMap<VolumeKey, VolumeName>,
     /// Data pools: id, name, and whether all its devices are NVMe.
     pub pools: &'a [(u32, String, bool)],
 }
@@ -274,7 +279,7 @@ fn recent(samples: &[Sample], n: usize) -> (Service, Service, f64, u32) {
     (r, c, rate, inflight)
 }
 
-/// The Advisor's findings, most serious first (D219).
+/// The Advisor's findings, most serious first (D222).
 pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
     use limits::*;
     let mut out = Vec::new();
@@ -362,7 +367,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                         names.join(", ")
                     ),
                     action: "Move the hot volumes to another pool, or spread them over more \
-                             PGs; moving primaries is planned (D219)"
+                             PGs; moving primaries is planned (D222)"
                         .into(),
                     command: format!("hyperstorctl top-volumes; hyperstorctl perf --device {d}"),
                 });
@@ -370,8 +375,8 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
         }
     }
 
-    // A volume that sends a large share of the load, and a faster pool to
-    // move it to.
+    // A volume that sends a large share of the load, when a pool on NVMe
+    // only, other than its own, could take it.
     let vols = p.top_volumes(5);
     let vol_total: f64 = p
         .all_pgs()
@@ -389,21 +394,17 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
             let faster = cx.pools.iter().find(|(p, _, nvme)| {
                 *nvme && p != pool && !cx.pools.iter().any(|(q, _, n)| q == pool && *n)
             });
-            let (action, command) = match faster {
-                Some((fp, fname, _)) => (
-                    format!(
-                        "Move it to pool {fp} ({fname}), on NVMe only; detach it first, \
-                         or copy a snapshot of it there"
-                    ),
-                    format!("hyperstorctl move-volume --id {id:032x} --pool {fp} --wait 3600"),
-                ),
-                None => (
-                    "Its pool is the fastest there is: spread it (smaller chunks in a new pool) \
-                     or limit it once QoS limits exist"
-                        .into(),
-                    String::new(),
-                ),
+            // Only when there is somewhere faster to move it: a volume that
+            // carries the load of a small cluster is no finding by itself.
+            let Some((fp, fname, _)) = faster else {
+                continue;
             };
+            let action = format!(
+                "Move it to pool {fp} ({fname}), on NVMe only; detach it first, \
+                 or copy a snapshot of it there"
+            );
+            let command =
+                format!("hyperstorctl move-volume --id {id:032x} --pool {fp} --wait 3600");
             out.push(Finding {
                 rule: "hot-volume",
                 severity: Severity::Info,
@@ -630,11 +631,13 @@ mod tests {
         assert_eq!((v[1].0, v[1].1), (9, 2));
     }
 
-    fn cx_parts() -> (
+    type Parts = (
         BTreeMap<u32, String>,
-        HashMap<(u128, u32), (u128, String, u32)>,
+        HashMap<VolumeKey, VolumeName>,
         Vec<(u32, String, bool)>,
-    ) {
+    );
+
+    fn cx_parts() -> Parts {
         let kinds = [1000, 1001, 2000, 3000]
             .into_iter()
             .map(|d| (d, "nvme".to_string()))

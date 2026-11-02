@@ -257,14 +257,14 @@ pub enum Admin {
         since: u64,
         reply: hyperstor_reactor::chan::OneSender<Result<PoolUsage, String>>,
     },
-    /// The devices' load and drives as the leader holds them (D215), with
+    /// The devices' load and drives as the leader holds them (D218), with
     /// the published map; only the leader has them.
     Perf(hyperstor_reactor::chan::OneSender<Result<(perf::Perf, ClusterMap), String>>),
     /// The volumes whose chunks are under these (lineage, branch) pairs,
     /// as (id, name, pool), for naming the load's top volumes.
     VolumesOf {
         keys: Vec<(u128, u32)>,
-        reply: hyperstor_reactor::chan::OneSender<Vec<((u128, u32), (u128, String, u32))>>,
+        reply: hyperstor_reactor::chan::OneSender<Vec<(perf::VolumeKey, perf::VolumeName)>>,
     },
     /// How long the leader has failed to commit map changes, if it has.
     Uncommitted(hyperstor_reactor::chan::OneSender<Option<Duration>>),
@@ -645,7 +645,7 @@ pub struct Meta {
     /// Bumped with every change to `usage`, from the wall clock's
     /// nanoseconds, so a new leader's versions don't repeat an old one's.
     usage_version: Cell<u64>,
-    /// The devices' load and drives (D215): the leader's, in memory only.
+    /// The devices' load and drives (D218): the leader's, in memory only.
     perf: RefCell<perf::Perf>,
 }
 

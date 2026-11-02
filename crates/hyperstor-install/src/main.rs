@@ -972,7 +972,7 @@ UMask=0077
 Also=hyperstor-authd.socket
 ";
 
-// The NVMe health reader for storage nodes (D218): root, one process per
+// The NVMe health reader for storage nodes (D221): root, one process per
 // connection, answering only the hyperstor group, for the devices the
 // nodes' options name.
 const SMART_SOCKET: &str = "\
@@ -2062,7 +2062,7 @@ fn units(p: &Plan) -> Vec<String> {
                 .iter()
                 .map(|n| format!("hyperstord@{}.service", n.n)),
         )
-        // Socket-activated, a process per request (D218).
+        // Socket-activated, a process per request (D221).
         .chain(
             p.nodes
                 .first()

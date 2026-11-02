@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 1 | 17 |
+| 7 | 0 | 1 | 17 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `feat/perf-heat` | Built and tested (D218–D222, I247–I248): per-PG heat and top volumes, device service time, sysfs and SMART through hyperstor-smart, the leader's 15 minutes, CLI and web UI views, the Advisor | Pull request; then on the pilot: G54 and G55 on its NVMe drives, the Advisor's thresholds from real load | 2026-11-02 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156) | Spec merged (#154). On feat/fabric (#156): networks and endpoints in the cluster file and map (format 14), hyperstord --endpoint/--networks from the installer, clients and hyperstor-vhost --networks, a device's endpoints chosen per request, the routing check; hyperstor-fabric (ranking, path choice, the reconciler's decisions); G48 first measured (IPoIB 6-7x 1 GbE for 1 MiB I/O); glidex-topology from glidex #250 (merged) | The owner's review of the PR and glidex #250 (then repin glidex); the installer proposing endpoints from the topology; stage 2 (several endpoints per device chosen per I/O, health per network) | 2026-11-02 |
 | **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `s3/decisions`, [#151](https://github.com/CMKL-APEX/hyperstor/pull/151) | Points 128–137 settled as D191–D199, and HS11 designed (25-kv-ranges.md §28; points 169–172 settled as D200–D202): one-row atomic changes, range objects found through a root in .meta, splits past 64 MiB and merges by each range's primary with the copied half frozen | Build HS11 in four stages: AssertKv in the engine; hyperstor-kv without splits; splits and merges in hyperstord; the deletion queue | 2026-11-01 |
 | **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `feat/held-reactor-names`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145), [#152](https://github.com/CMKL-APEX/hyperstor/pull/152), [#155](https://github.com/CMKL-APEX/hyperstor/pull/155) | A held reactor logs where the time went (I232): its thread's CPU, run-queue wait and time off a CPU, the longest poll and the line that spawned its task, and the longest io_uring_enter | Install I232 on the pilot and name node 0's 170 ms pause; why 1 MiB reads lose throughput above QD1; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes) | 2026-11-01 |
@@ -90,5 +91,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 11 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 12 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

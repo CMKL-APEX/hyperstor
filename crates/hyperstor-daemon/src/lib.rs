@@ -272,7 +272,7 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
 
-/// How often a device reports its load to the leader (D215).
+/// How often a device reports its load to the leader (D218).
 const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
@@ -405,7 +405,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     hyperstor_reactor::set_spin(spin);
                     let may_format = sh.device.formats_itself();
                     let kind = sh.device.kind();
-                    // A block device's drive is read for the leader (D217).
+                    // A block device's drive is read for the leader (D220).
                     let drive_path = match &sh.device {
                         DeviceSpec::File { path, .. }
                             if std::fs::metadata(path).is_ok_and(|m| {
@@ -644,7 +644,7 @@ struct ShardState {
     cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
-    /// This window's load, for the leader (`perf`, D215).
+    /// This window's load, for the leader (`perf`, D218).
     heat: heat::Heat,
     /// The drive's latest reading (`drive::watch`), if it has one.
     drive: RefCell<Option<Arc<std::sync::Mutex<Option<hyperstor_proto::perf::Drive>>>>>,
@@ -4124,7 +4124,7 @@ impl ShardState {
     }
 
     /// Reports this device's load, and its drive when there is a new
-    /// reading, to the map service every `every` (D215): best effort, a
+    /// reading, to the map service every `every` (D218): best effort, a
     /// lost report is a lost window.
     async fn perf(self: Rc<Self>, every: Duration) {
         let mut last = std::time::Instant::now();

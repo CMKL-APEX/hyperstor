@@ -1,5 +1,5 @@
 //! `hyperstor-smart`: the root helper that reads NVMe drives' SMART /
-//! health logs for `hyperstord` (27-performance.md §30.3, D218), which runs
+//! health logs for `hyperstord` (27-performance.md §30.3, D221), which runs
 //! as the unprivileged `hyperstor` user while the log needs
 //! `CAP_SYS_ADMIN`.
 //!

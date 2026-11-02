@@ -455,7 +455,7 @@ pub enum Msg {
         pgs: Vec<(u32, u32, u64)>,
     },
     /// Storage device to map service: its load and its drive's state
-    /// every 5 s (27-performance.md §30, D215). Answered `Noted`.
+    /// every 5 s (27-performance.md §30, D218). Answered `Noted`.
     PerfReport {
         report: perf::PerfReport,
     },

@@ -1,5 +1,5 @@
 //! What a device's drive is and says of itself (27-performance.md §30.3,
-//! D217, D218): model, firmware, temperature, PCIe link and NUMA node from
+//! D220, D221): model, firmware, temperature, PCIe link and NUMA node from
 //! sysfs, which `hyperstord` can read as its own user; and the NVMe SMART
 //! / health log, which needs `CAP_SYS_ADMIN`, from `hyperstor-smart`, a
 //! root helper on a Unix socket that answers for the devices the

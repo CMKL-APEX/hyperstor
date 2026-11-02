@@ -1,9 +1,9 @@
-//! The load and drives in the cluster API (27-performance.md §30, D215–D219):
+//! The load and drives in the cluster API (27-performance.md §30, D218–D222):
 //! the leader's [`crate::perf::Perf`] as `GetPgHeat`, `ListDevicePerf`,
 //! `ListTopVolumes` and `ListFindings` answer it.
 
 use super::{Api, meta_error};
-use crate::perf::{Context, Finding, Perf, Sample, Severity, findings};
+use crate::perf::{Context, Finding, Perf, Sample, Severity, VolumeKey, VolumeName, findings};
 use crate::{Admin, ClusterMap};
 use connectrpc::ConnectError;
 use hyperstor_api::proto::hyperstor::v1 as pb;
@@ -31,7 +31,7 @@ impl Api {
     pub(super) async fn volumes_of(
         &self,
         keys: Vec<(u128, u32)>,
-    ) -> HashMap<(u128, u32), (u128, String, u32)> {
+    ) -> HashMap<VolumeKey, VolumeName> {
         if keys.is_empty() {
             return HashMap::new();
         }
@@ -144,7 +144,7 @@ pub(super) fn volume_heat(
     key: (u128, u32),
     ops: f64,
     bytes: f64,
-    names: &HashMap<(u128, u32), (u128, String, u32)>,
+    names: &HashMap<VolumeKey, VolumeName>,
 ) -> pb::VolumeHeat {
     let (id, name, pool) = match names.get(&key) {
         Some((id, n, p)) => (format!("{id:032x}"), n.clone(), *p),

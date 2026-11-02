@@ -1,7 +1,10 @@
 // A pool's volumes, and a volume's snapshots: create, expand and delete
 // volumes, take snapshots (alone or as a consistency group), clone, roll back and
-// flatten (storage administrators).
+// flatten, move or copy to another pool (storage administrators). Above
+// them, the volumes sending most requests now (D219).
 import { Fragment, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { fmtRate } from "../perf";
 import { cluster } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll } from "../ui";
@@ -16,7 +19,8 @@ type Dialog =
   | { kind: "clone"; v: Volume; s: Snapshot }
   | { kind: "rollback"; v: Volume; s: Snapshot }
   | { kind: "flatten"; v: Volume }
-  | { kind: "expand"; v: Volume };
+  | { kind: "expand"; v: Volume }
+  | { kind: "move"; v: Volume };
 
 function Snapshots({ v, open }: { v: Volume; open: (d: Dialog) => void }) {
   const can = useCan();
@@ -71,6 +75,16 @@ export default function Volumes() {
   const [name, setName] = useState("");
   const [size, setSize] = useState("10G");
   const [force, setForce] = useState(false);
+  const [target, setTarget] = useState<number | null>(null);
+  const [copy, setCopy] = useState(false);
+  const top = usePoll(async () => (await cluster.listTopVolumes({ limit: 10 })).volumes, 5000);
+  // From the Advisor: a volume to show (`?id=`), in its pool.
+  const [params] = useSearchParams();
+  const want = params.get("id");
+  useEffect(() => {
+    const t = top.data?.find((x) => x.id === want);
+    if (t?.pool) setPool(t.pool);
+  }, [want, top.data]);
 
   const close = (done: boolean) => {
     setDialog(null);
@@ -84,6 +98,23 @@ export default function Volumes() {
   };
 
   return (
+    <>
+    <Card title="Busiest volumes now">
+      <ErrorText error={top.error} />
+      <Table head={["Volume", "Pool", "Requests/s", "MiB/s"]} empty="No volume traffic in the last window.">
+        {(top.data ?? []).map((t) => (
+          <tr key={t.id || t.name} data-testid={`top-${t.name}`} className={t.id === want ? "bg-sky-50 dark:bg-sky-950" : undefined}>
+            <td className={td}>
+              {t.name || "–"} <span className="font-mono text-xs text-slate-500">{t.id}</span>
+            </td>
+            <td className={td}>{t.pool || "–"}</td>
+            <td className={td}>{fmtRate(t.ops)}</td>
+            <td className={td}>{(t.bytes / 1048576).toFixed(1)}</td>
+          </tr>
+        ))}
+      </Table>
+      <Cli cmd="top-volumes" />
+    </Card>
     <Card
       title="Volumes"
       actions={
@@ -140,6 +171,15 @@ export default function Volumes() {
                       Expand
                     </Button>
                     <Button onClick={() => show({ kind: "flatten", v })}>Flatten</Button>
+                    <Button
+                      onClick={() => {
+                        setTarget(pools.find((p) => p.id !== v.pool)?.id ?? null);
+                        setCopy(!!v.attachedBy);
+                        show({ kind: "move", v });
+                      }}
+                    >
+                      Move to pool
+                    </Button>
                     <Button kind="danger" onClick={() => show({ kind: "delete", v })}>
                       Delete
                     </Button>
@@ -316,6 +356,49 @@ export default function Volumes() {
           </Field>
         </ActionDialog>
       )}
+      {dialog?.kind === "move" && (
+        <ActionDialog
+          title={`${copy ? "Copy" : "Move"} ${dialog.v.name || dialog.v.id} to another pool`}
+          submit={copy ? "Copy" : "Move"}
+          cli={copy ? `copy-volume --id ${dialog.v.id} --pool ${target ?? ""} --wait 3600` : `move-volume --id ${dialog.v.id} --pool ${target ?? ""} --wait 3600`}
+          run={async () => {
+            if (target == null) throw new Error("Choose a pool");
+            const r = copy
+              ? await cluster.copyVolume({ id: dialog.v.id, pool: target, name: name || dialog.v.name })
+              : await cluster.moveVolume({ id: dialog.v.id, pool: target });
+            setNotice(`${copy ? "Copying" : "Moving"} to pool ${target}: operation ${r.operation?.id} (Operations).`);
+          }}
+          onClose={close}
+        >
+          <Field label="To pool">
+            <select className={input} value={target ?? ""} onChange={(e) => setTarget(Number(e.target.value))}>
+              {pools
+                .filter((p) => p.id !== dialog.v.pool)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    pool {p.id} {p.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <label className="text-sm flex gap-2 items-center">
+            <input type="checkbox" checked={copy} onChange={(e) => setCopy(e.target.checked)} />
+            Copy instead: a new volume, leaving this one where it is
+          </label>
+          {copy ? (
+            <>
+              <Field label="The copy's name">
+                <input className={input} value={name} placeholder={dialog.v.name} onChange={(e) => setName(e.target.value)} />
+              </Field>
+              <p className="text-sm">Copies its current data, which needs it detached; to copy while it is in use, copy a snapshot (Snapshots).</p>
+            </>
+          ) : (
+            <p className="text-sm">
+              Keeps its id. It must be detached and have no snapshots (in the trash too). Its data is copied, it switches pools, and its old data is deleted. It runs as an operation.
+            </p>
+          )}
+        </ActionDialog>
+      )}
       {dialog?.kind === "flatten" && (
         <ActionDialog
           title={`Flatten ${dialog.v.name || dialog.v.id}`}
@@ -334,5 +417,6 @@ export default function Volumes() {
         </ActionDialog>
       )}
     </Card>
+    </>
   );
 }

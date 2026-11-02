@@ -6,7 +6,8 @@
 import { useEffect, useState } from "react";
 import { cluster } from "../api";
 import type { Device, Pool, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { PgGrid } from "../PgGrid";
+import { PgGrid, type GridView } from "../PgGrid";
+import { fmtRate } from "../perf";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Space, Table, input, td, useCan, usePoll } from "../ui";
 
 type Dialog =
@@ -172,6 +173,9 @@ export default function Pools() {
   const [pool, setPool] = useState<number | null>(null);
   const [pg, setPg] = useState<number | null>(null);
   const [all, setAll] = useState(false);
+  const [view, setView] = useState<GridView>("state");
+  // The picked PG's load and top volumes, every 5 s while a load view shows.
+  const pgHeat = usePoll(async () => (pool == null || pg == null || all || view === "state" ? null : await cluster.getPgHeat({ pool, pg })), view === "state" ? 0 : 5000);
   // Loaded when asked for, not polled: a pool may have many PGs.
   const pgs = usePoll(
     async () => (pool == null || (pg == null && !all) ? null : (await cluster.listPgs({ pool, pg: all ? undefined : pg! })).pgs),
@@ -181,6 +185,10 @@ export default function Pools() {
   useEffect(() => {
     reload();
   }, [reload, pool, pg, all]);
+  const reloadHeat = pgHeat.reload;
+  useEffect(() => {
+    reloadHeat();
+  }, [reloadHeat, pool, pg, all, view]);
   const open = (p: number) => {
     setPool(p);
     setPg(null);
@@ -435,9 +443,38 @@ export default function Pools() {
       {pool != null && (
         <Card
           title={`Pool ${pool}'s PGs`}
-          actions={!all && <Button onClick={() => setAll(true)}>List all</Button>}
+          actions={
+            <>
+              <div className="flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-sm" role="group" aria-label="Show">
+                {(["state", "reads", "writes"] as GridView[]).map((v) => (
+                  <button key={v} className={`px-2 py-1 ${view === v ? "bg-sky-600 text-white" : "bg-white dark:bg-slate-800"}`} onClick={() => setView(v)} data-testid={`grid-view-${v}`}>
+                    {v === "state" ? "State" : v === "reads" ? "Reads" : "Writes"}
+                  </button>
+                ))}
+              </div>
+              {!all && <Button onClick={() => setAll(true)}>List all</Button>}
+            </>
+          }
         >
-          <PgGrid key={pool} pool={pool} max={16} picked={all ? null : pg} onPick={(i) => (setAll(false), setPg(i))} />
+          <PgGrid key={pool} pool={pool} max={16} view={view} picked={all ? null : pg} onPick={(i) => (setAll(false), setPg(i))} />
+          {pgHeat.data && pg != null && (
+            <div className="text-sm grid gap-2" data-testid="pg-heat">
+              <p>
+                PG {pool}.{pg}: {fmtRate(pgHeat.data.readOps[pg] ?? 0)} reads/s, {fmtRate(pgHeat.data.writeOps[pg] ?? 0)} writes/s
+                {pgHeat.data.primaries[pg] != null && pgHeat.data.primaries[pg] !== 4294967295 && ` on device ${pgHeat.data.primaries[pg]}`}
+              </p>
+              <Table head={["Volume", "Pool", "Requests/s", "MiB/s"]} empty="No volume traffic in the last window.">
+                {pgHeat.data.top.map((v) => (
+                  <tr key={v.id || v.name}>
+                    <td className={td}>{v.name || v.id}</td>
+                    <td className={td}>{v.pool || "-"}</td>
+                    <td className={td}>{fmtRate(v.ops)}</td>
+                    <td className={td}>{(v.bytes / 1048576).toFixed(1)}</td>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          )}
           <ErrorText error={pgs.error} />
           {(pg != null || all) && (
             <Table head={["PG", "Epoch", "Acting", "Up"]}>
@@ -453,7 +490,15 @@ export default function Pools() {
               ))}
             </Table>
           )}
-          <Cli cmd={pg != null && !all ? `pgs --pool ${pool} --pg ${pg}` : `pg-grid --pool ${pool}`} />
+          <Cli
+            cmd={
+              view !== "state"
+                ? `pg-grid --pool ${pool} --heat ${view === "reads" ? "read" : "write"}${pg != null && !all ? ` --pg ${pg}` : ""}`
+                : pg != null && !all
+                  ? `pgs --pool ${pool} --pg ${pg}`
+                  : `pg-grid --pool ${pool}`
+            }
+          />
         </Card>
       )}
     </>

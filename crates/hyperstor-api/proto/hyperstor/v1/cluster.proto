@@ -19,7 +19,7 @@ service ClusterService {
   // nothing but the epoch while the map is still at `since_epoch`. Read.
   rpc GetPgGrid(GetPgGridRequest) returns (GetPgGridResponse);
 
-  // Load and drives (27-performance.md §30, D215-D219). Only the leader
+  // Load and drives (27-performance.md §30, D218-D222). Only the leader
   // has them: another member answers unavailable (not_leader).
 
   // One pool's requests per PG over the last window, as its primaries

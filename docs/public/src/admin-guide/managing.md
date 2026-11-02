@@ -411,6 +411,41 @@ each phase. A mismatch or an error exits with status 1. It is a quick
 end-to-end check; for measurements use
 [`hyperstor-bench`](benchmarking.md).
 
+## Load and drives
+
+```sh
+hyperstorctl pg-grid --pool 1 --heat read   # a digit per PG: reads per second
+hyperstorctl pg-grid --pool 1 --heat write --pg 7   # and that PG's busiest volumes
+hyperstorctl top-volumes                    # volumes sending most requests now
+hyperstorctl perf                           # each device's last minute
+hyperstorctl perf --device 1002             # its drive and 5-s windows
+hyperstorctl advise                         # what stands out, and what to do
+```
+
+Every 5 s each storage device tells the map service's leader what its
+PGs served as primary, with the volumes that sent most of it, how long
+the device itself took for reads and commits, and, every 30 s, what its
+drive says of itself: temperature, PCIe link, NUMA node and, for NVMe
+drives, the SMART health log (wear, spare, media errors, time
+throttled). The leader keeps 15 minutes in memory, so these commands
+ask it (from another member they fail with `not_leader`); longer history
+is in [Prometheus and Grafana](#prometheus-and-grafana).
+
+The web UI shows the same: the PG grid's **Reads** and **Writes** views
+on the Pools page, a sortable matrix of every device and a panel per
+device on the Nodes page (charts, a heatmap of service time, and I/Os in
+flight against p99, where a drive's knee shows), the busiest volumes
+with a **Move to pool** action on the Volumes page, and the **Advisor**
+page. The Advisor's findings say what was seen, from which numbers, and
+what to do, with the command; it changes nothing itself. Its rules are
+in the [design](https://github.com/CMKL-APEX/hyperstor/blob/main/spec/27-performance.md).
+
+`hyperstord` runs unprivileged, so the SMART log, which the kernel lets
+only `CAP_SYS_ADMIN` read, comes from
+[`hyperstor-smart`](../reference/hyperstor-smart.md), a root helper the
+installer sets up on storage hosts. File-backed devices have no drive to
+read; they report their service time only.
+
 ## Metrics
 
 Each storage node started with `--admin ADDR` (the installer uses
