@@ -1,0 +1,10 @@
+title = "Networks: several ports, path choice, the fabric reconciler and claims (HS19 design)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH"
+started = 2026-11-02
+updated = 2026-11-02
+milestone = "HS19"
+branch = "spec/networks"
+prs = []
+now = "26-networks.md: D203–D213 settled (reconciler in the leader, glidex's topology reader, any orchestrator claims, lending while idle by default), G47–G53 open"
+next = "The PR's merge; then glidex's topology crate with port facts (a glidex change) and stage 1"

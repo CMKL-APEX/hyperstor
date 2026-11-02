@@ -1114,3 +1114,24 @@ points the design left open. Asked, with a recommendation:
 | 170 | Who splits and merges ranges: the primary of the range's PG, through the client it has, with progress in the range's attributes (recommended); the map service's leader, as long operations; or clients, when a write's answer flags a large range | The range's primary | D201 |
 | 171 | What writes to the upper half do while a split copies it: wait and retry for the copy's length, reads and the lower half going on (recommended); or go on, logged and copied in a short last pass | Wait | D201 |
 | 172 | When a range splits: past 64 MiB, on size only, merging neighbours under 16 MiB together (recommended); past 16 MiB; or past 64 MiB and on a sustained write rate | 64 MiB, size only | D202 |
+
+## Networks (2026-11-02)
+
+Designing hosts with several network ports (26-networks.md §29): GPU
+hosts with eight InfiniBand rails and a 100 GbE uplink beside a 1 GbE
+port the pilot uses for everything, and small hosts with one port. The
+owner asked for roles and paths to follow the workload in a
+reconciliation loop rather than be pinned at install, and for the loop
+to run without glidex. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 173 | Where the fabric reconciler runs: in the map service's leader (recommended); or its own service from the start | In the leader, as a module that can be separated out later | D203 |
+| 174 | Where the host topology reader lives: a crate in hyperstor (recommended); its own repository shared by both; or glidex's, already built | glidex's, as a build dependency | D204 |
+| 175 | Who may claim ports and devices: any orchestrator with a role of its own (recommended); glidex only at first | Any orchestrator | D205 |
+
+Then the decisions drafted with the spec, asked for review:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 176 | D206–D213 as drafted: control apart from data, endpoints by closeness, two loops, roles as leases with lending `off` by default (recommended; or `idle`, or `always`), health per network, the GPU NIC default per host, pairing at VM start, placement not weighing speed | Lending `idle` by default; the rest as recommended | D206–D213 |

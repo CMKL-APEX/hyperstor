@@ -32,6 +32,7 @@ documents cite them by number.
 | [12-gpu.md](12-gpu.md) | §12 | GPU-direct storage behind cuFile and hipFile, in VMs, alongside NCCL and RCCL |
 | [13-protocol.md](13-protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
 | [14-s3.md](14-s3.md) | §14 | The S3 gateway and S3 over RDMA |
+| [26-networks.md](26-networks.md) | §29 | Hosts with several network ports: networks and endpoints, control apart from data, path choice per I/O, health per network, the fabric reconciler, claims by orchestrators, GPU-direct pairing (designed; D203–D213 settled) |
 | [22-nfs.md](22-nfs.md) | §26 | NFSv4.1/4.2 and pNFS for unmodified clients: the metadata server, files layouts, data servers in the storage nodes, stripe groups, fencing, failover (investigation; D127, D129, D130 settled) |
 | [15-operations.md](15-operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
 | [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
@@ -40,7 +41,7 @@ documents cite them by number.
 | [25-kv-ranges.md](25-kv-ranges.md) | §28 | `hyperstor-kv`'s range layer (HS11): tables, rows, range objects, the root, splits and merges, the deletion queue (designed; D191, D200–D202) |
 | [24-pools-and-devices.md](24-pools-and-devices.md) | §27 | Devices added to and removed from running nodes, device identity and formatting, classes and class sets, pools made, changed and deleted, PG splits (settled; built on `feature/elastic-pools`) |
 | [16-glidex.md](16-glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
-| [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS17 and host checks G1–G24, G39–G46 (G25–G38 in 22-nfs.md) |
+| [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS19 and host checks G1–G24, G39–G46 (G25–G38 in 22-nfs.md, G47–G53 in 26-networks.md) |
 | [00-filesystem.md](00-filesystem.md) | (own) | The distributed filesystem (outline), decisions F1–F12 |
 | [05-decision-log.md](05-decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
 | [01-implementation-notes.md](01-implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
