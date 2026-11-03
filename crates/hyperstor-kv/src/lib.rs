@@ -88,6 +88,8 @@ pub struct Table {
     pub index_pool: u32,
     /// Where its user keeps data the rows point to (D198).
     pub data_pool: u32,
+    /// Its user's own record (S3's bucket record), kept with it.
+    pub info: Vec<u8>,
 }
 
 /// The record's format. Later fields are appended, and a reader ignores
@@ -100,7 +102,8 @@ impl Table {
         e.u8(TABLE_V1)
             .u64(self.id)
             .u32(self.index_pool)
-            .u32(self.data_pool);
+            .u32(self.data_pool)
+            .bytes(&self.info);
         e.into_vec()
     }
 
@@ -117,6 +120,11 @@ impl Table {
             id: d.u64()?,
             index_pool: d.u32()?,
             data_pool: d.u32()?,
+            info: if d.remaining() > 0 {
+                d.bytes()?.to_vec()
+            } else {
+                Vec::new()
+            },
         })
     }
 }
@@ -600,11 +608,24 @@ impl Store {
         index_pool: u32,
         data_pool: u32,
     ) -> Result<Table, KvError> {
+        self.create_table_with(name, index_pool, data_pool, &[])
+            .await
+    }
+
+    /// [`Self::create_table`], with its user's record `info`.
+    pub async fn create_table_with(
+        &self,
+        name: &[u8],
+        index_pool: u32,
+        data_pool: u32,
+        info: &[u8],
+    ) -> Result<Table, KvError> {
         let table = Table {
             name: name.to_vec(),
             id: hyperstor_client::random_u64(),
             index_pool,
             data_pool,
+            info: info.to_vec(),
         };
         let first = Range {
             id: random_u128(),

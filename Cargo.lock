@@ -1682,6 +1682,7 @@ dependencies = [
 name = "hyperstor-daemon"
 version = "0.1.0"
 dependencies = [
+ "crc32c",
  "hyperstor-client",
  "hyperstor-engine",
  "hyperstor-fabric",
@@ -1691,6 +1692,8 @@ dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
  "hyperstor-rpc",
+ "hyperstor-s3",
+ "md-5",
  "rand 0.9.5",
  "tempfile",
 ]
@@ -1858,6 +1861,21 @@ version = "0.1.0"
 dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hyperstor-s3"
+version = "0.1.0"
+dependencies = [
+ "crc32c",
+ "hyperstor-client",
+ "hyperstor-codec",
+ "hyperstor-kv",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "md-5",
+ "rand 0.9.5",
  "thiserror 2.0.21",
 ]
 
@@ -2379,6 +2397,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
 ]
 
 [[package]]

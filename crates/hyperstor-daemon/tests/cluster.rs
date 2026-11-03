@@ -2210,7 +2210,8 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                 .await
                 .unwrap();
             let mut b = Batch::new();
-            b.collect_series(POOL, 5, b"series", 5).collect(POOL, 5, b"one");
+            b.collect_series(POOL, 5, b"series", 5)
+                .collect(POOL, 5, b"one");
             a.apply(&t, b"row30", &b).await.unwrap();
             a.apply(&t, b"row01", Batch::new().collect(POOL, 5, b"none"))
                 .await
@@ -6400,4 +6401,373 @@ fn audit_parts_roll_over_merge_and_are_dropped() {
     .join()
     .unwrap();
     c.stop();
+}
+
+/// What [`hyperstor_s3::S3::list`] should return for `prefix` and
+/// `delimiter`: objects and common prefixes, each in name order.
+fn s3_model_list(
+    m: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    prefix: &[u8],
+    delimiter: &[u8],
+) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let (mut objects, mut prefixes) = (Vec::new(), Vec::<Vec<u8>>::new());
+    for k in m.keys().filter(|k| k.starts_with(prefix)) {
+        let rest = &k[prefix.len()..];
+        let at = (!delimiter.is_empty())
+            .then(|| rest.windows(delimiter.len()).position(|w| w == delimiter))
+            .flatten();
+        match at {
+            Some(at) => {
+                let common = k[..prefix.len() + at + delimiter.len()].to_vec();
+                if prefixes.last() != Some(&common) {
+                    prefixes.push(common);
+                }
+            }
+            None => objects.push(k.clone()),
+        }
+    }
+    (objects, prefixes)
+}
+
+/// HS12 stage 1 (14-s3.md §14.6): two gateways' object layers PUT
+/// (inline, one chunk, several, on chunk boundaries, in pieces), GET with
+/// ranges, HEAD, DELETE and list (prefixes, a delimiter, small pages)
+/// at random against a model, while a storage node is killed and comes
+/// back. PUTs given up half-way (a gateway dying), aborted or short leave
+/// the object as it was; an upload the clean-up gave up can't be
+/// completed after, and one completed isn't touched by it. Buckets: names
+/// checked, one namespace, listed by tenant, deleted only empty. In the
+/// end every chunk of a replaced, deleted or given-up object is deleted,
+/// and the devices hold no `s3` object but the live objects' chunks.
+#[test]
+fn s3_objects_match_a_model() {
+    use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
+    use hyperstor_s3::{Config, List, Meta, S3, S3Error};
+    use md5::{Digest, Md5};
+    use std::collections::{BTreeMap, BTreeSet};
+    const CHUNK: u64 = 16 << 10;
+    const INLINE: u64 = 1000;
+    let kv = KvJobs {
+        off: false,
+        limits: KV_OFF.limits,
+        sweep: std::time::Duration::from_millis(300),
+        leftover: std::time::Duration::from_secs(3600),
+    };
+    let zero = std::time::Duration::ZERO;
+    let mut c = Cluster::start_kv(
+        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, kv,
+    );
+    let meta = c.meta_addr;
+    let (to_main, from_client) = std::sync::mpsc::channel::<usize>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let cfg = Config {
+                inline: INLINE,
+                chunk: CHUNK,
+                ..Config::default()
+            };
+            let g = [
+                S3::open(Client::connect(meta, 5).await.unwrap(), cfg),
+                S3::open(Client::connect(meta, 6).await.unwrap(), cfg),
+            ];
+            let cl = Client::connect(meta, 7).await.unwrap();
+            let mut rng = SmallRng::seed_from_u64(12);
+            // Buckets.
+            for bad in ["ab", "Upper", "a..b", "-ab", "192.168.0.1", &"a".repeat(64)] {
+                let r = g[0].create_bucket(bad, 1, POOL, POOL).await;
+                assert!(matches!(r, Err(S3Error::InvalidBucketName(_))), "{bad}");
+            }
+            let mut buckets = Vec::new();
+            for name in ["one", "two.b"] {
+                buckets.push(g[0].create_bucket(name, 1, POOL, POOL).await.unwrap());
+            }
+            let other = g[1].create_bucket("theirs", 2, POOL, POOL).await.unwrap();
+            let r = g[1].create_bucket("one", 2, POOL, POOL).await;
+            assert!(matches!(r, Err(S3Error::BucketExists(_))));
+            let names = |bs: Vec<hyperstor_s3::Bucket>| -> Vec<String> {
+                bs.into_iter().map(|b| b.name).collect()
+            };
+            assert_eq!(names(g[1].buckets(1).await.unwrap()), ["one", "two.b"]);
+            assert_eq!(names(g[0].buckets(2).await.unwrap()), ["theirs"]);
+            assert_eq!(g[1].bucket("two.b").await.unwrap(), buckets[1]);
+            // Objects.
+            let mut model: Vec<BTreeMap<Vec<u8>, Vec<u8>>> = vec![BTreeMap::new(); 2];
+            // Every chunk an upload may have written.
+            let mut written: BTreeSet<Vec<u8>> = BTreeSet::new();
+            let pieces: [&[u8]; 6] = [b"a", b"b/", b"cc", b"d/e/", b"\x00", b"\xff"];
+            let size_of = |rng: &mut SmallRng| -> u64 {
+                match rng.random_range(0..6) {
+                    0 => 0,
+                    1 => rng.random_range(1..=INLINE),
+                    2 => INLINE + 1,
+                    3 => CHUNK * rng.random_range(1..4) + rng.random_range(0..3) - 1,
+                    _ => rng.random_range(INLINE..5 * CHUNK),
+                }
+            };
+            let check_list = async |s3: &S3,
+                                    b: &hyperstor_s3::Bucket,
+                                    m: &BTreeMap<Vec<u8>, Vec<u8>>,
+                                    rng: &mut SmallRng| {
+                let prefix: &[u8] = [&b""[..], b"a", b"b/", b"d/", b"\xff"][rng.random_range(0..5)];
+                let delimiter: &[u8] = [&b""[..], b"/", b"e/"][rng.random_range(0..3)];
+                let max = rng.random_range(1..6);
+                let (mut objects, mut prefixes) = (Vec::new(), Vec::new());
+                let mut start = Vec::new();
+                loop {
+                    let q = List {
+                        prefix,
+                        delimiter,
+                        start: &start,
+                        max,
+                    };
+                    let page = s3.list(b, &q).await.unwrap();
+                    assert!(page.objects.len() + page.prefixes.len() <= max);
+                    for (k, e) in &page.objects {
+                        assert_eq!(e.size, m[k].len() as u64);
+                        objects.push(k.clone());
+                    }
+                    prefixes.extend(page.prefixes);
+                    match page.next {
+                        Some(n) => start = n,
+                        None => break,
+                    }
+                }
+                assert_eq!(
+                    (objects, prefixes),
+                    s3_model_list(m, prefix, delimiter),
+                    "prefix {prefix:?} delimiter {delimiter:?} max {max}"
+                );
+            };
+            const OPS: usize = 400;
+            for op in 0..OPS {
+                if op == OPS / 3 {
+                    to_main.send(1).unwrap();
+                }
+                if op == 2 * OPS / 3 {
+                    to_main.send(1).unwrap();
+                }
+                let s3 = &g[rng.random_range(0..2)];
+                let bi = rng.random_range(0..2);
+                let b = &buckets[bi];
+                let m = &mut model[bi];
+                let n = rng.random_range(1..4);
+                let key: Vec<u8> = (0..n)
+                    .flat_map(|_| pieces[rng.random_range(0..pieces.len())].to_vec())
+                    .collect();
+                match rng.random_range(0..10) {
+                    0..4 => {
+                        let size = size_of(&mut rng);
+                        let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
+                        // 0: given up half-way; 1: aborted; 2: short; else whole.
+                        let how = rng.random_range(0..8);
+                        let Ok(mut put) = s3.put(b, &key, size).await else {
+                            continue;
+                        };
+                        if size > INLINE {
+                            for i in 0..chunks_of(size, CHUNK) {
+                                written.insert(chunk_name(b.id(), put.id(), 0, i));
+                            }
+                        }
+                        let send = match how {
+                            0 => size / 2,
+                            2 if size > 0 => size - 1,
+                            _ => size,
+                        };
+                        let mut at = 0;
+                        let mut failed = false;
+                        while at < send {
+                            let n = rng.random_range(1..=CHUNK + 7).min(send - at);
+                            if put
+                                .write(&data[at as usize..(at + n) as usize])
+                                .await
+                                .is_err()
+                            {
+                                failed = true;
+                                break;
+                            }
+                            at += n;
+                        }
+                        let meta = Meta {
+                            content_type: "x/y".into(),
+                            meta: vec![("k".into(), format!("{op}"))],
+                        };
+                        match how {
+                            0 => drop(put),
+                            1 => put.abort().await.unwrap(),
+                            _ if failed => drop(put),
+                            2 if size > 0 => {
+                                let r = put.finish(meta).await;
+                                assert!(matches!(r, Err(S3Error::BadSize { .. })), "{r:?}");
+                            }
+                            _ => match put.finish(meta).await {
+                                Ok(e) => {
+                                    assert_eq!(e.size, size);
+                                    assert_eq!(e.md5, <[u8; 16]>::from(Md5::digest(&data)));
+                                    assert_eq!(e.crc32c, crc32c::crc32c(&data));
+                                    m.insert(key.clone(), data);
+                                }
+                                Err(err) => {
+                                    // Applied or not, unknown: the object says.
+                                    let now = s3.head(b, &key).await.unwrap();
+                                    let md5: [u8; 16] = Md5::digest(&data).into();
+                                    if now.is_some_and(|e| e.md5 == md5 && e.size == size) {
+                                        m.insert(key.clone(), data);
+                                    }
+                                    eprintln!("op {op}: a PUT failed: {err}");
+                                }
+                            },
+                        }
+                    }
+                    4 => {
+                        s3.delete(b, &key).await.unwrap();
+                        m.remove(&key);
+                    }
+                    5..7 => {
+                        // An existing name, mostly.
+                        let key = match m.keys().nth(rng.random_range(0..m.len().max(1))) {
+                            Some(k) if rng.random_range(0..4) > 0 => k.clone(),
+                            _ => key,
+                        };
+                        let e = s3.head(b, &key).await.unwrap();
+                        let Some(want) = m.get(&key) else {
+                            assert_eq!(e, None);
+                            continue;
+                        };
+                        let e = e.expect("an object the model has");
+                        assert_eq!(e.size, want.len() as u64);
+                        assert_eq!(e.content_type, "x/y");
+                        let size = want.len() as u64;
+                        let off = rng.random_range(0..=size);
+                        let len = rng.random_range(0..=size - off);
+                        let got = s3.read(b, &e, off, len).await.unwrap();
+                        assert!(
+                            got == want[off as usize..(off + len) as usize],
+                            "op {op}: bytes {off}+{len} of a {size}-byte object"
+                        );
+                        let past = s3.read(b, &e, off, size - off + 1).await;
+                        assert!(matches!(past, Err(S3Error::InvalidRange)));
+                    }
+                    _ => check_list(s3, b, m, &mut rng).await,
+                }
+            }
+            // Every upload left behind, given up.
+            let far = hyperstor_s3::now_ms() / 1000 + 10 * 86400;
+            for b in &buckets {
+                g[1].clean(b, far).await.unwrap();
+            }
+            // Completing and giving up an upload: exactly one happens.
+            let b = &buckets[0];
+            let data = vec![7u8; 3 * CHUNK as usize];
+            let mut put = g[0].put(b, b"raced", data.len() as u64).await.unwrap();
+            for i in 0..3 {
+                written.insert(chunk_name(b.id(), put.id(), 0, i));
+            }
+            put.write(&data).await.unwrap();
+            assert_eq!(g[1].clean(b, far).await.unwrap(), 1);
+            let r = put.finish(Meta::default()).await;
+            assert!(matches!(r, Err(S3Error::UploadGone)), "{r:?}");
+            assert_eq!(g[0].head(b, b"raced").await.unwrap(), None);
+            let mut put = g[0].put(b, b"raced", data.len() as u64).await.unwrap();
+            put.write(&data).await.unwrap();
+            put.finish(Meta::default()).await.unwrap();
+            model[0].insert(b"raced".to_vec(), data);
+            assert_eq!(g[1].clean(b, far).await.unwrap(), 0, "completed uploads");
+            for (bi, b) in buckets.iter().enumerate() {
+                for _ in 0..3 {
+                    check_list(&g[0], b, &model[bi], &mut rng).await;
+                }
+                for (k, want) in &model[bi] {
+                    let e = g[1].head(b, k).await.unwrap().unwrap();
+                    let got = g[1].read(b, &e, 0, e.size).await.unwrap();
+                    assert!(got == *want, "an object's bytes");
+                }
+            }
+            // The chunks of live objects, and nothing else, once drained.
+            let mut live = BTreeSet::new();
+            for (bi, b) in buckets.iter().enumerate() {
+                for k in model[bi].keys() {
+                    let e = g[0].head(b, k).await.unwrap().unwrap();
+                    if let Data::Chunks { object, .. } = e.data {
+                        for i in 0..chunks_of(e.size, CHUNK) {
+                            live.insert(chunk_name(b.id(), object, 0, i));
+                        }
+                    }
+                }
+            }
+            assert!(live.len() > 20, "{} live chunks", live.len());
+            let exists = async |name: &[u8]| {
+                let l = cl.lookup(POOL, 5, name, b"", None, 0).await;
+                l.unwrap().is_some()
+            };
+            kv_until("dead chunks deleted", async || {
+                for name in written.difference(&live) {
+                    if exists(name).await {
+                        return false;
+                    }
+                }
+                true
+            })
+            .await;
+            for name in &live {
+                assert!(exists(name).await, "a live object's chunk is gone");
+            }
+            // Deleted only empty.
+            let r = g[0].delete_bucket("one").await;
+            assert!(matches!(r, Err(S3Error::BucketNotEmpty(_))), "{r:?}");
+            for k in model[0].keys() {
+                g[1].delete(b, k).await.unwrap();
+            }
+            g[0].delete_bucket("one").await.unwrap();
+            let r = g[0].bucket("one").await;
+            assert!(matches!(r, Err(S3Error::NoSuchBucket(_))), "{r:?}");
+            assert_eq!(names(g[1].buckets(1).await.unwrap()), ["two.b"]);
+            let _ = other;
+            // The deleted objects' chunks are dead now too.
+            live.clear();
+            for k in model[1].keys() {
+                let e = g[0].head(&buckets[1], k).await.unwrap().unwrap();
+                if let Data::Chunks { object, .. } = e.data {
+                    for i in 0..chunks_of(e.size, CHUNK) {
+                        live.insert(chunk_name(buckets[1].id(), object, 0, i));
+                    }
+                }
+            }
+            kv_until("the deleted bucket's chunks deleted", async || {
+                for name in written.difference(&live) {
+                    if exists(name).await {
+                        return false;
+                    }
+                }
+                true
+            })
+            .await;
+            // The node killed is back and refilled, without what was
+            // deleted while it was away.
+            wait_all_up(&cl).await;
+            wait_backfilled(&cl).await;
+            to_main.send(usize::MAX).unwrap();
+            live
+        })
+    });
+    let node = from_client.recv().unwrap();
+    c.kill(node);
+    let back = from_client.recv().unwrap();
+    c.restart(back);
+    assert_eq!(from_client.recv().unwrap(), usize::MAX);
+    let live = client.join().unwrap();
+    let (map, devs) = c.stop();
+    let pool = &map.pools[&POOL];
+    for (id, d) in devs {
+        let sh = hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap();
+        for pg in 0..pool.pg_count {
+            let lo = ObjKey::new(POOL, pg, Namespace::S3, Vec::new(), 0);
+            let hi = ObjKey::new(POOL, pg, Namespace::Fs, Vec::new(), 0);
+            for k in sh.list(&lo, &hi) {
+                assert!(
+                    live.contains(&k.name),
+                    "device {id} holds an s3 object no live object names"
+                );
+            }
+        }
+    }
 }
