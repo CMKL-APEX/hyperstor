@@ -39,9 +39,13 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# openraft and glidex-raftstore log through tracing (I257).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "registry"] }
+tracing-core = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+tracing = "0.1"
 
 [lints]
 workspace = true
