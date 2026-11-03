@@ -5,6 +5,6 @@ started = 2026-11-02
 updated = 2026-11-03
 milestone = "HS19"
 branch = "feat/network-health"
-prs = [154, 156, 161]
+prs = [154, 156, 161, 181]
 now = "Stage 1 merged (#156, #161). On feat/network-health: health per network (D210, I257): endpoints pinged per path, marked down on two peer reports and damped, senders move to the device's other paths, a node down only when no data path reaches it; the fencing test on two networks"
 next = "Review and merge; deploy to the pilot when asked; then the reconciler in the leader (stage 3) and G47/G48 on prism2"
