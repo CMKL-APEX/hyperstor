@@ -12,6 +12,8 @@ hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
 rand.workspace = true
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-engine = { path = "../hyperstor-engine" }
+# Splits and merges of the key–value ranges it is primary of (25-kv-ranges.md §28.7).
+hyperstor-kv = { path = "../hyperstor-kv" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 # Which PG a key belongs to, when a PG splits (24-pools-and-devices.md §27.5).
 hyperstor-placement = { path = "../hyperstor-placement" }
@@ -22,7 +24,6 @@ hyperstor-reactor = { path = "../hyperstor-reactor" }
 rand.workspace = true
 hyperstor-rpc = { path = "../hyperstor-rpc" }
 tempfile = "3"
-hyperstor-kv = { path = "../hyperstor-kv" }
 
 [lints]
 workspace = true

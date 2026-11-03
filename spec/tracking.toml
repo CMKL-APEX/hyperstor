@@ -665,7 +665,16 @@ tests = [
 
 [[milestone.item]]
 what = "Splits and merges by each range's primary, resumed after failover"
-spec = ["25-kv-ranges.md §28.4", "25-kv-ranges.md §28.5", "D201", "D202"]
+spec = ["25-kv-ranges.md §28.4", "25-kv-ranges.md §28.5", "D201", "D202", "I260"]
+status = "done"
+tests = [
+    "cluster::kv_jobs_finish_or_undo_from_every_step",
+    "cluster::kv_ranges_split_and_merge_on_their_own",
+]
+
+[[milestone.item]]
+what = "Range objects nothing names deleted an hour after they appear"
+spec = ["25-kv-ranges.md §28.5"]
 status = "planned"
 
 [[milestone.item]]

@@ -13,6 +13,7 @@
 //! never a wrong answer (§28.3). This stage doesn't split or merge ranges
 //! (§28.8); it follows ranges that are split, held or merged by others.
 
+pub mod jobs;
 pub mod keys;
 
 use hyperstor_client::{Client, ClientError};
@@ -68,7 +69,7 @@ fn shown(name: &[u8]) -> String {
     String::from_utf8_lossy(name).into_owned()
 }
 
-fn conflict(e: &ClientError) -> bool {
+pub(crate) fn conflict(e: &ClientError) -> bool {
     matches!(
         e,
         ClientError::Server {
@@ -142,6 +143,17 @@ pub enum State {
 }
 
 impl State {
+    /// Its name, without the rows it names (user data).
+    pub fn name(&self) -> &'static str {
+        match self {
+            State::Pending => "pending",
+            State::Serving => "serving",
+            State::Splitting { .. } => "splitting",
+            State::Absorbing { .. } => "absorbing",
+            State::Merging { .. } => "merging",
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         match self {
@@ -188,8 +200,12 @@ pub struct Range {
     /// Grows with every change of `start`, `end` or `state`.
     pub epoch: u64,
     pub state: State,
-    /// After a split: the range now holding the rows from `end` on.
+    /// After a split: the range now holding the rows from `end` on, until
+    /// the root names it.
     pub next: Option<u128>,
+    /// After a merge: the neighbour whose rows it took, until the root no
+    /// longer names that one and it is deleted.
+    pub merged: Option<u128>,
 }
 
 /// Attribute names of a range object.
@@ -201,6 +217,7 @@ pub mod attr {
     pub const EPOCH: &[u8] = b"epoch";
     pub const STATE: &[u8] = b"state";
     pub const NEXT: &[u8] = b"next";
+    pub const MERGED: &[u8] = b"merged";
 }
 
 fn be<const N: usize>(name: &[u8], v: Option<&Vec<u8>>) -> Result<[u8; N], KvError> {
@@ -222,10 +239,12 @@ impl Range {
             Some(e) => WireOp::SetAttr(attr::END.into(), e.clone()),
             None => WireOp::RmAttr(attr::END.into()),
         });
-        ops.push(match self.next {
-            Some(n) => WireOp::SetAttr(attr::NEXT.into(), n.to_be_bytes().into()),
-            None => WireOp::RmAttr(attr::NEXT.into()),
-        });
+        for (name, v) in [(attr::NEXT, self.next), (attr::MERGED, self.merged)] {
+            ops.push(match v {
+                Some(n) => WireOp::SetAttr(name.into(), n.to_be_bytes().into()),
+                None => WireOp::RmAttr(name.into()),
+            });
+        }
         ops
     }
 
@@ -247,11 +266,15 @@ impl Range {
                 Some(_) => Some(u128::from_be_bytes(be(attr::NEXT, get(attr::NEXT))?)),
                 None => None,
             },
+            merged: match get(attr::MERGED) {
+                Some(_) => Some(u128::from_be_bytes(be(attr::MERGED, get(attr::MERGED))?)),
+                None => None,
+            },
         })
     }
 
     /// The assertion every write to the range carries (§28.2).
-    fn epoch_assertion(&self) -> WireOp {
+    pub fn epoch_assertion(&self) -> WireOp {
         WireOp::AssertAttr {
             name: attr::EPOCH.into(),
             value: Some(self.epoch.to_be_bytes().into()),
@@ -279,7 +302,7 @@ impl Range {
     }
 
     /// The first key past its rows.
-    fn end_key(&self) -> Vec<u8> {
+    pub fn end_key(&self) -> Vec<u8> {
         match &self.end {
             Some(e) => row_start(e),
             None => vec![USER + 1],
@@ -306,7 +329,7 @@ pub fn map_entry(v: &[u8]) -> Result<(u128, u64), KvError> {
     Ok((d.u128()?, d.u64()?))
 }
 
-fn random_u128() -> u128 {
+pub(crate) fn random_u128() -> u128 {
     (u128::from(hyperstor_client::random_u64()) << 64) | u128::from(hyperstor_client::random_u64())
 }
 
@@ -487,6 +510,7 @@ impl Store {
             epoch: 1,
             state: State::Serving,
             next: None,
+            merged: None,
         };
         let mut ops = vec![WireOp::AssertAbsent];
         ops.extend(first.set_ops());

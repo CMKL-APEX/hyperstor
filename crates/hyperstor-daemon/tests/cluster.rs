@@ -36,6 +36,13 @@ enum MetaCmd {
 /// Each stopped device, by device id.
 type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
+/// Key–value ranges never split or merge on their own, except in the
+/// tests of that: the others make their ranges by hand.
+const KV_OFF: hyperstor_kv::jobs::Limits = hyperstor_kv::jobs::Limits {
+    split_bytes: u64::MAX,
+    merge_bytes: 0,
+};
+
 /// Pushes split an object's key–value table into parts this small here,
 /// so that tests exercise the parts without tables of tens of megabytes.
 const TEST_PART_BYTES: usize = 16 << 10;
@@ -74,6 +81,10 @@ struct Cluster {
     stray_grace: std::time::Duration,
     /// Scrub's hole repair on every node (D223).
     hole_repair: bool,
+    /// When key–value ranges split and merge, and how often primaries
+    /// sweep them (25-kv-ranges.md §28.7).
+    kv_limits: hyperstor_kv::jobs::Limits,
+    kv_sweep: std::time::Duration,
 }
 
 impl Cluster {
@@ -170,6 +181,37 @@ impl Cluster {
         grace: std::time::Duration,
         hole_repair: bool,
     ) -> Cluster {
+        Self::start_kv(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            grace,
+            hole_repair,
+            KV_OFF,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    /// As [`Self::start_opts`], with key–value ranges splitting and
+    /// merging at `kv_limits`, swept every `kv_sweep`.
+    #[allow(clippy::too_many_arguments)]
+    fn start_kv(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+        hole_repair: bool,
+        kv_limits: hyperstor_kv::jobs::Limits,
+        kv_sweep: std::time::Duration,
+    ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -258,6 +300,8 @@ impl Cluster {
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
+                    kv_limits,
+                    kv_sweep,
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -307,6 +351,8 @@ impl Cluster {
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
             hole_repair,
+            kv_limits,
+            kv_sweep,
         }
     }
 
@@ -348,6 +394,8 @@ impl Cluster {
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
+            kv_limits: self.kv_limits,
+            kv_sweep: self.kv_sweep,
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -361,6 +409,16 @@ impl Cluster {
             no_digests,
             hole_repair: self.hole_repair,
         }));
+    }
+
+    /// Panics if a running node's reactor has ended (a panic, say).
+    fn assert_alive(&self) {
+        for (n, h) in self.nodes.iter().enumerate() {
+            assert!(
+                !h.as_ref().is_some_and(|h| h.any_failed()),
+                "node {n}'s reactor ended"
+            );
+        }
     }
 
     /// Takes device `d` out of placement, or brings it back in.
@@ -1533,6 +1591,112 @@ fn keys_are_asserted_and_tables_sized() {
     c.stop();
 }
 
+/// A key–value table's model: rows, each with its columns.
+type KvModel = std::collections::BTreeMap<Vec<u8>, std::collections::BTreeMap<Vec<u8>, Vec<u8>>>;
+
+/// Every row of table `t`, read a few at a time.
+async fn kv_all(s: &hyperstor_kv::Store, t: &hyperstor_kv::Table) -> Vec<hyperstor_kv::Row> {
+    let (mut out, mut from) = (Vec::new(), Vec::new());
+    loop {
+        let scan = hyperstor_kv::Scan {
+            from: &from,
+            limit: 3,
+            ..Default::default()
+        };
+        let p = s.scan(t, &scan).await.unwrap();
+        out.extend(p.rows);
+        match p.more {
+            Some(m) => from = m,
+            None => return out,
+        }
+    }
+}
+
+fn kv_rows(m: &KvModel) -> Vec<hyperstor_kv::Row> {
+    m.iter()
+        .map(|(r, c)| hyperstor_kv::Row {
+            row: r.clone(),
+            columns: c.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        })
+        .collect()
+}
+
+/// Table `t`'s ranges as the root of store `store` names them, by start.
+async fn kv_routes(cl: &Client, store: u64, t: &hyperstor_kv::Table) -> Vec<(Vec<u8>, u128)> {
+    use hyperstor_kv::keys;
+    let p = keys::map_prefix(t.id);
+    let end = keys::prefix_end(&p);
+    let root = store.to_be_bytes();
+    let (pool, ns) = (hyperstor_meta::META_POOL, hyperstor_kv::NS_KV);
+    let l = cl.lookup(pool, ns, &root, &p, end.as_deref(), 100_000);
+    let l = l.await.unwrap().unwrap();
+    l.kv.iter()
+        .map(|(k, v)| {
+            let start = keys::map_start(t.id, k).unwrap();
+            (start, hyperstor_kv::map_entry(v).unwrap().0)
+        })
+        .collect()
+}
+
+/// How many ranges table `t` has once settled: each the root names is
+/// serving with nothing under way and starts where the one before it
+/// ends, the last open-ended, and of `ids`, each the root doesn't name is
+/// gone. Otherwise, what isn't so.
+async fn kv_settled(
+    cl: &Client,
+    store: u64,
+    t: &hyperstor_kv::Table,
+    ids: &[u128],
+) -> Result<usize, String> {
+    use hyperstor_kv::jobs;
+    let routes = kv_routes(cl, store, t).await;
+    let mut start = Vec::new();
+    for (i, (s, id)) in routes.iter().enumerate() {
+        if *s != start {
+            return Err(format!("range {i} starts at {s:?}, not {start:?}"));
+        }
+        let Some((r, _)) = jobs::read(cl, t.index_pool, *id).await.unwrap() else {
+            return Err(format!("range {id:032x} is named but gone"));
+        };
+        if jobs::unfinished(&r) || r.start != *s {
+            return Err(format!("range {i}: {r:?}"));
+        }
+        match (&r.end, i + 1 == routes.len()) {
+            (None, true) => {}
+            (Some(e), false) => start = e.clone(),
+            (e, _) => return Err(format!("range {i} ends at {e:?}")),
+        }
+    }
+    for id in ids {
+        let named = routes.iter().any(|(_, i)| i == id);
+        if !named && jobs::read(cl, t.index_pool, *id).await.unwrap().is_some() {
+            return Err(format!("range {id:032x} is left over"));
+        }
+    }
+    Ok(routes.len())
+}
+
+/// Takes up every stopped job among ranges `ids`, as their new primaries
+/// would, until none shows one.
+async fn kv_take_up(cl: &Client, pool: u32, ids: &[u128]) {
+    use hyperstor_kv::jobs;
+    for _ in 0..6 {
+        let mut any = false;
+        for id in ids {
+            if let Some((r, _)) = jobs::read(cl, pool, *id).await.unwrap()
+                && jobs::unfinished(&r)
+            {
+                any = true;
+                jobs::resume(cl, pool, &r).await.unwrap();
+            }
+        }
+        if !any {
+            return;
+        }
+    }
+    panic!("stopped jobs are still there");
+}
+
 /// Splits range `id` of table `t` at row `at` by hand, as a range's
 /// primary will (25-kv-ranges.md §28.4), waiting `hold` with the upper
 /// half frozen; returns the new range. With `root`, the root names it;
@@ -1644,33 +1808,8 @@ async fn root_entry(cl: &Client, store: u64, t: &hyperstor_kv::Table, start: &[u
 #[test]
 fn kv_store_matches_a_sorted_map() {
     use hyperstor_kv::{Batch, KvError, Row, Scan, Store, Table};
-    use std::collections::BTreeMap;
-    type Model = BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>>;
     const STORE: u64 = 9;
-    async fn all(s: &Store, t: &Table) -> Vec<Row> {
-        let (mut out, mut from) = (Vec::new(), Vec::new());
-        loop {
-            let scan = Scan {
-                from: &from,
-                limit: 3,
-                ..Scan::default()
-            };
-            let p = s.scan(t, &scan).await.unwrap();
-            out.extend(p.rows);
-            match p.more {
-                Some(m) => from = m,
-                None => return out,
-            }
-        }
-    }
-    fn rows(m: &Model) -> Vec<Row> {
-        m.iter()
-            .map(|(r, c)| Row {
-                row: r.clone(),
-                columns: c.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            })
-            .collect()
-    }
+    let (all, rows) = (kv_all, kv_rows);
     let c = Cluster::start(4, 1);
     let meta = c.meta_addr;
     std::thread::spawn(move || {
@@ -1723,7 +1862,7 @@ fn kv_store_matches_a_sorted_map() {
             // Every range of t1 by start row, whether the root names it or not.
             let mut ranges: Vec<(Vec<u8>, u128)> = vec![(Vec::new(), first)];
             let mut unrooted: Vec<(Vec<u8>, u128)> = Vec::new();
-            let mut model = Model::new();
+            let mut model = KvModel::new();
             let mut rng = SmallRng::seed_from_u64(11);
             // Bytes where the row encoding has cases.
             let pick = |rng: &mut SmallRng| -> Vec<u8> {
@@ -1905,6 +2044,242 @@ fn kv_store_matches_a_sorted_map() {
     })
     .join()
     .unwrap();
+    c.stop();
+}
+
+/// HS11 stage 3 (25-kv-ranges.md §28.4, §28.5): a split stopped after
+/// each of its six steps, and a merge after each of its seven, as a dying
+/// primary would leave them, are taken up from the ranges' attributes
+/// alone: finished once the new range is open (a split) or the left
+/// range extended (a merge), undone before. Each time the table settles
+/// with every row in one serving range, nothing left over, the rows as
+/// written, and a store whose cache saw the old ranges reads and writes
+/// on.
+#[test]
+fn kv_jobs_finish_or_undo_from_every_step() {
+    use hyperstor_kv::jobs::{self, Steps};
+    use hyperstor_kv::{Batch, Store};
+    const STORE: u64 = 10;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let cl = Client::connect(meta, 7).await.unwrap();
+            let mut model = KvModel::new();
+            for i in 0..40u8 {
+                let v = vec![i; 50 + i as usize];
+                let row = format!("row{i:02}").into_bytes();
+                model.entry(row).or_default().insert(b"c".to_vec(), v);
+            }
+            let fill = async |t: &hyperstor_kv::Table| {
+                for (row, cols) in &model {
+                    a.apply(t, row, Batch::new().put(b"c", &cols[b"c".as_slice()]))
+                        .await
+                        .unwrap();
+                }
+            };
+            let first_range = async |t: &hyperstor_kv::Table| {
+                let id = kv_routes(&cl, STORE, t).await[0].1;
+                jobs::read(&cl, POOL, id).await.unwrap().unwrap().0
+            };
+            let mut after = model.clone();
+            after
+                .get_mut(b"row39".as_slice())
+                .unwrap()
+                .insert(b"d".to_vec(), b"after".to_vec());
+            after
+                .get_mut(b"row05".as_slice())
+                .unwrap()
+                .insert(b"d".to_vec(), b"after".to_vec());
+            let writes_go_on = async |t: &hyperstor_kv::Table, why: &str| {
+                assert_eq!(kv_all(&a, t).await, kv_rows(&model), "{why}");
+                for row in [b"row39", b"row05"] {
+                    a.apply(t, row, Batch::new().put(b"d", b"after"))
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(kv_all(&a, t).await, kv_rows(&after), "{why}");
+            };
+            for stop in 0..=6 {
+                let why = format!("a split stopped after {stop} steps");
+                let t = a.create_table(why.as_bytes(), POOL, POOL).await.unwrap();
+                fill(&t).await;
+                let r = first_range(&t).await;
+                // The store caches the range before the split.
+                assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+                let into = jobs::split(&cl, POOL, &r, &Steps::only(stop)).await;
+                let into = into.unwrap();
+                assert_eq!(into.is_some(), stop > 0, "{why}");
+                let ids: Vec<u128> = std::iter::once(r.id).chain(into).collect();
+                kv_take_up(&cl, POOL, &ids).await;
+                let n = kv_settled(&cl, STORE, &t, &ids).await;
+                // Finished once the new range was open (step 4).
+                assert_eq!(n, Ok(if stop >= 4 { 2 } else { 1 }), "{why}");
+                writes_go_on(&t, &why).await;
+            }
+            for stop in 0..=7 {
+                let why = format!("a merge stopped after {stop} steps");
+                let t = a.create_table(why.as_bytes(), POOL, POOL).await.unwrap();
+                fill(&t).await;
+                let r = first_range(&t).await;
+                let n = jobs::split_at(&cl, POOL, &r, b"row20", &Steps::all()).await;
+                let n = n.unwrap().unwrap();
+                assert_eq!(kv_settled(&cl, STORE, &t, &[r.id, n]).await, Ok(2));
+                // The store caches both ranges.
+                assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+                let (l, _) = jobs::read(&cl, POOL, r.id).await.unwrap().unwrap();
+                let (n, _) = jobs::read(&cl, POOL, n).await.unwrap().unwrap();
+                let merged = jobs::merge(&cl, POOL, &l, &n, &Steps::only(stop)).await;
+                assert_eq!(merged, Ok(stop >= 4), "{why}");
+                kv_take_up(&cl, POOL, &[l.id, n.id]).await;
+                let settled = kv_settled(&cl, STORE, &t, &[l.id, n.id]).await;
+                // Finished once the left range was extended (step 4).
+                assert_eq!(settled, Ok(if stop >= 4 { 1 } else { 2 }), "{why}");
+                writes_go_on(&t, &why).await;
+                if stop < 4 {
+                    // An undone merge leaves nothing of the right range's
+                    // rows in the left one: a row deleted now stays
+                    // deleted when the two merge after all.
+                    a.apply(&t, b"row30", Batch::new().delete(b"c"))
+                        .await
+                        .unwrap();
+                    let (l, _) = jobs::read(&cl, POOL, l.id).await.unwrap().unwrap();
+                    let (n, _) = jobs::read(&cl, POOL, n.id).await.unwrap().unwrap();
+                    let all = jobs::merge(&cl, POOL, &l, &n, &Steps::all()).await;
+                    assert_eq!(all, Ok(true), "{why}");
+                    assert_eq!(kv_settled(&cl, STORE, &t, &[l.id, n.id]).await, Ok(1));
+                    let mut want = after.clone();
+                    want.remove(b"row30".as_slice());
+                    assert_eq!(kv_all(&a, &t).await, kv_rows(&want), "{why}");
+                }
+            }
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
+/// HS11 stage 3 (25-kv-ranges.md §28.7): with small limits, primaries
+/// split a growing table and merge it back as its rows are deleted, on
+/// their own, while a node is killed and comes back. The rows read as
+/// written throughout, and the table settles each time.
+#[test]
+fn kv_ranges_split_and_merge_on_their_own() {
+    use hyperstor_kv::jobs::{self, Steps};
+    use hyperstor_kv::{Batch, KvError, Store};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const STORE: u64 = 11;
+    let limits = hyperstor_kv::jobs::Limits {
+        split_bytes: 8 << 10,
+        merge_bytes: 2 << 10,
+    };
+    let zero = std::time::Duration::ZERO;
+    let sweep = std::time::Duration::from_millis(300);
+    let mut c = Cluster::start_kv(
+        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, limits, sweep,
+    );
+    // Commits that take a while, so that the primaries' looks at their
+    // ranges often come while one is in flight (I199).
+    for d in [0, 1000, 2000, 3000] {
+        c.commit_delays.set(d, std::time::Duration::from_millis(3));
+    }
+    let meta = c.meta_addr;
+    let phase = Arc::new(AtomicU32::new(0));
+    let p = phase.clone();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let cl = Client::connect(meta, 7).await.unwrap();
+            let t = a.create_table(b"load", POOL, POOL).await.unwrap();
+            let wait = std::time::Duration::from_millis(100);
+            // A write cut off by the node's death is sent again: puts and
+            // deletes are the same done twice.
+            let apply = async |row: &[u8], b: &Batch| {
+                for _ in 0..300 {
+                    match a.apply(&t, row, b).await {
+                        Ok(()) => return,
+                        Err(KvError::Conflict) => panic!("no batch asserts"),
+                        Err(_) => hyperstor_reactor::time::sleep(wait).await,
+                    }
+                }
+                panic!("a write failed for 30 s");
+            };
+            let settled = async |at_least: usize, at_most: usize, ids: &[u128]| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                loop {
+                    let r = kv_settled(&cl, STORE, &t, ids).await;
+                    match r {
+                        Ok(n) if (at_least..=at_most).contains(&n) => return n,
+                        r if std::time::Instant::now() > deadline => panic!("{r:?}"),
+                        _ => hyperstor_reactor::time::sleep(wait).await,
+                    }
+                }
+            };
+            let mut model = KvModel::new();
+            let mut rng = SmallRng::seed_from_u64(3);
+            for i in 0..600u32 {
+                if i == 200 {
+                    p.store(1, Ordering::SeqCst);
+                }
+                if i == 400 {
+                    while p.load(Ordering::SeqCst) < 2 {
+                        hyperstor_reactor::time::sleep(wait).await;
+                    }
+                }
+                let row = format!("row{:04}", rng.random_range(0..400)).into_bytes();
+                let v = format!("{i:0100}").into_bytes();
+                apply(&row, Batch::new().put(b"c", &v)).await;
+                model.entry(row).or_default().insert(b"c".to_vec(), v);
+            }
+            let grown = settled(4, usize::MAX, &[]).await;
+            assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            // Jobs left half done, as by a primary that died, are taken up
+            // by the ranges' primaries: a split before its new range
+            // opened is undone, a merge that extended its range finished.
+            let routes = kv_routes(&cl, STORE, &t).await;
+            let (r, _) = jobs::read(&cl, POOL, routes[1].1).await.unwrap().unwrap();
+            let into = jobs::split(&cl, POOL, &r, &Steps::only(3)).await.unwrap();
+            settled(1, usize::MAX, &[into.unwrap()]).await;
+            let routes = kv_routes(&cl, STORE, &t).await;
+            let (l, _) = jobs::read(&cl, POOL, routes[0].1).await.unwrap().unwrap();
+            let (n, _) = jobs::read(&cl, POOL, routes[1].1).await.unwrap().unwrap();
+            let merged = jobs::merge(&cl, POOL, &l, &n, &Steps::only(4)).await;
+            assert_eq!(merged, Ok(true));
+            settled(1, usize::MAX, &[n.id]).await;
+            assert_eq!(jobs::read(&cl, POOL, n.id).await.unwrap(), None);
+            assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            // Deleting all but five rows merges the ranges back into one.
+            let gone: Vec<Vec<u8>> = model.keys().skip(5).cloned().collect();
+            for row in &gone {
+                apply(row, Batch::new().delete(b"c")).await;
+                model.remove(row);
+            }
+            settled(1, 1, &[]).await;
+            assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            grown
+        })
+    });
+    // No reactor ends meanwhile: the primaries' looks at their ranges
+    // must not panic, whatever the commits are doing.
+    let watch = |c: &Cluster, until: &dyn Fn() -> bool| {
+        while !until() {
+            c.assert_alive();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    watch(&c, &|| {
+        phase.load(Ordering::SeqCst) >= 1 || client.is_finished()
+    });
+    c.kill(1);
+    let t = std::time::Instant::now();
+    watch(&c, &|| t.elapsed() > std::time::Duration::from_millis(1500));
+    c.restart(1);
+    phase.store(2, Ordering::SeqCst);
+    watch(&c, &|| client.is_finished());
+    let grown = client.join().unwrap();
+    assert!(grown >= 4, "{grown} ranges");
     c.stop();
 }
 

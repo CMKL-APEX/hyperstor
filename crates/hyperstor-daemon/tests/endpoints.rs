@@ -125,6 +125,8 @@ impl Rig {
                     commit_delays: None,
                     pings: None,
                     older: None,
+                    kv_limits: Default::default(),
+                    kv_sweep: std::time::Duration::ZERO,
                     partitions: partitions.clone(),
                     node_id: n,
                     meta: vec![meta_addr],
