@@ -50,9 +50,10 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   memory, submits its I/O on the reactor's io_uring and finishes on the
   completions, so no device wait holds a reactor's thread. As built:
   commits, one in flight per shard (01-implementation-notes.md I199),
-  and client reads, up to 128 in flight per device (D190, I230); reads
-  for recovery and scrub, checkpoint slices and deferred writes still
-  wait in the device's calls. A commit that takes longer than the I/O
+  client reads, up to 128 in flight per device (D190, I230), and reads
+  for recovery, backfill, repair and deep scrub, up to 16 more of their
+  own (I257); checkpoint slices and deferred writes still wait in the
+  device's calls. A commit that takes longer than the I/O
   timeout (30 s, `hyperstord --io-timeout-secs`) fails its device
   (D166); a read past the read timeout (2 s, `--read-timeout-ms`) is
   served from a member, and three in a row fail the device (D190).
