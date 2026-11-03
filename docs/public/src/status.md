@@ -51,6 +51,7 @@ covered by tests that run on every change.
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
 | Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage) | In progress |
 | A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned | Done |
+| Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again | Done |
 | Crash safety: randomized crash tests against a model | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
