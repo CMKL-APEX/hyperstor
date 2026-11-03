@@ -31,7 +31,7 @@ while drafting and is open for review.
   divided (D200).
 - **Atomic unit: one row** (D200). A batch of changes to one row's
   columns applies atomically, with assertions on its columns (absent, or
-  equal to a checksum: D194). There is nothing atomic across rows until
+  holding given bytes: D194). There is nothing atomic across rows until
   HS11b. Why: a split can't break a one-row batch, so it never fails for
   a reason the caller can't see; S3 needs nothing wider (D191).
 - **Reads** are of a column, a row, or the rows from one row to another
@@ -72,10 +72,16 @@ allocator to coordinate, as volume ids.
 - **Reads return the attributes.** `Lookup` answers with the
   attributes and the key slice from one read on the primary, so a reader
   checks the bounds and state against the keys it got.
-- **One new engine operation:** `AssertKv(key, checksum or absent)`,
-  D194's per-key assertion, in the engine and on the wire (`WireOp`).
-  `Lookup` also reports the table's byte count, for split and merge
-  decisions.
+- **One new assertion:** `AssertKv(key, value or absent)`, D194's
+  per-key assertion (built, I255). Like the other assertions on the wire
+  it is decided by the primary, holding the object, and never reaches the
+  engine or the replicas (I6). It compares exact bytes (D194 revised,
+  point 190). Why: never wrong, and the values asserted (index entries,
+  root entries) are small.
+- **The table's size.** The engine keeps each table's bytes (keys and
+  values) as it changes. A *sized* lookup returns them, for split and
+  merge decisions; it travels as its own message kind, so `Lookup` and
+  its answer stay as older builds read them.
 
 ### 28.3 The root
 

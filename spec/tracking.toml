@@ -633,9 +633,15 @@ id = "HS11"
 title = "Key-value ranges"
 
 [[milestone.item]]
-what = "Per-key assertions on an object's key-value table"
-spec = ["25-kv-ranges.md §28.2", "D194"]
-status = "planned"
+what = "Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup"
+spec = ["25-kv-ranges.md §28.2", "D194", "I255"]
+status = "done"
+tests = [
+    "cluster::keys_are_asserted_and_tables_sized",
+    # The byte count is also checked against the model, through crashes
+    # and replay, by crash::random_crashes_recover_to_a_consistent_prefix,
+    # tracked earlier.
+]
 
 [[milestone.item]]
 what = "Tables, rows and range objects found through the root; one-row atomic changes and scans"
