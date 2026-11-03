@@ -411,6 +411,16 @@ impl Cluster {
         }));
     }
 
+    /// Panics if a running node's reactor has ended (a panic, say).
+    fn assert_alive(&self) {
+        for (n, h) in self.nodes.iter().enumerate() {
+            assert!(
+                !h.as_ref().is_some_and(|h| h.any_failed()),
+                "node {n}'s reactor ended"
+            );
+        }
+    }
+
     /// Takes device `d` out of placement, or brings it back in.
     fn set_in(&self, d: u32, up_in: bool) {
         assert!(self.meta_tx.send(MetaCmd::SetIn(d, up_in)).is_ok());
@@ -2170,6 +2180,11 @@ fn kv_ranges_split_and_merge_on_their_own() {
     let mut c = Cluster::start_kv(
         4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, limits, sweep,
     );
+    // Commits that take a while, so that the primaries' looks at their
+    // ranges often come while one is in flight (I199).
+    for d in [0, 1000, 2000, 3000] {
+        c.commit_delays.set(d, std::time::Duration::from_millis(3));
+    }
     let meta = c.meta_addr;
     let phase = Arc::new(AtomicU32::new(0));
     let p = phase.clone();
@@ -2181,12 +2196,15 @@ fn kv_ranges_split_and_merge_on_their_own() {
             let wait = std::time::Duration::from_millis(100);
             // A write cut off by the node's death is sent again: puts and
             // deletes are the same done twice.
-            let apply = async |row: &[u8], b: &Batch| loop {
-                match a.apply(&t, row, b).await {
-                    Ok(()) => return,
-                    Err(KvError::Conflict) => panic!("no batch asserts"),
-                    Err(_) => hyperstor_reactor::time::sleep(wait).await,
+            let apply = async |row: &[u8], b: &Batch| {
+                for _ in 0..300 {
+                    match a.apply(&t, row, b).await {
+                        Ok(()) => return,
+                        Err(KvError::Conflict) => panic!("no batch asserts"),
+                        Err(_) => hyperstor_reactor::time::sleep(wait).await,
+                    }
                 }
+                panic!("a write failed for 30 s");
             };
             let settled = async |at_least: usize, at_most: usize, ids: &[u128]| {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -2243,13 +2261,23 @@ fn kv_ranges_split_and_merge_on_their_own() {
             grown
         })
     });
-    while phase.load(Ordering::SeqCst) < 1 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // No reactor ends meanwhile: the primaries' looks at their ranges
+    // must not panic, whatever the commits are doing.
+    let watch = |c: &Cluster, until: &dyn Fn() -> bool| {
+        while !until() {
+            c.assert_alive();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    watch(&c, &|| {
+        phase.load(Ordering::SeqCst) >= 1 || client.is_finished()
+    });
     c.kill(1);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let t = std::time::Instant::now();
+    watch(&c, &|| t.elapsed() > std::time::Duration::from_millis(1500));
     c.restart(1);
     phase.store(2, Ordering::SeqCst);
+    watch(&c, &|| client.is_finished());
     let grown = client.join().unwrap();
     assert!(grown >= 4, "{grown} ranges");
     c.stop();

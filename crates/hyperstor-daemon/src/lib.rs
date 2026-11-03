@@ -345,6 +345,11 @@ pub struct NodeHandle {
 }
 
 impl NodeHandle {
+    /// Whether a reactor thread has ended (failed or panicked).
+    pub fn any_failed(&self) -> bool {
+        self.threads.iter().any(|t| t.is_finished())
+    }
+
     /// Waits for the reactor threads, which run until one fails; then
     /// stops the others and returns every result.
     pub fn stop_when_any_fails(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {

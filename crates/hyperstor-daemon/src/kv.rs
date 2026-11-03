@@ -31,9 +31,10 @@ impl ShardState {
     }
 
     /// A range object as this device's copy has it, and its table's bytes.
-    fn kv_range(&self, k: &ObjKey) -> Option<(Range, u64)> {
+    async fn kv_range(&self, k: &ObjKey) -> Option<(Range, u64)> {
         let id = u128::from_be_bytes(k.name.as_slice().try_into().ok()?);
-        let sh = self.shard.borrow();
+        // Once no commit is in flight: commits leave the reactor (I199).
+        let sh = self.shard.get().await;
         let bytes = sh.stat(k)?.kv_bytes;
         let attrs: Vec<_> = sh
             .attrs(k)?
@@ -55,7 +56,7 @@ impl ShardState {
             sleep(sweep.min(Duration::from_secs(1))).await;
             let written: Vec<ObjKey> = self.kv_written.borrow_mut().drain().collect();
             for k in written {
-                self.kv_size(&k, &limits);
+                self.kv_size(&k, &limits).await;
             }
             if swept.elapsed() < sweep {
                 continue;
@@ -63,7 +64,7 @@ impl ShardState {
             swept = std::time::Instant::now();
             let keys: Vec<ObjKey> = {
                 let map = self.map();
-                let sh = self.shard.borrow();
+                let sh = self.shard.get().await;
                 map.pgs
                     .iter()
                     .filter(|(_, i)| i.primary() == Some(self.me))
@@ -77,11 +78,11 @@ impl ShardState {
             };
             let mut now = HashMap::new();
             for k in keys {
-                let Some((r, _)) = self.kv_range(&k) else {
+                let Some((r, _)) = self.kv_range(&k).await else {
                     continue;
                 };
                 if !jobs::unfinished(&r) {
-                    self.kv_size(&k, &limits);
+                    self.kv_size(&k, &limits).await;
                     continue;
                 }
                 // Left so since the last sweep: no job is under way, or it
@@ -98,11 +99,11 @@ impl ShardState {
 
     /// Starts a check of range `k` if its size calls for a split or a
     /// merge (D202).
-    fn kv_size(self: &Rc<Self>, k: &ObjKey, limits: &Limits) {
+    async fn kv_size(self: &Rc<Self>, k: &ObjKey, limits: &Limits) {
         if !self.primary_of(k) {
             return;
         }
-        let Some((r, bytes)) = self.kv_range(k) else {
+        let Some((r, bytes)) = self.kv_range(k).await else {
             return;
         };
         let small = bytes < limits.merge_bytes && r.end.is_some();
