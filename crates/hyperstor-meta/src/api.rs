@@ -698,6 +698,7 @@ pub fn status(
                             .map(|(n, a)| pb::Endpoint {
                                 network: n.clone(),
                                 address: a.to_string(),
+                                down: map.endpoints_down.contains(a),
                                 ..Default::default()
                             })
                             .collect(),
