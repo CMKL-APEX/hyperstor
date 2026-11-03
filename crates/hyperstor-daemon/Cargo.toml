@@ -22,6 +22,7 @@ hyperstor-reactor = { path = "../hyperstor-reactor" }
 rand.workspace = true
 hyperstor-rpc = { path = "../hyperstor-rpc" }
 tempfile = "3"
+hyperstor-kv = { path = "../hyperstor-kv" }
 
 [lints]
 workspace = true

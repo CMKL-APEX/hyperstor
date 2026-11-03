@@ -1,0 +1,21 @@
+[package]
+name = "hyperstor-kv"
+description = "Hyperstor's key–value ranges: a sorted keyspace in range objects, routed by a root (spec/25-kv-ranges.md §28)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-map = { path = "../hyperstor-map" }
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[lints]
+workspace = true

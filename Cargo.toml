@@ -9,6 +9,7 @@ members = [
     "crates/hyperstor-engine",
     "crates/hyperstor-fabric",
     "crates/hyperstor-install",
+    "crates/hyperstor-kv",
     "crates/hyperstor-bench",
     "crates/hyperstor-map",
     "crates/hyperstor-meta",
