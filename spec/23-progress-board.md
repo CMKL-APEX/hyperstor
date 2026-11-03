@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 1 | 20 |
+| 7 | 0 | 2 | 20 |
 
 ## In progress
 
@@ -33,6 +33,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin`, [#174](https://github.com/CMKL-APEX/hyperstor/pull/174) | Proposal settled 2026-11-04 (28-scrub.md §31; the owner accepted D224–D230 as written): settings per pool in the map, step-up to weaken, each PG's last scrub through Raft, health checks, scrub on demand and after recovery | Merge #174; then build: settings in the map and the API and CLI first, then reports and health, scrub on demand and after recovery, the UI last | 2026-11-04 |
 | **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done

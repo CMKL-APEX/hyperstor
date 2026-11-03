@@ -33,6 +33,7 @@ documents cite them by number.
 | [13-protocol.md](13-protocol.md) | §13 | Message framing; TCP, RoCEv2 and InfiniBand transports; port roles and traffic classes |
 | [14-s3.md](14-s3.md) | §14 | The S3 gateway and S3 over RDMA |
 | [26-networks.md](26-networks.md) | §29 | Hosts with several network ports: networks and endpoints, control apart from data, path choice per I/O, health per network, the fabric reconciler, claims by orchestrators, GPU-direct pairing (designed; D203–D213 settled) |
+| [28-scrub.md](28-scrub.md) | §31 | Scrub settings per pool in the map, who may weaken them, each PG's last scrub kept through Raft, health checks, scrubbing on demand and after recovery, the API, CLI and UI (proposed; D224–D230 open) |
 | [27-performance.md](27-performance.md) | §30 | Load and drives: per-PG heat and top volumes, device service time, drives' sysfs and SMART (through `hyperstor-smart`), the leader's 15 minutes, the views and the Advisor (built; D218–D222 settled) |
 | [22-nfs.md](22-nfs.md) | §26 | NFSv4.1/4.2 and pNFS for unmodified clients: the metadata server, files layouts, data servers in the storage nodes, stripe groups, fencing, failover (investigation; D127, D129, D130 settled) |
 | [15-operations.md](15-operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
