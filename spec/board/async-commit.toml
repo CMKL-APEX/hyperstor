@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-03
 milestone = "HS0"
 branch = "feat/recovery-reads-off-reactor"
-prs = [94, 97, 100, 129, 134, 145, 152, 155]
+prs = [94, 97, 100, 129, 134, 145, 152, 155, 178]
 now = "Recovery, backfill, repair and deep scrub read on the ring with a share of 16 reads of their own (I257); a push reads again when its object is written meanwhile"
 next = "Install I257 on the pilot and measure a backfill under load; why 1 MiB reads lose throughput above QD1; then stage 3 (checkpoint slices, deferred writes)"
