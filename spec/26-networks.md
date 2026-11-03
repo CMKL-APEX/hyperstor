@@ -21,7 +21,7 @@ G47–G53 are the host checks they rest on. Built so far (HS19, branch
 endpoints in the cluster file and the map, nodes and clients reaching
 devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired;
-health per network (§29.7; I257). It builds on 13-protocol.md §13.2 (networks and transports in
+health per network (§29.7; I258). It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D217)
@@ -226,7 +226,7 @@ and never waits on the control plane.
   failure the pilot already saw from other causes (D149).
 - **Damping** as D149 for endpoints too: an endpoint that flaps is held
   down for doubling periods.
-- **As built** (I257): each reactor pings a peer on every endpoint its
+- **As built** (I258): each reactor pings a peer on every endpoint its
   devices have on the reactor's networks (else at its address), and
   reports an endpoint silent for the peer timeout while another of the
   peer's paths answers (`EndpointDown`); silent on all of them, it

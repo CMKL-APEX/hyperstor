@@ -3436,6 +3436,105 @@ fn a_slow_read_holds_no_reactor() {
     c.stop();
 }
 
+/// I257: backfill reads its pushes on the ring, with a share of reads of
+/// its own. With every read on the devices that stay taking 300 ms, no
+/// node is seen down while a failed node's PGs are refilled elsewhere, as
+/// writes to another volume go on.
+#[test]
+fn a_slow_backfill_holds_no_reactor() {
+    let (downs, _) = slow_backfill(false);
+    assert_eq!(downs, 0, "a node was seen down while its device read");
+}
+
+/// I257: a push whose object is written while its read waits for the
+/// device is read again rather than sent stale behind the write; after
+/// three tries it reads holding the reactor, as before. Every copy agrees.
+#[test]
+fn a_push_is_read_again_when_its_object_is_written() {
+    let (_, rereads) = slow_backfill(true);
+    assert!(rereads > 0, "no push was read again");
+}
+
+/// Volume 1 written, node 2 killed and its PGs backfilled elsewhere while
+/// every read on the other devices takes 300 ms, and blocks written
+/// meanwhile, to volume 1 (`to_pushed`) or 2; each block once, so a stale
+/// push would lose it for good. Returns how often a node was seen down,
+/// and the pushes read again.
+fn slow_backfill(to_pushed: bool) -> (usize, u64) {
+    use std::time::{Duration, Instant};
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        DOWN_OUT,
+    );
+    let meta = c.meta_addr;
+    const CHUNKS: u64 = 12;
+    let first = pattern(41, (CHUNKS * CHUNK as u64) as usize);
+    with_client(meta, 5, {
+        let d = first.clone();
+        |cl| async move {
+            wait_all_up(&cl).await;
+            cl.write(POOL, 1, 0, d.clone()).await.unwrap();
+            cl.write(POOL, 2, 0, d).await.unwrap();
+        }
+    });
+    for d in [0, 1000, 3000] {
+        c.commit_delays.set_reads(d, Duration::from_millis(300));
+    }
+    c.kill(2);
+    let vol = if to_pushed { 1 } else { 2 };
+    let (downs, rounds) = with_client(meta, 6, move |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+        let t = Instant::now();
+        let mut want = first;
+        let (mut downs, mut round) = (0, 0u64);
+        loop {
+            cl.refresh_map().await.unwrap();
+            let m = cl.map();
+            downs += [0, 1, 3].iter().filter(|n| !m.nodes[n].up).count();
+            if round >= 3 && m.pgs.values().all(|p| p.acting == p.up) {
+                break;
+            }
+            for i in 0..CHUNKS {
+                let b = pattern(1000 + round * 100 + i, 4096);
+                let at = i * CHUNK as u64 + round * 4096;
+                cl.write(POOL, vol, at, b.clone()).await.unwrap();
+                want[at as usize..][..4096].copy_from_slice(&b);
+            }
+            round += 1;
+            assert!(round < 256, "still backfilling");
+            assert!(t.elapsed() < Duration::from_secs(60), "still backfilling");
+            hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
+        }
+        let got = cl.read(POOL, vol, 0, want.len() as u64).await.unwrap();
+        assert!(got == want, "the last writes read back");
+        (downs, round)
+    });
+    for d in [0, 1000, 3000] {
+        c.commit_delays.set_reads(d, Duration::ZERO);
+    }
+    assert!(rounds >= 3, "writes went on during backfill");
+    let rereads = [0, 1, 3]
+        .iter()
+        .map(|n| {
+            c.nodes[*n].as_ref().unwrap().metrics[0]
+                .1
+                .push_rereads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .sum();
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (1..=2u128)
+        .flat_map(|v| (0..CHUNKS).map(move |i| (v, i)))
+        .collect();
+    copies_agree(&map, devs, &chunks);
+    (downs, rereads)
+}
+
 /// D190: a read that waits for its device past the read timeout is served
 /// from a member's copy; the device fails only on the third in a row, and
 /// is placed elsewhere while its node stays up.

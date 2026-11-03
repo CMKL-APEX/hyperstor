@@ -133,6 +133,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again"
+spec = ["I257"]
+status = "done"
+tests = [
+    "hyperstor_daemon::shard_cell::tests::background_reads_have_a_share_of_their_own",
+    "cluster::a_slow_backfill_holds_no_reactor",
+    "cluster::a_push_is_read_again_when_its_object_is_written",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
@@ -888,7 +898,7 @@ tests = [
 
 [[milestone.item]]
 what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests; health per network, with endpoints marked down on peer reports and damped; fencing shown on two networks; warm paths wait for RDMA)"
-spec = ["26-networks.md §29.6", "26-networks.md §29.7", "26-networks.md §29.11", "D208", "D210", "G53", "I257"]
+spec = ["26-networks.md §29.6", "26-networks.md §29.7", "26-networks.md §29.11", "D208", "D210", "G53", "I258"]
 status = "partial"
 tests = [
     "hyperstor_fabric::tests::a_path_without_weight_is_never_chosen",
