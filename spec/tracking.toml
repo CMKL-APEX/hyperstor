@@ -1330,6 +1330,25 @@ tests = [
     "hyperstor_meta::api::tests::pool_space_under_the_domain_rule",
 ]
 
+[[milestone.item]]
+what = "Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced"
+spec = ["28-scrub.md §31.2", "28-scrub.md §31.3", "D224", "D225", "D226", "I262"]
+status = "done"
+tests = [
+    "manage::scrub_settings_are_set_and_weakening_needs_a_reason",
+    "hyperstor_map::tests::scrub_settings_ride_in_the_map",
+    "hyperstor_map::tests::weakening_scrub_is_named",
+    "hyperstor_meta::tests::scrub_settings_are_set_and_weakening_is_asked_for",
+    "hyperstor_meta::health::tests::reduced_scrub_warns",
+    "cluster::scrub_reports_zeros_where_a_copy_has_holes",
+    "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
+]
+
+[[milestone.item]]
+what = "Scrub reports per PG kept through Raft, overdue and unchecked health checks, scrub on demand as an operation, scrub after recovery, and the UI's Scrub card and PG grid view"
+spec = ["28-scrub.md §31.4", "28-scrub.md §31.5", "28-scrub.md §31.6", "28-scrub.md §31.7", "28-scrub.md §31.8", "D227", "D228", "D229", "D230"]
+status = "planned"
+
 [[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

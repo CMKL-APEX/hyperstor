@@ -327,9 +327,9 @@ on large PGs show the scan is too slow.
 
 ## Scrub
 
-Each storage node compares, every 24 hours by default
-(`hyperstord --scrub-hours`), the copies of each clean PG it leads,
-spread evenly over the interval:
+Each storage node compares, every 24 hours by default (each pool's
+scrub settings in the map, `hyperstorctl scrub set`), the copies of each
+clean PG it leads, spread evenly over the interval:
 
 - **Light scrub** compares digests. A difference is looked at again after
   200 ms, so a write in flight isn't counted as damage.

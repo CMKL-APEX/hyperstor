@@ -1,10 +1,10 @@
 title = "Scrub settings and reports in the API, CLI and UI (D224–D230)"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-03
 updated = 2026-11-04
 milestone = "AD3"
 branch = "spec/scrub-admin"
 prs = [174]
-now = "Proposal settled 2026-11-04 (28-scrub.md §31; the owner accepted D224–D230 as written): settings per pool in the map, step-up to weaken, each PG's last scrub through Raft, health checks, scrub on demand and after recovery"
-next = "Merge #174; then build: settings in the map and the API and CLI first, then reports and health, scrub on demand and after recovery, the UI last"
+now = "Proposal settled and merged (#174, 2026-11-04): 28-scrub.md §31, D224–D230"
+next = "Built in workstream scrub-settings"

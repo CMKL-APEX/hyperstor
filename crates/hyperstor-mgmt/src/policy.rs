@@ -73,6 +73,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrashService.RestoreFromTrash", Group::Operate, false),
     ("ClusterService.CreatePool", Group::Store, false),
     ("ClusterService.SetPool", Group::Store, false),
+    // Weakening scrub is a deliberate choice (D226): a fresh login.
+    ("ClusterService.SetScrubSettings", Group::Store, false),
+    ("ClusterService.WeakenScrubSettings", Group::Store, true),
     ("ClusterService.SetPoolDevice", Group::Store, false),
     ("ClusterService.DeletePool", Group::Store, true),
     ("ClusterService.CreateVolume", Group::Store, false),

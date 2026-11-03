@@ -88,6 +88,20 @@ service ClusterService {
   // splits. Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
+  // Changes a pool's scrub settings (28-scrub.md §31.2, 04-decisions.md
+  // D224); a setting not given stays as it is. Storage nodes follow them
+  // from the next PG they scrub. Refused for cache pools, which aren't
+  // scrubbed, and, with reason "weakens_scrub", for a change that checks
+  // less than the defaults (D226): use WeakenScrubSettings. Write.
+  rpc SetScrubSettings(SetScrubSettingsRequest) returns (SetScrubSettingsResponse);
+
+  // As SetScrubSettings, and may weaken them: scrub off, more than 168
+  // hours, deep_every above 7, holes only reported, or a deep rate under
+  // 32 MiB/s (D226). Needs a reason, kept in the audit event; through
+  // hyperstor-mgmt, a login of the last 10 minutes (step-up). Health warns
+  // while a pool's settings are weaker than the defaults. Write.
+  rpc WeakenScrubSettings(SetScrubSettingsRequest) returns (SetScrubSettingsResponse);
+
   // Adds a device to a pool beyond its classes, or removes one of them
   // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
   // move as for SetPool, which it is checked as. Write.
@@ -393,6 +407,26 @@ message Pool {
   // Cache pools: seconds a PG waits for a down member before moving to
   // devices without its data (04-decisions.md D189); 0 moves at once.
   uint32 cache_grace = 22 [json_name = "cache_grace"];
+  // How scrub checks the pool's copies (D224); cache pools keep the
+  // defaults unused.
+  ScrubSettings scrub = 23;
+}
+
+// A pool's scrub settings (28-scrub.md §31.2, 04-decisions.md D224).
+message ScrubSettings {
+  // Every PG is light-scrubbed once in this many hours; 0: scrub off.
+  uint32 hours = 1;
+  // Every this-many passes, the first included, is deep: every block read
+  // and its CRC checked.
+  uint32 deep_every = 2 [json_name = "deep_every"];
+  // "repair": copies holding zeros where another has holes are replaced
+  // from it (D223, D225); "report": only reported.
+  string hole_repair = 3 [json_name = "hole_repair"];
+  // The most a deep scrub reads, per device, in MiB a second.
+  uint32 deep_rate_mib = 4 [json_name = "deep_rate_mib"];
+  // What checks less than the defaults (D226), in words; empty if
+  // nothing does. Health warns while it isn't.
+  repeated string weakened = 5;
 }
 
 // Each PG is counted once, under its worst state.
@@ -584,6 +618,27 @@ message SetPoolRequest {
   // Cache pools: seconds a PG waits for a down member, up to 3600; 0
   // moves at once (D189).
   optional uint32 cache_grace = 9 [json_name = "cache_grace"];
+}
+
+message SetScrubSettingsRequest {
+  uint32 pool = 1;
+  // 1 to 720, or 0: scrub off.
+  optional uint32 hours = 2;
+  // 1 to 28.
+  optional uint32 deep_every = 3 [json_name = "deep_every"];
+  // "repair" or "report".
+  optional string hole_repair = 4 [json_name = "hole_repair"];
+  // 8 to 1024.
+  optional uint32 deep_rate_mib = 5 [json_name = "deep_rate_mib"];
+  // Why: required by WeakenScrubSettings when the change weakens scrub,
+  // and kept in the audit event.
+  string reason = 6;
+}
+
+message SetScrubSettingsResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  ScrubSettings settings = 2;
 }
 
 message SetPoolResponse {

@@ -166,7 +166,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -248,6 +248,13 @@ struct Args {
     limit: Option<u32>,
     /// `audit settings`.
     retention_days: Option<u32>,
+    /// `scrub set` (D224): hours, deep every, hole repair, deep rate; and
+    /// why, to weaken scrub (D226).
+    scrub_hours: Option<u32>,
+    deep_every: Option<u32>,
+    hole_repair: Option<String>,
+    deep_rate: Option<u32>,
+    reason: Option<String>,
     /// `write-volume`, `read-volume`: where in the volume; skip zero blocks.
     offset: u64,
     sparse: bool,
@@ -332,6 +339,11 @@ fn main() {
         op: None,
         limit: None,
         retention_days: None,
+        scrub_hours: None,
+        deep_every: None,
+        hole_repair: None,
+        deep_rate: None,
+        reason: None,
         offset: 0,
         sparse: false,
         usage: false,
@@ -484,6 +496,14 @@ fn main() {
             "--op" => a.op = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--limit" => a.limit = Some(num(it.next()).clamp(1, 10_000)),
             "--retention-days" => a.retention_days = Some(num(it.next())),
+            "--hours" => a.scrub_hours = Some(num(it.next())),
+            "--deep-every" => a.deep_every = Some(num(it.next())),
+            "--deep-rate" => a.deep_rate = Some(num(it.next())),
+            "--hole-repair" => match it.next().map(String::as_str) {
+                Some(v @ ("repair" | "report")) => a.hole_repair = Some(v.to_string()),
+                _ => usage(),
+            },
+            "--reason" => a.reason = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--on-full" => match it.next().map(String::as_str) {
                 Some(v @ ("keep" | "purge")) => a.on_full = Some(v.to_string()),
                 _ => usage(),
@@ -505,7 +525,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool"
+            | "device" | "pool" | "scrub"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -520,6 +540,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
+                    "scrub" => matches!(sub, Some("set")),
                     "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
                     "pool" => {
                         matches!(
@@ -608,6 +629,18 @@ fn main() {
     {
         // out, in, weight and drain need a target; nothing else takes one.
         // weight takes one device and its weight.
+        usage();
+    }
+    // scrub set takes a pool and something to change; nothing else takes
+    // scrub's settings or a reason.
+    let scrub_given = a.scrub_hours.is_some()
+        || a.deep_every.is_some()
+        || a.hole_repair.is_some()
+        || a.deep_rate.is_some();
+    if (cmd == "scrub set") != scrub_given
+        || (cmd == "scrub set" && a.pool.is_none())
+        || (a.reason.is_some() && cmd != "scrub set")
+    {
         usage();
     }
     // Only full-ratios takes ratios.
@@ -942,6 +975,70 @@ fn exit_code(e: &connectrpc::ConnectError) -> i32 {
     }
 }
 
+/// `scrub set` (28-scrub.md §31.8; D224, D226): with `--reason`, it may
+/// weaken scrub; without, a change that would is refused, saying what.
+async fn scrub<T>(
+    client: ClusterServiceClient<T>,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+    T::ResponseBody: Unpin,
+{
+    let req = pb::SetScrubSettingsRequest {
+        pool: a.pool.unwrap_or_default(),
+        hours: a.scrub_hours,
+        deep_every: a.deep_every,
+        hole_repair: a.hole_repair.clone(),
+        deep_rate_mib: a.deep_rate,
+        reason: a.reason.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    let r = if a.reason.is_some() {
+        client.weaken_scrub_settings(req).await
+    } else {
+        client.set_scrub_settings(req).await
+    };
+    let r = match r {
+        Ok(r) => r.into_owned(),
+        Err(e) if hyperstor_ctl::reason_of(&e).as_deref() == Some("weakens_scrub") => {
+            let msg = e.message.as_deref().unwrap_or("this weakens scrub");
+            let msg = msg.split(": use").next().unwrap_or(msg);
+            eprintln!("hyperstorctl: {msg}: to do it, give --reason TEXT (D226)");
+            return Ok(Next::Exit(1));
+        }
+        Err(e) if e.code == connectrpc::ErrorCode::InvalidArgument => {
+            eprintln!("hyperstorctl: {}", error_text(&e));
+            return Ok(Next::Exit(1));
+        }
+        Err(e) => return Err(e),
+    };
+    let s = r.settings.into_option().unwrap_or_default();
+    show(a, &s, || {
+        let mut t = format!(
+            "pool {}: scrub every {} hours, deep every {} passes, holes {}, deep rate {} MiB/s\n",
+            a.pool.unwrap_or_default(),
+            s.hours,
+            s.deep_every,
+            if s.hole_repair == "repair" {
+                "repaired"
+            } else {
+                "only reported"
+            },
+            s.deep_rate_mib
+        );
+        if !s.weakened.is_empty() {
+            t.push_str(&format!(
+                "weaker than the defaults: {} (health warns)\n",
+                s.weakened.join(", ")
+            ));
+        }
+        t
+    });
+    Ok(Next::Exit(0))
+}
+
 /// Prints `v` as JSON or YAML when asked, else `text`.
 fn show<T: serde::Serialize>(a: &Args, v: &T, text: impl FnOnce() -> String) {
     if a.yaml {
@@ -983,6 +1080,7 @@ where
             };
         }
         "audit" => return audit(AuditServiceClient::new(transport, config), cmd, a).await,
+        "scrub" => return scrub(ClusterServiceClient::new(transport, config), a).await,
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),

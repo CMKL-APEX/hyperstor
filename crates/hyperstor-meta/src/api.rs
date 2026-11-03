@@ -163,6 +163,129 @@ fn refused(principal: &str, op: &str, target: &str, e: &ConnectError) {
 }
 
 impl Api {
+    /// `SetScrubSettings`, or with `weaken`, `WeakenScrubSettings`
+    /// (28-scrub.md §31.3; D224, D226).
+    async fn scrub_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
+        weaken: bool,
+    ) -> ServiceResult<pb::SetScrubSettingsResponse> {
+        let rpc = if weaken {
+            "WeakenScrubSettings"
+        } else {
+            "SetScrubSettings"
+        };
+        let mut target = format!("pool {} scrub", req.pool);
+        for (n, v) in [
+            ("hours", req.hours),
+            ("deep_every", req.deep_every),
+            ("deep_rate_mib", req.deep_rate_mib),
+        ] {
+            if let Some(v) = v {
+                target.push_str(&format!(" {n}={v}"));
+            }
+        }
+        if let Some(h) = req.hole_repair {
+            target.push_str(&format!(" hole_repair={h}"));
+        }
+        let reason = req.reason.trim();
+        if !reason.is_empty() {
+            target.push_str(&format!(" reason={reason:?}"));
+        }
+        let who = self.authorize(&ctx, rpc, &target, true)?;
+        let bad = |m: String| with_reason(ConnectError::invalid_argument(m), "invalid_argument");
+        let small = |name: &str, v: Option<u32>, max: u32| -> Result<Option<u32>, ConnectError> {
+            match v {
+                Some(v) if v > max => Err(bad(format!("{name} {v} is out of range"))),
+                v => Ok(v),
+            }
+        };
+        let hole_repair = match req.hole_repair {
+            None => None,
+            Some("repair") => Some(true),
+            Some("report") => Some(false),
+            Some(h) => return Err(bad(format!("hole_repair is repair or report, not {h:?}"))),
+        };
+        let change = crate::ScrubChange {
+            hours: small("hours", req.hours, u16::MAX.into())?.map(|v| v as u16),
+            deep_every: small("deep_every", req.deep_every, u8::MAX.into())?.map(|v| v as u8),
+            hole_repair,
+            deep_rate_mib: small("deep_rate_mib", req.deep_rate_mib, u16::MAX.into())?
+                .map(|v| v as u16),
+        };
+        if change.hours.is_none()
+            && change.deep_every.is_none()
+            && change.hole_repair.is_none()
+            && change.deep_rate_mib.is_none()
+        {
+            return Err(bad(
+                "nothing to change: give hours, deep_every, hole_repair or deep_rate_mib".into(),
+            ));
+        }
+        if weaken && reason.is_empty() {
+            return Err(bad("a reason is required to weaken scrub (D226)".into()));
+        }
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetScrub {
+                pool: req.pool,
+                change,
+                weaken,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        let show = |s: &crate::ScrubSettings| {
+            format!(
+                "{} h, deep every {}, holes {}, {} MiB/s",
+                s.hours,
+                s.deep_every,
+                if s.hole_repair {
+                    "repaired"
+                } else {
+                    "reported"
+                },
+                s.deep_rate_mib
+            )
+        };
+        audit(
+            &who,
+            rpc,
+            &target,
+            &match &r {
+                Some(Ok((epoch, was, now))) => {
+                    format!("ok, from {} to {}, map epoch {epoch}", show(was), show(now))
+                }
+                Some(Err(crate::ScrubRefused::Weakens(w))) => {
+                    format!("refused: weakens scrub ({})", w.join(", "))
+                }
+                Some(Err(crate::ScrubRefused::Invalid(e))) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, _, now))) => Ok(pb::SetScrubSettingsResponse {
+                map_epoch,
+                settings: scrub_pb(&now).into(),
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(crate::ScrubRefused::Weakens(w))) => Err(with_reason(
+                ConnectError::failed_precondition(format!(
+                    "this weakens scrub ({}): use WeakenScrubSettings with a reason",
+                    w.join(", ")
+                )),
+                "weakens_scrub",
+            )),
+            Some(Err(crate::ScrubRefused::Invalid(e))) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
     /// Checks the caller: with TLS, a certificate of this cluster whose
     /// role allows `op` (any but `host` to read; `admin` or `mgmt` to
     /// change); then the caller's rate. Returns who the caller is, for
@@ -730,6 +853,7 @@ pub fn status(
                 split_done: p.split.as_ref().map_or(0, |s| s.done.len() as u32),
                 autoscale: p.autoscale,
                 cache_grace: p.cache_grace,
+                scrub: scrub_pb(&p.scrub).into(),
                 pgs: pb::PgCounts {
                     clean: s.clean,
                     degraded: s.degraded,
@@ -759,6 +883,17 @@ pub fn status(
 }
 
 /// Fullness ratios as the API gives them: percentages (D27, D182).
+fn scrub_pb(s: &crate::ScrubSettings) -> pb::ScrubSettings {
+    pb::ScrubSettings {
+        hours: s.hours.into(),
+        deep_every: s.deep_every.into(),
+        hole_repair: if s.hole_repair { "repair" } else { "report" }.into(),
+        deep_rate_mib: s.deep_rate_mib.into(),
+        weakened: s.weakened(),
+        ..Default::default()
+    }
+}
+
 fn full_ratios(r: &crate::FullRatios) -> pb::FullRatios {
     let pct = |t: u16| t as f64 / 10.0;
     pb::FullRatios {
@@ -1100,6 +1235,22 @@ impl ClusterService for Api {
             )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
+    }
+
+    async fn set_scrub_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
+    ) -> ServiceResult<pb::SetScrubSettingsResponse> {
+        self.scrub_settings(ctx, req, false).await
+    }
+
+    async fn weaken_scrub_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
+    ) -> ServiceResult<pb::SetScrubSettingsResponse> {
+        self.scrub_settings(ctx, req, true).await
     }
 
     async fn set_device_weight(

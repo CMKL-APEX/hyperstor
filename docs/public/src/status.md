@@ -36,7 +36,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -211,3 +211,5 @@ covered by tests that run on every change.
 | Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
 | A write refused for space held by hyperstor-vhost, retried every second for up to 300 s (--hold-full), before the guest gets an I/O error | Done |
 | A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool | Done |
+| Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced | Done |
+| Scrub reports per PG kept through Raft, overdue and unchecked health checks, scrub on demand as an operation, scrub after recovery, and the UI's Scrub card and PG grid view | Planned |
