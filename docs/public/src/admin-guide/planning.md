@@ -121,12 +121,21 @@ fast ones and keep the rest on the management network:
   each `control`, `data` or `both`.
 - Give each device one or more `endpoint` lines on a data network. The
   device's own address (on its `node` line) stays where the map service
-  and pings reach it.
+  reaches it.
 - Install as usual. Each storage node then also listens on its devices'
   endpoints, and reaches the other nodes at their endpoints on the data
   networks it has endpoints on.
 - Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
   for VM disks. A client on no network uses devices' addresses.
+
+Nodes ping each other on every endpoint. When a port fails, its
+endpoints are marked down (`hyperstorctl nodes --json` shows `down`),
+and traffic moves to the device's other endpoints, then to its other
+data networks, while the node stays up: no data moves. A node is down
+when it stops sending heartbeats, or when none of its endpoints answers.
+Give a device at least two endpoints, on different ports, so one port's
+loss leaves it reachable. An endpoint that fails repeatedly stays down
+longer each time.
 
 Put each endpoint on a port close to its device: on the same PCIe switch
 or, failing that, the same CPU socket. With several ports in one subnet

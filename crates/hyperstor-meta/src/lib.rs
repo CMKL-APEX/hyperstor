@@ -632,6 +632,10 @@ pub struct Meta {
     reports: RefCell<HashMap<u32, HashMap<u32, Instant>>>,
     /// Nodes marked down on peer reports: no leases while reported.
     suspect: RefCell<std::collections::HashSet<u32>>,
+    /// Peer reports about endpoints (D210): endpoint -> reporter -> when.
+    endpoint_reports: RefCell<HashMap<SocketAddr, HashMap<u32, Instant>>>,
+    /// Flap damping for endpoints, as for nodes (D149, D210).
+    endpoint_damping: RefCell<HashMap<SocketAddr, Damping>>,
     lease: Duration,
     /// When this member started serving, or became the leader: nodes not
     /// heard from since get this much grace.
@@ -815,6 +819,8 @@ impl Meta {
             conns: RefCell::new(HashMap::new()),
             reports: RefCell::new(HashMap::new()),
             suspect: RefCell::new(std::collections::HashSet::new()),
+            endpoint_reports: RefCell::new(HashMap::new()),
+            endpoint_damping: RefCell::new(HashMap::new()),
             lease,
             started: Cell::new(Instant::now()),
             acked: RefCell::new(HashMap::new()),
@@ -2460,6 +2466,8 @@ impl Meta {
                     );
                 }
             }
+            drop(damping);
+            changed |= self.endpoints_tick(&mut map, fresh, now);
             // Down and out (07-placement.md §5.3): a node down for the
             // interval has its devices marked out, so its PGs are placed
             // elsewhere; they come back in when it returns.
@@ -2515,6 +2523,70 @@ impl Meta {
             }
         }
         changed
+    }
+
+    /// Endpoints from peer reports (26-networks.md §29.7, D210): one two
+    /// distinct nodes report silent, recently, is down, and senders take
+    /// its device's other paths; its node stays up. It comes back when
+    /// the reports stop and its hold, doubling as a node's does (D149),
+    /// has passed. True if any changed.
+    fn endpoints_tick(&self, map: &mut ClusterMap, fresh: Duration, now: Instant) -> bool {
+        let mut reports = self.endpoint_reports.borrow_mut();
+        for r in reports.values_mut() {
+            r.retain(|_, t| now.duration_since(*t) < fresh);
+        }
+        reports.retain(|a, r| !r.is_empty() && map.endpoint_device(*a).is_some());
+        let mut damping = self.endpoint_damping.borrow_mut();
+        let mut down = BTreeSet::new();
+        let known: Vec<SocketAddr> = map.endpoints.values().flatten().map(|(_, a)| *a).collect();
+        for a in known {
+            let reported = reports.get(&a).is_some_and(|r| r.len() >= 2);
+            let was = map.endpoints_down.contains(&a);
+            let held = damping
+                .get(&a)
+                .and_then(|d| d.hold_until)
+                .is_some_and(|t| now < t);
+            let is = reported || (was && held);
+            if is && !was {
+                let d = damping.entry(a).or_default();
+                d.downs.push_back(now);
+                while d
+                    .downs
+                    .front()
+                    .is_some_and(|t| now.duration_since(*t) >= FLAP_WINDOW)
+                {
+                    d.downs.pop_front();
+                }
+                let hold = flap_hold(d.downs.len());
+                d.hold_until = Some(now + hold);
+                let mut by: Vec<u32> = reports[&a].keys().copied().collect();
+                by.sort();
+                eprintln!(
+                    "hyperstor-meta: endpoint {a} of device {} down (reported silent by nodes {by:?}; held down {} s)",
+                    map.endpoint_device(a).unwrap_or_default(),
+                    hold.as_secs()
+                );
+            } else if was && !is {
+                eprintln!(
+                    "hyperstor-meta: endpoint {a} of device {} up",
+                    map.endpoint_device(a).unwrap_or_default()
+                );
+            }
+            if is {
+                down.insert(a);
+            }
+        }
+        damping.retain(|a, d| {
+            down.contains(a)
+                || d.downs
+                    .back()
+                    .is_some_and(|t| now.duration_since(*t) < FLAP_WINDOW)
+        });
+        if down == map.endpoints_down {
+            return false;
+        }
+        map.endpoints_down = down;
+        true
     }
 
     /// Nodes that went down at least twice within [`FLAP_WINDOW`] (D149).
@@ -2782,6 +2854,7 @@ impl Meta {
                 msg,
                 Ok(Msg::Heartbeat { .. }
                     | Msg::PeerDown { .. }
+                    | Msg::EndpointDown { .. }
                     | Msg::BackfillDone { .. }
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
@@ -2825,6 +2898,20 @@ impl Meta {
             // isn't news; the heartbeat timeout covers one that never
             // comes up (I198).
             Ok(Msg::PeerDown { peer, .. }) if !self.beats.borrow().contains_key(&peer) => {
+                Msg::PeerDownOk
+            }
+            // About an endpoint the map has (D210); a node not heard from
+            // yet reports nothing, as for `PeerDown`.
+            Ok(Msg::EndpointDown { reporter, addr }) => {
+                if self.beats.borrow().contains_key(&reporter)
+                    && self.map.borrow().endpoint_device(addr).is_some()
+                {
+                    self.endpoint_reports
+                        .borrow_mut()
+                        .entry(addr)
+                        .or_default()
+                        .insert(reporter, Instant::now());
+                }
                 Msg::PeerDownOk
             }
             Ok(Msg::PeerDown { reporter, peer }) => {
@@ -4092,6 +4179,75 @@ mod tests {
         report(1);
         assert!(m.liveness_tick(timeout, Instant::now()));
         assert!(!m.map.borrow().nodes[&3].up, "silent once it had started");
+    }
+
+    /// D210: an endpoint two nodes report silent is down while its node
+    /// stays up and keeps its lease; one reporter isn't enough. Once the
+    /// reports stop it comes back after its hold, which doubles when it
+    /// flaps. Reports about addresses the map doesn't have are dropped.
+    #[test]
+    fn two_reports_mark_an_endpoint_down_not_its_node() {
+        use hyperstor_proto::Msg;
+        let mut map = map();
+        map.networks.insert(
+            "fast".into(),
+            hyperstor_map::NetworkDef {
+                kind: hyperstor_map::NetKind::Data,
+                trusted: true,
+                matches: "subnet 127.0.0.2/32".into(),
+            },
+        );
+        let ep = |p: u16| SocketAddr::from(([127, 0, 0, 2], p));
+        map.endpoints.insert(
+            3000,
+            vec![("fast".into(), ep(9000)), ("fast".into(), ep(9001))],
+        );
+        let m = Meta::with_lease(map, Duration::from_millis(400));
+        for n in 0..4 {
+            m.handle(Ok(Msg::Heartbeat { node: n }));
+        }
+        let timeout = Duration::from_secs(3);
+        assert!(!m.liveness_tick(timeout, Instant::now()));
+        let report = |reporter: u32, addr: SocketAddr| {
+            assert_eq!(
+                m.handle(Ok(Msg::EndpointDown { reporter, addr })),
+                Msg::PeerDownOk
+            );
+        };
+        report(0, ep(9000));
+        report(0, ep(7777));
+        assert!(!m.liveness_tick(timeout, Instant::now()), "one reporter");
+        report(1, ep(9000));
+        let t0 = Instant::now();
+        assert!(m.liveness_tick(timeout, t0));
+        {
+            let map = m.map.borrow();
+            assert_eq!(map.endpoints_down, [ep(9000)].into());
+            assert!(map.nodes[&3].up);
+            assert_eq!(map.device_addrs_on(3000, &["fast".into()]), vec![ep(9001)]);
+        }
+        assert!(matches!(
+            m.handle(Ok(Msg::Heartbeat { node: 3 })),
+            Msg::HeartbeatOk { lease_ms, .. } if lease_ms > 0
+        ));
+        // The reports stop (fresh for half the timeout): held for the
+        // first hold, then up. Nodes stay within the timeout throughout.
+        let quiet = t0 + Duration::from_millis(1600);
+        assert!(!m.liveness_tick(timeout, quiet));
+        assert!(m.map.borrow().endpoints_down.contains(&ep(9000)));
+        let first = flap_hold(1);
+        assert!(m.liveness_tick(timeout, t0 + first + Duration::from_millis(1)));
+        assert!(m.map.borrow().endpoints_down.is_empty());
+        // Down again: held twice as long.
+        report(0, ep(9000));
+        report(2, ep(9000));
+        let t1 = Instant::now();
+        assert!(m.liveness_tick(timeout, t1));
+        assert!(!m.liveness_tick(timeout, t1 + Duration::from_millis(2500)));
+        assert_eq!(
+            m.endpoint_damping.borrow()[&ep(9000)].hold_until,
+            Some(t1 + flap_hold(2))
+        );
     }
 
     /// D189: a node down, cache pools wait for it up to their grace,

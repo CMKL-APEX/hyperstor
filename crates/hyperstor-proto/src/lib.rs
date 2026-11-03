@@ -337,6 +337,13 @@ pub enum Msg {
         peer: u32,
     },
     PeerDownOk,
+    /// Storage node to map service: `reporter`'s pings to the endpoint
+    /// `addr` go unanswered for the peer timeout while the peer answers on
+    /// another path (26-networks.md §29.7, D210). Answered `PeerDownOk`.
+    EndpointDown {
+        reporter: u32,
+        addr: std::net::SocketAddr,
+    },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (09-replication.md §8.5).
     Push {
@@ -757,6 +764,7 @@ mod kind {
     pub const HOLDS: u16 = 81;
     pub const HOLDS_OK: u16 = 82;
     pub const LOOKUP_SIZED: u16 = 83;
+    pub const ENDPOINT_DOWN: u16 = 84;
     pub const ERROR: u16 = 99;
 }
 
@@ -832,6 +840,7 @@ impl Msg {
             Msg::MapPushOk => MAP_PUSH_OK,
             Msg::PeerDown { .. } => PEER_DOWN,
             Msg::PeerDownOk => PEER_DOWN_OK,
+            Msg::EndpointDown { .. } => ENDPOINT_DOWN,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
             Msg::LeaseHeld { .. } => LEASE_HELD,
@@ -988,6 +997,9 @@ impl Msg {
             Msg::FenceOk | Msg::MapPushOk | Msg::PeerDownOk => {}
             Msg::PeerDown { reporter, peer } => {
                 e.u32(*reporter).u32(*peer);
+            }
+            Msg::EndpointDown { reporter, addr } => {
+                e.u32(*reporter).str(&addr.to_string());
             }
             Msg::Fence { epoch, pgs } => {
                 e.u64(*epoch).seq(pgs, |e, (p, g)| {
@@ -1417,6 +1429,10 @@ impl Msg {
                 peer: d.u32()?,
             },
             PEER_DOWN_OK => Msg::PeerDownOk,
+            ENDPOINT_DOWN => Msg::EndpointDown {
+                reporter: d.u32()?,
+                addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
+            },
             BACKFILL_DONE => Msg::BackfillDone {
                 pool: d.u32()?,
                 pg: d.u32()?,
@@ -2217,6 +2233,10 @@ mod tests {
                 peer: 2,
             },
             Msg::PeerDownOk,
+            Msg::EndpointDown {
+                reporter: 1,
+                addr: "192.0.2.1:9100".parse().unwrap(),
+            },
             Msg::BackfillDone {
                 pool: 1,
                 pg: 2,
