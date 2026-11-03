@@ -123,7 +123,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup | Done |
-| Tables, rows and range objects found through the root; one-row atomic changes and scans | Planned |
+| Tables, rows and range objects found through the root; one-row atomic changes and scans | Done |
 | Splits and merges by each range's primary, resumed after failover | Planned |
 | The deletion queue, drained by the range's primary | Planned |
 

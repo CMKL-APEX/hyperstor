@@ -1685,6 +1685,7 @@ dependencies = [
  "hyperstor-client",
  "hyperstor-engine",
  "hyperstor-fabric",
+ "hyperstor-kv",
  "hyperstor-meta",
  "hyperstor-placement",
  "hyperstor-proto",
@@ -1732,6 +1733,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "hyperstor-kv"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-client",
+ "hyperstor-codec",
+ "hyperstor-map",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "rand 0.9.5",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

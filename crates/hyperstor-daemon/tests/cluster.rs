@@ -1533,6 +1533,381 @@ fn keys_are_asserted_and_tables_sized() {
     c.stop();
 }
 
+/// Splits range `id` of table `t` at row `at` by hand, as a range's
+/// primary will (25-kv-ranges.md §28.4), waiting `hold` with the upper
+/// half frozen; returns the new range. With `root`, the root names it;
+/// else clients must follow the lower range's `next`.
+async fn split_by_hand(
+    cl: &Client,
+    store: u64,
+    t: &hyperstor_kv::Table,
+    id: u128,
+    at: &[u8],
+    root: bool,
+    hold: std::time::Duration,
+) -> u128 {
+    use hyperstor_kv::{NS_KV, Range, State, keys, range_name};
+    use hyperstor_proto::WireOp as W;
+    let name = range_name(id);
+    let l = cl.lookup(t.index_pool, NS_KV, &name, b"", None, 0);
+    let r = Range::from_attrs(id, &l.await.unwrap().unwrap().attrs).unwrap();
+    let epoch = |e: u64| W::AssertAttr {
+        name: b"epoch".to_vec(),
+        value: Some(e.to_be_bytes().to_vec()),
+    };
+    let new = (u128::from(hyperstor_client::random_u64()) << 64) | 1;
+    let frozen = Range {
+        epoch: r.epoch + 1,
+        state: State::Splitting {
+            at: at.to_vec(),
+            into: new,
+        },
+        ..r.clone()
+    };
+    let mut ops = vec![epoch(r.epoch)];
+    ops.extend(frozen.set_ops());
+    cl.exec(t.index_pool, NS_KV, &name, &ops).await.unwrap();
+    hyperstor_reactor::time::sleep(hold).await;
+    let upper = Range {
+        id: new,
+        start: at.to_vec(),
+        epoch: 1,
+        state: State::Pending,
+        next: None,
+        ..r.clone()
+    };
+    let mut ops = vec![W::AssertAbsent];
+    ops.extend(upper.set_ops());
+    cl.exec(t.index_pool, NS_KV, &range_name(new), &ops)
+        .await
+        .unwrap();
+    let end = match &r.end {
+        Some(e) => keys::row_start(e),
+        None => vec![keys::USER + 1],
+    };
+    let mut from = keys::row_start(at);
+    loop {
+        let l = cl.lookup(t.index_pool, NS_KV, &name, &from, Some(&end), 7);
+        let kv = l.await.unwrap().unwrap().kv;
+        let Some((last, _)) = kv.last() else { break };
+        from = last.clone();
+        from.push(0);
+        let ops: Vec<_> = kv.into_iter().map(|(k, v)| W::KvPut(k, v)).collect();
+        cl.exec(t.index_pool, NS_KV, &range_name(new), &ops)
+            .await
+            .unwrap();
+    }
+    let serving = W::SetAttr(b"state".to_vec(), State::Serving.encode());
+    cl.exec(t.index_pool, NS_KV, &range_name(new), &[serving])
+        .await
+        .unwrap();
+    let lower = Range {
+        end: Some(at.to_vec()),
+        next: Some(new),
+        epoch: r.epoch + 2,
+        state: State::Serving,
+        ..r.clone()
+    };
+    let mut ops = vec![epoch(r.epoch + 1)];
+    ops.extend(lower.set_ops());
+    ops.push(W::KvDelRange(keys::row_start(at), end));
+    cl.exec(t.index_pool, NS_KV, &name, &ops).await.unwrap();
+    if root {
+        root_entry(cl, store, t, at, new).await;
+    }
+    new
+}
+
+/// Names range `id`, starting at `start`, in store `store`'s root.
+async fn root_entry(cl: &Client, store: u64, t: &hyperstor_kv::Table, start: &[u8], id: u128) {
+    use hyperstor_kv::{NS_KV, keys, map_value};
+    use hyperstor_proto::WireOp as W;
+    let k = keys::map_key(t.id, start);
+    let ops = [
+        W::AssertKv {
+            key: k.clone(),
+            value: None,
+        },
+        W::KvPut(k, map_value(id, 1)),
+    ];
+    cl.exec(hyperstor_meta::META_POOL, NS_KV, &store.to_be_bytes(), &ops)
+        .await
+        .unwrap();
+}
+
+/// HS11 stage 2 (25-kv-ranges.md §28.8): `hyperstor-kv` against a sorted
+/// map, through two stores whose caches go stale. Ranges are split by
+/// hand, sometimes without the root naming the new one, so reads, scans
+/// and writes cross ranges, follow `next` and find their epoch changed;
+/// a write to a frozen half waits for the split, one below it doesn't.
+/// Tables are created, listed and deleted.
+#[test]
+fn kv_store_matches_a_sorted_map() {
+    use hyperstor_kv::{Batch, KvError, Row, Scan, Store, Table};
+    use std::collections::BTreeMap;
+    type Model = BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>>;
+    const STORE: u64 = 9;
+    async fn all(s: &Store, t: &Table) -> Vec<Row> {
+        let (mut out, mut from) = (Vec::new(), Vec::new());
+        loop {
+            let scan = Scan {
+                from: &from,
+                limit: 3,
+                ..Scan::default()
+            };
+            let p = s.scan(t, &scan).await.unwrap();
+            out.extend(p.rows);
+            match p.more {
+                Some(m) => from = m,
+                None => return out,
+            }
+        }
+    }
+    fn rows(m: &Model) -> Vec<Row> {
+        m.iter()
+            .map(|(r, c)| Row {
+                row: r.clone(),
+                columns: c.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            })
+            .collect()
+    }
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let b = Store::open(Client::connect(meta, 6).await.unwrap(), STORE);
+            let admin = Client::connect(meta, 7).await.unwrap();
+            // Tables.
+            let t = a.create_table(b"t1", POOL, POOL).await.unwrap();
+            assert_eq!(
+                b.create_table(b"t1", POOL, POOL).await,
+                Err(KvError::TableExists("t1".into()))
+            );
+            let gone = b.create_table(b"t0", POOL, POOL).await.unwrap();
+            assert_eq!(b.table(b"t1").await.unwrap(), Some(t.clone()));
+            let names = |v: Vec<Table>| v.into_iter().map(|t| t.name).collect::<Vec<_>>();
+            assert_eq!(names(a.tables(b"", 10).await.unwrap()), [b"t0", b"t1"]);
+            assert_eq!(names(a.tables(b"t1", 10).await.unwrap()), [b"t1"]);
+            assert_eq!(names(a.tables(b"", 1).await.unwrap()), [b"t0"]);
+            a.apply(&gone, b"r", Batch::new().put(b"c", b"v"))
+                .await
+                .unwrap();
+            b.delete_table(b"t0").await.unwrap();
+            assert_eq!(a.table(b"t0").await.unwrap(), None);
+            assert_eq!(
+                b.delete_table(b"t0").await,
+                Err(KvError::NoTable("t0".into()))
+            );
+            // `a` has t0's range cached; its write finds the range gone.
+            assert_eq!(
+                a.apply(&gone, b"r", Batch::new().put(b"c", b"w")).await,
+                Err(KvError::NoTable("t0".into()))
+            );
+            let again = a.create_table(b"t0", POOL, POOL).await.unwrap();
+            assert_ne!(again.id, gone.id);
+            assert_eq!(all(&b, &again).await, []);
+
+            // The first range, from the root.
+            let p = hyperstor_kv::keys::map_prefix(t.id);
+            let end = hyperstor_kv::keys::prefix_end(&p);
+            let (pool, ns, root) = (
+                hyperstor_meta::META_POOL,
+                hyperstor_kv::NS_KV,
+                STORE.to_be_bytes(),
+            );
+            let entries = admin.lookup(pool, ns, &root, &p, end.as_deref(), 10);
+            let entries = entries.await.unwrap().unwrap().kv;
+            assert_eq!(entries.len(), 1);
+            let first = hyperstor_kv::map_entry(&entries[0].1).unwrap().0;
+            // Every range of t1 by start row, whether the root names it or not.
+            let mut ranges: Vec<(Vec<u8>, u128)> = vec![(Vec::new(), first)];
+            let mut unrooted: Vec<(Vec<u8>, u128)> = Vec::new();
+            let mut model = Model::new();
+            let mut rng = SmallRng::seed_from_u64(11);
+            // Bytes where the row encoding has cases.
+            let pick = |rng: &mut SmallRng| -> Vec<u8> {
+                let n = rng.random_range(0..4);
+                (0..n)
+                    .map(|_| [0x00, 0x01, b'a', b'b', 0xFF][rng.random_range(0..5)])
+                    .collect()
+            };
+            let cols: [&[u8]; 4] = [b"", b"x", b"y\0", b"z"];
+            let (mut conflicts, mut splits) = (0, 0);
+            for step in 0..1500u32 {
+                let s = if rng.random() { &a } else { &b };
+                match rng.random_range(0..20) {
+                    0..=7 => {
+                        let row = pick(&mut rng);
+                        let have = model.get(&row).cloned().unwrap_or_default();
+                        let (mut after, mut holds, mut batch) = (have.clone(), true, Batch::new());
+                        for _ in 0..rng.random_range(1..4) {
+                            let col = cols[rng.random_range(0..cols.len())];
+                            match rng.random_range(0..4) {
+                                0 | 1 => {
+                                    let v = step.to_string().into_bytes();
+                                    batch.put(col, &v);
+                                    after.insert(col.to_vec(), v);
+                                }
+                                2 => {
+                                    batch.delete(col);
+                                    after.remove(col);
+                                }
+                                _ => {
+                                    let right = have.get(col).cloned();
+                                    let v = match rng.random_range(0..4) {
+                                        0 => Some(b"wrong".to_vec()),
+                                        _ => right.clone(),
+                                    };
+                                    holds &= v == right;
+                                    batch.assert(col, v.as_deref());
+                                }
+                            }
+                        }
+                        let r = s.apply(&t, &row, &batch).await;
+                        if !holds {
+                            assert_eq!(r, Err(KvError::Conflict), "step {step}");
+                            conflicts += 1;
+                        } else if after.is_empty() {
+                            r.unwrap();
+                            model.remove(&row);
+                        } else {
+                            r.unwrap();
+                            model.insert(row, after);
+                        }
+                    }
+                    8..=10 => {
+                        let row = pick(&mut rng);
+                        let col = cols[rng.random_range(0..cols.len())];
+                        let want = model.get(&row).and_then(|c| c.get(col)).cloned();
+                        assert_eq!(s.get(&t, &row, col).await.unwrap(), want, "step {step}");
+                    }
+                    11..=12 => {
+                        let row = pick(&mut rng);
+                        let want: Vec<_> = model
+                            .get(&row)
+                            .map(|c| c.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                            .unwrap_or_default();
+                        assert_eq!(s.row(&t, &row).await.unwrap(), want, "step {step}");
+                    }
+                    13..=16 => {
+                        let from = pick(&mut rng);
+                        let to = rng.random::<bool>().then(|| pick(&mut rng));
+                        let mut prefix = pick(&mut rng);
+                        prefix.truncate(rng.random_range(0..2));
+                        let limit = rng.random_range(1..5);
+                        let want: Vec<Row> = rows(&model)
+                            .into_iter()
+                            .filter(|r| {
+                                r.row >= from
+                                    && to.as_ref().is_none_or(|t| &r.row < t)
+                                    && r.row.starts_with(&prefix)
+                            })
+                            .collect();
+                        let (mut got, mut f) = (Vec::new(), from.clone());
+                        loop {
+                            let scan = Scan {
+                                from: &f,
+                                to: to.as_deref(),
+                                prefix: &prefix,
+                                limit,
+                            };
+                            let p = s.scan(&t, &scan).await.unwrap();
+                            assert!(p.rows.len() <= limit);
+                            if p.more.is_some() {
+                                assert_eq!(p.rows.len(), limit, "a page is full if more follow");
+                            }
+                            got.extend(p.rows);
+                            match p.more {
+                                Some(m) => f = m,
+                                None => break,
+                            }
+                        }
+                        assert_eq!(got, want, "step {step}: {from:?}..{to:?} {prefix:?}");
+                    }
+                    17..=18 => {
+                        let at = pick(&mut rng);
+                        let i = ranges.partition_point(|(s, _)| *s <= at) - 1;
+                        if ranges[i].0 == at {
+                            continue;
+                        }
+                        let root = rng.random();
+                        let none = std::time::Duration::ZERO;
+                        let new = split_by_hand(&admin, STORE, &t, ranges[i].1, &at, root, none);
+                        let new = new.await;
+                        ranges.insert(i + 1, (at.clone(), new));
+                        if !root {
+                            unrooted.push((at, new));
+                        }
+                        splits += 1;
+                    }
+                    _ => {
+                        // The root catches up.
+                        for (start, id) in unrooted.drain(..) {
+                            root_entry(&admin, STORE, &t, &start, id).await;
+                        }
+                    }
+                }
+            }
+            assert!(conflicts > 20 && splits > 20, "{conflicts} {splits}");
+            assert!(model.len() > 30, "{} rows", model.len());
+
+            // A write to a frozen half waits for the split; one below the
+            // frozen row doesn't. No row is "m", so no range starts there.
+            let i = ranges.partition_point(|(s, _)| s.as_slice() <= b"m".as_slice()) - 1;
+            let lower = ranges[i].0.clone();
+            let done = std::rc::Rc::new(std::cell::Cell::new(false));
+            let split = {
+                let (admin, t, done, id) = (admin.clone(), t.clone(), done.clone(), ranges[i].1);
+                spawn(async move {
+                    let hold = std::time::Duration::from_millis(500);
+                    let n = split_by_hand(&admin, STORE, &t, id, b"m", true, hold).await;
+                    done.set(true);
+                    n
+                })
+            };
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+            a.apply(&t, &lower, Batch::new().put(b"held", b"no"))
+                .await
+                .unwrap();
+            assert!(!done.get(), "a write below the frozen row doesn't wait");
+            b.apply(&t, b"m", Batch::new().put(b"held", b"yes"))
+                .await
+                .unwrap();
+            assert!(done.get(), "a write to the frozen half waits for the split");
+            split.await;
+            model
+                .entry(lower)
+                .or_default()
+                .insert(b"held".to_vec(), b"no".to_vec());
+            model
+                .entry(b"m".to_vec())
+                .or_default()
+                .insert(b"held".to_vec(), b"yes".to_vec());
+
+            // Every store, a fresh one too, reads the model.
+            let fresh = Store::open(Client::connect(meta, 8).await.unwrap(), STORE);
+            for s in [&a, &b, &fresh] {
+                assert_eq!(all(s, &t).await, rows(&model));
+            }
+            // Deleting the table deletes every range the root names.
+            for (start, id) in unrooted.drain(..) {
+                root_entry(&admin, STORE, &t, &start, id).await;
+            }
+            a.delete_table(b"t1").await.unwrap();
+            for (_, id) in &ranges {
+                let name = hyperstor_kv::range_name(*id);
+                let l = admin.lookup(POOL, hyperstor_kv::NS_KV, &name, b"", None, 0);
+                assert_eq!(l.await.unwrap(), None);
+            }
+            assert_eq!(names(fresh.tables(b"", 10).await.unwrap()), [b"t0"]);
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
 /// An object whose key–value table is larger than a push part is
 /// refilled in parts ([`hyperstor_proto::Msg::PushKv`]): every copy ends
 /// with the whole table. (A `.meta` audit day once outgrew the frame

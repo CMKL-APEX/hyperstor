@@ -645,8 +645,13 @@ tests = [
 
 [[milestone.item]]
 what = "Tables, rows and range objects found through the root; one-row atomic changes and scans"
-spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200"]
-status = "planned"
+spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200", "I256"]
+status = "done"
+tests = [
+    "cluster::kv_store_matches_a_sorted_map",
+    "hyperstor_kv::keys::tests::rows_keep_their_order_and_decode",
+    "hyperstor_kv::keys::tests::map_entries_name_their_start",
+]
 
 [[milestone.item]]
 what = "Splits and merges by each range's primary, resumed after failover"
