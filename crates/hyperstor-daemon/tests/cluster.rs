@@ -38,9 +38,14 @@ type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
 /// Key–value ranges never split or merge on their own, except in the
 /// tests of that: the others make their ranges by hand.
-const KV_OFF: hyperstor_kv::jobs::Limits = hyperstor_kv::jobs::Limits {
-    split_bytes: u64::MAX,
-    merge_bytes: 0,
+const KV_OFF: KvJobs = KvJobs {
+    off: true,
+    limits: hyperstor_kv::jobs::Limits {
+        split_bytes: u64::MAX,
+        merge_bytes: 0,
+    },
+    sweep: std::time::Duration::ZERO,
+    leftover: std::time::Duration::ZERO,
 };
 
 /// Pushes split an object's key–value table into parts this small here,
@@ -81,10 +86,8 @@ struct Cluster {
     stray_grace: std::time::Duration,
     /// Scrub's hole repair on every node (D223).
     hole_repair: bool,
-    /// When key–value ranges split and merge, and how often primaries
-    /// sweep them (25-kv-ranges.md §28.7).
-    kv_limits: hyperstor_kv::jobs::Limits,
-    kv_sweep: std::time::Duration,
+    /// Jobs on key–value ranges (25-kv-ranges.md §28.7).
+    kv: KvJobs,
 }
 
 impl Cluster {
@@ -192,12 +195,10 @@ impl Cluster {
             grace,
             hole_repair,
             KV_OFF,
-            std::time::Duration::ZERO,
         )
     }
 
-    /// As [`Self::start_opts`], with key–value ranges splitting and
-    /// merging at `kv_limits`, swept every `kv_sweep`.
+    /// As [`Self::start_opts`], with key–value range jobs as `kv` says.
     #[allow(clippy::too_many_arguments)]
     fn start_kv(
         nodes: u32,
@@ -209,8 +210,7 @@ impl Cluster {
         down_out: std::time::Duration,
         grace: std::time::Duration,
         hole_repair: bool,
-        kv_limits: hyperstor_kv::jobs::Limits,
-        kv_sweep: std::time::Duration,
+        kv: KvJobs,
     ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
@@ -300,8 +300,7 @@ impl Cluster {
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
-                    kv_limits,
-                    kv_sweep,
+                    kv,
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -351,8 +350,7 @@ impl Cluster {
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
             hole_repair,
-            kv_limits,
-            kv_sweep,
+            kv,
         }
     }
 
@@ -394,8 +392,7 @@ impl Cluster {
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
-            kv_limits: self.kv_limits,
-            kv_sweep: self.kv_sweep,
+            kv: self.kv,
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -1676,6 +1673,30 @@ async fn kv_settled(
     Ok(routes.len())
 }
 
+/// Range `id`'s deletion queue (25-kv-ranges.md §28.6), in `POOL`.
+async fn kv_queue(cl: &Client, id: u128) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use hyperstor_kv::keys::QUEUE;
+    let name = hyperstor_kv::range_name(id);
+    let l = cl.lookup(
+        POOL,
+        hyperstor_kv::NS_KV,
+        &name,
+        &[QUEUE],
+        Some(&[QUEUE + 1]),
+        1000,
+    );
+    l.await.unwrap().map(|l| l.kv).unwrap_or_default()
+}
+
+/// Waits up to 30 s for `done`, then panics with `what`.
+async fn kv_until(what: &str, done: impl AsyncFn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done().await {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Takes up every stopped job among ranges `ids`, as their new primaries
 /// would, until none shows one.
 async fn kv_take_up(cl: &Client, pool: u32, ids: &[u128]) {
@@ -2130,8 +2151,21 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                 assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
                 let (l, _) = jobs::read(&cl, POOL, r.id).await.unwrap().unwrap();
                 let (n, _) = jobs::read(&cl, POOL, n).await.unwrap().unwrap();
+                if stop == 7 {
+                    // The right range's deletion queue goes with its rows
+                    // (§28.6); jobs are off here, so nothing drains it.
+                    let collect = Batch::new().collect(POOL, 5, b"object").clone();
+                    a.apply(&t, b"row30", &collect).await.unwrap();
+                    assert_eq!(kv_queue(&cl, n.id).await.len(), 1);
+                }
                 let merged = jobs::merge(&cl, POOL, &l, &n, &Steps::only(stop)).await;
                 assert_eq!(merged, Ok(stop >= 4), "{why}");
+                if stop == 7 {
+                    let moved = kv_queue(&cl, l.id).await;
+                    assert_eq!(moved.len(), 1, "{why}");
+                    let objects = hyperstor_kv::decode_queue(&moved[0].1).unwrap();
+                    assert_eq!(objects, [(POOL, 5, b"object".to_vec())]);
+                }
                 kv_take_up(&cl, POOL, &[l.id, n.id]).await;
                 let settled = kv_settled(&cl, STORE, &t, &[l.id, n.id]).await;
                 // Finished once the left range was extended (step 4).
@@ -2176,9 +2210,16 @@ fn kv_ranges_split_and_merge_on_their_own() {
         merge_bytes: 2 << 10,
     };
     let zero = std::time::Duration::ZERO;
-    let sweep = std::time::Duration::from_millis(300);
+    let kv = KvJobs {
+        limits,
+        sweep: std::time::Duration::from_millis(300),
+        // Short, so that no range a job is working on is taken for left
+        // over while the table changes.
+        leftover: std::time::Duration::from_secs(1),
+        off: false,
+    };
     let mut c = Cluster::start_kv(
-        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, limits, sweep,
+        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, kv,
     );
     // Commits that take a while, so that the primaries' looks at their
     // ranges often come while one is in flight (I199).
@@ -2280,6 +2321,254 @@ fn kv_ranges_split_and_merge_on_their_own() {
     watch(&c, &|| client.is_finished());
     let grown = client.join().unwrap();
     assert!(grown >= 4, "{grown} ranges");
+    c.stop();
+}
+
+/// HS11 stage 4 (25-kv-ranges.md §28.6): objects a batch collects are
+/// deleted by its range's primary once the batch applies, and not if its
+/// assertion fails; the queue is then empty. A queue entry naming objects
+/// already deleted, as a primary that died between the objects and the
+/// entry leaves it, is drained too. A batch whose range's primary is
+/// killed straight after still has its objects deleted, by the next
+/// primary or the same one; so does one on a range a split made.
+#[test]
+fn kv_queued_objects_are_deleted_after_their_batch() {
+    use hyperstor_kv::jobs::{self, Steps};
+    use hyperstor_kv::{Batch, KvError, Store};
+    use hyperstor_proto::WireOp as W;
+    const STORE: u64 = 12;
+    const NS_S3: u8 = 5;
+    let kv = KvJobs {
+        off: false,
+        limits: KV_OFF.limits,
+        sweep: std::time::Duration::from_millis(200),
+        leftover: std::time::Duration::ZERO,
+    };
+    let zero = std::time::Duration::ZERO;
+    let mut c = Cluster::start_kv(
+        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, kv,
+    );
+    let meta = c.meta_addr;
+    let (to_main, from_client) = std::sync::mpsc::channel::<usize>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let cl = Client::connect(meta, 7).await.unwrap();
+            let name = |i: u32| format!("object{i}").into_bytes();
+            for i in 0..20 {
+                cl.exec(POOL, NS_S3, &name(i), &[W::Touch]).await.unwrap();
+            }
+            let exists = async |i: u32| {
+                let l = cl.lookup(POOL, NS_S3, &name(i), b"", None, 0).await;
+                l.unwrap().is_some()
+            };
+            let t = a.create_table(b"queued", POOL, POOL).await.unwrap();
+            let first = kv_routes(&cl, STORE, &t).await[0].1;
+            // A batch whose assertion fails collects nothing.
+            let mut b = Batch::new();
+            b.put(b"c", b"v")
+                .assert(b"d", Some(b"no"))
+                .collect(POOL, NS_S3, &name(0));
+            assert_eq!(a.apply(&t, b"row", &b).await, Err(KvError::Conflict));
+            let mut b = Batch::new();
+            b.put(b"c", b"v")
+                .collect(POOL, NS_S3, &name(1))
+                .collect(POOL, NS_S3, &name(2));
+            a.apply(&t, b"row", &b).await.unwrap();
+            kv_until("objects 1 and 2 deleted", async || {
+                !exists(1).await && !exists(2).await && kv_queue(&cl, first).await.is_empty()
+            })
+            .await;
+            assert!(exists(0).await, "a failed batch's object stays");
+            // An entry left by a primary that died between deleting its
+            // objects and the entry: drained again.
+            let entry =
+                hyperstor_kv::encode_queue(&[(POOL, NS_S3, name(1)), (POOL, NS_S3, name(3))]);
+            let k = hyperstor_kv::keys::queue_key(9);
+            let range = hyperstor_kv::range_name(first);
+            cl.exec(POOL, hyperstor_kv::NS_KV, &range, &[W::KvPut(k, entry)])
+                .await
+                .unwrap();
+            kv_until("object 3 deleted", async || {
+                !exists(3).await && kv_queue(&cl, first).await.is_empty()
+            })
+            .await;
+            // Its range's primary killed straight after the batch.
+            let map = cl.map();
+            let pool = &map.pools[&POOL];
+            let pg = hyperstor_client::object_pg(&range, pool.pg_count);
+            let primary = map.pg(POOL, pg).unwrap().primary().unwrap();
+            let mut b = Batch::new();
+            for i in 4..12 {
+                b.collect(POOL, NS_S3, &name(i));
+            }
+            a.apply(&t, b"row", &b).await.unwrap();
+            to_main.send(primary as usize / 1000).unwrap();
+            kv_until("objects 4–11 deleted through failover", async || {
+                let mut gone = true;
+                for i in 4..12 {
+                    gone &= !exists(i).await;
+                }
+                gone && kv_queue(&cl, first).await.is_empty()
+            })
+            .await;
+            // A range a split made drains its own queue.
+            let (r, _) = jobs::read(&cl, POOL, first).await.unwrap().unwrap();
+            let upper = jobs::split_at(&cl, POOL, &r, b"s", &Steps::all()).await;
+            let upper = upper.unwrap().unwrap();
+            let mut b = Batch::new();
+            b.collect(POOL, NS_S3, &name(12));
+            a.apply(&t, b"t", &b).await.unwrap();
+            kv_until("object 12 deleted by the upper range", async || {
+                !exists(12).await && kv_queue(&cl, upper).await.is_empty()
+            })
+            .await;
+            for i in [0, 13, 19] {
+                assert!(exists(i).await, "object {i} was never collected");
+            }
+        })
+    });
+    let node = from_client.recv().unwrap();
+    c.kill(node);
+    client.join().unwrap();
+    c.restart(node);
+    c.stop();
+}
+
+/// HS11 (25-kv-ranges.md §28.5): ranges nothing names are deleted once
+/// they have stayed so for the leftover time: one a crash in
+/// `create_table` left (no root entry), the new range of a split undone
+/// without it, and the ranges of a table whose delete stopped after its
+/// name went, with the table's root entries. Ranges of live tables,
+/// including one split by hand, stay.
+#[test]
+fn kv_leftover_ranges_are_deleted() {
+    use hyperstor_kv::jobs::{self, Steps};
+    use hyperstor_kv::{Batch, Range, State, Store, keys};
+    use hyperstor_proto::WireOp as W;
+    const STORE: u64 = 13;
+    let kv = KvJobs {
+        off: false,
+        limits: KV_OFF.limits,
+        sweep: std::time::Duration::from_millis(300),
+        leftover: std::time::Duration::from_secs(1),
+    };
+    let zero = std::time::Duration::ZERO;
+    let c = Cluster::start_kv(
+        4, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, kv,
+    );
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let cl = Client::connect(meta, 7).await.unwrap();
+            let gone = async |id: u128| jobs::read(&cl, POOL, id).await.unwrap().is_none();
+            let fill = async |t: &hyperstor_kv::Table| {
+                for i in 0..20u8 {
+                    let row = format!("row{i:02}").into_bytes();
+                    a.apply(t, &row, Batch::new().put(b"c", &[i]))
+                        .await
+                        .unwrap();
+                }
+            };
+            // A first range no root entry names, as a crash in
+            // `create_table` leaves.
+            let orphan = Range {
+                id: 0xdead,
+                store: STORE,
+                table: 77,
+                start: Vec::new(),
+                end: None,
+                epoch: 1,
+                state: State::Serving,
+                next: None,
+                merged: None,
+                parent: None,
+            };
+            let mut ops = vec![W::AssertAbsent];
+            ops.extend(orphan.set_ops());
+            let name = hyperstor_kv::range_name(orphan.id);
+            cl.exec(POOL, hyperstor_kv::NS_KV, &name, &ops)
+                .await
+                .unwrap();
+            // A split undone without deleting its new range.
+            let u = a.create_table(b"undone", POOL, POOL).await.unwrap();
+            fill(&u).await;
+            let first = kv_routes(&cl, STORE, &u).await[0].1;
+            let (r, _) = jobs::read(&cl, POOL, first).await.unwrap().unwrap();
+            let into = jobs::split(&cl, POOL, &r, &Steps::only(2))
+                .await
+                .unwrap()
+                .unwrap();
+            let (frozen, _) = jobs::read(&cl, POOL, first).await.unwrap().unwrap();
+            let again = Range {
+                epoch: frozen.epoch + 1,
+                state: State::Serving,
+                ..frozen.clone()
+            };
+            let mut ops = vec![frozen.epoch_assertion()];
+            ops.extend(again.set_ops());
+            let name = hyperstor_kv::range_name(first);
+            cl.exec(POOL, hyperstor_kv::NS_KV, &name, &ops)
+                .await
+                .unwrap();
+            // A table whose delete stopped once its name was gone.
+            let d = a.create_table(b"deleted", POOL, POOL).await.unwrap();
+            fill(&d).await;
+            let d0 = kv_routes(&cl, STORE, &d).await[0].1;
+            let (r, _) = jobs::read(&cl, POOL, d0).await.unwrap().unwrap();
+            let d1 = jobs::split_at(&cl, POOL, &r, b"row10", &Steps::all()).await;
+            let d1 = d1.unwrap().unwrap();
+            let root = STORE.to_be_bytes();
+            let del = [W::KvDel(keys::table_key(b"deleted"))];
+            cl.exec(hyperstor_meta::META_POOL, hyperstor_kv::NS_KV, &root, &del)
+                .await
+                .unwrap();
+            // A live table, split by hand.
+            let v = a.create_table(b"live", POOL, POOL).await.unwrap();
+            fill(&v).await;
+            let v0 = kv_routes(&cl, STORE, &v).await[0].1;
+            let (r, _) = jobs::read(&cl, POOL, v0).await.unwrap().unwrap();
+            let v1 = jobs::split_at(&cl, POOL, &r, b"row10", &Steps::all()).await;
+            let v1 = v1.unwrap().unwrap();
+
+            kv_until("the orphan range deleted", async || gone(orphan.id).await).await;
+            kv_until("the undone split's range deleted", async || {
+                gone(into).await
+            })
+            .await;
+            kv_until("the deleted table's ranges deleted", async || {
+                gone(d0).await && gone(d1).await
+            })
+            .await;
+            kv_until("the deleted table's root entries deleted", async || {
+                let p = keys::map_prefix(d.id);
+                let end = keys::prefix_end(&p);
+                let (pool, ns) = (hyperstor_meta::META_POOL, hyperstor_kv::NS_KV);
+                let m = cl
+                    .lookup(pool, ns, &root, &p, end.as_deref(), 10)
+                    .await
+                    .unwrap();
+                let id_key = keys::id_key(d.id);
+                let mut to = id_key.clone();
+                to.push(0);
+                let i = cl
+                    .lookup(pool, ns, &root, &id_key, Some(&to), 1)
+                    .await
+                    .unwrap();
+                m.is_none_or(|m| m.kv.is_empty()) && i.is_none_or(|i| i.kv.is_empty())
+            })
+            .await;
+            // Live tables keep every range and row.
+            assert_eq!(kv_settled(&cl, STORE, &u, &[first, into]).await, Ok(1));
+            assert_eq!(kv_settled(&cl, STORE, &v, &[v0, v1]).await, Ok(2));
+            for t in [&u, &v] {
+                assert_eq!(kv_all(&a, t).await.len(), 20);
+            }
+        })
+    })
+    .join()
+    .unwrap();
     c.stop();
 }
 

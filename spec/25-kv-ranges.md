@@ -8,8 +8,8 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **stages 1–3 of §28.8 built** (2026-11-03: I255, I256, I260);
-the leftover check and the deletion queue are next. Settled with the
+Status: **built** (2026-11-04: stages 1–4 of §28.8, I255, I256, I260,
+I261). HS11 is done; transactions are HS11b. Settled with the
 owner: D191–D199 (points 128–137) and D200–D202 (points 169–172 of
 [05-decision-log.md](05-decision-log.md)). The rest of this document
 (key encoding, ids, the root's layout, the deletion queue) was decided
@@ -57,6 +57,7 @@ allocator to coordinate, as volume ids.
 | `state` | `pending` (being filled, not yet serving), `serving`, `splitting` (at a row, into a named range id), `absorbing` (a named neighbour), `merging` (into a named neighbour) |
 | `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root; cleared once the root names it |
 | `merged` | after a merge: the neighbour whose rows it took, until the root no longer names that one and it is deleted |
+| `parent` | for a range a split made: the range it was split from (§28.5) |
 
 - **Attribute values:** ids and the epoch are big-endian; `start` and
   `end` are rows as they are; `state` is a tag byte (1 `pending`,
@@ -188,22 +189,38 @@ Range R holds rows `[a, c)` at epoch E:
   epoch as on the sweep before: finished or undone as above. Why: a
   job still under way changes the epoch within a sweep, and one that is
   taken up anyway fails its next step, which asserts what it left.
-- **Leftover objects** (not built yet). A range's primary checks, an hour
-  after a range object appears, that the root or a neighbour's
-  `splitting` state names it. One that nothing names (a crash while
-  creating a table, or an abandoned copy) is deleted.
+- **Leftover objects.** A range's primary looks, every quarter hour, at
+  what names each range it holds: its table must exist (the root's `i`
+  entry and the record under that name agree), and the root's entry at
+  its start must name it, or its `parent` name it by `next` or as the
+  range it splits into. A range in the middle of a job is left to the
+  job. One named by nothing on every look for an hour (a crash while
+  creating a table, an abandoned copy, a table whose delete stopped) is
+  deleted, asserting its epoch, with the deleted table's root entries
+  for it, and the table's `i` entry with its last range (I261). Why an
+  hour, counted by the primary: no clock in the range, and a primary that
+  restarts only starts counting again.
 - **Root repair** is taking up a stopped job: a split stopped before its
   step 5 shows `next`, a merge before its step 4 shows `merged`.
 
 ### 28.6 The deletion queue
 
 D192's collection records, in a form other users can share: a batch on a
-row may also add entries to the range's queue (`q` + a sequence number),
-each naming objects to delete (pool, namespace, name). The range's
+row may also add an entry to the range's queue (`q` + a random 128-bit
+id), naming objects to delete (pool, namespace, name). The range's
 primary deletes them in the background, then removes each entry. A split
-leaves the queue with the lower range. Why: the entry is written
+leaves the queue with the lower range; a merge moves the right range's
+entries into the left one with its rows. Why: the entry is written
 atomically with the change that orphans the objects, nothing is
-scanned, and the primary that holds the queue drains it.
+scanned, and the primary that holds the queue drains it. Why random
+ids, not sequence numbers: no counter to read before a batch, and a
+merge's entries can't collide (I261).
+
+- **At least once.** An object is deleted before its entry, so a primary
+  that dies between leaves the entry, and the next deletes the object
+  again: nothing. The objects named must be the batch's alone (S3's data
+  objects have unique names): a name reused after its entry was written
+  would be deleted.
 
 ### 28.7 The library and the daemon
 
@@ -239,5 +256,7 @@ scanned, and the primary that holds the queue drains it.
    restarted, with jobs left half done for the primaries to take up.
    After each, the store must equal the model, every row must be in
    exactly one serving range, and no object may be left over.
-4. The deletion queue. Tests: queued objects deleted once and only
-   after their batch commits, through primary failover.
+4. The deletion queue (built, I261). Tests: queued objects deleted only
+   after their batch commits, again after a primary that died between
+   objects and entry, through primary failover, by a range a split made,
+   and carried by a merge; leftover ranges deleted, live ones kept.

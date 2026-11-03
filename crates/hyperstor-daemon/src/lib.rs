@@ -221,12 +221,25 @@ pub struct NodeConfig {
     pub pings: Option<Arc<faults::Pings>>,
     /// Test hook: message kinds nodes don't know, as an older build.
     pub older: Option<Arc<faults::Older>>,
-    /// When key–value ranges split and merge (D202); tests set them small.
-    pub kv_limits: hyperstor_kv::jobs::Limits,
-    /// How often a primary looks over the key–value ranges it holds for
-    /// jobs that stopped and sizes to act on (25-kv-ranges.md §28.7);
-    /// zero: [`kv::SWEEP`].
-    pub kv_sweep: Duration,
+    /// Jobs on the key–value ranges this node is primary of.
+    pub kv: KvJobs,
+}
+
+/// Jobs on the key–value ranges a node is primary of (25-kv-ranges.md
+/// §28.5–§28.7): splits, merges, taking up stopped jobs, deletion queues
+/// and leftover ranges.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KvJobs {
+    /// None at all: for tests that make their ranges by hand.
+    pub off: bool,
+    /// When ranges split and merge (D202); tests set them small.
+    pub limits: hyperstor_kv::jobs::Limits,
+    /// How often a primary looks over its ranges for jobs that stopped and
+    /// sizes to act on; zero: [`kv::SWEEP`].
+    pub sweep: Duration,
+    /// How long a range nothing names stays before it is deleted; zero:
+    /// [`kv::LEFTOVER`].
+    pub leftover: Duration,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
@@ -410,11 +423,13 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             g => g,
         };
         let commit_delays = cfg.commit_delays.clone();
-        let kv_limits = cfg.kv_limits;
-        let kv_sweep = match cfg.kv_sweep {
-            Duration::ZERO => kv::SWEEP,
-            t => t,
-        };
+        let mut kv_jobs = cfg.kv;
+        if kv_jobs.sweep.is_zero() {
+            kv_jobs.sweep = kv::SWEEP;
+        }
+        if kv_jobs.leftover.is_zero() {
+            kv_jobs.leftover = kv::LEFTOVER;
+        }
         let ping_faults = cfg.pings.clone();
         let older = cfg.older.clone();
         let io_timeout = match cfg.io_timeout {
@@ -514,7 +529,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         if !scrub_interval.is_zero() {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
-                        spawn(st.clone().kv_ranges(kv_limits, kv_sweep));
+                        if !kv_jobs.off {
+                            spawn(st.clone().kv_ranges(kv_jobs));
+                        }
                         spawn(st.clone().accept(l));
                         // The same reactor answers on each endpoint (D207),
                         // and its pings there (D210).
