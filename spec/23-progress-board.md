@@ -33,7 +33,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log` | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I257), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
+| **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I257), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done
 
