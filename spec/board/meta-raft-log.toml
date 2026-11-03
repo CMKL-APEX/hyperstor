@@ -6,5 +6,5 @@ updated = 2026-11-03
 milestone = "HS2"
 branch = "fix/meta-raft-log"
 prs = [180]
-now = "hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I257), so a repeat can be diagnosed"
+now = "hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed"
 next = "Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig"

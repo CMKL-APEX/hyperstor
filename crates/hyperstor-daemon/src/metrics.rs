@@ -76,6 +76,9 @@ pub struct ShardMetrics {
     pub read_timeouts: AtomicU64,
     /// Of those, reads a member's copy answered for the primary (D190).
     pub reads_elsewhere: AtomicU64,
+    /// Reads for a push or fetch planned again because a write to their
+    /// object was queued while they waited for the device (I257).
+    pub push_rereads: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -167,6 +170,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
                 ("from_member", g(&m.reads_elsewhere)),
             ]
         },
+    );
+    family(
+        "hyperstor_push_rereads_total",
+        "counter",
+        "Reads of recovery, backfill and repair planned again because their object was written while they waited for the device.",
+        &|m| vec![("", g(&m.push_rereads))],
     );
     family(
         "hyperstor_scrub_objects_total",
@@ -324,7 +333,7 @@ mod tests {
         assert!(t.contains(
             "hyperstor_scrub_pgs_total{node=\"4\",device=\"4001\",kind=\"holes_unchecked\"} 0\n"
         ));
-        assert_eq!(t.matches("# TYPE ").count(), 16);
+        assert_eq!(t.matches("# TYPE ").count(), 17);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

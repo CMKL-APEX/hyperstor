@@ -1,7 +1,7 @@
 //! The log of what the libraries under the map service say through
 //! `tracing`: openraft's warnings and errors, and glidex-raftstore's.
 //! Without it a leader that can't commit says only "not committed" and
-//! nothing on why (I257, #177).
+//! nothing on why (I259, #177).
 //!
 //! `HS_LOG` sets the filter (`EnvFilter` syntax, such as
 //! `warn,openraft=debug`); the default is `warn`. A warning or error from
