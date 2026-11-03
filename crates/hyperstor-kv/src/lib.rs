@@ -104,7 +104,7 @@ impl Table {
         e.into_vec()
     }
 
-    fn decode(name: &[u8], b: &[u8]) -> Result<Table, KvError> {
+    pub(crate) fn decode(name: &[u8], b: &[u8]) -> Result<Table, KvError> {
         let mut d = Dec::new(b);
         if d.u8()? != TABLE_V1 {
             return Err(KvError::Corrupt(format!(
@@ -206,6 +206,9 @@ pub struct Range {
     /// After a merge: the neighbour whose rows it took, until the root no
     /// longer names that one and it is deleted.
     pub merged: Option<u128>,
+    /// For a range a split made: the range it was split from, by which a
+    /// range not yet in the root is known not to be left over (§28.5).
+    pub parent: Option<u128>,
 }
 
 /// Attribute names of a range object.
@@ -218,6 +221,7 @@ pub mod attr {
     pub const STATE: &[u8] = b"state";
     pub const NEXT: &[u8] = b"next";
     pub const MERGED: &[u8] = b"merged";
+    pub const PARENT: &[u8] = b"parent";
 }
 
 fn be<const N: usize>(name: &[u8], v: Option<&Vec<u8>>) -> Result<[u8; N], KvError> {
@@ -239,7 +243,11 @@ impl Range {
             Some(e) => WireOp::SetAttr(attr::END.into(), e.clone()),
             None => WireOp::RmAttr(attr::END.into()),
         });
-        for (name, v) in [(attr::NEXT, self.next), (attr::MERGED, self.merged)] {
+        for (name, v) in [
+            (attr::NEXT, self.next),
+            (attr::MERGED, self.merged),
+            (attr::PARENT, self.parent),
+        ] {
             ops.push(match v {
                 Some(n) => WireOp::SetAttr(name.into(), n.to_be_bytes().into()),
                 None => WireOp::RmAttr(name.into()),
@@ -268,6 +276,10 @@ impl Range {
             },
             merged: match get(attr::MERGED) {
                 Some(_) => Some(u128::from_be_bytes(be(attr::MERGED, get(attr::MERGED))?)),
+                None => None,
+            },
+            parent: match get(attr::PARENT) {
+                Some(_) => Some(u128::from_be_bytes(be(attr::PARENT, get(attr::PARENT))?)),
                 None => None,
             },
         })
@@ -340,6 +352,13 @@ pub enum Change {
     Delete(Vec<u8>),
     /// The column holds exactly this value; none: it is absent (D194).
     Assert(Vec<u8>, Option<Vec<u8>>),
+    /// Object `name` of namespace `ns` in `pool` is deleted once the
+    /// batch is applied, by the range's primary (D192, §28.6).
+    Collect {
+        pool: u32,
+        ns: u8,
+        name: Vec<u8>,
+    },
 }
 
 /// Changes to one row, applied together if every assertion holds (D200).
@@ -370,19 +389,64 @@ impl Batch {
         self
     }
 
+    /// Object `name` of namespace `ns` in `pool` is to be deleted once
+    /// the batch applies (§28.6).
+    pub fn collect(&mut self, pool: u32, ns: u8, name: &[u8]) -> &mut Self {
+        self.changes.push(Change::Collect {
+            pool,
+            ns,
+            name: name.into(),
+        });
+        self
+    }
+
+    /// The batch as operations on its range. The objects it collects
+    /// become one queue entry, under a random id made here, so that the
+    /// batch sent again (after an error that leaves it unknown whether it
+    /// applied) puts the same entry.
     fn ops(&self, row: &[u8]) -> Vec<WireOp> {
-        self.changes
-            .iter()
-            .map(|c| match c {
+        let mut collect = Vec::new();
+        let mut ops: Vec<WireOp> = Vec::new();
+        for c in &self.changes {
+            ops.push(match c {
                 Change::Put(k, v) => WireOp::KvPut(user_key(row, k), v.clone()),
                 Change::Delete(k) => WireOp::KvDel(user_key(row, k)),
                 Change::Assert(k, v) => WireOp::AssertKv {
                     key: user_key(row, k),
                     value: v.clone(),
                 },
-            })
-            .collect()
+                Change::Collect { pool, ns, name } => {
+                    collect.push((*pool, *ns, name.clone()));
+                    continue;
+                }
+            });
+        }
+        if !collect.is_empty() {
+            ops.push(WireOp::KvPut(
+                queue_key(random_u128()),
+                encode_queue(&collect),
+            ));
+        }
+        ops
     }
+}
+
+/// Objects a queue entry names: pool, namespace, name.
+pub type Collected = Vec<(u32, u8, Vec<u8>)>;
+
+pub fn encode_queue(objects: &[(u32, u8, Vec<u8>)]) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.seq(objects, |e, (pool, ns, name)| {
+        e.u32(*pool).u8(*ns).bytes(name);
+    });
+    e.into_vec()
+}
+
+pub fn decode_queue(b: &[u8]) -> Result<Collected, KvError> {
+    let mut d = Dec::new(b);
+    let objects = d.seq(9, |d| Ok((d.u32()?, d.u8()?, d.bytes()?.to_vec())))?;
+    d.finish()?;
+    Ok(objects)
 }
 
 /// A row's columns and their values, in column order.
@@ -511,6 +575,7 @@ impl Store {
             state: State::Serving,
             next: None,
             merged: None,
+            parent: None,
         };
         let mut ops = vec![WireOp::AssertAbsent];
         ops.extend(first.set_ops());

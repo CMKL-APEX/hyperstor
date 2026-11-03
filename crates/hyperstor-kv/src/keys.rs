@@ -11,6 +11,18 @@
 /// The first byte of every user key.
 pub const USER: u8 = b'r';
 
+/// The first byte of the deletion queue's keys (§28.6): before every
+/// user key, so a split, which moves user keys only, leaves the queue in
+/// the lower range.
+pub const QUEUE: u8 = b'q';
+
+/// A queue entry's key.
+pub fn queue_key(id: u128) -> Vec<u8> {
+    let mut out = vec![QUEUE];
+    out.extend_from_slice(&id.to_be_bytes());
+    out
+}
+
 /// `b` with each 0x00 byte doubled to 0x00 0xFF, appended to `out`.
 pub fn escape(out: &mut Vec<u8>, b: &[u8]) {
     for &c in b {

@@ -674,13 +674,15 @@ tests = [
 
 [[milestone.item]]
 what = "Range objects nothing names deleted an hour after they appear"
-spec = ["25-kv-ranges.md §28.5"]
-status = "planned"
+spec = ["25-kv-ranges.md §28.5", "I261"]
+status = "done"
+tests = ["cluster::kv_leftover_ranges_are_deleted"]
 
 [[milestone.item]]
 what = "The deletion queue, drained by the range's primary"
-spec = ["25-kv-ranges.md §28.6", "D192"]
-status = "planned"
+spec = ["25-kv-ranges.md §28.6", "D192", "I261"]
+status = "done"
+tests = ["cluster::kv_queued_objects_are_deleted_after_their_batch"]
 
 [[milestone]]
 id = "HS11b"

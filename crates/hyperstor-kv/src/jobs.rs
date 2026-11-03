@@ -12,7 +12,8 @@
 
 use crate::keys::*;
 use crate::{
-    KvError, NS_KV, Range, State, attr, conflict, map_entry, map_value, random_u128, range_name,
+    KvError, NS_KV, Range, State, Table, attr, conflict, decode_queue, map_entry, map_value,
+    random_u128, range_name,
 };
 use hyperstor_client::{Client, ClientError};
 use hyperstor_map::META_POOL;
@@ -324,6 +325,7 @@ pub async fn split_at(
         state: State::Pending,
         next: None,
         merged: None,
+        parent: Some(r.id),
         ..r.clone()
     };
     let mut ops = vec![WireOp::AssertAbsent];
@@ -391,6 +393,7 @@ async fn finish_split(
                 state: State::Serving,
                 next: None,
                 merged: None,
+                parent: Some(frozen.id),
                 ..frozen.clone()
             };
             let ops = [opened.epoch_assertion(), WireOp::Delete];
@@ -464,7 +467,9 @@ pub async fn merge(
             cl,
             pool,
             n.id,
-            (&[USER], &n.end_key()),
+            // Its queue too (§28.6): the entries' ids are random, so
+            // they don't collide with the left range's.
+            (&[QUEUE], &n.end_key()),
             l.id,
             &absorbing.state,
         )
@@ -603,4 +608,125 @@ pub async fn resume(cl: &Client, pool: u32, r: &Range) -> Result<(), KvError> {
         State::Serving if r.merged.is_some() => finish_merge(cl, pool, r, &Steps::all()).await,
         State::Serving => name_next(cl, pool, r).await,
     }
+}
+
+/// Entries of a range's deletion queue taken per look.
+const DRAIN_PAGE: u32 = 64;
+
+/// Deletes the objects in up to [`DRAIN_PAGE`] entries of range `r`'s
+/// queue, then the entries (§28.6): how many entries were done. An
+/// object is deleted before its entry, so a primary that dies between
+/// leaves the entry, and the next deletes the object again, which is
+/// nothing to delete.
+pub async fn drain(cl: &Client, pool: u32, r: &Range) -> Result<usize, KvError> {
+    let name = range_name(r.id);
+    let l = cl.lookup(pool, NS_KV, &name, &[QUEUE], Some(&[QUEUE + 1]), DRAIN_PAGE);
+    let Some(l) = l.await? else {
+        return Ok(0);
+    };
+    for (k, v) in &l.kv {
+        for (in_pool, ns, object) in decode_queue(v)? {
+            cl.exec(in_pool, ns, &object, &[WireOp::Delete]).await?;
+        }
+        exec(cl, pool, r.id, &[WireOp::KvDel(k.clone())]).await?;
+    }
+    Ok(l.kv.len())
+}
+
+/// The value of `key` in store `store`'s root.
+async fn root_value(cl: &Client, store: u64, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+    let mut to = key.to_vec();
+    to.push(0);
+    let name = root(store);
+    let l = cl
+        .lookup(META_POOL, NS_KV, &name, key, Some(&to), 1)
+        .await?;
+    Ok(l.and_then(|l| l.kv.into_iter().next()).map(|(_, v)| v))
+}
+
+/// Whether `r`'s table exists: the root's `i` entry names it, and the
+/// record under that name is the table's. Not while its delete is under
+/// way, nor if a crash stopped its create before the root named it.
+async fn table_alive(cl: &Client, r: &Range) -> Result<bool, KvError> {
+    let Some(name) = root_value(cl, r.store, &id_key(r.table)).await? else {
+        return Ok(false);
+    };
+    let record = root_value(cl, r.store, &table_key(&name)).await?;
+    Ok(record.is_some_and(|b| Table::decode(&name, &b).is_ok_and(|t| t.id == r.table)))
+}
+
+/// Whether anything names range `r` (§28.5): its table must exist, and
+/// the root name it, or the range it was split from, by `next` or as the
+/// range it splits into. A range in the middle of a job is left to the
+/// job; once taken up, it is looked at again.
+pub async fn named(cl: &Client, pool: u32, r: &Range) -> Result<bool, KvError> {
+    if matches!(
+        r.state,
+        State::Splitting { .. } | State::Absorbing { .. } | State::Merging { .. }
+    ) {
+        return Ok(true);
+    }
+    if !table_alive(cl, r).await? {
+        return Ok(false);
+    }
+    if root_get(cl, r, &r.start)
+        .await?
+        .is_some_and(|(i, _)| i == r.id)
+    {
+        return Ok(true);
+    }
+    let Some(p) = r.parent else {
+        return Ok(false);
+    };
+    Ok(read(cl, pool, p).await?.is_some_and(|(p, _)| {
+        p.next == Some(r.id) || matches!(&p.state, State::Splitting { into, .. } if *into == r.id)
+    }))
+}
+
+/// Deletes range `r`, which nothing names (§28.5), if it hasn't changed
+/// since it was read: true if it did. A deleted table's root entries for
+/// it go too, and the table's `i` entry with its last range, finishing a
+/// delete that stopped half-way.
+pub async fn delete_leftover(cl: &Client, pool: u32, r: &Range) -> Result<bool, KvError> {
+    let ops = [r.epoch_assertion(), WireOp::Delete];
+    if !went(exec(cl, pool, r.id, &ops).await)? {
+        return Ok(false);
+    }
+    let root_ops =
+        async |ops: &[WireOp]| went(cl.exec(META_POOL, NS_KV, &root(r.store), ops).await);
+    if let Some((id, v)) = root_get(cl, r, &r.start).await?
+        && id == r.id
+    {
+        let k = map_key(r.table, &r.start);
+        root_ops(&[
+            WireOp::AssertKv {
+                key: k.clone(),
+                value: Some(v),
+            },
+            WireOp::KvDel(k),
+        ])
+        .await?;
+    }
+    if !table_alive(cl, r).await? {
+        let p = map_prefix(r.table);
+        let end = prefix_end(&p).expect("a map prefix is never all 0xFF");
+        let name = root(r.store);
+        let left = cl
+            .lookup(META_POOL, NS_KV, &name, &p, Some(&end), 1)
+            .await?;
+        let k = id_key(r.table);
+        if left.is_none_or(|l| l.kv.is_empty())
+            && let Some(v) = root_value(cl, r.store, &k).await?
+        {
+            root_ops(&[
+                WireOp::AssertKv {
+                    key: k.clone(),
+                    value: Some(v),
+                },
+                WireOp::KvDel(k),
+            ])
+            .await?;
+        }
+    }
+    Ok(true)
 }
