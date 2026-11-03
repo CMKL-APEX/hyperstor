@@ -16,6 +16,7 @@ pub mod health;
 pub mod mgmt_store;
 pub mod operations;
 pub mod perf;
+pub mod raft_log;
 pub mod replica;
 pub mod settings;
 pub mod store;

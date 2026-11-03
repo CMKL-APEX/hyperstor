@@ -46,6 +46,8 @@
 use std::time::Duration;
 
 fn main() {
+    // openraft's warnings and errors (I259).
+    hyperstor_meta::raft_log::init();
     let args: Vec<String> = std::env::args().collect();
     let get = |flag: &str| {
         args.iter()
