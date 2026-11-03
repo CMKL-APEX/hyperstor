@@ -23,7 +23,7 @@ covered by tests that run on every change.
 | HS9: GPU-direct storage in virtual machines | Planned |
 | HS10: Hard-disk pools with flash log devices | Planned |
 | HS10b: Cache pools and priority classes | Planned |
-| HS11: Key-value ranges | Planned |
+| HS11: Key-value ranges | In progress |
 | HS11b: Key-value transactions | Planned |
 | HS12: S3 gateway | Planned |
 | HS13: S3 over RDMA | Planned |
@@ -51,6 +51,7 @@ covered by tests that run on every change.
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
 | Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage) | In progress |
 | A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned | Done |
+| Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again | Done |
 | Crash safety: randomized crash tests against a model | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
@@ -122,9 +123,10 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Per-key assertions on an object's key-value table | Planned |
-| Tables, rows and range objects found through the root; one-row atomic changes and scans | Planned |
-| Splits and merges by each range's primary, resumed after failover | Planned |
+| Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup | Done |
+| Tables, rows and range objects found through the root; one-row atomic changes and scans | Done |
+| Splits and merges by each range's primary, resumed after failover | Done |
+| Range objects nothing names deleted an hour after they appear | Planned |
 | The deletion queue, drained by the range's primary | Planned |
 
 ## HS18: Pools and devices at run time
@@ -153,7 +155,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; the installer proposing endpoints from the host's topology and keeping them in the map) | In progress |
-| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests) | In progress |
+| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests; health per network, with endpoints marked down on peer reports and damped; fencing shown on two networks; warm paths wait for RDMA) | In progress |
 | The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built) | In progress |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4) | Planned |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |

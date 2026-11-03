@@ -866,6 +866,37 @@ impl Client {
         kv_to: Option<&[u8]>,
         kv_limit: u32,
     ) -> Result<Option<hyperstor_proto::Looked>, ClientError> {
+        self.lookup_at(pool, ns, name, kv_from, kv_to, kv_limit, false)
+            .await
+    }
+
+    /// [`Self::lookup`], with the key–value table's size in bytes
+    /// (`kv_bytes`, 25-kv-ranges.md §28.2). Only storage nodes on a build
+    /// that has it answer: an older one refuses the message.
+    pub async fn lookup_sized(
+        &self,
+        pool: u32,
+        ns: u8,
+        name: &[u8],
+        kv_from: &[u8],
+        kv_to: Option<&[u8]>,
+        kv_limit: u32,
+    ) -> Result<Option<hyperstor_proto::Looked>, ClientError> {
+        self.lookup_at(pool, ns, name, kv_from, kv_to, kv_limit, true)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn lookup_at(
+        &self,
+        pool: u32,
+        ns: u8,
+        name: &[u8],
+        kv_from: &[u8],
+        kv_to: Option<&[u8]>,
+        kv_limit: u32,
+        sized: bool,
+    ) -> Result<Option<hyperstor_proto::Looked>, ClientError> {
         let (msg, payload) = self
             .to_primary(pool, Route::Object { ns, name }, 0, &[], &|to, key| {
                 Msg::Lookup {
@@ -874,6 +905,7 @@ impl Client {
                     kv_from: kv_from.to_vec(),
                     kv_to: kv_to.map(|t| t.to_vec()),
                     kv_limit,
+                    sized,
                 }
             })
             .await?;

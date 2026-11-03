@@ -252,6 +252,9 @@ pub struct ClusterMap {
     /// Devices' endpoints beyond `addr` (D207): the reactor listens on
     /// each, as (network, address).
     pub endpoints: BTreeMap<u32, Vec<(String, SocketAddr)>>,
+    /// Endpoints peers report silent (D210): senders take the device's
+    /// others. The leader keeps it from peer reports.
+    pub endpoints_down: BTreeSet<SocketAddr>,
 }
 
 /// What a network carries (D206).
@@ -614,6 +617,11 @@ impl ClusterMap {
         if old == endpoints {
             return Ok(false);
         }
+        for (_, a) in &old {
+            if !endpoints.iter().any(|(_, x)| x == a) {
+                self.endpoints_down.remove(a);
+            }
+        }
         if endpoints.is_empty() {
             self.endpoints.remove(&device);
         } else {
@@ -700,7 +708,9 @@ impl ClusterMap {
             set.remove(&id);
         }
         self.kinds.remove(&id);
-        self.endpoints.remove(&id);
+        for (_, a) in self.endpoints.remove(&id).unwrap_or_default() {
+            self.endpoints_down.remove(&a);
+        }
         for p in self.pools.values_mut() {
             p.added.remove(&id);
             p.removed.remove(&id);
@@ -1282,14 +1292,14 @@ impl ClusterMap {
     }
 
     /// Every address a sender on `networks` may reach `device` at (D207,
-    /// D208): its endpoints on the first of them it has endpoints on, else
-    /// its address alone. Empty for a device the map doesn't have.
+    /// D208): its endpoints up on the first of them it has any up on, else
+    /// its address alone (D210). Empty for a device the map doesn't have.
     pub fn device_addrs_on(&self, device: u32, networks: &[String]) -> Vec<SocketAddr> {
         if let Some(eps) = self.endpoints.get(&device) {
             for n in networks {
                 let on: Vec<SocketAddr> = eps
                     .iter()
-                    .filter(|(net, _)| net == n)
+                    .filter(|(net, a)| net == n && !self.endpoints_down.contains(a))
                     .map(|(_, a)| *a)
                     .collect();
                 if !on.is_empty() {
@@ -1301,14 +1311,48 @@ impl ClusterMap {
     }
 
     /// Address of the reactor serving `device` for a sender on `networks`
-    /// (D207): its first endpoint on one of them, in the sender's order,
-    /// else its address. A sender on no named network uses the address.
+    /// (D207): its first endpoint up on one of them, in the sender's
+    /// order, else its address. A sender on no named network uses the
+    /// address.
     pub fn device_addr_on(&self, device: u32, networks: &[String]) -> Option<SocketAddr> {
         let eps = self.endpoints.get(&device);
         networks
             .iter()
-            .find_map(|n| eps?.iter().find(|(net, _)| net == n).map(|(_, a)| *a))
+            .find_map(|n| {
+                eps?.iter()
+                    .find(|(net, a)| net == n && !self.endpoints_down.contains(a))
+                    .map(|(_, a)| *a)
+            })
             .or_else(|| self.device_addr(device))
+    }
+
+    /// The paths a sender on `networks` has to `device` (D210): its
+    /// endpoints on any of them, up or down, else its address alone.
+    /// Peers ping each, so a down endpoint is seen coming back.
+    pub fn device_paths_on(&self, device: u32, networks: &[String]) -> Vec<SocketAddr> {
+        let on: Vec<SocketAddr> = self
+            .endpoints
+            .get(&device)
+            .map(|eps| {
+                eps.iter()
+                    .filter(|(net, _)| networks.contains(net))
+                    .map(|(_, a)| *a)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if on.is_empty() {
+            self.device_addr(device).into_iter().collect()
+        } else {
+            on
+        }
+    }
+
+    /// The device an endpoint belongs to, if any.
+    pub fn endpoint_device(&self, addr: SocketAddr) -> Option<u32> {
+        self.endpoints
+            .iter()
+            .find(|(_, eps)| eps.iter().any(|(_, a)| *a == addr))
+            .map(|(d, _)| *d)
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -1324,7 +1368,10 @@ impl ClusterMap {
         // before them read. Why 12 after 11: the feature branch's 9-11 ran
         // on the pilot before main's fullness took 9 (I216). 13: cache
         // pools' grace other than the default, and what they wait for.
-        let format = if !self.networks.is_empty() || !self.endpoints.is_empty() {
+        // 14: networks and endpoints; 15: endpoints down (D210).
+        let format = if !self.endpoints_down.is_empty() {
+            15
+        } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
             14
         } else if !self.cache_held.is_empty()
             || !self.cache_released.is_empty()
@@ -1541,13 +1588,19 @@ impl ClusterMap {
                 });
             }
         }
+        if format >= 15 {
+            let down: Vec<SocketAddr> = self.endpoints_down.iter().copied().collect();
+            e.seq(&down, |e, a| {
+                e.str(&a.to_string());
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=14).contains(&v) {
+        if !(1..=15).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1764,6 +1817,12 @@ impl ClusterMap {
                 })?;
                 m.endpoints.insert(dev, eps);
             }
+        }
+        if v >= 15 {
+            m.endpoints_down = d
+                .seq(2, |d| d.str()?.parse().map_err(|_| DecodeError::Utf8))?
+                .into_iter()
+                .collect();
         }
         d.finish()?;
         Ok(m)
@@ -2040,6 +2099,38 @@ pool 1 v replicated size 2 min 1 pgs 8
         );
         assert_eq!(m.device_addrs_on(1000, &ib), vec![a("203.0.113.11:9100")]);
         assert!(m.device_addrs_on(7, &ib).is_empty());
+    }
+
+    /// Endpoints marked down (D210) travel in format 15; senders skip
+    /// them for the device's others, or its address when none is up, and
+    /// still have them as paths to ping. They go with their device.
+    #[test]
+    fn senders_skip_endpoints_down_and_keep_pinging_them() {
+        let mut m = parse_cluster(FILE).unwrap();
+        let ib = vec!["ib".to_string()];
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        m.endpoints_down.insert(a("192.0.2.10:9100"));
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 15);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+        assert_eq!(m.device_addrs_on(0, &ib), vec![a("192.0.2.11:9100")]);
+        assert_eq!(m.device_addr_on(0, &ib), Some(a("192.0.2.11:9100")));
+        assert_eq!(
+            m.device_paths_on(0, &ib),
+            vec![a("192.0.2.10:9100"), a("192.0.2.11:9100")]
+        );
+        assert_eq!(m.endpoint_device(a("192.0.2.11:9100")), Some(0));
+        m.endpoints_down.insert(a("192.0.2.11:9100"));
+        assert_eq!(m.device_addrs_on(0, &ib), vec![a("203.0.113.10:9100")]);
+        assert_eq!(m.device_addr_on(0, &ib), Some(a("203.0.113.10:9100")));
+        assert_eq!(m.device_paths_on(0, &[]), vec![a("203.0.113.10:9100")]);
+        // Replaced endpoints and removed devices take their marks along.
+        m.set_endpoints(0, vec![("ib".into(), a("192.0.2.11:9100"))])
+            .unwrap();
+        assert_eq!(m.endpoints_down.len(), 1);
+        m.remove_device(0);
+        assert!(m.endpoints_down.is_empty());
+        assert!(u32::from_le_bytes(m.encode()[..4].try_into().unwrap()) < 15);
     }
 
     #[test]

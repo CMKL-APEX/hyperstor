@@ -133,6 +133,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again"
+spec = ["I257"]
+status = "done"
+tests = [
+    "hyperstor_daemon::shard_cell::tests::background_reads_have_a_share_of_their_own",
+    "cluster::a_slow_backfill_holds_no_reactor",
+    "cluster::a_push_is_read_again_when_its_object_is_written",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
@@ -633,18 +643,38 @@ id = "HS11"
 title = "Key-value ranges"
 
 [[milestone.item]]
-what = "Per-key assertions on an object's key-value table"
-spec = ["25-kv-ranges.md §28.2", "D194"]
-status = "planned"
+what = "Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup"
+spec = ["25-kv-ranges.md §28.2", "D194", "I255"]
+status = "done"
+tests = [
+    "cluster::keys_are_asserted_and_tables_sized",
+    # The byte count is also checked against the model, through crashes
+    # and replay, by crash::random_crashes_recover_to_a_consistent_prefix,
+    # tracked earlier.
+]
 
 [[milestone.item]]
 what = "Tables, rows and range objects found through the root; one-row atomic changes and scans"
-spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200"]
-status = "planned"
+spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200", "I256"]
+status = "done"
+tests = [
+    "cluster::kv_store_matches_a_sorted_map",
+    "hyperstor_kv::keys::tests::rows_keep_their_order_and_decode",
+    "hyperstor_kv::keys::tests::map_entries_name_their_start",
+]
 
 [[milestone.item]]
 what = "Splits and merges by each range's primary, resumed after failover"
-spec = ["25-kv-ranges.md §28.4", "25-kv-ranges.md §28.5", "D201", "D202"]
+spec = ["25-kv-ranges.md §28.4", "25-kv-ranges.md §28.5", "D201", "D202", "I260"]
+status = "done"
+tests = [
+    "cluster::kv_jobs_finish_or_undo_from_every_step",
+    "cluster::kv_ranges_split_and_merge_on_their_own",
+]
+
+[[milestone.item]]
+what = "Range objects nothing names deleted an hour after they appear"
+spec = ["25-kv-ranges.md §28.5"]
 status = "planned"
 
 [[milestone.item]]
@@ -876,14 +906,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests)"
-spec = ["26-networks.md §29.6", "26-networks.md §29.7", "D208", "D210", "G53"]
+what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests; health per network, with endpoints marked down on peer reports and damped; fencing shown on two networks; warm paths wait for RDMA)"
+spec = ["26-networks.md §29.6", "26-networks.md §29.7", "26-networks.md §29.11", "D208", "D210", "G53", "I258"]
 status = "partial"
 tests = [
     "hyperstor_fabric::tests::a_path_without_weight_is_never_chosen",
     "hyperstor_fabric::tests::equal_load_follows_weights",
     "hyperstor_fabric::tests::load_spreads_without_herding",
     "endpoints::a_devices_endpoints_share_its_requests",
+    "hyperstor_map::network_tests::senders_skip_endpoints_down_and_keep_pinging_them",
+    "hyperstor_meta::tests::two_reports_mark_an_endpoint_down_not_its_node",
+    "endpoints::a_failed_endpoint_is_down_and_its_node_stays_up",
+    "endpoints::a_fenced_holder_is_refused_on_every_network",
 ]
 
 [[milestone.item]]

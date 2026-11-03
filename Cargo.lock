@@ -1685,6 +1685,7 @@ dependencies = [
  "hyperstor-client",
  "hyperstor-engine",
  "hyperstor-fabric",
+ "hyperstor-kv",
  "hyperstor-meta",
  "hyperstor-placement",
  "hyperstor-proto",
@@ -1735,6 +1736,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstor-kv"
+version = "0.1.0"
+dependencies = [
+ "hyperstor-client",
+ "hyperstor-codec",
+ "hyperstor-map",
+ "hyperstor-proto",
+ "hyperstor-reactor",
+ "rand 0.9.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hyperstor-map"
 version = "0.1.0"
 dependencies = [
@@ -1773,6 +1787,9 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

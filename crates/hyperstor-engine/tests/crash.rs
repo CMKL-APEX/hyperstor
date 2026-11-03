@@ -235,6 +235,12 @@ fn assert_matches(sh: &Shard, m: &Model, check_revisions: bool) -> Result<(), St
         if kv != mkv {
             return Err(format!("{k:?}: kv differs"));
         }
+        // The byte count kept as the table changes, after overwrites,
+        // deletes, ranges, takes and replay (25-kv-ranges.md §28.2).
+        let bytes: u64 = o.kv.iter().map(|(a, b)| (a.len() + b.len()) as u64).sum();
+        if st.kv_bytes != bytes {
+            return Err(format!("{k:?}: kv_bytes {} vs model {bytes}", st.kv_bytes));
+        }
     }
     Ok(())
 }

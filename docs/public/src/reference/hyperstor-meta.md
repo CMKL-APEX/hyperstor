@@ -29,6 +29,15 @@ usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--memb
 On start it prints the number of nodes, devices, pools and PGs it
 loaded, the map epoch and the lease length. It runs until stopped.
 
+It also prints the warnings and errors of the Raft library that keeps
+the members in step (openraft), such as a member it can't reach or a
+vote that timed out. A message from one place is printed at most once
+every 5 seconds, so a member that is down doesn't fill the journal.
+
+| Environment | Meaning |
+|---|---|
+| `HS_LOG` | Which library messages to print, as `tracing`'s `EnvFilter` (default `warn`). `HS_LOG=warn,openraft=debug` shows Raft in detail, for a map service that can't commit; set it in a systemd drop-in for `hyperstor-meta.service` |
+
 | Exit status | Meaning |
 |---|---|
 | 1 | The cluster file can't be read or has a mistake (the message names the line), or the `--api` or member address can't be bound, or the `--api-tls` or `--ca` files can't be read or don't fit together, or the store in `--data` can't be opened |

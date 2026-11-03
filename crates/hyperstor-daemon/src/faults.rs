@@ -18,6 +18,8 @@ const EIO: i32 = 5;
 #[derive(Default)]
 pub struct Partitions {
     cut: Mutex<HashSet<(u32, u32)>>,
+    /// Endpoints nobody reaches, as a failed port (D210).
+    addrs: Mutex<HashSet<std::net::SocketAddr>>,
 }
 
 impl Partitions {
@@ -35,6 +37,21 @@ impl Partitions {
 
     pub fn heal_all(&self) {
         self.cut.lock().unwrap().clear();
+        self.addrs.lock().unwrap().clear();
+    }
+
+    /// No node reaches `addr` while `cut`, over TCP or UDP.
+    pub fn cut_addr(&self, addr: std::net::SocketAddr, cut: bool) {
+        let mut s = self.addrs.lock().unwrap();
+        if cut {
+            s.insert(addr);
+        } else {
+            s.remove(&addr);
+        }
+    }
+
+    pub fn addr_blocked(&self, addr: std::net::SocketAddr) -> bool {
+        self.addrs.lock().unwrap().contains(&addr)
     }
 
     pub fn blocked(&self, a: u32, b: u32) -> bool {

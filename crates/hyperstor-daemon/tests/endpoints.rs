@@ -41,106 +41,164 @@ fn run(client: bool, nodes: bool, copies: u8) -> (BTreeSet<u16>, BTreeSet<u16>) 
     run_with(client, nodes, copies, 1)
 }
 
+/// A running 3-node cluster whose devices also listen on endpoints of
+/// network `fast` (127.0.0.2), with a pool of `copies`.
+struct Rig {
+    meta_addr: SocketAddr,
+    /// Each device's endpoints, by node.
+    endpoints: Vec<Vec<SocketAddr>>,
+    handles: Vec<NodeHandle>,
+    stop_tx: std::sync::mpsc::Sender<()>,
+    meta_thread: std::thread::JoinHandle<()>,
+}
+
+impl Rig {
+    /// `per` endpoints for each device, nodes on `fast` if `nodes`,
+    /// pinging each other with `peer_timeout` (zero: not at all), cut by
+    /// `partitions`.
+    fn start(
+        nodes: bool,
+        copies: u8,
+        per: u16,
+        peer_timeout: Duration,
+        partitions: Option<Arc<faults::Partitions>>,
+    ) -> Rig {
+        let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let meta_addr = meta_l.local_addr().unwrap();
+        let mut map = ClusterMap::new(1);
+        map.networks.insert(
+            "fast".into(),
+            NetworkDef {
+                kind: NetKind::Data,
+                trusted: true,
+                matches: "subnet 127.0.0.2/32".into(),
+            },
+        );
+        let mut specs = Vec::new();
+        let mut endpoints = Vec::new();
+        for n in 0..3u32 {
+            let main = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let eps: Vec<std::net::TcpListener> = (0..per)
+                .map(|_| std::net::TcpListener::bind("127.0.0.2:0").unwrap())
+                .collect();
+            let addrs: Vec<SocketAddr> = eps.iter().map(|l| l.local_addr().unwrap()).collect();
+            map.add_node(n, &[main.local_addr().unwrap()], 0);
+            map.endpoints.insert(
+                n * 1000,
+                addrs.iter().map(|a| ("fast".to_string(), *a)).collect(),
+            );
+            endpoints.push(addrs);
+            specs.push((n, main, eps));
+        }
+        let mut pool = replicated_pool(POOL, "vol", copies, 16);
+        pool.min_size = 1;
+        pool.chunk_size = CHUNK;
+        pool.autoscale = false;
+        map.add_pool(pool);
+        map.ensure_meta_pool();
+        map.recompute();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let meta_thread = std::thread::spawn(move || {
+            block_on(async move {
+                let meta = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(400));
+                spawn(hyperstor_meta::serve(
+                    hyperstor_reactor::net::TcpListener::from_std(meta_l),
+                    meta.clone(),
+                ));
+                spawn(meta.clone().liveness(Duration::from_millis(700)));
+                spawn(meta.clone().publisher());
+                while stop_rx.try_recv().is_err() {
+                    hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+        });
+        let handles: Vec<NodeHandle> = specs
+            .into_iter()
+            .map(|(n, main, eps)| {
+                start(NodeConfig {
+                    endpoints: eps.into_iter().map(|l| (n * 1000, l)).collect(),
+                    networks: networks(nodes),
+                    push_part_bytes: 0,
+                    stray_grace: Duration::ZERO,
+                    io_timeout: Duration::ZERO,
+                    read_timeout: Duration::ZERO,
+                    commit_delays: None,
+                    pings: None,
+                    older: None,
+                    kv_limits: Default::default(),
+                    kv_sweep: std::time::Duration::ZERO,
+                    partitions: partitions.clone(),
+                    node_id: n,
+                    meta: vec![meta_addr],
+                    shards: vec![ShardSpec {
+                        device_id: n * 1000,
+                        device: DeviceSpec::Existing(Arc::new(MemDev::new(64 << 20))),
+                        listener: main,
+                    }],
+                    cpus: Vec::new(),
+                    spin: Duration::ZERO,
+                    peer_timeout,
+                    meta_blocked: None,
+                    defer_max: None,
+                    scrub_interval: Duration::ZERO,
+                    no_digests: false,
+                    hole_repair: false,
+                })
+            })
+            .collect();
+        Rig {
+            meta_addr,
+            endpoints,
+            handles,
+            stop_tx,
+            meta_thread,
+        }
+    }
+
+    fn stop(self) {
+        for h in self.handles {
+            h.stop();
+        }
+        let _ = self.stop_tx.send(());
+        self.meta_thread.join().unwrap();
+    }
+}
+
+fn networks(on: bool) -> Vec<String> {
+    if on {
+        vec!["fast".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Waits up to 30 s for `ok` of the client's map, refreshing it.
+async fn wait_map(cl: &Client, what: &str, ok: impl Fn(&ClusterMap) -> bool) {
+    let t = std::time::Instant::now();
+    loop {
+        cl.refresh_map().await.unwrap();
+        if ok(&cl.map()) {
+            return;
+        }
+        assert!(
+            t.elapsed().as_secs() < 30,
+            "{what}: {:?}",
+            cl.map().endpoints_down
+        );
+        hyperstor_reactor::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// [`run`] with `per` endpoints on `fast` for each device.
 fn run_with(client: bool, nodes: bool, copies: u8, per: u16) -> (BTreeSet<u16>, BTreeSet<u16>) {
-    let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let meta_addr = meta_l.local_addr().unwrap();
-    let mut map = ClusterMap::new(1);
-    map.networks.insert(
-        "fast".into(),
-        NetworkDef {
-            kind: NetKind::Data,
-            trusted: true,
-            matches: "subnet 127.0.0.2/32".into(),
-        },
-    );
-    let mut specs = Vec::new();
-    let mut ports = BTreeSet::new();
-    for n in 0..3u32 {
-        let main = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let eps: Vec<std::net::TcpListener> = (0..per)
-            .map(|_| std::net::TcpListener::bind("127.0.0.2:0").unwrap())
-            .collect();
-        let addrs: Vec<SocketAddr> = eps.iter().map(|l| l.local_addr().unwrap()).collect();
-        ports.extend(addrs.iter().map(|a| a.port()));
-        map.add_node(n, &[main.local_addr().unwrap()], 0);
-        map.endpoints.insert(
-            n * 1000,
-            addrs.iter().map(|a| ("fast".to_string(), *a)).collect(),
-        );
-        specs.push((n, main, eps));
-    }
-    let mut pool = replicated_pool(POOL, "vol", copies, 16);
-    pool.min_size = 1;
-    pool.chunk_size = CHUNK;
-    pool.autoscale = false;
-    map.add_pool(pool);
-    map.ensure_meta_pool();
-    map.recompute();
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-    let meta_thread = std::thread::spawn(move || {
-        block_on(async move {
-            let meta = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(400));
-            spawn(hyperstor_meta::serve(
-                hyperstor_reactor::net::TcpListener::from_std(meta_l),
-                meta.clone(),
-            ));
-            spawn(meta.clone().liveness(Duration::from_millis(700)));
-            spawn(meta.clone().publisher());
-            while stop_rx.try_recv().is_err() {
-                hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-    });
-    let networks = |on: bool| {
-        if on {
-            vec!["fast".to_string()]
-        } else {
-            Vec::new()
-        }
-    };
-    let handles: Vec<NodeHandle> = specs
-        .into_iter()
-        .map(|(n, main, eps)| {
-            start(NodeConfig {
-                endpoints: eps.into_iter().map(|l| (n * 1000, l)).collect(),
-                networks: networks(nodes),
-                push_part_bytes: 0,
-                stray_grace: Duration::ZERO,
-                io_timeout: Duration::ZERO,
-                read_timeout: Duration::ZERO,
-                commit_delays: None,
-                pings: None,
-                older: None,
-                partitions: None,
-                node_id: n,
-                meta: vec![meta_addr],
-                shards: vec![ShardSpec {
-                    device_id: n * 1000,
-                    device: DeviceSpec::Existing(Arc::new(MemDev::new(64 << 20))),
-                    listener: main,
-                }],
-                cpus: Vec::new(),
-                spin: Duration::ZERO,
-                peer_timeout: Duration::ZERO,
-                meta_blocked: None,
-                defer_max: None,
-                scrub_interval: Duration::ZERO,
-                no_digests: false,
-                hole_repair: false,
-            })
-        })
-        .collect();
+    let rig = Rig::start(nodes, copies, per, Duration::ZERO, None);
+    let ports: BTreeSet<u16> = rig.endpoints.iter().flatten().map(|a| a.port()).collect();
+    let meta_addr = rig.meta_addr;
     let seen = std::thread::spawn(move || {
         block_on(async move {
             let cl = Client::connect(meta_addr, 7).await.unwrap();
             cl.set_networks(networks(client));
-            let t = std::time::Instant::now();
-            while cl.map().nodes.values().any(|n| !n.up) {
-                assert!(t.elapsed().as_secs() < 30, "nodes not up");
-                hyperstor_reactor::time::sleep(Duration::from_millis(100)).await;
-                cl.refresh_map().await.unwrap();
-            }
+            wait_map(&cl, "nodes not up", |m| m.nodes.values().all(|n| n.up)).await;
             // 32 chunks over 16 PGs: every device leads some. Then small
             // writes at once, so a device's endpoints share the load.
             for v in 1..=16u128 {
@@ -162,11 +220,7 @@ fn run_with(client: bool, nodes: bool, copies: u8, per: u16) -> (BTreeSet<u16>, 
     })
     .join()
     .unwrap();
-    for h in handles {
-        h.stop();
-    }
-    let _ = stop_tx.send(());
-    meta_thread.join().unwrap();
+    rig.stop();
     (ports, seen)
 }
 
@@ -219,4 +273,103 @@ fn without_a_shared_network_the_address_is_used() {
     );
     assert_eq!(map.device_addr_on(0, &["slow".into()]), Some(a));
     assert_eq!(map.device_addr_on(0, &[]), Some(a));
+}
+
+/// Health per network (26-networks.md §29.7, D210): an endpoint no node
+/// reaches is marked down while its node stays up, replication to the
+/// node goes on over its other endpoint, and the endpoint comes back once
+/// reachable. A node none of whose endpoints answers is down, though its
+/// address still does: no data network reaches it.
+#[test]
+fn a_failed_endpoint_is_down_and_its_node_stays_up() {
+    let cut = Arc::new(faults::Partitions::default());
+    let rig = Rig::start(true, 3, 2, Duration::from_millis(300), Some(cut.clone()));
+    let (meta_addr, eps) = (rig.meta_addr, rig.endpoints.clone());
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta_addr, 7).await.unwrap();
+            wait_map(&cl, "nodes up", |m| m.nodes.values().all(|n| n.up)).await;
+            let data = vec![5u8; 2 * CHUNK as usize];
+            cl.write(POOL, 1, 0, data.clone()).await.unwrap();
+            cut.cut_addr(eps[0][0], true);
+            wait_map(&cl, "endpoint down", |m| {
+                m.endpoints_down.contains(&eps[0][0])
+            })
+            .await;
+            let m = cl.map();
+            assert_eq!(m.endpoints_down.len(), 1, "{:?}", m.endpoints_down);
+            assert!(m.nodes.values().all(|n| n.up), "node 0 stays up");
+            assert_eq!(m.device_addrs_on(0, &networks(true)), vec![eps[0][1]]);
+            // Three copies, so node 0 gets every write, over its other
+            // endpoint.
+            for v in 2..=6u128 {
+                cl.write(POOL, v, 0, data.clone()).await.unwrap();
+                assert_eq!(cl.read(POOL, v, 0, data.len() as u64).await.unwrap(), data);
+            }
+            cut.cut_addr(eps[0][0], false);
+            wait_map(&cl, "endpoint up", |m| m.endpoints_down.is_empty()).await;
+            // Both cut: node 0 is unreachable on the data network.
+            cut.cut_addr(eps[0][0], true);
+            cut.cut_addr(eps[0][1], true);
+            wait_map(&cl, "node 0 down", |m| !m.nodes[&0].up).await;
+            assert!(cl.map().nodes[&1].up && cl.map().nodes[&2].up);
+            cut.heal_all();
+            wait_map(&cl, "node 0 back", |m| {
+                m.nodes.values().all(|n| n.up) && m.endpoints_down.is_empty()
+            })
+            .await;
+            assert_eq!(cl.read(POOL, 1, 0, data.len() as u64).await.unwrap(), data);
+        })
+    })
+    .join()
+    .unwrap();
+    rig.stop();
+}
+
+/// Fencing doesn't depend on the path (26-networks.md §29.11, D150): a
+/// holder whose lease was taken over is refused on the device's endpoint
+/// and on its address alike.
+#[test]
+fn a_fenced_holder_is_refused_on_every_network() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let rig = Rig::start(true, 3, 1, Duration::ZERO, None);
+    let meta_addr = rig.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Client::connect(meta_addr, 1).await.unwrap();
+            let b = Client::connect(meta_addr, 2).await.unwrap();
+            a.set_networks(networks(true));
+            wait_map(&a, "nodes up", |m| m.nodes.values().all(|n| n.up)).await;
+            let v = a
+                .create_volume(POOL, CHUNK as u64, None, "v")
+                .await
+                .unwrap();
+            let va = a.attach(v.id).await.unwrap();
+            va.write(0, vec![1; 4096]).await.unwrap();
+            let lease = va.lease();
+            drop(va);
+            b.take_over(v.id).await.unwrap();
+            for on in [true, false] {
+                a.set_networks(networks(on));
+                let e = a
+                    .write_under(lease, POOL, v.lineage, 0, 0, 0, vec![2; 4096])
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(
+                        e,
+                        ClientError::Server {
+                            code: Code::Fenced,
+                            ..
+                        }
+                    ),
+                    "on fast {on}: {e:?}"
+                );
+            }
+        })
+    })
+    .join()
+    .unwrap();
+    rig.stop();
 }

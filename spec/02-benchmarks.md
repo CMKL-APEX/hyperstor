@@ -1548,3 +1548,40 @@ bucket up to 512 µs in the last, polled, phase.
    pause shorter than about 1 ms per poll would hide in it; the max per
    phase, 6–9 ms either way, bounds a longer one. Checked for this model
    and firmware only (EPK9GB5Q); G54 stays open for other drives.
+
+## 2026-11-02: the load test with held reactors named (I232; pilot)
+
+The load test of the entry above, repeated once #155 (I232: a held
+reactor logs where the time went) was installed on every host (`main`
+at `aa6e347`), to catch node 0's process-wide pause in the act. Pool 1
+without the NVMe devices, as in finding 4 above.
+`HS_BENCH_SECS=30 hyperstor-bench remote` from node 2's host into eight
+64 MiB volumes in pool 1 (ids 0–7, purged after); no ICMP or TCP
+probes this time.
+
+| Test | ops/s | p50 | p99 | 2026-11-01 (ops/s, p50, p99) |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 1,123 | 0.87 ms | 1.50 ms | 939, 1.03 ms, 1.61 ms |
+| 4 KiB random writes, QD32 | 15,542 | 1.93 ms | 4.82 ms | 14,145, 2.08 ms, 4.74 ms |
+| 4 KiB random reads, QD1 | 2,643 | 0.46 ms | 0.61 ms | 1,795, 0.50 ms, 1.30 ms |
+| 4 KiB random reads, QD32 | 21,522 | 0.81 ms | 4.91 ms | 15,827, 1.45 ms, 4.48 ms |
+| 1 MiB writes, QD4 | 65 | 57 ms | 136 ms | 64, 58 ms, 148 ms |
+| 1 MiB reads, QD4 | 84 | 47 ms | 181 ms | 82–84, 46–48 ms, 145–164 ms (finding 4) |
+
+### Findings
+
+1. **No reactor held.** `hyperstor_reactor_stalls_total` stayed 0 on
+   all eight devices, so node 0's pause didn't recur and I232 had
+   nothing to name. It was rare before too (once on 2026-10-31, once in
+   the run above); the logs will now say whether a task, the scheduler
+   or the kernel held it when it comes back.
+2. **One peer silence, again without a hold.** During the 1 MiB tests,
+   node 0's device 1 reported node 1 silent for 300 ms; node 1 logged
+   nothing then, kernel included. Like G43's unexplained silences, it
+   points at the network rather than the reactor.
+3. **Commits waited on node 2's file devices while the volumes were
+   filled**: seven of 101–123 ms in the run's first seconds, none after.
+4. **The 4 KiB tests were faster than on 2026-11-01** (reads at QD32
+   15,827 → 21,522 ops/s, at QD1 1,795 → 2,643). One run of each, with
+   pool 1 now on file devices only, so not read as a change in the code.
+   1 MiB reads at QD4 are as in finding 4 above.

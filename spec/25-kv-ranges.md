@@ -8,7 +8,8 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **designed, not yet built** (2026-11-01). Settled with the
+Status: **stages 1–3 of §28.8 built** (2026-11-03: I255, I256, I260);
+the leftover check and the deletion queue are next. Settled with the
 owner: D191–D199 (points 128–137) and D200–D202 (points 169–172 of
 [05-decision-log.md](05-decision-log.md)). The rest of this document
 (key encoding, ids, the root's layout, the deletion queue) was decided
@@ -31,7 +32,7 @@ while drafting and is open for review.
   divided (D200).
 - **Atomic unit: one row** (D200). A batch of changes to one row's
   columns applies atomically, with assertions on its columns (absent, or
-  equal to a checksum: D194). There is nothing atomic across rows until
+  holding given bytes: D194). There is nothing atomic across rows until
   HS11b. Why: a split can't break a one-row batch, so it never fails for
   a reason the caller can't see; S3 needs nothing wider (D191).
 - **Reads** are of a column, a row, or the rows from one row to another
@@ -54,7 +55,13 @@ allocator to coordinate, as volume ids.
 | `start`, `end` | the first row it holds, and the first it doesn't (absent: the table's end) |
 | `epoch` | grows with every change of `start`, `end` or `state` |
 | `state` | `pending` (being filled, not yet serving), `serving`, `splitting` (at a row, into a named range id), `absorbing` (a named neighbour), `merging` (into a named neighbour) |
-| `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root |
+| `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root; cleared once the root names it |
+| `merged` | after a merge: the neighbour whose rows it took, until the root no longer names that one and it is deleted |
+
+- **Attribute values:** ids and the epoch are big-endian; `start` and
+  `end` are rows as they are; `state` is a tag byte (1 `pending`,
+  2 `serving`, 3 `splitting`, 4 `absorbing`, 5 `merging`), then the range
+  id it names and, for `splitting`, the row (I256).
 
 - **Key–value table.** User keys are stored as `r` + row + column. The
   row is encoded so that its end can be found and order is kept: each
@@ -72,17 +79,24 @@ allocator to coordinate, as volume ids.
 - **Reads return the attributes.** `Lookup` answers with the
   attributes and the key slice from one read on the primary, so a reader
   checks the bounds and state against the keys it got.
-- **One new engine operation:** `AssertKv(key, checksum or absent)`,
-  D194's per-key assertion, in the engine and on the wire (`WireOp`).
-  `Lookup` also reports the table's byte count, for split and merge
-  decisions.
+- **One new assertion:** `AssertKv(key, value or absent)`, D194's
+  per-key assertion (built, I255). Like the other assertions on the wire
+  it is decided by the primary, holding the object, and never reaches the
+  engine or the replicas (I6). It compares exact bytes (D194 revised,
+  point 190). Why: never wrong, and the values asserted (index entries,
+  root entries) are small.
+- **The table's size.** The engine keeps each table's bytes (keys and
+  values) as it changes. A *sized* lookup returns them, for split and
+  merge decisions; it travels as its own message kind, so `Lookup` and
+  its answer stay as older builds read them.
 
 ### 28.3 The root
 
 - Each store has one **root**: a `kv` object in `.meta` with a fixed name
   (the store id) (D197). Its table holds:
-  - `t` + table name → the table record: id, index and data pools,
-    state, settings. This is D197's bucket record;
+  - `t` + table name → the table record: a format byte, the id, the
+    index and data pools. Later fields (settings) are appended, and a
+    reader skips those it doesn't know. This is D197's bucket record;
   - `i` + table id → the table name, so a range can find its table;
   - `m` + table id + start row → range id and epoch, one entry per range.
 - **The root is a map, and range objects have the final word.** A range's
@@ -102,8 +116,10 @@ allocator to coordinate, as volume ids.
   entries. A crash between leaves a range object no root entry names. Its
   primary deletes it after an hour (§28.5).
 - **Deleting a table** (an S3 bucket must be empty): one operation on the
-  root marks the table `deleting` and removes the name; then the client
-  deletes the range objects and the `m` and `i` entries.
+  root removes the name, asserting the record is the one read; then the
+  client deletes the range objects, then the `m` and `i` entries. An `i`
+  entry whose name is gone marks a delete that stopped half-way, to be
+  finished by whoever finds it (I256).
 
 ### 28.4 Splits
 
@@ -117,20 +133,23 @@ Range R holds rows `[a, c)` at epoch E:
    to E+1. Clients see the new state and hold writes to rows ≥ `b`,
    retrying every 50 ms; writes below `b` go on at E+1 (D201).
 2. **Copy.** Create R2 (`pending`, rows `[b, c)`, same table and pool) and
-   copy rows ≥ `b` from R into it, in batches under the engine's limit
-   on one list (`max_list_bytes`). The frozen rows don't change, so one
+   copy rows ≥ `b` from R into it, in lists of at most 1 MiB, each
+   asserting R2 is still `pending`. The frozen rows don't change, so one
    pass is enough.
-3. **Open R2:** set its `state` to `serving`.
+3. **Open R2:** set its `state` to `serving`, at epoch 2, asserting it
+   `pending`.
 4. **Shrink R**, asserting epoch E+1: set `end` to `b`, `next` to R2,
    `state` to `serving` and the epoch to E+2, and delete rows ≥ `b`
    (`KvDelRange`, one operation). The split is done at this point.
-5. **Update the root:** put R2's entry (asserting it absent) and R's new
-   epoch.
+5. **Update the root:** put R2's entry (asserting it absent), then clear
+   R's `next`. Root entries' epochs are hints, and R's isn't rewritten.
 
 - **A crash before step 3** abandons the split: the new primary deletes
-  R2 and sets R `serving` at a new epoch. A crash after step 3 finishes
-  steps 4 and 5. Why: a copy is cheap to repeat, and abandoning needs no
-  record of how far the copy went.
+  R2 (asserting it `pending`) and sets R `serving` at a new epoch. A crash
+  after step 3 finishes steps 4 and 5. Why: a copy is cheap to repeat,
+  and abandoning needs no record of how far the copy went. A job whose
+  step 4 fails because its split was abandoned meanwhile deletes its R2,
+  which nothing names (I260).
 - **Freezing costs a pause** of about the copy's time, for writes to the
   upper half only: 32 MiB at a few hundred MB/s is roughly 0.1–0.3 s.
   Copying first and catching up after (a short last pass) can come later
@@ -146,29 +165,35 @@ Range R holds rows `[a, c)` at epoch E:
   table hold less than 16 MiB together, the left one's primary merges
   them. Why 16 MiB: a quarter of the split size, so a range that just
   split doesn't merge back.
-  1. Set the left range L to `absorbing` (the right one, N), and N to
-     `merging` (into L) at a new epoch. N's writes are held, as a frozen
-     half is.
-  2. Copy N's rows into L. L's bounds still exclude them, so no reader
-     sees them yet.
+  1. Set the left range L to `absorbing` (the right one, N), then N to
+     `merging` (into L), each at a new epoch; N only if it still starts
+     where L ends. N's writes are held, as a frozen half is.
+  2. Copy N's rows into L, each list asserting L still absorbs N. L's
+     bounds still exclude them, so no reader sees them yet.
   3. Extend L, asserting its epoch: set `end` to N's `end`, `state` to
-     `serving`, and a new epoch.
-  4. Update the root: delete N's entry (asserting its value), put L's
-     new epoch.
-  5. Delete N.
+     `serving`, `merged` to N, and a new epoch.
+  4. Update the root: delete N's entry (asserting its value).
+  5. Delete N (asserting it `merging` into L), then clear L's `merged`.
 
   A crash before step 3 abandons the merge: the copied rows are deleted
   from L (`KvDelRange` past its `end`) and both ranges serve again at new
-  epochs. A crash after step 3 finishes steps 4 and 5. N is deleted only
-  after the root no longer names it. Why: a client
+  epochs. A crash after step 3 finishes steps 4 and 5, from L's `merged`.
+  N's own primary leaves N to L while L absorbs it or names it in
+  `merged`; otherwise the merge was abandoned there, and N serves again.
+  N is deleted only after the root no longer names it. Why: a client
   that finds a range missing reads the root again, which must then
   point elsewhere.
-- **Leftover objects.** A range's primary checks, an hour after a range
-  object appears, that the root or a neighbour's `splitting` state names
-  it. One that nothing names (a crash while creating a table, or an
-  abandoned copy) is deleted.
-- **Root repair.** A primary that finds the root's entry for its range out
-  of date (a split stopped before its step 5, a merge before its step 4) puts it right.
+- **Taking up a stopped job.** A primary's sweep (every 10 s) takes up a
+  range that shows a job, by its state, `next` or `merged`, at the same
+  epoch as on the sweep before: finished or undone as above. Why: a
+  job still under way changes the epoch within a sweep, and one that is
+  taken up anyway fails its next step, which asserts what it left.
+- **Leftover objects** (not built yet). A range's primary checks, an hour
+  after a range object appears, that the root or a neighbour's
+  `splitting` state names it. One that nothing names (a crash while
+  creating a table, or an abandoned copy) is deleted.
+- **Root repair** is taking up a stopped job: a split stopped before its
+  step 5 shows `next`, a merge before its step 4 shows `merged`.
 
 ### 28.6 The deletion queue
 
@@ -185,15 +210,17 @@ scanned, and the primary that holds the queue drains it.
 - **`hyperstor-kv`**, a library on `hyperstor-client`:
   - open a store;
   - create, look up, list and delete tables;
-  - `get`, `scan` (rows, prefix, limit, continuation);
-  - `apply(row, batch)`: puts, deletes, assertions, and queue entries.
+  - `get` (a column), `row` (every column of a row), `scan` (rows from,
+    to, with a prefix, a limit of rows, and where the next page starts);
+  - `apply(row, batch)`: puts, deletes, assertions, and (stage 4) queue
+    entries.
 
   It caches the root, routes by row, handles `Conflict` and `next`, and
   holds writes during a freeze. The S3 gateway (HS12) is its first user.
 - **In `hyperstord`**, each primary watches the `kv` objects it holds for
-  size, at most once a second per object written. It runs splits,
-  merges, leftover checks and queues, one job per range at a time and a
-  few per device. These are the only background work in a storage
+  size, at most once a second per object written, and sweeps them all
+  every 10 s. It runs splits, merges, leftover checks and queues, one
+  job per range at a time and two per device (I260). These are the only background work in a storage
   daemon that writes to other PGs, through its client.
 
 ### 28.8 Build stages and tests
@@ -202,12 +229,15 @@ scanned, and the primary that holds the queue drains it.
    `Lookup`. Tests: the engine's randomized test against its model
    covers the new assertion.
 2. `hyperstor-kv` without splits: key encoding, the root, tables, rows,
-   scans, the routing cache. Tests: a randomized test against a sorted
-   map, on an in-process cluster.
-3. Splits and merges in `hyperstord`. Tests: the same randomized test,
-   with sizes that split and merge often and primaries killed at every
-   step (the fault rig). After each step the store must equal the model,
-   every row must be in exactly one serving range, and no object may be
-   left over.
+   scans, the routing cache (built, I256). Tests: a randomized test
+   against a sorted map, on an in-process cluster, through two stores
+   whose caches go stale, with ranges split by hand so that reads and
+   writes cross ranges, follow `next` and wait on a frozen half.
+3. Splits and merges in `hyperstord` (built, I260). Tests: each job
+   stopped after every step and taken up, and a table that splits and
+   merges on its own under small limits while a node is killed and
+   restarted, with jobs left half done for the primaries to take up.
+   After each, the store must equal the model, every row must be in
+   exactly one serving range, and no object may be left over.
 4. The deletion queue. Tests: queued objects deleted once and only
    after their batch commits, through primary failover.

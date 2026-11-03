@@ -174,6 +174,8 @@ fn main() {
         commit_delays: None,
         pings: None,
         older: None,
+        kv_limits: Default::default(),
+        kv_sweep: std::time::Duration::ZERO,
         partitions: None,
         node_id: node,
         meta,

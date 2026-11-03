@@ -1184,3 +1184,13 @@ first (28-scrub.md §31). Open, with a recommendation:
 | 187 | Health checks | (a) overdue, reduced, skipped and unrepairable damage, as in §31.5; (b) only unrepairable damage and inconsistency, as now | (a), D228 |
 | 188 | Scrub on demand | (a) an operation over the API and CLI; (b) none: wait for the schedule | (a), D229 |
 | 189 | Scrub after recovery | (a) a light pass with the hole check within an hour of a push; (b) nothing extra; (c) a deep pass | (a), D230: it catches copy-path bugs early, and a deep pass reads every block for a check that digests already make |
+
+## Per-key assertions, HS11 stage 1 (2026-11-03)
+
+Building D194's assertion: the only checksum in the code base is CRC32C,
+32 bits, with which a changed value would pass about once in four
+billion races. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 190 | What `AssertKv` compares: the exact value, sent back by the client (recommended); the value's CRC32C, as D194 read; or a new 64-bit hash | The exact value | D194 revised |

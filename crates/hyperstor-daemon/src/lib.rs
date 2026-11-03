@@ -28,8 +28,10 @@ pub mod diag;
 pub mod drive;
 pub mod faults;
 pub mod heat;
+mod kv;
 pub mod metrics;
 mod shard_cell;
+use shard_cell::ReadKind;
 
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
 use hyperstor_client::volume::{
@@ -219,12 +221,23 @@ pub struct NodeConfig {
     pub pings: Option<Arc<faults::Pings>>,
     /// Test hook: message kinds nodes don't know, as an older build.
     pub older: Option<Arc<faults::Older>>,
+    /// When key–value ranges split and merge (D202); tests set them small.
+    pub kv_limits: hyperstor_kv::jobs::Limits,
+    /// How often a primary looks over the key–value ranges it holds for
+    /// jobs that stopped and sizes to act on (25-kv-ranges.md §28.7);
+    /// zero: [`kv::SWEEP`].
+    pub kv_sweep: Duration,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
 /// large objects take long, and a reactor that doesn't yield misses its
 /// peers' pings.
 const DIGEST_BATCH: usize = 64;
+
+/// Times a push's read on the ring is planned again because a write to
+/// its object was queued while it waited for the device (I257); then it
+/// reads holding the reactor, as before.
+const PUSH_READ_TRIES: u32 = 3;
 
 /// Bytes of a large key–value table hashed between yields (I188): at
 /// most 1.5 ms of the reactor on the pilot's hosts.
@@ -332,6 +345,11 @@ pub struct NodeHandle {
 }
 
 impl NodeHandle {
+    /// Whether a reactor thread has ended (failed or panicked).
+    pub fn any_failed(&self) -> bool {
+        self.threads.iter().any(|t| t.is_finished())
+    }
+
     /// Waits for the reactor threads, which run until one fails; then
     /// stops the others and returns every result.
     pub fn stop_when_any_fails(self) -> Vec<Result<Arc<dyn BlockDev>, String>> {
@@ -392,6 +410,11 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             g => g,
         };
         let commit_delays = cfg.commit_delays.clone();
+        let kv_limits = cfg.kv_limits;
+        let kv_sweep = match cfg.kv_sweep {
+            Duration::ZERO => kv::SWEEP,
+            t => t,
+        };
         let ping_faults = cfg.pings.clone();
         let older = cfg.older.clone();
         let io_timeout = match cfg.io_timeout {
@@ -491,9 +514,16 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         if !scrub_interval.is_zero() {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
+                        spawn(st.clone().kv_ranges(kv_limits, kv_sweep));
                         spawn(st.clone().accept(l));
-                        // The same reactor answers on each endpoint (D207).
+                        // The same reactor answers on each endpoint (D207),
+                        // and its pings there (D210).
                         for l in more {
+                            if !no_udp
+                                && let Ok(u) = l.local_addr().and_then(UdpSocket::bind)
+                            {
+                                spawn(st.clone().udp_pings(Rc::new(u)));
+                            }
                             spawn(st.clone().accept(TcpListener::from_std(l)));
                         }
                         spawn(st.clone().gauges());
@@ -579,10 +609,10 @@ struct ShardState {
     /// number; none if it couldn't be bound, and peers then ping it over
     /// TCP only.
     udp: RefCell<Option<Rc<UdpSocket>>>,
-    /// This device's UDP pings in flight: nonce -> (peer node, sent).
-    udp_pings: RefCell<HashMap<u64, (u32, std::time::Instant)>>,
-    /// When each peer last answered one of them in time.
-    udp_pongs: RefCell<HashMap<u32, std::time::Instant>>,
+    /// This device's UDP pings in flight: nonce -> (path pinged, sent).
+    udp_pings: RefCell<HashMap<u64, (SocketAddr, std::time::Instant)>>,
+    /// When each path last answered one of them in time.
+    udp_pongs: RefCell<HashMap<SocketAddr, std::time::Instant>>,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
@@ -619,8 +649,17 @@ struct ShardState {
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
     /// push replaces them; reported with the digest [`DAMAGED`].
     damaged: RefCell<HashSet<ObjKey>>,
+    /// Objects being read for a push on the ring (I257): how many such
+    /// reads, and how many writes to each were queued; a read that saw a
+    /// write queued meanwhile is planned again.
+    watched: RefCell<HashMap<ObjKey, (u32, u64)>>,
     /// Objects an operation list is being decided for (`exec`).
     exec_locks: RefCell<HashSet<ObjKey>>,
+    /// Key–value ranges written since their size was last looked at
+    /// (25-kv-ranges.md §28.7).
+    kv_written: RefCell<HashSet<ObjKey>>,
+    /// Key–value ranges with a job running here.
+    kv_jobs: RefCell<HashSet<u128>>,
     /// Volume leases of the headers this device is primary of (06-metadata.md
     /// §9, D75): the holder, until when it holds the lease, and the PG
     /// epoch that was decided at. The holder is in the header too; the
@@ -869,7 +908,10 @@ const DEEP_SCRUB_RATE: u64 = 64 << 20;
 /// none: the primary decides them).
 fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
     Some(match op {
-        WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. } => return None,
+        WireOp::AssertExists
+        | WireOp::AssertAbsent
+        | WireOp::AssertAttr { .. }
+        | WireOp::AssertKv { .. } => return None,
         WireOp::Touch => Op::Touch,
         WireOp::Write { off, data } => Op::Write { off, data },
         WireOp::Zero { off, len } => Op::Zero { off, len },
@@ -1123,7 +1165,10 @@ impl ShardState {
             hole_repair: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
+            watched: RefCell::new(HashMap::new()),
             exec_locks: RefCell::new(HashSet::new()),
+            kv_written: RefCell::new(HashSet::new()),
+            kv_jobs: RefCell::new(HashSet::new()),
             leases: RefCell::new(HashMap::new()),
             slow_reported: RefCell::new(HashSet::new()),
             deadlines: Rc::default(),
@@ -1150,6 +1195,9 @@ impl ShardState {
     /// Queues a list for the next group commit.
     fn enqueue(&self, list: OpList) -> impl Future<Output = CommitResult> + 'static {
         let (tx, rx) = oneshot();
+        if let Some((_, writes)) = self.watched.borrow_mut().get_mut(&list.key) {
+            *writes += 1;
+        }
         self.queue.borrow_mut().push((list, tx));
         if let Some(w) = self.committer.borrow_mut().take() {
             w.wake();
@@ -1703,8 +1751,7 @@ impl ShardState {
                 let Ok(conn) = self.peer(addr).await else {
                     return false;
                 };
-                self.drained().await;
-                let Some(parts) = self.push_parts(to, &key, false) else {
+                let Some(parts) = self.push_parts(to, &key, false).await else {
                     return false;
                 };
                 if !push_all(&conn, parts).await {
@@ -1756,8 +1803,16 @@ impl ShardState {
         Some(addrs[i])
     }
 
-    /// Refuses a peer the partitions test hook cuts this node from.
+    /// Refuses a peer the partitions test hook cuts this node from, and
+    /// an endpoint it cuts.
     fn partitioned(&self, addr: SocketAddr) -> Result<(), ClientError> {
+        if let Some((_, p)) = &*self.partitions.borrow()
+            && p.addr_blocked(addr)
+        {
+            return Err(ClientError::Rpc(hyperstor_client::rpc::RpcError::Io(
+                "endpoint cut (test hook)".into(),
+            )));
+        }
         if let Some((node, p)) = &*self.partitions.borrow()
             && let Some(d) = {
                 let map = self.map();
@@ -1915,8 +1970,9 @@ impl ShardState {
                     kv_from,
                     kv_to,
                     kv_limit,
+                    sized,
                 } => {
-                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit).await;
+                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit, sized).await;
                     reply(&m, &p);
                 }
                 Msg::PushObject { to, key } => {
@@ -2438,6 +2494,7 @@ impl ShardState {
         let Ok(ops) = decode_ops(&payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        self.kv_wrote(&to, &key);
         let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
             Err(why) => Err(err(Code::Conflict, &me.map(), why)),
             Ok(()) => Ok(ops
@@ -2677,7 +2734,9 @@ impl ShardState {
             );
         }
         let r = self
-            .device_read(|sh| sh.read_layered_begin(&keys, off, len))
+            .device_read(ReadKind::Client, |sh| {
+                sh.read_layered_begin(&keys, off, len)
+            })
             .await;
         let data = match r {
             Ok(b) => b.to_vec(),
@@ -3393,6 +3452,12 @@ impl ShardState {
                         ));
                     }
                 }
+                WireOp::AssertKv { key: k, value } if sh.kv_get(key, k) != value.as_deref() => {
+                    return Err(format!(
+                        "key {} is not as asserted",
+                        String::from_utf8_lossy(k)
+                    ));
+                }
                 _ => {}
             }
         }
@@ -3448,6 +3513,7 @@ impl ShardState {
         kv_from: Vec<u8>,
         kv_to: Option<Vec<u8>>,
         kv_limit: u32,
+        sized: bool,
     ) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, true).await {
             return (m, Vec::new());
@@ -3466,6 +3532,7 @@ impl ShardState {
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(&okey, &kv_from, kv_to.as_deref(), kv_limit as usize),
+            kv_bytes: sized.then_some(st.kv_bytes),
         };
         (Msg::LookupOk { found: true }, encode_looked(&looked))
     }
@@ -3788,23 +3855,26 @@ impl ShardState {
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
     /// checks every block's CRC (08-engine.md §7.2), and marks the objects
-    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second, yielding
-    /// between objects so I/O goes on.
+    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second; the reads
+    /// wait for the device on the ring, so I/O goes on.
     async fn verify_pg(&self, pool: u32, pg: u32) {
         let keys = self.shard.get().await.list_pg(pool, pg);
         for key in keys {
-            let read = {
-                let sh = self.shard.get().await;
-                sh.stat(&key).map(|st| {
-                    sh.read(&key, 0, st.size.div_ceil(4096) * 4096)
-                        .map(|b| b.len())
+            // On the ring, with recovery's share of reads (I257).
+            let read = self
+                .device_read(ReadKind::Background, |sh| {
+                    let size = sh.stat(&key).ok_or(EngineError::NotFound)?.size;
+                    sh.read_begin(&key, 0, size.div_ceil(4096) * 4096)
                 })
-            };
+                .await;
             match read {
-                Some(Ok(n)) => {
-                    sleep(Duration::from_secs_f64(n as f64 / DEEP_SCRUB_RATE as f64)).await;
+                Ok(b) => {
+                    sleep(Duration::from_secs_f64(
+                        b.len() as f64 / DEEP_SCRUB_RATE as f64,
+                    ))
+                    .await;
                 }
-                Some(Err(EngineError::Checksum { .. })) => {
+                Err(EngineError::Checksum { .. }) => {
                     if self.damaged.borrow_mut().insert(key) {
                         metrics::ShardMetrics::add(&self.metrics.scrub_damaged, 1);
                     }
@@ -3909,31 +3979,35 @@ impl ShardState {
             } else if kind == UDP_PONG {
                 let nonce = u64::from_le_bytes(buf[4..12].try_into().unwrap());
                 let sent = self.udp_pings.borrow_mut().remove(&nonce);
-                if let Some((peer, sent)) = sent
+                if let Some((path, sent)) = sent
                     && sent.elapsed() <= PING_WAIT
                 {
                     self.udp_pongs
                         .borrow_mut()
-                        .insert(peer, std::time::Instant::now());
+                        .insert(path, std::time::Instant::now());
                 }
             }
         }
     }
 
-    /// Pings every node this reactor shares a PG with, every 100 ms, and
-    /// reports to the map service any that stays silent for
-    /// `peer_timeout` (D40). The map service marks a node down on reports
-    /// from two distinct nodes. Pings go over UDP, and over TCP too until a
-    /// peer first answers over UDP (D185).
+    /// Pings every node this reactor shares a PG with, every 100 ms, on
+    /// each of its paths: its devices' endpoints on this node's networks,
+    /// else its address. Reports to the map service a node silent on every
+    /// path for `peer_timeout` (D40), and an endpoint silent while the node
+    /// answers on another (D210). The map service marks a node or an
+    /// endpoint down on reports from two distinct nodes. Pings go over
+    /// UDP, and over TCP too until a path first answers over UDP (D185).
     async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
-        let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
-        // Peers reported since they last answered: logged once each.
+        let last_ok: Rc<RefCell<HashMap<SocketAddr, std::time::Instant>>> = Rc::default();
+        // Nodes reported since they last answered: logged once each; and
+        // endpoints the same way.
         let reported: Rc<RefCell<HashSet<u32>>> = Rc::default();
-        // Peers that have answered over UDP, so need no TCP ping; when each
+        let mut reported_eps: HashSet<SocketAddr> = HashSet::new();
+        // Paths that have answered over UDP, so need no TCP ping; when each
         // was first watched; those logged as answering over TCP only.
-        let mut udp_seen: HashSet<u32> = HashSet::new();
-        let mut watched: HashMap<u32, std::time::Instant> = HashMap::new();
-        let mut tcp_only: HashSet<u32> = HashSet::new();
+        let mut udp_seen: HashSet<SocketAddr> = HashSet::new();
+        let mut watched: HashMap<SocketAddr, std::time::Instant> = HashMap::new();
+        let mut tcp_only: HashSet<SocketAddr> = HashSet::new();
         const TICK: Duration = Duration::from_millis(100);
         let mut ticked = std::time::Instant::now();
         loop {
@@ -3951,7 +4025,9 @@ impl ShardState {
                 }
             }
             let map = self.map();
-            let mut peers: HashMap<u32, SocketAddr> = HashMap::new();
+            let networks = self.networks.borrow().clone();
+            let mut peers: HashMap<u32, Vec<SocketAddr>> = HashMap::new();
+            let mut addrs: HashMap<u32, SocketAddr> = HashMap::new();
             for pg in map.pgs.values() {
                 if !pg.acting.contains(&self.me) && !pg.up.contains(&self.me) {
                     continue;
@@ -3961,104 +4037,150 @@ impl ShardState {
                         && dev.node != node
                         && map.nodes.get(&dev.node).is_some_and(|n| n.up)
                     {
-                        peers.entry(dev.node).or_insert(dev.addr);
+                        addrs.entry(dev.node).or_insert(dev.addr);
+                        let paths = peers.entry(dev.node).or_default();
+                        if map.endpoints.contains_key(d) {
+                            for a in map.device_paths_on(*d, &networks) {
+                                if !paths.contains(&a) && a != dev.addr {
+                                    paths.push(a);
+                                }
+                            }
+                        }
                     }
                 }
             }
+            // A node with no endpoint on this node's networks is pinged at
+            // its first device's address, as before networks.
+            for (peer, paths) in peers.iter_mut() {
+                if paths.is_empty() {
+                    paths.push(addrs[peer]);
+                }
+            }
+            let all: HashSet<SocketAddr> = peers.values().flatten().copied().collect();
             let now = std::time::Instant::now();
-            // A peer that left (down, or no longer sharing a PG) starts
-            // afresh when it comes back: its old silence isn't news.
-            last_ok.borrow_mut().retain(|p, _| peers.contains_key(p));
+            // A path that left (its node down, no longer sharing a PG)
+            // starts afresh when it comes back: its old silence isn't news.
+            last_ok.borrow_mut().retain(|a, _| all.contains(a));
             reported.borrow_mut().retain(|p| peers.contains_key(p));
-            udp_seen.retain(|p| peers.contains_key(p));
-            watched.retain(|p, _| peers.contains_key(p));
-            tcp_only.retain(|p| peers.contains_key(p));
+            reported_eps.retain(|a| all.contains(a));
+            udp_seen.retain(|a| all.contains(a));
+            watched.retain(|a, _| all.contains(a));
+            tcp_only.retain(|a| all.contains(a));
             self.udp_pings
                 .borrow_mut()
                 .retain(|_, (_, sent)| now.duration_since(*sent) <= PING_WAIT);
             // Answers over UDP since the last tick. One older than the
-            // peer's entry (a peer that just came back, a tick counted
+            // path's entry (a peer that just came back, a tick counted
             // afresh) changes nothing.
-            for (&peer, &t) in self.udp_pongs.borrow().iter() {
-                if !peers.contains_key(&peer) {
+            for (&path, &t) in self.udp_pongs.borrow().iter() {
+                if !all.contains(&path) {
                     continue;
                 }
-                udp_seen.insert(peer);
+                udp_seen.insert(path);
                 let mut lo = last_ok.borrow_mut();
-                let e = lo.entry(peer).or_insert(now);
+                let e = lo.entry(path).or_insert(now);
                 if t > *e {
                     *e = t;
-                    reported.borrow_mut().remove(&peer);
                 }
             }
-            for (peer, addr) in peers {
-                let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
-                if now.duration_since(first) > peer_timeout && !self.cut_off() {
-                    if reported.borrow_mut().insert(peer) {
+            for (peer, paths) in peers {
+                let silent: Vec<(SocketAddr, Duration)> = paths
+                    .iter()
+                    .filter_map(|a| {
+                        let first = *last_ok.borrow_mut().entry(*a).or_insert(now);
+                        let quiet = now.duration_since(first);
+                        (quiet > peer_timeout).then_some((*a, quiet))
+                    })
+                    .collect();
+                if silent.len() < paths.len() {
+                    reported.borrow_mut().remove(&peer);
+                }
+                reported_eps.retain(|a| !paths.contains(a) || silent.iter().any(|(s, _)| s == a));
+                if !silent.is_empty() && !self.cut_off() {
+                    if silent.len() == paths.len() {
+                        if reported.borrow_mut().insert(peer) {
+                            eprintln!(
+                                "hyperstord: device {}: node {peer} silent for {} ms; reporting it",
+                                self.me,
+                                silent.iter().map(|(_, q)| *q).min().unwrap().as_millis()
+                            );
+                        }
+                        let _ = self
+                            .client
+                            .call_meta(&Msg::PeerDown {
+                                reporter: node,
+                                peer,
+                            })
+                            .await;
+                    } else {
+                        for (addr, quiet) in &silent {
+                            if reported_eps.insert(*addr) {
+                                eprintln!(
+                                    "hyperstord: device {}: endpoint {addr} of node {peer} silent for {} ms; reporting it",
+                                    self.me,
+                                    quiet.as_millis()
+                                );
+                            }
+                            let _ = self
+                                .client
+                                .call_meta(&Msg::EndpointDown {
+                                    reporter: node,
+                                    addr: *addr,
+                                })
+                                .await;
+                        }
+                    }
+                }
+                for addr in paths {
+                    let since = *watched.entry(addr).or_insert(now);
+                    let udp = self.udp.borrow().clone();
+                    if let Some(u) = &udp
+                        && self.partitioned(addr).is_ok()
+                    {
+                        let nonce = hyperstor_client::random_u64();
+                        self.udp_pings.borrow_mut().insert(nonce, (addr, now));
+                        let mut d = [0u8; 12];
+                        d[..4].copy_from_slice(&UDP_PING);
+                        d[4..].copy_from_slice(&nonce.to_le_bytes());
+                        let _ = u.send_to(&d, addr);
+                    }
+                    if udp.is_some() && udp_seen.contains(&addr) {
+                        continue;
+                    }
+                    if udp.is_some()
+                        && now.duration_since(since) >= TCP_ONLY_AFTER
+                        && tcp_only.insert(addr)
+                    {
                         eprintln!(
-                            "hyperstord: device {}: node {peer} silent for {} ms; reporting it",
-                            self.me,
-                            now.duration_since(first).as_millis()
+                            "hyperstord: device {}: node {peer} answers no UDP pings at {addr}; pinging it over TCP (D185)",
+                            self.me
                         );
                     }
-                    let _ = self
-                        .client
-                        .call_meta(&Msg::PeerDown {
-                            reporter: node,
-                            peer,
-                        })
-                        .await;
-                }
-                let since = *watched.entry(peer).or_insert(now);
-                let udp = self.udp.borrow().clone();
-                if let Some(u) = &udp
-                    && self.partitioned(addr).is_ok()
-                {
-                    let nonce = hyperstor_client::random_u64();
-                    self.udp_pings.borrow_mut().insert(nonce, (peer, now));
-                    let mut d = [0u8; 12];
-                    d[..4].copy_from_slice(&UDP_PING);
-                    d[4..].copy_from_slice(&nonce.to_le_bytes());
-                    let _ = u.send_to(&d, addr);
-                }
-                if udp.is_some() && udp_seen.contains(&peer) {
-                    continue;
-                }
-                if udp.is_some()
-                    && now.duration_since(since) >= TCP_ONLY_AFTER
-                    && tcp_only.insert(peer)
-                {
-                    eprintln!(
-                        "hyperstord: device {}: node {peer} answers no UDP pings at {addr}; pinging it over TCP (D185)",
-                        self.me
-                    );
-                }
-                if self
-                    .ping_faults
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|f| f.tcp_lost(peer))
-                {
-                    continue;
-                }
-                let me = self.clone();
-                let last_ok = last_ok.clone();
-                let reported = reported.clone();
-                spawn(async move {
-                    // The ping gives up on its own (its pending entry
-                    // with it); its connection, which carries nothing
-                    // else (I187), stays.
-                    let ping = async {
-                        let c = me.ping_peer(addr).await.ok()?;
-                        c.try_within(&Msg::Ping, &[], PING_WAIT).await.ok()
-                    };
-                    if let Ok(Some((Msg::Pong, _))) =
-                        hyperstor_reactor::time::timeout(PING_WAIT, ping).await
+                    if self
+                        .ping_faults
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|f| f.tcp_lost(peer))
                     {
-                        last_ok.borrow_mut().insert(peer, std::time::Instant::now());
-                        reported.borrow_mut().remove(&peer);
+                        continue;
                     }
-                });
+                    let me = self.clone();
+                    let last_ok = last_ok.clone();
+                    spawn(async move {
+                        // The ping gives up on its own (its pending entry
+                        // with it); its connection, which carries nothing
+                        // else (I187), stays.
+                        let ping = async {
+                            let c = me.ping_peer(addr).await.ok()?;
+                            c.try_within(&Msg::Ping, &[], PING_WAIT).await.ok()
+                        };
+                        if let Ok(Some((Msg::Pong, _))) =
+                            hyperstor_reactor::time::timeout(PING_WAIT, ping).await
+                        {
+                            last_ok.borrow_mut().insert(addr, std::time::Instant::now());
+                        }
+                    });
+                }
             }
         }
     }
@@ -4585,12 +4707,11 @@ impl ShardState {
             while self.backfill_bytes(target) >= BACKFILL_BUDGET {
                 sleep(Duration::from_millis(1)).await;
             }
-            self.drained().await;
-            let Some(parts) = self.push_parts(to, &key, legacy) else {
+            let Some(parts) = self.push_parts(to, &key, legacy).await else {
                 return false;
             };
             // An object's parts in order on this connection, which the
-            // target handles in order.
+            // target handles in order, sent before the next `.await`.
             for (m, data) in parts {
                 held.add(data.len());
                 inflight.push(conn.start_within(&m, &data, CALL_TIMEOUT));
@@ -4606,21 +4727,75 @@ impl ShardState {
         true
     }
 
+    /// `key`'s data for a push or a fetch, read on the ring with
+    /// recovery's share of reads (I257), so that the reactor serves
+    /// clients and pings meanwhile. It returns with every write queued
+    /// before the call committed, none to `key` queued since its data was
+    /// planned, and no commit in flight: the caller takes the rest of the
+    /// object from the shard and sends it before its next `.await`, so
+    /// that writes queued later follow it on the connection. A write to
+    /// `key` queued while the read waited plans it again; after
+    /// [`PUSH_READ_TRIES`], it reads holding the reactor, as before. None
+    /// if a read fails its checksums or times out.
+    async fn read_for_push(&self, key: &ObjKey) -> Option<PushRead> {
+        for _ in 0..PUSH_READ_TRIES {
+            let watch = Watch::new(&self.watched, key);
+            self.drained().await;
+            let mut held = None;
+            let r = self
+                .device_read(ReadKind::Background, |sh| {
+                    let size = sh.stat(key).ok_or(EngineError::NotFound)?.size;
+                    held = Some((size, sh.held_runs(key).ok_or(EngineError::NotFound)?));
+                    sh.read_begin(key, 0, size.div_ceil(4096) * 4096)
+                })
+                .await;
+            self.shard.idle().await;
+            if watch.written() {
+                metrics::ShardMetrics::add(&self.metrics.push_rereads, 1);
+                continue;
+            }
+            return match (r, held) {
+                (Ok(buf), Some((size, runs))) => {
+                    Some(PushRead::Held(size, cut_runs(&buf, size, runs)))
+                }
+                (Err(EngineError::NotFound), None) => Some(PushRead::Absent),
+                _ => None,
+            };
+        }
+        self.drained().await;
+        let sh = self.shard.borrow();
+        let Some(st) = sh.stat(key) else {
+            return Some(PushRead::Absent);
+        };
+        held_data(&sh, key, st.size).map(|h| PushRead::Held(st.size, h))
+    }
+
     /// The pushes of this node's copy of `key`, to send in order on one
-    /// connection: a [`Msg::PushObject`], and for an object whose
-    /// key–value table is larger than a part (`push_part_bytes`), the rest
-    /// of the table as [`Msg::PushKv`] parts, so that no frame exceeds the
-    /// limit. Read all at once, with no wait in between, as
-    /// [`Self::push_of`] reads.
-    fn push_parts(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<Vec<(Msg, Vec<u8>)>> {
-        let whole = legacy || self.shard.borrow().stat(key).is_none();
-        if whole {
-            return self.push_of(to, key, legacy).map(|p| vec![p]);
+    /// connection, before the next `.await`: a [`Msg::PushObject`], and
+    /// for an object whose key–value table is larger than a part
+    /// (`push_part_bytes`), the rest of the table as [`Msg::PushKv`]
+    /// parts, so that no frame exceeds the limit. Its data is read as
+    /// [`Self::read_for_push`] reads, the rest from the shard after.
+    async fn push_parts(
+        &self,
+        to: Target,
+        key: &ObjKey,
+        legacy: bool,
+    ) -> Option<Vec<(Msg, Vec<u8>)>> {
+        let read = self.read_for_push(key).await?;
+        let PushRead::Held(size, (data, runs)) = read else {
+            return Some(vec![self.push_from(to, key, legacy, read)?]);
+        };
+        if legacy {
+            return Some(vec![self.push_from(
+                to,
+                key,
+                legacy,
+                PushRead::Held(size, (data, runs)),
+            )?]);
         }
         let limit = self.push_part_bytes.get();
         let sh = self.shard.borrow();
-        let st = sh.stat(key)?;
-        let (data, runs) = held_data(&sh, key, st.size)?;
         let attrs = sh
             .attrs(key)
             .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -4651,7 +4826,7 @@ impl ShardState {
         }
         let mut rest = parts.into_iter();
         let obj = WireObject {
-            size: st.size,
+            size,
             data,
             attrs,
             kv: rest.next().unwrap_or_default(),
@@ -4682,9 +4857,21 @@ impl ShardState {
     /// Read it and send it with no wait in between, once every queued
     /// commit is done ([`Self::drained`]): writes queued later then follow
     /// the push on the same connection.
-    fn push_of(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<(Msg, Vec<u8>)> {
-        let sh = self.shard.borrow();
-        let Some(st) = sh.stat(key) else {
+    async fn push_of(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<(Msg, Vec<u8>)> {
+        let read = self.read_for_push(key).await?;
+        self.push_from(to, key, legacy, read)
+    }
+
+    /// [`Self::push_of`] once its data is read: the rest from the shard,
+    /// with no `.await`.
+    fn push_from(
+        &self,
+        to: Target,
+        key: &ObjKey,
+        legacy: bool,
+        read: PushRead,
+    ) -> Option<(Msg, Vec<u8>)> {
+        let PushRead::Held(size, (data, runs)) = read else {
             // Absent: a delete, which every version understands.
             let m = Msg::Push {
                 to,
@@ -4693,7 +4880,7 @@ impl ShardState {
             };
             return Some((m, Vec::new()));
         };
-        let (data, runs) = held_data(&sh, key, st.size)?;
+        let sh = self.shard.borrow();
         if legacy {
             // A node from before whole objects (a rolling upgrade): data
             // only, as before. It would fill holes with zeros, so an
@@ -4709,7 +4896,7 @@ impl ShardState {
             return Some((m, data));
         }
         let obj = WireObject {
-            size: st.size,
+            size,
             data,
             attrs: sh
                 .attrs(key)
@@ -4985,8 +5172,7 @@ impl ShardState {
                 ok = false;
                 continue;
             };
-            self.drained().await;
-            let Some(parts) = self.push_parts(to, key, false) else {
+            let Some(parts) = self.push_parts(to, key, false).await else {
                 ok = false;
                 continue;
             };
@@ -5348,10 +5534,8 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        if self.shard.get().await.stat(&okey).is_none() {
-            return (Msg::FetchOk { found: false }, Vec::new());
-        }
-        match self.push_of(to, &okey, false) {
+        match self.push_of(to, &okey, false).await {
+            Some((Msg::Push { .. }, _)) => (Msg::FetchOk { found: false }, Vec::new()),
             Some((_, payload)) => (Msg::FetchOk { found: true }, payload),
             None => (
                 err(
@@ -5388,35 +5572,43 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        let sh = self.shard.get().await;
-        let Some(st) = sh.stat(&okey) else {
-            return (
-                Msg::FetchPartOk {
-                    found: false,
-                    next: None,
-                },
-                Vec::new(),
-            );
-        };
-        let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
+        let absent = (
+            Msg::FetchPartOk {
+                found: false,
+                next: None,
+            },
+            Vec::new(),
+        );
         if !first {
+            let sh = self.shard.get().await;
+            if sh.stat(&okey).is_none() {
+                return absent;
+            }
+            let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
             return (
                 Msg::FetchPartOk { found: true, next },
                 hyperstor_proto::encode_pairs(&kv),
             );
         }
-        let Some((data, runs)) = held_data(&sh, &okey, st.size) else {
-            return (
-                err(
-                    Code::Checksum,
-                    &self.map(),
-                    "this copy fails its checksums too",
-                ),
-                Vec::new(),
-            );
+        // The first part has the data, read on the ring (I257).
+        let (size, (data, runs)) = match self.read_for_push(&okey).await {
+            Some(PushRead::Held(size, held)) => (size, held),
+            Some(PushRead::Absent) => return absent,
+            None => {
+                return (
+                    err(
+                        Code::Checksum,
+                        &self.map(),
+                        "this copy fails its checksums too",
+                    ),
+                    Vec::new(),
+                );
+            }
         };
+        let sh = self.shard.borrow();
+        let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
         let obj = WireObject {
-            size: st.size,
+            size,
             data,
             attrs: sh
                 .attrs(&okey)
@@ -5449,7 +5641,9 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let mut r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
+        let mut r = self
+            .device_read(ReadKind::Client, |sh| sh.read_begin(&okey, off, len))
+            .await;
         // A block that fails its checksum (09-replication.md §8.2): this copy
         // is replaced by a member's, and the read served from it.
         if primary && matches!(r, Err(EngineError::Checksum { .. })) {
@@ -5462,7 +5656,9 @@ impl ShardState {
                 .collect();
             for m in members {
                 if self.repair_own(to, &okey, m).await {
-                    r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
+                    r = self
+                        .device_read(ReadKind::Client, |sh| sh.read_begin(&okey, off, len))
+                        .await;
                     break;
                 }
             }
@@ -5572,16 +5768,19 @@ impl ShardState {
     /// reads go on the reactor's ring when the device has a descriptor, so
     /// the reactor goes on meanwhile, and commits may begin and end; the
     /// shard holds the extents the read uses until it ends. At most
-    /// [`shard_cell::MAX_READS`] are in flight, the rest wait in turn. A
+    /// [`shard_cell::MAX_READS`] are in flight, the rest wait in turn;
+    /// recovery's, backfill's and scrub's have their own share,
+    /// [`shard_cell::MAX_BACKGROUND_READS`] (`kind`, I257). A
     /// read that waits for the device past the read timeout is abandoned
     /// ([`timed_out`]), and [`READ_TIMEOUTS_TO_FAIL`] in a row fail the
     /// device. Memory and test devices read in their own calls, holding the
     /// reactor as before.
     async fn device_read(
         &self,
+        kind: ReadKind,
         plan: impl FnOnce(&mut hyperstor_engine::Shard) -> Result<ReadPlan, EngineError>,
     ) -> Result<AlignedBuf, EngineError> {
-        let _slot = self.shard.read_slot().await;
+        let _slot = self.shard.read_slot(kind).await;
         let mut plan = plan(&mut *self.shard.get_mut().await)?;
         let buf = plan.take_buf();
         if plan.ios().is_empty() {
@@ -5739,6 +5938,66 @@ fn held_data(sh: &hyperstor_engine::Shard, key: &ObjKey, size: u64) -> Option<He
         data.extend_from_slice(&sh.read(key, lb * 4096, n * 4096).ok()?);
     }
     Some((data, Some(runs)))
+}
+
+/// An object's data read for a push ([`ShardState::read_for_push`]).
+enum PushRead {
+    /// It has none here: pushed as a delete.
+    Absent,
+    /// Its size and what it holds.
+    Held(u64, HeldData),
+}
+
+/// [`held_data`] of an object of `size` bytes from `buf`, a read of all
+/// its blocks (holes read as zeros), given the runs it holds.
+fn cut_runs(buf: &[u8], size: u64, runs: Vec<(u64, u64)>) -> HeldData {
+    let blocks = size.div_ceil(4096);
+    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
+        return (buf.to_vec(), None);
+    }
+    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
+    for (lb, n) in &runs {
+        data.extend_from_slice(&buf[(lb * 4096) as usize..((lb + n) * 4096) as usize]);
+    }
+    (data, Some(runs))
+}
+
+/// A push's watch on the writes queued to its object while its read waits
+/// for the device (I257); counted by `enqueue`.
+struct Watch<'a> {
+    watched: &'a RefCell<HashMap<ObjKey, (u32, u64)>>,
+    key: ObjKey,
+    at: u64,
+}
+
+impl<'a> Watch<'a> {
+    fn new(watched: &'a RefCell<HashMap<ObjKey, (u32, u64)>>, key: &ObjKey) -> Self {
+        let mut w = watched.borrow_mut();
+        let e = w.entry(key.clone()).or_default();
+        e.0 += 1;
+        Self {
+            watched,
+            key: key.clone(),
+            at: e.1,
+        }
+    }
+
+    /// Whether a write to the object was queued since the watch began.
+    fn written(&self) -> bool {
+        self.watched.borrow().get(&self.key).map(|e| e.1) != Some(self.at)
+    }
+}
+
+impl Drop for Watch<'_> {
+    fn drop(&mut self) {
+        let mut w = self.watched.borrow_mut();
+        if let Some(e) = w.get_mut(&self.key) {
+            e.0 -= 1;
+            if e.0 == 0 {
+                w.remove(&self.key);
+            }
+        }
+    }
 }
 
 /// Entries of `key`'s table from `from` on, up to about `limit` bytes (at
