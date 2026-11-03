@@ -133,6 +133,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again"
+spec = ["I257"]
+status = "done"
+tests = [
+    "hyperstor_daemon::shard_cell::tests::background_reads_have_a_share_of_their_own",
+    "cluster::a_slow_backfill_holds_no_reactor",
+    "cluster::a_push_is_read_again_when_its_object_is_written",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
