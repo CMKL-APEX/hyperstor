@@ -1178,3 +1178,14 @@ billion races. Asked, with a recommendation:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 190 | What `AssertKv` compares: the exact value, sent back by the client (recommended); the value's CRC32C, as D194 read; or a new 64-bit hash | The exact value | D194 revised |
+
+## The S3 gateway, before building it (2026-11-04)
+
+Starting HS12, three choices D191–D199 left open. Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 191 | Who issues S3 access keys, and what encrypts their secrets: the map service, under its cluster key (D162), gateways fetching them (recommended); or mgmt with a key of its own, as D197 read | The map service | D231, amends D197 |
+| 192 | How buckets are created: S3's CreateBucket by any key, pools from the cluster's defaults or a named placement (recommended); or administrators only | CreateBucket | D232 |
+| 193 | Where the gateway runs: any joined host with an `s3` identity, `--s3` in the installer (recommended); or beside each storage node with its identity | Any host, its own role | D233 |

@@ -625,12 +625,21 @@ pub async fn drain(cl: &Client, pool: u32, r: &Range) -> Result<usize, KvError> 
         return Ok(0);
     };
     for (k, v) in &l.kv {
-        for (in_pool, ns, object) in decode_queue(v)? {
-            cl.exec(in_pool, ns, &object, &[WireOp::Delete]).await?;
+        for d in decode_queue(v)? {
+            for object in d.names() {
+                cl.exec(d.pool, d.ns, &object, &[WireOp::Delete]).await?;
+            }
         }
         exec(cl, pool, r.id, &[WireOp::KvDel(k.clone())]).await?;
     }
     Ok(l.kv.len())
+}
+
+/// [`drain`] until `r`'s queue is empty: before a range is deleted, so
+/// that what its batches collected isn't left behind.
+pub async fn drain_all(cl: &Client, pool: u32, r: &Range) -> Result<(), KvError> {
+    while drain(cl, pool, r).await? > 0 {}
+    Ok(())
 }
 
 /// The value of `key` in store `store`'s root.
@@ -688,6 +697,7 @@ pub async fn named(cl: &Client, pool: u32, r: &Range) -> Result<bool, KvError> {
 /// it go too, and the table's `i` entry with its last range, finishing a
 /// delete that stopped half-way.
 pub async fn delete_leftover(cl: &Client, pool: u32, r: &Range) -> Result<bool, KvError> {
+    drain_all(cl, pool, r).await?;
     let ops = [r.epoch_assertion(), WireOp::Delete];
     if !went(exec(cl, pool, r.id, &ops).await)? {
         return Ok(false);

@@ -2075,7 +2075,8 @@ fn kv_store_matches_a_sorted_map() {
 /// range extended (a merge), undone before. Each time the table settles
 /// with every row in one serving range, nothing left over, the rows as
 /// written, and a store whose cache saw the old ranges reads and writes
-/// on.
+/// on. Deleting a table deletes what its ranges' queues name, a series
+/// of objects among them, before the ranges.
 #[test]
 fn kv_jobs_finish_or_undo_from_every_step() {
     use hyperstor_kv::jobs::{self, Steps};
@@ -2164,7 +2165,8 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                     let moved = kv_queue(&cl, l.id).await;
                     assert_eq!(moved.len(), 1, "{why}");
                     let objects = hyperstor_kv::decode_queue(&moved[0].1).unwrap();
-                    assert_eq!(objects, [(POOL, 5, b"object".to_vec())]);
+                    let names: Vec<_> = objects.iter().flat_map(|d| d.names()).collect();
+                    assert_eq!(names, [b"object".to_vec()]);
                 }
                 kv_take_up(&cl, POOL, &[l.id, n.id]).await;
                 let settled = kv_settled(&cl, STORE, &t, &[l.id, n.id]).await;
@@ -2188,6 +2190,41 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                     assert_eq!(kv_all(&a, &t).await, kv_rows(&want), "{why}");
                 }
             }
+            // Deleting a table first drains each range's queue (§28.6), a
+            // series of objects among them; jobs are off, so the delete
+            // does it.
+            let t = a.create_table(b"deleted", POOL, POOL).await.unwrap();
+            fill(&t).await;
+            let r = first_range(&t).await;
+            jobs::split_at(&cl, POOL, &r, b"row20", &Steps::all())
+                .await
+                .unwrap()
+                .unwrap();
+            let name = |i: u32| [&b"series"[..], &i.to_be_bytes()].concat();
+            for i in 0..6 {
+                cl.exec(POOL, 5, &name(i), &[hyperstor_proto::WireOp::Touch])
+                    .await
+                    .unwrap();
+            }
+            cl.exec(POOL, 5, b"one", &[hyperstor_proto::WireOp::Touch])
+                .await
+                .unwrap();
+            let mut b = Batch::new();
+            b.collect_series(POOL, 5, b"series", 5).collect(POOL, 5, b"one");
+            a.apply(&t, b"row30", &b).await.unwrap();
+            a.apply(&t, b"row01", Batch::new().collect(POOL, 5, b"none"))
+                .await
+                .unwrap();
+            a.delete_table(b"deleted").await.unwrap();
+            let exists = async |name: &[u8]| {
+                let l = cl.lookup(POOL, 5, name, b"", None, 0).await;
+                l.unwrap().is_some()
+            };
+            for i in 0..5 {
+                assert!(!exists(&name(i)).await, "series object {i} left behind");
+            }
+            assert!(!exists(b"one").await, "a queued object left behind");
+            assert!(exists(&name(5)).await, "past the series' end");
         })
     })
     .join()
@@ -2382,8 +2419,13 @@ fn kv_queued_objects_are_deleted_after_their_batch() {
             assert!(exists(0).await, "a failed batch's object stays");
             // An entry left by a primary that died between deleting its
             // objects and the entry: drained again.
-            let entry =
-                hyperstor_kv::encode_queue(&[(POOL, NS_S3, name(1)), (POOL, NS_S3, name(3))]);
+            let one = |i: u32| hyperstor_kv::Doomed {
+                pool: POOL,
+                ns: NS_S3,
+                name: name(i),
+                count: 0,
+            };
+            let entry = hyperstor_kv::encode_queue(&[one(1), one(3)]);
             let k = hyperstor_kv::keys::queue_key(9);
             let range = hyperstor_kv::range_name(first);
             cl.exec(POOL, hyperstor_kv::NS_KV, &range, &[W::KvPut(k, entry)])
