@@ -28,6 +28,7 @@ pub mod diag;
 pub mod drive;
 pub mod faults;
 pub mod heat;
+mod kv;
 pub mod metrics;
 mod shard_cell;
 
@@ -219,6 +220,12 @@ pub struct NodeConfig {
     pub pings: Option<Arc<faults::Pings>>,
     /// Test hook: message kinds nodes don't know, as an older build.
     pub older: Option<Arc<faults::Older>>,
+    /// When key–value ranges split and merge (D202); tests set them small.
+    pub kv_limits: hyperstor_kv::jobs::Limits,
+    /// How often a primary looks over the key–value ranges it holds for
+    /// jobs that stopped and sizes to act on (25-kv-ranges.md §28.7);
+    /// zero: [`kv::SWEEP`].
+    pub kv_sweep: Duration,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
@@ -392,6 +399,11 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             g => g,
         };
         let commit_delays = cfg.commit_delays.clone();
+        let kv_limits = cfg.kv_limits;
+        let kv_sweep = match cfg.kv_sweep {
+            Duration::ZERO => kv::SWEEP,
+            t => t,
+        };
         let ping_faults = cfg.pings.clone();
         let older = cfg.older.clone();
         let io_timeout = match cfg.io_timeout {
@@ -491,6 +503,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         if !scrub_interval.is_zero() {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
+                        spawn(st.clone().kv_ranges(kv_limits, kv_sweep));
                         spawn(st.clone().accept(l));
                         // The same reactor answers on each endpoint (D207).
                         for l in more {
@@ -621,6 +634,11 @@ struct ShardState {
     damaged: RefCell<HashSet<ObjKey>>,
     /// Objects an operation list is being decided for (`exec`).
     exec_locks: RefCell<HashSet<ObjKey>>,
+    /// Key–value ranges written since their size was last looked at
+    /// (25-kv-ranges.md §28.7).
+    kv_written: RefCell<HashSet<ObjKey>>,
+    /// Key–value ranges with a job running here.
+    kv_jobs: RefCell<HashSet<u128>>,
     /// Volume leases of the headers this device is primary of (06-metadata.md
     /// §9, D75): the holder, until when it holds the lease, and the PG
     /// epoch that was decided at. The holder is in the header too; the
@@ -1127,6 +1145,8 @@ impl ShardState {
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             exec_locks: RefCell::new(HashSet::new()),
+            kv_written: RefCell::new(HashSet::new()),
+            kv_jobs: RefCell::new(HashSet::new()),
             leases: RefCell::new(HashMap::new()),
             slow_reported: RefCell::new(HashSet::new()),
             deadlines: Rc::default(),
@@ -2442,6 +2462,7 @@ impl ShardState {
         let Ok(ops) = decode_ops(&payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        self.kv_wrote(&to, &key);
         let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
             Err(why) => Err(err(Code::Conflict, &me.map(), why)),
             Ok(()) => Ok(ops

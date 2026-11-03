@@ -8,8 +8,8 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **stages 1 and 2 of §28.8 built** (2026-11-03: I255, I256);
-splits, merges and the deletion queue are next. Settled with the
+Status: **stages 1–3 of §28.8 built** (2026-11-03: I255, I256, I258);
+the leftover check and the deletion queue are next. Settled with the
 owner: D191–D199 (points 128–137) and D200–D202 (points 169–172 of
 [05-decision-log.md](05-decision-log.md)). The rest of this document
 (key encoding, ids, the root's layout, the deletion queue) was decided
@@ -55,7 +55,8 @@ allocator to coordinate, as volume ids.
 | `start`, `end` | the first row it holds, and the first it doesn't (absent: the table's end) |
 | `epoch` | grows with every change of `start`, `end` or `state` |
 | `state` | `pending` (being filled, not yet serving), `serving`, `splitting` (at a row, into a named range id), `absorbing` (a named neighbour), `merging` (into a named neighbour) |
-| `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root |
+| `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root; cleared once the root names it |
+| `merged` | after a merge: the neighbour whose rows it took, until the root no longer names that one and it is deleted |
 
 - **Attribute values:** ids and the epoch are big-endian; `start` and
   `end` are rows as they are; `state` is a tag byte (1 `pending`,
@@ -132,20 +133,23 @@ Range R holds rows `[a, c)` at epoch E:
    to E+1. Clients see the new state and hold writes to rows ≥ `b`,
    retrying every 50 ms; writes below `b` go on at E+1 (D201).
 2. **Copy.** Create R2 (`pending`, rows `[b, c)`, same table and pool) and
-   copy rows ≥ `b` from R into it, in batches under the engine's limit
-   on one list (`max_list_bytes`). The frozen rows don't change, so one
+   copy rows ≥ `b` from R into it, in lists of at most 1 MiB, each
+   asserting R2 is still `pending`. The frozen rows don't change, so one
    pass is enough.
-3. **Open R2:** set its `state` to `serving`.
+3. **Open R2:** set its `state` to `serving`, at epoch 2, asserting it
+   `pending`.
 4. **Shrink R**, asserting epoch E+1: set `end` to `b`, `next` to R2,
    `state` to `serving` and the epoch to E+2, and delete rows ≥ `b`
    (`KvDelRange`, one operation). The split is done at this point.
-5. **Update the root:** put R2's entry (asserting it absent) and R's new
-   epoch.
+5. **Update the root:** put R2's entry (asserting it absent), then clear
+   R's `next`. Root entries' epochs are hints, and R's isn't rewritten.
 
 - **A crash before step 3** abandons the split: the new primary deletes
-  R2 and sets R `serving` at a new epoch. A crash after step 3 finishes
-  steps 4 and 5. Why: a copy is cheap to repeat, and abandoning needs no
-  record of how far the copy went.
+  R2 (asserting it `pending`) and sets R `serving` at a new epoch. A crash
+  after step 3 finishes steps 4 and 5. Why: a copy is cheap to repeat,
+  and abandoning needs no record of how far the copy went. A job whose
+  step 4 fails because its split was abandoned meanwhile deletes its R2,
+  which nothing names (I258).
 - **Freezing costs a pause** of about the copy's time, for writes to the
   upper half only: 32 MiB at a few hundred MB/s is roughly 0.1–0.3 s.
   Copying first and catching up after (a short last pass) can come later
@@ -161,29 +165,35 @@ Range R holds rows `[a, c)` at epoch E:
   table hold less than 16 MiB together, the left one's primary merges
   them. Why 16 MiB: a quarter of the split size, so a range that just
   split doesn't merge back.
-  1. Set the left range L to `absorbing` (the right one, N), and N to
-     `merging` (into L) at a new epoch. N's writes are held, as a frozen
-     half is.
-  2. Copy N's rows into L. L's bounds still exclude them, so no reader
-     sees them yet.
+  1. Set the left range L to `absorbing` (the right one, N), then N to
+     `merging` (into L), each at a new epoch; N only if it still starts
+     where L ends. N's writes are held, as a frozen half is.
+  2. Copy N's rows into L, each list asserting L still absorbs N. L's
+     bounds still exclude them, so no reader sees them yet.
   3. Extend L, asserting its epoch: set `end` to N's `end`, `state` to
-     `serving`, and a new epoch.
-  4. Update the root: delete N's entry (asserting its value), put L's
-     new epoch.
-  5. Delete N.
+     `serving`, `merged` to N, and a new epoch.
+  4. Update the root: delete N's entry (asserting its value).
+  5. Delete N (asserting it `merging` into L), then clear L's `merged`.
 
   A crash before step 3 abandons the merge: the copied rows are deleted
   from L (`KvDelRange` past its `end`) and both ranges serve again at new
-  epochs. A crash after step 3 finishes steps 4 and 5. N is deleted only
-  after the root no longer names it. Why: a client
+  epochs. A crash after step 3 finishes steps 4 and 5, from L's `merged`.
+  N's own primary leaves N to L while L absorbs it or names it in
+  `merged`; otherwise the merge was abandoned there, and N serves again.
+  N is deleted only after the root no longer names it. Why: a client
   that finds a range missing reads the root again, which must then
   point elsewhere.
-- **Leftover objects.** A range's primary checks, an hour after a range
-  object appears, that the root or a neighbour's `splitting` state names
-  it. One that nothing names (a crash while creating a table, or an
-  abandoned copy) is deleted.
-- **Root repair.** A primary that finds the root's entry for its range out
-  of date (a split stopped before its step 5, a merge before its step 4) puts it right.
+- **Taking up a stopped job.** A primary's sweep (every 10 s) takes up a
+  range that shows a job, by its state, `next` or `merged`, at the same
+  epoch as on the sweep before: finished or undone as above. Why: a
+  job still under way changes the epoch within a sweep, and one that is
+  taken up anyway fails its next step, which asserts what it left.
+- **Leftover objects** (not built yet). A range's primary checks, an hour
+  after a range object appears, that the root or a neighbour's
+  `splitting` state names it. One that nothing names (a crash while
+  creating a table, or an abandoned copy) is deleted.
+- **Root repair** is taking up a stopped job: a split stopped before its
+  step 5 shows `next`, a merge before its step 4 shows `merged`.
 
 ### 28.6 The deletion queue
 
@@ -208,9 +218,9 @@ scanned, and the primary that holds the queue drains it.
   It caches the root, routes by row, handles `Conflict` and `next`, and
   holds writes during a freeze. The S3 gateway (HS12) is its first user.
 - **In `hyperstord`**, each primary watches the `kv` objects it holds for
-  size, at most once a second per object written. It runs splits,
-  merges, leftover checks and queues, one job per range at a time and a
-  few per device. These are the only background work in a storage
+  size, at most once a second per object written, and sweeps them all
+  every 10 s. It runs splits, merges, leftover checks and queues, one
+  job per range at a time and two per device (I258). These are the only background work in a storage
   daemon that writes to other PGs, through its client.
 
 ### 28.8 Build stages and tests
@@ -223,10 +233,11 @@ scanned, and the primary that holds the queue drains it.
    against a sorted map, on an in-process cluster, through two stores
    whose caches go stale, with ranges split by hand so that reads and
    writes cross ranges, follow `next` and wait on a frozen half.
-3. Splits and merges in `hyperstord`. Tests: the same randomized test,
-   with sizes that split and merge often and primaries killed at every
-   step (the fault rig). After each step the store must equal the model,
-   every row must be in exactly one serving range, and no object may be
-   left over.
+3. Splits and merges in `hyperstord` (built, I258). Tests: each job
+   stopped after every step and taken up, and a table that splits and
+   merges on its own under small limits while a node is killed and
+   restarted, with jobs left half done for the primaries to take up.
+   After each, the store must equal the model, every row must be in
+   exactly one serving range, and no object may be left over.
 4. The deletion queue. Tests: queued objects deleted once and only
    after their batch commits, through primary failover.
