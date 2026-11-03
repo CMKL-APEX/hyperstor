@@ -6,8 +6,8 @@ and UI for all of it. Part of the hyperstor design; sections keep their
 numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
 
-Status: **proposed** (2026-11-03). D224–D230 are open for the owner's
-review (points 183–189 of [05-decision-log.md](05-decision-log.md)). It
+Status: **settled, not built** (2026-11-04). The owner accepted D224–D230
+as written (points 183–189 of [05-decision-log.md](05-decision-log.md)). It
 builds on scrub as built (09-replication.md §8.5; I58, I60, I104, I105,
 D223, I249, I253), the cluster API with its roles and step-up
 (19-administration.md §23.9.2), the audit log (D112), operations (D121)

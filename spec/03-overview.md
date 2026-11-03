@@ -6,7 +6,7 @@ Status: **draft, implementation started.** The design is split by topic
 with the owner; D20–D26, D28–D37, D56–D60 and D66's merge rule were made while
 drafting and are open to review. For NFS and pNFS (22-nfs.md), D127, D129,
 D130 and D138–D141 are settled; D128 and D131–D137 are proposed and open. For networks (26-networks.md),
-D203–D213 and D215–D217 are settled, and D214 (copies and moves between pools); for load and drives (27-performance.md), D218–D222. For scrub settings and reports (28-scrub.md), D224–D230 are proposed and open. Host checks G1–G24 and G39–G46 (17-milestones.md
+D203–D213 and D215–D217 are settled, and D214 (copies and moves between pools); for load and drives (27-performance.md), D218–D222. For scrub settings and reports (28-scrub.md), D224–D230 are settled (2026-11-04) and not yet built. Host checks G1–G24 and G39–G46 (17-milestones.md
 §22), G25–G38 (22-nfs.md §26.11) and G47–G53 (26-networks.md §29.13) and G54–G55 (27-performance.md §30.7) are still open. What is built, and the
 decision points still open, are in
 [01-implementation-notes.md](01-implementation-notes.md) and

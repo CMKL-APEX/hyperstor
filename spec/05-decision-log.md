@@ -1173,7 +1173,8 @@ recommendation:
 
 After issue #158 and the pilot's repair, the owner asked for scrub's
 settings in the API and CLI, and for scrub reports, with data safety
-first (28-scrub.md §31). Open, with a recommendation:
+first (28-scrub.md §31). The owner accepted every recommendation as
+written (2026-11-04):
 
 | # | Point | Options | Recommendation |
 |---|---|---|---|
