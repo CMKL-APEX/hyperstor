@@ -1135,3 +1135,46 @@ Then the decisions drafted with the spec, asked for review:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 176 | D206–D213 as drafted: control apart from data, endpoints by closeness, two loops, roles as leases with lending `off` by default (recommended; or `idle`, or `always`), health per network, the GPU NIC default per host, pairing at VM start, placement not weighing speed | Lending `idle` by default; the rest as recommended | D206–D213 |
+
+## Copies and moves between pools (2026-11-02)
+
+The owner asked whether volumes can be moved or copied between pools:
+only by hand (`read-volume` into a file, `write-volume` out of it), with
+the volume detached. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 177 | What a copy reads: a snapshot, or the head of a detached volume (recommended); the head only, detached; or a snapshot it takes itself. Whether a move keeps the id: copy only for now (recommended), or `--move` keeping it. How data travels: through the map service's leader (recommended), or node to node. Snapshots: one point in time (recommended), or carried over | A snapshot or a detached head; a move keeping the id too; through the leader; one point in time | D214 |
+
+## Networks: endpoints and routing (2026-11-02)
+
+Three questions the first implementation left open (01-implementation-notes.md
+I238, I239). Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 178 | Where endpoints the installer proposes go: printed for the operator to add to the cluster file; or registered with the map through the API, a node setting only its own devices' (recommended) | The map, through the API: the installer proposes and maintains them | D215 |
+| 179 | Endpoints sharing a subnet without routing rules: refuse them; warn (as built); or warn, and fail under strict reverse-path filtering, where connections fail (recommended) | The third | D216 |
+| 180 | Who adds the routing rules: glidex's netd on glidex hosts, netplan elsewhere, hyperstor only checking (recommended); `hyperstor-install`; the operator | As recommended | D217 |
+
+## Load and drives (2026-11-02)
+
+The owner asked how to see read and write hot spots, whether tracking
+them costs performance, which drive metrics to collect, and for a UI to
+find what to optimize (27-performance.md §30). Asked, with a
+recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 181 | Scope: views first, the Advisor and moving primaries later (recommended); views and the Advisor; or everything with moving primaries. Heat: operations per second with bytes in detail (recommended), bytes, or a toggle. Top volumes per PG now (recommended) or later. Drive telemetry: service time and SMART (recommended), service time only, or every log page | Views and the Advisor, no moving primaries yet; operations per second; top 5 volumes per PG; service time and SMART | D218, D219, D220, D222 |
+| 182 | How `hyperstord`, running unprivileged, reads SMART logs, which need `CAP_SYS_ADMIN`: a small socket-activated root helper (recommended); the installer's root timer writing files; sysfs only for now; or the capability on `hyperstord` | The root helper | D221 |
+
+## Per-key assertions, HS11 stage 1 (2026-11-03)
+
+Building D194's assertion: the only checksum in the code base is CRC32C,
+32 bits, with which a changed value would pass about once in four
+billion races. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 190 | What `AssertKv` compares: the exact value, sent back by the client (recommended); the value's CRC32C, as D194 read; or a new 64-bit hash | The exact value | D194 revised |

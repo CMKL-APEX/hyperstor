@@ -15,6 +15,7 @@ pub mod fullness;
 pub mod health;
 pub mod mgmt_store;
 pub mod operations;
+pub mod perf;
 pub mod replica;
 pub mod settings;
 pub mod store;
@@ -230,6 +231,13 @@ pub enum Admin {
         class: Option<String>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, String), String>>,
     },
+    /// Replaces a device's endpoints (D215). Replies with the working
+    /// map's epoch.
+    SetEndpoints {
+        device: u32,
+        endpoints: Vec<(String, SocketAddr)>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Appends a device to a node (D167). Replies with the device's id
     /// and the working map's epoch.
     AddDevice {
@@ -255,6 +263,15 @@ pub enum Admin {
         pool: u32,
         since: u64,
         reply: hyperstor_reactor::chan::OneSender<Result<PoolUsage, String>>,
+    },
+    /// The devices' load and drives as the leader holds them (D218), with
+    /// the published map; only the leader has them.
+    Perf(hyperstor_reactor::chan::OneSender<Result<(perf::Perf, ClusterMap), String>>),
+    /// The volumes whose chunks are under these (lineage, branch) pairs,
+    /// as (id, name, pool), for naming the load's top volumes.
+    VolumesOf {
+        keys: Vec<(u128, u32)>,
+        reply: hyperstor_reactor::chan::OneSender<Vec<(perf::VolumeKey, perf::VolumeName)>>,
     },
     /// How long the leader has failed to commit map changes, if it has.
     Uncommitted(hyperstor_reactor::chan::OneSender<Option<Duration>>),
@@ -337,6 +354,22 @@ pub enum SnapOp {
     },
     Flatten {
         id: u128,
+    },
+    /// Its snapshot at `epoch`, or its head, into new volume `new_id` of
+    /// `pool` (D214).
+    Copy {
+        id: u128,
+        epoch: Option<u64>,
+        pool: u32,
+        new_id: u128,
+        name: String,
+        progress: std::sync::Arc<hyperstor_client::copy::Progress>,
+    },
+    /// To `pool`, keeping its id (D214).
+    Move {
+        id: u128,
+        pool: u32,
+        progress: std::sync::Arc<hyperstor_client::copy::Progress>,
     },
     Group {
         ids: Vec<u128>,
@@ -463,6 +496,20 @@ async fn run_snap_op(
             SnapDone::Volume(c.volume(id).await?.ok_or(ClientError::NoVolume(id))?)
         }
         SnapOp::Flatten { id } => SnapDone::Volume(c.flatten(id).await?),
+        SnapOp::Copy {
+            id,
+            epoch,
+            pool,
+            new_id,
+            name,
+            progress,
+        } => SnapDone::Volume(
+            c.copy_volume(id, epoch, pool, new_id, &name, &progress)
+                .await?,
+        ),
+        SnapOp::Move { id, pool, progress } => {
+            SnapDone::Volume(c.move_volume(id, pool, &progress).await?)
+        }
         SnapOp::Group { ids, name } => {
             let (g, s) = c.snapshot_group(&ids, &name).await?;
             SnapDone::Group(g, s)
@@ -476,6 +523,27 @@ async fn run_snap_op(
             SnapDone::Trashed(out)
         }
     })
+}
+
+/// The volume whose chunks are under `lineage`'s `branch`: the lineage's
+/// own volume for branch 0 (if it still is on it), else the branch's
+/// recorded owner.
+async fn volume_of(
+    c: &std::rc::Rc<hyperstor_client::Client>,
+    lineage: u128,
+    branch: u32,
+) -> Option<Volume> {
+    let id = if branch == 0 {
+        lineage
+    } else {
+        c.branches(lineage)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|b| b.branch == branch)?
+            .volume
+    };
+    c.volume(id).await.ok().flatten()
 }
 
 /// Why a volume operation failed, for the API's error codes.
@@ -584,6 +652,8 @@ pub struct Meta {
     /// Bumped with every change to `usage`, from the wall clock's
     /// nanoseconds, so a new leader's versions don't repeat an old one's.
     usage_version: Cell<u64>,
+    /// The devices' load and drives (D218): the leader's, in memory only.
+    perf: RefCell<perf::Perf>,
 }
 
 /// PGs whose last scrub left objects unresolved, with how many.
@@ -753,6 +823,7 @@ impl Meta {
             inconsistent: RefCell::new(BTreeMap::new()),
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
+            perf: RefCell::new(perf::Perf::default()),
         })
     }
 
@@ -1365,6 +1436,21 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Replaces a device's endpoints (D215). Returns the working map's
+    /// epoch.
+    pub fn set_endpoints(
+        &self,
+        device: u32,
+        endpoints: Vec<(String, SocketAddr)>,
+    ) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.set_endpoints(device, endpoints)?;
+        Ok(map.epoch)
+    }
+
     /// Deletes pool `pool` (24-pools-and-devices.md §27.3.4; D176, D181):
     /// it leaves the map at once, its id kept so none is given again, and
     /// each device deletes what it holds of it. The caller checks first
@@ -1969,6 +2055,30 @@ impl Meta {
                 Admin::PgUsage { pool, since, reply } => {
                     let _ = reply.send(self.pool_usage(pool, since));
                 }
+                Admin::Perf(reply) => {
+                    let _ = reply.send(if self.leads() {
+                        Ok((
+                            self.perf.borrow().clone(),
+                            (*self.published.borrow()).clone(),
+                        ))
+                    } else {
+                        Err(self.not_leader())
+                    });
+                }
+                Admin::VolumesOf { keys, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let mut out = Vec::new();
+                        if let Ok(c) = c.await {
+                            for (lineage, branch) in keys {
+                                if let Some(v) = volume_of(&c, lineage, branch).await {
+                                    out.push(((lineage, branch), (v.id, v.name, v.pool)));
+                                }
+                            }
+                        }
+                        let _ = reply.send(out);
+                    });
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -2028,6 +2138,13 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_device_class(device, class.as_deref()));
+                }
+                Admin::SetEndpoints {
+                    device,
+                    endpoints,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_endpoints(device, endpoints));
                 }
                 Admin::AddDevice {
                     node,
@@ -2673,7 +2790,8 @@ impl Meta {
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
-                    | Msg::PgUsage { .. })
+                    | Msg::PgUsage { .. }
+                    | Msg::PerfReport { .. })
             )
         {
             return Msg::Error {
@@ -2764,6 +2882,12 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            Ok(Msg::PerfReport { report }) => {
+                self.perf.borrow_mut().note(report);
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
             Ok(Msg::PgUsage { device, full, pgs }) => Msg::PgUsageOk {
                 known: self.note_usage(device, full, &pgs),
             },

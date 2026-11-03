@@ -135,6 +135,23 @@ members, as long as there are at least `min_size` of them. Below
   takes it in parts the same way, holding the object's lock so the
   member's copy can't change between parts; a copy left half replaced
   stays marked damaged, so reads go to repair (I182).
+- **Holes are copied as holes** (I243, issue #158). A whole object sent
+  by backfill, refill, peering or repair lists the blocks it holds and
+  carries only theirs. A hole isn't zeros: in a volume's version, a read
+  passes through it to the older versions and to a clone's parent
+  (08-engine.md §7.2). Copies made densely, as they were before, held
+  zeros there, and a clone served from one read zeros where its parent
+  has data. A node that can't take the list refuses such an object, and
+  it is sent again once that node is upgraded.
+- **Scrub checks held blocks** (D223, I249). For objects whose digests
+  agree, scrub also compares which blocks each copy holds. Copies that
+  differ there hold zeros where another has holes, from a dense copy made
+  before I243; the copy with the fewest blocks replaces them, whatever the
+  majority, with `hyperstord --hole-repair`. Without it, scrub only logs
+  and counts them. A PG whose check is skipped (a member doesn't answer
+  or is from before `Holds`, or the PG changes while checking) is logged
+  with the reason and counted (I253), so a pass that found nothing can be
+  told from one that didn't look.
 
 ### 8.6 Erasure-coded pools (D6)
 

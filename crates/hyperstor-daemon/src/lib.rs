@@ -25,9 +25,12 @@
 #![allow(clippy::result_large_err)]
 
 pub mod diag;
+pub mod drive;
 pub mod faults;
+pub mod heat;
 pub mod metrics;
 mod shard_cell;
+use shard_cell::ReadKind;
 
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
 use hyperstor_client::volume::{
@@ -41,10 +44,10 @@ use hyperstor_engine::{
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
 use hyperstor_proto::{
-    Code, DAMAGED, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW, Looked, Msg,
-    Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp, block_crcs,
-    decode_digests, decode_object, decode_ops, encode_digests, encode_frame, encode_looked,
-    encode_object, encode_ops, verify_crcs,
+    Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
+    Looked, Msg, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp,
+    block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
+    encode_frame, encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
@@ -158,6 +161,13 @@ pub struct ShardSpec {
 
 pub struct NodeConfig {
     pub node_id: u32,
+    /// More listeners for devices' reactors, one per endpoint in the map
+    /// (26-networks.md §29.5, D207), as (device, listener).
+    pub endpoints: Vec<(u32, std::net::TcpListener)>,
+    /// The data networks this node sends on, in order (D206, D207): a
+    /// peer is reached at its endpoint on the first it has, else at its
+    /// device's address.
+    pub networks: Vec<String>,
     /// The map service's members (04-decisions.md D72): any one will do.
     pub meta: Vec<SocketAddr>,
     pub shards: Vec<ShardSpec>,
@@ -175,6 +185,10 @@ pub struct NodeConfig {
     /// Test hook: answer `Digests` as a node from before digests does
     /// ("unsupported request"), as in a rolling upgrade.
     pub no_digests: bool,
+    /// Scrub repairs copies that hold blocks of zeros where another copy
+    /// has holes, from the copy with the holes (D223). Off, it only
+    /// reports them: the dry run.
+    pub hole_repair: bool,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -204,12 +218,19 @@ pub struct NodeConfig {
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
     /// Test hook: pings that fail (D185).
     pub pings: Option<Arc<faults::Pings>>,
+    /// Test hook: message kinds nodes don't know, as an older build.
+    pub older: Option<Arc<faults::Older>>,
 }
 
 /// Objects digested or compared between two yields (I183): digests of
 /// large objects take long, and a reactor that doesn't yield misses its
 /// peers' pings.
 const DIGEST_BATCH: usize = 64;
+
+/// Times a push's read on the ring is planned again because a write to
+/// its object was queued while it waited for the device (I257); then it
+/// reads holding the reactor, as before.
+const PUSH_READ_TRIES: u32 = 3;
 
 /// Bytes of a large key–value table hashed between yields (I188): at
 /// most 1.5 ms of the reactor on the pilot's hosts.
@@ -262,6 +283,9 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
+
+/// How often a device reports its load to the leader (D218).
+const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -344,7 +368,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
     let mut all_metrics = Vec::new();
     // Devices still opening: the node heartbeats once none is (I188).
     let opening = Arc::new(std::sync::atomic::AtomicUsize::new(cfg.shards.len()));
+    let mut endpoints: std::collections::BTreeMap<u32, Vec<std::net::TcpListener>> =
+        std::collections::BTreeMap::new();
+    for (d, l) in cfg.endpoints {
+        endpoints.entry(d).or_default().push(l);
+    }
     for (i, sh) in cfg.shards.into_iter().enumerate() {
+        let more = endpoints.remove(&sh.device_id).unwrap_or_default();
+        let networks = cfg.networks.clone();
         let m = Arc::new(metrics::ShardMetrics::default());
         all_metrics.push((sh.device_id, m.clone()));
         let (tx, mut rx) = channel::<()>();
@@ -356,6 +387,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
+        let hole_repair = cfg.hole_repair;
         let push_part_bytes = match cfg.push_part_bytes {
             0 => PUSH_PART_BYTES,
             n => n,
@@ -367,6 +399,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         };
         let commit_delays = cfg.commit_delays.clone();
         let ping_faults = cfg.pings.clone();
+        let older = cfg.older.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
@@ -386,6 +419,17 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                     hyperstor_reactor::set_spin(spin);
                     let may_format = sh.device.formats_itself();
                     let kind = sh.device.kind();
+                    // A block device's drive is read for the leader (D220).
+                    let drive_path = match &sh.device {
+                        DeviceSpec::File { path, .. }
+                            if std::fs::metadata(path).is_ok_and(|m| {
+                                std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type())
+                            }) =>
+                        {
+                            Some(path.clone())
+                        }
+                        _ => None,
+                    };
                     let dev = sh.device.open().map_err(|e| e.to_string())?;
                     let d2 = dev.clone();
                     block_on(async move {
@@ -403,14 +447,17 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
+                        st.hole_repair.set(hole_repair);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
+                        *st.older.borrow_mut() = older.map(|o| (node, o));
                         *st.commit_delays.borrow_mut() = commit_delays;
                         let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
                         *st.ping_faults.borrow_mut() = ping_faults;
                         st.io_timeout.set(io_timeout);
                         st.read_timeout.set(read_timeout);
                         st.kind.set(kind);
+                        *st.networks.borrow_mut() = networks;
                         let l = TcpListener::from_std(sh.listener);
                         let udp = if no_udp {
                             Err(std::io::Error::other("test hook"))
@@ -451,6 +498,10 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().scrubber(scrub_interval));
                         }
                         spawn(st.clone().accept(l));
+                        // The same reactor answers on each endpoint (D207).
+                        for l in more {
+                            spawn(st.clone().accept(TcpListener::from_std(l)));
+                        }
                         spawn(st.clone().gauges());
                         // Every 30 s (HS_PG_USAGE_MS for tests).
                         let every = std::env::var("HS_PG_USAGE_MS")
@@ -458,6 +509,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             .and_then(|v| v.parse().ok())
                             .map_or(Duration::from_secs(30), Duration::from_millis);
                         spawn(st.clone().usage(every));
+                        // Every 5 s (HS_PERF_MS for tests).
+                        *st.drive.borrow_mut() =
+                            Some(drive::watch(sh.device_id, drive_path, cpu));
+                        let every = std::env::var("HS_PERF_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .map_or(PERF_EVERY, Duration::from_millis);
+                        spawn(st.clone().perf(every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -495,6 +554,10 @@ struct ShardState {
     dev: Arc<dyn BlockDev>,
     /// `NodeConfig::io_timeout`, resolved.
     io_timeout: Cell<Duration>,
+    /// The data networks this node sends on (D207).
+    networks: RefCell<Vec<String>>,
+    /// For choosing among a peer's endpoints (D208).
+    path_rng: RefCell<rand::rngs::SmallRng>,
     /// `NodeConfig::read_timeout`, resolved.
     read_timeout: Cell<Duration>,
     /// Reads in a row that took over `read_timeout` (D190).
@@ -555,11 +618,17 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
+    /// `NodeConfig::hole_repair`.
+    hole_repair: Cell<bool>,
     /// `NodeConfig::push_part_bytes`, resolved.
     push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
     /// push replaces them; reported with the digest [`DAMAGED`].
     damaged: RefCell<HashSet<ObjKey>>,
+    /// Objects being read for a push on the ring (I257): how many such
+    /// reads, and how many writes to each were queued; a read that saw a
+    /// write queued meanwhile is planned again.
+    watched: RefCell<HashMap<ObjKey, (u32, u64)>>,
     /// Objects an operation list is being decided for (`exec`).
     exec_locks: RefCell<HashSet<ObjKey>>,
     /// Volume leases of the headers this device is primary of (06-metadata.md
@@ -582,6 +651,8 @@ struct ShardState {
     quiesce: RefCell<HashMap<ObjKey, Quiesce>>,
     /// The test hook of `NodeConfig::partitions`, with this node's id.
     partitions: RefCell<Option<(u32, Arc<faults::Partitions>)>>,
+    /// The test hook of `NodeConfig::older`, with this node's id.
+    older: RefCell<Option<(u32, Arc<faults::Older>)>>,
     /// Objects the last scrub of each PG left unresolved, as reported.
     inconsistent: RefCell<HashMap<(u32, u32), u32>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
@@ -597,6 +668,10 @@ struct ShardState {
     cache_gens: RefCell<HashMap<(u32, u32), u64>>,
     /// Counters for the admin port (`metrics`).
     metrics: Arc<metrics::ShardMetrics>,
+    /// This window's load, for the leader (`perf`, D218).
+    heat: heat::Heat,
+    /// The drive's latest reading (`drive::watch`), if it has one.
+    drive: RefCell<Option<Arc<std::sync::Mutex<Option<hyperstor_proto::perf::Drive>>>>>,
 }
 
 /// Coarse deadlines for the I/O path: one ticker per reactor wakes them
@@ -804,7 +879,10 @@ const DEEP_SCRUB_RATE: u64 = 64 << 20;
 /// none: the primary decides them).
 fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
     Some(match op {
-        WireOp::AssertExists | WireOp::AssertAbsent | WireOp::AssertAttr { .. } => return None,
+        WireOp::AssertExists
+        | WireOp::AssertAbsent
+        | WireOp::AssertAttr { .. }
+        | WireOp::AssertKv { .. } => return None,
         WireOp::Touch => Op::Touch,
         WireOp::Write { off, data } => Op::Write { off, data },
         WireOp::Zero { off, len } => Op::Zero { off, len },
@@ -1027,6 +1105,10 @@ impl ShardState {
             shard: shard_cell::ShardCell::new(shard),
             dev,
             io_timeout: Cell::new(IO_TIMEOUT),
+            networks: RefCell::new(Vec::new()),
+            path_rng: RefCell::new(rand::SeedableRng::seed_from_u64(
+                hyperstor_client::random_u64(),
+            )),
             read_timeout: Cell::new(READ_TIMEOUT),
             read_timeouts: Cell::new(0),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
@@ -1051,8 +1133,10 @@ impl ShardState {
             splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
+            hole_repair: Cell::new(false),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
+            watched: RefCell::new(HashMap::new()),
             exec_locks: RefCell::new(HashSet::new()),
             leases: RefCell::new(HashMap::new()),
             slow_reported: RefCell::new(HashSet::new()),
@@ -1061,12 +1145,15 @@ impl ShardState {
             failure_reported: Cell::new(false),
             inconsistent: RefCell::new(HashMap::new()),
             partitions: RefCell::new(None),
+            older: RefCell::new(None),
             watches: RefCell::new(HashMap::new()),
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
             blocked,
             cache_gens: RefCell::new(HashMap::new()),
             metrics,
+            heat: heat::Heat::default(),
+            drive: RefCell::new(None),
         }))
     }
 
@@ -1077,6 +1164,9 @@ impl ShardState {
     /// Queues a list for the next group commit.
     fn enqueue(&self, list: OpList) -> impl Future<Output = CommitResult> + 'static {
         let (tx, rx) = oneshot();
+        if let Some((_, writes)) = self.watched.borrow_mut().get_mut(&list.key) {
+            *writes += 1;
+        }
         self.queue.borrow_mut().push((list, tx));
         if let Some(w) = self.committer.borrow_mut().take() {
             w.wake();
@@ -1168,6 +1258,7 @@ impl ShardState {
         if writes.is_empty() {
             return Ok(());
         }
+        let commit_bytes: u64 = writes.iter().map(|(_, b)| b.len() as u64).sum();
         let delay = self
             .commit_delays
             .borrow()
@@ -1191,7 +1282,15 @@ impl ShardState {
             }
         };
         let limit = self.io_timeout.get();
-        match hyperstor_reactor::time::timeout(limit, io).await {
+        self.heat.begin();
+        let began = std::time::Instant::now();
+        let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::COMMIT,
+            began.elapsed(),
+            commit_bytes,
+        );
+        match r {
             Ok(r) => r,
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -1615,14 +1714,13 @@ impl ShardState {
                 if m.get(&key) == mine {
                     continue;
                 }
-                let Some(addr) = map.device_addr(others[i - 1]) else {
+                let Some(addr) = self.addr_of(&map, others[i - 1]) else {
                     return false;
                 };
                 let Ok(conn) = self.peer(addr).await else {
                     return false;
                 };
-                self.drained().await;
-                let Some(parts) = self.push_parts(to, &key, false) else {
+                let Some(parts) = self.push_parts(to, &key, false).await else {
                     return false;
                 };
                 if !push_all(&conn, parts).await {
@@ -1654,10 +1752,42 @@ impl ShardState {
         Ok(self.pings.get(addr).await?)
     }
 
+    /// Where to reach `device` for one request: among its endpoints on
+    /// this node's first network that has any, by two random choices on
+    /// requests outstanding (D207, D208); else its address.
+    fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
+        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        if addrs.len() < 2 {
+            return addrs.first().copied();
+        }
+        let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
+            .iter()
+            .map(|a| hyperstor_fabric::path::PathLoad {
+                weight: 1.0,
+                bytes_in_flight: self.peers.pending(*a) as u64,
+                rtt_us: 0,
+            })
+            .collect();
+        let i = hyperstor_fabric::path::choose(&loads, &mut *self.path_rng.borrow_mut())?;
+        Some(addrs[i])
+    }
+
     /// Refuses a peer the partitions test hook cuts this node from.
     fn partitioned(&self, addr: SocketAddr) -> Result<(), ClientError> {
         if let Some((node, p)) = &*self.partitions.borrow()
-            && let Some(d) = self.map().devices.values().find(|d| d.addr == addr)
+            && let Some(d) = {
+                let map = self.map();
+                map.devices
+                    .values()
+                    .find(|d| {
+                        d.addr == addr
+                            || map
+                                .endpoints
+                                .get(&d.id)
+                                .is_some_and(|e| e.iter().any(|(_, a)| *a == addr))
+                    })
+                    .cloned()
+            }
             && p.blocked(*node, d.node)
         {
             return Err(ClientError::Rpc(hyperstor_client::rpc::RpcError::Io(
@@ -1701,6 +1831,14 @@ impl ShardState {
                 let _ = s.shutdown();
                 return;
             };
+            // An older build can't decode a kind it doesn't know, and
+            // drops the connection as above.
+            if let Some((node, o)) = &*self.older.borrow()
+                && o.unknown(*node, h.kind)
+            {
+                let _ = s.shutdown();
+                return;
+            }
             let reply = |m: &Msg, p: &[u8]| {
                 let _ = tx.send(encode_frame(h.req, m, p));
             };
@@ -1728,6 +1866,13 @@ impl ShardState {
                 Msg::Write { to, key, off, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.writes, 1);
                     metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
+                    self.heat.request(
+                        to.pool,
+                        to.pg,
+                        heat::volume_of(&key.name),
+                        true,
+                        payload.len() as u64,
+                    );
                     self.write(h.req, instance, to, key, off, crcs, payload, tx.clone())
                         .await;
                 }
@@ -1786,8 +1931,9 @@ impl ShardState {
                     kv_from,
                     kv_to,
                     kv_limit,
+                    sized,
                 } => {
-                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit).await;
+                    let (m, p) = self.lookup(to, key, kv_from, kv_to, kv_limit, sized).await;
                     reply(&m, &p);
                 }
                 Msg::PushObject { to, key } => {
@@ -1805,9 +1951,11 @@ impl ShardState {
                 // its request id.
                 Msg::Read { to, key, off, len } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read(to, key, off, len).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -1852,9 +2000,11 @@ impl ShardState {
                     len,
                 } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    let (pool, pg, vol) = (to.pool, to.pg, heat::volume_of(&key.name));
                     spawn(async move {
                         let arrived = std::time::Instant::now();
                         let (m, p) = me.read_at(to, key, layers, off, len, true).await;
+                        me.heat.request(pool, pg, vol, false, p.len() as u64);
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
@@ -1991,6 +2141,13 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.digests(to, deep).await;
+                        let _ = tx.send(encode_frame(req, &m, &p));
+                    });
+                }
+                Msg::Holds { to } => {
+                    let (me, tx, req) = (self.clone(), tx.clone(), h.req);
+                    spawn(async move {
+                        let (m, p) = me.holds(to).await;
                         let _ = tx.send(encode_frame(req, &m, &p));
                     });
                 }
@@ -2247,7 +2404,7 @@ impl ShardState {
             .filter(|d| **d != NO_DEVICE)
             .chain(required.iter())
         {
-            let Some(addr) = map.device_addr(*d) else {
+            let Some(addr) = self.addr_of(&map, *d) else {
                 return Err(err(Code::Unavailable, &map, "replica has no address"));
             };
             match self.peer(addr).await {
@@ -2265,7 +2422,7 @@ impl ShardState {
         }
         let mut fills = Vec::new();
         for d in filling.into_iter().filter(|d| !required.contains(d)) {
-            match map.device_addr(d) {
+            match self.addr_of(&map, d) {
                 Some(addr) => match self.peer(addr).await {
                     Ok(c) => fills.push((d, c)),
                     Err(_) => self.fill_failed(to.pool, to.pg, d),
@@ -2537,7 +2694,9 @@ impl ShardState {
             );
         }
         let r = self
-            .device_read(|sh| sh.read_layered_begin(&keys, off, len))
+            .device_read(ReadKind::Client, |sh| {
+                sh.read_layered_begin(&keys, off, len)
+            })
             .await;
         let data = match r {
             Ok(b) => b.to_vec(),
@@ -3253,6 +3412,12 @@ impl ShardState {
                         ));
                     }
                 }
+                WireOp::AssertKv { key: k, value } if sh.kv_get(key, k) != value.as_deref() => {
+                    return Err(format!(
+                        "key {} is not as asserted",
+                        String::from_utf8_lossy(k)
+                    ));
+                }
                 _ => {}
             }
         }
@@ -3308,6 +3473,7 @@ impl ShardState {
         kv_from: Vec<u8>,
         kv_to: Option<Vec<u8>>,
         kv_limit: u32,
+        sized: bool,
     ) -> (Msg, Vec<u8>) {
         if let Err(m) = self.check(&to, true).await {
             return (m, Vec::new());
@@ -3326,6 +3492,7 @@ impl ShardState {
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(&okey, &kv_from, kv_to.as_deref(), kv_limit as usize),
+            kv_bytes: sized.then_some(st.kv_bytes),
         };
         (Msg::LookupOk { found: true }, encode_looked(&looked))
     }
@@ -3459,11 +3626,24 @@ impl ShardState {
     /// member between two lists serves no one the half-copied object.
     fn object_lists(&self, okey: &ObjKey, obj: WireObject) -> Vec<OpList> {
         let mut first = vec![Op::Delete];
-        if !obj.data.is_empty() {
-            first.push(Op::Write {
+        match obj.runs {
+            // Each run where it was: the holes stay holes (issue #158).
+            Some(runs) => {
+                let mut at = 0;
+                for (lb, n) in runs {
+                    let len = n as usize * 4096;
+                    first.push(Op::Write {
+                        off: lb * 4096,
+                        data: obj.data[at..at + len].to_vec(),
+                    });
+                    at += len;
+                }
+            }
+            None if !obj.data.is_empty() => first.push(Op::Write {
                 off: 0,
                 data: obj.data,
-            });
+            }),
+            None => {}
         }
         first.push(Op::Truncate(obj.size));
         first.extend(obj.attrs.into_iter().map(|(k, v)| Op::SetAttr(k, v)));
@@ -3543,6 +3723,41 @@ impl ShardState {
         (Msg::DigestsOk, encode_digests(&entries))
     }
 
+    /// Which blocks this node holds of each object of a PG (D223), once
+    /// every commit queued so far is done, as [`Self::digests`].
+    async fn holds(&self, to: Target) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.check(&to, false).await {
+            return (m, Vec::new());
+        }
+        self.drained().await;
+        let entries: Vec<_> = self
+            .local_holds(to.pool, to.pg)
+            .await
+            .into_iter()
+            .map(|(k, h)| (wire_key(&k), h))
+            .collect();
+        (Msg::HoldsOk, encode_holds(&entries))
+    }
+
+    /// [`Self::holds`] of this device, from the index, in batches of
+    /// [`DIGEST_BATCH`] objects with a yield between.
+    async fn local_holds(&self, pool: u32, pg: u32) -> Vec<(ObjKey, HeldBlocks)> {
+        let keys = self.shard.get().await.list_pg(pool, pg);
+        let mut out = Vec::with_capacity(keys.len());
+        for batch in keys.chunks(DIGEST_BATCH) {
+            {
+                let sh = self.shard.get().await;
+                for k in batch {
+                    if let Some((digest, blocks)) = sh.held(k) {
+                        out.push((k.clone(), HeldBlocks { digest, blocks }));
+                    }
+                }
+            }
+            hyperstor_reactor::yield_now().await;
+        }
+        out
+    }
+
     /// This device's digests of a PG; [`DAMAGED`] for objects a deep scrub
     /// found damaged. In batches of [`DIGEST_BATCH`] objects with a yield
     /// between (I183), and a large object's digest in parts (I188), so
@@ -3600,23 +3815,26 @@ impl ShardState {
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
     /// checks every block's CRC (08-engine.md §7.2), and marks the objects
-    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second, yielding
-    /// between objects so I/O goes on.
+    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second; the reads
+    /// wait for the device on the ring, so I/O goes on.
     async fn verify_pg(&self, pool: u32, pg: u32) {
         let keys = self.shard.get().await.list_pg(pool, pg);
         for key in keys {
-            let read = {
-                let sh = self.shard.get().await;
-                sh.stat(&key).map(|st| {
-                    sh.read(&key, 0, st.size.div_ceil(4096) * 4096)
-                        .map(|b| b.len())
+            // On the ring, with recovery's share of reads (I257).
+            let read = self
+                .device_read(ReadKind::Background, |sh| {
+                    let size = sh.stat(&key).ok_or(EngineError::NotFound)?.size;
+                    sh.read_begin(&key, 0, size.div_ceil(4096) * 4096)
                 })
-            };
+                .await;
             match read {
-                Some(Ok(n)) => {
-                    sleep(Duration::from_secs_f64(n as f64 / DEEP_SCRUB_RATE as f64)).await;
+                Ok(b) => {
+                    sleep(Duration::from_secs_f64(
+                        b.len() as f64 / DEEP_SCRUB_RATE as f64,
+                    ))
+                    .await;
                 }
-                Some(Err(EngineError::Checksum { .. })) => {
+                Err(EngineError::Checksum { .. }) => {
                     if self.damaged.borrow_mut().insert(key) {
                         metrics::ShardMetrics::add(&self.metrics.scrub_damaged, 1);
                     }
@@ -4014,6 +4232,49 @@ impl ShardState {
         }
     }
 
+    /// Reports this device's load, and its drive when there is a new
+    /// reading, to the map service every `every` (D218): best effort, a
+    /// lost report is a lost window.
+    async fn perf(self: Rc<Self>, every: Duration) {
+        let mut last = std::time::Instant::now();
+        let mut sent_drive: Option<hyperstor_proto::perf::Drive> = None;
+        let mut since_drive = u32::MAX;
+        loop {
+            sleep(every).await;
+            let (pgs, service, inflight_max) = self.heat.take();
+            let window_ms = last.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            last = std::time::Instant::now();
+            if self.cut_off() {
+                continue;
+            }
+            // The drive when it changed, and at least every 30 s, so a new
+            // leader has it soon.
+            let now = self
+                .drive
+                .borrow()
+                .as_ref()
+                .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
+            since_drive = since_drive.saturating_add(window_ms);
+            let drive = match now {
+                Some(d) if sent_drive.as_ref() != Some(&d) || since_drive >= 30_000 => {
+                    since_drive = 0;
+                    sent_drive = Some(d.clone());
+                    Some(d)
+                }
+                _ => None,
+            };
+            let report = hyperstor_proto::perf::PerfReport {
+                device: self.me,
+                window_ms,
+                pgs,
+                service,
+                inflight_max,
+                drive,
+            };
+            let _ = self.client.call_meta(&Msg::PerfReport { report }).await;
+        }
+    }
+
     /// The bytes this device's copy of a PG holds, summed a slice of the
     /// index at a time so that I/O waits behind none of it for long.
     async fn pg_bytes(&self, pool: u32, pg: u32) -> u64 {
@@ -4219,7 +4480,7 @@ impl ShardState {
 
     async fn backfill_once(&self, pool: u32, pg: u32, target: u32, pg_epoch: u64) -> bool {
         let map = self.map();
-        let Some(addr) = map.device_addr(target) else {
+        let Some(addr) = self.addr_of(&map, target) else {
             crate::diag!("addr {}.{} {}", pool, pg, target; "backfill of PG {pool}.{pg}: device {target} has no address in map {}", map.epoch);
             return false;
         };
@@ -4354,12 +4615,11 @@ impl ShardState {
             while self.backfill_bytes(target) >= BACKFILL_BUDGET {
                 sleep(Duration::from_millis(1)).await;
             }
-            self.drained().await;
-            let Some(parts) = self.push_parts(to, &key, legacy) else {
+            let Some(parts) = self.push_parts(to, &key, legacy).await else {
                 return false;
             };
             // An object's parts in order on this connection, which the
-            // target handles in order.
+            // target handles in order, sent before the next `.await`.
             for (m, data) in parts {
                 held.add(data.len());
                 inflight.push(conn.start_within(&m, &data, CALL_TIMEOUT));
@@ -4375,24 +4635,75 @@ impl ShardState {
         true
     }
 
+    /// `key`'s data for a push or a fetch, read on the ring with
+    /// recovery's share of reads (I257), so that the reactor serves
+    /// clients and pings meanwhile. It returns with every write queued
+    /// before the call committed, none to `key` queued since its data was
+    /// planned, and no commit in flight: the caller takes the rest of the
+    /// object from the shard and sends it before its next `.await`, so
+    /// that writes queued later follow it on the connection. A write to
+    /// `key` queued while the read waited plans it again; after
+    /// [`PUSH_READ_TRIES`], it reads holding the reactor, as before. None
+    /// if a read fails its checksums or times out.
+    async fn read_for_push(&self, key: &ObjKey) -> Option<PushRead> {
+        for _ in 0..PUSH_READ_TRIES {
+            let watch = Watch::new(&self.watched, key);
+            self.drained().await;
+            let mut held = None;
+            let r = self
+                .device_read(ReadKind::Background, |sh| {
+                    let size = sh.stat(key).ok_or(EngineError::NotFound)?.size;
+                    held = Some((size, sh.held_runs(key).ok_or(EngineError::NotFound)?));
+                    sh.read_begin(key, 0, size.div_ceil(4096) * 4096)
+                })
+                .await;
+            self.shard.idle().await;
+            if watch.written() {
+                metrics::ShardMetrics::add(&self.metrics.push_rereads, 1);
+                continue;
+            }
+            return match (r, held) {
+                (Ok(buf), Some((size, runs))) => {
+                    Some(PushRead::Held(size, cut_runs(&buf, size, runs)))
+                }
+                (Err(EngineError::NotFound), None) => Some(PushRead::Absent),
+                _ => None,
+            };
+        }
+        self.drained().await;
+        let sh = self.shard.borrow();
+        let Some(st) = sh.stat(key) else {
+            return Some(PushRead::Absent);
+        };
+        held_data(&sh, key, st.size).map(|h| PushRead::Held(st.size, h))
+    }
+
     /// The pushes of this node's copy of `key`, to send in order on one
-    /// connection: a [`Msg::PushObject`], and for an object whose
-    /// key–value table is larger than a part (`push_part_bytes`), the rest
-    /// of the table as [`Msg::PushKv`] parts, so that no frame exceeds the
-    /// limit. Read all at once, with no wait in between, as
-    /// [`Self::push_of`] reads.
-    fn push_parts(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<Vec<(Msg, Vec<u8>)>> {
-        let whole = legacy || self.shard.borrow().stat(key).is_none();
-        if whole {
-            return self.push_of(to, key, legacy).map(|p| vec![p]);
+    /// connection, before the next `.await`: a [`Msg::PushObject`], and
+    /// for an object whose key–value table is larger than a part
+    /// (`push_part_bytes`), the rest of the table as [`Msg::PushKv`]
+    /// parts, so that no frame exceeds the limit. Its data is read as
+    /// [`Self::read_for_push`] reads, the rest from the shard after.
+    async fn push_parts(
+        &self,
+        to: Target,
+        key: &ObjKey,
+        legacy: bool,
+    ) -> Option<Vec<(Msg, Vec<u8>)>> {
+        let read = self.read_for_push(key).await?;
+        let PushRead::Held(size, (data, runs)) = read else {
+            return Some(vec![self.push_from(to, key, legacy, read)?]);
+        };
+        if legacy {
+            return Some(vec![self.push_from(
+                to,
+                key,
+                legacy,
+                PushRead::Held(size, (data, runs)),
+            )?]);
         }
         let limit = self.push_part_bytes.get();
         let sh = self.shard.borrow();
-        let st = sh.stat(key)?;
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
         let attrs = sh
             .attrs(key)
             .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -4423,10 +4734,11 @@ impl ShardState {
         }
         let mut rest = parts.into_iter();
         let obj = WireObject {
-            size: st.size,
+            size,
             data,
             attrs,
             kv: rest.next().unwrap_or_default(),
+            runs,
         };
         let mut out = vec![(
             Msg::PushObject {
@@ -4453,9 +4765,21 @@ impl ShardState {
     /// Read it and send it with no wait in between, once every queued
     /// commit is done ([`Self::drained`]): writes queued later then follow
     /// the push on the same connection.
-    fn push_of(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<(Msg, Vec<u8>)> {
-        let sh = self.shard.borrow();
-        let Some(st) = sh.stat(key) else {
+    async fn push_of(&self, to: Target, key: &ObjKey, legacy: bool) -> Option<(Msg, Vec<u8>)> {
+        let read = self.read_for_push(key).await?;
+        self.push_from(to, key, legacy, read)
+    }
+
+    /// [`Self::push_of`] once its data is read: the rest from the shard,
+    /// with no `.await`.
+    fn push_from(
+        &self,
+        to: Target,
+        key: &ObjKey,
+        legacy: bool,
+        read: PushRead,
+    ) -> Option<(Msg, Vec<u8>)> {
+        let PushRead::Held(size, (data, runs)) = read else {
             // Absent: a delete, which every version understands.
             let m = Msg::Push {
                 to,
@@ -4464,13 +4788,14 @@ impl ShardState {
             };
             return Some((m, Vec::new()));
         };
-        let data = sh
-            .read(key, 0, st.size.div_ceil(4096) * 4096)
-            .ok()?
-            .to_vec();
+        let sh = self.shard.borrow();
         if legacy {
             // A node from before whole objects (a rolling upgrade): data
-            // only, as before.
+            // only, as before. It would fill holes with zeros, so an
+            // object with holes waits until it is upgraded (issue #158).
+            if runs.is_some() {
+                return None;
+            }
             let m = Msg::Push {
                 to,
                 key: wire_key(key),
@@ -4479,13 +4804,14 @@ impl ShardState {
             return Some((m, data));
         }
         let obj = WireObject {
-            size: st.size,
+            size,
             data,
             attrs: sh
                 .attrs(key)
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv: sh.kv_scan(key, b"", None, usize::MAX),
+            runs,
         };
         let m = Msg::PushObject {
             to,
@@ -4561,7 +4887,7 @@ impl ShardState {
             if *d == self.me {
                 continue;
             }
-            let conn = self.peer(map.device_addr(*d)?).await.ok()?;
+            let conn = self.peer(self.addr_of(&map, *d)?).await.ok()?;
             // A deep scrub reads every block: it may take minutes, and
             // keepalive catches a peer that's gone. A light one answers
             // from the index.
@@ -4603,6 +4929,62 @@ impl ShardState {
         Some(out)
     }
 
+    /// Every acting member's [`Self::holds`] of a PG, this device's first;
+    /// why not if a member can't answer, or is from before `Holds`: the
+    /// check is skipped until every member has it.
+    async fn member_holds(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+    ) -> Result<Vec<HashMap<ObjKey, HeldBlocks>>, String> {
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let mut theirs = Vec::new();
+        for d in &info.acting {
+            if *d == self.me {
+                continue;
+            }
+            let addr = self
+                .addr_of(&map, *d)
+                .ok_or_else(|| format!("device {d} has no address in the map"))?;
+            let conn = self
+                .peer(addr)
+                .await
+                .map_err(|e| format!("device {d} can't be reached: {e}"))?;
+            match conn
+                .call_within(&Msg::Holds { to }, &[], CALL_TIMEOUT)
+                .await
+            {
+                Ok((Msg::HoldsOk, p)) => theirs.push(
+                    decode_holds(&p)
+                        .map_err(|e| format!("device {d}'s answer is malformed: {e}"))?
+                        .into_iter()
+                        .filter_map(|(k, h)| Some((engine_key(&to, &k).ok()?, h)))
+                        .collect::<HashMap<_, _>>(),
+                ),
+                Ok((m, _)) => {
+                    return Err(format!(
+                        "device {d} answered kind {}, not HoldsOk (from before Holds?)",
+                        m.kind()
+                    ));
+                }
+                Err(e) => return Err(format!("device {d} didn't answer: {e}")),
+            }
+        }
+        self.drained().await;
+        let mine = self.local_holds(pool, pg).await.into_iter().collect();
+        let mut out = vec![mine];
+        out.extend(theirs);
+        Ok(out)
+    }
+
     /// Light scrub of one PG: compares every member's digests. Keys that
     /// differ are checked again after a pause, since a write in flight can
     /// make copies differ for a moment. A difference that persists is
@@ -4618,9 +5000,11 @@ impl ShardState {
         };
         let all: BTreeSet<ObjKey> = first.iter().flat_map(|m| m.keys().cloned()).collect();
         metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
-        let suspects = differing(&first, &mut all.into_iter());
+        let suspects = differing(&first, &mut all.iter().cloned());
+        let agreeing: BTreeSet<ObjKey> = all.difference(&suspects).cloned().collect();
+        let undecided = self.scrub_holes(pool, pg, info, &agreeing).await;
         if suspects.is_empty() {
-            self.report_scrub(pool, pg, 0).await;
+            self.report_scrub(pool, pg, undecided).await;
             return;
         }
         sleep(Duration::from_millis(200)).await;
@@ -4646,7 +5030,7 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
-        let mut unresolved = 0;
+        let mut unresolved = undecided;
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
             let v = match verdict(&row(&second, &key)) {
@@ -4663,24 +5047,8 @@ impl ShardState {
             match v {
                 Verdict::Agree | Verdict::Pull { .. } => {}
                 Verdict::Repair(members) => {
-                    let mut ok = true;
-                    for m in members {
-                        let Some(addr) = map.device_addr(others[m - 1]) else {
-                            ok = false;
-                            continue;
-                        };
-                        let Ok(conn) = self.peer(addr).await else {
-                            ok = false;
-                            continue;
-                        };
-                        self.drained().await;
-                        let Some(parts) = self.push_parts(to, &key, false) else {
-                            ok = false;
-                            continue;
-                        };
-                        ok &= push_all(&conn, parts).await;
-                    }
-                    if ok {
+                    let devices: Vec<u32> = members.iter().map(|m| others[m - 1]).collect();
+                    if self.push_to(to, &key, &devices).await {
                         metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
                     }
                 }
@@ -4696,6 +5064,160 @@ impl ShardState {
             }
         }
         self.report_scrub(pool, pg, unresolved).await;
+    }
+
+    /// Pushes this device's copy of `key` to each of `devices`; whether
+    /// every push landed.
+    async fn push_to(&self, to: Target, key: &ObjKey, devices: &[u32]) -> bool {
+        let map = self.map();
+        let mut ok = true;
+        for d in devices {
+            let Some(addr) = map.device_addr(*d) else {
+                ok = false;
+                continue;
+            };
+            let Ok(conn) = self.peer(addr).await else {
+                ok = false;
+                continue;
+            };
+            let Some(parts) = self.push_parts(to, key, false).await else {
+                ok = false;
+                continue;
+            };
+            ok &= push_all(&conn, parts).await;
+        }
+        ok
+    }
+
+    /// Scrub's check of holes (D223), on the objects whose copies' digests
+    /// agree: they hold the same data, but a copy may hold blocks of zeros
+    /// where another has holes, which a volume's version reads through to
+    /// its older versions and its parent (issue #158). Only a dense copy,
+    /// as pushes made before I243, does that, so the copy holding the
+    /// fewest blocks is right, whatever the vote. Checked again after a
+    /// pause, as [`Self::scrub_pg`] does. Reported, and repaired only with
+    /// `--hole-repair`. Returns how many objects it couldn't decide.
+    async fn scrub_holes(
+        &self,
+        pool: u32,
+        pg: u32,
+        info: &PgInfo,
+        agreeing: &BTreeSet<ObjKey>,
+    ) -> u32 {
+        let differing = |h: &[HashMap<ObjKey, HeldBlocks>],
+                         keys: &mut dyn Iterator<Item = &ObjKey>| {
+            keys.filter(|k| {
+                let row: Option<Vec<&HeldBlocks>> = h.iter().map(|m| m.get(*k)).collect();
+                row.is_some_and(|r| r.iter().any(|x| x.digest != r[0].digest))
+            })
+            .cloned()
+            .collect::<BTreeSet<ObjKey>>()
+        };
+        // A skipped check is logged, so a pass that found nothing can be
+        // told from one that didn't look.
+        let skip = |why: &str| {
+            metrics::ShardMetrics::add(&self.metrics.scrub_holes_unchecked, 1);
+            eprintln!("hyperstord: scrub: pool {pool} PG {pg}: holes not checked: {why}");
+            0
+        };
+        let first = match self.member_holds(pool, pg, info).await {
+            Ok(h) => h,
+            Err(e) => return skip(&e),
+        };
+        let suspects = differing(&first, &mut agreeing.iter());
+        if suspects.is_empty() {
+            return 0;
+        }
+        sleep(Duration::from_millis(200)).await;
+        if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
+            return skip("the PG changed while checking");
+        }
+        let Some(digests) = self.member_digests(pool, pg, info, false).await else {
+            return skip("a member didn't answer for digests on the second look");
+        };
+        let second = match self.member_holds(pool, pg, info).await {
+            Ok(h) => h,
+            Err(e) => return skip(&e),
+        };
+        let still: BTreeSet<ObjKey> = suspects
+            .into_iter()
+            .filter(|k| verdict(&row(&digests, k)) == Verdict::Agree)
+            .collect();
+        let bad = differing(&second, &mut still.iter());
+        let map = self.map();
+        let to = Target {
+            pool,
+            pg,
+            map_epoch: map.epoch,
+            pg_epoch: info.epoch,
+            lease: 0,
+        };
+        let others: Vec<u32> = info
+            .acting
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me)
+            .collect();
+        let repair = self.hole_repair.get();
+        let mut undecided = 0;
+        for key in bad {
+            metrics::ShardMetrics::add(&self.metrics.scrub_holes, 1);
+            let held: Vec<HeldBlocks> = second.iter().map(|m| m[&key]).collect();
+            let win = (0..held.len()).min_by_key(|i| held[*i].blocks).unwrap_or(0);
+            let device = |i: usize| if i == 0 { self.me } else { others[i - 1] };
+            // Copies holding as few blocks, but others: neither is a dense
+            // copy of the other, so don't guess.
+            if held
+                .iter()
+                .any(|h| h.blocks == held[win].blocks && h.digest != held[win].digest)
+            {
+                metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
+                undecided += 1;
+                eprintln!(
+                    "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                     hold as many blocks but different ones; left as is",
+                    hex(&key.name),
+                    key.version
+                );
+                continue;
+            }
+            let fix: Vec<usize> = (0..held.len())
+                .filter(|i| held[*i].digest != held[win].digest)
+                .collect();
+            eprintln!(
+                "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
+                 hold blocks of zeros where device {}'s copy has holes ({} blocks against \
+                 {:?}); {}",
+                hex(&key.name),
+                key.version,
+                device(win),
+                held[win].blocks,
+                fix.iter()
+                    .map(|i| (device(*i), held[*i].blocks))
+                    .collect::<Vec<_>>(),
+                if repair {
+                    "repairing from it"
+                } else {
+                    "report only (--hole-repair is off)"
+                }
+            );
+            if !repair {
+                continue;
+            }
+            // Pull the copy with the holes first; then it is this copy.
+            if win != 0 && !self.repair_own(to, &key, device(win)).await {
+                continue;
+            }
+            let push: Vec<u32> = fix
+                .into_iter()
+                .filter(|i| *i != 0 && *i != win)
+                .map(device)
+                .collect();
+            if self.push_to(to, &key, &push).await {
+                metrics::ShardMetrics::add(&self.metrics.scrub_holes_repaired, 1);
+            }
+        }
+        undecided
     }
 
     /// Tells the map service how many objects of a PG its last scrub left
@@ -4920,10 +5442,8 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        if self.shard.get().await.stat(&okey).is_none() {
-            return (Msg::FetchOk { found: false }, Vec::new());
-        }
-        match self.push_of(to, &okey, false) {
+        match self.push_of(to, &okey, false).await {
+            Some((Msg::Push { .. }, _)) => (Msg::FetchOk { found: false }, Vec::new()),
             Some((_, payload)) => (Msg::FetchOk { found: true }, payload),
             None => (
                 err(
@@ -4960,41 +5480,50 @@ impl ShardState {
                 Vec::new(),
             );
         }
-        let sh = self.shard.get().await;
-        let Some(st) = sh.stat(&okey) else {
-            return (
-                Msg::FetchPartOk {
-                    found: false,
-                    next: None,
-                },
-                Vec::new(),
-            );
-        };
-        let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
+        let absent = (
+            Msg::FetchPartOk {
+                found: false,
+                next: None,
+            },
+            Vec::new(),
+        );
         if !first {
+            let sh = self.shard.get().await;
+            if sh.stat(&okey).is_none() {
+                return absent;
+            }
+            let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
             return (
                 Msg::FetchPartOk { found: true, next },
                 hyperstor_proto::encode_pairs(&kv),
             );
         }
-        let Ok(data) = sh.read(&okey, 0, st.size.div_ceil(4096) * 4096) else {
-            return (
-                err(
-                    Code::Checksum,
-                    &self.map(),
-                    "this copy fails its checksums too",
-                ),
-                Vec::new(),
-            );
+        // The first part has the data, read on the ring (I257).
+        let (size, (data, runs)) = match self.read_for_push(&okey).await {
+            Some(PushRead::Held(size, held)) => (size, held),
+            Some(PushRead::Absent) => return absent,
+            None => {
+                return (
+                    err(
+                        Code::Checksum,
+                        &self.map(),
+                        "this copy fails its checksums too",
+                    ),
+                    Vec::new(),
+                );
+            }
         };
+        let sh = self.shard.borrow();
+        let (kv, next) = kv_part(&sh, &okey, &kv_from, self.push_part_bytes.get());
         let obj = WireObject {
-            size: st.size,
-            data: data.to_vec(),
+            size,
+            data,
             attrs: sh
                 .attrs(&okey)
                 .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
             kv,
+            runs,
         };
         (Msg::FetchPartOk { found: true, next }, encode_object(&obj))
     }
@@ -5020,7 +5549,9 @@ impl ShardState {
         let Ok(okey) = engine_key(&to, &key) else {
             return (err(Code::Invalid, &self.map(), "bad namespace"), Vec::new());
         };
-        let mut r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
+        let mut r = self
+            .device_read(ReadKind::Client, |sh| sh.read_begin(&okey, off, len))
+            .await;
         // A block that fails its checksum (09-replication.md §8.2): this copy
         // is replaced by a member's, and the read served from it.
         if primary && matches!(r, Err(EngineError::Checksum { .. })) {
@@ -5033,7 +5564,9 @@ impl ShardState {
                 .collect();
             for m in members {
                 if self.repair_own(to, &okey, m).await {
-                    r = self.device_read(|sh| sh.read_begin(&okey, off, len)).await;
+                    r = self
+                        .device_read(ReadKind::Client, |sh| sh.read_begin(&okey, off, len))
+                        .await;
                     break;
                 }
             }
@@ -5143,16 +5676,19 @@ impl ShardState {
     /// reads go on the reactor's ring when the device has a descriptor, so
     /// the reactor goes on meanwhile, and commits may begin and end; the
     /// shard holds the extents the read uses until it ends. At most
-    /// [`shard_cell::MAX_READS`] are in flight, the rest wait in turn. A
+    /// [`shard_cell::MAX_READS`] are in flight, the rest wait in turn;
+    /// recovery's, backfill's and scrub's have their own share,
+    /// [`shard_cell::MAX_BACKGROUND_READS`] (`kind`, I257). A
     /// read that waits for the device past the read timeout is abandoned
     /// ([`timed_out`]), and [`READ_TIMEOUTS_TO_FAIL`] in a row fail the
     /// device. Memory and test devices read in their own calls, holding the
     /// reactor as before.
     async fn device_read(
         &self,
+        kind: ReadKind,
         plan: impl FnOnce(&mut hyperstor_engine::Shard) -> Result<ReadPlan, EngineError>,
     ) -> Result<AlignedBuf, EngineError> {
-        let _slot = self.shard.read_slot().await;
+        let _slot = self.shard.read_slot(kind).await;
         let mut plan = plan(&mut *self.shard.get_mut().await)?;
         let buf = plan.take_buf();
         if plan.ios().is_empty() {
@@ -5185,7 +5721,15 @@ impl ShardState {
             }
         };
         let limit = self.read_timeout.get();
+        let read_bytes: u64 = ios.iter().map(|&(_, _, n)| n as u64).sum();
+        self.heat.begin();
+        let began = std::time::Instant::now();
         let r = hyperstor_reactor::time::timeout(limit, io).await;
+        self.heat.end(
+            hyperstor_proto::perf::Service::READ,
+            began.elapsed(),
+            read_bytes,
+        );
         // Abandoned or not, what the read gets no longer matters.
         self.shard.end_read(&plan);
         match r {
@@ -5274,6 +5818,92 @@ impl Drop for InflightGuard {
     fn drop(&mut self) {
         if let Some(n) = self.0.pg_inflight.borrow_mut().get_mut(&self.1) {
             *n = n.saturating_sub(1);
+        }
+    }
+}
+
+/// `b` in lowercase hex, for logs.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// An object's data to send and, if it has holes, the runs it holds.
+type HeldData = (Vec<u8>, Option<Vec<(u64, u64)>>);
+
+/// The data of `key` (of `size` bytes) to send whole: every block from
+/// the start if it has no holes, as before; otherwise the blocks it holds
+/// alone, with their runs ([`WireObject::runs`]). Sent dense, a version's
+/// holes would arrive as zeros and hide what its older versions and its
+/// parent hold (issue #158). None if a read fails its checksums.
+fn held_data(sh: &hyperstor_engine::Shard, key: &ObjKey, size: u64) -> Option<HeldData> {
+    let blocks = size.div_ceil(4096);
+    let runs = sh.held_runs(key)?;
+    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
+        return Some((sh.read(key, 0, blocks * 4096).ok()?.to_vec(), None));
+    }
+    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
+    for (lb, n) in &runs {
+        data.extend_from_slice(&sh.read(key, lb * 4096, n * 4096).ok()?);
+    }
+    Some((data, Some(runs)))
+}
+
+/// An object's data read for a push ([`ShardState::read_for_push`]).
+enum PushRead {
+    /// It has none here: pushed as a delete.
+    Absent,
+    /// Its size and what it holds.
+    Held(u64, HeldData),
+}
+
+/// [`held_data`] of an object of `size` bytes from `buf`, a read of all
+/// its blocks (holes read as zeros), given the runs it holds.
+fn cut_runs(buf: &[u8], size: u64, runs: Vec<(u64, u64)>) -> HeldData {
+    let blocks = size.div_ceil(4096);
+    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
+        return (buf.to_vec(), None);
+    }
+    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
+    for (lb, n) in &runs {
+        data.extend_from_slice(&buf[(lb * 4096) as usize..((lb + n) * 4096) as usize]);
+    }
+    (data, Some(runs))
+}
+
+/// A push's watch on the writes queued to its object while its read waits
+/// for the device (I257); counted by `enqueue`.
+struct Watch<'a> {
+    watched: &'a RefCell<HashMap<ObjKey, (u32, u64)>>,
+    key: ObjKey,
+    at: u64,
+}
+
+impl<'a> Watch<'a> {
+    fn new(watched: &'a RefCell<HashMap<ObjKey, (u32, u64)>>, key: &ObjKey) -> Self {
+        let mut w = watched.borrow_mut();
+        let e = w.entry(key.clone()).or_default();
+        e.0 += 1;
+        Self {
+            watched,
+            key: key.clone(),
+            at: e.1,
+        }
+    }
+
+    /// Whether a write to the object was queued since the watch began.
+    fn written(&self) -> bool {
+        self.watched.borrow().get(&self.key).map(|e| e.1) != Some(self.at)
+    }
+}
+
+impl Drop for Watch<'_> {
+    fn drop(&mut self) {
+        let mut w = self.watched.borrow_mut();
+        if let Some(e) = w.get_mut(&self.key) {
+            e.0 -= 1;
+            if e.0 == 0 {
+                w.remove(&self.key);
+            }
         }
     }
 }

@@ -342,6 +342,16 @@ impl Pool {
         r
     }
 
+    /// Requests waiting for their answer on the connection to `addr`; 0
+    /// without one (26-networks.md §29.6: a path's load).
+    pub fn pending(&self, addr: SocketAddr) -> usize {
+        self.conns
+            .borrow()
+            .get(&addr)
+            .filter(|c| !c.is_dead())
+            .map_or(0, Conn::pending)
+    }
+
     /// Connects made so far (tests).
     pub fn connects(&self) -> u64 {
         self.connects.get()

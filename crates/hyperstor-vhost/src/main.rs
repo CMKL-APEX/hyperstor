@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -67,6 +67,14 @@ fn main() {
                     group,
                     queues,
                     hold_full: std::time::Duration::from_secs(hold_full),
+                    networks: get("--networks")
+                        .map(|s| {
+                            s.split(',')
+                                .filter(|n| !n.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 },
                 |p| {
                     println!("hyperstor-vhost: control socket {}", p.display());

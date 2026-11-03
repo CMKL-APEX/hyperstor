@@ -133,6 +133,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again"
+spec = ["I257"]
+status = "done"
+tests = [
+    "hyperstor_daemon::shard_cell::tests::background_reads_have_a_share_of_their_own",
+    "cluster::a_slow_backfill_holds_no_reactor",
+    "cluster::a_push_is_read_again_when_its_object_is_written",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
@@ -396,10 +406,13 @@ tests = [
 
 [[milestone.item]]
 what = "Scrub"
-spec = ["09-replication.md §8.5", "I58", "I60", "I104", "I105"]
+spec = ["09-replication.md §8.5", "I58", "I60", "I104", "I105", "D223", "I249", "I253"]
 status = "done"
 tests = [
     "cluster::scrub_repairs_a_copy_the_others_outvote",
+    "cluster::scrub_reports_zeros_where_a_copy_has_holes",
+    "cluster::scrub_counts_pgs_whose_holes_it_cannot_check",
+    "cluster::scrub_repairs_zeros_where_a_copy_has_holes",
     "cluster::scrub_repairs_an_outvoted_primary_and_reports_what_it_cant",
     "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
     "hyperstor_daemon::tests::scrub_repairs_only_from_a_majority",
@@ -534,7 +547,7 @@ tests = [
 
 [[milestone.item]]
 what = "Snapshots, clones, rollback, flatten and snapshot deletion"
-spec = ["10-volumes.md §10.3", "10-volumes.md §10.4", "D10", "D21", "D101", "D103", "D106", "I115", "I122", "I123", "I124", "I126"]
+spec = ["10-volumes.md §10.3", "10-volumes.md §10.4", "D10", "D21", "D101", "D103", "D106", "I115", "I122", "I123", "I124", "I126", "I243"]
 status = "done"
 tests = [
     "cluster::snapshots_clones_and_rollback_read_what_they_should",
@@ -543,8 +556,19 @@ tests = [
     "cluster::a_snapshot_never_changes_while_its_volume_is_written",
     "cluster::a_snapshot_whose_holder_doesnt_quiesce_is_abandoned",
     "cluster::resets_to_the_newest_snapshot_stay_in_place",
+    "cluster::a_refilled_clone_keeps_its_holes",
     "manage::snapshots_through_hyperstorctl",
     "hyperstor_client::volume::tests::layers_skip_what_a_reset_dropped",
+]
+
+[[milestone.item]]
+what = "Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hyperstorctl"
+spec = ["10-volumes.md §10.6", "D214", "I242"]
+status = "done"
+tests = [
+    "cluster::volumes_copy_and_move_between_pools",
+    "operations::copies_and_moves_run_as_operations",
+    "hyperstor_client::copy::tests::what_a_move_leaves_round_trips",
 ]
 
 [[milestone.item]]
@@ -619,14 +643,25 @@ id = "HS11"
 title = "Key-value ranges"
 
 [[milestone.item]]
-what = "Per-key assertions on an object's key-value table"
-spec = ["25-kv-ranges.md §28.2", "D194"]
-status = "planned"
+what = "Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup"
+spec = ["25-kv-ranges.md §28.2", "D194", "I255"]
+status = "done"
+tests = [
+    "cluster::keys_are_asserted_and_tables_sized",
+    # The byte count is also checked against the model, through crashes
+    # and replay, by crash::random_crashes_recover_to_a_consistent_prefix,
+    # tracked earlier.
+]
 
 [[milestone.item]]
 what = "Tables, rows and range objects found through the root; one-row atomic changes and scans"
-spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200"]
-status = "planned"
+spec = ["25-kv-ranges.md §28.1", "25-kv-ranges.md §28.3", "D197", "D200", "I256"]
+status = "done"
+tests = [
+    "cluster::kv_store_matches_a_sorted_map",
+    "hyperstor_kv::keys::tests::rows_keep_their_order_and_decode",
+    "hyperstor_kv::keys::tests::map_entries_name_their_start",
+]
 
 [[milestone.item]]
 what = "Splits and merges by each range's primary, resumed after failover"
@@ -836,19 +871,52 @@ id = "HS19"
 title = "Networks"
 
 [[milestone.item]]
-what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1)"
+what = "Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; the installer proposing endpoints from the host's topology and keeping them in the map)"
 spec = ["26-networks.md §29.4", "26-networks.md §29.5", "D204", "D206", "D207", "G47", "G48", "G49"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::endpoints_nearest_first_two_bound_per_network",
+    "hyperstor_fabric::tests::endpoints_only_on_ports_storage_may_use",
+    "hyperstor_fabric::tests::one_port_hosts_use_it_for_everything",
+    "hyperstor_fabric::tests::fabrics_differ_by_subnet_manager",
+    "hyperstor_fabric::tests::addresses_are_matched_by_subnet",
+    "hyperstor_fabric::tests::several_ports_in_one_subnet_need_rules_by_source",
+    "hyperstor_fabric::tests::strict_reverse_path_filtering_is_the_larger_of_all_and_the_port",
+    "hyperstor_fabric::tests::the_installer_proposes_the_nearest_ports_of_each_device",
+    "hyperstor_fabric::tests::a_block_device_leads_to_its_pci_function_through_md",
+    "hyperstor_map::network_tests::networks_and_endpoints_round_trip_in_format_14_only_when_set",
+    "hyperstor_map::network_tests::a_sender_takes_an_endpoint_on_its_networks_else_the_address",
+    "hyperstor_map::network_tests::cluster_file_networks_are_checked",
+    "hyperstor_map::network_tests::merged_and_removed_endpoints",
+    "endpoints::a_client_on_a_network_uses_its_endpoints",
+    "endpoints::nodes_on_a_network_replicate_over_its_endpoints",
+    "endpoints::nobody_on_the_network_leaves_its_endpoints_idle",
+    "endpoints::without_a_shared_network_the_address_is_used",
+    "hyperstor_install::tests::endpoints_and_networks_come_from_the_cluster_file",
+    "install::storage_nodes_replicate_over_endpoints_from_the_cluster_file",
+]
 
 [[milestone.item]]
-what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2)"
+what = "Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests)"
 spec = ["26-networks.md §29.6", "26-networks.md §29.7", "D208", "D210", "G53"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::a_path_without_weight_is_never_chosen",
+    "hyperstor_fabric::tests::equal_load_follows_weights",
+    "hyperstor_fabric::tests::load_spreads_without_herding",
+    "endpoints::a_devices_endpoints_share_its_requests",
+]
 
 [[milestone.item]]
-what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3)"
+what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built)"
 spec = ["26-networks.md §29.8", "D203", "D209", "G52"]
-status = "planned"
+status = "partial"
+tests = [
+    "hyperstor_fabric::tests::an_idle_rail_is_lent_after_the_dwell_and_revoked_on_traffic",
+    "hyperstor_fabric::tests::a_claim_takes_a_rail_back_and_keeps_it",
+    "hyperstor_fabric::tests::lending_off_never_lends",
+    "hyperstor_fabric::tests::reconciler_invariants_hold_under_random_load",
+]
 
 [[milestone.item]]
 what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4)"
@@ -1167,7 +1235,33 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages"
+what = "Load and drives: per-PG requests and top volumes from primaries, each device's service time and in flight, drives' sysfs and NVMe SMART (through hyperstor-smart), kept by the leader 15 minutes; pg-grid --heat, perf, top-volumes and advise; the PG grid's Reads and Writes views, the device matrix and panel, busiest volumes with Move to pool, and the Advisor in the web UI"
+spec = ["27-performance.md §30", "D218", "D219", "D220", "D221", "D222", "I247", "I248"]
+status = "done"
+tests = [
+    "hyperstor_proto::perf::tests::quantiles_come_from_the_buckets",
+    "hyperstor_daemon::heat::tests::chunk_names_give_their_volume",
+    "hyperstor_daemon::heat::tests::the_sketch_keeps_the_heaviest_volumes",
+    "hyperstor_daemon::heat::tests::a_window_is_taken_and_the_next_starts",
+    "hyperstor_daemon::drive::tests::a_health_log_is_parsed",
+    "hyperstor_daemon::drive::tests::sysfs_says_what_the_drive_is",
+    "hyperstor_daemon::drive::tests::hex_and_link_speeds_parse",
+    "hyperstor_meta::perf::tests::reports_keep_fifteen_minutes_and_the_newest_pg_windows",
+    "hyperstor_meta::perf::tests::volumes_are_summed_across_their_pgs",
+    "hyperstor_meta::perf::tests::the_advisor_names_a_slow_device_a_hot_primary_and_a_hot_volume",
+    "hyperstor_meta::perf::tests::the_advisor_reads_the_drives",
+    "hyperstor_ctl::tests::heat_shows_a_digit_per_pg_and_the_busiest_volumes",
+    "hyperstor_ctl::tests::quantiles_merge_buckets",
+    "hyperstor_ctl::tests::perf_and_findings_read_as_tables",
+    "hyperstor_smart::nvme::tests::the_command_has_the_kernels_layout",
+    "hyperstor_smart::tests::the_nodes_options_name_the_devices",
+    "hyperstor_smart::tests::only_configured_nvme_namespaces_are_read",
+    "perf::the_leader_shows_where_the_load_is",
+    "browser::the_load_and_the_drives_are_shown",
+]
+
+[[milestone.item]]
+what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages"
 spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193", "I197"]
 status = "done"
 tests = [
@@ -1178,6 +1272,9 @@ tests = [
     # browser::the_pages_show_the_cluster, tracked earlier; a follower's
     # answer also by join::map_service_members_join_the_first.
     "hyperstor_meta::tests::a_follower_asks_the_leader_for_its_view",
+    # Status's raw space line; also by manage::status_and_tables and, the
+    # Overview page's bar, browser::the_pages_show_the_cluster.
+    "hyperstor_ctl::tests::status_text_sums_the_space_of_devices_in",
 ]
 
 [[milestone.item]]

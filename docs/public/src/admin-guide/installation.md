@@ -65,7 +65,10 @@ hyperstorctl status
 hyperstorctl io-test
 ```
 
-`check` reports each requirement as `ok`, `info`, `warn` or `FAIL`.
+`check` reports each requirement as `ok`, `info`, `warn` or `FAIL`. On a
+storage host whose devices have [endpoints](planning.md#several-networks),
+it also warns about endpoint addresses that share a subnet with another
+port and have no routing rule of their own (`routing`).
 `install` runs the checks, copies the binaries to `/usr/local/bin`,
 creates the `hyperstor` user, writes the configuration in
 `/etc/hyperstor`, the cluster's certificates in `/etc/hyperstor/pki`,

@@ -2003,6 +2003,7 @@ impl Shard {
             size: o.size,
             revision: o.revision,
             blocks: o.block_count(),
+            kv_bytes: o.kv_bytes,
         })
     }
 
@@ -2327,6 +2328,35 @@ impl Shard {
             .objects
             .get(key)
             .is_some_and(|o| o.all_mapped(lb, 1))
+    }
+
+    /// The blocks object `key` holds, as (first block, count) in order,
+    /// contiguous ones merged; none if it doesn't exist. What isn't in
+    /// them is a hole, which a layered read passes through (issue #158).
+    pub fn held_runs(&self, key: &ObjKey) -> Option<Vec<(u64, u64)>> {
+        let o = self.index.objects.get(key)?;
+        let mut out: Vec<(u64, u64)> = Vec::new();
+        for (lb, _, crcs) in o.blocks.runs() {
+            let n = crcs.len() as u64;
+            match out.last_mut() {
+                Some((l, c)) if *l + *c == lb => *c += n,
+                _ => out.push((lb, n)),
+            }
+        }
+        Some(out)
+    }
+
+    /// A digest of which blocks object `key` holds, and how many (D223):
+    /// copies with equal [`Shard::digest`]s that differ here differ only in
+    /// blocks of zeros one holds where another has a hole. From the index.
+    pub fn held(&self, key: &ObjKey) -> Option<(u64, u64)> {
+        let mut h = Fnv::new();
+        let mut blocks = 0;
+        for (lb, n) in self.held_runs(key)? {
+            h.u64(lb).u64(n);
+            blocks += n;
+        }
+        Some((h.0, blocks))
     }
 
     /// The versions of the object `key` names (every version of its pool,

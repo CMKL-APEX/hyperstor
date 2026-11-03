@@ -220,4 +220,6 @@ pub struct ObjStat {
     pub revision: u64,
     /// Blocks the object holds.
     pub blocks: u64,
+    /// Its key–value table's keys and values, in bytes.
+    pub kv_bytes: u64,
 }

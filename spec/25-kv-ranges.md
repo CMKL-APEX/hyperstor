@@ -8,7 +8,8 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **designed, not yet built** (2026-11-01). Settled with the
+Status: **stages 1 and 2 of §28.8 built** (2026-11-03: I255, I256);
+splits, merges and the deletion queue are next. Settled with the
 owner: D191–D199 (points 128–137) and D200–D202 (points 169–172 of
 [05-decision-log.md](05-decision-log.md)). The rest of this document
 (key encoding, ids, the root's layout, the deletion queue) was decided
@@ -31,7 +32,7 @@ while drafting and is open for review.
   divided (D200).
 - **Atomic unit: one row** (D200). A batch of changes to one row's
   columns applies atomically, with assertions on its columns (absent, or
-  equal to a checksum: D194). There is nothing atomic across rows until
+  holding given bytes: D194). There is nothing atomic across rows until
   HS11b. Why: a split can't break a one-row batch, so it never fails for
   a reason the caller can't see; S3 needs nothing wider (D191).
 - **Reads** are of a column, a row, or the rows from one row to another
@@ -56,6 +57,11 @@ allocator to coordinate, as volume ids.
 | `state` | `pending` (being filled, not yet serving), `serving`, `splitting` (at a row, into a named range id), `absorbing` (a named neighbour), `merging` (into a named neighbour) |
 | `next` | after a split: the range id now holding the rows from `end` on, a hint for clients with an old root |
 
+- **Attribute values:** ids and the epoch are big-endian; `start` and
+  `end` are rows as they are; `state` is a tag byte (1 `pending`,
+  2 `serving`, 3 `splitting`, 4 `absorbing`, 5 `merging`), then the range
+  id it names and, for `splitting`, the row (I256).
+
 - **Key–value table.** User keys are stored as `r` + row + column. The
   row is encoded so that its end can be found and order is kept: each
   0x00 byte becomes 0x00 0xFF, and the row ends with 0x00 0x01 (as
@@ -72,17 +78,24 @@ allocator to coordinate, as volume ids.
 - **Reads return the attributes.** `Lookup` answers with the
   attributes and the key slice from one read on the primary, so a reader
   checks the bounds and state against the keys it got.
-- **One new engine operation:** `AssertKv(key, checksum or absent)`,
-  D194's per-key assertion, in the engine and on the wire (`WireOp`).
-  `Lookup` also reports the table's byte count, for split and merge
-  decisions.
+- **One new assertion:** `AssertKv(key, value or absent)`, D194's
+  per-key assertion (built, I255). Like the other assertions on the wire
+  it is decided by the primary, holding the object, and never reaches the
+  engine or the replicas (I6). It compares exact bytes (D194 revised,
+  point 190). Why: never wrong, and the values asserted (index entries,
+  root entries) are small.
+- **The table's size.** The engine keeps each table's bytes (keys and
+  values) as it changes. A *sized* lookup returns them, for split and
+  merge decisions; it travels as its own message kind, so `Lookup` and
+  its answer stay as older builds read them.
 
 ### 28.3 The root
 
 - Each store has one **root**: a `kv` object in `.meta` with a fixed name
   (the store id) (D197). Its table holds:
-  - `t` + table name → the table record: id, index and data pools,
-    state, settings. This is D197's bucket record;
+  - `t` + table name → the table record: a format byte, the id, the
+    index and data pools. Later fields (settings) are appended, and a
+    reader skips those it doesn't know. This is D197's bucket record;
   - `i` + table id → the table name, so a range can find its table;
   - `m` + table id + start row → range id and epoch, one entry per range.
 - **The root is a map, and range objects have the final word.** A range's
@@ -102,8 +115,10 @@ allocator to coordinate, as volume ids.
   entries. A crash between leaves a range object no root entry names. Its
   primary deletes it after an hour (§28.5).
 - **Deleting a table** (an S3 bucket must be empty): one operation on the
-  root marks the table `deleting` and removes the name; then the client
-  deletes the range objects and the `m` and `i` entries.
+  root removes the name, asserting the record is the one read; then the
+  client deletes the range objects, then the `m` and `i` entries. An `i`
+  entry whose name is gone marks a delete that stopped half-way, to be
+  finished by whoever finds it (I256).
 
 ### 28.4 Splits
 
@@ -185,8 +200,10 @@ scanned, and the primary that holds the queue drains it.
 - **`hyperstor-kv`**, a library on `hyperstor-client`:
   - open a store;
   - create, look up, list and delete tables;
-  - `get`, `scan` (rows, prefix, limit, continuation);
-  - `apply(row, batch)`: puts, deletes, assertions, and queue entries.
+  - `get` (a column), `row` (every column of a row), `scan` (rows from,
+    to, with a prefix, a limit of rows, and where the next page starts);
+  - `apply(row, batch)`: puts, deletes, assertions, and (stage 4) queue
+    entries.
 
   It caches the root, routes by row, handles `Conflict` and `next`, and
   holds writes during a freeze. The S3 gateway (HS12) is its first user.
@@ -202,8 +219,10 @@ scanned, and the primary that holds the queue drains it.
    `Lookup`. Tests: the engine's randomized test against its model
    covers the new assertion.
 2. `hyperstor-kv` without splits: key encoding, the root, tables, rows,
-   scans, the routing cache. Tests: a randomized test against a sorted
-   map, on an in-process cluster.
+   scans, the routing cache (built, I256). Tests: a randomized test
+   against a sorted map, on an in-process cluster, through two stores
+   whose caches go stale, with ranges split by hand so that reads and
+   writes cross ranges, follow `next` and wait on a frozen half.
 3. Splits and merges in `hyperstord`. Tests: the same randomized test,
    with sizes that split and merge often and primaries killed at every
    step (the fault rig). After each step the store must equal the model,

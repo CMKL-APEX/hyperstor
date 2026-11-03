@@ -232,7 +232,7 @@ impl Volume {
     }
 }
 
-fn dir_key(pool: u32, id: u128) -> Vec<u8> {
+pub(crate) fn dir_key(pool: u32, id: u128) -> Vec<u8> {
     format!("d/{pool}/{:02}", id % DIR_SHARDS).into_bytes()
 }
 
@@ -1100,6 +1100,33 @@ pub enum Take {
 }
 
 impl Client {
+    /// Releases `lease` on volume `id`'s header, as [`Attached::detach`]
+    /// does, for a lease no attachment of this client holds (a trashed
+    /// volume's). A lease that is already gone is no error.
+    pub(crate) async fn release_lease(&self, id: u128, lease: u64) -> Result<(), ClientError> {
+        let key = header_key(id);
+        let r = self
+            .to_primary(
+                META_POOL,
+                Route::Object {
+                    ns: NS_META,
+                    name: &key,
+                },
+                lease,
+                &[],
+                &|to, key| Msg::LeaseRelease { to, key },
+            )
+            .await;
+        match r {
+            Ok((Msg::LeaseOk { .. }, _)) => Ok(()),
+            Err(ClientError::Server {
+                code: Code::Fenced, ..
+            }) => Ok(()),
+            Ok((m, _)) => Err(unexpected(m)),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Attaches volume `id` read-write: takes its lease, refused with
     /// [`ClientError::LeaseHeld`] while another instance holds it.
     pub async fn attach(self: &Rc<Self>, id: u128) -> Result<Rc<Attached>, ClientError> {
@@ -1398,7 +1425,7 @@ impl Client {
             for a in live {
                 let pg = meta.pg_of_key(NS_META, &header_key(a.volume.borrow().id));
                 if let Some(info) = map.pg(META_POOL, pg)
-                    && let Some(addr) = info.primary().and_then(|d| map.device_addr(d))
+                    && let Some(addr) = info.primary().and_then(|d| self.addr_of(&map, d))
                 {
                     by_primary
                         .entry(addr)
@@ -1539,6 +1566,7 @@ mod tests {
                 (DELEGATES_ATTR.to_vec(), encode_delegates(&[4, 6])),
             ],
             kv: vec![],
+            kv_bytes: None,
         };
         assert_eq!(decode(7, &l).unwrap(), v);
         // The trash's fields come last: 8 bytes of the volume's time, then

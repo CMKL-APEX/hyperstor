@@ -161,12 +161,15 @@ impl Group {
 
     fn node(&self, n: usize, device: DeviceSpec) -> NodeHandle {
         start(NodeConfig {
+            endpoints: Vec::new(),
+            networks: Vec::new(),
             push_part_bytes: 0,
             stray_grace: std::time::Duration::ZERO,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             commit_delays: None,
             pings: None,
+            older: None,
             partitions: None,
             node_id: n as u32,
             meta: self.maps(),
@@ -182,6 +185,7 @@ impl Group {
             defer_max: None,
             scrub_interval: Duration::ZERO,
             no_digests: false,
+            hole_repair: false,
         })
     }
 

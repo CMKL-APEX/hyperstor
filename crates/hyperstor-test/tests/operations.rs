@@ -188,3 +188,135 @@ fn operations_outlive_the_map_service() {
     assert!(list.has(&flatten) && list.has(&drain), "{}", list.out);
     c.ctl(&["in", "--node", "3", "--wait", "60"]).ok();
 }
+
+/// Copies and moves between pools as operations (10-volumes.md §10.6,
+/// D214): a snapshot copied into a new pool reads back what was written;
+/// a volume with snapshots doesn't move, and moves once they are purged,
+/// keeping its id and its data; the refusals' reasons; audited.
+#[test]
+fn copies_and_moves_run_as_operations() {
+    let c = Cluster::all_in_one("copy", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "second", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("second").then_some(())
+    });
+    let v = c
+        .ctl(&["create-volume", "--size", "8M", "--name", "v"])
+        .ok()
+        .out
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    // Blocks of data, then a MiB of zeros, then a hole.
+    let mut image: Vec<u8> = (0..5 << 20).map(|i| (i / 4096 % 251) as u8 + 1).collect();
+    image[(2 << 20)..(3 << 20)].fill(0);
+    let src = c.scratch.path("image.raw");
+    std::fs::write(&src, &image).unwrap();
+    c.ctl(&["write-volume", "--id", &v, "--file", src.to_str().unwrap()])
+        .ok();
+    image.resize(8 << 20, 0);
+    let read = |id: &str| {
+        let out = c.scratch.path("back.raw");
+        c.ctl(&[
+            "read-volume",
+            "--id",
+            id,
+            "--size",
+            "8M",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .ok();
+        std::fs::read(out).unwrap()
+    };
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "s"])
+        .ok();
+
+    // The snapshot, copied into pool 3 under a given id.
+    let copy = "00000000000000000000000000c0ffee";
+    let r = c
+        .ctl(&[
+            "copy-volume",
+            "--id",
+            &v,
+            "--epoch",
+            "1",
+            "--pool",
+            "3",
+            "--new-id",
+            copy,
+            "--name",
+            "c",
+            "--wait",
+            "60",
+        ])
+        .ok();
+    let id = op_id(&r.out);
+    assert!(
+        r.has(&format!("volume {v} copying to volume {copy} in pool 3")),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.has(&format!("{id} copy volume {v} snapshot 1 to pool 3: done")),
+        "{}",
+        r.out
+    );
+    assert!(c.ctl(&["volumes", "--pool", "3"]).ok().has(copy));
+    assert!(read(copy) == image, "the copy reads what was written");
+    // Its id is taken now; the pool must exist and differ.
+    let r = c
+        .ctl(&[
+            "copy-volume",
+            "--id",
+            &v,
+            "--epoch",
+            "1",
+            "--pool",
+            "3",
+            "--new-id",
+            copy,
+        ])
+        .expect(1);
+    assert!(r.has("(already_exists)"), "{}", r.out);
+    let r = c.ctl(&["copy-volume", "--id", &v, "--pool", "9"]).expect(1);
+    assert!(r.has("(not_found)"), "{}", r.out);
+    let r = c.ctl(&["move-volume", "--id", &v, "--pool", "1"]).expect(1);
+    assert!(r.has("(invalid_argument)"), "{}", r.out);
+
+    // A move waits for the snapshots to go, the trash's too.
+    let r = c.ctl(&["move-volume", "--id", &v, "--pool", "3"]).expect(1);
+    assert!(r.has("(in_use)") && r.has("has snapshots"), "{}", r.out);
+    c.ctl(&["snapshot", "delete", "--id", &v, "--epoch", "1"])
+        .ok();
+    c.ctl(&["move-volume", "--id", &v, "--pool", "3"]).expect(1);
+    c.ctl(&["trash", "purge", "--id", &v, "--epoch", "1", "--wait", "60"])
+        .ok();
+    let r = c
+        .ctl(&["move-volume", "--id", &v, "--pool", "3", "--wait", "60"])
+        .ok();
+    let id = op_id(&r.out);
+    assert!(
+        r.has(&format!("{id} move volume {v} to pool 3: done")),
+        "{}",
+        r.out
+    );
+    assert!(c.ctl(&["volumes", "--pool", "3"]).ok().has(&v));
+    assert!(!c.ctl(&["volumes", "--pool", "1"]).ok().has(&v));
+    assert!(read(&v) == image, "the moved volume reads what was written");
+    let audit = c.audit();
+    for op in ["CopyVolume", "MoveVolume"] {
+        assert!(
+            audit
+                .iter()
+                .any(|l| l.contains(&format!("\"op\":\"{op}\"")) && l.contains("done")),
+            "{op}: {audit:?}"
+        );
+    }
+}

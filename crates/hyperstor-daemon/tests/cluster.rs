@@ -64,12 +64,16 @@ struct Cluster {
     commit_delays: Arc<hyperstor_daemon::faults::CommitDelays>,
     /// Pings that fail (D185).
     pings: Arc<hyperstor_daemon::faults::Pings>,
+    /// Message kinds nodes don't know, as an older build.
+    older: Arc<hyperstor_daemon::faults::Older>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
     /// Read timeout given to restarted nodes (D190); zero: the default.
     read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
+    /// Scrub's hole repair on every node (D223).
+    hole_repair: bool,
 }
 
 impl Cluster {
@@ -138,6 +142,33 @@ impl Cluster {
         scrub: std::time::Duration,
         down_out: std::time::Duration,
         grace: std::time::Duration,
+    ) -> Cluster {
+        Self::start_opts(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            grace,
+            false,
+        )
+    }
+
+    /// As [`Self::start_graced`]; with `hole_repair`, scrub repairs copies
+    /// holding zeros where another has holes (D223).
+    #[allow(clippy::too_many_arguments)]
+    fn start_opts(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+        hole_repair: bool,
     ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
@@ -211,18 +242,22 @@ impl Cluster {
         let partitions = Arc::new(hyperstor_daemon::faults::Partitions::default());
         let commit_delays = Arc::new(hyperstor_daemon::faults::CommitDelays::default());
         let pings = Arc::new(hyperstor_daemon::faults::Pings::default());
+        let older = Arc::new(hyperstor_daemon::faults::Older::default());
         let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    endpoints: Vec::new(),
+                    networks: Vec::new(),
                     push_part_bytes: TEST_PART_BYTES,
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
                     read_timeout: std::time::Duration::ZERO,
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
+                    older: Some(older.clone()),
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
                     meta: vec![meta_addr],
@@ -249,6 +284,7 @@ impl Cluster {
                     defer_max: None,
                     scrub_interval: scrub,
                     no_digests: false,
+                    hole_repair,
                 }))
             })
             .collect();
@@ -266,9 +302,11 @@ impl Cluster {
             faulty,
             commit_delays,
             pings,
+            older,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
+            hole_repair,
         }
     }
 
@@ -301,12 +339,15 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            endpoints: Vec::new(),
+            networks: Vec::new(),
             push_part_bytes: TEST_PART_BYTES,
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
             read_timeout: self.read_timeout,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
+            older: Some(self.older.clone()),
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
             meta: vec![self.meta_addr],
@@ -318,6 +359,7 @@ impl Cluster {
             defer_max: None,
             scrub_interval: self.scrub,
             no_digests,
+            hole_repair: self.hole_repair,
         }));
     }
 
@@ -1372,6 +1414,500 @@ fn objects_change_atomically_and_every_copy_follows() {
     assert!(kv.contains(&b"c".to_vec()) && !kv.contains(&b"a".to_vec()));
 }
 
+/// Per-key assertions (04-decisions.md D194, 25-kv-ranges.md §28.2): an
+/// operation list may assert that a key of the object's table is absent
+/// or holds exact bytes; a list whose assertion fails changes nothing, and
+/// of writers racing to create the same key exactly one wins. A sized
+/// lookup also gives the table's bytes, kept as it changes; a plain one
+/// doesn't.
+#[test]
+fn keys_are_asserted_and_tables_sized() {
+    use hyperstor_client::{ClientError, NS_META};
+    use hyperstor_proto::{Code, WireOp as W};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let conflict = |r: Result<(), ClientError>| {
+        matches!(
+            r,
+            Err(ClientError::Server {
+                code: Code::Conflict,
+                ..
+            })
+        )
+    };
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let n = b"range/1".to_vec();
+            let put = |k: &str, v: &str| W::KvPut(k.as_bytes().to_vec(), v.as_bytes().to_vec());
+            let is = |k: &str, v: Option<&str>| W::AssertKv {
+                key: k.as_bytes().to_vec(),
+                value: v.map(|v| v.as_bytes().to_vec()),
+            };
+            // Absent, on an object that doesn't exist yet.
+            cl.exec(POOL, NS_META, &n, &[is("a", None), put("a", "1")])
+                .await
+                .unwrap();
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", None), put("b", "x")])
+                    .await
+            ));
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", Some("2")), put("b", "x")])
+                    .await
+            ));
+            // A prefix of the value isn't the value.
+            assert!(conflict(
+                cl.exec(POOL, NS_META, &n, &[is("a", Some("")), put("b", "x")])
+                    .await
+            ));
+            cl.exec(
+                POOL,
+                NS_META,
+                &n,
+                &[is("a", Some("1")), put("a", "22"), put("c", "333")],
+            )
+            .await
+            .unwrap();
+            // Sixteen writers, each with its own connection, race to
+            // create the same key: exactly one wins.
+            let mut racers = Vec::new();
+            for i in 0..16u64 {
+                let cl = Client::connect(meta, 100 + i).await.unwrap();
+                let (n, ops) = (n.clone(), vec![is("d", None), put("d", &i.to_string())]);
+                racers.push(spawn(async move { cl.exec(POOL, NS_META, &n, &ops).await }));
+            }
+            let mut won = 0;
+            for r in racers {
+                match r.await {
+                    Ok(()) => won += 1,
+                    e => {
+                        let shown = format!("{e:?}");
+                        assert!(conflict(e), "{shown}");
+                    }
+                }
+            }
+            assert_eq!(won, 1, "one create wins");
+            let l = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 100)
+                .await
+                .unwrap()
+                .unwrap();
+            let keys: Vec<&[u8]> = l.kv.iter().map(|(k, _)| k.as_slice()).collect();
+            assert_eq!(
+                keys,
+                [b"a".as_slice(), b"c", b"d"],
+                "no failed list wrote b"
+            );
+            let bytes: u64 = l.kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            assert_eq!(l.kv_bytes, Some(bytes));
+            // Overwrites and deletes keep the count.
+            cl.exec(POOL, NS_META, &n, &[put("a", ""), W::KvDel(b"c".to_vec())])
+                .await
+                .unwrap();
+            let all = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 100)
+                .await
+                .unwrap()
+                .unwrap();
+            let bytes: u64 = all.kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            assert_eq!(all.kv.len(), 2, "a and d: {all:?}");
+            // The count is of the whole table, whatever the slice sent.
+            let l = cl
+                .lookup_sized(POOL, NS_META, &n, b"", None, 0)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(l.kv.is_empty());
+            assert_eq!(l.kv_bytes, Some(bytes));
+            let plain = cl
+                .lookup(POOL, NS_META, &n, b"", None, 0)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(plain.kv_bytes, None);
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
+/// Splits range `id` of table `t` at row `at` by hand, as a range's
+/// primary will (25-kv-ranges.md §28.4), waiting `hold` with the upper
+/// half frozen; returns the new range. With `root`, the root names it;
+/// else clients must follow the lower range's `next`.
+async fn split_by_hand(
+    cl: &Client,
+    store: u64,
+    t: &hyperstor_kv::Table,
+    id: u128,
+    at: &[u8],
+    root: bool,
+    hold: std::time::Duration,
+) -> u128 {
+    use hyperstor_kv::{NS_KV, Range, State, keys, range_name};
+    use hyperstor_proto::WireOp as W;
+    let name = range_name(id);
+    let l = cl.lookup(t.index_pool, NS_KV, &name, b"", None, 0);
+    let r = Range::from_attrs(id, &l.await.unwrap().unwrap().attrs).unwrap();
+    let epoch = |e: u64| W::AssertAttr {
+        name: b"epoch".to_vec(),
+        value: Some(e.to_be_bytes().to_vec()),
+    };
+    let new = (u128::from(hyperstor_client::random_u64()) << 64) | 1;
+    let frozen = Range {
+        epoch: r.epoch + 1,
+        state: State::Splitting {
+            at: at.to_vec(),
+            into: new,
+        },
+        ..r.clone()
+    };
+    let mut ops = vec![epoch(r.epoch)];
+    ops.extend(frozen.set_ops());
+    cl.exec(t.index_pool, NS_KV, &name, &ops).await.unwrap();
+    hyperstor_reactor::time::sleep(hold).await;
+    let upper = Range {
+        id: new,
+        start: at.to_vec(),
+        epoch: 1,
+        state: State::Pending,
+        next: None,
+        ..r.clone()
+    };
+    let mut ops = vec![W::AssertAbsent];
+    ops.extend(upper.set_ops());
+    cl.exec(t.index_pool, NS_KV, &range_name(new), &ops)
+        .await
+        .unwrap();
+    let end = match &r.end {
+        Some(e) => keys::row_start(e),
+        None => vec![keys::USER + 1],
+    };
+    let mut from = keys::row_start(at);
+    loop {
+        let l = cl.lookup(t.index_pool, NS_KV, &name, &from, Some(&end), 7);
+        let kv = l.await.unwrap().unwrap().kv;
+        let Some((last, _)) = kv.last() else { break };
+        from = last.clone();
+        from.push(0);
+        let ops: Vec<_> = kv.into_iter().map(|(k, v)| W::KvPut(k, v)).collect();
+        cl.exec(t.index_pool, NS_KV, &range_name(new), &ops)
+            .await
+            .unwrap();
+    }
+    let serving = W::SetAttr(b"state".to_vec(), State::Serving.encode());
+    cl.exec(t.index_pool, NS_KV, &range_name(new), &[serving])
+        .await
+        .unwrap();
+    let lower = Range {
+        end: Some(at.to_vec()),
+        next: Some(new),
+        epoch: r.epoch + 2,
+        state: State::Serving,
+        ..r.clone()
+    };
+    let mut ops = vec![epoch(r.epoch + 1)];
+    ops.extend(lower.set_ops());
+    ops.push(W::KvDelRange(keys::row_start(at), end));
+    cl.exec(t.index_pool, NS_KV, &name, &ops).await.unwrap();
+    if root {
+        root_entry(cl, store, t, at, new).await;
+    }
+    new
+}
+
+/// Names range `id`, starting at `start`, in store `store`'s root.
+async fn root_entry(cl: &Client, store: u64, t: &hyperstor_kv::Table, start: &[u8], id: u128) {
+    use hyperstor_kv::{NS_KV, keys, map_value};
+    use hyperstor_proto::WireOp as W;
+    let k = keys::map_key(t.id, start);
+    let ops = [
+        W::AssertKv {
+            key: k.clone(),
+            value: None,
+        },
+        W::KvPut(k, map_value(id, 1)),
+    ];
+    cl.exec(hyperstor_meta::META_POOL, NS_KV, &store.to_be_bytes(), &ops)
+        .await
+        .unwrap();
+}
+
+/// HS11 stage 2 (25-kv-ranges.md §28.8): `hyperstor-kv` against a sorted
+/// map, through two stores whose caches go stale. Ranges are split by
+/// hand, sometimes without the root naming the new one, so reads, scans
+/// and writes cross ranges, follow `next` and find their epoch changed;
+/// a write to a frozen half waits for the split, one below it doesn't.
+/// Tables are created, listed and deleted.
+#[test]
+fn kv_store_matches_a_sorted_map() {
+    use hyperstor_kv::{Batch, KvError, Row, Scan, Store, Table};
+    use std::collections::BTreeMap;
+    type Model = BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>>;
+    const STORE: u64 = 9;
+    async fn all(s: &Store, t: &Table) -> Vec<Row> {
+        let (mut out, mut from) = (Vec::new(), Vec::new());
+        loop {
+            let scan = Scan {
+                from: &from,
+                limit: 3,
+                ..Scan::default()
+            };
+            let p = s.scan(t, &scan).await.unwrap();
+            out.extend(p.rows);
+            match p.more {
+                Some(m) => from = m,
+                None => return out,
+            }
+        }
+    }
+    fn rows(m: &Model) -> Vec<Row> {
+        m.iter()
+            .map(|(r, c)| Row {
+                row: r.clone(),
+                columns: c.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            })
+            .collect()
+    }
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let a = Store::open(Client::connect(meta, 5).await.unwrap(), STORE);
+            let b = Store::open(Client::connect(meta, 6).await.unwrap(), STORE);
+            let admin = Client::connect(meta, 7).await.unwrap();
+            // Tables.
+            let t = a.create_table(b"t1", POOL, POOL).await.unwrap();
+            assert_eq!(
+                b.create_table(b"t1", POOL, POOL).await,
+                Err(KvError::TableExists("t1".into()))
+            );
+            let gone = b.create_table(b"t0", POOL, POOL).await.unwrap();
+            assert_eq!(b.table(b"t1").await.unwrap(), Some(t.clone()));
+            let names = |v: Vec<Table>| v.into_iter().map(|t| t.name).collect::<Vec<_>>();
+            assert_eq!(names(a.tables(b"", 10).await.unwrap()), [b"t0", b"t1"]);
+            assert_eq!(names(a.tables(b"t1", 10).await.unwrap()), [b"t1"]);
+            assert_eq!(names(a.tables(b"", 1).await.unwrap()), [b"t0"]);
+            a.apply(&gone, b"r", Batch::new().put(b"c", b"v"))
+                .await
+                .unwrap();
+            b.delete_table(b"t0").await.unwrap();
+            assert_eq!(a.table(b"t0").await.unwrap(), None);
+            assert_eq!(
+                b.delete_table(b"t0").await,
+                Err(KvError::NoTable("t0".into()))
+            );
+            // `a` has t0's range cached; its write finds the range gone.
+            assert_eq!(
+                a.apply(&gone, b"r", Batch::new().put(b"c", b"w")).await,
+                Err(KvError::NoTable("t0".into()))
+            );
+            let again = a.create_table(b"t0", POOL, POOL).await.unwrap();
+            assert_ne!(again.id, gone.id);
+            assert_eq!(all(&b, &again).await, []);
+
+            // The first range, from the root.
+            let p = hyperstor_kv::keys::map_prefix(t.id);
+            let end = hyperstor_kv::keys::prefix_end(&p);
+            let (pool, ns, root) = (
+                hyperstor_meta::META_POOL,
+                hyperstor_kv::NS_KV,
+                STORE.to_be_bytes(),
+            );
+            let entries = admin.lookup(pool, ns, &root, &p, end.as_deref(), 10);
+            let entries = entries.await.unwrap().unwrap().kv;
+            assert_eq!(entries.len(), 1);
+            let first = hyperstor_kv::map_entry(&entries[0].1).unwrap().0;
+            // Every range of t1 by start row, whether the root names it or not.
+            let mut ranges: Vec<(Vec<u8>, u128)> = vec![(Vec::new(), first)];
+            let mut unrooted: Vec<(Vec<u8>, u128)> = Vec::new();
+            let mut model = Model::new();
+            let mut rng = SmallRng::seed_from_u64(11);
+            // Bytes where the row encoding has cases.
+            let pick = |rng: &mut SmallRng| -> Vec<u8> {
+                let n = rng.random_range(0..4);
+                (0..n)
+                    .map(|_| [0x00, 0x01, b'a', b'b', 0xFF][rng.random_range(0..5)])
+                    .collect()
+            };
+            let cols: [&[u8]; 4] = [b"", b"x", b"y\0", b"z"];
+            let (mut conflicts, mut splits) = (0, 0);
+            for step in 0..1500u32 {
+                let s = if rng.random() { &a } else { &b };
+                match rng.random_range(0..20) {
+                    0..=7 => {
+                        let row = pick(&mut rng);
+                        let have = model.get(&row).cloned().unwrap_or_default();
+                        let (mut after, mut holds, mut batch) = (have.clone(), true, Batch::new());
+                        for _ in 0..rng.random_range(1..4) {
+                            let col = cols[rng.random_range(0..cols.len())];
+                            match rng.random_range(0..4) {
+                                0 | 1 => {
+                                    let v = step.to_string().into_bytes();
+                                    batch.put(col, &v);
+                                    after.insert(col.to_vec(), v);
+                                }
+                                2 => {
+                                    batch.delete(col);
+                                    after.remove(col);
+                                }
+                                _ => {
+                                    let right = have.get(col).cloned();
+                                    let v = match rng.random_range(0..4) {
+                                        0 => Some(b"wrong".to_vec()),
+                                        _ => right.clone(),
+                                    };
+                                    holds &= v == right;
+                                    batch.assert(col, v.as_deref());
+                                }
+                            }
+                        }
+                        let r = s.apply(&t, &row, &batch).await;
+                        if !holds {
+                            assert_eq!(r, Err(KvError::Conflict), "step {step}");
+                            conflicts += 1;
+                        } else if after.is_empty() {
+                            r.unwrap();
+                            model.remove(&row);
+                        } else {
+                            r.unwrap();
+                            model.insert(row, after);
+                        }
+                    }
+                    8..=10 => {
+                        let row = pick(&mut rng);
+                        let col = cols[rng.random_range(0..cols.len())];
+                        let want = model.get(&row).and_then(|c| c.get(col)).cloned();
+                        assert_eq!(s.get(&t, &row, col).await.unwrap(), want, "step {step}");
+                    }
+                    11..=12 => {
+                        let row = pick(&mut rng);
+                        let want: Vec<_> = model
+                            .get(&row)
+                            .map(|c| c.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                            .unwrap_or_default();
+                        assert_eq!(s.row(&t, &row).await.unwrap(), want, "step {step}");
+                    }
+                    13..=16 => {
+                        let from = pick(&mut rng);
+                        let to = rng.random::<bool>().then(|| pick(&mut rng));
+                        let mut prefix = pick(&mut rng);
+                        prefix.truncate(rng.random_range(0..2));
+                        let limit = rng.random_range(1..5);
+                        let want: Vec<Row> = rows(&model)
+                            .into_iter()
+                            .filter(|r| {
+                                r.row >= from
+                                    && to.as_ref().is_none_or(|t| &r.row < t)
+                                    && r.row.starts_with(&prefix)
+                            })
+                            .collect();
+                        let (mut got, mut f) = (Vec::new(), from.clone());
+                        loop {
+                            let scan = Scan {
+                                from: &f,
+                                to: to.as_deref(),
+                                prefix: &prefix,
+                                limit,
+                            };
+                            let p = s.scan(&t, &scan).await.unwrap();
+                            assert!(p.rows.len() <= limit);
+                            if p.more.is_some() {
+                                assert_eq!(p.rows.len(), limit, "a page is full if more follow");
+                            }
+                            got.extend(p.rows);
+                            match p.more {
+                                Some(m) => f = m,
+                                None => break,
+                            }
+                        }
+                        assert_eq!(got, want, "step {step}: {from:?}..{to:?} {prefix:?}");
+                    }
+                    17..=18 => {
+                        let at = pick(&mut rng);
+                        let i = ranges.partition_point(|(s, _)| *s <= at) - 1;
+                        if ranges[i].0 == at {
+                            continue;
+                        }
+                        let root = rng.random();
+                        let none = std::time::Duration::ZERO;
+                        let new = split_by_hand(&admin, STORE, &t, ranges[i].1, &at, root, none);
+                        let new = new.await;
+                        ranges.insert(i + 1, (at.clone(), new));
+                        if !root {
+                            unrooted.push((at, new));
+                        }
+                        splits += 1;
+                    }
+                    _ => {
+                        // The root catches up.
+                        for (start, id) in unrooted.drain(..) {
+                            root_entry(&admin, STORE, &t, &start, id).await;
+                        }
+                    }
+                }
+            }
+            assert!(conflicts > 20 && splits > 20, "{conflicts} {splits}");
+            assert!(model.len() > 30, "{} rows", model.len());
+
+            // A write to a frozen half waits for the split; one below the
+            // frozen row doesn't. No row is "m", so no range starts there.
+            let i = ranges.partition_point(|(s, _)| s.as_slice() <= b"m".as_slice()) - 1;
+            let lower = ranges[i].0.clone();
+            let done = std::rc::Rc::new(std::cell::Cell::new(false));
+            let split = {
+                let (admin, t, done, id) = (admin.clone(), t.clone(), done.clone(), ranges[i].1);
+                spawn(async move {
+                    let hold = std::time::Duration::from_millis(500);
+                    let n = split_by_hand(&admin, STORE, &t, id, b"m", true, hold).await;
+                    done.set(true);
+                    n
+                })
+            };
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+            a.apply(&t, &lower, Batch::new().put(b"held", b"no"))
+                .await
+                .unwrap();
+            assert!(!done.get(), "a write below the frozen row doesn't wait");
+            b.apply(&t, b"m", Batch::new().put(b"held", b"yes"))
+                .await
+                .unwrap();
+            assert!(done.get(), "a write to the frozen half waits for the split");
+            split.await;
+            model
+                .entry(lower)
+                .or_default()
+                .insert(b"held".to_vec(), b"no".to_vec());
+            model
+                .entry(b"m".to_vec())
+                .or_default()
+                .insert(b"held".to_vec(), b"yes".to_vec());
+
+            // Every store, a fresh one too, reads the model.
+            let fresh = Store::open(Client::connect(meta, 8).await.unwrap(), STORE);
+            for s in [&a, &b, &fresh] {
+                assert_eq!(all(s, &t).await, rows(&model));
+            }
+            // Deleting the table deletes every range the root names.
+            for (start, id) in unrooted.drain(..) {
+                root_entry(&admin, STORE, &t, &start, id).await;
+            }
+            a.delete_table(b"t1").await.unwrap();
+            for (_, id) in &ranges {
+                let name = hyperstor_kv::range_name(*id);
+                let l = admin.lookup(POOL, hyperstor_kv::NS_KV, &name, b"", None, 0);
+                assert_eq!(l.await.unwrap(), None);
+            }
+            assert_eq!(names(fresh.tables(b"", 10).await.unwrap()), [b"t0"]);
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
 /// An object whose key–value table is larger than a push part is
 /// refilled in parts ([`hyperstor_proto::Msg::PushKv`]): every copy ends
 /// with the whole table. (A `.meta` audit day once outgrew the frame
@@ -1499,6 +2035,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
             data: Vec::new(),
             attrs: Vec::new(),
             kv: vec![(b"stray".to_vec(), b"entry".to_vec())],
+            runs: None,
         };
         let (reply, _) = conn
             .call(
@@ -2899,6 +3436,105 @@ fn a_slow_read_holds_no_reactor() {
     c.stop();
 }
 
+/// I257: backfill reads its pushes on the ring, with a share of reads of
+/// its own. With every read on the devices that stay taking 300 ms, no
+/// node is seen down while a failed node's PGs are refilled elsewhere, as
+/// writes to another volume go on.
+#[test]
+fn a_slow_backfill_holds_no_reactor() {
+    let (downs, _) = slow_backfill(false);
+    assert_eq!(downs, 0, "a node was seen down while its device read");
+}
+
+/// I257: a push whose object is written while its read waits for the
+/// device is read again rather than sent stale behind the write; after
+/// three tries it reads holding the reactor, as before. Every copy agrees.
+#[test]
+fn a_push_is_read_again_when_its_object_is_written() {
+    let (_, rereads) = slow_backfill(true);
+    assert!(rereads > 0, "no push was read again");
+}
+
+/// Volume 1 written, node 2 killed and its PGs backfilled elsewhere while
+/// every read on the other devices takes 300 ms, and blocks written
+/// meanwhile, to volume 1 (`to_pushed`) or 2; each block once, so a stale
+/// push would lose it for good. Returns how often a node was seen down,
+/// and the pushes read again.
+fn slow_backfill(to_pushed: bool) -> (usize, u64) {
+    use std::time::{Duration, Instant};
+    let mut c = Cluster::start_full(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        Duration::from_millis(300),
+        Duration::ZERO,
+        DOWN_OUT,
+    );
+    let meta = c.meta_addr;
+    const CHUNKS: u64 = 12;
+    let first = pattern(41, (CHUNKS * CHUNK as u64) as usize);
+    with_client(meta, 5, {
+        let d = first.clone();
+        |cl| async move {
+            wait_all_up(&cl).await;
+            cl.write(POOL, 1, 0, d.clone()).await.unwrap();
+            cl.write(POOL, 2, 0, d).await.unwrap();
+        }
+    });
+    for d in [0, 1000, 3000] {
+        c.commit_delays.set_reads(d, Duration::from_millis(300));
+    }
+    c.kill(2);
+    let vol = if to_pushed { 1 } else { 2 };
+    let (downs, rounds) = with_client(meta, 6, move |cl| async move {
+        wait_map(&cl, "node 2 down", |m| !m.nodes[&2].up).await;
+        let t = Instant::now();
+        let mut want = first;
+        let (mut downs, mut round) = (0, 0u64);
+        loop {
+            cl.refresh_map().await.unwrap();
+            let m = cl.map();
+            downs += [0, 1, 3].iter().filter(|n| !m.nodes[n].up).count();
+            if round >= 3 && m.pgs.values().all(|p| p.acting == p.up) {
+                break;
+            }
+            for i in 0..CHUNKS {
+                let b = pattern(1000 + round * 100 + i, 4096);
+                let at = i * CHUNK as u64 + round * 4096;
+                cl.write(POOL, vol, at, b.clone()).await.unwrap();
+                want[at as usize..][..4096].copy_from_slice(&b);
+            }
+            round += 1;
+            assert!(round < 256, "still backfilling");
+            assert!(t.elapsed() < Duration::from_secs(60), "still backfilling");
+            hyperstor_reactor::time::sleep(Duration::from_millis(50)).await;
+        }
+        let got = cl.read(POOL, vol, 0, want.len() as u64).await.unwrap();
+        assert!(got == want, "the last writes read back");
+        (downs, round)
+    });
+    for d in [0, 1000, 3000] {
+        c.commit_delays.set_reads(d, Duration::ZERO);
+    }
+    assert!(rounds >= 3, "writes went on during backfill");
+    let rereads = [0, 1, 3]
+        .iter()
+        .map(|n| {
+            c.nodes[*n].as_ref().unwrap().metrics[0]
+                .1
+                .push_rereads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .sum();
+    let (map, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (1..=2u128)
+        .flat_map(|v| (0..CHUNKS).map(move |i| (v, i)))
+        .collect();
+    copies_agree(&map, devs, &chunks);
+    (downs, rereads)
+}
+
 /// D190: a read that waits for its device past the read timeout is served
 /// from a member's copy; the device fails only on the third in a row, and
 /// is placed elsewhere while its node stays up.
@@ -3654,6 +4290,354 @@ fn snapshots_clones_and_rollback_read_what_they_should() {
     let _ = ids;
 }
 
+/// Scrub finds copies of a clone's versions that hold zeros where
+/// another copy has holes, as pushes from before I243 made them (D223),
+/// and only reports them without `--hole-repair`.
+#[test]
+fn scrub_reports_zeros_where_a_copy_has_holes() {
+    scrub_holes(false, false);
+}
+
+/// With `--hole-repair`, scrub replaces such copies with the one that
+/// has the holes, even when it is outvoted, and the clone reads its
+/// parent's data again wherever it is served from (D223).
+#[test]
+fn scrub_repairs_zeros_where_a_copy_has_holes() {
+    scrub_holes(true, false);
+}
+
+/// While a member of the PG is from before `Holds`, scrub can't check its
+/// holes: it counts and logs the PG as unchecked rather than passing it
+/// as clean, and checks it once the member answers.
+#[test]
+fn scrub_counts_pgs_whose_holes_it_cannot_check() {
+    scrub_holes(false, true);
+}
+
+fn scrub_holes(repair: bool, older: bool) {
+    use hyperstor_proto::{Msg, Target, block_crcs, decode_holds};
+    let c = Cluster::start_opts(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+        DOWN_OUT,
+        std::time::Duration::ZERO,
+        repair,
+    );
+    let meta = c.meta_addr;
+    let size = 2 * CHUNK as u64;
+    let parent = pattern(61, size as usize);
+    let block = |i: u64| pattern(70 + i, 4096);
+    // The clone writes block 1 + i of chunk i.
+    let at = |i: u64| i * CHUNK as u64 + 4096 * (1 + i);
+    let mut model = parent.clone();
+    for i in 0..2 {
+        model[at(i) as usize..at(i) as usize + 4096].copy_from_slice(&block(i));
+    }
+    let p = parent.clone();
+    let (lineage, k) = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "image").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, p).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        for i in 0..2 {
+            ka.write(at(i), block(i)).await.unwrap();
+        }
+        ka.detach().await.unwrap();
+        wait_backfilled(&cl).await;
+        (v.lineage, k.id)
+    });
+    // Without `Holds` on any node (`older`), scrub can't check a PG's
+    // holes, from before the zeros below are written.
+    let holds = Msg::Holds {
+        to: Target {
+            pool: POOL,
+            pg: 0,
+            map_epoch: 0,
+            pg_epoch: 0,
+            lease: 0,
+        },
+    }
+    .kind();
+    let forget = older.then(|| c.older.clone());
+    // Zeros written behind the primary's back into the clone's versions,
+    // where they have holes: chunk 0 on one replica, chunk 1 on the
+    // primary and a replica, so that its one good copy is outvoted.
+    with_client(meta, 6, move |cl| async move {
+        let m = cl.map();
+        let conn = |d: u32| {
+            let addr = m.device_addr(d).unwrap();
+            async move { hyperstor_rpc::Conn::connect(addr).await.unwrap() }
+        };
+        let mut plants = Vec::new();
+        for i in 0..2u64 {
+            let pg = pg_of(lineage, i, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: m.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let (reply, p) = conn(info.acting[0])
+                .await
+                .call(&Msg::Holds { to }, &[])
+                .await
+                .unwrap();
+            assert_eq!(reply, Msg::HoldsOk);
+            let chunk = chunk_name(lineage, i);
+            let key = decode_holds(&p)
+                .unwrap()
+                .into_iter()
+                .find(|(k, h)| k.name.starts_with(&chunk) && k.name != chunk && h.blocks == 1)
+                .expect("the clone's version of the chunk")
+                .0;
+            let damaged = if i == 0 {
+                vec![info.acting[1]]
+            } else {
+                vec![info.acting[0], info.acting[1]]
+            };
+            plants.push((i, to, key, damaged));
+        }
+        if let Some(f) = &forget {
+            for n in 0..4 {
+                f.set(n, holds, true);
+            }
+        }
+        for (i, to, key, damaged) in plants {
+            let zeros = vec![0u8; 4096 * (1 + i as usize)];
+            for d in damaged {
+                let (reply, _) = conn(d)
+                    .await
+                    .call(
+                        &Msg::Repl {
+                            to,
+                            seq: 0,
+                            key: key.clone(),
+                            off: 0,
+                            crcs: block_crcs(&zeros),
+                        },
+                        &zeros,
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(reply, Msg::ReplOk { .. }), "{reply:?}");
+            }
+        }
+    });
+    let count = |f: fn(&hyperstor_daemon::metrics::ShardMetrics) -> u64| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| f(m))
+            .sum()
+    };
+    let holes = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let fixed = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes_repaired
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let unchecked = |m: &hyperstor_daemon::metrics::ShardMetrics| {
+        m.scrub_holes_unchecked
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    if older {
+        let t = std::time::Instant::now();
+        while count(unchecked) < 2 {
+            assert!(t.elapsed().as_secs() < 20, "no PG counted as unchecked");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(count(holes), 0, "holes checked without Holds");
+        for n in 0..4 {
+            c.older.set(n, holds, false);
+        }
+    }
+    let t = std::time::Instant::now();
+    let want = |n: u64| {
+        if repair {
+            count(fixed) >= n
+        } else {
+            count(holes) >= n
+        }
+    };
+    while !want(2) {
+        assert!(
+            t.elapsed().as_secs() < 20,
+            "scrub found {} and repaired {}",
+            count(holes),
+            count(fixed)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !repair {
+        // Another pass or two: still only reported.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert_eq!(count(fixed), 0, "repaired without --hole-repair");
+    }
+    let m = model.clone();
+    let read = with_client(meta, 7, move |cl| async move {
+        let ka = cl.attach(k).await.unwrap();
+        let got = ka.read(0, size).await.unwrap();
+        ka.detach().await.unwrap();
+        got == m
+    });
+    if repair {
+        assert!(read, "the repaired clone reads its parent's data");
+    }
+    let (map, devs) = c.stop();
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let pool = &map.pools[&POOL];
+    for i in 0..2u64 {
+        let pg = pg_of(lineage, i, pool.pg_count);
+        let info = map.pg(POOL, pg).unwrap();
+        let chunk = chunk_name(lineage, i);
+        let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk.clone(), 0);
+        let mut hi = chunk.clone();
+        hi.extend_from_slice(&[0xff; 5]);
+        let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+        let keys: Vec<ObjKey> = shards[&info.acting[0]]
+            .list(&lo, &hi)
+            .into_iter()
+            .filter(|k| k.name != chunk)
+            .collect();
+        assert_eq!(keys.len(), 1, "one clone version of chunk {i}");
+        let held: Vec<u64> = info
+            .acting
+            .iter()
+            .map(|d| shards[d].held(&keys[0]).unwrap().1)
+            .collect();
+        if repair {
+            assert!(held.iter().all(|b| *b == 1), "chunk {i}: {held:?}");
+        } else {
+            assert!(
+                held.iter().any(|b| *b > 1),
+                "chunk {i} left as is: {held:?}"
+            );
+        }
+    }
+}
+
+/// A clone written while a node is away keeps its holes on every copy
+/// recovery makes (issue #158): the blocks it never wrote still read
+/// its parent's, wherever the PG is served from. Pushes used to send an
+/// object dense, so the copies they made held zeros there.
+#[test]
+fn a_refilled_clone_keeps_its_holes() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let chunks = 4u64;
+    let size = chunks * CHUNK as u64;
+    let parent = pattern(41, size as usize);
+    let p = parent.clone();
+    let (lineage, k) = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "image").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, p).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        (v.lineage, k.id)
+    });
+    c.kill(3);
+    // While node 3 is away, the clone writes one block of each chunk: its
+    // versions are new objects, mostly holes, that node 3 lacks.
+    let block = |i: u64| pattern(50 + i, 4096);
+    let at = |i: u64| i * CHUNK as u64 + 4096 * (1 + i);
+    with_client(meta, 6, move |cl| async move {
+        let ka = cl.attach(k).await.unwrap();
+        for i in 0..chunks {
+            ka.write(at(i), block(i)).await.unwrap();
+        }
+        ka.detach().await.unwrap();
+        wait_backfilled(&cl).await;
+    });
+    c.restart(3);
+    let mut model = parent.clone();
+    for i in 0..chunks {
+        model[at(i) as usize..at(i) as usize + 4096].copy_from_slice(&block(i));
+    }
+    let m = model.clone();
+    with_client(meta, 7, move |cl| async move {
+        wait_all_up(&cl).await;
+        wait_backfilled(&cl).await;
+        let ka = cl.attach(k).await.unwrap();
+        let got = ka.read(0, size).await.unwrap();
+        let wrong: Vec<usize> = (0..m.len() / 4096)
+            .filter(|b| got[b * 4096..(b + 1) * 4096] != m[b * 4096..(b + 1) * 4096])
+            .collect();
+        let zeros = (wrong.iter())
+            .filter(|b| got[*b * 4096..(*b + 1) * 4096].iter().all(|x| *x == 0))
+            .count();
+        assert!(
+            wrong.is_empty(),
+            "the clone reads {} blocks wrong, {zeros} of them zeros",
+            wrong.len()
+        );
+        ka.detach().await.unwrap();
+    });
+    let (map, devs) = c.stop();
+    // Every copy holds the same blocks of every version: the clone's
+    // versions only the block written, whichever copy serves the PG.
+    let shards: std::collections::HashMap<u32, hyperstor_engine::Shard> = devs
+        .into_iter()
+        .map(|(id, d)| {
+            (
+                id,
+                hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap(),
+            )
+        })
+        .collect();
+    let pool = &map.pools[&POOL];
+    let blocks = CHUNK as u64 / 4096;
+    let mut clone_versions = 0;
+    for chunk in 0..chunks {
+        let pg = pg_of(lineage, chunk, pool.pg_count);
+        let info = map.pg(POOL, pg).unwrap();
+        assert_eq!(info.acting, info.up, "PG {pg} still backfilling");
+        let lo = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(lineage, chunk), 0);
+        let mut hi = chunk_name(lineage, chunk);
+        hi.extend_from_slice(&[0xff; 5]);
+        let hi = ObjKey::new(POOL, pg, Namespace::Vol, hi, 0);
+        let first = &shards[&info.acting[0]];
+        for key in first.list(&lo, &hi) {
+            let held = |sh: &hyperstor_engine::Shard| -> Vec<u64> {
+                (0..blocks).filter(|lb| sh.holds(&key, *lb)).collect()
+            };
+            let want = held(first);
+            if want.len() as u64 != blocks {
+                assert_eq!(want, vec![1 + chunk], "{key:?}");
+                clone_versions += 1;
+            }
+            for d in &info.acting {
+                assert_eq!(
+                    held(&shards[d]),
+                    want,
+                    "device {d} holds other blocks of {key:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(clone_versions, chunks, "one clone version per chunk");
+}
+
 /// A snapshot of a volume whose holder doesn't answer (it stopped
 /// renewing and watching, but its lease stands) is abandoned after 2 s,
 /// and changes nothing (10-volumes.md §10.3).
@@ -3685,6 +4669,176 @@ fn a_snapshot_whose_holder_doesnt_quiesce_is_abandoned() {
         assert!(t.elapsed() >= std::time::Duration::from_secs(2));
         let after = other.volume(v.id).await.unwrap().unwrap();
         assert!(after.snapshots.is_empty() && after.head_epoch == v.head_epoch);
+    });
+    c.stop();
+}
+
+/// Copies and moves between pools (10-volumes.md §10.6, D214): a snapshot
+/// copied while its volume is attached, the head once detached, a clone
+/// moved (flattened, so its parent's snapshot can go) and back, a move
+/// stopped after its switch and finished by running it again, and a
+/// cancelled copy, which leaves nothing. Each reads what its source did,
+/// and the data a move leaves behind is gone.
+#[test]
+fn volumes_copy_and_move_between_pools() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::copy::Progress;
+    use std::sync::atomic::Ordering;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    // Three chunks and a half: the last chunk partly used.
+    let size = 3 * CHUNK as u64 + CHUNK as u64 / 2;
+    with_client(meta, 5, move |cl| async move {
+        let len = size as usize;
+        let gone = |pool: u32, lineage: u128, branch: u32| {
+            let cl = cl.clone();
+            async move {
+                cl.sources(pool, lineage, &[(branch, 0, u64::MAX)], 0, size)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|s| s.0 == u32::MAX)
+            }
+        };
+        let listed = |pool: u32, id: u128| {
+            let cl = cl.clone();
+            async move {
+                cl.list_volumes(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|v| v.id == id)
+            }
+        };
+        let v = cl.create_volume(POOL, size, None, "v").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        // Data, a block of zeros written, and a hole.
+        let mut model = vec![0u8; len];
+        let a = pattern(1, CHUNK as usize + 8192);
+        va.write(0, a.clone()).await.unwrap();
+        model[..a.len()].copy_from_slice(&a);
+        va.write(2 * CHUNK as u64, vec![0; 4096]).await.unwrap();
+        let b = pattern(2, 16384);
+        va.write(size - 16384, b.clone()).await.unwrap();
+        model[len - 16384..].copy_from_slice(&b);
+        let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+        let at_s1 = model.clone();
+        let d = pattern(3, 8192);
+        va.write(4096, d.clone()).await.unwrap();
+        model[4096..12288].copy_from_slice(&d);
+
+        // A snapshot copies while the volume is attached; its head doesn't.
+        let p = Progress::default();
+        let c1 = cl
+            .copy_volume(v.id, Some(s1.epoch), CACHE_POOL, 11, "c1", &p)
+            .await
+            .unwrap();
+        assert_eq!((c1.pool, c1.lineage, c1.size), (CACHE_POOL, 11, size));
+        assert!(c1.snapshots.is_empty() && c1.chain.is_empty() && c1.holder.is_none());
+        assert_eq!(p.done.load(Ordering::Relaxed), size);
+        let c1a = cl.attach(11).await.unwrap();
+        assert!(
+            c1a.read(0, size).await.unwrap() == at_s1,
+            "the snapshot's copy"
+        );
+        c1a.detach().await.unwrap();
+        assert!(matches!(
+            cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        assert!(cl.volume(12).await.unwrap().is_none());
+        va.detach().await.unwrap();
+        cl.copy_volume(v.id, None, CACHE_POOL, 12, "c2", &p)
+            .await
+            .unwrap();
+        let c2a = cl.attach(12).await.unwrap();
+        assert!(c2a.read(0, size).await.unwrap() == model, "the head's copy");
+        c2a.detach().await.unwrap();
+        // Holes and zeros aren't written.
+        let src = cl
+            .sources(CACHE_POOL, 12, &[(0, 0, u64::MAX)], 0, size)
+            .await
+            .unwrap();
+        assert!(src[2 * CHUNK as usize / 4096].0 == u32::MAX, "zeros");
+        assert!(src[CHUNK as usize / 4096 + 2].0 == u32::MAX, "a hole");
+        assert!(listed(CACHE_POOL, 12).await && listed(POOL, v.id).await);
+
+        // A volume with snapshots doesn't move.
+        assert!(matches!(
+            cl.move_volume(v.id, CACHE_POOL, &p).await,
+            Err(ClientError::Refused(_))
+        ));
+        // A clone moves, flattened: its parent's snapshot can then go.
+        let k = cl.clone_snapshot(v.id, s1.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        let e = pattern(4, 8192);
+        ka.write(CHUNK as u64, e.clone()).await.unwrap();
+        let mut kmodel = at_s1.clone();
+        kmodel[CHUNK as usize..CHUNK as usize + 8192].copy_from_slice(&e);
+        assert!(matches!(
+            cl.move_volume(k.id, CACHE_POOL, &p).await,
+            Err(ClientError::VolumeAttached(_))
+        ));
+        ka.detach().await.unwrap();
+        let km = cl.move_volume(k.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!((km.pool, km.lineage, km.branch), (CACHE_POOL, k.id, 0));
+        assert!(km.chain.is_empty() && km.incarnation != k.incarnation);
+        assert!(gone(POOL, v.lineage, k.branch).await, "the clone's branch");
+        assert!(listed(CACHE_POOL, k.id).await && !listed(POOL, k.id).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved");
+        ka.detach().await.unwrap();
+        cl.delete_snapshot(v.id, s1.epoch).await.unwrap();
+        // And back, into lineage k of the first pool.
+        let kb = cl.move_volume(k.id, POOL, &p).await.unwrap();
+        assert_eq!((kb.pool, kb.lineage), (POOL, k.id));
+        assert!(gone(CACHE_POOL, k.id, 0).await);
+        let ka = cl.attach(k.id).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == kmodel, "moved back");
+        ka.detach().await.unwrap();
+        assert!(listed(POOL, k.id).await && !listed(CACHE_POOL, k.id).await);
+
+        // Stopped after its switch: the volume reads from its new pool,
+        // and running the move again clears the old one.
+        let p2 = Progress::default();
+        p2.stop_after_switch.store(true, Ordering::Relaxed);
+        assert!(cl.move_volume(v.id, CACHE_POOL, &p2).await.is_err());
+        let half = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(half.pool, CACHE_POOL);
+        assert!(!gone(POOL, v.id, 0).await, "not cleared yet");
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "after the switch");
+        va.detach().await.unwrap();
+        let vm = cl.move_volume(v.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(vm.pool, CACHE_POOL);
+        assert!(gone(POOL, v.id, 0).await, "cleared");
+        assert!(listed(CACHE_POOL, v.id).await && !listed(POOL, v.id).await);
+        let va = cl.attach(v.id).await.unwrap();
+        assert!(va.read(0, size).await.unwrap() == model, "finished");
+        va.detach().await.unwrap();
+
+        // A holder that stopped renewing (a former leader running the
+        // same move) is taken over once its lease runs out.
+        let w = cl.create_volume(POOL, size, None, "w").await.unwrap();
+        let wa = cl.attach(w.id).await.unwrap();
+        wa.write(0, a.clone()).await.unwrap();
+        wa.detach().await.unwrap();
+        let other = Client::connect(meta, 7).await.unwrap();
+        drop(other.attach(w.id).await.unwrap());
+        let wm = cl.move_volume(w.id, CACHE_POOL, &p).await.unwrap();
+        assert_eq!(wm.pool, CACHE_POOL);
+        let wa = cl.attach(w.id).await.unwrap();
+        assert!(wa.read(0, a.len() as u64).await.unwrap() == a, "taken over");
+        wa.detach().await.unwrap();
+
+        // A cancelled copy leaves no volume.
+        let p3 = Progress::default();
+        p3.cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            cl.copy_volume(v.id, None, POOL, 13, "c3", &p3).await,
+            Err(ClientError::Refused(_))
+        ));
+        assert!(cl.volume(13).await.unwrap().is_none());
     });
     c.stop();
 }
@@ -4343,6 +5497,32 @@ fn the_trash_keeps_what_it_holds_until_purged() {
         assert!(cl.purge_volume(k.id).await.is_err(), "not in the trash");
         cl.purge_volume(other.id).await.unwrap();
         assert!(cl.volume(other.id).await.unwrap().is_none());
+    });
+    c.stop();
+}
+
+/// A forced trash (D54, D80) of an attached volume preempts its holder and
+/// leaves no lease on the trashed header, so it purges (I252: the lease
+/// taken to preempt used to stay, and every purge was refused).
+#[test]
+fn a_volume_trashed_while_attached_purges() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "busy")
+            .await
+            .unwrap();
+        let holder = Client::connect(meta, 6).await.unwrap();
+        let a = holder.attach(v.id).await.unwrap();
+        a.write(0, pattern(3, 8192)).await.unwrap();
+        cl.trash_volume(v.id, true).await.unwrap();
+        let t = cl.volume(v.id).await.unwrap().unwrap();
+        assert_eq!(t.state, hyperstor_client::volume::VolumeState::Trashed);
+        assert_eq!(t.holder, None, "the lease taken to preempt is released");
+        assert!(a.write(0, pattern(4, 8192)).await.is_err(), "fenced");
+        cl.purge_volume(v.id).await.unwrap();
+        assert!(cl.volume(v.id).await.unwrap().is_none());
     });
     c.stop();
 }

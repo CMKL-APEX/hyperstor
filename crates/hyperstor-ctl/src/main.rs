@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -51,6 +51,9 @@
 //!   operation;
 //! - `device class --device D --class C|auto`: set a device's class, or
 //!   let it follow the device's kind again (D178);
+//! - `device endpoints --device D --endpoints NET=ADDR,...|none`: set a
+//!   device's endpoints on the cluster's data networks, replacing them
+//!   (26-networks.md §29.5, D215); the installer keeps its own node's;
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -71,6 +74,11 @@
 //!   N] [--new-id ID]`, `rollback-volume --id ID --epoch E` (detached) and
 //!   `flatten-volume --id ID [--wait SECS]` (§10.4), which runs as an
 //!   operation (D121);
+//! - `copy-volume --id ID --pool P [--epoch E] [--name N] [--new-id ID]
+//!   [--wait SECS]` copies a volume (its head, detached, or its snapshot at
+//!   E) into a new volume in pool P, and `move-volume --id ID --pool P
+//!   [--wait SECS]` moves a detached volume without snapshots there,
+//!   keeping its id: operations (§10.6, D214);
 //! - `delete-volume`, `snapshot delete` and `snapshot group-delete` move
 //!   to the trash (D54): `trash list [--pool P]`; `trash restore --id ID
 //!   [--epoch E] [--name N]` brings a volume (or its snapshot at E) back,
@@ -158,7 +166,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -199,6 +207,8 @@ fn random_u64() -> u64 {
 }
 
 struct Args {
+    /// `device endpoints`: `NET=ADDR,...` or `none`.
+    endpoints: Option<String>,
     json: bool,
     yaml: bool,
     role: Option<String>,
@@ -243,6 +253,8 @@ struct Args {
     sparse: bool,
     /// `pg-grid`: each PG's usage too.
     usage: bool,
+    /// `pg-grid --heat`: writes (true) or reads.
+    heat: Option<bool>,
     /// `weight`: the weight to set, or `None` for `auto` (D158).
     weight: Option<Option<f64>>,
     /// `full-ratios`: nearfull, backfillfull and full, as percentages
@@ -286,6 +298,7 @@ fn main() {
     let mut token_file = None;
     let mut mgmt_ca = None;
     let mut a = Args {
+        endpoints: None,
         json: false,
         yaml: false,
         role: None,
@@ -322,6 +335,7 @@ fn main() {
         offset: 0,
         sparse: false,
         usage: false,
+        heat: None,
         weight: None,
         ratios: [None; 3],
         address: None,
@@ -360,6 +374,11 @@ fn main() {
             "--ttl" => a.ttl = num(it.next()),
             "--dry-run" => a.dry_run = true,
             "--usage" => a.usage = true,
+            "--heat" => match it.next().map(String::as_str) {
+                Some("read") => a.heat = Some(false),
+                Some("write") => a.heat = Some(true),
+                _ => usage(),
+            },
             "--serial" => a.serial = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--file" => a.file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--out" => a.out = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -397,6 +416,7 @@ fn main() {
             "--node" => a.node = Some(num(it.next())),
             "--address" => a.address = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--class" => a.class = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--endpoints" => a.endpoints = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--classes" => a.classes = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--kind" => a.kind = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--copies" => a.copies = Some(num(it.next())),
@@ -474,10 +494,11 @@ fn main() {
                 Some("off") => a.autoscale = Some(false),
                 _ => usage(),
             },
-            "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "volumes" | "create-volume"
-            | "delete-volume" | "io-test" | "out" | "in" | "weight" | "full-ratios" | "drain"
-            | "clone-volume" | "rollback-volume" | "flatten-volume" | "expand-volume"
-            | "write-volume" | "read-volume" | "enroll"
+            "status" | "nodes" | "pools" | "pgs" | "pg-grid" | "perf" | "top-volumes"
+            | "advise" | "volumes" | "create-volume" | "delete-volume" | "io-test" | "out"
+            | "in" | "weight" | "full-ratios" | "drain" | "clone-volume" | "rollback-volume"
+            | "flatten-volume" | "expand-volume" | "write-volume" | "read-volume" | "enroll"
+            | "copy-volume" | "move-volume"
                 if cmd.is_none() =>
             {
                 cmd = Some(arg.clone())
@@ -499,7 +520,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "device" => matches!(sub, Some("add" | "remove" | "class")),
+                    "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
                     "pool" => {
                         matches!(
                             sub,
@@ -521,6 +542,7 @@ fn main() {
     // takes the last two.
     let device_add = cmd == "device add";
     let device_class = cmd == "device class";
+    let device_endpoints = cmd == "device endpoints";
     // pool set takes a pool and what to change (classes, a name, a
     // domain), pool create a name and classes; nothing else takes classes
     // or a domain, and only pool create its other options.
@@ -564,11 +586,14 @@ fn main() {
         || device_class != (a.device.is_some() && a.class.is_some() && a.node.is_none())
         || (!device_add && a.address.is_some())
         || (!device_add && !device_class && a.class.is_some())
+        || device_endpoints != (a.device.is_some() && a.endpoints.is_some() && a.node.is_none())
+        || (!device_endpoints && a.endpoints.is_some())
     {
         usage();
     }
     if !device_add
         && !device_class
+        && !device_endpoints
         && !pool_device
         && (cmd == "out"
             || cmd == "in"
@@ -576,6 +601,7 @@ fn main() {
             || cmd == "weight"
             || cmd == "device remove")
             == (a.device.is_none() && a.node.is_none())
+        && !(cmd == "perf" && a.node.is_none())
         || (cmd == "device remove" && a.node.is_some())
         || (cmd == "drain" && a.node.is_none())
         || (cmd == "weight") != (a.weight.is_some() && a.device.is_some() && a.node.is_none())
@@ -602,6 +628,8 @@ fn main() {
             | "clone-volume"
             | "rollback-volume"
             | "flatten-volume"
+            | "copy-volume"
+            | "move-volume"
             | "trash restore"
             | "trash purge"
             | "expand-volume"
@@ -614,7 +642,10 @@ fn main() {
         usage();
     }
     // A trashed snapshot, or the volume when there's no epoch.
-    let may_epoch = matches!(cmd.as_str(), "trash restore" | "trash purge");
+    let may_epoch = matches!(
+        cmd.as_str(),
+        "trash restore" | "trash purge" | "copy-volume"
+    );
     // The snapshot commands' own flags, and only theirs.
     let needs_epoch = matches!(
         cmd.as_str(),
@@ -622,12 +653,15 @@ fn main() {
     );
     if (needs_epoch != a.epoch.is_some() && !may_epoch)
         || ((a.grace.is_some() || a.on_full.is_some()) && cmd != "trash settings")
-        || ((a.since.is_some() || a.principal.is_some() || a.op.is_some() || a.limit.is_some())
-            && cmd != "audit list")
+        || ((a.since.is_some() || a.principal.is_some() || a.op.is_some()) && cmd != "audit list")
+        || (a.limit.is_some() && !matches!(cmd.as_str(), "audit list" | "top-volumes"))
+        || (a.heat.is_some() && cmd != "pg-grid")
+        || (a.heat.is_some() && a.usage)
         || (a.retention_days.is_some() && cmd != "audit settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
-        || (a.new_id.is_some() && cmd != "clone-volume")
+        || (a.new_id.is_some() && !matches!(cmd.as_str(), "clone-volume" | "copy-volume"))
+        || (matches!(cmd.as_str(), "copy-volume" | "move-volume") && a.pool.is_none())
     {
         usage();
     }
@@ -935,7 +969,8 @@ where
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
-        "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume" => {
+        "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume"
+        | "copy-volume" | "move-volume" => {
             let ops = OperationServiceClient::new(transport.clone(), config.clone());
             let next = if cmd.starts_with("trash") {
                 trash(TrashServiceClient::new(transport, config), cmd, a).await?
@@ -1018,6 +1053,65 @@ where
                 .await?
                 .into_owned();
             show(a, &r, || pgs_text(&r));
+            Next::Exit(0)
+        }
+        "pg-grid" if a.heat.is_some() => {
+            let s = status().await?;
+            let Some(pool) = first_pool(&s) else {
+                eprintln!("hyperstorctl: the cluster has no pools");
+                return Ok(Next::Exit(1));
+            };
+            let r = client
+                .get_pg_heat(pb::GetPgHeatRequest {
+                    pool,
+                    pg: a.pg,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || pg_heat_text(pool, a.heat == Some(true), &r));
+            Next::Exit(0)
+        }
+        "perf" => {
+            let r = client
+                .list_device_perf(pb::ListDevicePerfRequest {
+                    device: a.device,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            match (a.device, r.devices.first()) {
+                (Some(d), None) => {
+                    eprintln!("hyperstorctl: device {d} hasn't reported to the leader");
+                    Next::Exit(1)
+                }
+                (Some(_), Some(d)) => {
+                    show(a, &r, || device_perf_text(d));
+                    Next::Exit(0)
+                }
+                (None, _) => {
+                    show(a, &r, || perf_text(&r));
+                    Next::Exit(0)
+                }
+            }
+        }
+        "top-volumes" => {
+            let r = client
+                .list_top_volumes(pb::ListTopVolumesRequest {
+                    limit: a.limit.unwrap_or(0),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || volume_heat_text(&r.volumes));
+            Next::Exit(0)
+        }
+        "advise" => {
+            let r = client
+                .list_findings(pb::ListFindingsRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || findings_text(&r));
             Next::Exit(0)
         }
         "pg-grid" => {
@@ -1448,6 +1542,58 @@ where
                     if matches!(
                         e.code,
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "device endpoints" => {
+            let (Some(device), Some(given)) = (a.device, a.endpoints.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let mut endpoints = Vec::new();
+            if given != "none" {
+                for e in given.split(',').filter(|e| !e.is_empty()) {
+                    let Some((network, address)) = e.split_once('=') else {
+                        eprintln!("hyperstorctl: --endpoints: {e:?} isn't NET=ADDR");
+                        return Ok(Next::Exit(2));
+                    };
+                    endpoints.push(pb::Endpoint {
+                        network: network.to_string(),
+                        address: address.to_string(),
+                        ..Default::default()
+                    });
+                }
+            }
+            let n = endpoints.len();
+            let r = client
+                .set_endpoints(pb::SetEndpointsRequest {
+                    device,
+                    endpoints,
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!(
+                        "device {device}: {n} endpoint(s) (map epoch {}); its node listens on them once restarted with --endpoint",
+                        r.map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound
+                            | connectrpc::ErrorCode::InvalidArgument
+                            | connectrpc::ErrorCode::PermissionDenied
                     ) =>
                 {
                     eprintln!(
@@ -2121,6 +2267,59 @@ where
                 );
             }
             Next::Exit(0)
+        }
+        "copy-volume" => {
+            let r = client
+                .copy_volume(pb::CopyVolumeRequest {
+                    id: id(),
+                    epoch,
+                    pool: a.pool.unwrap_or_default(),
+                    name: a.name.clone(),
+                    new_id: a.new_id.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "volume {} copying to volume {} in pool {}: operation {} \
+                     (hyperstorctl op watch --id {})\n",
+                    id(),
+                    r.new_id,
+                    a.pool.unwrap_or_default(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            }
+        }
+        "move-volume" => {
+            let r = client
+                .move_volume(pb::MoveVolumeRequest {
+                    id: id(),
+                    pool: a.pool.unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "volume {} moving to pool {}: operation {} (hyperstorctl op watch --id {})\n",
+                    id(),
+                    a.pool.unwrap_or_default(),
+                    op.id,
+                    op.id
+                )
+            });
+            match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            }
         }
         _ => {
             let r = client

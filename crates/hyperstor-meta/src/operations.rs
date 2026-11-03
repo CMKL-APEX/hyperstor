@@ -1,12 +1,13 @@
 //! Long operations (19-administration.md §23.5, 04-decisions.md D120, D121):
-//! drains, flattens and purges, as rows of the replicated store, so every
+//! drains, flattens, copies, moves and purges, as rows of the replicated store, so every
 //! member answers for them, they survive restarts, and a new leader
 //! resumes those still running. Without a store (a map service of one,
 //! without `--data`) they are kept in memory.
 //!
 //! A row is the operation the API shows, plus what is needed to run it
 //! again: each kind restarts safely (a drain is followed from the map, a
-//! flatten copies what is left, a purge deletes what is left). Finished
+//! flatten copies what is left, a copy starts over, a move starts over or
+//! finishes, a purge deletes what is left). Finished
 //! operations are kept [`KEEP_SECS`].
 
 use crate::store::{self, Db, Origin, Table};
@@ -55,6 +56,23 @@ pub enum Work {
     /// A pool deleted with what it holds (D176): its volumes to the trash
     /// and purged, then the pool.
     DeletePool { pool: u32 },
+    /// A volume, or its snapshot at `epoch`, copied into new volume
+    /// `new_id` of `pool` (10-volumes.md §10.6, D214).
+    Copy {
+        #[serde(with = "hex_id")]
+        volume: u128,
+        epoch: Option<u64>,
+        pool: u32,
+        #[serde(with = "hex_id")]
+        new_id: u128,
+        name: String,
+    },
+    /// A volume moved to `pool`, keeping its id (D214).
+    Move {
+        #[serde(with = "hex_id")]
+        volume: u128,
+        pool: u32,
+    },
     /// A volume, or one of its snapshots, deleted from the trash.
     Purge {
         #[serde(with = "hex_id")]
@@ -83,6 +101,8 @@ impl Work {
         match self {
             Work::Drain { .. } => "drain",
             Work::Flatten { .. } => "flatten",
+            Work::Copy { .. } => "copy",
+            Work::Move { .. } => "move",
             Work::Purge { .. } => "purge",
             Work::DeletePool { .. } => "delete-pool",
             Work::RemoveDevice { .. } => "remove-device",
@@ -336,6 +356,29 @@ mod tests {
         };
         ops.put(&f).unwrap();
         assert_eq!(ops.get("f").unwrap().unwrap(), f);
+        for (i, work) in [
+            Work::Copy {
+                volume: 1 << 100,
+                epoch: Some(3),
+                pool: 2,
+                new_id: 7 << 90,
+                name: "c".into(),
+            },
+            Work::Move {
+                volume: 1 << 100,
+                pool: 2,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let c = Op {
+                work,
+                ..op(&format!("c{i}"), now, State::Running, 0)
+            };
+            ops.put(&c).unwrap();
+            assert_eq!(ops.get(&c.id).unwrap().unwrap(), c);
+        }
         let p = Op {
             work: Work::DeletePool { pool: 3 },
             ..op("p", now, State::Running, 0)

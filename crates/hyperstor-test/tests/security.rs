@@ -78,13 +78,16 @@ fn local_socket_break_glass() {
     );
 }
 
-/// An API that isn't there is exit status 3, not a hang.
+/// An API that isn't there is exit status 3, not a hang. With the test
+/// cluster's certificates: on a host with a cluster installed, the
+/// default (`/etc/hyperstor/pki`) is that cluster's, and unreadable.
 #[test]
 fn unreachable_api_is_status_3() {
     let c = Cluster::all_in_one("unreach", 1);
     let dead = format!("127.0.0.1:{}", free_ports(1));
+    let pki = c.pki();
     let r = std::process::Command::new(c.bin.join("hyperstorctl"))
-        .args(["--api", &dead, "status"])
+        .args(["--api", &dead, "--tls", pki.to_str().unwrap(), "status"])
         .output()
         .unwrap();
     assert_eq!(r.status.code(), Some(3));

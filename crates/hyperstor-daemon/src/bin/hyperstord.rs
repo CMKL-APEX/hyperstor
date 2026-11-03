@@ -19,6 +19,9 @@
 //! (19-administration.md §23.3).
 //! `--scrub-hours N` compares the copies of each PG this node is primary
 //! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
+//! `--hole-repair`: scrub repairs copies that hold blocks of zeros where
+//! another copy has holes, from the copy with the holes (04-decisions.md
+//! D223); without it, scrub only logs and counts them.
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
 //! `--read-timeout-ms N`: a read that waits longer for its device is
@@ -40,7 +43,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N] [--read-timeout-ms N]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--hole-repair] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
         );
         std::process::exit(2)
     };
@@ -122,6 +125,31 @@ fn main() {
             })
             .unwrap_or(hyperstor_daemon::READ_TIMEOUT.as_millis() as u64),
     );
+    // More addresses a device's reactor listens on, one per endpoint in
+    // the map (26-networks.md §29.5, D207).
+    let mut endpoints = Vec::new();
+    for w in args.windows(2).filter(|w| w[0] == "--endpoint") {
+        let (dev, addr) = w[1].split_once('=').unwrap_or_else(|| usage());
+        let dev: u32 = dev.parse().unwrap_or_else(|_| usage());
+        if !shards.iter().any(|s| s.device_id == dev) {
+            fail_args(&format!("--endpoint {dev}: not one of this node's devices"));
+        }
+        let addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|_| usage());
+        let l = hyperstor_reactor::net::bind_retrying(addr).unwrap_or_else(|e| {
+            eprintln!("bind {addr}: {e}");
+            std::process::exit(1)
+        });
+        endpoints.push((dev, l));
+    }
+    // The data networks to reach peers on, in order (D206).
+    let networks: Vec<String> = get("--networks")
+        .map(|s| {
+            s.split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let admin = get("--admin").map(|a| {
         std::net::TcpListener::bind(&a).unwrap_or_else(|e| {
             eprintln!("bind {a}: {e}");
@@ -137,12 +165,15 @@ fn main() {
             .join(",")
     );
     let h = start(NodeConfig {
+        endpoints,
+        networks,
         push_part_bytes: 0,
         stray_grace: std::time::Duration::ZERO,
         io_timeout,
         read_timeout,
         commit_delays: None,
         pings: None,
+        older: None,
         partitions: None,
         node_id: node,
         meta,
@@ -168,6 +199,7 @@ fn main() {
                 * 3600,
         ),
         no_digests: false,
+        hole_repair: args.iter().any(|a| a == "--hole-repair"),
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());

@@ -3,7 +3,7 @@
 A storage node. See [Storage nodes](../admin-guide/storage-nodes.md).
 
 ```text
-usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--io-timeout-secs N] [--read-timeout-ms N]
+usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--hole-repair] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]
 ```
 
 | Option | Default | Meaning |
@@ -16,8 +16,11 @@ usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard 
 | `--hdd` | off | The devices are hard disks: defer small overwrites through the log |
 | `--admin ADDR` | off | Serve metrics (`GET /metrics`, Prometheus format) and `GET /health` on `IP:PORT`; plain HTTP, read-only: keep it on the management network |
 | `--scrub-hours N` | 24 | Compare every copy of each placement group this node leads, every N hours, and repair a copy the others outvote; the first pass and every seventh also read every block and check its checksum; `0` turns it off |
+| `--hole-repair` | off | Let scrub repair copies that hold blocks of zeros where another copy has holes, from the copy with the holes (see [Failures and recovery](../admin-guide/failures.md#scrub)). Off, scrub only logs and counts them |
 | `--io-timeout-secs N` | 30 | How long a device may take to write and flush a commit before the node fails it: its placement groups go elsewhere, as after an I/O error, and the node stays up. At least 1 |
 | `--read-timeout-ms N` | 2000 | How long a read may wait for its device. Past it, the read is served from another copy of the placement group; three in a row fail the device, as after an I/O error. At least 1 |
+| `--endpoint DEV=ADDR` | none | Also serve device `DEV` on `IP:PORT`: one of its endpoints on another network, as the [cluster file](cluster-file.md#endpoint) lists it. Repeat for each endpoint. `DEV` must be one of this node's `--shard` devices |
+| `--networks NAME[,NAME...]` | none | The data networks this node reaches other storage nodes on, in order: a peer's endpoint on the first network it has one on, else its device's address. Without it, devices' addresses only |
 
 **Diagnostic build.** Built with `HYPERSTOR_DIAG=1 cargo build --release
 -p hyperstor-daemon`, a node also logs, to standard error (the journal),
@@ -31,5 +34,5 @@ runs until `SIGINT` or `SIGTERM`, and recovers on the next start.
 
 | Exit status | Meaning |
 |---|---|
-| 1 | An address (including `--admin`) can't be bound, or a device's thread failed (the message says why) |
+| 1 | An address (including `--admin` and `--endpoint`) can't be bound, or a device's thread failed (the message says why) |
 | 2 | A missing or malformed option |

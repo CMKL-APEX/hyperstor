@@ -38,6 +38,7 @@ use std::sync::Arc;
 mod admin;
 mod audit;
 mod ops;
+mod perf;
 mod trash;
 pub use admin::{Signing, parse_token};
 
@@ -689,6 +690,17 @@ pub fn status(
                         weight_fixed: map.fixed_weights.contains(&d.id),
                         kind: map.kinds.get(&d.id).map_or("", |k| k.name()).into(),
                         class_fixed: map.fixed_classes.contains(&d.id),
+                        endpoints: map
+                            .endpoints
+                            .get(&d.id)
+                            .into_iter()
+                            .flatten()
+                            .map(|(n, a)| pb::Endpoint {
+                                network: n.clone(),
+                                address: a.to_string(),
+                                ..Default::default()
+                            })
+                            .collect(),
                         ..Default::default()
                     })
                     .collect(),
@@ -730,6 +742,17 @@ pub fn status(
             .collect(),
         map_address: map_address.to_string(),
         full_ratios: full_ratios(&map.full_ratios).into(),
+        networks: map
+            .networks
+            .iter()
+            .map(|(name, n)| pb::Network {
+                name: name.clone(),
+                kind: n.kind.name().into(),
+                trusted: n.trusted,
+                matches: n.matches.clone(),
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -912,6 +935,73 @@ impl ClusterService for Api {
         Ok(r.into())
     }
 
+    async fn get_pg_heat(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetPgHeatRequest>,
+    ) -> ServiceResult<pb::GetPgHeatResponse> {
+        self.authorize(&ctx, "GetPgHeat", &format!("pool {}", req.pool), false)?;
+        let (p, map) = self.perf_view().await?;
+        let mut r = perf::pg_heat(&p, &map, req.pool)?;
+        if let Some(pg) = req.pg {
+            let top = perf::pg_top(&p, req.pool, pg);
+            let names = self.volumes_of(top.iter().map(|t| t.0).collect()).await;
+            r.top = top
+                .into_iter()
+                .map(|(k, ops, bytes)| perf::volume_heat(k, ops, bytes, &names))
+                .collect();
+        }
+        Ok(r.into())
+    }
+
+    async fn list_device_perf(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListDevicePerfRequest>,
+    ) -> ServiceResult<pb::ListDevicePerfResponse> {
+        let target = req
+            .device
+            .map_or("all devices".into(), |d| format!("device {d}"));
+        self.authorize(&ctx, "ListDevicePerf", &target, false)?;
+        let (p, map) = self.perf_view().await?;
+        Ok(perf::device_perf(&p, &map, req.device).into())
+    }
+
+    async fn list_top_volumes(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListTopVolumesRequest>,
+    ) -> ServiceResult<pb::ListTopVolumesResponse> {
+        self.authorize(&ctx, "ListTopVolumes", "volumes", false)?;
+        let (p, _) = self.perf_view().await?;
+        let top = p.top_volumes(perf::top_limit(req.limit));
+        let names = self
+            .volumes_of(top.iter().map(|t| (t.0, t.1)).collect())
+            .await;
+        Ok(pb::ListTopVolumesResponse {
+            volumes: top
+                .into_iter()
+                .map(|(l, b, ops, bytes)| perf::volume_heat((l, b), ops, bytes, &names))
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_findings(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::ListFindingsRequest>,
+    ) -> ServiceResult<pb::ListFindingsResponse> {
+        self.authorize(&ctx, "ListFindings", "cluster", false)?;
+        let f = self.advise().await?;
+        Ok(pb::ListFindingsResponse {
+            findings: f.iter().map(perf::finding_pb).collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn set_device_in(
         &self,
         ctx: RequestContext,
@@ -1053,6 +1143,97 @@ impl ClusterService for Api {
             }
             .into()),
             Some(Err(e)) => Err(meta_error(e, ConnectError::not_found, "not_found")),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_endpoints(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetEndpointsRequest>,
+    ) -> ServiceResult<pb::SetEndpointsResponse> {
+        let device = req.device;
+        let given: Vec<(String, String)> = req
+            .endpoints
+            .iter()
+            .map(|e| (e.network.to_string(), e.address.to_string()))
+            .collect();
+        let target = format!(
+            "device {device} endpoints [{}]",
+            given
+                .iter()
+                .map(|(n, a)| format!("{n} {a}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let who = self.authorize_as(&ctx, "SetEndpoints", &target, Need::Identity)?;
+        // D215: admin and mgmt any device's; a node's certificate only its
+        // own devices' (`node * 1000` to `node * 1000 + 999`), so a host
+        // can't redirect another's traffic. The local socket is root's.
+        if self.cluster.is_some() && ctx.extensions().get::<LocalPeer>().is_none() {
+            let id = ctx
+                .peer_certs()
+                .and_then(|c| c.first())
+                .and_then(|leaf| hyperstor_pki::identity_of(leaf));
+            let allowed = match &id {
+                Some(i) if i.role.may_administer() => true,
+                Some(i) if i.role == hyperstor_pki::Role::Node => {
+                    i.id.parse::<u32>().ok() == Some(device / 1000)
+                }
+                _ => false,
+            };
+            if !allowed {
+                let e = with_reason(
+                    ConnectError::permission_denied(format!(
+                        "{who} may set only its own node's devices' endpoints"
+                    )),
+                    "permission_denied",
+                );
+                refused(&who, "SetEndpoints", &target, &e);
+                return Err(e);
+            }
+        }
+        let endpoints = given
+            .iter()
+            .map(|(n, a)| {
+                a.parse::<SocketAddr>()
+                    .map(|a| (n.clone(), a))
+                    .map_err(|_| admin::invalid(format!("{a}: not IP:PORT"), "invalid_argument"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetEndpoints {
+                device,
+                endpoints,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetEndpoints",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetEndpointsResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }
     }
@@ -1983,6 +2164,132 @@ impl ClusterService for Api {
         .into())
     }
 
+    async fn copy_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::CopyVolumeRequest>,
+    ) -> ServiceResult<pb::CopyVolumeResponse> {
+        use crate::VolumeFault as F;
+        let id = parse_volume_id(req.id)?;
+        let new_id = if req.new_id.is_empty() {
+            parse_volume_id(&admin::random_hex(16))?
+        } else {
+            parse_volume_id(req.new_id)?
+        };
+        let epoch = (req.epoch != 0).then_some(req.epoch);
+        let target = match epoch {
+            Some(e) => format!("volume {id:032x} snapshot {e} to pool {}", req.pool),
+            None => format!("volume {id:032x} to pool {}", req.pool),
+        };
+        let who = self.authorize(&ctx, "CopyVolume", &target, true)?;
+        // Checked now, run as an operation (D214): it copies every block.
+        let v = self.active_volume(id).await?;
+        self.copy_target(req.pool).await?;
+        let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
+        match epoch {
+            Some(e) => {
+                if !v
+                    .snapshots
+                    .iter()
+                    .any(|s| s.epoch == e && !s.deleting && s.trashed_unix == 0)
+                {
+                    refuse(F::NotFound, format!("no snapshot at epoch {e}"))?;
+                }
+            }
+            None if v.holder.is_some() => refuse(
+                F::Attached,
+                format!(
+                    "volume {id:032x} is attached: copy one of its snapshots (--epoch), \
+                     or detach it"
+                ),
+            )?,
+            None => {}
+        }
+        if self.volume_any(new_id).await.is_ok() {
+            refuse(F::Exists, format!("volume {new_id:032x} exists"))?;
+        }
+        let name = if req.name.is_empty() {
+            v.name.clone()
+        } else {
+            req.name.to_string()
+        };
+        let op = self
+            .start_op(
+                &who,
+                "CopyVolume",
+                crate::operations::Work::Copy {
+                    volume: id,
+                    epoch,
+                    pool: req.pool,
+                    new_id,
+                    name,
+                },
+                target,
+                format!("copying {} to pool {}", v.name, req.pool),
+            )
+            .await?;
+        Ok(pb::CopyVolumeResponse {
+            volume: Some(volume_pb(&v)).into(),
+            new_id: format!("{new_id:032x}"),
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn move_volume(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::MoveVolumeRequest>,
+    ) -> ServiceResult<pb::MoveVolumeResponse> {
+        use crate::VolumeFault as F;
+        let id = parse_volume_id(req.id)?;
+        let target = format!("volume {id:032x} to pool {}", req.pool);
+        let who = self.authorize(&ctx, "MoveVolume", &target, true)?;
+        let v = self.active_volume(id).await?;
+        self.copy_target(req.pool).await?;
+        let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
+        if v.pool == req.pool {
+            refuse(
+                F::Invalid,
+                format!("volume {id:032x} is in pool {} already", v.pool),
+            )?;
+        }
+        if v.holder.is_some() {
+            refuse(
+                F::Attached,
+                format!("volume {id:032x} is attached: detach it first"),
+            )?;
+        }
+        if !v.snapshots.is_empty() {
+            refuse(
+                F::InUse,
+                format!(
+                    "volume {id:032x} has snapshots (in the trash too): delete and purge \
+                     them first, or copy it instead"
+                ),
+            )?;
+        }
+        let op = self
+            .start_op(
+                &who,
+                "MoveVolume",
+                crate::operations::Work::Move {
+                    volume: id,
+                    pool: req.pool,
+                },
+                target,
+                format!("moving {} to pool {}", v.name, req.pool),
+            )
+            .await?;
+        Ok(pb::MoveVolumeResponse {
+            volume: Some(volume_pb(&v)).into(),
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn create_group_snapshot(
         &self,
         ctx: RequestContext,
@@ -2091,6 +2398,32 @@ impl Api {
     /// A snapshot operation (10-volumes.md §10.3, §10.4): authorized, run on
     /// the map service's reactor as a client of `.meta`, and audited if
     /// it changes anything.
+    /// Volume `id`, refused unless active (not in the trash, not being
+    /// deleted).
+    async fn active_volume(&self, id: u128) -> Result<crate::Volume, ConnectError> {
+        match self.volume_any(id).await? {
+            v if v.state == crate::VolumeState::Active => Ok(v),
+            _ => Err(with_reason(
+                ConnectError::not_found(format!("no volume {id:032x}")),
+                "not_found",
+            )),
+        }
+    }
+
+    /// Refuses pool `pool` as the target of a copy or move: unknown,
+    /// `.meta`, or past `full` (D27).
+    async fn copy_target(&self, pool: u32) -> Result<(), ConnectError> {
+        use crate::VolumeFault as F;
+        let (map, ..) = self.published().await?;
+        if pool == hyperstor_map::META_POOL || !map.pools.contains_key(&pool) {
+            return volume_result(Some(Err((F::NotFound, format!("no pool {pool}")))));
+        }
+        if let Some(why) = self.full_pools().await.remove(&pool) {
+            return volume_result(Some(Err((F::Full, why))));
+        }
+        Ok(())
+    }
+
     /// Volume `id`'s header, whatever its state.
     async fn volume_any(&self, id: u128) -> Result<crate::Volume, ConnectError> {
         let (reply, rx) = oneshot();

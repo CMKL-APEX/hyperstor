@@ -77,6 +77,31 @@ impl Pings {
     }
 }
 
+/// Message kinds some nodes don't know, as a build from before them: such
+/// a node drops the connection a request of that kind comes on, as it
+/// does any frame it can't decode. A node's reactors consult it for every
+/// request (`NodeConfig::older`).
+#[derive(Default)]
+pub struct Older {
+    unknown: Mutex<HashSet<(u32, u16)>>,
+}
+
+impl Older {
+    /// `node` doesn't know message `kind` while `unknown`.
+    pub fn set(&self, node: u32, kind: u16, unknown: bool) {
+        let mut s = self.unknown.lock().unwrap();
+        if unknown {
+            s.insert((node, kind));
+        } else {
+            s.remove(&(node, kind));
+        }
+    }
+
+    pub fn unknown(&self, node: u32, kind: u16) -> bool {
+        self.unknown.lock().unwrap().contains(&(node, kind))
+    }
+}
+
 /// Devices whose commits take longer without holding their reactor
 /// (I199): a slow device written through the reactor's ring, as opposed to
 /// [`FaultyDev`]'s delay, which holds it as the device's own calls do. A

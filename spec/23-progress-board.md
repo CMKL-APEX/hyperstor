@@ -11,15 +11,16 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 0 | 17 |
+| 7 | 0 | 0 | 20 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Networks: several ports, path choice, the fabric reconciler and claims (HS19 design)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `spec/networks` | 26-networks.md: D203–D213 settled (reconciler in the leader, glidex's topology reader, any orchestrator claims, lending while idle by default), G47–G53 open | The PR's merge; then glidex's topology crate with port facts (a glidex change) and stage 1 | 2026-11-02 |
-| **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `s3/decisions`, [#151](https://github.com/CMKL-APEX/hyperstor/pull/151) | Points 128–137 settled as D191–D199, and HS11 designed (25-kv-ranges.md §28; points 169–172 settled as D200–D202): one-row atomic changes, range objects found through a root in .meta, splits past 64 MiB and merges by each range's primary with the copied half frozen | Build HS11 in four stages: AssertKv in the engine; hyperstor-kv without splits; splits and merges in hyperstord; the deletion queue | 2026-11-01 |
-| **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `bench/held-reactor-run`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145), [#152](https://github.com/CMKL-APEX/hyperstor/pull/152), [#155](https://github.com/CMKL-APEX/hyperstor/pull/155), [#165](https://github.com/CMKL-APEX/hyperstor/pull/165) | I232 installed on the pilot (aa6e347) and load-tested: no reactor held, so node 0's pause didn't recur; one 300 ms peer silence without a hold (02-benchmarks.md, 2026-11-02) | Read the next held reactor's log line when node 0's pause comes back; why 1 MiB reads lose throughput above QD1; then recovery and scrub reads, and stage 3 (checkpoint slices, deferred writes) | 2026-11-01 |
+| **S3 sooner: key-value ranges, then the gateway (D191–D199)** (`s3-sooner`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS11 | `feat/kv-lib`, [#151](https://github.com/CMKL-APEX/hyperstor/pull/151), [#175](https://github.com/CMKL-APEX/hyperstor/pull/175), [#176](https://github.com/CMKL-APEX/hyperstor/pull/176) | HS11 stage 2 built (I256): hyperstor-kv, a library of tables, rows and scans over range objects found through the root, checked against a sorted map with ranges split by hand. Stage 1 (I255) is on main (#175) | Review and merge stage 2; then stage 3, splits and merges by each range's primary in hyperstord, with failover at every step | 2026-11-03 |
+| **Device waits off the reactor (D165, D166)** (`async-commit`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS0 | `feat/recovery-reads-off-reactor`, [#94](https://github.com/CMKL-APEX/hyperstor/pull/94), [#97](https://github.com/CMKL-APEX/hyperstor/pull/97), [#100](https://github.com/CMKL-APEX/hyperstor/pull/100), [#129](https://github.com/CMKL-APEX/hyperstor/pull/129), [#134](https://github.com/CMKL-APEX/hyperstor/pull/134), [#145](https://github.com/CMKL-APEX/hyperstor/pull/145), [#152](https://github.com/CMKL-APEX/hyperstor/pull/152), [#155](https://github.com/CMKL-APEX/hyperstor/pull/155), [#165](https://github.com/CMKL-APEX/hyperstor/pull/165), [#178](https://github.com/CMKL-APEX/hyperstor/pull/178) | Recovery, backfill, repair and deep scrub read on the ring with a share of 16 reads of their own (I257); a push reads again when its object is written meanwhile | Install I257 on the pilot and measure a backfill under load; why 1 MiB reads lose throughput above QD1; then stage 3 (checkpoint slices, deferred writes) | 2026-11-03 |
+| **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-endpoints`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161) | #156 merged (endpoints, per-request choice, hyperstor-fabric, routing check; glidex #250 merged). On feat/fabric-endpoints: D215 (the installer proposes endpoints from the topology and keeps them in the map through SetEndpoints, a node only its own), D216 (strict rp_filter fails the check), D217 (netplan example; glidex netd issue) | Its review and merge; then the reconciler in the leader (stage 3), health per network (stage 2) | 2026-11-02 |
+| **Recovery keeps a clone's holes (issue #158)** (`clone-holes`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS4 | `fix/hole-check-skips`, [#162](https://github.com/CMKL-APEX/hyperstor/pull/162), [#163](https://github.com/CMKL-APEX/hyperstor/pull/163), [#172](https://github.com/CMKL-APEX/hyperstor/pull/172) | #163 on the pilot (cb76f56) with hourly scrub and --hole-repair: the dry run found 266 objects, repair replaced 292 (26 the dry run hadn't reported), and four passes since found none. Scrub now logs and counts PGs whose holes it skips (I253) | Merge and deploy the skip logging, watch a pass for unchecked PGs, then remove the scrub drop-in from the pilot and mark this done | 2026-11-02 |
 | **Main's CI: peer reports about starting nodes** (`refill-flapping`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS2 | `fix/refill-flapping`, [#93](https://github.com/CMKL-APEX/hyperstor/pull/93) | Fixed (I198): the map service ignores peer reports about a node that hasn't heartbeated yet; manage::an_empty_node_is_refilled_without_flapping failed on main's CI | Merge on green CI, then #90 and #91; deploy to the pilot | 2026-10-31 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
 | **Pool capacity for glidex's datastores page** (`pool-capacity`) | Claude Code session https://claude.ai/code/session_01KuFVeijxXBrRHsKFXZPcoZ | AD3 | `feat/pool-capacity`, [#81](https://github.com/CMKL-APEX/hyperstor/pull/81) | Built and tested (D156, I192): devices report their space to the leader, GetStatus gives each pool total_bytes and free_bytes, hyperstorctl pools shows them | Merge once CI passes; then glidex moves its hyperstor-api pin and shows the space on its Datastores page | 2026-10-30 |
@@ -36,7 +37,10 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `feat/perf-heat`, [#164](https://github.com/CMKL-APEX/hyperstor/pull/164), [#166](https://github.com/CMKL-APEX/hyperstor/pull/166) | 2026-11-02 |
 | **Fullness thresholds: D27 revised, D182, D183** (`fullness`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `board/fullness-done`, [#128](https://github.com/CMKL-APEX/hyperstor/pull/128), [#133](https://github.com/CMKL-APEX/hyperstor/pull/133), [#136](https://github.com/CMKL-APEX/hyperstor/pull/136), [#139](https://github.com/CMKL-APEX/hyperstor/pull/139), [#142](https://github.com/CMKL-APEX/hyperstor/pull/142), [#144](https://github.com/CMKL-APEX/hyperstor/pull/144), [#149](https://github.com/CMKL-APEX/hyperstor/pull/149) | 2026-11-02 |
+| **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | 2026-11-02 |
+| **The cluster's raw space in hyperstorctl status and the web UI** (`cluster-space`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `main`, [#157](https://github.com/CMKL-APEX/hyperstor/pull/157) | 2026-11-02 |
 | **Pools, devices and volumes managed in the web UI** (`ui-manage`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | AD3 | `main`, [#147](https://github.com/CMKL-APEX/hyperstor/pull/147) | 2026-11-01 |
 | **Pools and devices at run time (D163, D164, D167–D176), and S3 sooner (points 128–137)** (`elastic-pools`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS18 | `main`, [#96](https://github.com/CMKL-APEX/hyperstor/pull/96), [#101](https://github.com/CMKL-APEX/hyperstor/pull/101), [#102](https://github.com/CMKL-APEX/hyperstor/pull/102), [#104](https://github.com/CMKL-APEX/hyperstor/pull/104), [#106](https://github.com/CMKL-APEX/hyperstor/pull/106), [#113](https://github.com/CMKL-APEX/hyperstor/pull/113), [#114](https://github.com/CMKL-APEX/hyperstor/pull/114), [#116](https://github.com/CMKL-APEX/hyperstor/pull/116), [#117](https://github.com/CMKL-APEX/hyperstor/pull/117), [#118](https://github.com/CMKL-APEX/hyperstor/pull/118), [#119](https://github.com/CMKL-APEX/hyperstor/pull/119), [#120](https://github.com/CMKL-APEX/hyperstor/pull/120), [#121](https://github.com/CMKL-APEX/hyperstor/pull/121), [#123](https://github.com/CMKL-APEX/hyperstor/pull/123), [#124](https://github.com/CMKL-APEX/hyperstor/pull/124), [#125](https://github.com/CMKL-APEX/hyperstor/pull/125), [#126](https://github.com/CMKL-APEX/hyperstor/pull/126), [#127](https://github.com/CMKL-APEX/hyperstor/pull/127), [#130](https://github.com/CMKL-APEX/hyperstor/pull/130), [#131](https://github.com/CMKL-APEX/hyperstor/pull/131), [#132](https://github.com/CMKL-APEX/hyperstor/pull/132), [#137](https://github.com/CMKL-APEX/hyperstor/pull/137), [#138](https://github.com/CMKL-APEX/hyperstor/pull/138), [#140](https://github.com/CMKL-APEX/hyperstor/pull/140), [#141](https://github.com/CMKL-APEX/hyperstor/pull/141), [#143](https://github.com/CMKL-APEX/hyperstor/pull/143) | 2026-11-01 |
 | **Public docs caught up with the implementation (November)** (`docs-catch-up-nov`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | — | `docs/catch-up-nov`, [#148](https://github.com/CMKL-APEX/hyperstor/pull/148) | 2026-11-01 |
@@ -61,11 +65,11 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 8 | 3 | 1 |
+| HS0 | Local storage engine and reactor | 9 | 3 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 5 | 1 | 4 |
-| HS4 | Snapshots, clones and the host read cache | 4 | 1 | 0 |
+| HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
 | HS5b | Lower CPU cost per operation | 0 | 0 | 0 |
 | HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 0 |
@@ -75,7 +79,7 @@ against the tests.
 | HS9 | GPU-direct storage in virtual machines | 0 | 0 | 0 |
 | HS10 | Hard-disk pools with flash log devices | 0 | 0 | 0 |
 | HS10b | Cache pools and priority classes | 0 | 0 | 0 |
-| HS11 | Key-value ranges | 0 | 0 | 4 |
+| HS11 | Key-value ranges | 2 | 0 | 2 |
 | HS11b | Key-value transactions | 0 | 0 | 0 |
 | HS12 | S3 gateway | 0 | 0 | 0 |
 | HS13 | S3 over RDMA | 0 | 0 | 0 |
@@ -84,9 +88,9 @@ against the tests.
 | HS16 | Sites and replication between clusters | 0 | 0 | 0 |
 | HS17 | Global namespace and federation | 0 | 0 | 0 |
 | HS18 | Pools and devices at run time | 14 | 2 | 0 |
-| HS19 | Networks | 0 | 0 | 5 |
+| HS19 | Networks | 0 | 3 | 2 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 11 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 12 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

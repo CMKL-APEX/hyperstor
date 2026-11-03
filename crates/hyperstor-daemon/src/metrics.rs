@@ -60,6 +60,13 @@ pub struct ShardMetrics {
     pub scrub_unresolved: AtomicU64,
     /// Objects a deep scrub found with a block that failed its CRC.
     pub scrub_damaged: AtomicU64,
+    /// Objects whose copies held blocks of zeros where another copy had
+    /// holes (D223), and those repaired from the copy with the holes.
+    pub scrub_holes: AtomicU64,
+    pub scrub_holes_repaired: AtomicU64,
+    /// PGs whose check of holes scrub skipped: a member didn't answer
+    /// `Holds` or is from before it, or the PG changed while checking.
+    pub scrub_holes_unchecked: AtomicU64,
     /// Objects a new primary pushed to members while peering (I61).
     pub peer_pushes: AtomicU64,
     /// Times the reactor's thread was held for [`crate::STALL`] or more,
@@ -69,6 +76,9 @@ pub struct ShardMetrics {
     pub read_timeouts: AtomicU64,
     /// Of those, reads a member's copy answered for the primary (D190).
     pub reads_elsewhere: AtomicU64,
+    /// Reads for a push or fetch planned again because a write to their
+    /// object was queued while they waited for the device (I257).
+    pub push_rereads: AtomicU64,
     /// From a client write's arrival to its answer, after every replica.
     pub write_latency: Histogram,
     /// From a client read's arrival to its answer.
@@ -162,9 +172,15 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         },
     );
     family(
+        "hyperstor_push_rereads_total",
+        "counter",
+        "Reads of recovery, backfill and repair planned again because their object was written while they waited for the device.",
+        &|m| vec![("", g(&m.push_rereads))],
+    );
+    family(
         "hyperstor_scrub_objects_total",
         "counter",
-        "Scrub and peering: objects compared across copies, those whose copies differed by outcome, those a deep scrub found damaged, and those a new primary pushed while peering.",
+        "Scrub and peering: objects compared across copies, those whose copies differed by outcome, those a deep scrub found damaged, those whose copies held zeros where another had holes and those of them repaired, and those a new primary pushed while peering.",
         &|m| {
             vec![
                 ("compared", g(&m.scrub_objects)),
@@ -172,9 +188,17 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
                 ("repaired", g(&m.scrub_repaired)),
                 ("unresolved", g(&m.scrub_unresolved)),
                 ("damaged", g(&m.scrub_damaged)),
+                ("holes", g(&m.scrub_holes)),
+                ("holes_repaired", g(&m.scrub_holes_repaired)),
                 ("peering", g(&m.peer_pushes)),
             ]
         },
+    );
+    family(
+        "hyperstor_scrub_pgs_total",
+        "counter",
+        "Scrub: PGs whose check of holes was skipped, because a member didn't answer or the PG changed while checking.",
+        &|m| vec![("holes_unchecked", g(&m.scrub_holes_unchecked))],
     );
     family(
         "hyperstor_device_objects",
@@ -306,7 +330,10 @@ mod tests {
         assert!(t.contains(
             "hyperstor_read_timeouts_total{node=\"4\",device=\"4001\",kind=\"from_member\"} 0\n"
         ));
-        assert_eq!(t.matches("# TYPE ").count(), 15);
+        assert!(t.contains(
+            "hyperstor_scrub_pgs_total{node=\"4\",device=\"4001\",kind=\"holes_unchecked\"} 0\n"
+        ));
+        assert_eq!(t.matches("# TYPE ").count(), 17);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

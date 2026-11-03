@@ -251,6 +251,142 @@ fn cluster_file_install_across_hosts() {
     }
 }
 
+/// Endpoints from the cluster file (26-networks.md §29.5, D207): each
+/// storage host's installer gives `hyperstord` its devices' endpoints on
+/// network `fast` (a second loopback address here) and the network, and
+/// the nodes replicate to each other there.
+#[test]
+fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
+    let _one = one_at_a_time();
+    let s = Scratch::new("endpoints");
+    let base = free_ports(11);
+    let file = s.path("cluster.txt");
+    let ep = |n: u16| format!("127.0.0.2:{}", base + 8 + n);
+    std::fs::write(
+        &file,
+        format!(
+            "cluster 8\nnetwork fast data trusted subnet 127.0.0.2/32\n\
+             node 0 rack 0 127.0.0.1:{}\nnode 1 rack 0 127.0.0.1:{}\nnode 2 rack 0 127.0.0.1:{}\n\
+             endpoint 0 fast {}\nendpoint 1000 fast {}\nendpoint 2000 fast {}\n\
+             pool 1 vol replicated size 3 min 2 pgs 32 domain host\n",
+            base + 2,
+            base + 3,
+            base + 4,
+            ep(0),
+            ep(1),
+            ep(2)
+        ),
+    )
+    .unwrap();
+    let map = format!("127.0.0.1:{}", base + 1);
+    let common = [
+        "--cluster",
+        file.to_str().unwrap(),
+        "--map",
+        map.as_str(),
+        "--size-gib",
+        "1",
+    ];
+    let meta_root = s.path("meta-host");
+    let api_port = base.to_string();
+    let meta_data = s.path("meta-data");
+    std::fs::create_dir_all(&meta_data).unwrap();
+    let mut a = common.to_vec();
+    a.extend([
+        "--role",
+        "meta",
+        "--api-port",
+        &api_port,
+        "--data-dir",
+        meta_data.to_str().unwrap(),
+    ]);
+    install(&meta_root, &a);
+    let bin = meta_root.join("usr/local/bin");
+    let mut procs = vec![
+        Command::new(bin.join("hyperstor-meta"))
+            .args(env_args(&meta_root, s.run(), "meta.env"))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    ];
+    for n in 0..3u16 {
+        let root = s.path(&format!("host-{n}"));
+        let data = s.path(&format!("data-{n}"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (node, admin) = (n.to_string(), (base + 5 + n).to_string());
+        let mut a = common.to_vec();
+        a.extend([
+            "--role",
+            "storage",
+            "--node",
+            &node,
+            "--data-dir",
+            data.to_str().unwrap(),
+            "--admin-port",
+            &admin,
+        ]);
+        install(&root, &a);
+        let env =
+            std::fs::read_to_string(root.join(format!("etc/hyperstor/node-{n}.env"))).unwrap();
+        assert!(
+            env.contains(&format!("--endpoint {}={}", n as u32 * 1000, ep(n)))
+                && env.contains("--networks fast"),
+            "{env}"
+        );
+        procs.push(
+            Command::new(root.join("usr/local/bin/hyperstord"))
+                .args(env_args(&root, s.run(), &format!("node-{n}.env")))
+                .args(NODE_ARGS)
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let api = format!("127.0.0.1:{api_port}");
+    let pki = meta_root.join("etc/hyperstor/pki");
+    let ctl = |args: &[&str]| {
+        let o = Command::new(bin.join("hyperstorctl"))
+            .args(["--api", &api, "--tls", pki.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
+        )
+    };
+    let (code, out) = ctl(&["status", "--wait", "30"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (code, out) = ctl(&["io-test", "--mib", "64"]);
+    assert_eq!(code, Some(0), "{out}");
+    // Sessions to every node's endpoint, from the primaries replicating:
+    // 16 chunks over 32 PGs, so every node is a replica of some.
+    let want: std::collections::BTreeSet<u16> = (0..3).map(|n| base + 8 + n).collect();
+    let seen = established_on([127, 0, 0, 2]);
+    for p in &mut procs {
+        let _ = p.kill();
+        let _ = p.wait();
+    }
+    assert!(want.is_subset(&seen), "{want:?} not all in {seen:?}");
+}
+
+/// The local ports of established TCP connections on `ip` (IPv4), from
+/// /proc/net/tcp.
+fn established_on(ip: [u8; 4]) -> std::collections::BTreeSet<u16> {
+    let want = format!("{:08X}", u32::from_le_bytes(ip));
+    std::fs::read_to_string("/proc/net/tcp")
+        .unwrap()
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let (addr, port) = f.get(1)?.split_once(':')?;
+            // 01: ESTABLISHED.
+            (addr == want && f.get(3) == Some(&"01")).then(|| u16::from_str_radix(port, 16).ok())?
+        })
+        .collect()
+}
+
 /// The root CA's key (D84): an install says it has no backup; a backup
 /// is encrypted, opens only with its passphrase, may take the key off the
 /// host (later runs still converge), and restores only onto its own

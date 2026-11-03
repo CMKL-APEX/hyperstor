@@ -23,7 +23,7 @@ covered by tests that run on every change.
 | HS9: GPU-direct storage in virtual machines | Planned |
 | HS10: Hard-disk pools with flash log devices | Planned |
 | HS10b: Cache pools and priority classes | Planned |
-| HS11: Key-value ranges | Planned |
+| HS11: Key-value ranges | In progress |
 | HS11b: Key-value transactions | Planned |
 | HS12: S3 gateway | Planned |
 | HS13: S3 over RDMA | Planned |
@@ -32,7 +32,7 @@ covered by tests that run on every change.
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
-| HS19: Networks | Planned |
+| HS19: Networks | In progress |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
@@ -51,6 +51,7 @@ covered by tests that run on every change.
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
 | Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage) | In progress |
 | A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned | Done |
+| Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again | Done |
 | Crash safety: randomized crash tests against a model | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
@@ -113,6 +114,7 @@ covered by tests that run on every change.
 |---|---|
 | Engine: chunk versions read through layers, and merged without copying | Done |
 | Snapshots, clones, rollback, flatten and snapshot deletion | Done |
+| Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hyperstorctl | Done |
 | Consistency groups | Done |
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
@@ -121,8 +123,8 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Per-key assertions on an object's key-value table | Planned |
-| Tables, rows and range objects found through the root; one-row atomic changes and scans | Planned |
+| Per-key assertions on an object's key-value table, and its size in bytes from a sized lookup | Done |
+| Tables, rows and range objects found through the root; one-row atomic changes and scans | Done |
 | Splits and merges by each range's primary, resumed after failover | Planned |
 | The deletion queue, drained by the range's primary | Planned |
 
@@ -151,9 +153,9 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1) | Planned |
-| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2) | Planned |
-| The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3) | Planned |
+| Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; the installer proposing endpoints from the host's topology and keeping them in the map) | In progress |
+| Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests) | In progress |
+| The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built) | In progress |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4) | Planned |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
 
@@ -202,7 +204,8 @@ covered by tests that run on every change.
 | Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI | Done |
 | A grid of each pool's PGs in the web UI and hyperstorctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request | Done |
 | Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hyperstorctl pg-grid --usage prints a digit | Done |
-| Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL, the web UI bars on the Pools, Nodes and Overview pages | Done |
+| Load and drives: per-PG requests and top volumes from primaries, each device's service time and in flight, drives' sysfs and NVMe SMART (through hyperstor-smart), kept by the leader 15 minutes; pg-grid --heat, perf, top-volumes and advise; the PG grid's Reads and Writes views, the device matrix and panel, busiest volumes with Move to pool, and the Advisor in the web UI | Done |
+| Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages | Done |
 | Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto | Done |
 | Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
 | A write refused for space held by hyperstor-vhost, retried every second for up to 300 s (--hold-full), before the guest gets an I/O error | Done |

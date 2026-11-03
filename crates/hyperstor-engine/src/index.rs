@@ -18,10 +18,31 @@ pub struct Object {
     /// Logical to physical blocks, as runs or a dense map (D43).
     pub blocks: BlockMap,
     pub attrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Change it through [`Object::kv_put`] and [`Object::kv_del`], which
+    /// keep [`Object::kv_bytes`].
     pub kv: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// The key–value table's keys and values, in bytes, kept as it
+    /// changes so a range's size is known without a scan
+    /// (25-kv-ranges.md §28.2). Never stored: rebuilt as the table is
+    /// read.
+    pub kv_bytes: u64,
 }
 
 impl Object {
+    pub fn kv_put(&mut self, k: Vec<u8>, v: Vec<u8>) {
+        let (kl, vl) = (k.len() as u64, v.len() as u64);
+        if let Some(old) = self.kv.insert(k, v) {
+            self.kv_bytes -= kl + old.len() as u64;
+        }
+        self.kv_bytes += kl + vl;
+    }
+
+    pub fn kv_del(&mut self, k: &[u8]) {
+        if let Some(old) = self.kv.remove(k) {
+            self.kv_bytes -= (k.len() + old.len()) as u64;
+        }
+    }
+
     pub fn block_count(&self) -> u64 {
         self.blocks.block_count()
     }
@@ -292,12 +313,8 @@ impl Index {
                 ROp::RmAttr(k) => {
                     o.attrs.remove(k);
                 }
-                ROp::KvPut(k, v) => {
-                    o.kv.insert(k.clone(), v.clone());
-                }
-                ROp::KvDel(k) => {
-                    o.kv.remove(k);
-                }
+                ROp::KvPut(k, v) => o.kv_put(k.clone(), v.clone()),
+                ROp::KvDel(k) => o.kv_del(k),
                 ROp::KvDelRange(a, b) => {
                     if a < b {
                         let keys: Vec<Vec<u8>> =
@@ -305,7 +322,7 @@ impl Index {
                                 .map(|(k, _)| k.clone())
                                 .collect();
                         for k in keys {
-                            o.kv.remove(&k);
+                            o.kv_del(&k);
                         }
                     }
                 }
@@ -438,7 +455,7 @@ pub fn decode_object(d: &mut Dec<'_>) -> Result<(ObjKey, Object), DecodeError> {
     }
     let nk = d.u64()?;
     for _ in 0..nk {
-        o.kv.insert(d.bytes()?.to_vec(), d.bytes()?.to_vec());
+        o.kv_put(d.bytes()?.to_vec(), d.bytes()?.to_vec());
     }
     Ok((k, o))
 }

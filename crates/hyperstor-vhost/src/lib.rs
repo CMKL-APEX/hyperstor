@@ -46,6 +46,9 @@ pub struct Options {
     /// How long a write refused for space is held before the guest sees
     /// an I/O error (04-decisions.md D183; 0: at once).
     pub hold_full: std::time::Duration,
+    /// The data networks it reaches storage nodes on, in order
+    /// (26-networks.md §29.5, D207); none: devices' addresses.
+    pub networks: Vec<String>,
 }
 
 /// The control socket's path in `dir`.
@@ -195,6 +198,7 @@ pub fn serve(
         let client = Client::connect_members(opts.meta.clone(), instance_id())
             .await
             .map_err(|e| format!("map service: {e}"))?;
+        client.set_networks(opts.networks.clone());
         let svc = Rc::new(Service {
             opts,
             client,

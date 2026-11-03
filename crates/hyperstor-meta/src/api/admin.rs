@@ -1223,8 +1223,8 @@ impl OperationService for Api {
         let target = format!("operation {}", req.id);
         let who = self.authorize(&ctx, "CancelOperation", &target, true)?;
         let op = self.op(req.id).await?;
-        // Only a drain or a removal stops part way: a flatten or a purge
-        // runs to its end (D121).
+        // Only a drain, a removal, a copy or a move stops part way: a
+        // flatten or a purge runs to its end (D121).
         let devices = |map: &hyperstor_map::ClusterMap| -> Vec<u32> {
             match &op.work {
                 Work::Drain { node, .. } => map
@@ -1239,6 +1239,41 @@ impl OperationService for Api {
                 _ => Vec::new(),
             }
         };
+        // A copy or a move stops at its next step (D214): a copy's new
+        // volume is deleted; a move that has switched pools finishes.
+        if matches!(op.work, Work::Copy { .. } | Work::Move { .. }) {
+            if !op.running() {
+                return Err(with_reason(
+                    ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
+                    "finished",
+                ));
+            }
+            let id = op.id.clone();
+            let r = self
+                .admin
+                .runner
+                .store(move |s| {
+                    s.update(&id, |o| {
+                        if o.running() {
+                            o.state = S::Cancelled;
+                            o.finished_unix = now_unix();
+                            o.message = "cancelled; it stops at its next step".into();
+                        }
+                    })
+                })
+                .await;
+            return match r {
+                Ok(Some(o)) if o.state == S::Cancelled => {
+                    audit(&who, "CancelOperation", &target, "ok, cancelled");
+                    Ok(super::ops::op_pb(&o).into())
+                }
+                Ok(_) => Err(with_reason(
+                    ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
+                    "finished",
+                )),
+                Err(e) => Err(self.token_error(e).await),
+            };
+        }
         let what = match &op.work {
             Work::Drain { node, .. } => format!("node {node}'s devices are"),
             Work::RemoveDevice { device, .. } => format!("device {device} is"),

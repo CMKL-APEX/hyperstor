@@ -110,3 +110,60 @@ notice under load). The map service needs one TCP port reachable from
 all of them, and its members one more between themselves. Pick ports
 and firewall rules accordingly, and keep the storage network isolated
 (see [Running a cluster](index.md)).
+
+### Several networks
+
+A host with several network ports (a management port, and fast storage
+or InfiniBand ports) can carry reads, writes and replication on the
+fast ones and keep the rest on the management network:
+
+- Declare the networks in the [cluster file](../reference/cluster-file.md#network),
+  each `control`, `data` or `both`.
+- Give each device one or more `endpoint` lines on a data network. The
+  device's own address (on its `node` line) stays where the map service
+  and pings reach it.
+- Install as usual. Each storage node then also listens on its devices'
+  endpoints, and reaches the other nodes at their endpoints on the data
+  networks it has endpoints on.
+- Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
+  for VM disks. A client on no network uses devices' addresses.
+
+Put each endpoint on a port close to its device: on the same PCIe switch
+or, failing that, the same CPU socket. With several ports in one subnet
+(InfiniBand ports often are), Linux sends from every address through
+one of them unless each address has a routing rule of its own; add
+those, or traffic leaves by one port. `hyperstor-install check` warns
+about endpoints without one, and fails when the port also filters
+reverse paths strictly (`rp_filter` 1), where connections to the
+endpoint would fail. On glidex hosts, glidex is to manage these rules
+(planned); on another host, and until then, netplan can keep them, a
+table per port:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    ibp12s0:
+      addresses: [192.0.2.10/24]
+      routes:
+        - to: 192.0.2.0/24
+          scope: link
+          table: 101
+      routing-policy:
+        - from: 192.0.2.10
+          table: 101
+    ibp18s0:
+      addresses: [192.0.2.11/24]
+      routes:
+        - to: 192.0.2.0/24
+          scope: link
+          table: 102
+      routing-policy:
+        - from: 192.0.2.11
+          table: 102
+```
+
+Apply it with `netplan try`, then check again.
+
+Choosing endpoints for you, from the host's topology, and moving traffic
+between ports as load changes are planned.

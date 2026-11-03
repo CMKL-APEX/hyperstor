@@ -4,16 +4,19 @@ Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage]
+usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--heat read|write]
 ```
 
 | Command | Does |
 |---|---|
-| `status` | Health (`ok`, `warn` or `error`) with its reasons, nodes and devices up, and PG states per pool |
+| `status` | Health (`ok`, `warn` or `error`) with its reasons, nodes and devices up, the raw space free and total over the devices in (before copies; `-` until devices have reported), and PG states and space per pool |
 | `nodes` | Each node and its devices: address, weight, free and total space (GiB; `-` until the device has reported to the leader), in or out |
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive, and its usable free and total space (GiB, after copies or erasure coding) |
 | `pgs` | One pool's PGs with their acting and up sets; `--pg N` for one PG |
 | `pg-grid` | One pool's PG states, a character per PG, 64 to a line: `.` clean, `d` degraded, `b` backfilling, `X` inactive; with `--usage`, also a digit per PG for the data on its primary, `0` least to `9` most |
+| `perf` | Each device over the last minute: requests per second its PGs served as primary, MiB/s, the device's own read and commit (write and flush) p99, the most I/Os it had in flight, its drive's temperature and wear. With `--device D`, that device's drive (model, firmware, PCIe link, NUMA node, write cache, SMART) and its last two minutes, 5 s a line. Asks the map service's leader, which keeps 15 minutes; exit 1 for a device that hasn't reported |
+| `top-volumes` | The volumes sending most requests now, summed over their PGs (at most `--limit`, default 20): requests and MiB per second |
+| `advise` | The Advisor's findings: a slow device, a device carrying a hot spot, a hot volume (with the `move-volume` that would move it to an NVMe pool), and what drives say of themselves (critical warnings, media errors, wear, heat, a PCIe link below its width or speed, a drive on another NUMA node than its reactor), each with the numbers behind it and what to do. It changes nothing |
 | `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
 | `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
 | `delete-volume` | Moves volume `--id` (with its snapshots) to the trash, where it stays for its pool's grace period (a day by default); refused while it is attached, unless `--force`. Prints when it will be purged |
@@ -35,6 +38,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `enroll` | Makes this client a management client of the cluster from a `mgmt` token in `--file`: a key made here, the API (`--api`) checked against the root the token names; writes `admin.crt`, `admin.key` and `root.crt` into `--out`, as `--tls` reads them. The certificate lives 30 days |
 | `rollback-volume` | Rolls volume `--id` (detached) back to its snapshot at `--epoch` |
 | `flatten-volume` | Copies into clone `--id` what it reads from its parents, so they can be deleted, as an operation: prints its id; with `--wait`, follows it to the end |
+| `copy-volume` | Copies volume `--id` into a new volume in pool `--pool`, named `--name` (default: the volume's), with `--new-id` or a random id, as an operation: prints the new id and the operation's; with `--wait`, follows it. With `--epoch`, copies that snapshot, while the volume stays in use; without it, the volume's current data, which needs it detached (it is held meanwhile). The copy has no snapshots and no parents; holes and blocks of zeros aren't written. It is listed while it fills, held by the copy, and deleted if the copy fails or is cancelled. Refused (exit 1) for a pool that isn't there or is `full`, or an id in use |
+| `move-volume` | Moves detached volume `--id` to pool `--pool`, keeping its id, as an operation: prints its id; with `--wait`, follows it. The volume is held while its data is copied, then switches pools, then its data in the old pool is deleted. Refused (exit 1) while it is attached, while it has snapshots (in the trash too: purge them), while a clone reads through it, for its own pool, and for a pool that isn't there or is `full`. A clone is flattened by the move |
 | `out` | Takes a device out of placement: its PGs move to other devices |
 | `in` | Brings a device back into placement |
 | `weight` | Keeps `--device`'s placement weight at `--weight W`, or with `--weight auto` lets it follow the device's capacity in TiB again. Its PGs move as the weight changes. Needs every storage node and map service member on a build that has it |
@@ -42,6 +47,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `device add` | Appends a device to `--node N`, served at `--address A`, of class `--class C` (default: that of the node's other devices). It is device `N × 1000 + i`, at weight 0, so nothing moves until the node is restarted with one more `--shard A=PATH:SIZE` and the device reports its capacity. An address in use or a node that isn't there exits 1 |
 | `device remove` | Removes `--device D`: takes it out, so its PGs move to the other devices of their pools, and starts an operation that removes it from the map once no PG lists it, with its node if it was the node's last. Neither id is given again; the device's data is left as it is. Refused (exit 1) when a pool using it would keep fewer copies than its `min`, or, without `--force`, than its copies, for want of failure domains; and when a device taking its data would pass the `full` ratio (95% by default, see `full-ratios`). Prints the PGs that move, pools left short and the space after. Then drop its `--shard` from the node's options: a node started with it stops, saying so. `op cancel` brings it back in |
 | `device class` | Keeps `--device`'s class at `--class C`, or with `--class auto` lets it follow the device's kind (`nvme`, `ssd`, `hdd`, `file`) again. A class holds devices of one kind, and a class named after a kind only that kind; a device whose kind isn't known yet (its node hasn't run) is refused, exit 1. Pools limited to classes move its PGs |
+| `device endpoints` | Sets `--device`'s endpoints to `--endpoints`, replacing them: each `NET=IP:PORT` on a data network of the cluster (see [Several networks](../admin-guide/planning.md#several-networks)); `none` removes them. `hyperstor-install` keeps its own node's devices' endpoints this way on every run. A storage node's certificate may set only its own devices'; refused (wrong network, bad address, another node's device) exit 1 |
 | `pool create` | Makes pool `--name N` on devices of `--classes C,C...` (required): `--kind replicated` (default) or `cache`, `--copies N` (3; 1 for cache), `--min N` (half the copies, rounded up; 1 for cache), `--pgs N` (a power of two; default about 100 per device of its classes per copy), `--chunk BYTES` (4M), `--domain device\|host\|rack` (host). The map service doubles its PG count as devices are added, unless `--autoscale off`. A cache pool's PGs wait `--cache-grace SECS` (60) for a down node before starting empty elsewhere. Refused (exit 1) for a name in use, classes whose devices span fewer domains than the copies, and hard disks with flash unless `--force` |
 | `pool set` | Changes pool `--pool P`: places its PGs on devices of `--classes C,C...` only, or with `--classes any` on every device; keeps a copy per `--domain device\|host\|rack`; renames it `--name N`; sets a cache pool's `--cache-grace SECS`. What isn't given stays; PGs move as for a weight change. Refused (exit 1) for `.meta`, for a name another pool has, when the pool's devices would span fewer failure domains than its copies, and when the classes hold hard disks and flash both, unless `--force`, which warns. `pools` lists each pool's classes, `!` marking a forced mix. `--pgs N`, twice the pool's PG count, splits its PGs in place, a few at a time, each paused for a moment; with `--wait SECS`, until it is done. The new PGs then move to their own devices a few at a time, once every PG of the pool is clean, and `pools` says how many are placed; refused (exit 1) for another count, for `.meta`, while the pool splits and until the last split's PGs have moved. `--autoscale on\|off` turns the autoscaler on or off for the pool; `pools` lists those with it off |
 | `pool add-device` | Lets pool `--pool P` use device `--device D` too, though it is not of the pool's classes, or takes back a device removed from it; PGs move as for `pool set`, and it is refused as `pool set` is (exit 1), `--force` allowing hard disks with flash. A device serves every pool that uses it, sharing its space |
@@ -52,7 +58,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `token create` | Makes a single-use join token for `--role node` (a storage host), `--role meta` (a map service member) or `--role mgmt --name N` (a management client such as glidex, named N: 1–32 of a–z, 0–9 and -), valid `--ttl` seconds. Prints the token alone on standard output, and how to use it on standard error. Storage tokens are made on the map service's leader |
 | `token list` | The tokens this map service member made: id, role, expiry, and whether used, revoked or expired. Never the tokens themselves |
 | `token revoke` | Makes token `--id` unusable |
-| `op list` | Running and recent operations (drains, flattens, purges), newest first; finished ones are kept a week |
+| `op list` | Running and recent operations (drains, flattens, copies, moves, purges), newest first; finished ones are kept a week |
 | `op get` | Operation `--id` |
 | `op watch` | Prints operation `--id` as it changes, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
 | `member list` | The map service's members: voters and learners, their Raft and map addresses, and who leads |
@@ -62,7 +68,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
 | `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired |
 | `cert show` | Prints the identity, serial and expiry of the certificate in `--file`, without the API: how to find the serial of a certificate the installer made |
-| `op cancel` | Stops drain or device removal `--id`, bringing the devices back in; a flatten or a purge can't be cancelled |
+| `op cancel` | Stops drain or device removal `--id`, bringing the devices back in; or a copy, whose new volume is deleted, or a move, unless it has switched pools already. A flatten or a purge can't be cancelled |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -72,15 +78,16 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
 | `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
-| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `device remove`, `flatten-volume`, `trash purge`, `pool delete --force`: follow the operation until it finishes. `pool set --pgs`: until the split is done. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
+| `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `device remove`, `flatten-volume`, `copy-volume`, `move-volume`, `trash purge`, `pool delete --force`: follow the operation until it finishes. `pool set --pgs`: until the split is done. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
 | `--sparse` | off | `write-volume`: skip blocks of zeros |
 | `--usage` | off | `pg-grid`: each PG's data too (the map service's leader answers) |
-| `--pool P` | the first data pool | The pool for `pgs`, `pg-grid`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers) |
-| `--pg N` | every PG | `pgs`: only this PG of the pool |
+| `--heat read\|write` | | `pg-grid`: instead of states, a digit per PG for its reads or writes per second over the last 5 s, `1` least to `9` most, `.` none; with `--pg N`, that PG's top volumes too (the leader answers) |
+| `--pool P` | the first data pool | The pool for `pgs`, `pg-grid`, `volumes`, `create-volume` and `io-test` (`.meta`, pool 0, holds volume headers); the pool `copy-volume` and `move-volume` go to (required) |
+| `--pg N` | every PG | `pgs`: only this PG of the pool. `pg-grid --heat`: also this PG's top volumes |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
-| `--device D` | | The device for `out`, `in`, `weight`, `device remove`, `pool add-device` and `pool remove-device` |
+| `--device D` | | The device for `out`, `in`, `weight`, `device remove`, `pool add-device`, `pool remove-device` and `perf` |
 | `--weight W\|auto` | | `weight`: the weight to keep (0 or more; 0 places nothing on the device), or `auto` |
 | `--nearfull PCT` | 85 | `full-ratios`: where a device warns |
 | `--backfillfull PCT` | 90 | `full-ratios`: past it, a device takes no backfill |
@@ -88,6 +95,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--node N` | | Every device of node N, for `out` and `in`; the node for `device add` |
 | `--address A` | | `device add`: `IP:PORT` where the node's new reactor listens |
 | `--class C` | | `device add`: the device's class; `device class`: the class to keep, or `auto` |
+| `--endpoints NET=ADDR,...\|none` | | `device endpoints`: the device's endpoints, or `none` |
 | `--classes C,C...\|any` | | `pool create`: the classes (required); `pool set`: the new classes, or every device |
 | `--kind K` | replicated | `pool create`: `replicated` or `cache` |
 | `--copies N` | 3 (1 for cache) | `pool create`: copies |
@@ -96,12 +104,12 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--chunk B` | 4M | `pool create`: chunk size, a multiple of 4096 bytes |
 | `--domain D` | host | `pool create`, `pool set`: `device`, `host` or `rack` |
 | `--size S` | | The new volume's size for `create-volume`: bytes, or with `K`, `M`, `G` or `T` |
-| `--name N` | empty | The new volume's, clone's or snapshot's name: shown, not unique. `pool create`, `pool set`: the pool's name, unique |
+| `--name N` | empty | The new volume's, clone's, copy's or snapshot's name: shown, not unique. `pool create`, `pool set`: the pool's name, unique |
 | `--id ID` | | `delete-volume` and the snapshot commands: the volume (32 hex digits). `create-volume`: its id, instead of a random one. `token revoke`: the token's id. `op get`, `op watch`, `op cancel`: the operation |
-| `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`: the snapshot, by the epoch `snapshot list` shows. `trash restore`, `trash purge`: a snapshot in the trash; without it, the volume |
+| `--epoch E` | | `snapshot delete`, `clone-volume`, `rollback-volume`, `copy-volume`: the snapshot, by the epoch `snapshot list` shows. `trash restore`, `trash purge`: a snapshot in the trash; without it, the volume |
 | `--ids ID,ID...` | | `snapshot group`: the volumes, comma-separated |
 | `--group G` | | `snapshot group-delete`: the group, as `snapshot group` printed it |
-| `--new-id ID` | random | `clone-volume`: the clone's id (32 hex digits) |
+| `--new-id ID` | random | `clone-volume`, `copy-volume`: the new volume's id (32 hex digits) |
 | `--grace SECS` | | `trash settings`: how long a deleted volume or snapshot stays in the trash; 0 purges at once; at most a year |
 | `--autoscale on\|off` | on | `pool create`, `pool set`: whether the map service doubles the pool's PG count when its devices call for twice as many |
 | `--cache-grace SECS` | 60 | `pool create`, `pool set`, cache pools only: how long a PG whose copies are all on down nodes waits for them, keeping their data, before starting empty elsewhere; 0 to 3600, 0 not waiting. Meanwhile its reads miss and a write moves it at once. `pools` notes a grace other than 60 |
@@ -109,7 +117,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--since AGO` | | `audit list`: only records from the last `AGO`: `30m`, `2h`, `7d`, or seconds |
 | `--principal P` | | `audit list`: only records whose principal contains `P` (`user:ann`, `/admin/`) |
 | `--op OP` | | `audit list`: only records of operation `OP` (`CreateVolume`) |
-| `--limit N` | 100 | `audit list`: at most `N` records |
+| `--limit N` | 100 | `audit list`: at most `N` records. `top-volumes`: at most `N` volumes (default 20) |
 | `--retention-days N` | 365 | `audit settings`: keep records `N` days; 0 keeps them forever |
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters. `pool create`, `pool set`, `pool add-device`: allow hard disks with flash. `pool delete`: delete the pool's volumes, snapshots and trash first. `device remove`: let pools keep fewer copies than their size, never fewer than their `min` |
 | `--role R` | | `token create`: `node`, `meta`, or `mgmt` (for a management service, such as glidex's, enrolling with `enroll`) |

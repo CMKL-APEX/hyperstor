@@ -14,10 +14,16 @@ the reconciler runs in the map service's leader, as a module that can
 move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
-G47–G53 are the host checks they rest on. It builds on 13-protocol.md §13.2 (networks and transports in
+D215–D217 (points 178–180) settle how endpoints are chosen and kept,
+and who routes by source.
+G47–G53 are the host checks they rest on. Built so far (HS19, branch
+`feat/fabric`; 01-implementation-notes.md I233–I238): networks and
+endpoints in the cluster file and the map, nodes and clients reaching
+devices at their endpoints, and in `hyperstor-fabric` the ranking by
+closeness, path choice and the reconciler's decisions, not yet wired. It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
-## 29. Networks (D203–D213)
+## 29. Networks (D203–D217)
 
 ### 29.1 Goal and scope
 
@@ -160,8 +166,19 @@ port on its own NUMA node.
   the reactor checks checksums and runs the engine on every chunk.
 - **Source addresses.** Outgoing connections bind the endpoint's address
   as their source. With several ports in one subnet, the host must also
-  route by source (G47); the installer checks it and refuses to bind
-  endpoints on a host where it doesn't hold.
+  route by source (G47). The installer checks it (D216): it warns about
+  an endpoint address without a rule of its own, and fails when the
+  port filters reverse paths strictly, where connections would fail;
+  loose filtering only costs the spread over ports. The rules are the
+  host network owner's to add (D217): glidex's netd on glidex hosts,
+  the operator (netplan) elsewhere.
+- **Who picks endpoints (D215).** The installer proposes them from the
+  host's topology (the closest ports to each device, by this ranking,
+  on the cluster's data networks) and keeps them in the map through the
+  cluster API, again on every run, so they follow the host's ports. A
+  node's own certificate may set only its own devices' endpoints;
+  `admin` and `mgmt` may set any. The cluster file's `endpoint` lines
+  stay, for endpoints written by hand.
 - **Clients** rank their own ports the same way: by closeness to the
   client reactor's CPU, and for `libhyperstor-gpu` to the GPU whose
   buffer is read or written (12-gpu.md §12.1).
@@ -349,12 +366,17 @@ port on the 100 GbE bond, with no RDMA work.
 
 ### 29.13 Host checks
 
-- **G47. Several ports in one subnet** (D207). On a host with several
+- **G47. Several ports in one subnet** (D207). Seen on the pilot's GPU
+  hosts (01-implementation-notes.md I237): no rules by source, so the
+  risk is real; the measurement with and without rules is open. On a host with several
   IPoIB ports in one subnet: with `arp_ignore=1`, `arp_announce=2` and a
   routing rule per source address, does each reactor's traffic leave by
   its own port? Measure per-port counters while 8 reactors send, with
   and without the rules.
-- **G48. TCP over IPoIB and 100 GbE** (D206, stage 1). With
+- **G48. TCP over IPoIB and 100 GbE** (D206, stage 1). First part
+  measured 2026-11-02 (02-benchmarks.md): one IPoIB port in datagram mode
+  gives 6–7 times 1 GbE for 1 MiB I/O and 3–4 times lower latency at
+  QD1, but one connection reaches about 0.8 GB/s; the rest is open. With
   `hyperstor-bench remote`: throughput and latency for 4 KiB and 1 MiB
   I/O over one HDR port in datagram and connected mode, over 8 ports,
   and over a host port on the 100 GbE bond, against 1 GbE.
