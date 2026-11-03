@@ -192,6 +192,7 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         backfillfull: map.backfillfull.clone(),
         networks: map.networks.clone(),
         endpoints: map.endpoints.clone(),
+        endpoints_down: map.endpoints_down.clone(),
     }
     .encode()
 }

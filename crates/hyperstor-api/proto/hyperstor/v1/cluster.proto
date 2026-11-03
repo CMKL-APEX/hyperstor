@@ -618,6 +618,9 @@ message Endpoint {
   string network = 1;
   // IP:PORT.
   string address = 2;
+  // In GetStatus: peers report it silent, so senders take the device's
+  // other paths (26-networks.md §29.7, D210). Ignored by SetEndpoints.
+  bool down = 3;
 }
 
 // A network of the cluster (26-networks.md §29.3, D206).

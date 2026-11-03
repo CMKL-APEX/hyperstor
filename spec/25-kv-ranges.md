@@ -8,7 +8,7 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **stages 1–3 of §28.8 built** (2026-11-03: I255, I256, I258);
+Status: **stages 1–3 of §28.8 built** (2026-11-03: I255, I256, I260);
 the leftover check and the deletion queue are next. Settled with the
 owner: D191–D199 (points 128–137) and D200–D202 (points 169–172 of
 [05-decision-log.md](05-decision-log.md)). The rest of this document
@@ -149,7 +149,7 @@ Range R holds rows `[a, c)` at epoch E:
   after step 3 finishes steps 4 and 5. Why: a copy is cheap to repeat,
   and abandoning needs no record of how far the copy went. A job whose
   step 4 fails because its split was abandoned meanwhile deletes its R2,
-  which nothing names (I258).
+  which nothing names (I260).
 - **Freezing costs a pause** of about the copy's time, for writes to the
   upper half only: 32 MiB at a few hundred MB/s is roughly 0.1–0.3 s.
   Copying first and catching up after (a short last pass) can come later
@@ -220,7 +220,7 @@ scanned, and the primary that holds the queue drains it.
 - **In `hyperstord`**, each primary watches the `kv` objects it holds for
   size, at most once a second per object written, and sweeps them all
   every 10 s. It runs splits, merges, leftover checks and queues, one
-  job per range at a time and two per device (I258). These are the only background work in a storage
+  job per range at a time and two per device (I260). These are the only background work in a storage
   daemon that writes to other PGs, through its client.
 
 ### 28.8 Build stages and tests
@@ -233,7 +233,7 @@ scanned, and the primary that holds the queue drains it.
    against a sorted map, on an in-process cluster, through two stores
    whose caches go stale, with ranges split by hand so that reads and
    writes cross ranges, follow `next` and wait on a frozen half.
-3. Splits and merges in `hyperstord` (built, I258). Tests: each job
+3. Splits and merges in `hyperstord` (built, I260). Tests: each job
    stopped after every step and taken up, and a table that splits and
    merges on its own under small limits while a node is killed and
    restarted, with jobs left half done for the primaries to take up.

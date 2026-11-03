@@ -516,8 +516,14 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         }
                         spawn(st.clone().kv_ranges(kv_limits, kv_sweep));
                         spawn(st.clone().accept(l));
-                        // The same reactor answers on each endpoint (D207).
+                        // The same reactor answers on each endpoint (D207),
+                        // and its pings there (D210).
                         for l in more {
+                            if !no_udp
+                                && let Ok(u) = l.local_addr().and_then(UdpSocket::bind)
+                            {
+                                spawn(st.clone().udp_pings(Rc::new(u)));
+                            }
                             spawn(st.clone().accept(TcpListener::from_std(l)));
                         }
                         spawn(st.clone().gauges());
@@ -603,10 +609,10 @@ struct ShardState {
     /// number; none if it couldn't be bound, and peers then ping it over
     /// TCP only.
     udp: RefCell<Option<Rc<UdpSocket>>>,
-    /// This device's UDP pings in flight: nonce -> (peer node, sent).
-    udp_pings: RefCell<HashMap<u64, (u32, std::time::Instant)>>,
-    /// When each peer last answered one of them in time.
-    udp_pongs: RefCell<HashMap<u32, std::time::Instant>>,
+    /// This device's UDP pings in flight: nonce -> (path pinged, sent).
+    udp_pings: RefCell<HashMap<u64, (SocketAddr, std::time::Instant)>>,
+    /// When each path last answered one of them in time.
+    udp_pongs: RefCell<HashMap<SocketAddr, std::time::Instant>>,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
@@ -1797,8 +1803,16 @@ impl ShardState {
         Some(addrs[i])
     }
 
-    /// Refuses a peer the partitions test hook cuts this node from.
+    /// Refuses a peer the partitions test hook cuts this node from, and
+    /// an endpoint it cuts.
     fn partitioned(&self, addr: SocketAddr) -> Result<(), ClientError> {
+        if let Some((_, p)) = &*self.partitions.borrow()
+            && p.addr_blocked(addr)
+        {
+            return Err(ClientError::Rpc(hyperstor_client::rpc::RpcError::Io(
+                "endpoint cut (test hook)".into(),
+            )));
+        }
         if let Some((node, p)) = &*self.partitions.borrow()
             && let Some(d) = {
                 let map = self.map();
@@ -3965,31 +3979,35 @@ impl ShardState {
             } else if kind == UDP_PONG {
                 let nonce = u64::from_le_bytes(buf[4..12].try_into().unwrap());
                 let sent = self.udp_pings.borrow_mut().remove(&nonce);
-                if let Some((peer, sent)) = sent
+                if let Some((path, sent)) = sent
                     && sent.elapsed() <= PING_WAIT
                 {
                     self.udp_pongs
                         .borrow_mut()
-                        .insert(peer, std::time::Instant::now());
+                        .insert(path, std::time::Instant::now());
                 }
             }
         }
     }
 
-    /// Pings every node this reactor shares a PG with, every 100 ms, and
-    /// reports to the map service any that stays silent for
-    /// `peer_timeout` (D40). The map service marks a node down on reports
-    /// from two distinct nodes. Pings go over UDP, and over TCP too until a
-    /// peer first answers over UDP (D185).
+    /// Pings every node this reactor shares a PG with, every 100 ms, on
+    /// each of its paths: its devices' endpoints on this node's networks,
+    /// else its address. Reports to the map service a node silent on every
+    /// path for `peer_timeout` (D40), and an endpoint silent while the node
+    /// answers on another (D210). The map service marks a node or an
+    /// endpoint down on reports from two distinct nodes. Pings go over
+    /// UDP, and over TCP too until a path first answers over UDP (D185).
     async fn peer_watch(self: Rc<Self>, node: u32, peer_timeout: Duration) {
-        let last_ok: Rc<RefCell<HashMap<u32, std::time::Instant>>> = Rc::default();
-        // Peers reported since they last answered: logged once each.
+        let last_ok: Rc<RefCell<HashMap<SocketAddr, std::time::Instant>>> = Rc::default();
+        // Nodes reported since they last answered: logged once each; and
+        // endpoints the same way.
         let reported: Rc<RefCell<HashSet<u32>>> = Rc::default();
-        // Peers that have answered over UDP, so need no TCP ping; when each
+        let mut reported_eps: HashSet<SocketAddr> = HashSet::new();
+        // Paths that have answered over UDP, so need no TCP ping; when each
         // was first watched; those logged as answering over TCP only.
-        let mut udp_seen: HashSet<u32> = HashSet::new();
-        let mut watched: HashMap<u32, std::time::Instant> = HashMap::new();
-        let mut tcp_only: HashSet<u32> = HashSet::new();
+        let mut udp_seen: HashSet<SocketAddr> = HashSet::new();
+        let mut watched: HashMap<SocketAddr, std::time::Instant> = HashMap::new();
+        let mut tcp_only: HashSet<SocketAddr> = HashSet::new();
         const TICK: Duration = Duration::from_millis(100);
         let mut ticked = std::time::Instant::now();
         loop {
@@ -4007,7 +4025,9 @@ impl ShardState {
                 }
             }
             let map = self.map();
-            let mut peers: HashMap<u32, SocketAddr> = HashMap::new();
+            let networks = self.networks.borrow().clone();
+            let mut peers: HashMap<u32, Vec<SocketAddr>> = HashMap::new();
+            let mut addrs: HashMap<u32, SocketAddr> = HashMap::new();
             for pg in map.pgs.values() {
                 if !pg.acting.contains(&self.me) && !pg.up.contains(&self.me) {
                     continue;
@@ -4017,104 +4037,150 @@ impl ShardState {
                         && dev.node != node
                         && map.nodes.get(&dev.node).is_some_and(|n| n.up)
                     {
-                        peers.entry(dev.node).or_insert(dev.addr);
+                        addrs.entry(dev.node).or_insert(dev.addr);
+                        let paths = peers.entry(dev.node).or_default();
+                        if map.endpoints.contains_key(d) {
+                            for a in map.device_paths_on(*d, &networks) {
+                                if !paths.contains(&a) && a != dev.addr {
+                                    paths.push(a);
+                                }
+                            }
+                        }
                     }
                 }
             }
+            // A node with no endpoint on this node's networks is pinged at
+            // its first device's address, as before networks.
+            for (peer, paths) in peers.iter_mut() {
+                if paths.is_empty() {
+                    paths.push(addrs[peer]);
+                }
+            }
+            let all: HashSet<SocketAddr> = peers.values().flatten().copied().collect();
             let now = std::time::Instant::now();
-            // A peer that left (down, or no longer sharing a PG) starts
-            // afresh when it comes back: its old silence isn't news.
-            last_ok.borrow_mut().retain(|p, _| peers.contains_key(p));
+            // A path that left (its node down, no longer sharing a PG)
+            // starts afresh when it comes back: its old silence isn't news.
+            last_ok.borrow_mut().retain(|a, _| all.contains(a));
             reported.borrow_mut().retain(|p| peers.contains_key(p));
-            udp_seen.retain(|p| peers.contains_key(p));
-            watched.retain(|p, _| peers.contains_key(p));
-            tcp_only.retain(|p| peers.contains_key(p));
+            reported_eps.retain(|a| all.contains(a));
+            udp_seen.retain(|a| all.contains(a));
+            watched.retain(|a, _| all.contains(a));
+            tcp_only.retain(|a| all.contains(a));
             self.udp_pings
                 .borrow_mut()
                 .retain(|_, (_, sent)| now.duration_since(*sent) <= PING_WAIT);
             // Answers over UDP since the last tick. One older than the
-            // peer's entry (a peer that just came back, a tick counted
+            // path's entry (a peer that just came back, a tick counted
             // afresh) changes nothing.
-            for (&peer, &t) in self.udp_pongs.borrow().iter() {
-                if !peers.contains_key(&peer) {
+            for (&path, &t) in self.udp_pongs.borrow().iter() {
+                if !all.contains(&path) {
                     continue;
                 }
-                udp_seen.insert(peer);
+                udp_seen.insert(path);
                 let mut lo = last_ok.borrow_mut();
-                let e = lo.entry(peer).or_insert(now);
+                let e = lo.entry(path).or_insert(now);
                 if t > *e {
                     *e = t;
-                    reported.borrow_mut().remove(&peer);
                 }
             }
-            for (peer, addr) in peers {
-                let first = *last_ok.borrow_mut().entry(peer).or_insert(now);
-                if now.duration_since(first) > peer_timeout && !self.cut_off() {
-                    if reported.borrow_mut().insert(peer) {
+            for (peer, paths) in peers {
+                let silent: Vec<(SocketAddr, Duration)> = paths
+                    .iter()
+                    .filter_map(|a| {
+                        let first = *last_ok.borrow_mut().entry(*a).or_insert(now);
+                        let quiet = now.duration_since(first);
+                        (quiet > peer_timeout).then_some((*a, quiet))
+                    })
+                    .collect();
+                if silent.len() < paths.len() {
+                    reported.borrow_mut().remove(&peer);
+                }
+                reported_eps.retain(|a| !paths.contains(a) || silent.iter().any(|(s, _)| s == a));
+                if !silent.is_empty() && !self.cut_off() {
+                    if silent.len() == paths.len() {
+                        if reported.borrow_mut().insert(peer) {
+                            eprintln!(
+                                "hyperstord: device {}: node {peer} silent for {} ms; reporting it",
+                                self.me,
+                                silent.iter().map(|(_, q)| *q).min().unwrap().as_millis()
+                            );
+                        }
+                        let _ = self
+                            .client
+                            .call_meta(&Msg::PeerDown {
+                                reporter: node,
+                                peer,
+                            })
+                            .await;
+                    } else {
+                        for (addr, quiet) in &silent {
+                            if reported_eps.insert(*addr) {
+                                eprintln!(
+                                    "hyperstord: device {}: endpoint {addr} of node {peer} silent for {} ms; reporting it",
+                                    self.me,
+                                    quiet.as_millis()
+                                );
+                            }
+                            let _ = self
+                                .client
+                                .call_meta(&Msg::EndpointDown {
+                                    reporter: node,
+                                    addr: *addr,
+                                })
+                                .await;
+                        }
+                    }
+                }
+                for addr in paths {
+                    let since = *watched.entry(addr).or_insert(now);
+                    let udp = self.udp.borrow().clone();
+                    if let Some(u) = &udp
+                        && self.partitioned(addr).is_ok()
+                    {
+                        let nonce = hyperstor_client::random_u64();
+                        self.udp_pings.borrow_mut().insert(nonce, (addr, now));
+                        let mut d = [0u8; 12];
+                        d[..4].copy_from_slice(&UDP_PING);
+                        d[4..].copy_from_slice(&nonce.to_le_bytes());
+                        let _ = u.send_to(&d, addr);
+                    }
+                    if udp.is_some() && udp_seen.contains(&addr) {
+                        continue;
+                    }
+                    if udp.is_some()
+                        && now.duration_since(since) >= TCP_ONLY_AFTER
+                        && tcp_only.insert(addr)
+                    {
                         eprintln!(
-                            "hyperstord: device {}: node {peer} silent for {} ms; reporting it",
-                            self.me,
-                            now.duration_since(first).as_millis()
+                            "hyperstord: device {}: node {peer} answers no UDP pings at {addr}; pinging it over TCP (D185)",
+                            self.me
                         );
                     }
-                    let _ = self
-                        .client
-                        .call_meta(&Msg::PeerDown {
-                            reporter: node,
-                            peer,
-                        })
-                        .await;
-                }
-                let since = *watched.entry(peer).or_insert(now);
-                let udp = self.udp.borrow().clone();
-                if let Some(u) = &udp
-                    && self.partitioned(addr).is_ok()
-                {
-                    let nonce = hyperstor_client::random_u64();
-                    self.udp_pings.borrow_mut().insert(nonce, (peer, now));
-                    let mut d = [0u8; 12];
-                    d[..4].copy_from_slice(&UDP_PING);
-                    d[4..].copy_from_slice(&nonce.to_le_bytes());
-                    let _ = u.send_to(&d, addr);
-                }
-                if udp.is_some() && udp_seen.contains(&peer) {
-                    continue;
-                }
-                if udp.is_some()
-                    && now.duration_since(since) >= TCP_ONLY_AFTER
-                    && tcp_only.insert(peer)
-                {
-                    eprintln!(
-                        "hyperstord: device {}: node {peer} answers no UDP pings at {addr}; pinging it over TCP (D185)",
-                        self.me
-                    );
-                }
-                if self
-                    .ping_faults
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|f| f.tcp_lost(peer))
-                {
-                    continue;
-                }
-                let me = self.clone();
-                let last_ok = last_ok.clone();
-                let reported = reported.clone();
-                spawn(async move {
-                    // The ping gives up on its own (its pending entry
-                    // with it); its connection, which carries nothing
-                    // else (I187), stays.
-                    let ping = async {
-                        let c = me.ping_peer(addr).await.ok()?;
-                        c.try_within(&Msg::Ping, &[], PING_WAIT).await.ok()
-                    };
-                    if let Ok(Some((Msg::Pong, _))) =
-                        hyperstor_reactor::time::timeout(PING_WAIT, ping).await
+                    if self
+                        .ping_faults
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|f| f.tcp_lost(peer))
                     {
-                        last_ok.borrow_mut().insert(peer, std::time::Instant::now());
-                        reported.borrow_mut().remove(&peer);
+                        continue;
                     }
-                });
+                    let me = self.clone();
+                    let last_ok = last_ok.clone();
+                    spawn(async move {
+                        // The ping gives up on its own (its pending entry
+                        // with it); its connection, which carries nothing
+                        // else (I187), stays.
+                        let ping = async {
+                            let c = me.ping_peer(addr).await.ok()?;
+                            c.try_within(&Msg::Ping, &[], PING_WAIT).await.ok()
+                        };
+                        if let Ok(Some((Msg::Pong, _))) =
+                            hyperstor_reactor::time::timeout(PING_WAIT, ping).await
+                        {
+                            last_ok.borrow_mut().insert(addr, std::time::Instant::now());
+                        }
+                    });
+                }
             }
         }
     }
