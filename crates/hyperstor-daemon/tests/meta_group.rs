@@ -66,8 +66,11 @@ impl MetaMember {
             )
             .unwrap();
             let commits = r.commits.clone();
+            let db = r.db.clone();
             block_on(async move {
                 let meta = Meta::replicated(seed, LEASE, commits);
+                meta.keep_scrubs(db);
+                spawn(meta.clone().scrub_writer(Duration::from_millis(200)));
                 spawn(meta.clone().follow(from_raft));
                 spawn(meta.clone().liveness(DOWN_AFTER));
                 spawn(meta.clone().publisher());
@@ -167,6 +170,7 @@ impl Group {
             stray_grace: std::time::Duration::ZERO,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
+            perf_every: std::time::Duration::ZERO,
             commit_delays: None,
             pings: None,
             older: None,
@@ -186,7 +190,6 @@ impl Group {
             defer_max: None,
             scrub_interval: Duration::ZERO,
             no_digests: false,
-            hole_repair: false,
         })
     }
 
@@ -435,5 +438,77 @@ fn a_group_restarted_whole_keeps_its_map() {
             .unwrap();
         assert!(!cl.map().nodes[&3].up, "node 3 is still down");
     });
+    g.stop();
+}
+
+/// D227: the leader writes each PG's last scrubs through Raft, so they
+/// survive the whole group restarting; storage nodes start their passes
+/// from them.
+#[test]
+fn scrub_records_survive_the_group_restarting() {
+    use hyperstor_proto::{Msg, ScrubDetail, encode_scrub_detail};
+    let mut g = Group::start(3);
+    let maps = g.maps();
+    wait_leader(&maps, Duration::from_secs(10));
+    let deep = ScrubDetail {
+        started: 1_700_000_000,
+        took_ms: 50,
+        deep: true,
+        compared: 12,
+        ..Default::default()
+    };
+    let light = ScrubDetail {
+        started: 1_700_000_500,
+        deep: false,
+        compared: 12,
+        ..deep.clone()
+    };
+    with_client(maps.clone(), 5, async move |cl| {
+        for d in [deep, light] {
+            let r = cl
+                .call_meta_with(
+                    &Msg::ScrubReport {
+                        pool: POOL,
+                        pg: 3,
+                        unresolved: 0,
+                    },
+                    &encode_scrub_detail(&d),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(r.0, Msg::Noted { .. }), "{:?}", r.0);
+        }
+    });
+    // Past the writer's interval, and a commit.
+    std::thread::sleep(Duration::from_secs(1));
+    for i in 0..3 {
+        g.kill_member(i);
+    }
+    for i in 0..3 {
+        g.restart_member(i);
+    }
+    wait_leader(&maps, Duration::from_secs(10));
+    let ages = with_client(maps.clone(), 6, async move |cl| {
+        match cl
+            .call_meta(&Msg::ScrubAges { pool: POOL })
+            .await
+            .unwrap()
+            .0
+        {
+            Msg::ScrubAgesOk { pgs } => pgs,
+            m => panic!("{m:?}"),
+        }
+    });
+    assert_eq!(ages.len(), 64, "every PG of the pool");
+    assert!(
+        ages.contains(&(3, 1_700_000_500, 1_700_000_000)),
+        "{ages:?}"
+    );
+    assert!(
+        ages.iter()
+            .filter(|a| a.0 != 3)
+            .all(|a| a.1 == 0 && a.2 == 0),
+        "the others never scrubbed: {ages:?}"
+    );
     g.stop();
 }

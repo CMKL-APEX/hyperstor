@@ -1310,6 +1310,7 @@ tests = [
     "hyperstor_meta::perf::tests::volumes_are_summed_across_their_pgs",
     "hyperstor_meta::perf::tests::the_advisor_names_a_slow_device_a_hot_primary_and_a_hot_volume",
     "hyperstor_meta::perf::tests::the_advisor_reads_the_drives",
+    "cluster::the_advisor_names_a_device_slowed_on_purpose",
     "hyperstor_ctl::tests::heat_shows_a_digit_per_pg_and_the_busiest_volumes",
     "hyperstor_ctl::tests::quantiles_merge_buckets",
     "hyperstor_ctl::tests::perf_and_findings_read_as_tables",
@@ -1374,6 +1375,40 @@ status = "done"
 tests = [
     "hyperstor_meta::api::tests::pool_space_under_the_domain_rule",
 ]
+
+[[milestone.item]]
+what = "Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced"
+spec = ["28-scrub.md §31.2", "28-scrub.md §31.3", "D224", "D225", "D226", "I263"]
+status = "done"
+tests = [
+    "manage::scrub_settings_are_set_and_weakening_needs_a_reason",
+    "hyperstor_map::tests::scrub_settings_ride_in_the_map",
+    "hyperstor_map::tests::weakening_scrub_is_named",
+    "hyperstor_meta::tests::scrub_settings_are_set_and_weakening_is_asked_for",
+    "hyperstor_meta::health::tests::reduced_scrub_warns",
+]
+
+[[milestone.item]]
+what = "Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs"
+spec = ["28-scrub.md §31.4", "28-scrub.md §31.5", "28-scrub.md §31.8", "D227", "D228", "I265"]
+status = "done"
+tests = [
+    "manage::scrub_status_and_pgs_are_shown",
+    "cluster::scrub_reports_are_kept_per_pg",
+    "meta_group::scrub_records_survive_the_group_restarting",
+    "hyperstor_meta::scrubs::tests::records_round_trip_and_survive_in_the_store",
+    "hyperstor_meta::scrubs::tests::overdue_unchecked_and_damaged",
+    "hyperstor_meta::scrubs::tests::health_names_pools_and_pgs_and_records_follow_the_map",
+    "hyperstor_meta::api::tests::scrub_status_and_health_from_the_records",
+    "hyperstor_daemon::tests::deep_scrub_is_due_by_the_records",
+    "hyperstor_proto::tests::scrub_detail_rides_in_the_payload_and_may_grow",
+    "hyperstor_ctl::tests::scrub_status_and_pgs_read_plainly",
+]
+
+[[milestone.item]]
+what = "Scrub on demand as an operation, scrub after recovery, the UI's Scrub card and PG grid view, and per-pool scrub metrics"
+spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "28-scrub.md §31.8", "D229", "D230"]
+status = "planned"
 
 [[milestone]]
 id = "AD4"

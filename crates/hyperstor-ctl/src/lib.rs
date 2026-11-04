@@ -280,6 +280,160 @@ pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
     o
 }
 
+/// A span of seconds in its largest whole unit: `45s`, `12m`, `5h`, `9d`.
+pub fn span_text(secs: u64) -> String {
+    match secs {
+        s if s < 120 => format!("{s}s"),
+        s if s < 2 * 3600 => format!("{}m", s / 60),
+        s if s < 48 * 3600 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// `hyperstorctl scrub status` (28-scrub.md §31.8): each pool's settings,
+/// its oldest light and deep scrub, the PGs overdue, unchecked or damaged,
+/// and what the last week's scrubs found.
+pub fn scrub_status_text(r: &pb::GetScrubStatusResponse) -> String {
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "{:<6} {:<12} {:>5} {:>6} {:>5} {:>7} {:>7} {:>8} {:>10} {:>8} {:>13}",
+        "POOL",
+        "NAME",
+        "PGS",
+        "EVERY",
+        "DEEP",
+        "OLDEST",
+        "DEEPEST",
+        "OVERDUE",
+        "UNCHECKED",
+        "DAMAGED",
+        "INCONSISTENT"
+    );
+    for p in &r.pools {
+        let s = p.settings.as_option().cloned().unwrap_or_default();
+        let every = if s.hours == 0 {
+            "off".to_string()
+        } else {
+            format!("{}h", s.hours)
+        };
+        let _ = writeln!(
+            o,
+            "{:<6} {:<12} {:>5} {:>6} {:>5} {:>7} {:>7} {:>8} {:>10} {:>8} {:>13}",
+            p.pool,
+            p.name,
+            p.pg_count,
+            every,
+            format!("1/{}", s.deep_every),
+            span_text(p.oldest_light_secs),
+            span_text(p.oldest_deep_secs),
+            p.overdue,
+            p.unchecked,
+            p.damaged,
+            p.inconsistent
+        );
+    }
+    for p in &r.pools {
+        let w = p.week.as_option().cloned().unwrap_or_default();
+        let _ = writeln!(
+            o,
+            "pool {}, last 7 days: {} scrubs, {} objects compared, {} inconsistent, \
+             {} repaired, {} unresolved, {} damaged, {} with holes ({} repaired), \
+             {} skipped the hole check",
+            p.name,
+            w.scrubs,
+            w.compared,
+            w.inconsistent,
+            w.repaired,
+            w.unresolved,
+            w.damaged,
+            w.holes,
+            w.holes_repaired,
+            w.holes_skipped
+        );
+        if !p.overdue_pgs.is_empty() {
+            let more = p.overdue as usize - p.overdue_pgs.len();
+            let _ = writeln!(
+                o,
+                "pool {}: overdue {}{}",
+                p.name,
+                p.overdue_pgs.join(", "),
+                if more > 0 {
+                    format!(", and {more} more")
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+    o
+}
+
+/// What one scrub of a PG found, in words: `-` for nothing.
+fn found_text(r: &pb::PgScrubReport) -> String {
+    let mut f = Vec::new();
+    for (n, what) in [
+        (r.inconsistent, "inconsistent"),
+        (r.repaired, "repaired"),
+        (r.unresolved, "unresolved"),
+        (r.damaged, "damaged"),
+        (r.holes, "with holes"),
+        (r.holes_repaired, "holes repaired"),
+    ] {
+        if n > 0 {
+            f.push(format!("{n} {what}"));
+        }
+    }
+    if !r.holes_skipped.is_empty() {
+        f.push("holes not checked".into());
+    }
+    if f.is_empty() {
+        "-".into()
+    } else {
+        f.join(", ")
+    }
+}
+
+/// `hyperstorctl scrub pgs` (28-scrub.md §31.8): each PG's last light and
+/// deep scrub, what the last found, and whether it is overdue. `now` in
+/// Unix seconds.
+pub fn pg_scrubs_text(pool: u32, r: &pb::ListPgScrubsResponse, now: u64) -> String {
+    let ago = |s: &pb::PgScrubReport| format!("{} ago", span_text(now.saturating_sub(s.at)));
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "{:<10} {:>10} {:>10}  {:<8} FOUND",
+        "PG", "LIGHT", "DEEP", "OVERDUE"
+    );
+    for pg in &r.pgs {
+        let light = pg.light.as_option();
+        let deep = pg.deep.as_option();
+        // The newer of the two found what is there now.
+        let last = match (light, deep) {
+            (Some(l), Some(d)) => Some(if d.at >= l.at { d } else { l }),
+            (l, d) => l.or(d),
+        };
+        let mut found = last.map_or("-".to_string(), found_text);
+        if pg.skipped >= 2 {
+            found = format!("{found} (holes unchecked {} times running)", pg.skipped);
+        }
+        let _ = writeln!(
+            o,
+            "{:<10} {:>10} {:>10}  {:<8} {}",
+            format!("{pool}.{}", pg.pg),
+            light.map_or("never".to_string(), ago),
+            deep.map_or("never".to_string(), ago),
+            if pg.overdue.is_empty() {
+                "-"
+            } else {
+                &pg.overdue
+            },
+            found
+        );
+    }
+    o
+}
+
 /// `hyperstorctl pg-grid`: a character per PG, 64 to a line, each line
 /// led by its first PG (D154); with usage (D155), a second grid of digits,
 /// 0 for the emptiest level to 9 for the fullest.
@@ -663,6 +817,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetEndpoints", "device endpoints"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
+    ("ClusterService.SetScrubSettings", "scrub set"),
+    ("ClusterService.WeakenScrubSettings", "scrub set --reason"),
+    ("ClusterService.GetScrubStatus", "scrub status"),
+    ("ClusterService.ListPgScrubs", "scrub pgs"),
     (
         "ClusterService.SetPoolDevice",
         "pool add-device, pool remove-device",
@@ -1298,6 +1456,87 @@ mod tests {
         assert!(
             stale.is_empty(),
             "COMMANDS names RPCs the protos lack: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn scrub_status_and_pgs_read_plainly() {
+        assert_eq!(span_text(45), "45s");
+        assert_eq!(span_text(3600), "60m");
+        assert_eq!(span_text(5 * 3600), "5h");
+        assert_eq!(span_text(9 * 86_400), "9d");
+        let status = pb::GetScrubStatusResponse {
+            pools: vec![pb::PoolScrub {
+                pool: 1,
+                name: "vol".into(),
+                settings: pb::ScrubSettings {
+                    hours: 24,
+                    deep_every: 7,
+                    ..Default::default()
+                }
+                .into(),
+                pg_count: 64,
+                oldest_light_secs: 30 * 3600,
+                oldest_deep_secs: 9 * 86_400,
+                overdue: 12,
+                overdue_pgs: vec!["1.3".into(), "1.9".into()],
+                week: pb::ScrubTotals {
+                    scrubs: 448,
+                    compared: 9000,
+                    holes_repaired: 2,
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let t = scrub_status_text(&status);
+        assert!(
+            t.contains("1      vol             64    24h   1/7     30h      9d       12"),
+            "{t}"
+        );
+        assert!(t.contains("448 scrubs, 9000 objects compared"), "{t}");
+        assert!(t.contains("pool vol: overdue 1.3, 1.9, and 10 more"), "{t}");
+
+        let now = 1_000_000;
+        let pgs = pb::ListPgScrubsResponse {
+            pgs: vec![
+                pb::PgScrubs {
+                    pg: 0,
+                    light: pb::PgScrubReport {
+                        at: now - 3 * 3600,
+                        compared: 40,
+                        ..Default::default()
+                    }
+                    .into(),
+                    deep: pb::PgScrubReport {
+                        at: now - 2 * 86_400,
+                        damaged: 1,
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..Default::default()
+                },
+                pb::PgScrubs {
+                    pg: 1,
+                    overdue: "light".into(),
+                    skipped: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let t = pg_scrubs_text(1, &pgs, now);
+        assert!(
+            t.contains("1.0            3h ago     2d ago  -        -\n"),
+            "{t}"
+        );
+        assert!(
+            t.contains(
+                "1.1             never      never  light    - (holes unchecked 2 times running)"
+            ),
+            "{t}"
         );
     }
 

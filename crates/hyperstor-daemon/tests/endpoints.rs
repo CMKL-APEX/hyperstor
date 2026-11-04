@@ -122,6 +122,7 @@ impl Rig {
                     stray_grace: Duration::ZERO,
                     io_timeout: Duration::ZERO,
                     read_timeout: Duration::ZERO,
+                    perf_every: Duration::ZERO,
                     commit_delays: None,
                     pings: None,
                     older: None,
@@ -141,7 +142,6 @@ impl Rig {
                     defer_max: None,
                     scrub_interval: Duration::ZERO,
                     no_digests: false,
-                    hole_repair: false,
                 })
             })
             .collect();

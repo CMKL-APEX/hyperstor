@@ -17,11 +17,9 @@
 //! `--admin ADDR` serves metrics in Prometheus format (`GET /metrics`) and
 //! a liveness answer (`GET /health`) there, from a thread of its own
 //! (19-administration.md §23.3).
-//! `--scrub-hours N` compares the copies of each PG this node is primary
-//! of every N hours (default 24; 0 turns scrub off; 09-replication.md §8.5).
-//! `--hole-repair`: scrub repairs copies that hold blocks of zeros where
-//! another copy has holes, from the copy with the holes (04-decisions.md
-//! D223); without it, scrub only logs and counts them.
+//! Scrub follows each pool's settings in the map (04-decisions.md D224;
+//! `hyperstorctl scrub set`): the `--scrub-hours` and `--hole-repair` of
+//! earlier builds are accepted, ignored and logged.
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
 //! `--read-timeout-ms N`: a read that waits longer for its device is
@@ -43,13 +41,21 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--scrub-hours N] [--hole-repair] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
         );
         std::process::exit(2)
     };
     let node: u32 = get("--node")
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| usage());
+    for gone in ["--scrub-hours", "--hole-repair"] {
+        if args.iter().any(|a| a == gone) {
+            eprintln!(
+                "hyperstord: {gone} is ignored: each pool's scrub settings are in the map \
+                 now (hyperstorctl scrub set)"
+            );
+        }
+    }
     // One map service member, or several separated by commas (D72).
     let meta: Vec<std::net::SocketAddr> = get("--meta")
         .map(|s| {
@@ -171,6 +177,7 @@ fn main() {
         stray_grace: std::time::Duration::ZERO,
         io_timeout,
         read_timeout,
+        perf_every: std::time::Duration::ZERO,
         commit_delays: None,
         pings: None,
         older: None,
@@ -193,14 +200,8 @@ fn main() {
             .iter()
             .any(|a| a == "--hdd")
             .then_some(hyperstor_engine::DEFER_MAX),
-        scrub_interval: std::time::Duration::from_secs(
-            get("--scrub-hours")
-                .map(|s| s.parse::<u64>().unwrap_or_else(|_| usage()))
-                .unwrap_or(24)
-                * 3600,
-        ),
+        scrub_interval: std::time::Duration::ZERO,
         no_digests: false,
-        hole_repair: args.iter().any(|a| a == "--hole-repair"),
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());

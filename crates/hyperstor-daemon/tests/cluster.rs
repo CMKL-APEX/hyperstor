@@ -31,6 +31,10 @@ enum MetaCmd {
     DeletePool(u32),
     /// The PGs scrub reported inconsistent.
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
+    /// The leader's view of the devices' load (D218).
+    Perf(std::sync::mpsc::Sender<hyperstor_meta::perf::Perf>),
+    /// Each PG's last scrubs, as the map service keeps them (D227).
+    Scrubs(std::sync::mpsc::Sender<hyperstor_meta::scrubs::Records>),
 }
 
 /// Each stopped device, by device id.
@@ -84,10 +88,10 @@ struct Cluster {
     read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
-    /// Scrub's hole repair on every node (D223).
-    hole_repair: bool,
     /// Jobs on key–value ranges (25-kv-ranges.md §28.7).
     kv: KvJobs,
+    /// How often devices report their load (D218); zero: the default.
+    perf_every: std::time::Duration,
 }
 
 impl Cluster {
@@ -212,6 +216,55 @@ impl Cluster {
         hole_repair: bool,
         kv: KvJobs,
     ) -> Cluster {
+        Self::start_all(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            grace,
+            hole_repair,
+            kv,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    /// With the defaults, each device reporting its load every `every`
+    /// (D218).
+    fn start_perf(nodes: u32, shards: u32, every: std::time::Duration) -> Cluster {
+        Self::start_all(
+            nodes,
+            shards,
+            LEASE,
+            DOWN_AFTER,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            DOWN_OUT,
+            std::time::Duration::ZERO,
+            false,
+            KV_OFF,
+            every,
+        )
+    }
+
+    /// As [`Self::start_kv`], each device reporting its load every
+    /// `perf_every` (zero: the default).
+    #[allow(clippy::too_many_arguments)]
+    fn start_all(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+        hole_repair: bool,
+        kv: KvJobs,
+        perf_every: std::time::Duration,
+    ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -230,6 +283,8 @@ impl Cluster {
         pool.chunk_size = CHUNK;
         // The tests' PG counts are theirs: no autoscaler (D184).
         pool.autoscale = false;
+        // Scrub's hole repair (D223), the pool's setting (D224).
+        pool.scrub.hole_repair = hole_repair;
         map.add_pool(pool);
         // A one-copy cache pool (D45).
         map.add_pool(hyperstor_meta::PoolInfo {
@@ -248,6 +303,7 @@ impl Cluster {
             split: None,
             autoscale: false,
             cache_grace: hyperstor_meta::CACHE_GRACE_SECS,
+            scrub: Default::default(),
         });
         map.ensure_meta_pool();
         map.recompute();
@@ -274,6 +330,12 @@ impl Cluster {
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
+                        MetaCmd::Perf(tx) => {
+                            let _ = tx.send(meta.perf());
+                        }
+                        MetaCmd::Scrubs(tx) => {
+                            let _ = tx.send(meta.scrub_records());
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -297,6 +359,7 @@ impl Cluster {
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
                     read_timeout: std::time::Duration::ZERO,
+                    perf_every,
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
@@ -327,7 +390,6 @@ impl Cluster {
                     defer_max: None,
                     scrub_interval: scrub,
                     no_digests: false,
-                    hole_repair,
                 }))
             })
             .collect();
@@ -349,8 +411,8 @@ impl Cluster {
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
-            hole_repair,
             kv,
+            perf_every,
         }
     }
 
@@ -389,6 +451,7 @@ impl Cluster {
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
             read_timeout: self.read_timeout,
+            perf_every: self.perf_every,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
@@ -404,7 +467,6 @@ impl Cluster {
             defer_max: None,
             scrub_interval: self.scrub,
             no_digests,
-            hole_repair: self.hole_repair,
         }));
     }
 
@@ -431,6 +493,33 @@ impl Cluster {
     fn inconsistent(&self) -> hyperstor_meta::Inconsistent {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Inconsistent(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// The leader's view of the devices' load (D218).
+    fn perf(&self) -> hyperstor_meta::perf::Perf {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Perf(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// The Advisor's findings over the leader's view of the load
+    /// (D222), every device of one kind.
+    fn findings(&self) -> Vec<hyperstor_meta::perf::Finding> {
+        hyperstor_meta::perf::findings(
+            &self.perf(),
+            &hyperstor_meta::perf::Context {
+                kinds: &Default::default(),
+                volumes: &Default::default(),
+                pools: &[],
+            },
+        )
+    }
+
+    /// Each PG's last scrubs, as the map service keeps them (D227).
+    fn scrub_records(&self) -> hyperstor_meta::scrubs::Records {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Scrubs(tx)).is_ok());
         rx.recv().unwrap()
     }
 
@@ -4375,6 +4464,99 @@ fn reads_in_flight_get_whole_writes() {
     c.stop();
 }
 
+/// G55(b), D222: the Advisor names a device whose reads were slowed, from
+/// the service times the devices report, within the minute of reports it
+/// looks at (12 windows, here of 250 ms), and only that device; once the
+/// device is fast again, the finding goes as its slow reads leave the
+/// window. Four devices of one kind, read across 32 chunks so that each is
+/// primary of some.
+#[test]
+fn the_advisor_names_a_device_slowed_on_purpose() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+    const CHUNKS: u64 = 32;
+    let c = Cluster::start_perf(4, 1, Duration::from_millis(250));
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        let d = pattern(55, (CHUNKS * CHUNK as u64) as usize);
+        cl.write(POOL, 1, 0, d).await.unwrap();
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers = std::thread::spawn({
+        let stop = stop.clone();
+        move || {
+            with_client(meta, 6, |cl| async move {
+                let tasks: Vec<_> = (0..4u64)
+                    .map(|r| {
+                        let (cl, stop) = (cl.clone(), stop.clone());
+                        spawn(async move {
+                            let mut x = r + 1;
+                            while !stop.load(Relaxed) {
+                                x = x
+                                    .wrapping_mul(6364136223846793005)
+                                    .wrapping_add(1442695040888963407);
+                                let at = (x >> 33) % (CHUNKS * u64::from(CHUNK) / 4096) * 4096;
+                                cl.read(POOL, 1, at, 4096).await.unwrap();
+                            }
+                        })
+                    })
+                    .collect();
+                for t in tasks {
+                    t.await;
+                }
+            })
+        }
+    });
+    let slow = |f: &[hyperstor_meta::perf::Finding]| -> Vec<String> {
+        f.iter()
+            .filter(|x| x.rule == "slow-device")
+            .map(|x| x.title.clone())
+            .collect()
+    };
+    // Waits up to 20 s for `want` of the slow-device findings.
+    let wait = |what: &str, want: &dyn Fn(&[String]) -> bool| -> Vec<String> {
+        let t = Instant::now();
+        loop {
+            let s = slow(&c.findings());
+            if want(&s) {
+                return s;
+            }
+            assert!(t.elapsed() < Duration::from_secs(20), "{what}: {s:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // Every device reports reads before any is slowed.
+    let t = Instant::now();
+    while c
+        .perf()
+        .devices()
+        .iter()
+        .filter(|(_, s, _)| s.iter().any(|x| x.service[0].count > 0))
+        .count()
+        < 4
+    {
+        assert!(t.elapsed() < Duration::from_secs(20), "no reads reported");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !slow(&c.findings()).iter().any(|t| t.contains("2000")),
+        "device 2000 named before it was slowed"
+    );
+    c.commit_delays.set_reads(2000, Duration::from_millis(20));
+    let named = wait("device 2000 named", &|s| {
+        s.iter().any(|t| t == "Device 2000 is slow at reads")
+    });
+    assert_eq!(named, ["Device 2000 is slow at reads"], "only device 2000");
+    c.commit_delays.set_reads(2000, Duration::ZERO);
+    wait("the finding gone", &|s| s.is_empty());
+    stop.store(true, Relaxed);
+    readers.join().unwrap();
+    c.stop();
+}
+
 /// D177: a device taken out deletes its copies of the PGs that moved away,
 /// once each is clean elsewhere for the grace; the data stays readable,
 /// and the other copies agree.
@@ -4639,6 +4821,103 @@ fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
     let (map, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
+}
+
+/// D227: after each PG, its primary reports what the scrub did, and the
+/// map service keeps it with the PG; it answers when each PG was last
+/// scrubbed, which the scrubbers start their passes from. A PG never
+/// scrubbed deep is scrubbed deep first.
+#[test]
+fn scrub_reports_are_kept_per_pg() {
+    use hyperstor_proto::Msg;
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let (pgs, objects) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, pattern(5, 16 * CHUNK as usize))
+                .await
+                .unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pgs: Vec<u32> = m.pgs.keys().filter(|k| k.0 == POOL).map(|k| k.1).collect();
+            (pgs, 16)
+        })
+    })
+    .join()
+    .unwrap();
+    // Scrubs that ran before the writes compared fewer: wait for a pass
+    // after them.
+    let compared = |r: &hyperstor_meta::scrubs::Records| -> u32 {
+        pgs.iter()
+            .filter_map(|g| r.get(&(POOL, *g))?.last().map(|s| s.compared))
+            .sum()
+    };
+    let t = std::time::Instant::now();
+    let records = loop {
+        let r = c.scrub_records();
+        if pgs.iter().all(|g| {
+            r.get(&(POOL, *g))
+                .is_some_and(|x| x.deep.is_some() && x.light.is_some())
+        }) && compared(&r) >= objects
+        {
+            break r;
+        }
+        assert!(
+            t.elapsed().as_secs() < 20,
+            "not every PG was scrubbed light and deep, or not since the writes: {r:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    for g in &pgs {
+        let r = &records[&(POOL, *g)];
+        // Deep and light both: at this interval, deep comes round again
+        // every 7 × 300 ms, so either may be the newer.
+        let light = r.light.as_ref().unwrap();
+        assert_eq!(
+            (
+                light.inconsistent,
+                light.unresolved,
+                light.damaged,
+                r.skipped
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(light.holes_skipped.is_empty(), "{:?}", light.holes_skipped);
+    }
+    // What the scrubbers start each pass from.
+    let ages = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            cl.call_meta(&Msg::ScrubAges { pool: POOL })
+                .await
+                .unwrap()
+                .0
+        })
+    })
+    .join()
+    .unwrap();
+    let Msg::ScrubAgesOk { pgs: ages } = ages else {
+        panic!("{ages:?}")
+    };
+    assert_eq!(ages.len(), pgs.len());
+    // Read after the ages, so at least as new.
+    let now = c.scrub_records();
+    for (g, light, deep) in ages {
+        let r = &now[&(POOL, g)];
+        assert!(light > 0 && deep > 0, "PG {g}: {light} {deep}");
+        assert!(
+            light <= r.light_at() && deep <= r.deep_at(),
+            "PG {g}: {r:?}"
+        );
+    }
 }
 
 /// Scrub when the primary's copy is the one outvoted (09-replication.md

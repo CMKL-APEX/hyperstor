@@ -142,6 +142,14 @@ pub fn report(map: &ClusterMap) -> Report {
                 ),
             ));
         }
+        // Scrub weaker than the defaults (D226): allowed, never silent.
+        let weak = p.scrub.weakened();
+        if p.kind != PoolKind::Cache && !weak.is_empty() {
+            reasons.push((
+                Health::Warn,
+                format!("pool {}: scrub reduced: {}", p.name, weak.join(", ")),
+            ));
+        }
         if s.inactive > waiting {
             let what = if p.kind == PoolKind::Cache {
                 // Cache pools lose data instead of recovering it (D45).
@@ -202,6 +210,25 @@ mod tests {
         assert_eq!(r.health, Health::Ok, "{:?}", r.reasons);
         assert_eq!(pool(&r, 1).clean, 8);
         assert_eq!(r.nodes_up, 3);
+    }
+
+    /// D226: scrub weaker than the defaults warns, naming the pool and
+    /// what is weaker, for as long as it lasts.
+    #[test]
+    fn reduced_scrub_warns() {
+        let mut m = map();
+        m.pools.get_mut(&1).unwrap().scrub.hole_repair = false;
+        let r = report(&m);
+        assert_eq!(r.health, Health::Warn);
+        assert!(
+            r.reasons.iter().any(
+                |(h, w)| *h == Health::Warn && w.contains("scrub reduced: holes only reported")
+            ),
+            "{:?}",
+            r.reasons
+        );
+        m.pools.get_mut(&1).unwrap().scrub = Default::default();
+        assert_eq!(report(&m).health, Health::Ok);
     }
 
     #[test]

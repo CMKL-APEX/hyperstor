@@ -342,6 +342,15 @@ impl Client {
     /// that isn't the leader names it, or says it doesn't know yet (an
     /// election), and one that doesn't answer is skipped.
     pub async fn call_meta(&self, msg: &Msg) -> Result<rpc::Reply, ClientError> {
+        self.call_meta_with(msg, &[]).await
+    }
+
+    /// [`Self::call_meta`] with a payload.
+    pub async fn call_meta_with(
+        &self,
+        msg: &Msg,
+        payload: &[u8],
+    ) -> Result<rpc::Reply, ClientError> {
         let tries = 2 * self.members.borrow().len() + 2;
         let mut last = None;
         for _ in 0..tries {
@@ -349,7 +358,7 @@ impl Client {
             let reply = match self.conn(addr).await {
                 // A member that doesn't answer is let go: the next is tried.
                 Ok(conn) => conn
-                    .call_within(msg, &[], rpc::CALL_TIMEOUT)
+                    .call_within(msg, payload, rpc::CALL_TIMEOUT)
                     .await
                     .map_err(ClientError::Rpc),
                 Err(e) => Err(e),

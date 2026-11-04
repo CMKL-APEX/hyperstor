@@ -43,11 +43,11 @@ use hyperstor_engine::{
     AlignedBuf, BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev,
     Namespace, ObjKey, Op, OpError, OpList, ReadPlan, UringDev,
 };
-use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo};
+use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo, ScrubSettings};
 use hyperstor_proto::{
     Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
-    Looked, Msg, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject, WireOp,
-    block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
+    Looked, Msg, ScrubDetail, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject,
+    WireOp, block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
     encode_frame, encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
@@ -180,16 +180,14 @@ pub struct NodeConfig {
     /// Report a peer to the map service after this long without an answer
     /// to pings (04-decisions.md D40); zero turns peer reports off.
     pub peer_timeout: Duration,
-    /// How often each primary scrubs its PGs, comparing every member's
-    /// digests (09-replication.md §8.5); zero turns scrub off.
+    /// Test hook: how often each primary scrubs its PGs, comparing every
+    /// member's digests (09-replication.md §8.5), in place of each pool's
+    /// `scrub.hours` (D224); a pool with scrub off stays off. Zero: the
+    /// pools' own settings, as in production.
     pub scrub_interval: Duration,
     /// Test hook: answer `Digests` as a node from before digests does
     /// ("unsupported request"), as in a rolling upgrade.
     pub no_digests: bool,
-    /// Scrub repairs copies that hold blocks of zeros where another copy
-    /// has holes, from the copy with the holes (D223). Off, it only
-    /// reports them: the dry run.
-    pub hole_repair: bool,
     /// Test hook: while set, this node neither reaches the map service nor
     /// hears from it (no heartbeats, map fetches, pushes or fences), as if
     /// cut off from it while clients and peers can still reach it.
@@ -214,6 +212,9 @@ pub struct NodeConfig {
     /// How long a read may wait for the device before the primary serves
     /// it from a member (D190); zero: [`READ_TIMEOUT`].
     pub read_timeout: Duration,
+    /// How often each device reports its load to the map service (D218);
+    /// zero: `HS_PERF_MS` if set, else [`PERF_EVERY`]. Tests set it short.
+    pub perf_every: Duration,
     /// Test hook: devices whose commits take longer without holding their
     /// reactor (04-decisions.md D92, I199).
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
@@ -305,7 +306,7 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 const SPACE_EVERY: Duration = Duration::from_secs(5);
 
 /// How often a device reports its load to the leader (D218).
-const PERF_EVERY: Duration = Duration::from_secs(5);
+pub const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -412,7 +413,6 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
         let no_digests = cfg.no_digests;
-        let hole_repair = cfg.hole_repair;
         let push_part_bytes = match cfg.push_part_bytes {
             0 => PUSH_PART_BYTES,
             n => n,
@@ -438,6 +438,13 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         };
         let read_timeout = match cfg.read_timeout {
             Duration::ZERO => READ_TIMEOUT,
+            t => t,
+        };
+        let perf_every = match cfg.perf_every {
+            Duration::ZERO => std::env::var("HS_PERF_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .map_or(PERF_EVERY, Duration::from_millis),
             t => t,
         };
         let opened = Opening(Some(opening.clone()));
@@ -479,7 +486,6 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         )
                         .await?;
                         st.no_digests.set(no_digests);
-                        st.hole_repair.set(hole_repair);
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.older.borrow_mut() = older.map(|o| (node, o));
@@ -526,9 +532,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         }
                         spawn(st.clone().backfiller());
                         spawn(st.clone().strays(stray_grace));
-                        if !scrub_interval.is_zero() {
-                            spawn(st.clone().scrubber(scrub_interval));
-                        }
+                        spawn(st.clone().scrubbers(scrub_interval));
                         if !kv_jobs.off {
                             spawn(st.clone().kv_ranges(kv_jobs));
                         }
@@ -550,14 +554,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             .and_then(|v| v.parse().ok())
                             .map_or(Duration::from_secs(30), Duration::from_millis);
                         spawn(st.clone().usage(every));
-                        // Every 5 s (HS_PERF_MS for tests).
                         *st.drive.borrow_mut() =
                             Some(drive::watch(sh.device_id, drive_path, cpu));
-                        let every = std::env::var("HS_PERF_MS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .map_or(PERF_EVERY, Duration::from_millis);
-                        spawn(st.clone().perf(every));
+                        spawn(st.clone().perf(perf_every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -659,8 +658,8 @@ struct ShardState {
     blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The test hook of `NodeConfig::no_digests`.
     no_digests: Cell<bool>,
-    /// `NodeConfig::hole_repair`.
-    hole_repair: Cell<bool>,
+    /// Pools with a scrubber running on this device.
+    scrubbing: RefCell<HashSet<u32>>,
     /// `NodeConfig::push_part_bytes`, resolved.
     push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
@@ -914,12 +913,37 @@ fn row(table: &[HashMap<ObjKey, u64>], key: &ObjKey) -> Vec<Option<u64>> {
         .collect()
 }
 
-/// Every this-many scrub passes, the first included, is deep (09-replication.md
-/// §8.5: light daily, deep weekly).
-const DEEP_SCRUB_EVERY: u64 = 7;
+/// How often a scrubber looks again at a pool with scrub off, and the
+/// supervisor for pools new to the map.
+const SCRUB_RECHECK: Duration = Duration::from_secs(30);
 
-/// How fast a deep scrub reads, per device, in bytes a second.
-const DEEP_SCRUB_RATE: u64 = 64 << 20;
+/// What scrub's check of holes (D223) found in a PG.
+#[derive(Debug, Default)]
+struct HoleCheck {
+    /// Objects with blocks of zeros where another copy has holes.
+    found: u32,
+    repaired: u32,
+    /// Of those, the ones it couldn't decide.
+    undecided: u32,
+    /// Why it was skipped; empty when it ran.
+    skipped: String,
+}
+
+/// Whether a PG last scrubbed deep at `deep_at` (Unix seconds, 0: never)
+/// is due a deep scrub at `now`, scrubbed every `every` and deep every
+/// `deep_every` scrubs. Half an interval early, so a pass that starts a
+/// little sooner than the last doesn't put it off by a whole pass.
+fn deep_due(deep_at: u64, now: u64, every: Duration, deep_every: u8) -> bool {
+    let deep = every * deep_every.max(1) as u32;
+    deep_at == 0 || Duration::from_secs(now.saturating_sub(deep_at)) + every / 2 >= deep
+}
+
+/// The wall clock in Unix seconds.
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 /// The engine operation of an operation list's effect (assertions have
 /// none: the primary decides them).
@@ -1179,7 +1203,7 @@ impl ShardState {
             splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
-            hole_repair: Cell::new(false),
+            scrubbing: RefCell::new(HashSet::new()),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             watched: RefCell::new(HashMap::new()),
@@ -3872,8 +3896,8 @@ impl ShardState {
 
     /// Deep scrub of this device's copy of a PG: reads every object, which
     /// checks every block's CRC (08-engine.md §7.2), and marks the objects
-    /// that fail. At most [`DEEP_SCRUB_RATE`] bytes a second; the reads
-    /// wait for the device on the ring, so I/O goes on.
+    /// that fail. At most the pool's deep rate (D224); the reads wait for
+    /// the device on the ring, so I/O goes on.
     async fn verify_pg(&self, pool: u32, pg: u32) {
         let keys = self.shard.get().await.list_pg(pool, pg);
         for key in keys {
@@ -3886,8 +3910,15 @@ impl ShardState {
                 .await;
             match read {
                 Ok(b) => {
+                    let rate = self
+                        .map()
+                        .pools
+                        .get(&pool)
+                        .map_or(ScrubSettings::default().deep_rate_mib, |p| {
+                            p.scrub.deep_rate_mib
+                        });
                     sleep(Duration::from_secs_f64(
-                        b.len() as f64 / DEEP_SCRUB_RATE as f64,
+                        b.len() as f64 / (rate as f64 * (1 << 20) as f64),
                     ))
                     .await;
                 }
@@ -4929,34 +4960,102 @@ impl ShardState {
         Some((m, encode_object(&obj)))
     }
 
-    /// Scrubs every PG this device is primary of, once per `every`
-    /// (09-replication.md §8.5), spread evenly over the interval rather than
-    /// back to back. Only clean PGs are scrubbed: backfill already
-    /// compares a filling member's copy.
-    async fn scrubber(self: Rc<Self>, every: Duration) {
-        let mut pass = 0u64;
+    /// Starts a scrubber for each pool in the map, and for pools added
+    /// later. `every`: the test hook of `NodeConfig::scrub_interval`.
+    async fn scrubbers(self: Rc<Self>, every: Duration) {
         loop {
-            let deep = pass.is_multiple_of(DEEP_SCRUB_EVERY);
-            pass += 1;
-            let pgs: Vec<(u32, u32)> = self
-                .map()
-                .pgs
-                .iter()
-                .filter(|(k, _)| self.scrubs(**k).is_some())
-                .map(|(k, _)| *k)
-                .collect();
-            if pgs.is_empty() {
-                sleep(every).await;
-                continue;
-            }
-            let gap = every / pgs.len() as u32;
-            for (pool, pg) in pgs {
-                sleep(gap).await;
-                // The map may have changed while waiting.
-                if let Some(info) = self.scrubs((pool, pg)) {
-                    self.scrub_pg(pool, pg, &info, deep).await;
+            let pools: Vec<u32> = self.map().pools.keys().copied().collect();
+            for pool in pools {
+                if self.scrubbing.borrow_mut().insert(pool) {
+                    spawn(self.clone().scrubber(pool, every));
                 }
             }
+            sleep(SCRUB_RECHECK).await;
+        }
+    }
+
+    /// Scrubs every PG of `pool` this device is primary of, once per the
+    /// pool's interval (09-replication.md §8.5; D224), spread evenly over
+    /// it rather than back to back. The settings are read again before
+    /// each PG, so a change applies from the next one. Only clean PGs are
+    /// scrubbed: backfill already compares a filling member's copy. Ends
+    /// when the pool leaves the map.
+    ///
+    /// A pass starts at the PG scrubbed longest ago, and a PG is scrubbed
+    /// deep once its last deep scrub is `deep_every` intervals old, both
+    /// from the map service's records (D227), so a restart neither leaves
+    /// the last PGs unscrubbed nor scrubs everything deep. A map service
+    /// from before them doesn't answer: then every `deep_every`th pass is
+    /// deep, from PG 0, as before.
+    async fn scrubber(self: Rc<Self>, pool: u32, every: Duration) {
+        let settings = || self.map().pools.get(&pool).map(|p| p.scrub);
+        let interval = |s: ScrubSettings| {
+            if s.hours == 0 {
+                Duration::ZERO
+            } else if every.is_zero() {
+                Duration::from_secs(s.hours as u64 * 3600)
+            } else {
+                every
+            }
+        };
+        let mut pass = 0u64;
+        'passes: while let Some(s) = settings() {
+            if interval(s).is_zero() {
+                sleep(SCRUB_RECHECK).await;
+                continue;
+            }
+            let pass_deep = pass.is_multiple_of(s.deep_every.max(1) as u64);
+            pass += 1;
+            let mut pgs: Vec<u32> = self
+                .map()
+                .pgs
+                .keys()
+                .filter(|k| k.0 == pool && self.scrubs(**k).is_some())
+                .map(|k| k.1)
+                .collect();
+            if pgs.is_empty() {
+                sleep(interval(s)).await;
+                continue;
+            }
+            let ages = self.scrub_ages(pool).await;
+            if let Some(a) = &ages {
+                // Stable: PGs never scrubbed keep PG order.
+                pgs.sort_by_key(|g| a.get(g).map_or(0, |x| x.0));
+            }
+            for pg in &pgs {
+                let Some(s) = settings() else { break 'passes };
+                let every = interval(s);
+                if every.is_zero() {
+                    continue 'passes;
+                }
+                sleep(every / pgs.len() as u32).await;
+                let deep = match &ages {
+                    Some(a) => deep_due(
+                        a.get(pg).map_or(0, |x| x.1),
+                        unix_secs(),
+                        every,
+                        s.deep_every,
+                    ),
+                    None => pass_deep,
+                };
+                // The map may have changed while waiting.
+                if let Some(info) = self.scrubs((pool, *pg)) {
+                    self.scrub_pg(pool, *pg, &info, deep).await;
+                }
+            }
+        }
+        self.scrubbing.borrow_mut().remove(&pool);
+    }
+
+    /// When each of `pool`'s PGs was last scrubbed, light and deep, in Unix
+    /// seconds (0: never), as the map service records them (D227); `None`
+    /// if it doesn't answer, or is from before the records.
+    async fn scrub_ages(&self, pool: u32) -> Option<HashMap<u32, (u64, u64)>> {
+        match self.client.call_meta(&Msg::ScrubAges { pool }).await {
+            Ok((Msg::ScrubAgesOk { pgs }, _)) => {
+                Some(pgs.into_iter().map(|(g, l, d)| (g, (l, d))).collect())
+            }
+            _ => None,
         }
     }
 
@@ -5100,6 +5199,12 @@ impl ShardState {
     /// repaired from this copy when a majority of the copies agree with
     /// it, and otherwise reported, not guessed at.
     async fn scrub_pg(&self, pool: u32, pg: u32, info: &PgInfo, deep: bool) {
+        let began = std::time::Instant::now();
+        let mut d = ScrubDetail {
+            started: unix_secs(),
+            deep,
+            ..Default::default()
+        };
         let Some(first) = self.member_digests(pool, pg, info, deep).await else {
             return;
         };
@@ -5109,11 +5214,15 @@ impl ShardState {
         };
         let all: BTreeSet<ObjKey> = first.iter().flat_map(|m| m.keys().cloned()).collect();
         metrics::ShardMetrics::add(&self.metrics.scrub_objects, all.len() as u64);
+        d.compared = all.len() as u32;
         let suspects = differing(&first, &mut all.iter().cloned());
         let agreeing: BTreeSet<ObjKey> = all.difference(&suspects).cloned().collect();
-        let undecided = self.scrub_holes(pool, pg, info, &agreeing).await;
+        let holes = self.scrub_holes(pool, pg, info, &agreeing).await;
+        d.holes = holes.found;
+        d.holes_repaired = holes.repaired;
+        d.holes_skipped = holes.skipped;
         if suspects.is_empty() {
-            self.report_scrub(pool, pg, undecided).await;
+            self.report_scrub(pool, pg, holes.undecided, d, began).await;
             return;
         }
         sleep(Duration::from_millis(200)).await;
@@ -5139,9 +5248,10 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
-        let mut unresolved = undecided;
+        let mut unresolved = holes.undecided;
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_inconsistent, 1);
+            d.inconsistent += 1;
             let v = match verdict(&row(&second, &key)) {
                 // Pull the majority's copy first; then it is this copy.
                 Verdict::Pull { from, fix } => {
@@ -5159,6 +5269,7 @@ impl ShardState {
                     let devices: Vec<u32> = members.iter().map(|m| others[m - 1]).collect();
                     if self.push_to(to, &key, &devices).await {
                         metrics::ShardMetrics::add(&self.metrics.scrub_repaired, 1);
+                        d.repaired += 1;
                     }
                 }
                 Verdict::Unresolved => {
@@ -5172,7 +5283,7 @@ impl ShardState {
                 }
             }
         }
-        self.report_scrub(pool, pg, unresolved).await;
+        self.report_scrub(pool, pg, unresolved, d, began).await;
     }
 
     /// Pushes this device's copy of `key` to each of `devices`; whether
@@ -5205,14 +5316,14 @@ impl ShardState {
     /// as pushes made before I243, does that, so the copy holding the
     /// fewest blocks is right, whatever the vote. Checked again after a
     /// pause, as [`Self::scrub_pg`] does. Reported, and repaired only with
-    /// `--hole-repair`. Returns how many objects it couldn't decide.
+    /// the pool's hole repair (D225).
     async fn scrub_holes(
         &self,
         pool: u32,
         pg: u32,
         info: &PgInfo,
         agreeing: &BTreeSet<ObjKey>,
-    ) -> u32 {
+    ) -> HoleCheck {
         let differing = |h: &[HashMap<ObjKey, HeldBlocks>],
                          keys: &mut dyn Iterator<Item = &ObjKey>| {
             keys.filter(|k| {
@@ -5227,15 +5338,19 @@ impl ShardState {
         let skip = |why: &str| {
             metrics::ShardMetrics::add(&self.metrics.scrub_holes_unchecked, 1);
             eprintln!("hyperstord: scrub: pool {pool} PG {pg}: holes not checked: {why}");
-            0
+            HoleCheck {
+                skipped: why.to_string(),
+                ..Default::default()
+            }
         };
         let first = match self.member_holds(pool, pg, info).await {
             Ok(h) => h,
             Err(e) => return skip(&e),
         };
         let suspects = differing(&first, &mut agreeing.iter());
+        let mut out = HoleCheck::default();
         if suspects.is_empty() {
-            return 0;
+            return out;
         }
         sleep(Duration::from_millis(200)).await;
         if self.map().pg(pool, pg).map(|p| p.epoch) != Some(info.epoch) {
@@ -5267,10 +5382,14 @@ impl ShardState {
             .copied()
             .filter(|d| *d != self.me)
             .collect();
-        let repair = self.hole_repair.get();
-        let mut undecided = 0;
+        let repair = self
+            .map()
+            .pools
+            .get(&pool)
+            .is_none_or(|p| p.scrub.hole_repair);
         for key in bad {
             metrics::ShardMetrics::add(&self.metrics.scrub_holes, 1);
+            out.found += 1;
             let held: Vec<HeldBlocks> = second.iter().map(|m| m[&key]).collect();
             let win = (0..held.len()).min_by_key(|i| held[*i].blocks).unwrap_or(0);
             let device = |i: usize| if i == 0 { self.me } else { others[i - 1] };
@@ -5281,7 +5400,7 @@ impl ShardState {
                 .any(|h| h.blocks == held[win].blocks && h.digest != held[win].digest)
             {
                 metrics::ShardMetrics::add(&self.metrics.scrub_unresolved, 1);
-                undecided += 1;
+                out.undecided += 1;
                 eprintln!(
                     "hyperstord: scrub: pool {pool} PG {pg}: copies of object {} version {} \
                      hold as many blocks but different ones; left as is",
@@ -5307,7 +5426,7 @@ impl ShardState {
                 if repair {
                     "repairing from it"
                 } else {
-                    "report only (--hole-repair is off)"
+                    "report only (the pool's hole repair is off)"
                 }
             );
             if !repair {
@@ -5324,30 +5443,42 @@ impl ShardState {
                 .collect();
             if self.push_to(to, &key, &push).await {
                 metrics::ShardMetrics::add(&self.metrics.scrub_holes_repaired, 1);
+                out.repaired += 1;
             }
         }
-        undecided
+        out
     }
 
-    /// Tells the map service how many objects of a PG its last scrub left
-    /// unresolved, when that changes (for cluster health).
-    async fn report_scrub(&self, pool: u32, pg: u32, unresolved: u32) {
-        let before = self
-            .inconsistent
+    /// Tells the map service what a scrub of a PG found (28-scrub.md
+    /// §31.4, D227): how many objects it left unresolved, for health, and
+    /// the rest in the payload, kept with the PG. Objects of the PG this
+    /// copy still holds damaged count as damaged: no good copy replaced
+    /// them.
+    async fn report_scrub(
+        &self,
+        pool: u32,
+        pg: u32,
+        unresolved: u32,
+        mut d: ScrubDetail,
+        began: std::time::Instant,
+    ) {
+        d.took_ms = began.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        d.damaged = self
+            .damaged
             .borrow()
-            .get(&(pool, pg))
-            .copied()
-            .unwrap_or(0);
-        if before == unresolved {
-            return;
-        }
+            .iter()
+            .filter(|k| k.pool == pool && k.pg == pg)
+            .count() as u32;
         let r = self
             .client
-            .call_meta(&Msg::ScrubReport {
-                pool,
-                pg,
-                unresolved,
-            })
+            .call_meta_with(
+                &Msg::ScrubReport {
+                    pool,
+                    pg,
+                    unresolved,
+                },
+                &hyperstor_proto::encode_scrub_detail(&d),
+            )
             .await;
         if matches!(r, Ok((Msg::Noted { .. }, _))) {
             let mut inc = self.inconsistent.borrow_mut();
@@ -6066,6 +6197,25 @@ mod tests {
 
     /// I232: a held reactor's log tells a busy thread from one the host
     /// didn't run, from this thread's own schedstat.
+    /// D227: a PG is scrubbed deep once its last deep scrub is
+    /// `deep_every` intervals old (half an interval early), and at once
+    /// when it never was.
+    #[test]
+    fn deep_scrub_is_due_by_the_records() {
+        use super::deep_due;
+        let day = std::time::Duration::from_secs(86_400);
+        let now = 100 * 86_400;
+        assert!(deep_due(0, now, day, 7));
+        assert!(!deep_due(now - 6 * 86_400, now, day, 7));
+        assert!(deep_due(now - 6 * 86_400 - 43_200, now, day, 7));
+        assert!(deep_due(now - 7 * 86_400, now, day, 7));
+        assert!(
+            deep_due(now - 86_400 + 600, now, day, 1),
+            "every scrub deep"
+        );
+        assert!(!deep_due(now, now, day, 7));
+    }
+
     #[test]
     fn a_hold_says_where_the_time_went() {
         use super::{held_by, parse_sched, thread_sched};

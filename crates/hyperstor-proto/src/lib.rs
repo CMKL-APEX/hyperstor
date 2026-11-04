@@ -461,11 +461,24 @@ pub enum Msg {
         device: u32,
     },
     /// Primary to map service: after a scrub of the PG, `unresolved`
-    /// objects whose copies differ and couldn't be repaired.
+    /// objects whose copies differ and couldn't be repaired. The payload,
+    /// when there is one, is the rest of the report ([`ScrubDetail`],
+    /// D227): in the payload so a map service from before it, whose
+    /// decoder refuses a longer body, still reads the count.
     ScrubReport {
         pool: u32,
         pg: u32,
         unresolved: u32,
+    },
+    /// Storage node to map service: when each of `pool`'s PGs was last
+    /// scrubbed, so a scrubber starts its pass at the oldest (D227).
+    ScrubAges {
+        pool: u32,
+    },
+    /// Answer to `ScrubAges`: each PG with the Unix seconds its last light
+    /// and deep scrub started, 0 for never.
+    ScrubAgesOk {
+        pgs: Vec<(u32, u64, u64)>,
     },
     /// Primary `device` to map service: the bytes its copy of each PG
     /// holds (D155), for the PGs whose bytes changed since its last
@@ -765,6 +778,8 @@ mod kind {
     pub const HOLDS_OK: u16 = 82;
     pub const LOOKUP_SIZED: u16 = 83;
     pub const ENDPOINT_DOWN: u16 = 84;
+    pub const SCRUB_AGES: u16 = 85;
+    pub const SCRUB_AGES_OK: u16 = 86;
     pub const ERROR: u16 = 99;
 }
 
@@ -861,6 +876,8 @@ impl Msg {
             Msg::LeaderStateOk { .. } => LEADER_STATE_OK,
             Msg::MemberSlow { .. } => MEMBER_SLOW,
             Msg::ScrubReport { .. } => SCRUB_REPORT,
+            Msg::ScrubAges { .. } => SCRUB_AGES,
+            Msg::ScrubAgesOk { .. } => SCRUB_AGES_OK,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
             Msg::PerfReport { .. } => PERF_REPORT,
@@ -1181,6 +1198,14 @@ impl Msg {
                 unresolved,
             } => {
                 e.u32(*pool).u32(*pg).u32(*unresolved);
+            }
+            Msg::ScrubAges { pool } => {
+                e.u32(*pool);
+            }
+            Msg::ScrubAgesOk { pgs } => {
+                e.seq(pgs, |e, (g, light, deep)| {
+                    e.u32(*g).u64(*light).u64(*deep);
+                });
             }
             Msg::PgUsage { device, full, pgs } => {
                 e.u32(*device).bool(*full).seq(pgs, |e, (p, g, b)| {
@@ -1524,6 +1549,10 @@ impl Msg {
                 pg: d.u32()?,
                 unresolved: d.u32()?,
             },
+            SCRUB_AGES => Msg::ScrubAges { pool: d.u32()? },
+            SCRUB_AGES_OK => Msg::ScrubAgesOk {
+                pgs: d.seq(20, |d| Ok((d.u32()?, d.u64()?, d.u64()?)))?,
+            },
             NOTED => Msg::Noted {
                 map_epoch: d.u64()?,
             },
@@ -1724,6 +1753,64 @@ pub fn decode_holds(payload: &[u8]) -> Result<Vec<(WireKey, HeldBlocks)>, Decode
     })?;
     d.finish()?;
     Ok(v)
+}
+
+/// The rest of a [`Msg::ScrubReport`] (28-scrub.md §31.4, D227): what one
+/// scrub of a PG did and found, in its payload.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScrubDetail {
+    /// Unix seconds when the scrub of the PG started.
+    pub started: u64,
+    pub took_ms: u32,
+    pub deep: bool,
+    /// Objects whose copies were compared.
+    pub compared: u32,
+    /// Objects whose copies still differed when looked at again.
+    pub inconsistent: u32,
+    /// Objects repaired from the majority's copy.
+    pub repaired: u32,
+    /// Objects of the primary's copy that failed their checksums and
+    /// weren't replaced by a good copy.
+    pub damaged: u32,
+    /// Objects with blocks of zeros on a copy where another has holes
+    /// (D223), and how many of them were repaired.
+    pub holes: u32,
+    pub holes_repaired: u32,
+    /// Why the hole check was skipped (I253); empty when it ran.
+    pub holes_skipped: String,
+}
+
+/// The payload of [`Msg::ScrubReport`]. Fields are only ever added at the
+/// end; a decoder ignores what follows the fields it knows.
+pub fn encode_scrub_detail(r: &ScrubDetail) -> Vec<u8> {
+    let mut e = Enc::new();
+    e.u64(r.started)
+        .u32(r.took_ms)
+        .bool(r.deep)
+        .u32(r.compared)
+        .u32(r.inconsistent)
+        .u32(r.repaired)
+        .u32(r.damaged)
+        .u32(r.holes)
+        .u32(r.holes_repaired)
+        .str(&r.holes_skipped);
+    e.into_vec()
+}
+
+pub fn decode_scrub_detail(payload: &[u8]) -> Result<ScrubDetail, DecodeError> {
+    let mut d = Dec::new(payload);
+    Ok(ScrubDetail {
+        started: d.u64()?,
+        took_ms: d.u32()?,
+        deep: d.bool()?,
+        compared: d.u32()?,
+        inconsistent: d.u32()?,
+        repaired: d.u32()?,
+        damaged: d.u32()?,
+        holes: d.u32()?,
+        holes_repaired: d.u32()?,
+        holes_skipped: d.str()?.to_string(),
+    })
 }
 
 /// One operation of an atomic list on an object ([`Msg::Exec`]): the
@@ -2340,6 +2427,10 @@ mod tests {
                 pg: 2,
                 unresolved: 4,
             },
+            Msg::ScrubAges { pool: 1 },
+            Msg::ScrubAgesOk {
+                pgs: vec![(0, 0, 0), (7, 1_700_000_000, 1_699_000_000)],
+            },
             Msg::PgUsage {
                 device: 2000,
                 full: true,
@@ -2639,6 +2730,48 @@ mod tests {
         assert_eq!(sized.len(), plain.len() + 8);
         assert_eq!(&sized[..plain.len()], &plain[..]);
         assert_eq!(decode_looked(&sized).unwrap(), l);
+    }
+
+    #[test]
+    fn scrub_detail_rides_in_the_payload_and_may_grow() {
+        let r = ScrubDetail {
+            started: 1_700_000_000,
+            took_ms: 1234,
+            deep: true,
+            compared: 100,
+            inconsistent: 2,
+            repaired: 1,
+            damaged: 1,
+            holes: 3,
+            holes_repaired: 3,
+            holes_skipped: String::new(),
+        };
+        let mut b = encode_scrub_detail(&r);
+        assert_eq!(decode_scrub_detail(&b).unwrap(), r);
+        // Fields added later are ignored by this decoder.
+        b.extend_from_slice(&[7, 7, 7]);
+        assert_eq!(decode_scrub_detail(&b).unwrap(), r);
+        // The body stays what a map service from before reads.
+        let frame = encode_frame(
+            9,
+            &Msg::ScrubReport {
+                pool: 1,
+                pg: 2,
+                unresolved: 0,
+            },
+            &b,
+        );
+        let h = Header::decode(frame[..HEADER_LEN].try_into().unwrap()).unwrap();
+        let body = &frame[HEADER_LEN..HEADER_LEN + h.body_len as usize];
+        assert_eq!(
+            Msg::decode(h.kind, body).unwrap(),
+            Msg::ScrubReport {
+                pool: 1,
+                pg: 2,
+                unresolved: 0
+            }
+        );
+        assert!(decode_scrub_detail(&b[..5]).is_err());
     }
 
     #[test]

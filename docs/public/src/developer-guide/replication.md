@@ -327,13 +327,14 @@ on large PGs show the scan is too slow.
 
 ## Scrub
 
-Each storage node compares, every 24 hours by default
-(`hyperstord --scrub-hours`), the copies of each clean PG it leads,
-spread evenly over the interval:
+Each storage node compares, every 24 hours by default (each pool's
+scrub settings in the map, `hyperstorctl scrub set`), the copies of each
+clean PG it leads, spread evenly over the interval:
 
 - **Light scrub** compares digests. A difference is looked at again after
   200 ms, so a write in flight isn't counted as damage.
-- **Deep scrub**, on the first pass after a start and every seventh, has
+- **Deep scrub**, once a PG's last deep scrub is `deep_every` intervals
+  old (and when it never had one; half an interval early), has
   every copy first read all its blocks and check their CRCs, at most
   64 MiB/s per device. A damaged copy gets a digest that never matches,
   so it never counts toward a majority.
@@ -341,6 +342,22 @@ spread evenly over the interval:
   it is pushed to the others; if another value is, the primary first
   pulls that copy, then pushes it. With no majority, nothing is changed:
   the object is reported, and cluster health warns.
+
+After each PG, the primary sends the map service a `ScrubReport`: the
+unresolved count in the body, and the rest (`ScrubDetail`: when, how
+long, deep or not, objects compared, inconsistent, repaired, damaged,
+holes found and repaired, why the hole check was skipped) in the payload,
+which a map service from before ignores. The leader keeps each PG's last
+light and deep report (`scrubs.rs`) and writes the changed ones, new PGs'
+and removed PGs' once a minute as rows `scrub/…` of the replicated store's
+`settings` table (a member from before them applies those; it would fail
+on a table it doesn't know), from a thread of its own (a write waits for
+the group). A scrubber asks
+for `ScrubAges` at the start of each pass, sorts its PGs oldest first and
+decides deep per PG; without an answer it falls back to every
+`deep_every`th pass from PG 0. Health's `scrub overdue`, `holes
+unchecked` and `damaged` reasons are computed from the records by the API
+on any member, from its applied copy.
 
 When a client's read finds a damaged block on the primary, the primary
 fetches the object from another copy, replaces its own and serves the
@@ -368,5 +385,6 @@ A multi-host rig with real network faults is not built.
 - Peer reports don't yet require reporters in different failure domains.
 - Backfill is bounded by bytes in flight, not by a rate or a priority
   class, and the bound is per reactor and target, not per link.
-- Down times, flap holds, space reports and scrub results are kept in
-  the leader's memory; a new leader starts them again.
+- Down times, flap holds and space reports are kept in the leader's
+  memory; a new leader starts them again. Scrub results are replicated,
+  but those of the last minute are lost with the leader.

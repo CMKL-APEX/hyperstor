@@ -383,6 +383,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
+                perf_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -411,7 +412,6 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                         .unwrap_or(0),
                 ),
                 no_digests: false,
-                hole_repair: false,
             })
         })
         .collect();
@@ -666,6 +666,7 @@ fn adminload_suite(secs: f64) {
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
+                perf_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -685,7 +686,6 @@ fn adminload_suite(secs: f64) {
                 defer_max: None,
                 scrub_interval: std::time::Duration::ZERO,
                 no_digests: false,
-                hole_repair: false,
             })
         })
         .collect();
@@ -1456,6 +1456,7 @@ fn failover_suite() {
                         stray_grace: std::time::Duration::ZERO,
                         io_timeout: std::time::Duration::ZERO,
                         read_timeout: std::time::Duration::ZERO,
+                        perf_every: std::time::Duration::ZERO,
                         commit_delays: None,
                         pings: None,
                         older: None,
@@ -1475,7 +1476,6 @@ fn failover_suite() {
                         defer_max: None,
                         scrub_interval: std::time::Duration::ZERO,
                         no_digests: false,
-                        hole_repair: false,
                     }))
                 })
                 .collect();
@@ -1581,6 +1581,7 @@ fn rejoin_suite() {
                 stray_grace: std::time::Duration::ZERO,
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
+                perf_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -1600,7 +1601,6 @@ fn rejoin_suite() {
                 defer_max: None,
                 scrub_interval: Duration::ZERO,
                 no_digests: false,
-                hole_repair: false,
             })
         };
         let mut nodes: Vec<Option<NodeHandle>> = listeners

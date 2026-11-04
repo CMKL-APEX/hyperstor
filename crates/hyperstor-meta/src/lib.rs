@@ -18,6 +18,7 @@ pub mod operations;
 pub mod perf;
 pub mod raft_log;
 pub mod replica;
+pub mod scrubs;
 pub mod settings;
 pub mod store;
 pub mod tokens;
@@ -73,6 +74,26 @@ pub struct PoolChange {
     pub cache_grace: Option<u32>,
 }
 
+/// What `SetScrubSettings` changes (28-scrub.md §31.2, D224); `None`
+/// leaves a setting as it is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrubChange {
+    pub hours: Option<u16>,
+    pub deep_every: Option<u8>,
+    pub hole_repair: Option<bool>,
+    pub deep_rate_mib: Option<u16>,
+}
+
+/// Why a scrub change was refused.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScrubRefused {
+    /// Not the leader, no such pool, out of range: the message says.
+    Invalid(String),
+    /// It weakens scrub (D226), and the caller didn't ask to: what it
+    /// weakens.
+    Weakens(Vec<String>),
+}
+
 /// The longest a cache pool's PGs may wait for a down member (D189).
 /// Why: past an hour, the node is better taken out, and its PGs' reads
 /// keep missing meanwhile.
@@ -107,6 +128,8 @@ pub enum Admin {
     /// else the leader's, asked over the map protocol and kept a second;
     /// `None` when there is no leader or it doesn't answer.
     LeaderView(hyperstor_reactor::chan::OneSender<Option<LeaderView>>),
+    /// Each PG's last scrubs (D227): the leader's, else this member's copy.
+    ScrubRecords(hyperstor_reactor::chan::OneSender<scrubs::Records>),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -123,6 +146,17 @@ pub enum Admin {
     /// Sets the fullness ratios (D27, D182), in thousandths; one not given
     /// stays as it is. Replies with the working map's epoch and the ratios
     /// now.
+    /// Changes a pool's scrub settings (D224); weakening them only with
+    /// `weaken` (D226). Replies with the working map's epoch and the
+    /// settings before and after.
+    SetScrub {
+        pool: u32,
+        change: ScrubChange,
+        weaken: bool,
+        reply: hyperstor_reactor::chan::OneSender<
+            Result<(u64, ScrubSettings, ScrubSettings), ScrubRefused>,
+        >,
+    },
     SetFullRatios {
         nearfull: Option<u16>,
         backfillfull: Option<u16>,
@@ -659,6 +693,21 @@ pub struct Meta {
     usage_version: Cell<u64>,
     /// The devices' load and drives (D218): the leader's, in memory only.
     perf: RefCell<perf::Perf>,
+    /// Each PG's last light and deep scrub (D227): the leader's, loaded
+    /// from the store when it takes over, with the PGs changed since its
+    /// last write.
+    scrubs: RefCell<scrubs::Records>,
+    scrubs_changed: RefCell<BTreeSet<(u32, u32)>>,
+    /// The replicated store, where the records are kept, and the thread
+    /// that writes them: a write waits for the group, so not on the
+    /// reactor. `None` without Raft: the records stay in memory.
+    scrub_store: RefCell<Option<ScrubStore>>,
+}
+
+/// Where the leader keeps scrub records ([`Meta::keep_scrubs`]).
+struct ScrubStore {
+    db: std::sync::Arc<store::Db>,
+    writes: std::sync::mpsc::Sender<scrubs::Changes>,
 }
 
 /// PGs whose last scrub left objects unresolved, with how many.
@@ -831,7 +880,99 @@ impl Meta {
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
             perf: RefCell::new(perf::Perf::default()),
+            scrubs: RefCell::new(BTreeMap::new()),
+            scrubs_changed: RefCell::new(BTreeSet::new()),
+            scrub_store: RefCell::new(None),
         })
+    }
+
+    /// Keeps scrub records (D227) in `db`, the replicated store: loaded
+    /// when this member takes the lead, written by a thread of their own.
+    pub fn keep_scrubs(&self, db: std::sync::Arc<store::Db>) {
+        let (writes, rx) = std::sync::mpsc::channel::<scrubs::Changes>();
+        let w = db.clone();
+        std::thread::Builder::new()
+            .name("scrub-records".into())
+            .spawn(move || {
+                // One line per kind of failure while it lasts, not one a
+                // minute: a member that lost the lead refuses them all.
+                let mut failing = false;
+                for batch in rx {
+                    match scrubs::write(&w, &batch) {
+                        Ok(()) => failing = false,
+                        Err(e) if !failing => {
+                            failing = true;
+                            eprintln!("hyperstor-meta: scrub records not written: {e}");
+                        }
+                        Err(_) => {}
+                    }
+                }
+            })
+            .expect("scrub records thread");
+        *self.scrub_store.borrow_mut() = Some(ScrubStore { db, writes });
+    }
+
+    /// Every PG's scrub record: the leader's own, else this member's copy
+    /// of the store.
+    pub fn scrub_records(&self) -> scrubs::Records {
+        if self.leads() {
+            return self.scrubs.borrow().clone();
+        }
+        match &*self.scrub_store.borrow() {
+            Some(s) => scrubs::load(&s.db).unwrap_or_default(),
+            None => scrubs::Records::new(),
+        }
+    }
+
+    /// A primary's report of one scrub of a PG (D227), with its detail
+    /// when the node sends one.
+    pub fn scrub_reported(
+        &self,
+        pool: u32,
+        pg: u32,
+        unresolved: u32,
+        detail: Option<&hyperstor_proto::ScrubDetail>,
+    ) {
+        {
+            let mut inc = self.inconsistent.borrow_mut();
+            if unresolved == 0 {
+                inc.remove(&(pool, pg));
+            } else {
+                inc.insert((pool, pg), unresolved);
+            }
+        }
+        let Some(d) = detail else { return };
+        let now = unix_now();
+        self.scrubs
+            .borrow_mut()
+            .entry((pool, pg))
+            .or_insert_with(|| scrubs::PgScrubs::new(now))
+            .note(scrubs::Summary::from_report(unresolved, d), d.deep);
+        self.scrubs_changed.borrow_mut().insert((pool, pg));
+    }
+
+    /// The leader's writes of scrub records (D227): every `every`, the
+    /// records changed since the last, new PGs' and removed PGs'.
+    pub async fn scrub_writer(self: Rc<Self>, every: Duration) {
+        loop {
+            sleep(every).await;
+            if !self.leads() {
+                continue;
+            }
+            let changed = std::mem::take(&mut *self.scrubs_changed.borrow_mut());
+            let batch = scrubs::changes(
+                &self.published.borrow(),
+                &mut self.scrubs.borrow_mut(),
+                &changed,
+                unix_now(),
+            );
+            if batch.is_empty() {
+                continue;
+            }
+            if let Some(s) = &*self.scrub_store.borrow() {
+                let _ = s.writes.send(batch);
+            }
+        }
     }
 
     fn bump_usage(&self) {
@@ -878,6 +1019,11 @@ impl Meta {
             .map(|pg| u.get(&(pool, pg)).map(|&(_, b)| b))
             .collect();
         Ok((version, Some(bytes)))
+    }
+
+    /// The leader's view of the devices' load and drives (D218).
+    pub fn perf(&self) -> perf::Perf {
+        self.perf.borrow().clone()
     }
 
     /// Sets how long a node stays down before its devices are marked out.
@@ -1024,6 +1170,17 @@ impl Meta {
                     self.inconsistent.borrow_mut().clear();
                     self.usage.borrow_mut().clear();
                     self.bump_usage();
+                    // Scrub records (D227) from the store, as the last
+                    // leader wrote them.
+                    let records = match &*self.scrub_store.borrow() {
+                        Some(s) => scrubs::load(&s.db).unwrap_or_else(|e| {
+                            eprintln!("hyperstor-meta: scrub records not read: {e}");
+                            scrubs::Records::new()
+                        }),
+                        None => scrubs::Records::new(),
+                    };
+                    *self.scrubs.borrow_mut() = records;
+                    self.scrubs_changed.borrow_mut().clear();
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
                     if !self.persisted.get() {
@@ -1149,6 +1306,47 @@ impl Meta {
             map.recompute();
         }
         Ok((map.epoch, now))
+    }
+
+    /// Changes a pool's scrub settings (28-scrub.md §31.2–31.3; D224,
+    /// D226). A change that weakens them is refused unless `weaken`.
+    /// Cache pools aren't scrubbed (09-replication.md §8.7): refused.
+    /// Returns the working map's epoch and the settings before and after.
+    pub fn set_scrub(
+        &self,
+        pool: u32,
+        change: ScrubChange,
+        weaken: bool,
+    ) -> Result<(u64, ScrubSettings, ScrubSettings), ScrubRefused> {
+        if !self.leads() {
+            return Err(ScrubRefused::Invalid(self.not_leader()));
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(info) = map.pools.get(&pool) else {
+            return Err(ScrubRefused::Invalid(format!("no pool {pool}")));
+        };
+        if info.kind == PoolKind::Cache {
+            return Err(ScrubRefused::Invalid(format!(
+                "pool {pool} is a cache pool: its data is recomputable and isn't scrubbed"
+            )));
+        }
+        let was = info.scrub;
+        let now = ScrubSettings {
+            hours: change.hours.unwrap_or(was.hours),
+            deep_every: change.deep_every.unwrap_or(was.deep_every),
+            hole_repair: change.hole_repair.unwrap_or(was.hole_repair),
+            deep_rate_mib: change.deep_rate_mib.unwrap_or(was.deep_rate_mib),
+        };
+        now.check().map_err(ScrubRefused::Invalid)?;
+        let weakens = was.weakens(&now);
+        if !weaken && !weakens.is_empty() {
+            return Err(ScrubRefused::Weakens(weakens));
+        }
+        if now != was {
+            map.pools.get_mut(&pool).expect("checked").scrub = now;
+            map.epoch += 1;
+        }
+        Ok((map.epoch, was, now))
     }
 
     /// Sets the fullness ratios every device is held to (04-decisions.md
@@ -1650,6 +1848,7 @@ impl Meta {
             split: None,
             autoscale,
             cache_grace: cache_grace.unwrap_or(CACHE_GRACE_SECS),
+            scrub: ScrubSettings::default(),
         };
         let eligible = map
             .devices
@@ -2086,6 +2285,9 @@ impl Meta {
                         let _ = reply.send(out);
                     });
                 }
+                Admin::ScrubRecords(reply) => {
+                    let _ = reply.send(self.scrub_records());
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -2138,6 +2340,14 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_pool(pool, change, force));
+                }
+                Admin::SetScrub {
+                    pool,
+                    change,
+                    weaken,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_scrub(pool, change, weaken));
                 }
                 Admin::SetDeviceClass {
                     device,
@@ -2843,11 +3053,27 @@ impl Meta {
         self.fencing.borrow_mut().remove(&node);
     }
 
+    #[cfg(test)]
     fn handle(
         &self,
         msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
     ) -> hyperstor_proto::Msg {
+        self.handle_with(msg, &[])
+    }
+
+    /// Answers a request from a storage node or client, with the request's
+    /// payload: only a scrub report carries one the map service reads
+    /// (D227).
+    fn handle_with(
+        &self,
+        msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
+        payload: &[u8],
+    ) -> hyperstor_proto::Msg {
         use hyperstor_proto::*;
+        let detail = (!payload.is_empty())
+            .then(|| decode_scrub_detail(payload).ok())
+            .flatten();
+        let detail = detail.as_ref();
         // Followers serve the map; the rest is the leader's (D72).
         if !self.leads()
             && matches!(
@@ -2864,6 +3090,7 @@ impl Meta {
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
+                    | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. })
             )
@@ -3102,14 +3329,27 @@ impl Meta {
                 pg,
                 unresolved,
             }) => {
-                let mut inc = self.inconsistent.borrow_mut();
-                if unresolved == 0 {
-                    inc.remove(&(pool, pg));
-                } else {
-                    inc.insert((pool, pg), unresolved);
-                }
+                self.scrub_reported(pool, pg, unresolved, detail);
                 Msg::Noted {
                     map_epoch: self.map.borrow().epoch,
+                }
+            }
+            Ok(Msg::ScrubAges { pool }) => {
+                let records = self.scrubs.borrow();
+                let map = self.published.borrow();
+                Msg::ScrubAgesOk {
+                    pgs: map
+                        .pgs
+                        .range((pool, 0)..=(pool, u32::MAX))
+                        .map(|(&(_, g), _)| {
+                            let r = records.get(&(pool, g));
+                            (
+                                g,
+                                r.map_or(0, |r| r.light_at()),
+                                r.map_or(0, |r| r.deep_at()),
+                            )
+                        })
+                        .collect(),
                 }
             }
             Ok(Msg::Blocklist { .. }) => Msg::Error {
@@ -3126,7 +3366,7 @@ impl Meta {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -3170,7 +3410,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                     });
                     continue;
                 }
-                let reply = meta.handle(msg);
+                let reply = meta.handle_with(msg, &body[h.body_len as usize..]);
                 if tx.send(encode_frame(h.req, &reply, &[])).is_err() {
                     return;
                 }
@@ -4083,6 +4323,7 @@ mod tests {
             split: None,
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
+            scrub: ScrubSettings::default(),
         });
         m.recompute();
         m
@@ -4575,6 +4816,50 @@ mod tests {
         assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
         report(new, TIB);
         assert_eq!(weight(new), 1.0);
+    }
+
+    /// D224, D226: scrub settings change in the map; weakening them is
+    /// refused unless asked for, and cache pools have none to change.
+    #[test]
+    fn scrub_settings_are_set_and_weakening_is_asked_for() {
+        let m = Meta::new(map());
+        let pool = *m.map.borrow().pools.keys().next().unwrap();
+        let epoch = m.map.borrow().epoch;
+        let six = ScrubChange {
+            hours: Some(6),
+            deep_every: Some(2),
+            ..Default::default()
+        };
+        let (e, was, now) = m.set_scrub(pool, six, false).unwrap();
+        assert_eq!(
+            (e, was, now.hours, now.deep_every),
+            (epoch + 1, ScrubSettings::default(), 6, 2)
+        );
+        assert_eq!(m.map.borrow().pools[&pool].scrub, now);
+        let report = ScrubChange {
+            hole_repair: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            m.set_scrub(pool, report, false),
+            Err(ScrubRefused::Weakens(vec!["holes only reported".into()]))
+        );
+        assert_eq!(m.map.borrow().pools[&pool].scrub, now, "refused: unchanged");
+        let (_, _, now) = m.set_scrub(pool, report, true).unwrap();
+        assert!(!now.hole_repair);
+        // Out of range.
+        let bad = ScrubChange {
+            hours: Some(1000),
+            ..Default::default()
+        };
+        assert!(matches!(
+            m.set_scrub(pool, bad, true),
+            Err(ScrubRefused::Invalid(_))
+        ));
+        assert!(matches!(
+            m.set_scrub(999, six, false),
+            Err(ScrubRefused::Invalid(_))
+        ));
     }
 
     /// D27, D182: ratios are set together or one at a time, checked; a
