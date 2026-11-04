@@ -5,6 +5,6 @@ started = 2026-11-02
 updated = 2026-11-04
 milestone = "AD3"
 branch = "feat/perf-heat"
-prs = [164, 166, 169, 170]
+prs = [164, 166, 169, 170, 185]
 now = "Merged (#164, fix #166) and deployed to the pilot (386cd13): heat, service time, sysfs and SMART on its NVMe drives, the Advisor"
 next = "G54 measured on the pilot (no stall, #170); the slow-device rule tested end to end in the cluster rig (I263); left of G55: the 90 % fill and a kernel-imposed slowdown on real drives, and the Advisor's thresholds from real load (I248)"
