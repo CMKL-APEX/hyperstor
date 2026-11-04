@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-04
 milestone = "HS12"
 branch = "feat/s3-http"
-prs = [151, 175, 176, 179, 182, 183]
+prs = [151, 175, 176, 179, 182, 183, 186]
 now = "HS12 stages 1 (#183) and 2 built: hyperstor-s3 serves S3 over HTTPS with SigV4, aws-chunked bodies and checksums, tested with boto3 (I264); keys from a file until stage 3"
 next = "Stage 3: access keys and placements in the map service, hyperstorctl s3, the s3 role and --s3 in the installer (D231-D233)"
