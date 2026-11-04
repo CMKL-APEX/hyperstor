@@ -134,7 +134,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | The object layer: buckets, PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up | Done |
-| The HTTP gateway: path-style, SigV4, S3's errors (stage 2) | Planned |
+| The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors, replaced chunks kept 15 minutes (stage 2) | Done |
 | Access keys and placements in the map service, `hyperstorctl s3`, the `s3` role in the installer (stage 3) | Planned |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Planned |
 | Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5) | Planned |

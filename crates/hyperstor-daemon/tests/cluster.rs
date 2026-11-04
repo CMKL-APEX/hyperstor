@@ -2427,7 +2427,7 @@ fn kv_queued_objects_are_deleted_after_their_batch() {
                 count: 0,
             };
             let entry = hyperstor_kv::encode_queue(&[one(1), one(3)]);
-            let k = hyperstor_kv::keys::queue_key(9);
+            let k = hyperstor_kv::keys::queue_key(0, 9);
             let range = hyperstor_kv::range_name(first);
             cl.exec(POOL, hyperstor_kv::NS_KV, &range, &[W::KvPut(k, entry)])
                 .await
@@ -6464,6 +6464,7 @@ fn s3_objects_match_a_model() {
             let cfg = Config {
                 inline: INLINE,
                 chunk: CHUNK,
+                linger: 5,
                 ..Config::default()
             };
             let g = [
@@ -6560,6 +6561,8 @@ fn s3_objects_match_a_model() {
                         let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
                         // 0: given up half-way; 1: aborted; 2: short; else whole.
                         let how = rng.random_range(0..8);
+                        // The version this replaces, read once it is replaced.
+                        let before = s3.head(b, &key).await.ok().flatten();
                         let Ok(mut put) = s3.put(b, &key, size).await else {
                             continue;
                         };
@@ -6604,6 +6607,14 @@ fn s3_objects_match_a_model() {
                                     assert_eq!(e.size, size);
                                     assert_eq!(e.md5, <[u8; 16]>::from(Md5::digest(&data)));
                                     assert_eq!(e.crc32c, crc32c::crc32c(&data));
+                                    // A GET that found the old version still
+                                    // reads it: its chunks linger.
+                                    if let (Some(old), Some(want)) = (&before, m.get(&key))
+                                        && old.md5 == <[u8; 16]>::from(Md5::digest(want))
+                                    {
+                                        let got = s3.read(b, old, 0, old.size).await;
+                                        assert_eq!(got.ok().as_ref(), Some(want), "op {op}");
+                                    }
                                     m.insert(key.clone(), data);
                                 }
                                 Err(err) => {
@@ -6672,6 +6683,25 @@ fn s3_objects_match_a_model() {
             put.finish(Meta::default()).await.unwrap();
             model[0].insert(b"raced".to_vec(), data);
             assert_eq!(g[1].clean(b, far).await.unwrap(), 0, "completed uploads");
+            // A GET that found a version before it was replaced still reads
+            // it seconds later, past the primaries' looks at the queue: its
+            // chunks linger.
+            let mut old = None;
+            for v in [1u8, 2] {
+                let data = vec![v; 3 * CHUNK as usize];
+                let mut put = g[0].put(b, b"lingers", data.len() as u64).await.unwrap();
+                for i in 0..3 {
+                    written.insert(chunk_name(b.id(), put.id(), 0, i));
+                }
+                put.write(&data).await.unwrap();
+                let e = put.finish(Meta::default()).await.unwrap();
+                model[0].insert(b"lingers".to_vec(), data);
+                old.get_or_insert(e);
+            }
+            let old = old.unwrap();
+            hyperstor_reactor::time::sleep(std::time::Duration::from_secs(2)).await;
+            let got = g[1].read(b, &old, 0, old.size).await.unwrap();
+            assert!(got.iter().all(|&x| x == 1), "the replaced version");
             for (bi, b) in buckets.iter().enumerate() {
                 for _ in 0..3 {
                     check_list(&g[0], b, &model[bi], &mut rng).await;
@@ -6760,6 +6790,14 @@ fn s3_objects_match_a_model() {
     for (id, d) in devs {
         let sh = hyperstor_engine::open(&copy(&d)).unwrap().1.pop().unwrap();
         for pg in 0..pool.pg_count {
+            // A copy on a device the PG moved off is a stray, dropped
+            // whole after its grace (its deletes went to the members).
+            let member = map
+                .pg(POOL, pg)
+                .is_some_and(|i| i.acting.contains(&id) || i.up.contains(&id));
+            if !member {
+                continue;
+            }
             let lo = ObjKey::new(POOL, pg, Namespace::S3, Vec::new(), 0);
             let hi = ObjKey::new(POOL, pg, Namespace::Fs, Vec::new(), 0);
             for k in sh.list(&lo, &hi) {
@@ -6770,4 +6808,177 @@ fn s3_objects_match_a_model() {
             }
         }
     }
+}
+
+/// AWS's Python SDK against a gateway on a cluster (14-s3.md §14.7, stage
+/// 2): `crates/hyperstor-s3/tests/sdk.py`, with keys made for the run and
+/// a certificate from a CA made for it. Needs boto3 in `HS_S3_SDK_PYTHON`
+/// (or `python3`); without it the test says so and passes, unless
+/// `HS_S3_SDK_REQUIRED` is set, as CI sets it.
+#[test]
+fn s3_gateway_serves_an_sdk() {
+    use hyperstor_pki::{Identity, Role};
+    use hyperstor_s3::Config;
+    use hyperstor_s3::gateway::{Options, serve};
+    use hyperstor_s3::keys::Keys;
+    use std::process::Command;
+    let python = std::env::var("HS_S3_SDK_PYTHON").unwrap_or_else(|_| "python3".into());
+    let has = Command::new(&python)
+        .args(["-I", "-c", "import boto3"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !has {
+        assert!(
+            std::env::var_os("HS_S3_SDK_REQUIRED").is_none(),
+            "no boto3 in {python}"
+        );
+        eprintln!("s3_gateway_serves_an_sdk: no boto3 in {python}; not run");
+        return;
+    }
+    let zero = std::time::Duration::ZERO;
+    let c = Cluster::start_kv(
+        3, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, KV_OFF,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let root = hyperstor_pki::new_root("s3test").unwrap();
+    let ca = hyperstor_pki::new_intermediate(&root, "s3test").unwrap();
+    let who = Identity {
+        cluster: "s3test".into(),
+        role: Role::Host,
+        id: "s3".into(),
+    };
+    let leaf = hyperstor_pki::issue(&ca, &who, &["127.0.0.1".parse().unwrap()], &[], 1).unwrap();
+    let ca_path = dir.path().join("ca.pem");
+    std::fs::write(&ca_path, &root.cert).unwrap();
+    // Keys made here, for this run only.
+    let mut rng = rand::rng();
+    let mut made = |prefix: &str| {
+        let id = format!("{prefix}{:016X}", rng.random::<u64>());
+        let secret: String = (0..40)
+            .map(|_| {
+                char::from(
+                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+"
+                        [rng.random_range(0..64)],
+                )
+            })
+            .collect();
+        (id, secret)
+    };
+    let (k1, s1) = made("HSONE");
+    let (k2, s2) = made("HSTWO");
+    let keys = Keys::parse(&format!("{k1} {s1} 1\n{k2} {s2} 2\n")).unwrap();
+    let opts = Options {
+        meta: vec![c.meta_addr],
+        networks: Vec::new(),
+        listen: vec!["127.0.0.1:0".parse().unwrap()],
+        tls: std::sync::Arc::new(hyperstor_pki::web_server_config(&leaf.cert, &leaf.key).unwrap()),
+        keys,
+        data_pool: "vol".into(),
+        index_pool: "vol".into(),
+        reactors: 2,
+        threads: 2,
+        config: Config {
+            inline: 1000,
+            chunk: 64 << 10,
+            linger: 2,
+            ..Config::default()
+        },
+        clean_every: std::time::Duration::from_secs(3600),
+    };
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let (at_tx, at_rx) = std::sync::mpsc::channel();
+    let gw = std::thread::spawn(move || serve(opts, |a| at_tx.send(a[0]).unwrap(), stopped));
+    let at = at_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the gateway listens");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../hyperstor-s3/tests/sdk.py");
+    let out = Command::new(&python)
+        .arg("-I")
+        .arg(script)
+        .env("HS_S3_ENDPOINT", format!("https://{at}"))
+        .env("HS_S3_CA", &ca_path)
+        .env("HS_S3_KEY", &k1)
+        .env("HS_S3_SECRET", &s1)
+        .env("HS_S3_KEY2", &k2)
+        .env("HS_S3_SECRET2", &s2)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success() && text.contains("SDK OK"), "{text}");
+    stop.send(()).unwrap();
+    gw.join().unwrap().unwrap();
+    c.stop();
+}
+
+/// PUT and GET throughput through the object layer, with 1 and with 4
+/// chunk writes in flight (14-s3.md §14.6; 02-benchmarks.md): 16 MiB
+/// objects in 4 MiB chunks on a 3-node in-process cluster. A
+/// measurement, not a check: `cargo test --release -p hyperstor-daemon
+/// --test cluster s3_put_throughput -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn s3_put_throughput() {
+    use hyperstor_s3::{Config, Meta, S3};
+    let zero = std::time::Duration::ZERO;
+    // Replaced chunks deleted straight away: the devices are 256 MiB.
+    let kv = KvJobs {
+        off: false,
+        limits: KV_OFF.limits,
+        sweep: std::time::Duration::from_millis(300),
+        leftover: std::time::Duration::from_secs(3600),
+    };
+    let c = Cluster::start_kv(
+        3, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, kv,
+    );
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let size: u64 = 16 << 20;
+            let data = vec![7u8; size as usize];
+            let bucket = S3::open(cl.clone(), Config::default())
+                .create_bucket("bench", 1, POOL, POOL)
+                .await
+                .unwrap();
+            for in_flight in [1, 4, 1, 4] {
+                let s3 = S3::open(
+                    cl.clone(),
+                    Config {
+                        in_flight,
+                        linger: 0,
+                        ..Config::default()
+                    },
+                );
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let t = std::time::Instant::now();
+                for i in 0..4 {
+                    let mut put = s3.put(&bucket, format!("o{i}").as_bytes(), size).await.unwrap();
+                    for piece in data.chunks(1 << 20) {
+                        put.write(piece).await.unwrap();
+                    }
+                    put.finish(Meta {
+                        content_type: String::new(),
+                        meta: Vec::new(),
+                    })
+                    .await
+                    .unwrap();
+                }
+                let put = 4.0 * size as f64 / t.elapsed().as_secs_f64() / (1 << 20) as f64;
+                let e = s3.head(&bucket, b"o0").await.unwrap().unwrap();
+                let t = std::time::Instant::now();
+                for off in (0..size).step_by(4 << 20) {
+                    s3.read(&bucket, &e, off, 4 << 20).await.unwrap();
+                }
+                let get = size as f64 / t.elapsed().as_secs_f64() / (1 << 20) as f64;
+                println!("in flight {in_flight}: PUT {put:.0} MiB/s, GET (one chunk at a time) {get:.0} MiB/s");
+            }
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
 }

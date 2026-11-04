@@ -8,7 +8,7 @@
 
 use super::*;
 use hyperstor_kv::jobs::{self, Done};
-use hyperstor_kv::keys::QUEUE;
+use hyperstor_kv::keys::{QUEUE, now_secs, queue_due_end};
 use hyperstor_kv::{NS_KV, Range};
 
 /// How often the sweep runs.
@@ -31,7 +31,7 @@ struct Local {
     range: Range,
     /// Its table's bytes.
     bytes: u64,
-    /// Whether its deletion queue has entries.
+    /// Whether its deletion queue has entries due.
     queued: bool,
 }
 
@@ -56,7 +56,8 @@ impl ShardState {
             .iter()
             .map(|(a, v)| (a.clone(), v.clone()))
             .collect();
-        let queued = !sh.kv_scan(k, &[QUEUE], Some(&[QUEUE + 1]), 1).is_empty();
+        let due = queue_due_end(now_secs());
+        let queued = !sh.kv_scan(k, &[QUEUE], Some(&due), 1).is_empty();
         Some(Local {
             range: Range::from_attrs(id, &attrs).ok()?,
             bytes,
@@ -171,7 +172,7 @@ impl ShardState {
         *unnamed = still;
     }
 
-    /// Starts a drain of range `k`'s deletion queue if it has entries, or
+    /// Starts a drain of range `k`'s deletion queue if it has entries due, or
     /// else a check if its size calls for a split or a merge (D202).
     async fn kv_look(self: &Rc<Self>, k: &ObjKey, limits: &jobs::Limits) {
         if !self.primary_of(k) {
@@ -212,7 +213,7 @@ impl ShardState {
                 Job::Resume(r) => jobs::resume(&cl, pool, &r)
                     .await
                     .map(|()| Some(format!("looked at, found {}", r.state.name()))),
-                Job::Drain(r) => jobs::drain(&cl, pool, &r).await.map(|n| {
+                Job::Drain(r) => jobs::drain(&cl, pool, &r, Some(now_secs())).await.map(|n| {
                     // More, or a size to look at: once more.
                     me.kv_written.borrow_mut().insert(k.clone());
                     (n > 0).then(|| format!("deleted the objects of {n} queue entries"))
