@@ -1,0 +1,10 @@
+title = "Scrub reports per PG and their health checks (D227, D228)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-04
+updated = 2026-11-04
+milestone = "AD3"
+branch = "feat/scrub-reports"
+prs = [187]
+now = "Stage 2 of 28-scrub.md: each PG's last light and deep scrub kept through Raft; passes start at the oldest PG and scrub deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs (I265)"
+next = "Stage 3: scrub on demand as an operation and scrub after recovery (D229, D230); then the UI"

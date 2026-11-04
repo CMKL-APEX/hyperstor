@@ -18,6 +18,7 @@ pub mod operations;
 pub mod perf;
 pub mod raft_log;
 pub mod replica;
+pub mod scrubs;
 pub mod settings;
 pub mod store;
 pub mod tokens;
@@ -127,6 +128,8 @@ pub enum Admin {
     /// else the leader's, asked over the map protocol and kept a second;
     /// `None` when there is no leader or it doesn't answer.
     LeaderView(hyperstor_reactor::chan::OneSender<Option<LeaderView>>),
+    /// Each PG's last scrubs (D227): the leader's, else this member's copy.
+    ScrubRecords(hyperstor_reactor::chan::OneSender<scrubs::Records>),
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -690,6 +693,21 @@ pub struct Meta {
     usage_version: Cell<u64>,
     /// The devices' load and drives (D218): the leader's, in memory only.
     perf: RefCell<perf::Perf>,
+    /// Each PG's last light and deep scrub (D227): the leader's, loaded
+    /// from the store when it takes over, with the PGs changed since its
+    /// last write.
+    scrubs: RefCell<scrubs::Records>,
+    scrubs_changed: RefCell<BTreeSet<(u32, u32)>>,
+    /// The replicated store, where the records are kept, and the thread
+    /// that writes them: a write waits for the group, so not on the
+    /// reactor. `None` without Raft: the records stay in memory.
+    scrub_store: RefCell<Option<ScrubStore>>,
+}
+
+/// Where the leader keeps scrub records ([`Meta::keep_scrubs`]).
+struct ScrubStore {
+    db: std::sync::Arc<store::Db>,
+    writes: std::sync::mpsc::Sender<scrubs::Changes>,
 }
 
 /// PGs whose last scrub left objects unresolved, with how many.
@@ -862,7 +880,99 @@ impl Meta {
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
             perf: RefCell::new(perf::Perf::default()),
+            scrubs: RefCell::new(BTreeMap::new()),
+            scrubs_changed: RefCell::new(BTreeSet::new()),
+            scrub_store: RefCell::new(None),
         })
+    }
+
+    /// Keeps scrub records (D227) in `db`, the replicated store: loaded
+    /// when this member takes the lead, written by a thread of their own.
+    pub fn keep_scrubs(&self, db: std::sync::Arc<store::Db>) {
+        let (writes, rx) = std::sync::mpsc::channel::<scrubs::Changes>();
+        let w = db.clone();
+        std::thread::Builder::new()
+            .name("scrub-records".into())
+            .spawn(move || {
+                // One line per kind of failure while it lasts, not one a
+                // minute: a member that lost the lead refuses them all.
+                let mut failing = false;
+                for batch in rx {
+                    match scrubs::write(&w, &batch) {
+                        Ok(()) => failing = false,
+                        Err(e) if !failing => {
+                            failing = true;
+                            eprintln!("hyperstor-meta: scrub records not written: {e}");
+                        }
+                        Err(_) => {}
+                    }
+                }
+            })
+            .expect("scrub records thread");
+        *self.scrub_store.borrow_mut() = Some(ScrubStore { db, writes });
+    }
+
+    /// Every PG's scrub record: the leader's own, else this member's copy
+    /// of the store.
+    pub fn scrub_records(&self) -> scrubs::Records {
+        if self.leads() {
+            return self.scrubs.borrow().clone();
+        }
+        match &*self.scrub_store.borrow() {
+            Some(s) => scrubs::load(&s.db).unwrap_or_default(),
+            None => scrubs::Records::new(),
+        }
+    }
+
+    /// A primary's report of one scrub of a PG (D227), with its detail
+    /// when the node sends one.
+    pub fn scrub_reported(
+        &self,
+        pool: u32,
+        pg: u32,
+        unresolved: u32,
+        detail: Option<&hyperstor_proto::ScrubDetail>,
+    ) {
+        {
+            let mut inc = self.inconsistent.borrow_mut();
+            if unresolved == 0 {
+                inc.remove(&(pool, pg));
+            } else {
+                inc.insert((pool, pg), unresolved);
+            }
+        }
+        let Some(d) = detail else { return };
+        let now = unix_now();
+        self.scrubs
+            .borrow_mut()
+            .entry((pool, pg))
+            .or_insert_with(|| scrubs::PgScrubs::new(now))
+            .note(scrubs::Summary::from_report(unresolved, d), d.deep);
+        self.scrubs_changed.borrow_mut().insert((pool, pg));
+    }
+
+    /// The leader's writes of scrub records (D227): every `every`, the
+    /// records changed since the last, new PGs' and removed PGs'.
+    pub async fn scrub_writer(self: Rc<Self>, every: Duration) {
+        loop {
+            sleep(every).await;
+            if !self.leads() {
+                continue;
+            }
+            let changed = std::mem::take(&mut *self.scrubs_changed.borrow_mut());
+            let batch = scrubs::changes(
+                &self.published.borrow(),
+                &mut self.scrubs.borrow_mut(),
+                &changed,
+                unix_now(),
+            );
+            if batch.is_empty() {
+                continue;
+            }
+            if let Some(s) = &*self.scrub_store.borrow() {
+                let _ = s.writes.send(batch);
+            }
+        }
     }
 
     fn bump_usage(&self) {
@@ -1060,6 +1170,17 @@ impl Meta {
                     self.inconsistent.borrow_mut().clear();
                     self.usage.borrow_mut().clear();
                     self.bump_usage();
+                    // Scrub records (D227) from the store, as the last
+                    // leader wrote them.
+                    let records = match &*self.scrub_store.borrow() {
+                        Some(s) => scrubs::load(&s.db).unwrap_or_else(|e| {
+                            eprintln!("hyperstor-meta: scrub records not read: {e}");
+                            scrubs::Records::new()
+                        }),
+                        None => scrubs::Records::new(),
+                    };
+                    *self.scrubs.borrow_mut() = records;
+                    self.scrubs_changed.borrow_mut().clear();
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
                     if !self.persisted.get() {
@@ -2164,6 +2285,9 @@ impl Meta {
                         let _ = reply.send(out);
                     });
                 }
+                Admin::ScrubRecords(reply) => {
+                    let _ = reply.send(self.scrub_records());
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -2929,11 +3053,27 @@ impl Meta {
         self.fencing.borrow_mut().remove(&node);
     }
 
+    #[cfg(test)]
     fn handle(
         &self,
         msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
     ) -> hyperstor_proto::Msg {
+        self.handle_with(msg, &[])
+    }
+
+    /// Answers a request from a storage node or client, with the request's
+    /// payload: only a scrub report carries one the map service reads
+    /// (D227).
+    fn handle_with(
+        &self,
+        msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
+        payload: &[u8],
+    ) -> hyperstor_proto::Msg {
         use hyperstor_proto::*;
+        let detail = (!payload.is_empty())
+            .then(|| decode_scrub_detail(payload).ok())
+            .flatten();
+        let detail = detail.as_ref();
         // Followers serve the map; the rest is the leader's (D72).
         if !self.leads()
             && matches!(
@@ -2950,6 +3090,7 @@ impl Meta {
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
+                    | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. })
             )
@@ -3188,14 +3329,27 @@ impl Meta {
                 pg,
                 unresolved,
             }) => {
-                let mut inc = self.inconsistent.borrow_mut();
-                if unresolved == 0 {
-                    inc.remove(&(pool, pg));
-                } else {
-                    inc.insert((pool, pg), unresolved);
-                }
+                self.scrub_reported(pool, pg, unresolved, detail);
                 Msg::Noted {
                     map_epoch: self.map.borrow().epoch,
+                }
+            }
+            Ok(Msg::ScrubAges { pool }) => {
+                let records = self.scrubs.borrow();
+                let map = self.published.borrow();
+                Msg::ScrubAgesOk {
+                    pgs: map
+                        .pgs
+                        .range((pool, 0)..=(pool, u32::MAX))
+                        .map(|(&(_, g), _)| {
+                            let r = records.get(&(pool, g));
+                            (
+                                g,
+                                r.map_or(0, |r| r.light_at()),
+                                r.map_or(0, |r| r.deep_at()),
+                            )
+                        })
+                        .collect(),
                 }
             }
             Ok(Msg::Blocklist { .. }) => Msg::Error {
@@ -3212,7 +3366,7 @@ impl Meta {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -3256,7 +3410,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                     });
                     continue;
                 }
-                let reply = meta.handle(msg);
+                let reply = meta.handle_with(msg, &body[h.body_len as usize..]);
                 if tx.send(encode_frame(h.req, &reply, &[])).is_err() {
                     return;
                 }

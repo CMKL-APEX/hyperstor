@@ -42,6 +42,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.GetStatus", Group::Read, false),
     ("ClusterService.ListPgs", Group::Read, false),
     ("ClusterService.GetPgGrid", Group::Read, false),
+    ("ClusterService.GetScrubStatus", Group::Read, false),
+    ("ClusterService.ListPgScrubs", Group::Read, false),
     ("ClusterService.GetPgHeat", Group::Read, false),
     ("ClusterService.ListDevicePerf", Group::Read, false),
     ("ClusterService.ListTopVolumes", Group::Read, false),
