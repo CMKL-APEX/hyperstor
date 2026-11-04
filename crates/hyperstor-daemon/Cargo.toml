@@ -23,6 +23,9 @@ hyperstor-reactor = { path = "../hyperstor-reactor" }
 [dev-dependencies]
 rand.workspace = true
 hyperstor-rpc = { path = "../hyperstor-rpc" }
+hyperstor-s3 = { path = "../hyperstor-s3" }
+md-5 = "0.10"
+crc32c.workspace = true
 tempfile = "3"
 
 [lints]

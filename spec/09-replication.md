@@ -116,7 +116,7 @@ members, as long as there are at least `min_size` of them. Below
   Damaged copies are repaired from a copy whose CRCs match, and an
   inconsistency that can't be decided is reported, not guessed at.
 - **As built** (HS2, 01-implementation-notes.md I58): light scrub by the
-  same digests, every pool's `scrub.hours` (default 24; D224, I262) for
+  same digests, every pool's `scrub.hours` (default 24; D224, I263) for
   each clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
   the copies agree with it, and otherwise reported. The first pass after

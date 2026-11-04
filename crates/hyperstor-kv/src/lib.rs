@@ -88,6 +88,8 @@ pub struct Table {
     pub index_pool: u32,
     /// Where its user keeps data the rows point to (D198).
     pub data_pool: u32,
+    /// Its user's own record (S3's bucket record), kept with it.
+    pub info: Vec<u8>,
 }
 
 /// The record's format. Later fields are appended, and a reader ignores
@@ -100,7 +102,8 @@ impl Table {
         e.u8(TABLE_V1)
             .u64(self.id)
             .u32(self.index_pool)
-            .u32(self.data_pool);
+            .u32(self.data_pool)
+            .bytes(&self.info);
         e.into_vec()
     }
 
@@ -117,6 +120,11 @@ impl Table {
             id: d.u64()?,
             index_pool: d.u32()?,
             data_pool: d.u32()?,
+            info: if d.remaining() > 0 {
+                d.bytes()?.to_vec()
+            } else {
+                Vec::new()
+            },
         })
     }
 }
@@ -354,11 +362,7 @@ pub enum Change {
     Assert(Vec<u8>, Option<Vec<u8>>),
     /// Object `name` of namespace `ns` in `pool` is deleted once the
     /// batch is applied, by the range's primary (D192, §28.6).
-    Collect {
-        pool: u32,
-        ns: u8,
-        name: Vec<u8>,
-    },
+    Collect(Doomed),
 }
 
 /// Changes to one row, applied together if every assertion holds (D200).
@@ -392,11 +396,27 @@ impl Batch {
     /// Object `name` of namespace `ns` in `pool` is to be deleted once
     /// the batch applies (§28.6).
     pub fn collect(&mut self, pool: u32, ns: u8, name: &[u8]) -> &mut Self {
-        self.changes.push(Change::Collect {
+        self.changes.push(Change::Collect(Doomed {
             pool,
             ns,
             name: name.into(),
-        });
+            count: 0,
+        }));
+        self
+    }
+
+    /// Objects `prefix` + 0, `prefix` + 1, … `prefix` + (`count` − 1), each
+    /// number a big-endian u32, are to be deleted once the batch applies:
+    /// a large S3 object's chunks in one queue entry (§28.6).
+    pub fn collect_series(&mut self, pool: u32, ns: u8, prefix: &[u8], count: u32) -> &mut Self {
+        if count > 0 {
+            self.changes.push(Change::Collect(Doomed {
+                pool,
+                ns,
+                name: prefix.into(),
+                count,
+            }));
+        }
         self
     }
 
@@ -415,8 +435,8 @@ impl Batch {
                     key: user_key(row, k),
                     value: v.clone(),
                 },
-                Change::Collect { pool, ns, name } => {
-                    collect.push((*pool, *ns, name.clone()));
+                Change::Collect(d) => {
+                    collect.push(d.clone());
                     continue;
                 }
             });
@@ -431,20 +451,49 @@ impl Batch {
     }
 }
 
-/// Objects a queue entry names: pool, namespace, name.
-pub type Collected = Vec<(u32, u8, Vec<u8>)>;
+/// Objects a queue entry names, in namespace `ns` of `pool`: `name`
+/// alone if `count` is 0, else the series `name` + i (a big-endian u32)
+/// for i below `count`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Doomed {
+    pub pool: u32,
+    pub ns: u8,
+    pub name: Vec<u8>,
+    pub count: u32,
+}
 
-pub fn encode_queue(objects: &[(u32, u8, Vec<u8>)]) -> Vec<u8> {
+impl Doomed {
+    /// The names of the objects, in order.
+    pub fn names(&self) -> impl Iterator<Item = Vec<u8>> + '_ {
+        let series = (0..self.count).map(|i| [&self.name[..], &i.to_be_bytes()].concat());
+        (self.count == 0)
+            .then(|| self.name.clone())
+            .into_iter()
+            .chain(series)
+    }
+}
+
+/// What a queue entry names.
+pub type Collected = Vec<Doomed>;
+
+pub fn encode_queue(objects: &[Doomed]) -> Vec<u8> {
     let mut e = Enc::new();
-    e.seq(objects, |e, (pool, ns, name)| {
-        e.u32(*pool).u8(*ns).bytes(name);
+    e.seq(objects, |e, d| {
+        e.u32(d.pool).u8(d.ns).bytes(&d.name).u32(d.count);
     });
     e.into_vec()
 }
 
 pub fn decode_queue(b: &[u8]) -> Result<Collected, KvError> {
     let mut d = Dec::new(b);
-    let objects = d.seq(9, |d| Ok((d.u32()?, d.u8()?, d.bytes()?.to_vec())))?;
+    let objects = d.seq(13, |d| {
+        Ok(Doomed {
+            pool: d.u32()?,
+            ns: d.u8()?,
+            name: d.bytes()?.to_vec(),
+            count: d.u32()?,
+        })
+    })?;
     d.finish()?;
     Ok(objects)
 }
@@ -559,11 +608,24 @@ impl Store {
         index_pool: u32,
         data_pool: u32,
     ) -> Result<Table, KvError> {
+        self.create_table_with(name, index_pool, data_pool, &[])
+            .await
+    }
+
+    /// [`Self::create_table`], with its user's record `info`.
+    pub async fn create_table_with(
+        &self,
+        name: &[u8],
+        index_pool: u32,
+        data_pool: u32,
+        info: &[u8],
+    ) -> Result<Table, KvError> {
         let table = Table {
             name: name.to_vec(),
             id: hyperstor_client::random_u64(),
             index_pool,
             data_pool,
+            info: info.to_vec(),
         };
         let first = Range {
             id: random_u128(),
@@ -663,6 +725,9 @@ impl Store {
         let end = prefix_end(&p).expect("a map prefix is never all 0xFF");
         for (_, v) in self.root_scan(&p, &end, usize::MAX).await? {
             let (id, _) = map_entry(&v)?;
+            if let Some(r) = self.read_range(table, id).await? {
+                jobs::drain_all(&self.client, table.index_pool, &r).await?;
+            }
             self.client
                 .exec(table.index_pool, NS_KV, &range_name(id), &[WireOp::Delete])
                 .await?;
