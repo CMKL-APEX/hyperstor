@@ -5047,16 +5047,24 @@ fn recovered_pgs_are_scrubbed() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let since = unix_now();
     // Node 3 goes down and out; its PGs are placed and filled elsewhere.
+    // Watched from one client, without writing: this test runs beside
+    // others whose timing matters.
     c.kill(3);
-    let t = std::time::Instant::now();
-    let after = loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let m = write(6);
-        if !m.nodes[&3].up {
-            break m;
-        }
-        assert!(t.elapsed().as_secs() < 20, "node 3 still up");
-    };
+    let after = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let t = std::time::Instant::now();
+            while cl.map().nodes[&3].up {
+                assert!(t.elapsed().as_secs() < 20, "node 3 still up");
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(200)).await;
+                cl.refresh_map().await.unwrap();
+            }
+            wait_backfilled(&cl).await;
+            (*cl.map()).clone()
+        })
+    })
+    .join()
+    .unwrap();
     let changed: Vec<u32> = (0..before.pools[&POOL].pg_count)
         .filter(|g| before.pgs[&(POOL, *g)].epoch != after.pgs[&(POOL, *g)].epoch)
         .collect();
