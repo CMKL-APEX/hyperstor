@@ -1265,6 +1265,7 @@ tests = [
     "hyperstor_meta::perf::tests::volumes_are_summed_across_their_pgs",
     "hyperstor_meta::perf::tests::the_advisor_names_a_slow_device_a_hot_primary_and_a_hot_volume",
     "hyperstor_meta::perf::tests::the_advisor_reads_the_drives",
+    "cluster::the_advisor_names_a_device_slowed_on_purpose",
     "hyperstor_ctl::tests::heat_shows_a_digit_per_pg_and_the_busiest_volumes",
     "hyperstor_ctl::tests::quantiles_merge_buckets",
     "hyperstor_ctl::tests::perf_and_findings_read_as_tables",

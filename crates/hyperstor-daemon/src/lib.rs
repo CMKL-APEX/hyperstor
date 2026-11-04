@@ -214,6 +214,9 @@ pub struct NodeConfig {
     /// How long a read may wait for the device before the primary serves
     /// it from a member (D190); zero: [`READ_TIMEOUT`].
     pub read_timeout: Duration,
+    /// How often each device reports its load to the map service (D218);
+    /// zero: `HS_PERF_MS` if set, else [`PERF_EVERY`]. Tests set it short.
+    pub perf_every: Duration,
     /// Test hook: devices whose commits take longer without holding their
     /// reactor (04-decisions.md D92, I199).
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
@@ -305,7 +308,7 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 const SPACE_EVERY: Duration = Duration::from_secs(5);
 
 /// How often a device reports its load to the leader (D218).
-const PERF_EVERY: Duration = Duration::from_secs(5);
+pub const PERF_EVERY: Duration = Duration::from_secs(5);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -440,6 +443,13 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
             Duration::ZERO => READ_TIMEOUT,
             t => t,
         };
+        let perf_every = match cfg.perf_every {
+            Duration::ZERO => std::env::var("HS_PERF_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .map_or(PERF_EVERY, Duration::from_millis),
+            t => t,
+        };
         let opened = Opening(Some(opening.clone()));
         threads.push(
             std::thread::Builder::new()
@@ -550,14 +560,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             .and_then(|v| v.parse().ok())
                             .map_or(Duration::from_secs(30), Duration::from_millis);
                         spawn(st.clone().usage(every));
-                        // Every 5 s (HS_PERF_MS for tests).
                         *st.drive.borrow_mut() =
                             Some(drive::watch(sh.device_id, drive_path, cpu));
-                        let every = std::env::var("HS_PERF_MS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .map_or(PERF_EVERY, Duration::from_millis);
-                        spawn(st.clone().perf(every));
+                        spawn(st.clone().perf(perf_every));
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;

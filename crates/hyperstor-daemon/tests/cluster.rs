@@ -31,6 +31,8 @@ enum MetaCmd {
     DeletePool(u32),
     /// The PGs scrub reported inconsistent.
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
+    /// The leader's view of the devices' load (D218).
+    Perf(std::sync::mpsc::Sender<hyperstor_meta::perf::Perf>),
 }
 
 /// Each stopped device, by device id.
@@ -88,6 +90,8 @@ struct Cluster {
     hole_repair: bool,
     /// Jobs on key–value ranges (25-kv-ranges.md §28.7).
     kv: KvJobs,
+    /// How often devices report their load (D218); zero: the default.
+    perf_every: std::time::Duration,
 }
 
 impl Cluster {
@@ -212,6 +216,55 @@ impl Cluster {
         hole_repair: bool,
         kv: KvJobs,
     ) -> Cluster {
+        Self::start_all(
+            nodes,
+            shards,
+            lease,
+            down_after,
+            peer_timeout,
+            scrub,
+            down_out,
+            grace,
+            hole_repair,
+            kv,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    /// With the defaults, each device reporting its load every `every`
+    /// (D218).
+    fn start_perf(nodes: u32, shards: u32, every: std::time::Duration) -> Cluster {
+        Self::start_all(
+            nodes,
+            shards,
+            LEASE,
+            DOWN_AFTER,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            DOWN_OUT,
+            std::time::Duration::ZERO,
+            false,
+            KV_OFF,
+            every,
+        )
+    }
+
+    /// As [`Self::start_kv`], each device reporting its load every
+    /// `perf_every` (zero: the default).
+    #[allow(clippy::too_many_arguments)]
+    fn start_all(
+        nodes: u32,
+        shards: u32,
+        lease: std::time::Duration,
+        down_after: std::time::Duration,
+        peer_timeout: std::time::Duration,
+        scrub: std::time::Duration,
+        down_out: std::time::Duration,
+        grace: std::time::Duration,
+        hole_repair: bool,
+        kv: KvJobs,
+        perf_every: std::time::Duration,
+    ) -> Cluster {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -274,6 +327,9 @@ impl Cluster {
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
+                        MetaCmd::Perf(tx) => {
+                            let _ = tx.send(meta.perf());
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -297,6 +353,7 @@ impl Cluster {
                     stray_grace: grace,
                     io_timeout: std::time::Duration::ZERO,
                     read_timeout: std::time::Duration::ZERO,
+                    perf_every,
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
@@ -351,6 +408,7 @@ impl Cluster {
             stray_grace: grace,
             hole_repair,
             kv,
+            perf_every,
         }
     }
 
@@ -389,6 +447,7 @@ impl Cluster {
             stray_grace: self.stray_grace,
             io_timeout: self.io_timeout,
             read_timeout: self.read_timeout,
+            perf_every: self.perf_every,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
@@ -432,6 +491,26 @@ impl Cluster {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Inconsistent(tx)).is_ok());
         rx.recv().unwrap()
+    }
+
+    /// The leader's view of the devices' load (D218).
+    fn perf(&self) -> hyperstor_meta::perf::Perf {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Perf(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// The Advisor's findings over the leader's view of the load
+    /// (D222), every device of one kind.
+    fn findings(&self) -> Vec<hyperstor_meta::perf::Finding> {
+        hyperstor_meta::perf::findings(
+            &self.perf(),
+            &hyperstor_meta::perf::Context {
+                kinds: &Default::default(),
+                volumes: &Default::default(),
+                pools: &[],
+            },
+        )
     }
 
     /// Stops everything; returns the final map and each device by id.
@@ -4329,6 +4408,99 @@ fn reads_in_flight_get_whole_writes() {
     for d in [0, 1000, 2000] {
         c.commit_delays.set_reads(d, Duration::ZERO);
     }
+    c.stop();
+}
+
+/// G55(b), D222: the Advisor names a device whose reads were slowed, from
+/// the service times the devices report, within the minute of reports it
+/// looks at (12 windows, here of 250 ms), and only that device; once the
+/// device is fast again, the finding goes as its slow reads leave the
+/// window. Four devices of one kind, read across 32 chunks so that each is
+/// primary of some.
+#[test]
+fn the_advisor_names_a_device_slowed_on_purpose() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+    const CHUNKS: u64 = 32;
+    let c = Cluster::start_perf(4, 1, Duration::from_millis(250));
+    let meta = c.meta_addr;
+    with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        let d = pattern(55, (CHUNKS * CHUNK as u64) as usize);
+        cl.write(POOL, 1, 0, d).await.unwrap();
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers = std::thread::spawn({
+        let stop = stop.clone();
+        move || {
+            with_client(meta, 6, |cl| async move {
+                let tasks: Vec<_> = (0..4u64)
+                    .map(|r| {
+                        let (cl, stop) = (cl.clone(), stop.clone());
+                        spawn(async move {
+                            let mut x = r + 1;
+                            while !stop.load(Relaxed) {
+                                x = x
+                                    .wrapping_mul(6364136223846793005)
+                                    .wrapping_add(1442695040888963407);
+                                let at = (x >> 33) % (CHUNKS * u64::from(CHUNK) / 4096) * 4096;
+                                cl.read(POOL, 1, at, 4096).await.unwrap();
+                            }
+                        })
+                    })
+                    .collect();
+                for t in tasks {
+                    t.await;
+                }
+            })
+        }
+    });
+    let slow = |f: &[hyperstor_meta::perf::Finding]| -> Vec<String> {
+        f.iter()
+            .filter(|x| x.rule == "slow-device")
+            .map(|x| x.title.clone())
+            .collect()
+    };
+    // Waits up to 20 s for `want` of the slow-device findings.
+    let wait = |what: &str, want: &dyn Fn(&[String]) -> bool| -> Vec<String> {
+        let t = Instant::now();
+        loop {
+            let s = slow(&c.findings());
+            if want(&s) {
+                return s;
+            }
+            assert!(t.elapsed() < Duration::from_secs(20), "{what}: {s:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // Every device reports reads before any is slowed.
+    let t = Instant::now();
+    while c
+        .perf()
+        .devices()
+        .iter()
+        .filter(|(_, s, _)| s.iter().any(|x| x.service[0].count > 0))
+        .count()
+        < 4
+    {
+        assert!(t.elapsed() < Duration::from_secs(20), "no reads reported");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !slow(&c.findings()).iter().any(|t| t.contains("2000")),
+        "device 2000 named before it was slowed"
+    );
+    c.commit_delays.set_reads(2000, Duration::from_millis(20));
+    let named = wait("device 2000 named", &|s| {
+        s.iter().any(|t| t == "Device 2000 is slow at reads")
+    });
+    assert_eq!(named, ["Device 2000 is slow at reads"], "only device 2000");
+    c.commit_delays.set_reads(2000, Duration::ZERO);
+    wait("the finding gone", &|s| s.is_empty());
+    stop.store(true, Relaxed);
+    readers.join().unwrap();
     c.stop();
 }
 

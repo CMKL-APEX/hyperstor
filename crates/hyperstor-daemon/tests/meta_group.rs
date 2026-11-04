@@ -167,6 +167,7 @@ impl Group {
             stray_grace: std::time::Duration::ZERO,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
+            perf_every: std::time::Duration::ZERO,
             commit_delays: None,
             pings: None,
             older: None,
