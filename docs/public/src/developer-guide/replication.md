@@ -359,6 +359,17 @@ decides deep per PG; without an answer it falls back to every
 unchecked` and `damaged` reasons are computed from the records by the API
 on any member, from its applied copy.
 
+Scrubs ahead of their turn come from the map service as `ScrubNow`
+(PGs, deep, cancel) to each PG's primary device, which queues those it is
+the clean primary of and scrubs them one at a time beside the pass (a PG
+is never scrubbed twice at once). `StartScrub` is an operation
+(`Work::Scrub`): every two seconds the runner asks the map service which
+of its PGs reported a scrub since it started and has it ask the
+primaries of the rest, each again after 10 minutes. Scrub after recovery
+(D230) runs on the leader: a PG whose PG epoch changes is asked a light
+scrub once it has been clean a minute, until a scrub since reports, at
+most six times.
+
 When a client's read finds a damaged block on the primary, the primary
 fetches the object from another copy, replaces its own and serves the
 read, holding writes to that object meanwhile.

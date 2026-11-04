@@ -195,6 +195,28 @@ writes the records once a minute.
 Each names the pool and up to ten PGs. The next scrub of the PG that
 finds it clean clears it.
 
+### Scrubbing now, and after recovery
+
+To check a pool without waiting for its turn, after a fix or an
+incident:
+
+```
+hyperstorctl scrub start --pool 1 --deep --wait 3600
+hyperstorctl scrub start --pool 1 --pg 7 --pg 12
+```
+
+It is an operation: `op list` shows how many PGs are done, `op cancel`
+stops it, and the audit log records who started it. The PGs' primaries
+scrub them one at a time, a deep one at the pool's deep rate, while the
+regular schedule goes on.
+
+After a node comes back, a device is replaced, or anything else changes
+which devices hold a PG, the PG is scrubbed light, holes checked, about a
+minute after it is clean again: recovery copies data, and a copy made
+wrong is best found while the copy it came from is still there. The
+leader keeps that list in memory; after a change of leader, PGs already
+clean wait for their turn.
+
 
 ### Scrub settings
 

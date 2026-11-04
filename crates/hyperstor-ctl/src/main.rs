@@ -166,7 +166,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -221,6 +221,10 @@ struct Args {
     map: Option<String>,
     pool: Option<u32>,
     pg: Option<u32>,
+    /// `scrub start`: every `--pg` given.
+    pg_list: Vec<u32>,
+    /// `scrub start`: deep.
+    deep: bool,
     mib: u64,
     wait: Option<u32>,
     device: Option<u32>,
@@ -350,6 +354,8 @@ fn main() {
         sparse: false,
         usage: false,
         overdue: false,
+        pg_list: Vec::new(),
+        deep: false,
         heat: None,
         weight: None,
         ratios: [None; 3],
@@ -401,7 +407,12 @@ fn main() {
             "--raft" => a.raft = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--map" => a.map = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--pool" => a.pool = Some(num(it.next())),
-            "--pg" => a.pg = Some(num(it.next())),
+            "--pg" => {
+                let n = num(it.next());
+                a.pg = Some(n);
+                a.pg_list.push(n);
+            }
+            "--deep" => a.deep = true,
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
             "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
@@ -544,7 +555,7 @@ fn main() {
                     ),
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
-                    "scrub" => matches!(sub, Some("set" | "status" | "pgs")),
+                    "scrub" => matches!(sub, Some("set" | "status" | "pgs" | "start")),
                     "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
                     "pool" => {
                         matches!(
@@ -696,6 +707,9 @@ fn main() {
         || (a.heat.is_some() && a.usage)
         || (a.overdue && cmd != "scrub pgs")
         || (cmd == "scrub pgs" && a.pool.is_none())
+        || (a.deep && cmd != "scrub start")
+        || (cmd == "scrub start" && a.pool.is_none())
+        || (a.pg_list.len() > 1 && cmd != "scrub start")
         || (a.retention_days.is_some() && cmd != "audit settings")
         || (cmd == "snapshot group") == a.ids.is_empty()
         || (cmd == "snapshot group-delete") != a.group.is_some()
@@ -1009,6 +1023,32 @@ where
             show(a, &r, || hyperstor_ctl::scrub_status_text(&r));
             return Ok(Next::Exit(0));
         }
+        "scrub start" => {
+            let pool = a.pool.unwrap_or_default();
+            let r = client
+                .start_scrub(pb::StartScrubRequest {
+                    pool,
+                    pgs: a.pg_list.clone(),
+                    deep: a.deep,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "pool {pool}: scrubbing {} PG(s){}: operation {} (hyperstorctl op watch --id {})\n",
+                    op.total,
+                    if a.deep { " deep" } else { "" },
+                    op.id,
+                    op.id
+                )
+            });
+            return Ok(match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            });
+        }
         "scrub pgs" => {
             let pool = a.pool.unwrap_or_default();
             let r = client
@@ -1132,7 +1172,13 @@ where
             };
         }
         "audit" => return audit(AuditServiceClient::new(transport, config), cmd, a).await,
-        "scrub" => return scrub(ClusterServiceClient::new(transport, config), cmd, a).await,
+        "scrub" => {
+            let ops = OperationServiceClient::new(transport.clone(), config.clone());
+            return match scrub(ClusterServiceClient::new(transport, config), cmd, a).await? {
+                Next::Follow(id) => follow(&ops, id, a).await,
+                n => Ok(n),
+            };
+        }
         "op" | "drain" => {
             return operations(
                 NodeServiceClient::new(transport.clone(), config.clone()),

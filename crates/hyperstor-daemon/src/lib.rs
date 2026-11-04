@@ -54,7 +54,7 @@ use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
 use hyperstor_reactor::{block_on, spawn, time::sleep};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -533,6 +533,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().backfiller());
                         spawn(st.clone().strays(stray_grace));
                         spawn(st.clone().scrubbers(scrub_interval));
+                        spawn(st.clone().asked_scrubs());
                         if !kv_jobs.off {
                             spawn(st.clone().kv_ranges(kv_jobs));
                         }
@@ -660,6 +661,11 @@ struct ShardState {
     no_digests: Cell<bool>,
     /// Pools with a scrubber running on this device.
     scrubbing: RefCell<HashSet<u32>>,
+    /// PGs the map service asked to scrub ahead of their turn (D229,
+    /// D230), whether deep; and the PGs being scrubbed now, so the pass
+    /// and these never scrub one twice at once.
+    scrub_asked: RefCell<BTreeMap<(u32, u32), bool>>,
+    scrubbing_pgs: RefCell<HashSet<(u32, u32)>>,
     /// `NodeConfig::push_part_bytes`, resolved.
     push_part_bytes: Cell<usize>,
     /// Objects a deep scrub found damaged (a block failed its CRC), until a
@@ -1204,6 +1210,8 @@ impl ShardState {
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
             scrubbing: RefCell::new(HashSet::new()),
+            scrub_asked: RefCell::new(BTreeMap::new()),
+            scrubbing_pgs: RefCell::new(HashSet::new()),
             push_part_bytes: Cell::new(PUSH_PART_BYTES),
             damaged: RefCell::new(HashSet::new()),
             watched: RefCell::new(HashMap::new()),
@@ -2065,6 +2073,21 @@ impl ShardState {
                         }
                         let _ = tx.send(encode_frame(req, &Msg::FenceOk, &[]));
                     });
+                }
+                Msg::ScrubNow { .. } if self.cut_off() => {}
+                Msg::ScrubNow { pgs, deep, cancel } => {
+                    let mut asked = self.scrub_asked.borrow_mut();
+                    let mut queued = 0;
+                    for k in pgs {
+                        if cancel {
+                            asked.remove(&k);
+                        } else if self.scrubs(k).is_some() {
+                            *asked.entry(k).or_default() |= deep;
+                            queued += 1;
+                        }
+                    }
+                    drop(asked);
+                    reply(&Msg::ScrubNowOk { queued }, &[]);
                 }
                 Msg::MapPush { map, .. } => {
                     if let Ok(m) = ClusterMap::decode(&map) {
@@ -5047,6 +5070,24 @@ impl ShardState {
         self.scrubbing.borrow_mut().remove(&pool);
     }
 
+    /// Scrubs the PGs the map service asked for (`ScrubNow`; D229, D230),
+    /// one at a time, the oldest asked first, outside the pass: a deep one
+    /// reads at the pool's deep rate, and the pass goes on around them.
+    async fn asked_scrubs(self: Rc<Self>) {
+        loop {
+            let next = self.scrub_asked.borrow_mut().pop_first();
+            let Some((k, deep)) = next else {
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            };
+            if let Some(info) = self.scrubs(k) {
+                self.scrub_pg(k.0, k.1, &info, deep).await;
+            }
+            // A breath between PGs: a recovery may ask for hundreds.
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// When each of `pool`'s PGs was last scrubbed, light and deep, in Unix
     /// seconds (0: never), as the map service records them (D227); `None`
     /// if it doesn't answer, or is from before the records.
@@ -5199,6 +5240,15 @@ impl ShardState {
     /// repaired from this copy when a majority of the copies agree with
     /// it, and otherwise reported, not guessed at.
     async fn scrub_pg(&self, pool: u32, pg: u32, info: &PgInfo, deep: bool) {
+        // Once at a time: the pass and the asked-for scrubs both get here.
+        if !self.scrubbing_pgs.borrow_mut().insert((pool, pg)) {
+            return;
+        }
+        self.scrub_pg_once(pool, pg, info, deep).await;
+        self.scrubbing_pgs.borrow_mut().remove(&(pool, pg));
+    }
+
+    async fn scrub_pg_once(&self, pool: u32, pg: u32, info: &PgInfo, deep: bool) {
         let began = std::time::Instant::now();
         let mut d = ScrubDetail {
             started: unix_secs(),

@@ -1,0 +1,10 @@
+title = "Scrubbing now and after recovery (D229, D230)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-04
+updated = 2026-11-04
+milestone = "AD3"
+branch = "feat/scrub-now"
+prs = [188]
+now = "Stage 3 of 28-scrub.md: StartScrub as an operation and hyperstorctl scrub start; each PG whose members changed is scrubbed light, holes checked, a minute after it is clean (I267)"
+next = "Stage 4: the UI's Scrub card per pool and the PG grid's Scrub view"

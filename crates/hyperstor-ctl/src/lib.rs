@@ -821,6 +821,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.WeakenScrubSettings", "scrub set --reason"),
     ("ClusterService.GetScrubStatus", "scrub status"),
     ("ClusterService.ListPgScrubs", "scrub pgs"),
+    ("ClusterService.StartScrub", "scrub start"),
     (
         "ClusterService.SetPoolDevice",
         "pool add-device, pool remove-device",
