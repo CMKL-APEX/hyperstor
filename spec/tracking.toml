@@ -708,7 +708,6 @@ spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "I264"]
 status = "done"
 tests = [
     "cluster::s3_gateway_serves_an_sdk",
-    "cluster::s3_objects_match_a_model",
     "hyperstor_s3::sigv4::tests::signed_headers_match_aws",
     "hyperstor_s3::sigv4::tests::presigned_urls_match_aws",
     "hyperstor_s3::sigv4::tests::chunk_signatures_match_aws",
