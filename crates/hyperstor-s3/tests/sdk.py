@@ -148,6 +148,8 @@ assert [(o["Key"], o["Size"]) for o in r["Contents"]] == [("a/b/big", len(big)),
 
 # Presigned URLs, as a browser or curl would use them.
 ctx = ssl.create_default_context(cafile=CA)
+# As Python 3.13 checks by default, whatever this Python's default.
+ctx.verify_flags |= ssl.VERIFY_X509_STRICT
 url = s3.generate_presigned_url("get_object", Params={"Bucket": "sdk", "Key": "a/small.txt"}, ExpiresIn=60)
 assert urllib.request.urlopen(url, context=ctx).read() == small
 put = s3.generate_presigned_url("put_object", Params={"Bucket": "sdk", "Key": "presigned"}, ExpiresIn=60)
