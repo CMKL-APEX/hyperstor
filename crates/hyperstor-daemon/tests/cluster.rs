@@ -84,8 +84,6 @@ struct Cluster {
     read_timeout: std::time::Duration,
     /// Stray grace given to restarted nodes (D177); zero: the default.
     stray_grace: std::time::Duration,
-    /// Scrub's hole repair on every node (D223).
-    hole_repair: bool,
     /// Jobs on key–value ranges (25-kv-ranges.md §28.7).
     kv: KvJobs,
 }
@@ -230,6 +228,8 @@ impl Cluster {
         pool.chunk_size = CHUNK;
         // The tests' PG counts are theirs: no autoscaler (D184).
         pool.autoscale = false;
+        // Scrub's hole repair (D223), the pool's setting (D224).
+        pool.scrub.hole_repair = hole_repair;
         map.add_pool(pool);
         // A one-copy cache pool (D45).
         map.add_pool(hyperstor_meta::PoolInfo {
@@ -248,6 +248,7 @@ impl Cluster {
             split: None,
             autoscale: false,
             cache_grace: hyperstor_meta::CACHE_GRACE_SECS,
+            scrub: Default::default(),
         });
         map.ensure_meta_pool();
         map.recompute();
@@ -327,7 +328,6 @@ impl Cluster {
                     defer_max: None,
                     scrub_interval: scrub,
                     no_digests: false,
-                    hole_repair,
                 }))
             })
             .collect();
@@ -349,7 +349,6 @@ impl Cluster {
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
-            hole_repair,
             kv,
         }
     }
@@ -404,7 +403,6 @@ impl Cluster {
             defer_max: None,
             scrub_interval: self.scrub,
             no_digests,
-            hole_repair: self.hole_repair,
         }));
     }
 

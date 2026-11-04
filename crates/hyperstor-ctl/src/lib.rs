@@ -663,6 +663,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetEndpoints", "device endpoints"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
+    ("ClusterService.SetScrubSettings", "scrub set"),
+    ("ClusterService.WeakenScrubSettings", "scrub set --reason"),
     (
         "ClusterService.SetPoolDevice",
         "pool add-device, pool remove-device",

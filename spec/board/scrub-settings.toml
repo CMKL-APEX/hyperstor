@@ -1,0 +1,10 @@
+title = "Scrub settings per pool in the map, the API and the CLI (D224–D226)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-04
+updated = 2026-11-04
+milestone = "AD3"
+branch = "feat/scrub-settings"
+prs = [184]
+now = "Stage 1 of 28-scrub.md: each pool's scrub settings in the map, followed by every storage node; SetScrubSettings and WeakenScrubSettings (reason, step-up), hyperstorctl scrub set; health warns while scrub is reduced (I263)"
+next = "Deploy, removing the pilot's scrub drop-in; then stage 2: per-PG reports through Raft and the overdue and unchecked health checks (D227, D228)"

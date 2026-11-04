@@ -116,13 +116,13 @@ members, as long as there are at least `min_size` of them. Below
   Damaged copies are repaired from a copy whose CRCs match, and an
   inconsistency that can't be decided is reported, not guessed at.
 - **As built** (HS2, 01-implementation-notes.md I58): light scrub by the
-  same digests, every `hyperstord --scrub-hours` (default 24) for each
-  clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
+  same digests, every pool's `scrub.hours` (default 24; D224, I263) for
+  each clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
   the copies agree with it, and otherwise reported. The first pass after
   a start and every seventh are **deep** (I60): each member first reads
   every block of the PG, checking its CRC (08-engine.md §7.2), at most
-  64 MiB/s per device, and reports an object that fails as damaged,
+  the pool's deep rate per device (64 MiB/s by default; D224), and reports an object that fails as damaged,
   which never counts toward a majority; the majority's copy replaces it.
   When the majority outvotes the primary's own copy, the primary fetches
   a majority member's copy first (I104). PGs left with unresolved
@@ -147,8 +147,8 @@ members, as long as there are at least `min_size` of them. Below
   agree, scrub also compares which blocks each copy holds. Copies that
   differ there hold zeros where another has holes, from a dense copy made
   before I243; the copy with the fewest blocks replaces them, whatever the
-  majority, with `hyperstord --hole-repair`. Without it, scrub only logs
-  and counts them. A PG whose check is skipped (a member doesn't answer
+  majority, unless the pool's hole repair is `report` (D225). Then scrub
+  only logs and counts them. A PG whose check is skipped (a member doesn't answer
   or is from before `Holds`, or the PG changes while checking) is logged
   with the reason and counted (I253), so a pass that found nothing can be
   told from one that didn't look.

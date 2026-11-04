@@ -1958,3 +1958,82 @@ fn snapshots_through_hyperstorctl() {
     c.ctl(&["snapshot", "delete", "--id", &v]).expect(2);
     c.ctl(&["volumes", "--epoch", "1"]).expect(2);
 }
+
+/// D224, D226: scrub's settings are each pool's, set with `scrub set`;
+/// weakening them is refused without a reason, kept in the audit log, and
+/// health warns while they are weaker than the defaults.
+#[test]
+fn scrub_settings_are_set_and_weakening_needs_a_reason() {
+    let c = Cluster::all_in_one("scrubset", 3);
+    let r = c
+        .ctl(&[
+            "scrub",
+            "set",
+            "--pool",
+            "1",
+            "--hours",
+            "12",
+            "--deep-every",
+            "3",
+        ])
+        .ok();
+    assert!(
+        r.has("pool 1: scrub every 12 hours, deep every 3 passes, holes repaired"),
+        "{}",
+        r.out
+    );
+    // Published once fenced, as every map change.
+    wait_for("the settings in the published map", 20, || {
+        let s = c.ctl(&["status", "--json"]).ok();
+        (s.has("\"hours\":12") && s.has("\"deep_every\":3")).then_some(())
+    });
+    // Weaker than the defaults: refused without a reason, saying what.
+    let refused = c
+        .ctl(&["scrub", "set", "--pool", "1", "--hole-repair", "report"])
+        .expect(1);
+    assert!(
+        refused.has("holes only reported") && refused.has("--reason"),
+        "{}",
+        refused.out
+    );
+    assert!(c.ctl(&["status"]).ok().has("health  ok"));
+    let r = c
+        .ctl(&[
+            "scrub",
+            "set",
+            "--pool",
+            "1",
+            "--hole-repair",
+            "report",
+            "--reason",
+            "dry run before a fix",
+        ])
+        .ok();
+    assert!(
+        r.has("weaker than the defaults: holes only reported"),
+        "{}",
+        r.out
+    );
+    wait_for("health to warn", 20, || {
+        // Status exits 1 while health warns.
+        let st = c.ctl(&["status"]);
+        (st.has("health  warn") && st.has("scrub reduced: holes only reported")).then_some(())
+    });
+    wait_for("the change and its reason in the audit log", 20, || {
+        let a = c
+            .ctl(&["audit", "list", "--op", "WeakenScrubSettings"])
+            .ok();
+        (a.has("hole_repair=report") && a.has("dry run before a fix")).then_some(())
+    });
+    // Back to the defaults: no reason needed, and the warning goes.
+    c.ctl(&["scrub", "set", "--pool", "1", "--hole-repair", "repair"])
+        .ok();
+    wait_for("the warning to go", 20, || {
+        c.ctl(&["status"]).has("health  ok").then_some(())
+    });
+    // Out of range, and a reason with nothing to change.
+    c.ctl(&["scrub", "set", "--pool", "1", "--hours", "1000"])
+        .expect(1);
+    c.ctl(&["scrub", "set", "--pool", "1", "--reason", "x"])
+        .expect(2);
+}

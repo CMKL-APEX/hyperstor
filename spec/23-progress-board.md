@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 2 | 20 |
+| 7 | 0 | 2 | 21 |
 
 ## In progress
 
@@ -33,13 +33,14 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin`, [#174](https://github.com/CMKL-APEX/hyperstor/pull/174) | Proposal settled 2026-11-04 (28-scrub.md §31; the owner accepted D224–D230 as written): settings per pool in the map, step-up to weaken, each PG's last scrub through Raft, health checks, scrub on demand and after recovery | Merge #174; then build: settings in the map and the API and CLI first, then reports and health, scrub on demand and after recovery, the UI last | 2026-11-04 |
+| **Scrub settings per pool in the map, the API and the CLI (D224–D226)** (`scrub-settings`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-settings`, [#184](https://github.com/CMKL-APEX/hyperstor/pull/184) | Stage 1 of 28-scrub.md: each pool's scrub settings in the map, followed by every storage node; SetScrubSettings and WeakenScrubSettings (reason, step-up), hyperstorctl scrub set; health warns while scrub is reduced (I263) | Deploy, removing the pilot's scrub drop-in; then stage 2: per-PG reports through Raft and the overdue and unchecked health checks (D227, D228) | 2026-11-04 |
 | **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin`, [#174](https://github.com/CMKL-APEX/hyperstor/pull/174) | 2026-11-04 |
 | **Load and drives: heat, device service time, SMART, the Advisor** (`perf-heat`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `feat/perf-heat`, [#164](https://github.com/CMKL-APEX/hyperstor/pull/164), [#166](https://github.com/CMKL-APEX/hyperstor/pull/166) | 2026-11-02 |
 | **Fullness thresholds: D27 revised, D182, D183** (`fullness`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `board/fullness-done`, [#128](https://github.com/CMKL-APEX/hyperstor/pull/128), [#133](https://github.com/CMKL-APEX/hyperstor/pull/133), [#136](https://github.com/CMKL-APEX/hyperstor/pull/136), [#139](https://github.com/CMKL-APEX/hyperstor/pull/139), [#142](https://github.com/CMKL-APEX/hyperstor/pull/142), [#144](https://github.com/CMKL-APEX/hyperstor/pull/144), [#149](https://github.com/CMKL-APEX/hyperstor/pull/149) | 2026-11-02 |
 | **Copies and moves of volumes between pools** (`copy-volume`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS4 | `feat/copy-volume`, [#159](https://github.com/CMKL-APEX/hyperstor/pull/159) | 2026-11-02 |
@@ -95,5 +96,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 12 | 0 | 0 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 13 | 0 | 1 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

@@ -411,7 +411,6 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                         .unwrap_or(0),
                 ),
                 no_digests: false,
-                hole_repair: false,
             })
         })
         .collect();
@@ -685,7 +684,6 @@ fn adminload_suite(secs: f64) {
                 defer_max: None,
                 scrub_interval: std::time::Duration::ZERO,
                 no_digests: false,
-                hole_repair: false,
             })
         })
         .collect();
@@ -1475,7 +1473,6 @@ fn failover_suite() {
                         defer_max: None,
                         scrub_interval: std::time::Duration::ZERO,
                         no_digests: false,
-                        hole_repair: false,
                     }))
                 })
                 .collect();
@@ -1600,7 +1597,6 @@ fn rejoin_suite() {
                 defer_max: None,
                 scrub_interval: Duration::ZERO,
                 no_digests: false,
-                hole_repair: false,
             })
         };
         let mut nodes: Vec<Option<NodeHandle>> = listeners
