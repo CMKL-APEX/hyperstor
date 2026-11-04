@@ -96,8 +96,10 @@ allocator to coordinate, as volume ids.
 - Each store has one **root**: a `kv` object in `.meta` with a fixed name
   (the store id) (D197). Its table holds:
   - `t` + table name → the table record: a format byte, the id, the
-    index and data pools. Later fields (settings) are appended, and a
-    reader skips those it doesn't know. This is D197's bucket record;
+    index and data pools, and its user's own record (S3's bucket record:
+    tenant and creation time, I262). Later fields (settings) are
+    appended, and a reader skips those it doesn't know. This is D197's
+    bucket record;
   - `i` + table id → the table name, so a range can find its table;
   - `m` + table id + start row → range id and epoch, one entry per range.
 - **The root is a map, and range objects have the final word.** A range's
@@ -221,6 +223,13 @@ merge's entries can't collide (I261).
   again: nothing. The objects named must be the batch's alone (S3's data
   objects have unique names): a name reused after its entry was written
   would be deleted.
+- **Series.** An entry may name a prefix and a count: the objects
+  prefix + 0 … prefix + (count − 1), numbers as big-endian u32. Why: a
+  5 TiB S3 object has over a million chunks, one series per part (I262).
+- **Deleting a range drains it first**: a table's delete and the
+  leftover check delete what a range's queue names before the range.
+  Why: the queue goes with the range object, and its objects would
+  otherwise stay forever (I262).
 
 ### 28.7 The library and the daemon
 

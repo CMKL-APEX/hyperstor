@@ -692,6 +692,36 @@ title = "Key-value transactions"
 id = "HS12"
 title = "S3 gateway"
 
+[[milestone.item]]
+what = "The object layer: buckets, PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up"
+spec = ["14-s3.md §14.6", "14-s3.md §14.7", "D192", "D197", "D198", "I262"]
+status = "done"
+tests = [
+    "cluster::s3_objects_match_a_model",
+    "hyperstor_s3::layout::tests::records_decode_as_encoded",
+    "hyperstor_s3::layout::tests::uploads_sort_by_expiry_and_chunks_by_index",
+]
+
+[[milestone.item]]
+what = "The HTTP gateway: path-style, SigV4, S3's errors (stage 2)"
+spec = ["14-s3.md §14.2", "14-s3.md §14.7", "D195"]
+status = "planned"
+
+[[milestone.item]]
+what = "Access keys and placements in the map service, `hyperstorctl s3`, the `s3` role in the installer (stage 3)"
+spec = ["14-s3.md §14.2", "D231", "D232", "D233"]
+status = "planned"
+
+[[milestone.item]]
+what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4)"
+spec = ["14-s3.md §14.2", "D193", "D194", "D196"]
+status = "planned"
+
+[[milestone.item]]
+what = "Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5)"
+spec = ["14-s3.md §14.2", "D199"]
+status = "planned"
+
 [[milestone]]
 id = "HS13"
 title = "S3 over RDMA"

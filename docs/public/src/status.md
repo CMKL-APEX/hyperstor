@@ -25,7 +25,7 @@ covered by tests that run on every change.
 | HS10b: Cache pools and priority classes | Planned |
 | HS11: Key-value ranges | Done |
 | HS11b: Key-value transactions | Planned |
-| HS12: S3 gateway | Planned |
+| HS12: S3 gateway | In progress |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
 | HS15: Tenancy: quotas and fair share between tenants | Planned |
@@ -128,6 +128,16 @@ covered by tests that run on every change.
 | Splits and merges by each range's primary, resumed after failover | Done |
 | Range objects nothing names deleted an hour after they appear | Done |
 | The deletion queue, drained by the range's primary | Done |
+
+## HS12: S3 gateway
+
+| Feature | Status |
+|---|---|
+| The object layer: buckets, PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up | Done |
+| The HTTP gateway: path-style, SigV4, S3's errors (stage 2) | Planned |
+| Access keys and placements in the map service, `hyperstorctl s3`, the `s3` role in the installer (stage 3) | Planned |
+| Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Planned |
+| Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5) | Planned |
 
 ## HS18: Pools and devices at run time
 
