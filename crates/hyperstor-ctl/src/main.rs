@@ -986,22 +986,36 @@ where
     <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
     T::ResponseBody: Unpin,
 {
-    let req = pb::SetScrubSettingsRequest {
-        pool: a.pool.unwrap_or_default(),
-        hours: a.scrub_hours,
-        deep_every: a.deep_every,
-        hole_repair: a.hole_repair.clone(),
-        deep_rate_mib: a.deep_rate,
-        reason: a.reason.clone().unwrap_or_default(),
-        ..Default::default()
-    };
-    let r = if a.reason.is_some() {
-        client.weaken_scrub_settings(req).await
+    let r = if let Some(reason) = &a.reason {
+        let req = pb::WeakenScrubSettingsRequest {
+            pool: a.pool.unwrap_or_default(),
+            hours: a.scrub_hours,
+            deep_every: a.deep_every,
+            hole_repair: a.hole_repair.clone(),
+            deep_rate_mib: a.deep_rate,
+            reason: reason.clone(),
+            ..Default::default()
+        };
+        client
+            .weaken_scrub_settings(req)
+            .await
+            .map(|r| r.into_owned().settings)
     } else {
-        client.set_scrub_settings(req).await
+        let req = pb::SetScrubSettingsRequest {
+            pool: a.pool.unwrap_or_default(),
+            hours: a.scrub_hours,
+            deep_every: a.deep_every,
+            hole_repair: a.hole_repair.clone(),
+            deep_rate_mib: a.deep_rate,
+            ..Default::default()
+        };
+        client
+            .set_scrub_settings(req)
+            .await
+            .map(|r| r.into_owned().settings)
     };
-    let r = match r {
-        Ok(r) => r.into_owned(),
+    let settings = match r {
+        Ok(s) => s,
         Err(e) if hyperstor_ctl::reason_of(&e).as_deref() == Some("weakens_scrub") => {
             let msg = e.message.as_deref().unwrap_or("this weakens scrub");
             let msg = msg.split(": use").next().unwrap_or(msg);
@@ -1014,7 +1028,7 @@ where
         }
         Err(e) => return Err(e),
     };
-    let s = r.settings.into_option().unwrap_or_default();
+    let s = settings.into_option().unwrap_or_default();
     show(a, &s, || {
         let mut t = format!(
             "pool {}: scrub every {} hours, deep every {} passes, holes {}, deep rate {} MiB/s\n",

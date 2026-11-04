@@ -100,7 +100,7 @@ service ClusterService {
   // 32 MiB/s (D226). Needs a reason, kept in the audit event; through
   // hyperstor-mgmt, a login of the last 10 minutes (step-up). Health warns
   // while a pool's settings are weaker than the defaults. Write.
-  rpc WeakenScrubSettings(SetScrubSettingsRequest) returns (SetScrubSettingsResponse);
+  rpc WeakenScrubSettings(WeakenScrubSettingsRequest) returns (WeakenScrubSettingsResponse);
 
   // Adds a device to a pool beyond its classes, or removes one of them
   // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
@@ -630,13 +630,28 @@ message SetScrubSettingsRequest {
   optional string hole_repair = 4 [json_name = "hole_repair"];
   // 8 to 1024.
   optional uint32 deep_rate_mib = 5 [json_name = "deep_rate_mib"];
-  // Why: required by WeakenScrubSettings when the change weakens scrub,
-  // and kept in the audit event.
+  // Why, kept in the audit event; optional here.
   string reason = 6;
 }
 
 message SetScrubSettingsResponse {
   // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  ScrubSettings settings = 2;
+}
+
+// As SetScrubSettingsRequest; the reason is required.
+message WeakenScrubSettingsRequest {
+  uint32 pool = 1;
+  optional uint32 hours = 2;
+  optional uint32 deep_every = 3 [json_name = "deep_every"];
+  optional string hole_repair = 4 [json_name = "hole_repair"];
+  optional uint32 deep_rate_mib = 5 [json_name = "deep_rate_mib"];
+  // Why scrub is weakened, kept in the audit event (D226).
+  string reason = 6;
+}
+
+message WeakenScrubSettingsResponse {
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   ScrubSettings settings = 2;
 }

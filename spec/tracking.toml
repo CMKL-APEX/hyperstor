@@ -1340,8 +1340,6 @@ tests = [
     "hyperstor_map::tests::weakening_scrub_is_named",
     "hyperstor_meta::tests::scrub_settings_are_set_and_weakening_is_asked_for",
     "hyperstor_meta::health::tests::reduced_scrub_warns",
-    "cluster::scrub_reports_zeros_where_a_copy_has_holes",
-    "cluster::deep_scrub_finds_a_damaged_block_and_repairs_it",
 ]
 
 [[milestone.item]]

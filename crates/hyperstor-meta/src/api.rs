@@ -162,15 +162,26 @@ fn refused(principal: &str, op: &str, target: &str, e: &ConnectError) {
     );
 }
 
+/// The fields of `SetScrubSettings` and `WeakenScrubSettings`, which
+/// have the same request.
+struct ScrubAsk<'a> {
+    pool: u32,
+    hours: Option<u32>,
+    deep_every: Option<u32>,
+    hole_repair: Option<&'a str>,
+    deep_rate_mib: Option<u32>,
+    reason: &'a str,
+}
+
 impl Api {
     /// `SetScrubSettings`, or with `weaken`, `WeakenScrubSettings`
     /// (28-scrub.md §31.3; D224, D226).
     async fn scrub_settings(
         &self,
         ctx: RequestContext,
-        req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
+        req: ScrubAsk<'_>,
         weaken: bool,
-    ) -> ServiceResult<pb::SetScrubSettingsResponse> {
+    ) -> Result<(u64, crate::ScrubSettings), ConnectError> {
         let rpc = if weaken {
             "WeakenScrubSettings"
         } else {
@@ -265,12 +276,7 @@ impl Api {
             },
         );
         match r {
-            Some(Ok((map_epoch, _, now))) => Ok(pb::SetScrubSettingsResponse {
-                map_epoch,
-                settings: scrub_pb(&now).into(),
-                ..Default::default()
-            }
-            .into()),
+            Some(Ok((map_epoch, _, now))) => Ok((map_epoch, now)),
             Some(Err(crate::ScrubRefused::Weakens(w))) => Err(with_reason(
                 ConnectError::failed_precondition(format!(
                     "this weakens scrub ({}): use WeakenScrubSettings with a reason",
@@ -1242,15 +1248,43 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
     ) -> ServiceResult<pb::SetScrubSettingsResponse> {
-        self.scrub_settings(ctx, req, false).await
+        let ask = ScrubAsk {
+            pool: req.pool,
+            hours: req.hours,
+            deep_every: req.deep_every,
+            hole_repair: req.hole_repair,
+            deep_rate_mib: req.deep_rate_mib,
+            reason: req.reason,
+        };
+        let (map_epoch, now) = self.scrub_settings(ctx, ask, false).await?;
+        Ok(pb::SetScrubSettingsResponse {
+            map_epoch,
+            settings: scrub_pb(&now).into(),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn weaken_scrub_settings(
         &self,
         ctx: RequestContext,
-        req: ServiceRequest<'_, pb::SetScrubSettingsRequest>,
-    ) -> ServiceResult<pb::SetScrubSettingsResponse> {
-        self.scrub_settings(ctx, req, true).await
+        req: ServiceRequest<'_, pb::WeakenScrubSettingsRequest>,
+    ) -> ServiceResult<pb::WeakenScrubSettingsResponse> {
+        let ask = ScrubAsk {
+            pool: req.pool,
+            hours: req.hours,
+            deep_every: req.deep_every,
+            hole_repair: req.hole_repair,
+            deep_rate_mib: req.deep_rate_mib,
+            reason: req.reason,
+        };
+        let (map_epoch, now) = self.scrub_settings(ctx, ask, true).await?;
+        Ok(pb::WeakenScrubSettingsResponse {
+            map_epoch,
+            settings: scrub_pb(&now).into(),
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn set_device_weight(
