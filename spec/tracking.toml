@@ -703,9 +703,23 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The HTTP gateway: path-style, SigV4, S3's errors (stage 2)"
-spec = ["14-s3.md §14.2", "14-s3.md §14.7", "D195"]
-status = "planned"
+what = "The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors, replaced chunks kept 15 minutes (stage 2)"
+spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "I264"]
+status = "done"
+tests = [
+    "cluster::s3_gateway_serves_an_sdk",
+    "hyperstor_s3::sigv4::tests::signed_headers_match_aws",
+    "hyperstor_s3::sigv4::tests::presigned_urls_match_aws",
+    "hyperstor_s3::sigv4::tests::chunk_signatures_match_aws",
+    "hyperstor_s3::sigv4::tests::paths_and_queries_encode_as_aws",
+    "hyperstor_s3::chunked::tests::unsigned_bodies_carry_their_checksum_after",
+    "hyperstor_s3::dates::tests::times_print_and_parse",
+    "hyperstor_s3::gateway::tests::ranges_are_read_as_s3_reads_them",
+    "hyperstor_s3::gateway::tests::listings_resume_after_a_name_or_common_prefix",
+    "hyperstor_s3::gateway::tests::paths_name_buckets_and_objects",
+    "hyperstor_s3::keys::tests::keys_parse",
+    "hyperstor_s3::xml::tests::text_is_escaped",
+]
 
 [[milestone.item]]
 what = "Access keys and placements in the map service, `hyperstorctl s3`, the `s3` role in the installer (stage 3)"

@@ -370,6 +370,8 @@ pub enum Change {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Batch {
     pub changes: Vec<Change>,
+    /// Seconds what it collects is kept before it is deleted (§28.6).
+    pub linger: u64,
 }
 
 impl Batch {
@@ -420,6 +422,14 @@ impl Batch {
         self
     }
 
+    /// Keeps what the batch collects for `secs` seconds before it is
+    /// deleted: a reader that found the old version may still read it
+    /// (14-s3.md §14.6).
+    pub fn linger(&mut self, secs: u64) -> &mut Self {
+        self.linger = secs;
+        self
+    }
+
     /// The batch as operations on its range. The objects it collects
     /// become one queue entry, under a random id made here, so that the
     /// batch sent again (after an error that leaves it unknown whether it
@@ -443,7 +453,7 @@ impl Batch {
         }
         if !collect.is_empty() {
             ops.push(WireOp::KvPut(
-                queue_key(random_u128()),
+                queue_key(now_secs() + self.linger, random_u128()),
                 encode_queue(&collect),
             ));
         }

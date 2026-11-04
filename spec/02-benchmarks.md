@@ -1585,3 +1585,32 @@ probes this time.
    15,827 → 21,522 ops/s, at QD1 1,795 → 2,643). One run of each, with
    pool 1 now on file devices only, so not read as a change in the code.
    1 MiB reads at QD4 are as in finding 4 above.
+
+## 2026-11-04: the S3 object layer's PUT and GET, in process (I264)
+
+Whether a PUT writing one chunk at a time is fast enough (I262), and
+what four in flight change (`Config::in_flight`). On dev-2, shared with
+other sessions: a 3-node in-process cluster (one 256 MiB memory device
+each, pool 1 replicated 3 ways, loopback TCP), the object layer on one
+client reactor; four 16 MiB PUTs in 4 MiB chunks, written in 1 MiB
+pieces, then one object read back 4 MiB at a time. Two rounds of each,
+alternating.
+
+```sh
+cargo test --release -p hyperstor-daemon --test cluster s3_put_throughput -- --ignored --nocapture
+```
+
+| Chunk writes in flight | PUT (MiB/s) | GET, one chunk at a time (MiB/s) |
+|---|---|---|
+| 1 | 90, 177 | 259, 665 |
+| 4 | 118, 145 | 698, 715 |
+
+### Findings
+
+1. **Not settled here.** The rounds vary by 2× and overlap: every node,
+   the client and the replication share one host's loopback and memory,
+   so this measures the software path, not disks or a network. Four in
+   flight is no worse; the pilot decides (I264's open issue).
+2. **The first GET round was slow** (259 MiB/s) and later ones not, with
+   nothing else changed: warm-up of the in-process cluster, not the
+   gateway.

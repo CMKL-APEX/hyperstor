@@ -208,9 +208,10 @@ Range R holds rows `[a, c)` at epoch E:
 ### 28.6 The deletion queue
 
 D192's collection records, in a form other users can share: a batch on a
-row may also add an entry to the range's queue (`q` + a random 128-bit
-id), naming objects to delete (pool, namespace, name). The range's
-primary deletes them in the background, then removes each entry. A split
+row may also add an entry to the range's queue (`q` + the time it is
+due, Unix seconds as a big-endian u64, + a random 128-bit id), naming
+objects to delete (pool, namespace, name). The range's primary deletes
+them in the background once they are due, then removes each entry. A split
 leaves the queue with the lower range; a merge moves the right range's
 entries into the left one with its rows. Why: the entry is written
 atomically with the change that orphans the objects, nothing is
@@ -226,8 +227,15 @@ merge's entries can't collide (I261).
 - **Series.** An entry may name a prefix and a count: the objects
   prefix + 0 … prefix + (count − 1), numbers as big-endian u32. Why: a
   5 TiB S3 object has over a million chunks, one series per part (I262).
+- **Due later.** A batch may keep what it collects for a while
+  (`Batch::linger`): its entry is due that many seconds after the
+  client's clock. The primary looks only at entries due by its own
+  clock, the first bytes of their keys, and again at each sweep. Why: an
+  S3 GET that read the old version finishes before its chunks go (I264);
+  clocks a few seconds apart only move that by as much.
 - **Deleting a range drains it first**: a table's delete and the
-  leftover check delete what a range's queue names before the range.
+  leftover check delete what a range's queue names before the range,
+  due or not.
   Why: the queue goes with the range object, and its objects would
   otherwise stay forever (I262).
 

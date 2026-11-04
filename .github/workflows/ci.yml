@@ -125,10 +125,18 @@ jobs:
     # The crash test's seed count (spec/01-implementation-notes.md): the
     # default 300 on pushes and pull requests (empty means the default),
     # 5,000 nightly.
+    # AWS's Python SDK, for the S3 gateway's test (s3_gateway_serves_an_sdk),
+    # pinned, in a virtualenv of its own.
+    - name: Install boto3
+      run: |
+        python3 -m venv "$RUNNER_TEMP/s3sdk"
+        "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.38.46
     - name: Run tests
       id: tests
       env:
         HS_CRASH_SEEDS: ${{ github.event_name == 'schedule' && '5000' || '' }}
+        HS_S3_SDK_PYTHON: ${{ runner.temp }}/s3sdk/bin/python
+        HS_S3_SDK_REQUIRED: "1"
       run: |
         set -o pipefail
         cargo test --workspace --release --no-fail-fast 2>&1 | tee target/test.log

@@ -614,13 +614,14 @@ pub async fn resume(cl: &Client, pool: u32, r: &Range) -> Result<(), KvError> {
 const DRAIN_PAGE: u32 = 64;
 
 /// Deletes the objects in up to [`DRAIN_PAGE`] entries of range `r`'s
-/// queue, then the entries (§28.6): how many entries were done. An
-/// object is deleted before its entry, so a primary that dies between
-/// leaves the entry, and the next deletes the object again, which is
-/// nothing to delete.
-pub async fn drain(cl: &Client, pool: u32, r: &Range) -> Result<usize, KvError> {
+/// queue due by `now` (Unix seconds; all with `None`), then the entries
+/// (§28.6): how many entries were done. An object is deleted before its
+/// entry, so a primary that dies between leaves the entry, and the next
+/// deletes the object again, which is nothing to delete.
+pub async fn drain(cl: &Client, pool: u32, r: &Range, now: Option<u64>) -> Result<usize, KvError> {
     let name = range_name(r.id);
-    let l = cl.lookup(pool, NS_KV, &name, &[QUEUE], Some(&[QUEUE + 1]), DRAIN_PAGE);
+    let end = now.map_or(vec![QUEUE + 1], queue_due_end);
+    let l = cl.lookup(pool, NS_KV, &name, &[QUEUE], Some(&end), DRAIN_PAGE);
     let Some(l) = l.await? else {
         return Ok(0);
     };
@@ -635,10 +636,10 @@ pub async fn drain(cl: &Client, pool: u32, r: &Range) -> Result<usize, KvError> 
     Ok(l.kv.len())
 }
 
-/// [`drain`] until `r`'s queue is empty: before a range is deleted, so
-/// that what its batches collected isn't left behind.
+/// [`drain`] until `r`'s queue is empty, due or not: before a range is
+/// deleted, so that what its batches collected isn't left behind.
 pub async fn drain_all(cl: &Client, pool: u32, r: &Range) -> Result<(), KvError> {
-    while drain(cl, pool, r).await? > 0 {}
+    while drain(cl, pool, r, None).await? > 0 {}
     Ok(())
 }
 

@@ -24,6 +24,7 @@ hyperstor-reactor = { path = "../hyperstor-reactor" }
 rand.workspace = true
 hyperstor-rpc = { path = "../hyperstor-rpc" }
 hyperstor-s3 = { path = "../hyperstor-s3" }
+hyperstor-pki = { path = "../hyperstor-pki" }
 md-5 = "0.10"
 crc32c.workspace = true
 tempfile = "3"
