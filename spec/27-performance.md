@@ -160,6 +160,12 @@ shown (every 5 s; findings every 10 s).
   smart-log`, vendor latency logs) do, and the `slow-device` rule names
   a drive slowed on purpose (a cgroup I/O limit on its node) within a
   minute.
+  The rule itself is shown in the test cluster
+  (`the_advisor_names_a_device_slowed_on_purpose`, I266): reads on one of
+  four devices made 20 ms slower are named within 12 report windows, no
+  other device is, and the finding goes once the device is fast again.
+  The pilot's drives are still open: the 90 % fill, and a slowdown the
+  kernel imposes rather than the test hook.
 
 ### 30.8 Later
 

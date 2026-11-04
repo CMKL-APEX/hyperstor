@@ -1021,6 +1021,11 @@ impl Meta {
         Ok((version, Some(bytes)))
     }
 
+    /// The leader's view of the devices' load and drives (D218).
+    pub fn perf(&self) -> perf::Perf {
+        self.perf.borrow().clone()
+    }
+
     /// Sets how long a node stays down before its devices are marked out.
     pub fn set_down_out(&self, d: Duration) {
         self.down_out.set(d);
