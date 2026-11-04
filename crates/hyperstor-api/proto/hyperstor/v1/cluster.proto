@@ -111,6 +111,13 @@ service ClusterService {
   // One pool's PGs with their last light and deep scrub (D227). Read.
   rpc ListPgScrubs(ListPgScrubsRequest) returns (ListPgScrubsResponse);
 
+  // Scrubs a pool's PGs, or some of them, now, ahead of their turn
+  // (28-scrub.md §31.6, D229), light or deep, at the pool's deep rate; the
+  // regular schedule goes on around them. An operation: done once each PG
+  // reported a scrub since it started; cancelled, the primaries drop what
+  // they haven't begun. Refused for cache pools. Write.
+  rpc StartScrub(StartScrubRequest) returns (StartScrubResponse);
+
   // Adds a device to a pool beyond its classes, or removes one of them
   // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
   // move as for SetPool, which it is checked as. Write.
@@ -677,6 +684,18 @@ message ScrubTotals {
   uint64 holes_repaired = 8 [json_name = "holes_repaired"];
   // Scrubs that skipped the hole check.
   uint32 holes_skipped = 9 [json_name = "holes_skipped"];
+}
+
+message StartScrubRequest {
+  uint32 pool = 1;
+  // These PGs; every PG of the pool if none.
+  repeated uint32 pgs = 2;
+  // Read every block and check its CRC.
+  bool deep = 3;
+}
+
+message StartScrubResponse {
+  Operation operation = 1;
 }
 
 message ListPgScrubsRequest {

@@ -1406,8 +1406,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Scrub on demand as an operation, scrub after recovery, the UI's Scrub card and PG grid view, and per-pool scrub metrics"
-spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "28-scrub.md §31.8", "D229", "D230"]
+what = "Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean"
+spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267"]
+status = "done"
+tests = [
+    "manage::a_scrub_started_now_finishes_as_an_operation",
+    "cluster::a_scrub_asked_for_runs_now",
+    "cluster::recovered_pgs_are_scrubbed",
+]
+
+[[milestone.item]]
+what = "The UI's Scrub card and PG grid Scrub view, and per-pool scrub metrics"
+spec = ["28-scrub.md §31.8"]
 status = "planned"
 
 [[milestone]]

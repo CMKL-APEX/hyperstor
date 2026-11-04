@@ -2071,3 +2071,32 @@ fn scrub_status_and_pgs_are_shown() {
     // Nothing to warn of.
     assert!(c.ctl(&["status"]).ok().has("health  ok"));
 }
+
+/// D229: `scrub start` scrubs a pool's PGs now, as an operation that ends
+/// once each reported a scrub, and is audited; not for cache pools.
+#[test]
+fn a_scrub_started_now_finishes_as_an_operation() {
+    let c = Cluster::all_in_one("scrubnow", 3);
+    let r = c
+        .ctl(&["scrub", "start", "--pool", "1", "--deep", "--wait", "120"])
+        .ok();
+    assert!(r.has("scrubbing") && r.has("done"), "{}", r.out);
+    let ops = c.ctl(&["op", "list"]).ok();
+    assert!(ops.has("scrub") && ops.has("done"), "{}", ops.out);
+    // Every PG of the pool has a deep scrub now.
+    let pgs = c.ctl(&["scrub", "pgs", "--pool", "1"]).ok();
+    let never: Vec<&str> = pgs
+        .out
+        .lines()
+        .skip(1)
+        .filter(|l| l.split_whitespace().nth(3) == Some("never"))
+        .collect();
+    assert!(never.is_empty(), "never scrubbed deep: {never:?}");
+    let audit = c.ctl(&["audit", "list", "--op", "StartScrub"]).ok();
+    assert!(audit.has("pool 1 scrub deep"), "{}", audit.out);
+    // A cache pool isn't scrubbed; --deep is only for scrub start.
+    let cache = c.ctl(&["scrub", "start", "--pool", "2"]).expect(1);
+    assert!(cache.has("cache pool"), "{}", cache.out);
+    c.ctl(&["scrub", "status", "--deep"]).expect(2);
+    c.ctl(&["scrub", "start"]).expect(2);
+}

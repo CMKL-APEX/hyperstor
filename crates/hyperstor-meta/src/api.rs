@@ -1144,6 +1144,93 @@ impl ClusterService for Api {
         Ok(s.into())
     }
 
+    async fn start_scrub(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::StartScrubRequest>,
+    ) -> ServiceResult<pb::StartScrubResponse> {
+        let pgs: Vec<u32> = req.pgs.iter().copied().collect();
+        let mut target = format!("pool {} scrub", req.pool);
+        if req.deep {
+            target.push_str(" deep");
+        }
+        if !pgs.is_empty() {
+            let names: Vec<String> = pgs.iter().map(|g| format!("{}.{g}", req.pool)).collect();
+            target.push_str(&format!(" PGs {}", names.join(",")));
+        }
+        let who = self.authorize(&ctx, "StartScrub", &target, true)?;
+        let refuse = |e: ConnectError| {
+            audit(
+                &who,
+                "StartScrub",
+                &target,
+                &format!("failed: {}", e.message.as_deref().unwrap_or("")),
+            );
+            Err(e)
+        };
+        let (map, ..) = self.published().await?;
+        let Some(pool) = map.pools.get(&req.pool) else {
+            return refuse(ConnectError::not_found(format!("no pool {}", req.pool)));
+        };
+        if pool.kind == crate::PoolKind::Cache {
+            return refuse(with_reason(
+                ConnectError::invalid_argument(format!(
+                    "pool {} is a cache pool: it isn't scrubbed",
+                    req.pool
+                )),
+                "invalid_argument",
+            ));
+        }
+        if let Some(g) = pgs.iter().find(|g| !map.pgs.contains_key(&(req.pool, **g))) {
+            return refuse(with_reason(
+                ConnectError::invalid_argument(format!("pool {} has no PG {g}", req.pool)),
+                "invalid_argument",
+            ));
+        }
+        let total = if pgs.is_empty() {
+            map.pgs.range((req.pool, 0)..=(req.pool, u32::MAX)).count()
+        } else {
+            pgs.len()
+        } as u32;
+        let since = crate::unix_now();
+        let op = self
+            .admin
+            .runner
+            .create(
+                crate::operations::Work::Scrub {
+                    pool: req.pool,
+                    pgs,
+                    deep: req.deep,
+                    since,
+                },
+                target.clone(),
+                total,
+                format!(
+                    "{total} PG(s) to scrub{}",
+                    if req.deep { " deep" } else { "" }
+                ),
+                who.clone(),
+            )
+            .await;
+        audit(
+            &who,
+            "StartScrub",
+            &target,
+            &match &op {
+                Ok(o) => format!("ok, {total} PG(s), operation {} started", o.id),
+                Err(e) => format!("failed: {e:?}"),
+            },
+        );
+        match op {
+            Ok(o) => Ok(pb::StartScrubResponse {
+                operation: buffa::MessageField::some(ops::op_pb(&o)),
+                ..Default::default()
+            }
+            .into()),
+            Err(e) => Err(self.store_error(e).await),
+        }
+    }
+
     async fn get_scrub_status(
         &self,
         ctx: RequestContext,

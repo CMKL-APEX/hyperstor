@@ -130,6 +130,18 @@ pub enum Admin {
     LeaderView(hyperstor_reactor::chan::OneSender<Option<LeaderView>>),
     /// Each PG's last scrubs (D227): the leader's, else this member's copy.
     ScrubRecords(hyperstor_reactor::chan::OneSender<scrubs::Records>),
+    /// `StartScrub`'s progress (D229): asks the primaries of `pool`'s
+    /// `pgs` (every PG if empty) not yet scrubbed since `since` (Unix
+    /// seconds; deep if `deep`) to scrub them now, and answers how many
+    /// are done of how many; with `cancel`, asks them to drop them.
+    ScrubNow {
+        pool: u32,
+        pgs: Vec<u32>,
+        deep: bool,
+        since: u64,
+        cancel: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u32, u32), String>>,
+    },
     SetDeviceIn {
         device: u32,
         up_in: bool,
@@ -702,7 +714,17 @@ pub struct Meta {
     /// that writes them: a write waits for the group, so not on the
     /// reactor. `None` without Raft: the records stay in memory.
     scrub_store: RefCell<Option<ScrubStore>>,
+    /// When each PG's primary was last asked to scrub it now (D229, D230).
+    scrub_asked: RefCell<HashMap<(u32, u32), Instant>>,
 }
+
+/// How long before a primary is asked again to scrub a PG it was asked
+/// to (D229, D230): it moved, or the scrub was cut short.
+pub const SCRUB_ASK_AGAIN: Duration = Duration::from_secs(600);
+
+/// How many times a recovered PG's primary is asked to scrub it before
+/// giving up (one from before `ScrubNow` never does).
+const RECOVERY_ASKS: u32 = 6;
 
 /// Where the leader keeps scrub records ([`Meta::keep_scrubs`]).
 struct ScrubStore {
@@ -883,6 +905,7 @@ impl Meta {
             scrubs: RefCell::new(BTreeMap::new()),
             scrubs_changed: RefCell::new(BTreeSet::new()),
             scrub_store: RefCell::new(None),
+            scrub_asked: RefCell::new(HashMap::new()),
         })
     }
 
@@ -949,6 +972,173 @@ impl Meta {
             .or_insert_with(|| scrubs::PgScrubs::new(now))
             .note(scrubs::Summary::from_report(unresolved, d), d.deep);
         self.scrubs_changed.borrow_mut().insert((pool, pg));
+    }
+
+    /// [`Admin::ScrubNow`]: how many of `pool`'s `pgs` (all if empty) were
+    /// scrubbed since `since`, of how many; asks the primaries of the
+    /// others, each again after [`SCRUB_ASK_AGAIN`] (a primary that moved,
+    /// or a scrub cut short). PGs gone since (merged) count as done.
+    pub fn scrub_now(
+        self: Rc<Self>,
+        pool: u32,
+        pgs: Vec<u32>,
+        deep: bool,
+        since: u64,
+        cancel: bool,
+    ) -> Result<(u32, u32), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let map = self.published.borrow().clone();
+        let Some(p) = map.pools.get(&pool) else {
+            return Err(format!("no pool {pool}"));
+        };
+        if p.kind == PoolKind::Cache {
+            return Err(format!("pool {pool} is a cache pool: it isn't scrubbed"));
+        }
+        let pgs: Vec<u32> = if pgs.is_empty() {
+            map.pgs
+                .range((pool, 0)..=(pool, u32::MAX))
+                .map(|(k, _)| k.1)
+                .collect()
+        } else {
+            pgs
+        };
+        let total = pgs.len() as u32;
+        let records = self.scrubs.borrow();
+        let pending: Vec<(u32, u32)> = pgs
+            .iter()
+            .map(|g| (pool, *g))
+            .filter(|k| map.pgs.contains_key(k))
+            .filter(|k| {
+                records
+                    .get(k)
+                    .is_none_or(|r| (if deep { r.deep_at() } else { r.light_at() }) < since)
+            })
+            .collect();
+        drop(records);
+        let done = total - pending.len() as u32;
+        let now = Instant::now();
+        let ask: Vec<(u32, u32)> = if cancel {
+            pending
+        } else {
+            let mut asked = self.scrub_asked.borrow_mut();
+            pending
+                .into_iter()
+                .filter(|k| {
+                    let again = asked
+                        .get(k)
+                        .is_none_or(|t| now.duration_since(*t) >= SCRUB_ASK_AGAIN);
+                    if again {
+                        asked.insert(*k, now);
+                    }
+                    again
+                })
+                .collect()
+        };
+        if !ask.is_empty() {
+            hyperstor_reactor::spawn(self.clone().ask_scrub(ask, deep, cancel));
+        }
+        Ok((done, total))
+    }
+
+    /// Sends `ScrubNow` for `pgs` to each one's primary, as the published
+    /// map has it; a device that doesn't answer is asked again later.
+    async fn ask_scrub(self: Rc<Self>, pgs: Vec<(u32, u32)>, deep: bool, cancel: bool) {
+        use hyperstor_proto::Msg;
+        let map = self.published.borrow().clone();
+        let mut by: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        for k in pgs {
+            if let Some(d) = map.pg(k.0, k.1).and_then(|i| i.primary()) {
+                by.entry(d).or_default().push(k);
+            }
+        }
+        for (d, pgs) in by {
+            let Some(addr) = map.device_addr(d) else {
+                continue;
+            };
+            let asked = async {
+                let c = self.conn(addr).await.ok()?;
+                c.call(&Msg::ScrubNow { pgs, deep, cancel }, &[]).await.ok()
+            };
+            let _ = hyperstor_reactor::time::timeout(Duration::from_secs(5), asked).await;
+        }
+    }
+
+    /// Scrub after recovery (28-scrub.md §31.7, D230), on the leader: a PG
+    /// whose PG epoch changed (a member added, back or replaced: backfill,
+    /// refill or peering pushed to it) is light-scrubbed, with the hole
+    /// check, once it has been clean for `settle`: its primary is asked,
+    /// again every [`SCRUB_ASK_AGAIN`] until a scrub since reports, at most
+    /// [`RECOVERY_ASKS`] times. Kept in memory: a new leader starts from
+    /// the map it publishes first.
+    pub async fn recovery_scrubs(self: Rc<Self>, settle: Duration) {
+        // Each PG's epoch at the last look; `None` until this member leads.
+        let mut seen: Option<BTreeMap<(u32, u32), u64>> = None;
+        // PGs to scrub: since when clean (Unix seconds), and asks so far.
+        let mut due: BTreeMap<(u32, u32), (Option<u64>, u32)> = BTreeMap::new();
+        loop {
+            sleep(Duration::from_secs(1).min(settle)).await;
+            if !self.leads() {
+                seen = None;
+                due.clear();
+                continue;
+            }
+            let map = self.published.borrow().clone();
+            let epochs: BTreeMap<(u32, u32), u64> =
+                map.pgs.iter().map(|(k, i)| (*k, i.epoch)).collect();
+            if let Some(before) = &seen {
+                for (k, e) in &epochs {
+                    if before.get(k).is_some_and(|b| b != e) {
+                        due.insert(*k, (None, 0));
+                    }
+                }
+            }
+            seen = Some(epochs);
+            let now = unix_now();
+            let mut ask = Vec::new();
+            let records = self.scrubs.borrow();
+            due.retain(|k, (clean_since, asks)| {
+                let (Some(info), Some(p)) = (map.pgs.get(k), map.pools.get(&k.0)) else {
+                    return false;
+                };
+                if p.kind == PoolKind::Cache || p.scrub.hours == 0 || *asks >= RECOVERY_ASKS {
+                    return false;
+                }
+                let clean = info.acting == info.up && info.acting_count() >= p.size as usize;
+                if !clean {
+                    *clean_since = None;
+                    return true;
+                }
+                let since = *clean_since.get_or_insert(now);
+                if records.get(k).is_some_and(|r| r.light_at() >= since) {
+                    return false;
+                }
+                if Duration::from_secs(now.saturating_sub(since)) >= settle {
+                    ask.push(*k);
+                }
+                true
+            });
+            drop(records);
+            let at = Instant::now();
+            let mut asked = self.scrub_asked.borrow_mut();
+            ask.retain(|k| {
+                let again = asked
+                    .get(k)
+                    .is_none_or(|t| at.duration_since(*t) >= SCRUB_ASK_AGAIN);
+                if again {
+                    asked.insert(*k, at);
+                    if let Some(d) = due.get_mut(k) {
+                        d.1 += 1;
+                    }
+                }
+                again
+            });
+            drop(asked);
+            if !ask.is_empty() {
+                hyperstor_reactor::spawn(self.clone().ask_scrub(ask, false, false));
+            }
+        }
     }
 
     /// The leader's writes of scrub records (D227): every `every`, the
@@ -2287,6 +2477,16 @@ impl Meta {
                 }
                 Admin::ScrubRecords(reply) => {
                     let _ = reply.send(self.scrub_records());
+                }
+                Admin::ScrubNow {
+                    pool,
+                    pgs,
+                    deep,
+                    since,
+                    cancel,
+                    reply,
+                } => {
+                    let _ = reply.send(self.clone().scrub_now(pool, pgs, deep, since, cancel));
                 }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {

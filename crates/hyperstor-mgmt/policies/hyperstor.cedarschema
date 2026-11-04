@@ -95,6 +95,9 @@ namespace Hyperstor {
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.StartScrub" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   // Weakening scrub is a deliberate choice (D226): a fresh login.
   action "ClusterService.WeakenScrubSettings" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }

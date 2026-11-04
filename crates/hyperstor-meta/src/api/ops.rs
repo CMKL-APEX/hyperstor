@@ -316,6 +316,17 @@ impl Runner {
                     let done = format!("volume {volume:032x} moved to pool {pool}");
                     me.finish(&op, r, done).await;
                 }
+                Work::Scrub {
+                    pool,
+                    pgs,
+                    deep,
+                    since,
+                } => {
+                    let r = me.follow_scrub(&op, pool, pgs, deep, since).await;
+                    let what = if deep { "scrubbed deep" } else { "scrubbed" };
+                    me.finish(&op, r, format!("pool {pool}: {} PG(s) {what}", op.total))
+                        .await;
+                }
                 Work::DeletePool { pool } => {
                     let r = me.delete_pool(&op, pool).await;
                     me.finish(&op, r, format!("pool {pool} deleted")).await;
@@ -384,6 +395,62 @@ impl Runner {
         }
     }
 
+    /// Follows a scrub on demand (D229): every two seconds, has the map
+    /// service ask the primaries of the PGs not yet scrubbed since it
+    /// started, and records how many are; once the operation is
+    /// cancelled, has them drop the rest. None: no longer the leader (a
+    /// new one resumes it), or cancelled.
+    async fn follow_scrub(
+        &self,
+        op: &Op,
+        pool: u32,
+        pgs: Vec<u32>,
+        deep: bool,
+        since: u64,
+    ) -> Option<Result<(), (crate::VolumeFault, String)>> {
+        loop {
+            let id = op.id.clone();
+            let cancelled = matches!(
+                self.store(move |s| s.get(&id)).await,
+                Ok(Some(o)) if !o.running()
+            );
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ScrubNow {
+                    pool,
+                    pgs: pgs.clone(),
+                    deep,
+                    since,
+                    cancel: cancelled,
+                    reply,
+                })
+                .ok()?;
+            let (done, total) = match rx.recv().await? {
+                Ok(n) => n,
+                Err(_) if !self.leads().await => return None,
+                Err(e) => return Some(Err((crate::VolumeFault::InUse, e))),
+            };
+            if cancelled {
+                return None;
+            }
+            if done >= total {
+                return Some(Ok(()));
+            }
+            let id = op.id.clone();
+            let _ = self
+                .store(move |s| {
+                    s.update(&id, |o| {
+                        if o.running() {
+                            o.done = done;
+                            o.total = total;
+                        }
+                    })
+                })
+                .await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
     /// Records how a flatten or purge ended (none: the map service stopped,
     /// and a new leader resumes it).
     async fn finish(
@@ -418,6 +485,7 @@ impl Runner {
             Work::Move { .. } => "MoveVolume",
             Work::DeletePool { .. } => "DeletePool",
             Work::RemoveDevice { .. } => "RemoveDevice",
+            Work::Scrub { .. } => "StartScrub",
             _ => "PurgeFromTrash",
         };
         audit(
