@@ -3056,8 +3056,9 @@ impl Meta {
         self.handle_with(msg, &[])
     }
 
-    /// [`Self::handle`], with the request's payload: only a scrub report
-    /// carries one the map service reads (D227).
+    /// Answers a request from a storage node or client, with the request's
+    /// payload: only a scrub report carries one the map service reads
+    /// (D227).
     fn handle_with(
         &self,
         msg: Result<hyperstor_proto::Msg, hyperstor_proto::FrameError>,
