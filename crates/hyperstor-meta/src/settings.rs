@@ -1,6 +1,7 @@
 //! Settings the map service keeps for the cluster, in the replicated store
 //! (`Table::Settings`): each pool's trash (04-decisions.md D54, D115) and how
-//! long the audit log is kept (D113). Not in the map: only the map service needs them. Writes go
+//! long the audit log is kept (D113). Rows `scrub/…` are scrub's records
+//! (`scrubs.rs`). Not in the map: only the map service needs them. Writes go
 //! through the leader; reads come from the member's applied copy.
 
 use crate::store::{self, Db, Origin, Table};
