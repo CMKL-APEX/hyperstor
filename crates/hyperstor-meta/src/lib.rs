@@ -73,6 +73,26 @@ pub struct PoolChange {
     pub cache_grace: Option<u32>,
 }
 
+/// What `SetScrubSettings` changes (28-scrub.md §31.2, D224); `None`
+/// leaves a setting as it is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrubChange {
+    pub hours: Option<u16>,
+    pub deep_every: Option<u8>,
+    pub hole_repair: Option<bool>,
+    pub deep_rate_mib: Option<u16>,
+}
+
+/// Why a scrub change was refused.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScrubRefused {
+    /// Not the leader, no such pool, out of range: the message says.
+    Invalid(String),
+    /// It weakens scrub (D226), and the caller didn't ask to: what it
+    /// weakens.
+    Weakens(Vec<String>),
+}
+
 /// The longest a cache pool's PGs may wait for a down member (D189).
 /// Why: past an hour, the node is better taken out, and its PGs' reads
 /// keep missing meanwhile.
@@ -123,6 +143,17 @@ pub enum Admin {
     /// Sets the fullness ratios (D27, D182), in thousandths; one not given
     /// stays as it is. Replies with the working map's epoch and the ratios
     /// now.
+    /// Changes a pool's scrub settings (D224); weakening them only with
+    /// `weaken` (D226). Replies with the working map's epoch and the
+    /// settings before and after.
+    SetScrub {
+        pool: u32,
+        change: ScrubChange,
+        weaken: bool,
+        reply: hyperstor_reactor::chan::OneSender<
+            Result<(u64, ScrubSettings, ScrubSettings), ScrubRefused>,
+        >,
+    },
     SetFullRatios {
         nearfull: Option<u16>,
         backfillfull: Option<u16>,
@@ -1156,6 +1187,47 @@ impl Meta {
         Ok((map.epoch, now))
     }
 
+    /// Changes a pool's scrub settings (28-scrub.md §31.2–31.3; D224,
+    /// D226). A change that weakens them is refused unless `weaken`.
+    /// Cache pools aren't scrubbed (09-replication.md §8.7): refused.
+    /// Returns the working map's epoch and the settings before and after.
+    pub fn set_scrub(
+        &self,
+        pool: u32,
+        change: ScrubChange,
+        weaken: bool,
+    ) -> Result<(u64, ScrubSettings, ScrubSettings), ScrubRefused> {
+        if !self.leads() {
+            return Err(ScrubRefused::Invalid(self.not_leader()));
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(info) = map.pools.get(&pool) else {
+            return Err(ScrubRefused::Invalid(format!("no pool {pool}")));
+        };
+        if info.kind == PoolKind::Cache {
+            return Err(ScrubRefused::Invalid(format!(
+                "pool {pool} is a cache pool: its data is recomputable and isn't scrubbed"
+            )));
+        }
+        let was = info.scrub;
+        let now = ScrubSettings {
+            hours: change.hours.unwrap_or(was.hours),
+            deep_every: change.deep_every.unwrap_or(was.deep_every),
+            hole_repair: change.hole_repair.unwrap_or(was.hole_repair),
+            deep_rate_mib: change.deep_rate_mib.unwrap_or(was.deep_rate_mib),
+        };
+        now.check().map_err(ScrubRefused::Invalid)?;
+        let weakens = was.weakens(&now);
+        if !weaken && !weakens.is_empty() {
+            return Err(ScrubRefused::Weakens(weakens));
+        }
+        if now != was {
+            map.pools.get_mut(&pool).expect("checked").scrub = now;
+            map.epoch += 1;
+        }
+        Ok((map.epoch, was, now))
+    }
+
     /// Sets the fullness ratios every device is held to (04-decisions.md
     /// D27, D182), in thousandths; one not given stays as it is. Returns
     /// the working map's epoch and the ratios now.
@@ -1655,6 +1727,7 @@ impl Meta {
             split: None,
             autoscale,
             cache_grace: cache_grace.unwrap_or(CACHE_GRACE_SECS),
+            scrub: ScrubSettings::default(),
         };
         let eligible = map
             .devices
@@ -2143,6 +2216,14 @@ impl Meta {
                     reply,
                 } => {
                     let _ = reply.send(self.set_pool(pool, change, force));
+                }
+                Admin::SetScrub {
+                    pool,
+                    change,
+                    weaken,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_scrub(pool, change, weaken));
                 }
                 Admin::SetDeviceClass {
                     device,
@@ -4088,6 +4169,7 @@ mod tests {
             split: None,
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
+            scrub: ScrubSettings::default(),
         });
         m.recompute();
         m
@@ -4580,6 +4662,50 @@ mod tests {
         assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
         report(new, TIB);
         assert_eq!(weight(new), 1.0);
+    }
+
+    /// D224, D226: scrub settings change in the map; weakening them is
+    /// refused unless asked for, and cache pools have none to change.
+    #[test]
+    fn scrub_settings_are_set_and_weakening_is_asked_for() {
+        let m = Meta::new(map());
+        let pool = *m.map.borrow().pools.keys().next().unwrap();
+        let epoch = m.map.borrow().epoch;
+        let six = ScrubChange {
+            hours: Some(6),
+            deep_every: Some(2),
+            ..Default::default()
+        };
+        let (e, was, now) = m.set_scrub(pool, six, false).unwrap();
+        assert_eq!(
+            (e, was, now.hours, now.deep_every),
+            (epoch + 1, ScrubSettings::default(), 6, 2)
+        );
+        assert_eq!(m.map.borrow().pools[&pool].scrub, now);
+        let report = ScrubChange {
+            hole_repair: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            m.set_scrub(pool, report, false),
+            Err(ScrubRefused::Weakens(vec!["holes only reported".into()]))
+        );
+        assert_eq!(m.map.borrow().pools[&pool].scrub, now, "refused: unchanged");
+        let (_, _, now) = m.set_scrub(pool, report, true).unwrap();
+        assert!(!now.hole_repair);
+        // Out of range.
+        let bad = ScrubChange {
+            hours: Some(1000),
+            ..Default::default()
+        };
+        assert!(matches!(
+            m.set_scrub(pool, bad, true),
+            Err(ScrubRefused::Invalid(_))
+        ));
+        assert!(matches!(
+            m.set_scrub(999, six, false),
+            Err(ScrubRefused::Invalid(_))
+        ));
     }
 
     /// D27, D182: ratios are set together or one at a time, checked; a

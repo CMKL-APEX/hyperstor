@@ -79,6 +79,108 @@ pub struct PoolInfo {
     /// before moving to devices without its data (D189); 0 moves at once.
     /// Other kinds keep the default and don't use it.
     pub cache_grace: u32,
+    /// How scrub checks the pool's copies (D224).
+    pub scrub: ScrubSettings,
+}
+
+/// A pool's scrub settings (D224; 28-scrub.md §31.2). Every pool has
+/// them; cache pools aren't scrubbed and keep the defaults unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrubSettings {
+    /// Every PG is light-scrubbed once in this many hours; 0: scrub off.
+    pub hours: u16,
+    /// Every this-many passes, the first included, is deep.
+    pub deep_every: u8,
+    /// Copies holding zeros where another has holes are replaced (D223,
+    /// D225); off, they are only reported (the dry run).
+    pub hole_repair: bool,
+    /// The most a deep scrub reads, per device, in MiB a second.
+    pub deep_rate_mib: u16,
+}
+
+impl Default for ScrubSettings {
+    fn default() -> Self {
+        ScrubSettings {
+            hours: 24,
+            deep_every: 7,
+            hole_repair: true,
+            deep_rate_mib: 64,
+        }
+    }
+}
+
+impl ScrubSettings {
+    /// The longest interval that isn't weakening (D226): a week.
+    pub const HOURS_WEAK: u16 = 168;
+    /// The slowest deep rate that isn't weakening (D226).
+    pub const RATE_WEAK: u16 = 32;
+
+    /// Why the settings are out of range, if they are.
+    pub fn check(&self) -> Result<(), String> {
+        if self.hours > 720 {
+            return Err(format!(
+                "scrub hours {} is past 720 (30 days); 0 turns scrub off",
+                self.hours
+            ));
+        }
+        if !(1..=28).contains(&self.deep_every) {
+            return Err(format!(
+                "deep every {} passes is outside 1-28",
+                self.deep_every
+            ));
+        }
+        if !(8..=1024).contains(&self.deep_rate_mib) {
+            return Err(format!(
+                "a deep rate of {} MiB/s is outside 8-1024",
+                self.deep_rate_mib
+            ));
+        }
+        Ok(())
+    }
+
+    /// What in these settings checks less than the defaults (D226), in
+    /// words; empty if nothing does.
+    pub fn weakened(&self) -> Vec<String> {
+        let d = ScrubSettings::default();
+        let mut w = Vec::new();
+        if self.hours == 0 {
+            w.push("scrub is off".to_string());
+        } else if self.hours > Self::HOURS_WEAK {
+            w.push(format!("scrub every {} hours", self.hours));
+        }
+        if self.deep_every > d.deep_every {
+            w.push(format!("deep every {} passes", self.deep_every));
+        }
+        if !self.hole_repair {
+            w.push("holes only reported".to_string());
+        }
+        if self.deep_rate_mib < Self::RATE_WEAK {
+            w.push(format!("deep scrub at {} MiB/s", self.deep_rate_mib));
+        }
+        w
+    }
+
+    /// What `new` weakens compared with `self` (D226): each setting that
+    /// newly checks less than the defaults, or less than it did.
+    pub fn weakens(&self, new: &ScrubSettings) -> Vec<String> {
+        let was = self.weakened();
+        let mut w: Vec<String> = new
+            .weakened()
+            .into_iter()
+            .filter(|x| !was.contains(x))
+            .collect();
+        // Already weak, and weaker still.
+        if w.is_empty() {
+            let less = (new.hours == 0 && self.hours != 0)
+                || (self.hours != 0 && new.hours > self.hours.max(Self::HOURS_WEAK))
+                || new.deep_every > self.deep_every.max(ScrubSettings::default().deep_every)
+                || new.deep_rate_mib < self.deep_rate_mib.min(Self::RATE_WEAK);
+            if less {
+                w = new.weakened();
+            }
+        }
+        w
+    }
 }
 
 /// How long a cache PG waits for a down member unless its pool says
@@ -1368,8 +1470,15 @@ impl ClusterMap {
         // before them read. Why 12 after 11: the feature branch's 9-11 ran
         // on the pilot before main's fullness took 9 (I216). 13: cache
         // pools' grace other than the default, and what they wait for.
-        // 14: networks and endpoints; 15: endpoints down (D210).
-        let format = if !self.endpoints_down.is_empty() {
+        // 14: networks and endpoints; 15: endpoints down (D210); 16:
+        // pools' scrub settings other than the defaults (D224).
+        let format = if self
+            .pools
+            .values()
+            .any(|p| p.scrub != ScrubSettings::default())
+        {
+            16
+        } else if !self.endpoints_down.is_empty() {
             15
         } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
             14
@@ -1594,13 +1703,22 @@ impl ClusterMap {
                 e.str(&a.to_string());
             });
         }
+        if format >= 16 {
+            for p in self.pools.values() {
+                let s = &p.scrub;
+                e.u16(s.hours)
+                    .u8(s.deep_every)
+                    .bool(s.hole_repair)
+                    .u16(s.deep_rate_mib);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=15).contains(&v) {
+        if !(1..=16).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1678,6 +1796,7 @@ impl ClusterMap {
                     split: None,
                     autoscale: true,
                     cache_grace: CACHE_GRACE_SECS,
+                    scrub: ScrubSettings::default(),
                 },
             );
         }
@@ -1824,6 +1943,16 @@ impl ClusterMap {
                 .into_iter()
                 .collect();
         }
+        if v >= 16 {
+            for p in m.pools.values_mut() {
+                p.scrub = ScrubSettings {
+                    hours: d.u16()?,
+                    deep_every: d.u8()?,
+                    hole_repair: d.bool()?,
+                    deep_rate_mib: d.u16()?,
+                };
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -1851,6 +1980,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         split: None,
         autoscale: true,
         cache_grace: CACHE_GRACE_SECS,
+        scrub: ScrubSettings::default(),
     }
 }
 
@@ -2285,6 +2415,7 @@ mod tests {
             split: None,
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
+            scrub: ScrubSettings::default(),
         });
         m.recompute();
         m
@@ -2693,6 +2824,74 @@ mod tests {
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
     }
 
+    /// D224: scrub settings ride in the map in format 16, only once a
+    /// pool's differ from the defaults, so nodes from before read it.
+    #[test]
+    fn scrub_settings_ride_in_the_map() {
+        let mut m = map();
+        assert!(m.encode()[..4] < 16u32.to_le_bytes()[..]);
+        let p = *m.pools.keys().next().unwrap();
+        m.pools.get_mut(&p).unwrap().scrub = ScrubSettings {
+            hours: 6,
+            deep_every: 3,
+            hole_repair: false,
+            deep_rate_mib: 128,
+        };
+        assert_eq!(m.encode()[..4], 16u32.to_le_bytes());
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.pools[&p].scrub.hours, 6);
+    }
+
+    /// D226: what checks less than the defaults, and what a change weakens.
+    #[test]
+    fn weakening_scrub_is_named() {
+        let d = ScrubSettings::default();
+        assert!(d.check().is_ok());
+        assert!(d.weakened().is_empty());
+        let off = ScrubSettings { hours: 0, ..d };
+        assert_eq!(off.weakened(), ["scrub is off"]);
+        assert_eq!(d.weakens(&off), ["scrub is off"]);
+        // Stronger, or weak but within the bounds: nothing to say.
+        assert!(
+            d.weakens(&ScrubSettings {
+                hours: 6,
+                deep_every: 1,
+                ..d
+            })
+            .is_empty()
+        );
+        assert!(
+            d.weakens(&ScrubSettings {
+                hours: 168,
+                deep_rate_mib: 32,
+                ..d
+            })
+            .is_empty()
+        );
+        let report = ScrubSettings {
+            hole_repair: false,
+            ..d
+        };
+        assert_eq!(d.weakens(&report), ["holes only reported"]);
+        // Already weak: the same weakness again isn't new, a weaker one is.
+        let week2 = ScrubSettings { hours: 336, ..d };
+        assert!(week2.weakens(&week2).is_empty());
+        assert!(!week2.weakens(&ScrubSettings { hours: 720, ..d }).is_empty());
+        assert!(week2.weakens(&d).is_empty());
+        // Out of range.
+        assert!(ScrubSettings { hours: 721, ..d }.check().is_err());
+        assert!(ScrubSettings { deep_every: 0, ..d }.check().is_err());
+        assert!(
+            ScrubSettings {
+                deep_rate_mib: 4,
+                ..d
+            }
+            .check()
+            .is_err()
+        );
+    }
+
     /// D186: a removed device leaves the map, its node with its last
     /// device; both ids are kept, in format 9 only once there is one, and
     /// never given again.
@@ -3063,6 +3262,7 @@ mod tests {
             split: None,
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
+            scrub: ScrubSettings::default(),
         });
         m.recompute();
         let before = m.clone();

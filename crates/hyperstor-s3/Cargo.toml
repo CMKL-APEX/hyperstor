@@ -1,0 +1,23 @@
+[package]
+name = "hyperstor-s3"
+description = "Hyperstor's S3 gateway: buckets and objects on key–value ranges and s3 chunk objects (spec/14-s3.md §14)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crc32c.workspace = true
+hyperstor-client = { path = "../hyperstor-client" }
+hyperstor-codec = { path = "../hyperstor-codec" }
+hyperstor-kv = { path = "../hyperstor-kv" }
+hyperstor-proto = { path = "../hyperstor-proto" }
+hyperstor-reactor = { path = "../hyperstor-reactor" }
+md-5 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[lints]
+workspace = true

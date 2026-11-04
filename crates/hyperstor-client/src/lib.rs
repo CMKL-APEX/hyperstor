@@ -919,4 +919,34 @@ impl Client {
             )))),
         }
     }
+
+    /// Reads `len` bytes at `off` of object `name` of namespace `ns`, both
+    /// multiples of 4096; past its end, zeros. A missing object is
+    /// `Server { code: NotFound, .. }`.
+    pub async fn read_object(
+        &self,
+        pool: u32,
+        ns: u8,
+        name: &[u8],
+        off: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        if !off.is_multiple_of(4096) || !len.is_multiple_of(4096) {
+            return Err(ClientError::Unaligned);
+        }
+        let (msg, payload) = self
+            .to_primary(pool, Route::Object { ns, name }, 0, &[], &|to, key| {
+                Msg::Read { to, key, off, len }
+            })
+            .await?;
+        match msg {
+            Msg::ReadOk { crcs } => {
+                verify_crcs(&payload, &crcs).map_err(|_| ClientError::Checksum)?;
+                Ok(payload)
+            }
+            m => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                "unexpected {m:?}"
+            )))),
+        }
+    }
 }

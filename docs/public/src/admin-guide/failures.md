@@ -130,8 +130,9 @@ block is never returned to a client.
 
 ## Scrub
 
-Every storage node compares, once a day by default (`hyperstord
---scrub-hours`), the copies of each placement group it leads. A copy
+Every storage node compares, once a day by default, the copies of each
+placement group it leads. Each pool has its own scrub settings, changed
+with `hyperstorctl scrub set` (see [Scrub settings](#scrub-settings)). A copy
 that differs from the others, when the rest agree, is replaced from the
 majority's copy, the primary's own included. Once a week (and on the
 first scrub after a start) the scrub is **deep**: every copy is read in
@@ -148,10 +149,10 @@ For a clone or a snapshotted volume, those zeros hide the parent's or
 the older version's data, which the unwritten blocks should read. Such a
 copy has the same data digest as a good one. Scrub logs each object
 whose copies differ only this way, with the device whose copy keeps its
-holes, and counts it under `kind="holes"`. With `hyperstord
---hole-repair`, it also replaces the other copies with that one, whatever
-the majority (`kind="holes_repaired"`). Run without it first, to see how
-many objects would change.
+holes, and counts it under `kind="holes"`, and by default replaces the other
+copies with that one, whatever the majority (`kind="holes_repaired"`).
+To see first how many objects would change, set the pool's hole repair
+to `report`.
 
 A PG whose holes scrub couldn't check is logged (`holes not checked`, with
 the reason) and counted under
@@ -160,6 +161,35 @@ answer, runs a version from before the check, or the PG changed while
 checking. A pass that found no holes but counted unchecked PGs hasn't
 looked at them; they are checked on a later pass.
 
+
+### Scrub settings
+
+Each pool has four, in the map, so every node follows the same ones and
+a change needs no restart:
+
+| Setting | Default | `scrub set` flag | Meaning |
+|---|---|---|---|
+| hours | 24 | `--hours` | Every placement group is compared once in this many hours; 0 turns scrub off |
+| deep every | 7 | `--deep-every` | Every N-th pass, the first included, reads every block |
+| hole repair | `repair` | `--hole-repair` | Replace copies holding zeros where another has holes, or only `report` them |
+| deep rate | 64 MiB/s | `--deep-rate` | The most a deep scrub reads per device |
+
+```
+hyperstorctl scrub set --pool 1 --hours 12
+hyperstorctl scrub set --pool 3 --deep-rate 32
+```
+
+Scrub turned off loses nothing at once, which is what makes it
+dangerous: damage then goes unseen until a read needs the copy. So a
+change that checks less than the defaults (scrub off, more than 168
+hours, deep every more than 7 passes, holes only reported, a deep rate
+under 32 MiB/s) is refused unless you give `--reason`, which goes in the
+audit log; through the web UI or `--mgmt`, it also needs a fresh login.
+While a pool's scrub is weaker than the defaults, `hyperstorctl status`
+warns (`scrub reduced`), naming the pool and what is weaker.
+
+`hyperstord`'s `--scrub-hours` and `--hole-repair`, from earlier
+versions, are ignored with a line in the log.
 ## A storage node is cut off from the map service
 
 A node that can reach clients but not the map service keeps serving until
