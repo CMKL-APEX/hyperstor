@@ -1373,8 +1373,25 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Scrub reports per PG kept through Raft, overdue and unchecked health checks, scrub on demand as an operation, scrub after recovery, and the UI's Scrub card and PG grid view"
-spec = ["28-scrub.md §31.4", "28-scrub.md §31.5", "28-scrub.md §31.6", "28-scrub.md §31.7", "28-scrub.md §31.8", "D227", "D228", "D229", "D230"]
+what = "Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs"
+spec = ["28-scrub.md §31.4", "28-scrub.md §31.5", "28-scrub.md §31.8", "D227", "D228", "I265"]
+status = "done"
+tests = [
+    "manage::scrub_status_and_pgs_are_shown",
+    "cluster::scrub_reports_are_kept_per_pg",
+    "meta_group::scrub_records_survive_the_group_restarting",
+    "hyperstor_meta::scrubs::tests::records_round_trip_and_survive_in_the_store",
+    "hyperstor_meta::scrubs::tests::overdue_unchecked_and_damaged",
+    "hyperstor_meta::scrubs::tests::health_names_pools_and_pgs_and_records_follow_the_map",
+    "hyperstor_meta::api::tests::scrub_status_and_health_from_the_records",
+    "hyperstor_daemon::tests::deep_scrub_is_due_by_the_records",
+    "hyperstor_proto::tests::scrub_detail_rides_in_the_payload_and_may_grow",
+    "hyperstor_ctl::tests::scrub_status_and_pgs_read_plainly",
+]
+
+[[milestone.item]]
+what = "Scrub on demand as an operation, scrub after recovery, the UI's Scrub card and PG grid view, and per-pool scrub metrics"
+spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "28-scrub.md §31.8", "D229", "D230"]
 status = "planned"
 
 [[milestone]]

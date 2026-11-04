@@ -2037,3 +2037,37 @@ fn scrub_settings_are_set_and_weakening_needs_a_reason() {
     c.ctl(&["scrub", "set", "--pool", "1", "--reason", "x"])
         .expect(2);
 }
+
+/// D227, D228: each pool's scrub and each PG's last scrubs, from the map
+/// service's records. A new cluster has scrubbed nothing yet, and nothing
+/// is overdue: its PGs count from when they were made.
+#[test]
+fn scrub_status_and_pgs_are_shown() {
+    let c = Cluster::all_in_one("scrubstat", 3);
+    let r = c.ctl(&["scrub", "status"]).ok();
+    assert!(
+        r.has("POOL") && r.has("OVERDUE") && r.has(".meta") && r.has("last 7 days"),
+        "{}",
+        r.out
+    );
+    let j = c.ctl(&["scrub", "status", "--pool", "1", "--json"]).ok();
+    assert!(
+        j.has("\"pool\":1") && j.has("\"pg_count\":") && !j.has("\"overdue\":"),
+        "{}",
+        j.out
+    );
+    let pgs = c.ctl(&["scrub", "pgs", "--pool", "1"]).ok();
+    assert!(
+        pgs.has("1.0 ") && pgs.has("never") && pgs.has("FOUND"),
+        "{}",
+        pgs.out
+    );
+    let overdue = c.ctl(&["scrub", "pgs", "--pool", "1", "--overdue"]).ok();
+    assert_eq!(overdue.out.lines().count(), 1, "{}", overdue.out);
+    // A pool is needed, and only `scrub pgs` takes --overdue.
+    c.ctl(&["scrub", "pgs"]).expect(2);
+    c.ctl(&["scrub", "status", "--overdue"]).expect(2);
+    c.ctl(&["scrub", "status", "--pool", "99"]).expect(1);
+    // Nothing to warn of.
+    assert!(c.ctl(&["status"]).ok().has("health  ok"));
+}

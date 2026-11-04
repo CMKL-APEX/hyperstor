@@ -401,6 +401,7 @@ fn main() {
                     Duration::from_millis(lease),
                     r.commits.clone(),
                 );
+                meta.keep_scrubs(r.db.clone());
                 hyperstor_reactor::spawn(meta.clone().follow(from_raft));
                 settings = Some(std::sync::Arc::new(
                     hyperstor_meta::settings::Settings::new(r.db.clone()),
@@ -426,6 +427,13 @@ fn main() {
         meta.set_down_out(Duration::from_secs(down_out));
         hyperstor_reactor::spawn(meta.clone().liveness(Duration::from_millis(down)));
         hyperstor_reactor::spawn(meta.clone().publisher());
+        // Scrub records (D227) written at most once a minute
+        // (HS_SCRUB_WRITE_MS for tests).
+        let scrub_every = std::env::var("HS_SCRUB_WRITE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map_or(Duration::from_secs(60), Duration::from_millis);
+        hyperstor_reactor::spawn(meta.clone().scrub_writer(scrub_every));
         if let Some(api) = api {
             let (tx, rx) = hyperstor_reactor::chan::channel();
             hyperstor_reactor::spawn(meta.clone().admin(rx, addr));

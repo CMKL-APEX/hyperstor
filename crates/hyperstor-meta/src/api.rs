@@ -174,6 +174,17 @@ struct ScrubAsk<'a> {
 }
 
 impl Api {
+    /// Each PG's last scrubs (D227), from the map service.
+    async fn scrub_records(&self) -> Result<crate::scrubs::Records, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ScrubRecords(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        rx.recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))
+    }
+
     /// `SetScrubSettings`, or with `weaken`, `WeakenScrubSettings`
     /// (28-scrub.md §31.3; D224, D226).
     async fn scrub_settings(
@@ -900,6 +911,129 @@ fn scrub_pb(s: &crate::ScrubSettings) -> pb::ScrubSettings {
     }
 }
 
+/// Health's scrub checks (28-scrub.md §31.5, D228), added to a status.
+pub fn scrub_health(
+    s: &mut pb::GetStatusResponse,
+    map: &ClusterMap,
+    records: &crate::scrubs::Records,
+    now: u64,
+) {
+    for (level, text) in crate::scrubs::health(map, records, now) {
+        let l = match level {
+            Health::Error => pb::Health::HEALTH_ERROR,
+            Health::Warn => pb::Health::HEALTH_WARN,
+            Health::Ok => pb::Health::HEALTH_OK,
+        };
+        s.reasons.push(pb::Reason {
+            level: l.into(),
+            text,
+            ..Default::default()
+        });
+        if level > health_of(s) {
+            s.health = l.into();
+        }
+    }
+}
+
+/// A status's health as [`Health`].
+fn health_of(s: &pb::GetStatusResponse) -> Health {
+    match s.health.as_known() {
+        Some(pb::Health::HEALTH_ERROR) => Health::Error,
+        Some(pb::Health::HEALTH_WARN) => Health::Warn,
+        _ => Health::Ok,
+    }
+}
+
+fn scrub_report_pb(s: &crate::scrubs::Summary) -> pb::PgScrubReport {
+    pb::PgScrubReport {
+        at: s.at,
+        took_ms: s.took_ms,
+        compared: s.compared,
+        inconsistent: s.inconsistent,
+        repaired: s.repaired,
+        unresolved: s.unresolved,
+        damaged: s.damaged,
+        holes: s.holes,
+        holes_repaired: s.holes_repaired,
+        holes_skipped: s.holes_skipped.clone(),
+        ..Default::default()
+    }
+}
+
+/// A PG's record as `ListPgScrubs` answers it.
+pub fn pg_scrubs_pb(
+    pool: &crate::PoolInfo,
+    pg: u32,
+    r: &crate::scrubs::PgScrubs,
+    now: u64,
+) -> pb::PgScrubs {
+    pb::PgScrubs {
+        pg,
+        since: r.since,
+        light: r.light.as_ref().map(scrub_report_pb).into(),
+        deep: r.deep.as_ref().map(scrub_report_pb).into(),
+        overdue: match r.overdue(pool, now) {
+            Some(crate::scrubs::Overdue::Light) => "light",
+            Some(crate::scrubs::Overdue::Deep) => "deep",
+            None => "",
+        }
+        .into(),
+        skipped: r.skipped.into(),
+        ..Default::default()
+    }
+}
+
+/// One pool's scrub as `GetScrubStatus` answers it (28-scrub.md §31.8).
+pub fn pool_scrub(
+    map: &ClusterMap,
+    pool: &crate::PoolInfo,
+    records: &crate::scrubs::Records,
+    now: u64,
+) -> pb::PoolScrub {
+    let week = now.saturating_sub(7 * 86_400);
+    let mut out = pb::PoolScrub {
+        pool: pool.id,
+        name: pool.name.clone(),
+        settings: scrub_pb(&pool.scrub).into(),
+        ..Default::default()
+    };
+    let mut t = pb::ScrubTotals::default();
+    for (&(_, g), _) in map.pgs.range((pool.id, 0)..=(pool.id, u32::MAX)) {
+        out.pg_count += 1;
+        let Some(r) = records.get(&(pool.id, g)) else {
+            continue;
+        };
+        let age = |at: u64| now.saturating_sub(at.max(r.since));
+        out.oldest_light_secs = out.oldest_light_secs.max(age(r.light_at()));
+        out.oldest_deep_secs = out.oldest_deep_secs.max(age(r.deep_at()));
+        if r.overdue(pool, now).is_some() {
+            out.overdue += 1;
+            if out.overdue_pgs.len() < 10 {
+                out.overdue_pgs.push(format!("{}.{g}", pool.id));
+            }
+        }
+        out.unchecked += r.unchecked() as u32;
+        out.damaged += r.damaged() as u32;
+        out.inconsistent += r.last().is_some_and(|s| s.unresolved > 0) as u32;
+        for s in [&r.light, &r.deep].into_iter().flatten() {
+            if s.at < week {
+                continue;
+            }
+            t.scrubs += 1;
+            t.compared += s.compared as u64;
+            t.inconsistent += s.inconsistent as u64;
+            t.repaired += s.repaired as u64;
+            t.unresolved += s.unresolved as u64;
+            t.damaged += s.damaged as u64;
+            t.holes += s.holes as u64;
+            t.holes_repaired += s.holes_repaired as u64;
+            t.holes_skipped += !s.holes_skipped.is_empty() as u32;
+        }
+    }
+    out.week = t.into();
+    out
+}
+
 fn full_ratios(r: &crate::FullRatios) -> pb::FullRatios {
     let pct = |t: u16| t as f64 / 10.0;
     pb::FullRatios {
@@ -1002,10 +1136,71 @@ impl ClusterService for Api {
                 leads,
             ),
         };
+        let records = self.scrub_records().await?;
+        scrub_health(&mut s, &map, &records, crate::unix_now());
         if let Some(d) = uncommitted {
             stalled(&mut s, d);
         }
         Ok(s.into())
+    }
+
+    async fn get_scrub_status(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetScrubStatusRequest>,
+    ) -> ServiceResult<pb::GetScrubStatusResponse> {
+        let target = req.pool.map_or("cluster".into(), |p| format!("pool {p}"));
+        self.authorize(&ctx, "GetScrubStatus", &target, false)?;
+        let (map, ..) = self.published().await?;
+        if let Some(p) = req.pool
+            && !map.pools.contains_key(&p)
+        {
+            return Err(ConnectError::not_found(format!("no pool {p}")));
+        }
+        let records = self.scrub_records().await?;
+        let now = crate::unix_now();
+        Ok(pb::GetScrubStatusResponse {
+            pools: map
+                .pools
+                .values()
+                .filter(|p| req.pool.is_none_or(|id| id == p.id))
+                .filter(|p| p.kind != crate::PoolKind::Cache)
+                .map(|p| pool_scrub(&map, p, &records, now))
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_pg_scrubs(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListPgScrubsRequest>,
+    ) -> ServiceResult<pb::ListPgScrubsResponse> {
+        self.authorize(&ctx, "ListPgScrubs", &format!("pool {}", req.pool), false)?;
+        let (map, ..) = self.published().await?;
+        let Some(pool) = map.pools.get(&req.pool) else {
+            return Err(ConnectError::not_found(format!("no pool {}", req.pool)));
+        };
+        let records = self.scrub_records().await?;
+        let now = crate::unix_now();
+        let pgs = map
+            .pgs
+            .range((req.pool, 0)..=(req.pool, u32::MAX))
+            .map(|(&(_, g), _)| {
+                let r = records
+                    .get(&(req.pool, g))
+                    .cloned()
+                    .unwrap_or_else(|| crate::scrubs::PgScrubs::new(now));
+                pg_scrubs_pb(pool, g, &r, now)
+            })
+            .filter(|p| !req.overdue || !p.overdue.is_empty())
+            .collect();
+        Ok(pb::ListPgScrubsResponse {
+            pgs,
+            ..Default::default()
+        }
+        .into())
     }
 
     async fn list_pgs(
@@ -3153,6 +3348,84 @@ mod tests {
         // A device not heard from: the pool's fullness isn't known.
         space.remove(&ids[0]);
         assert_eq!(pool(&status(&space)), (String::new(), None));
+    }
+
+    /// D227, D228: a pool's scrub from its PGs' records, and health's
+    /// scrub checks in the status.
+    #[test]
+    fn scrub_status_and_health_from_the_records() {
+        use crate::scrubs::{PgScrubs, Records, Summary};
+        let m = crate::parse_cluster(
+            "cluster 5\nnode 0 rack 0 127.0.0.1:9100\nnode 1 rack 0 127.0.0.1:9101\n\
+             pool 1 vol replicated size 2 min 1 pgs 4 domain host\n",
+        )
+        .unwrap();
+        let day = 86_400;
+        let now = 100 * day;
+        let mut records = Records::new();
+        for g in 0..4 {
+            let mut r = PgScrubs::new(now - 30 * day);
+            r.note(
+                Summary {
+                    at: now - 3600,
+                    compared: 10,
+                    ..Default::default()
+                },
+                false,
+            );
+            r.note(
+                Summary {
+                    at: now - 3 * day,
+                    compared: 10,
+                    holes_repaired: 1,
+                    ..Default::default()
+                },
+                true,
+            );
+            records.insert((1, g), r);
+        }
+        // PG 2: no light scrub in 3 days. PG 3: damaged, no good copy.
+        records.get_mut(&(1, 2)).unwrap().light = None;
+        records.get_mut(&(1, 3)).unwrap().note(
+            Summary {
+                at: now - 60,
+                damaged: 2,
+                unresolved: 2,
+                ..Default::default()
+            },
+            false,
+        );
+        let pool = &m.pools[&1];
+        let p = super::pool_scrub(&m, pool, &records, now);
+        assert_eq!(p.pg_count, 4);
+        assert_eq!(p.oldest_light_secs, 3 * day);
+        assert_eq!(p.oldest_deep_secs, 3 * day);
+        assert_eq!(
+            (p.overdue, p.overdue_pgs.clone()),
+            (1, vec!["1.2".to_string()])
+        );
+        assert_eq!((p.damaged, p.inconsistent, p.unchecked), (1, 1, 0));
+        let w = p.week.as_option().unwrap();
+        assert_eq!((w.scrubs, w.compared, w.holes_repaired), (7, 60, 4));
+        let pg = super::pg_scrubs_pb(pool, 2, &records[&(1, 2)], now);
+        assert_eq!(pg.overdue, "light");
+        assert!(pg.light.as_option().is_none() && pg.deep.as_option().is_some());
+
+        let mut s = super::status(
+            &m,
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        super::scrub_health(&mut s, &m, &records, now);
+        assert_eq!(s.health, super::pb::Health::HEALTH_ERROR);
+        let texts: Vec<&str> = s.reasons.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.contains(&"pool vol: 1 PG(s) damaged, with no good copy to repair from: 1.3")
+                && texts.contains(&"pool vol: scrub overdue on 1 PG(s): 1.2"),
+            "{texts:?}"
+        );
     }
 
     #[test]

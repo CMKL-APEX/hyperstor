@@ -119,8 +119,9 @@ members, as long as there are at least `min_size` of them. Below
   same digests, every pool's `scrub.hours` (default 24; D224, I263) for
   each clean PG a device is primary of, spread evenly over the interval. A difference that persists after a
   second look is repaired from the primary's copy when a majority of
-  the copies agree with it, and otherwise reported. The first pass after
-  a start and every seventh are **deep** (I60): each member first reads
+  the copies agree with it, and otherwise reported. A PG is scrubbed
+  **deep** (I60) once its last deep scrub is `deep_every` intervals old,
+  and the first time, from the map service's records (D227, I265): each member first reads
   every block of the PG, checking its CRC (08-engine.md §7.2), at most
   the pool's deep rate per device (64 MiB/s by default; D224), and reports an object that fails as damaged,
   which never counts toward a majority; the majority's copy replaces it.

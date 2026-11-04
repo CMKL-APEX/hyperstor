@@ -102,6 +102,15 @@ service ClusterService {
   // while a pool's settings are weaker than the defaults. Write.
   rpc WeakenScrubSettings(WeakenScrubSettingsRequest) returns (WeakenScrubSettingsResponse);
 
+  // Each pool's scrub, or one pool's (28-scrub.md §31.8, D227): its
+  // settings, how long since its PGs were last scrubbed, light and deep,
+  // the PGs overdue, unchecked or damaged, and the totals of its PGs' last
+  // scrubs of the last 7 days. Up to a minute behind the leader. Read.
+  rpc GetScrubStatus(GetScrubStatusRequest) returns (GetScrubStatusResponse);
+
+  // One pool's PGs with their last light and deep scrub (D227). Read.
+  rpc ListPgScrubs(ListPgScrubsRequest) returns (ListPgScrubsResponse);
+
   // Adds a device to a pool beyond its classes, or removes one of them
   // from it (24-pools-and-devices.md §27.4, 04-decisions.md D180); PGs
   // move as for SetPool, which it is checked as. Write.
@@ -416,8 +425,9 @@ message Pool {
 message ScrubSettings {
   // Every PG is light-scrubbed once in this many hours; 0: scrub off.
   uint32 hours = 1;
-  // Every this-many passes, the first included, is deep: every block read
-  // and its CRC checked.
+  // A PG is scrubbed deep, every block read and its CRC checked, once
+  // every this-many scrubs: when its last deep scrub is this many
+  // intervals old, or it never had one.
   uint32 deep_every = 2 [json_name = "deep_every"];
   // "repair": copies holding zeros where another has holes are replaced
   // from it (D223, D225); "report": only reported.
@@ -618,6 +628,98 @@ message SetPoolRequest {
   // Cache pools: seconds a PG waits for a down member, up to 3600; 0
   // moves at once (D189).
   optional uint32 cache_grace = 9 [json_name = "cache_grace"];
+}
+
+message GetScrubStatusRequest {
+  // Only this pool; every pool when absent.
+  optional uint32 pool = 1;
+}
+
+message GetScrubStatusResponse {
+  repeated PoolScrub pools = 1;
+}
+
+// One pool's scrub (28-scrub.md §31.4, §31.5). Cache pools aren't
+// scrubbed and aren't listed.
+message PoolScrub {
+  uint32 pool = 1;
+  string name = 2;
+  ScrubSettings settings = 3;
+  uint32 pg_count = 4 [json_name = "pg_count"];
+  // Seconds since the PG scrubbed longest ago was last scrubbed, light (a
+  // deep scrub counts) and deep; a PG never scrubbed counts from when it
+  // was made or first recorded.
+  uint64 oldest_light_secs = 5 [json_name = "oldest_light_secs"];
+  uint64 oldest_deep_secs = 6 [json_name = "oldest_deep_secs"];
+  // PGs overdue: no light scrub in twice the interval, or no deep scrub in
+  // twice the deep interval (D228); the first ten named, as "pool.pg".
+  uint32 overdue = 7;
+  repeated string overdue_pgs = 8 [json_name = "overdue_pgs"];
+  // PGs whose hole check was skipped in their last two scrubs.
+  uint32 unchecked = 9;
+  // PGs whose last scrub left damaged objects without a good copy.
+  uint32 damaged = 10;
+  // PGs whose last scrub left objects unresolved.
+  uint32 inconsistent = 11;
+  // Totals of the PGs' last scrubs, light and deep, that started in the
+  // last 7 days.
+  ScrubTotals week = 12;
+}
+
+message ScrubTotals {
+  uint32 scrubs = 1;
+  uint64 compared = 2;
+  uint64 inconsistent = 3;
+  uint64 repaired = 4;
+  uint64 unresolved = 5;
+  uint64 damaged = 6;
+  uint64 holes = 7;
+  uint64 holes_repaired = 8 [json_name = "holes_repaired"];
+  // Scrubs that skipped the hole check.
+  uint32 holes_skipped = 9 [json_name = "holes_skipped"];
+}
+
+message ListPgScrubsRequest {
+  uint32 pool = 1;
+  // Only PGs overdue.
+  bool overdue = 2;
+}
+
+message ListPgScrubsResponse {
+  repeated PgScrubs pgs = 1;
+}
+
+message PgScrubs {
+  uint32 pg = 1;
+  // Unix seconds since when it is counted: made, or first recorded.
+  uint64 since = 2;
+  // Its last light and deep scrub; absent if none since it was recorded.
+  PgScrubReport light = 3;
+  PgScrubReport deep = 4;
+  // "light" or "deep" when overdue; empty otherwise.
+  string overdue = 5;
+  // Scrubs running that skipped the hole check.
+  uint32 skipped = 6;
+}
+
+// What one scrub of a PG did and found (28-scrub.md §31.4).
+message PgScrubReport {
+  // Unix seconds when it started.
+  uint64 at = 1;
+  uint32 took_ms = 2 [json_name = "took_ms"];
+  uint32 compared = 3;
+  // Objects whose copies still differed when looked at again.
+  uint32 inconsistent = 4;
+  uint32 repaired = 5;
+  uint32 unresolved = 6;
+  // Objects of the primary's copy that failed their checksums and no good
+  // copy replaced.
+  uint32 damaged = 7;
+  // Objects with zeros where another copy has holes (D223), and repaired.
+  uint32 holes = 8;
+  uint32 holes_repaired = 9 [json_name = "holes_repaired"];
+  // Why the hole check was skipped; empty when it ran.
+  string holes_skipped = 10 [json_name = "holes_skipped"];
 }
 
 message SetScrubSettingsRequest {

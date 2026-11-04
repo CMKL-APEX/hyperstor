@@ -6,8 +6,11 @@ and UI for all of it. Part of the hyperstor design; sections keep their
 numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
 
-Status: **settled, not built** (2026-11-04). The owner accepted D224–D230
-as written (points 183–189 of [05-decision-log.md](05-decision-log.md)). It
+Status: **settled; §31.2–§31.5 and part of §31.8 built** (2026-11-04;
+01-implementation-notes.md I263, I265). The owner accepted D224–D230
+as written (points 183–189 of [05-decision-log.md](05-decision-log.md)).
+Scrubbing now (§31.6), scrub after recovery (§31.7), the UI and the
+metrics of §31.8 are still to build. It
 builds on scrub as built (09-replication.md §8.5; I58, I60, I104, I105,
 D223, I249, I253), the cluster API with its roles and step-up
 (19-administration.md §23.9.2), the audit log (D112), operations (D121)
@@ -207,6 +210,12 @@ API.
   short report as one without the new counts.
 - **Raft:** the scrub summaries are a new entry kind. Map service
   members are upgraded together, as for operations (D121).
+- **As built** (01-implementation-notes.md I265): the map protocol's
+  decoder refuses a body longer than it knows, so the new counts ride in
+  the report's payload, which an older map service ignores. The summaries
+  are rows of the store's existing `settings` table, which an older
+  member applies without reading, where a new table would fail its
+  apply. Hosts can be upgraded one at a time, in any order.
 
 ### 31.10 Not in this proposal
 

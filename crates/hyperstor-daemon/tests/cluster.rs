@@ -31,6 +31,8 @@ enum MetaCmd {
     DeletePool(u32),
     /// The PGs scrub reported inconsistent.
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
+    /// Each PG's last scrubs, as the map service keeps them (D227).
+    Scrubs(std::sync::mpsc::Sender<hyperstor_meta::scrubs::Records>),
 }
 
 /// Each stopped device, by device id.
@@ -275,6 +277,9 @@ impl Cluster {
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
+                        MetaCmd::Scrubs(tx) => {
+                            let _ = tx.send(meta.scrub_records());
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -429,6 +434,13 @@ impl Cluster {
     fn inconsistent(&self) -> hyperstor_meta::Inconsistent {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Inconsistent(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// Each PG's last scrubs, as the map service keeps them (D227).
+    fn scrub_records(&self) -> hyperstor_meta::scrubs::Records {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Scrubs(tx)).is_ok());
         rx.recv().unwrap()
     }
 
@@ -4637,6 +4649,103 @@ fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
     let (map, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
+}
+
+/// D227: after each PG, its primary reports what the scrub did, and the
+/// map service keeps it with the PG; it answers when each PG was last
+/// scrubbed, which the scrubbers start their passes from. A PG never
+/// scrubbed deep is scrubbed deep first.
+#[test]
+fn scrub_reports_are_kept_per_pg() {
+    use hyperstor_proto::Msg;
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(300),
+    );
+    let meta = c.meta_addr;
+    let (pgs, objects) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, pattern(5, 16 * CHUNK as usize))
+                .await
+                .unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pgs: Vec<u32> = m.pgs.keys().filter(|k| k.0 == POOL).map(|k| k.1).collect();
+            (pgs, 16)
+        })
+    })
+    .join()
+    .unwrap();
+    // Scrubs that ran before the writes compared fewer: wait for a pass
+    // after them.
+    let compared = |r: &hyperstor_meta::scrubs::Records| -> u32 {
+        pgs.iter()
+            .filter_map(|g| r.get(&(POOL, *g))?.last().map(|s| s.compared))
+            .sum()
+    };
+    let t = std::time::Instant::now();
+    let records = loop {
+        let r = c.scrub_records();
+        if pgs.iter().all(|g| {
+            r.get(&(POOL, *g))
+                .is_some_and(|x| x.deep.is_some() && x.light.is_some())
+        }) && compared(&r) >= objects
+        {
+            break r;
+        }
+        assert!(
+            t.elapsed().as_secs() < 20,
+            "not every PG was scrubbed light and deep, or not since the writes: {r:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    for g in &pgs {
+        let r = &records[&(POOL, *g)];
+        // Deep and light both: at this interval, deep comes round again
+        // every 7 × 300 ms, so either may be the newer.
+        let light = r.light.as_ref().unwrap();
+        assert_eq!(
+            (
+                light.inconsistent,
+                light.unresolved,
+                light.damaged,
+                r.skipped
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(light.holes_skipped.is_empty(), "{:?}", light.holes_skipped);
+    }
+    // What the scrubbers start each pass from.
+    let ages = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            cl.call_meta(&Msg::ScrubAges { pool: POOL })
+                .await
+                .unwrap()
+                .0
+        })
+    })
+    .join()
+    .unwrap();
+    let Msg::ScrubAgesOk { pgs: ages } = ages else {
+        panic!("{ages:?}")
+    };
+    assert_eq!(ages.len(), pgs.len());
+    // Read after the ages, so at least as new.
+    let now = c.scrub_records();
+    for (g, light, deep) in ages {
+        let r = &now[&(POOL, g)];
+        assert!(light > 0 && deep > 0, "PG {g}: {light} {deep}");
+        assert!(
+            light <= r.light_at() && deep <= r.deep_at(),
+            "PG {g}: {r:?}"
+        );
+    }
 }
 
 /// Scrub when the primary's copy is the one outvoted (09-replication.md
