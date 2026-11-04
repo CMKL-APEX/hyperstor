@@ -480,6 +480,19 @@ pub enum Msg {
     ScrubAgesOk {
         pgs: Vec<(u32, u64, u64)>,
     },
+    /// Map service to a device: scrub these PGs it is primary of soon,
+    /// ahead of their turn (D229 on demand, D230 after recovery), deep or
+    /// light; with `cancel`, drop them from what it was asked.
+    ScrubNow {
+        pgs: Vec<(u32, u32)>,
+        deep: bool,
+        cancel: bool,
+    },
+    /// Answer to `ScrubNow`: how many of the PGs it took (those it is the
+    /// clean primary of).
+    ScrubNowOk {
+        queued: u32,
+    },
     /// Primary `device` to map service: the bytes its copy of each PG
     /// holds (D155), for the PGs whose bytes changed since its last
     /// report, or for all it is primary of if `full`.
@@ -780,6 +793,8 @@ mod kind {
     pub const ENDPOINT_DOWN: u16 = 84;
     pub const SCRUB_AGES: u16 = 85;
     pub const SCRUB_AGES_OK: u16 = 86;
+    pub const SCRUB_NOW: u16 = 87;
+    pub const SCRUB_NOW_OK: u16 = 88;
     pub const ERROR: u16 = 99;
 }
 
@@ -878,6 +893,8 @@ impl Msg {
             Msg::ScrubReport { .. } => SCRUB_REPORT,
             Msg::ScrubAges { .. } => SCRUB_AGES,
             Msg::ScrubAgesOk { .. } => SCRUB_AGES_OK,
+            Msg::ScrubNow { .. } => SCRUB_NOW,
+            Msg::ScrubNowOk { .. } => SCRUB_NOW_OK,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
             Msg::PerfReport { .. } => PERF_REPORT,
@@ -1206,6 +1223,16 @@ impl Msg {
                 e.seq(pgs, |e, (g, light, deep)| {
                     e.u32(*g).u64(*light).u64(*deep);
                 });
+            }
+            Msg::ScrubNow { pgs, deep, cancel } => {
+                e.seq(pgs, |e, (p, g)| {
+                    e.u32(*p).u32(*g);
+                })
+                .bool(*deep)
+                .bool(*cancel);
+            }
+            Msg::ScrubNowOk { queued } => {
+                e.u32(*queued);
             }
             Msg::PgUsage { device, full, pgs } => {
                 e.u32(*device).bool(*full).seq(pgs, |e, (p, g, b)| {
@@ -1553,6 +1580,12 @@ impl Msg {
             SCRUB_AGES_OK => Msg::ScrubAgesOk {
                 pgs: d.seq(20, |d| Ok((d.u32()?, d.u64()?, d.u64()?)))?,
             },
+            SCRUB_NOW => Msg::ScrubNow {
+                pgs: d.seq(8, |d| Ok((d.u32()?, d.u32()?)))?,
+                deep: d.bool()?,
+                cancel: d.bool()?,
+            },
+            SCRUB_NOW_OK => Msg::ScrubNowOk { queued: d.u32()? },
             NOTED => Msg::Noted {
                 map_epoch: d.u64()?,
             },
@@ -2431,6 +2464,12 @@ mod tests {
             Msg::ScrubAgesOk {
                 pgs: vec![(0, 0, 0), (7, 1_700_000_000, 1_699_000_000)],
             },
+            Msg::ScrubNow {
+                pgs: vec![(1, 2), (1, 9)],
+                deep: true,
+                cancel: false,
+            },
+            Msg::ScrubNowOk { queued: 2 },
             Msg::PgUsage {
                 device: 2000,
                 full: true,

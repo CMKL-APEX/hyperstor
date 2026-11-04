@@ -73,6 +73,15 @@ pub enum Work {
         volume: u128,
         pool: u32,
     },
+    /// A pool's PGs scrubbed now (28-scrub.md §31.6, D229), deep or
+    /// light: done once each reported a scrub started at or after `since`
+    /// (Unix seconds).
+    Scrub {
+        pool: u32,
+        pgs: Vec<u32>,
+        deep: bool,
+        since: u64,
+    },
     /// A volume, or one of its snapshots, deleted from the trash.
     Purge {
         #[serde(with = "hex_id")]
@@ -104,6 +113,7 @@ impl Work {
             Work::Copy { .. } => "copy",
             Work::Move { .. } => "move",
             Work::Purge { .. } => "purge",
+            Work::Scrub { .. } => "scrub",
             Work::DeletePool { .. } => "delete-pool",
             Work::RemoveDevice { .. } => "remove-device",
         }

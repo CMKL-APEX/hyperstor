@@ -434,6 +434,8 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .map_or(Duration::from_secs(60), Duration::from_millis);
         hyperstor_reactor::spawn(meta.clone().scrub_writer(scrub_every));
+        // A recovered PG is scrubbed once clean a minute (D230).
+        hyperstor_reactor::spawn(meta.clone().recovery_scrubs(Duration::from_secs(60)));
         if let Some(api) = api {
             let (tx, rx) = hyperstor_reactor::chan::channel();
             hyperstor_reactor::spawn(meta.clone().admin(rx, addr));

@@ -33,6 +33,16 @@ enum MetaCmd {
     Inconsistent(std::sync::mpsc::Sender<hyperstor_meta::Inconsistent>),
     /// Each PG's last scrubs, as the map service keeps them (D227).
     Scrubs(std::sync::mpsc::Sender<hyperstor_meta::scrubs::Records>),
+    /// Asks for a pool's PGs to be scrubbed now (D229): pool, deep, since;
+    /// answers how many are done of how many.
+    ScrubNow(
+        u32,
+        bool,
+        u64,
+        std::sync::mpsc::Sender<Result<(u32, u32), String>>,
+    ),
+    /// Starts scrub after recovery (D230), each PG once clean this long.
+    RecoveryScrubs(std::time::Duration),
 }
 
 /// Each stopped device, by device id.
@@ -280,6 +290,18 @@ impl Cluster {
                         MetaCmd::Scrubs(tx) => {
                             let _ = tx.send(meta.scrub_records());
                         }
+                        MetaCmd::ScrubNow(pool, deep, since, tx) => {
+                            let _ = tx.send(meta.clone().scrub_now(
+                                pool,
+                                Vec::new(),
+                                deep,
+                                since,
+                                false,
+                            ));
+                        }
+                        MetaCmd::RecoveryScrubs(settle) => {
+                            spawn(meta.clone().recovery_scrubs(settle));
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -442,6 +464,18 @@ impl Cluster {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Scrubs(tx)).is_ok());
         rx.recv().unwrap()
+    }
+
+    /// Asks for every PG of `pool` to be scrubbed now (D229); how many
+    /// were since `since`, of how many.
+    fn scrub_now(&self, pool: u32, deep: bool, since: u64) -> (u32, u32) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::ScrubNow(pool, deep, since, tx))
+                .is_ok()
+        );
+        rx.recv().unwrap().unwrap()
     }
 
     /// Stops everything; returns the final map and each device by id.
@@ -4745,6 +4779,136 @@ fn scrub_reports_are_kept_per_pg() {
             light <= r.light_at() && deep <= r.deep_at(),
             "PG {g}: {r:?}"
         );
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// D229: asked, each PG's primary scrubs it now, deep, ahead of its turn
+/// (here a day away), and the map service counts the PGs done since.
+#[test]
+fn a_scrub_asked_for_runs_now() {
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+    );
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, pattern(9, 8 * CHUNK as usize))
+                .await
+                .unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    // Records of scrubs start after this second.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let since = unix_now();
+    let (done, pgs) = c.scrub_now(POOL, true, since);
+    assert_eq!(done, 0, "nothing scrubbed yet");
+    let t = std::time::Instant::now();
+    loop {
+        let (done, total) = c.scrub_now(POOL, true, since);
+        if done == total {
+            break;
+        }
+        assert!(t.elapsed().as_secs() < 20, "{done} of {total} scrubbed");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let r = c.scrub_records();
+    for g in 0..pgs {
+        assert!(
+            r[&(POOL, g)].deep_at() >= since,
+            "PG {g}: {:?}",
+            r[&(POOL, g)]
+        );
+    }
+}
+
+/// D230: after a node is back, every PG whose members changed is
+/// light-scrubbed, with the hole check, once clean for the settling time.
+#[test]
+fn recovered_pgs_are_scrubbed() {
+    let mut c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+    );
+    let meta = c.meta_addr;
+    let write = |seed| {
+        std::thread::spawn(move || {
+            block_on(async move {
+                let cl = Client::connect(meta, seed).await.unwrap();
+                cl.write(POOL, 1, 0, pattern(seed, 8 * CHUNK as usize))
+                    .await
+                    .unwrap();
+                wait_backfilled(&cl).await;
+                (*cl.map()).clone()
+            })
+        })
+        .join()
+        .unwrap()
+    };
+    let before = write(5);
+    assert!(
+        c.meta_tx
+            .send(MetaCmd::RecoveryScrubs(std::time::Duration::from_millis(
+                300
+            )))
+            .is_ok()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let since = unix_now();
+    // Node 3 goes down and out; its PGs are placed and filled elsewhere.
+    c.kill(3);
+    let t = std::time::Instant::now();
+    let after = loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let m = write(6);
+        if !m.nodes[&3].up {
+            break m;
+        }
+        assert!(t.elapsed().as_secs() < 20, "node 3 still up");
+    };
+    let changed: Vec<u32> = (0..before.pools[&POOL].pg_count)
+        .filter(|g| before.pgs[&(POOL, *g)].epoch != after.pgs[&(POOL, *g)].epoch)
+        .collect();
+    assert!(!changed.is_empty(), "no PG had node 3");
+    let t = std::time::Instant::now();
+    loop {
+        let r = c.scrub_records();
+        let left: Vec<u32> = changed
+            .iter()
+            .copied()
+            .filter(|g| r.get(&(POOL, *g)).is_none_or(|x| x.light_at() < since))
+            .collect();
+        if left.is_empty() {
+            for g in &changed {
+                let s = r[&(POOL, *g)].last().unwrap();
+                assert!(s.holes_skipped.is_empty(), "PG {g}: {s:?}");
+            }
+            break;
+        }
+        assert!(
+            t.elapsed().as_secs() < 30,
+            "PGs not scrubbed since recovery: {left:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
