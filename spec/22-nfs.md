@@ -2,11 +2,10 @@
 
 Status: **investigation; nothing built.** D127 (our own Rust server),
 D129 (data servers inside `hyperstord`) and D130 (stripe groups) are
-settled with the owner (05-decision-log.md point 74), as are D138–D141 and
-the revisions of D128, D131–D134 and D137 (points 75–82, after a review
-against RFC 8881, RFC 8434, RFC 8435 and the Linux client). D128 and
-D131–D137 as written are open for review, and G25–G38 are the host
-checks they rest on. It extends the filesystem
+settled with the owner (05-decision-log.md point 74), as are D138–D141
+(points 75–82) and, since 2026-11-05, D128 and D131–D137 (point 194; after
+reviews against RFC 8881, RFC 8434, RFC 8435 and the Linux client).
+G25–G38 are the host checks they rest on, still to run. It extends the filesystem
 ([00-filesystem.md](00-filesystem.md)) with a third way in, beside virtio-fs
 and FUSE (F8): unmodified NFS clients.
 
@@ -453,8 +452,12 @@ those are what the MDS seals:
   expires or it doesn't return a recalled layout in time. It meets RFC
   8434's fencing requirement, and RFC 8435 section 2.2's for tightly
   coupled devices (the client sees `NFS4ERR_BAD_STATEID`).
-- How the cluster key reaches storage nodes, and how it is rotated, needs
-  a security review before it is built.
+- **The sealing key** is a cluster secret: the map service holds it
+  encrypted under its cluster key (D162), as it holds S3 access keys
+  (D231). `hyperstord` and the MDS fetch it over mutual TLS with the map
+  and keep it only in memory. `hyperstorctl nfs key rotate` issues a new
+  key under the next key id, audited; both are valid until every MDS
+  instance has re-issued its stateids, then the old one is dropped.
 
 **The DS is stateless about opens (D139).** A sealed stateid stays valid
 at the DS after the client's `CLOSE`, and after a `chmod` or ACL change
