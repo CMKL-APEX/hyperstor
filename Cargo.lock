@@ -710,6 +710,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1688,6 +1697,7 @@ dependencies = [
  "hyperstor-fabric",
  "hyperstor-kv",
  "hyperstor-meta",
+ "hyperstor-pki",
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
@@ -1870,15 +1880,28 @@ dependencies = [
 name = "hyperstor-s3"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "crc32c",
+ "crc32fast",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "hyperstor-client",
  "hyperstor-codec",
  "hyperstor-kv",
+ "hyperstor-pki",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "libc",
  "md-5",
  "rand 0.9.5",
+ "ring",
+ "rustls",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "zeroize",
 ]
 
 [[package]]

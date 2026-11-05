@@ -16,11 +16,27 @@ pub const USER: u8 = b'r';
 /// the lower range.
 pub const QUEUE: u8 = b'q';
 
-/// A queue entry's key.
-pub fn queue_key(id: u128) -> Vec<u8> {
+/// A queue entry's key: when it is due (Unix seconds, big-endian), so
+/// entries sort by it, then a random id.
+pub fn queue_key(due: u64, id: u128) -> Vec<u8> {
     let mut out = vec![QUEUE];
+    out.extend_from_slice(&due.to_be_bytes());
     out.extend_from_slice(&id.to_be_bytes());
     out
+}
+
+/// The end of the queue entries due by `now` (Unix seconds).
+pub fn queue_due_end(now: u64) -> Vec<u8> {
+    let mut out = vec![QUEUE];
+    out.extend_from_slice(&(now.saturating_add(1)).to_be_bytes());
+    out
+}
+
+/// The time now, in Unix seconds.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// `b` with each 0x00 byte doubled to 0x00 0xFF, appended to `out`.

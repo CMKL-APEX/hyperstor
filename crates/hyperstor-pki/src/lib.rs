@@ -130,6 +130,9 @@ fn ca_params(name: &str, days: u32, path_len: u8) -> CertificateParams {
     p.distinguished_name = dn;
     p.is_ca = IsCa::Ca(BasicConstraints::Constrained(path_len));
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    // RFC 5280 wants it on every certificate a CA signs; Python 3.13's
+    // default (VERIFY_X509_STRICT) refuses a chain without it.
+    p.use_authority_key_identifier_extension = true;
     validity(&mut p, days);
     p
 }
@@ -189,6 +192,8 @@ fn leaf_params(
             .push(SanType::DnsName(n.clone().try_into().map_err(err)?));
     }
     p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    // As for CAs: strict verifiers refuse a leaf without it.
+    p.use_authority_key_identifier_extension = true;
     p.extended_key_usages = vec![
         ExtendedKeyUsagePurpose::ServerAuth,
         ExtendedKeyUsagePurpose::ClientAuth,

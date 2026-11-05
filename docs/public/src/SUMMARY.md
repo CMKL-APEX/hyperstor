@@ -46,6 +46,7 @@
   - [hyperstorctl](reference/hyperstorctl.md)
   - [hyperstor-ublk](reference/hyperstor-ublk.md)
   - [hyperstor-vhost](reference/hyperstor-vhost.md)
+  - [hyperstor-s3](reference/hyperstor-s3.md)
   - [hyperstor-install](reference/hyperstor-install.md)
   - [hyperstor-mgmt](reference/hyperstor-mgmt.md)
   - [hyperstor-authd](reference/hyperstor-authd.md)

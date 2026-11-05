@@ -10,11 +10,18 @@
 //! a gateway that stops in the middle leaves nothing that isn't deleted
 //! in the end ([`S3::clean`]).
 
+pub mod chunked;
+pub mod dates;
+pub mod gateway;
+pub mod keys;
 pub mod layout;
+pub mod sigv4;
+pub mod xml;
 
 use hyperstor_client::{Client, ClientError};
 use hyperstor_kv::{Batch, KvError, S3_STORE, Scan, Store, Table};
 use hyperstor_proto::{Code, WireOp};
+use hyperstor_reactor::JoinHandle;
 use layout::*;
 use md5::{Digest, Md5};
 use std::rc::Rc;
@@ -67,6 +74,11 @@ pub struct Config {
     /// Seconds before its expiry when an upload stops taking writes, so
     /// gateways' clocks may differ by as much.
     pub margin: u64,
+    /// Seconds a replaced or deleted object's chunks are kept, so that a
+    /// GET that found it before can finish.
+    pub linger: u64,
+    /// Chunk writes a PUT keeps in flight.
+    pub in_flight: usize,
 }
 
 impl Default for Config {
@@ -76,6 +88,8 @@ impl Default for Config {
             chunk: 4 << 20,
             put_expiry: 24 * 3600,
             margin: 3600,
+            linger: 900,
+            in_flight: 4,
         }
     }
 }
@@ -86,7 +100,7 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     now_ms() / 1000
 }
 
@@ -162,7 +176,7 @@ pub struct Listing {
 }
 
 /// The first name past every name beginning with `p`; none: there is none.
-fn past_prefix(p: &[u8]) -> Option<Vec<u8>> {
+pub fn past_prefix(p: &[u8]) -> Option<Vec<u8>> {
     let mut p = p.to_vec();
     while let Some(last) = p.pop() {
         if last < 0xFF {
@@ -248,6 +262,13 @@ impl S3 {
 
     /// Every bucket of `tenant`, by name.
     pub async fn buckets(&self, tenant: u32) -> Result<Vec<Bucket>> {
+        let mut all = self.all_buckets().await?;
+        all.retain(|b| b.info.tenant == tenant);
+        Ok(all)
+    }
+
+    /// Every tenant's buckets, by name.
+    pub async fn all_buckets(&self) -> Result<Vec<Bucket>> {
         let mut out = Vec::new();
         let mut from = Vec::new();
         loop {
@@ -257,10 +278,7 @@ impl S3 {
             };
             from = [&last.name[..], &[0]].concat();
             for t in page {
-                let b = Bucket::of(t)?;
-                if b.info.tenant == tenant {
-                    out.push(b);
-                }
+                out.push(Bucket::of(t)?);
             }
         }
     }
@@ -366,6 +384,7 @@ impl S3 {
             };
             let mut batch = Batch::new();
             batch.assert(LATEST, Some(&v)).delete(LATEST);
+            batch.linger(self.cfg.linger);
             collect(&mut batch, b, &e);
             let r = self.kv.apply(&b.table, &row, &batch).await;
             if !kv_conflict(&r) {
@@ -410,6 +429,7 @@ impl S3 {
             buf: Vec::new(),
             sent: 0,
             chunks: 0,
+            writing: Default::default(),
             md5: Md5::new(),
             crc: 0,
         })
@@ -548,8 +568,9 @@ pub struct Put<'a> {
     pending: Option<Pending>,
     buf: Vec<u8>,
     sent: u64,
-    /// Chunks written.
+    /// Chunks written or being written.
     chunks: u32,
+    writing: std::collections::VecDeque<JoinHandle<std::result::Result<(), ClientError>>>,
     md5: Md5,
     crc: u32,
 }
@@ -558,6 +579,17 @@ impl Put<'_> {
     /// The upload's id, which names its chunks.
     pub fn id(&self) -> u128 {
         self.id
+    }
+
+    /// The MD5 of the bytes written so far, to check a `Content-MD5`
+    /// before [`Put::finish`].
+    pub fn md5(&self) -> [u8; 16] {
+        self.md5.clone().finalize().into()
+    }
+
+    /// Bytes written so far.
+    pub fn sent(&self) -> u64 {
+        self.sent
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -590,21 +622,28 @@ impl Put<'_> {
         }
     }
 
+    /// Starts writing a chunk, once fewer than `in_flight` are.
     async fn write_chunk(&mut self, mut data: Vec<u8>) -> Result<()> {
         self.live()?;
+        while self.writing.len() >= self.s3.cfg.in_flight.max(1) {
+            self.wait_one().await?;
+        }
         data.resize(data.len().div_ceil(4096) * 4096, 0);
         let name = chunk_name(self.bucket.id(), self.id, 0, self.chunks);
-        self.s3
-            .client()
-            .exec(
-                self.bucket.table.data_pool,
-                NS_S3,
-                &name,
-                &[WireOp::Write { off: 0, data }],
-            )
-            .await?;
+        let (cl, pool) = (self.s3.client().clone(), self.bucket.table.data_pool);
+        self.writing.push_back(hyperstor_reactor::spawn(async move {
+            cl.exec(pool, NS_S3, &name, &[WireOp::Write { off: 0, data }])
+                .await
+        }));
         self.chunks += 1;
         Ok(())
+    }
+
+    async fn wait_one(&mut self) -> Result<()> {
+        match self.writing.pop_front() {
+            Some(w) => Ok(w.await?),
+            None => Ok(()),
+        }
     }
 
     /// Writes what is left and makes the object visible, replacing the one
@@ -620,6 +659,9 @@ impl Put<'_> {
             if !self.buf.is_empty() {
                 let last = std::mem::take(&mut self.buf);
                 self.write_chunk(last).await?;
+            }
+            while !self.writing.is_empty() {
+                self.wait_one().await?;
             }
             Data::Chunks {
                 object: self.id,
@@ -658,6 +700,7 @@ impl Put<'_> {
                 batch.assert(&col, Some(m)).delete(&col);
             }
             if let Some((_, e)) = &old {
+                batch.linger(s3.cfg.linger);
                 collect(&mut batch, b, e);
             }
             match s3.kv.apply(&b.table, &row, &batch).await {
@@ -691,7 +734,11 @@ impl Put<'_> {
 
     /// Gives the upload up: its chunks are queued for deletion and its
     /// records removed.
-    pub async fn abort(self) -> Result<()> {
+    pub async fn abort(mut self) -> Result<()> {
+        // Before the chunks are queued, so none is written after.
+        while !self.writing.is_empty() {
+            let _ = self.wait_one().await;
+        }
         let Some(p) = &self.pending else {
             return Ok(());
         };
