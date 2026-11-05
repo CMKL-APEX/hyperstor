@@ -126,6 +126,20 @@ impl Settings {
         self.put("operations/instance", instance.to_string().as_bytes())
     }
 
+    /// The cluster API of the member serving the map at `map`, as it
+    /// recorded when it last began to lead.
+    pub fn member_api(&self, map: &str) -> Result<Option<String>, Error> {
+        Ok(self
+            .get(&format!("members/api/{map}"))?
+            .map(|v| String::from_utf8_lossy(&v).into_owned()))
+    }
+
+    /// Records this leader's cluster API, by its map address. Only the
+    /// leader.
+    pub fn set_member_api(&self, map: &str, api: &str) -> Result<(), Error> {
+        self.put(&format!("members/api/{map}"), api.as_bytes())
+    }
+
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         let txn = self
             .0
@@ -188,5 +202,11 @@ mod tests {
         assert_eq!(s.ops_instance().unwrap(), None);
         s.set_ops_instance(u64::MAX).unwrap();
         assert_eq!(s.ops_instance().unwrap(), Some(u64::MAX));
+        assert_eq!(s.member_api("10.0.0.1:8849").unwrap(), None);
+        s.set_member_api("10.0.0.1:8849", "10.0.0.1:8850").unwrap();
+        assert_eq!(
+            s.member_api("10.0.0.1:8849").unwrap().as_deref(),
+            Some("10.0.0.1:8850")
+        );
     }
 }

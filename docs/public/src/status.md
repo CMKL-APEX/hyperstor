@@ -36,7 +36,7 @@ covered by tests that run on every change.
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
-| AD3: Administration from the UI and CLI, with roles, trash and audit | In progress |
+| AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -225,4 +225,5 @@ covered by tests that run on every change.
 | Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced | Done |
 | Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs | Done |
 | Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean | Done |
-| The UI's Scrub card and PG grid Scrub view, and per-pool scrub metrics | Planned |
+| The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns | Done |
+| Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew | Done |

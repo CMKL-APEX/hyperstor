@@ -25,6 +25,9 @@ tokio = { version = "1", features = ["rt", "net", "time"] }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 http = "1"
+# `GET /metrics` beside the RPCs (D234).
+http-body-util = "0.1"
+bytes = "1"
 tower = "0.5"
 libc.workspace = true
 # The replicated map (04-decisions.md D20, D71): glidex's store and Raft stack,

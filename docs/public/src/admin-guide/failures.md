@@ -193,7 +193,8 @@ writes the records once a minute.
 | `PG(s) inconsistent` | warn | Copies differ with no majority (above) |
 
 Each names the pool and up to ten PGs. The next scrub of the PG that
-finds it clean clears it.
+finds it clean clears it. In the web UI, the Overview's reasons link to
+the pool's PGs in the grid's Scrub view.
 
 ### Scrubbing now, and after recovery
 
@@ -209,6 +210,23 @@ It is an operation: `op list` shows how many PGs are done, `op cancel`
 stops it, and the audit log records who started it. The PGs' primaries
 scrub them one at a time, a deep one at the pool's deep rate, while the
 regular schedule goes on.
+
+Only the map service's leader starts operations. Asked of another
+member, `scrub start` goes on to the leader's API, with the
+certificates of `--tls` or of `hyperstorctl.conf`, and says so. It
+finds that API in `member list`: each member records its own when it
+begins to lead. When it can't go there (no certificates, over the local
+socket, or the leader hasn't recorded its API yet, as with members from
+before this), it exits with status 3 and says what to run instead.
+
+In the web UI, a pool's **Scrub** card (Pools, then the pool's PGs)
+shows its settings, how long since its PGs were last scrubbed, light and
+deep, and the PGs overdue, with **Scrub now** and **Scrub deep now**
+buttons and **Change** for the settings. The PG grid's **Scrub** view
+shades each PG by the age of its last deep scrub: green when fresh,
+amber as it falls due, red once overdue, with a dark centre for a PG
+whose last scrubs found something. Click a PG for its last light and
+deep scrub.
 
 After a node comes back, a device is replaced, or anything else changes
 which devices hold a PG, the PG is scrubbed light, holes checked, about a

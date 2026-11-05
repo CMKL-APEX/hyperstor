@@ -37,6 +37,9 @@ pub enum Role {
     Host,
     /// An S3 gateway (`hyperstor-s3`, D233): reads the S3 access keys.
     S3,
+    /// A metrics scraper such as Prometheus: the map service's `/metrics`
+    /// and nothing else (D234).
+    Metrics,
 }
 
 impl Role {
@@ -48,6 +51,7 @@ impl Role {
             Role::Admin => "admin",
             Role::Host => "host",
             Role::S3 => "s3",
+            Role::Metrics => "metrics",
         }
     }
 
@@ -59,6 +63,7 @@ impl Role {
             "admin" => Role::Admin,
             "host" => Role::Host,
             "s3" => Role::S3,
+            "metrics" => Role::Metrics,
             _ => return None,
         })
     }
@@ -1118,6 +1123,8 @@ mod tests {
     fn roles_that_may_administer() {
         assert!(Role::Admin.may_administer());
         assert!(Role::Mgmt.may_administer());
+        assert!(!Role::Metrics.may_administer());
+        assert_eq!(Role::parse("metrics"), Some(Role::Metrics));
         for r in [Role::Node, Role::Meta, Role::Host, Role::S3] {
             assert!(!r.may_administer());
         }

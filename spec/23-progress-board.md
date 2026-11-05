@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 2 | 23 |
+| 8 | 0 | 2 | 24 |
 
 ## In progress
 
@@ -34,13 +34,14 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Scrubbing now and after recovery (D229, D230)** (`scrub-now`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-now`, [#188](https://github.com/CMKL-APEX/hyperstor/pull/188) | Stage 3 of 28-scrub.md: StartScrub as an operation and hyperstorctl scrub start; each PG whose members changed is scrubbed light, holes checked, a minute after it is clean (I267) | Stage 4: the UI's Scrub card per pool and the PG grid's Scrub view | 2026-11-04 |
+| **Scrub in the web UI and the scrub metrics; scrub start through the leader (28-scrub.md §31.8)** (`scrub-ui`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-ui`, [#190](https://github.com/CMKL-APEX/hyperstor/pull/190) | Stage 4 of 28-scrub.md: a Scrub card per pool, the PG grid's Scrub view, health linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API (I271); /metrics on the API's port for a new metrics certificate role, and hyperstorctl cert renew (D234, D235, I272) | Merge and deploy; then a metrics certificate for the pilot's Prometheus, if it has one | 2026-11-05 |
 | **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Scrubbing now and after recovery (D229, D230)** (`scrub-now`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-now`, [#188](https://github.com/CMKL-APEX/hyperstor/pull/188) | 2026-11-05 |
 | **Scrub settings per pool in the map, the API and the CLI (D224–D226)** (`scrub-settings`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-settings`, [#184](https://github.com/CMKL-APEX/hyperstor/pull/184) | 2026-11-04 |
 | **Scrub reports per PG and their health checks (D227, D228)** (`scrub-reports`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-reports`, [#187](https://github.com/CMKL-APEX/hyperstor/pull/187) | 2026-11-04 |
 | **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin`, [#174](https://github.com/CMKL-APEX/hyperstor/pull/174) | 2026-11-04 |
@@ -99,5 +100,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 15 | 0 | 1 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 17 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |
