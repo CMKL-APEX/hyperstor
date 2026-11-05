@@ -849,8 +849,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TokenService.RevokeToken", "token revoke"),
     // Called by hyperstor-install, which joins the host it runs on.
     ("TokenService.Join", "hyperstor-install install --join"),
-    // Called by hyperstor-install's daily run.
-    ("CaService.RenewCertificate", "hyperstor-install install"),
+    // Also by hyperstor-install's daily run, for the host's own.
+    ("CaService.RenewCertificate", "cert renew"),
     ("CaService.ListCertificates", "cert list"),
     ("CaService.RevokeCertificate", "cert revoke"),
     ("NodeService.DrainNode", "drain"),

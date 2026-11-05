@@ -331,28 +331,35 @@ impl TokenService for Api {
         let target = format!("role {}", req.role);
         let who = self.authorize(&ctx, "CreateToken", &target, true)?;
         let (_, root) = self.signing()?;
-        if !matches!(req.role, "node" | "meta" | "mgmt") {
+        if !matches!(req.role, "node" | "meta" | "mgmt" | "metrics") {
             return Err(invalid(
-                format!("{}: a token is for role node, meta or mgmt", req.role),
+                format!(
+                    "{}: a token is for role node, meta, mgmt or metrics",
+                    req.role
+                ),
                 "invalid_argument",
             ));
         }
-        // A management client's token names the identity it enrolls (D122).
+        // A management client's or scraper's token names the identity it
+        // enrolls (D122, D234).
         let name = req.name.to_string();
-        if req.role == "mgmt" {
+        if matches!(req.role, "mgmt" | "metrics") {
             let ok = (1..=32).contains(&name.len())
                 && name
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
             if !ok {
                 return Err(invalid(
-                    format!("{name:?}: a mgmt token names its identity: 1-32 of a-z, 0-9 and -"),
+                    format!(
+                        "{name:?}: a {} token names its identity: 1-32 of a-z, 0-9 and -",
+                        req.role
+                    ),
                     "invalid_argument",
                 ));
             }
         } else if !name.is_empty() {
             return Err(invalid(
-                "only a mgmt token takes a name",
+                "only a mgmt or metrics token takes a name",
                 "invalid_argument",
             ));
         }
@@ -532,13 +539,18 @@ impl TokenService for Api {
                         },
                     ))
                 }
-                "mgmt" => {
-                    // A management client (D122): a client certificate
+                role @ ("mgmt" | "metrics") => {
+                    // A management client (D122), or a scraper of the map
+                    // service's metrics (D234): a client certificate
                     // naming no address, the root, and the map service's
-                    // addresses for its data path.
+                    // addresses for a management client's data path.
                     let who = Identity {
                         cluster: cluster.clone(),
-                        role: Role::Mgmt,
+                        role: if role == "mgmt" {
+                            Role::Mgmt
+                        } else {
+                            Role::Metrics
+                        },
                         id: token.name.clone(),
                     };
                     let certificate = hyperstor_pki::sign_request(
@@ -551,7 +563,7 @@ impl TokenService for Api {
                     )
                     .map_err(|e| invalid(e, "bad_request"))?;
                     Ok((
-                        format!("{who_token}: mgmt {}", token.name),
+                        format!("{who_token}: {role} {}", token.name),
                         pb::JoinResponse {
                             cluster_id: cluster.clone(),
                             certificate,

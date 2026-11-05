@@ -93,13 +93,15 @@
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
-//! - `token create --role node|meta|mgmt [--name N] [--ttl SECS]`, `token
-//!   list`, `token revoke --id ID`: join tokens (§23.4.2); a `mgmt` token
-//!   enrolls a management client named N, such as glidex (D122); `create`
+//! - `token create --role node|meta|mgmt|metrics [--name N] [--ttl SECS]`,
+//!   `token list`, `token revoke --id ID`: join tokens (§23.4.2); a `mgmt`
+//!   token enrolls a management client named N, such as glidex (D122), a
+//!   `metrics` one a scraper that may read only `/metrics` (D234); `create`
 //!   prints the token alone on standard output, and how to use it on
 //!   standard error;
-//! - `enroll --file TOKEN --out DIR`: a management client's identity from a
-//!   mgmt token: a key made here, the API pinned to the token's root; DIR
+//! - `enroll --file TOKEN --out DIR`: a management client's or scraper's
+//!   identity from a mgmt or metrics token: a key made here, the API pinned
+//!   to the token's root; DIR
 //!   gets `admin.crt`, `admin.key` and `root.crt`, as `--tls` reads them;
 //! - `expand-volume --id ID --size S`: grows a volume;
 //! - `write-volume --id ID --file F [--offset O] [--sparse] [--map ADDR[,ADDR...]]`,
@@ -125,7 +127,10 @@
 //!   an existing file;
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
-//!   certificate file's identity, serial and expiry, without the API.
+//!   certificate file's identity, serial and expiry, without the API;
+//!   `cert renew [--force]` renews the certificate of `--tls DIR` with
+//!   itself once past two thirds of its life (now with `--force`), for a
+//!   client the installer doesn't renew, from a daily timer.
 //!
 //! `--json` (or `-o json`) prints the API's answer as JSON, the form `curl`
 //! gets; `-o yaml` as YAML. A refused call prints the API's message and
@@ -166,7 +171,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -546,7 +551,7 @@ fn main() {
                 let sub = it.next().map(String::as_str);
                 let ok = match arg.as_str() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
-                    "cert" => matches!(sub, Some("list" | "revoke" | "show")),
+                    "cert" => matches!(sub, Some("list" | "revoke" | "show" | "renew")),
                     "map" => matches!(sub, Some("backup")),
                     "member" => matches!(sub, Some("list" | "add" | "remove")),
                     "snapshot" => matches!(
@@ -787,7 +792,8 @@ fn main() {
             && cmd != "pool create"
             && cmd != "pool add-device"
             && cmd != "pool delete"
-            && cmd != "device remove")
+            && cmd != "device remove"
+            && cmd != "cert renew")
     {
         usage();
     }
@@ -811,6 +817,16 @@ fn main() {
     });
     let api = api_addr(api);
     let tls_dir = tls.or_else(|| conf("tls")).filter(|_| mgmt.is_none());
+    if cmd == "cert renew" {
+        let Some(dir) = tls_dir else {
+            eprintln!(
+                "hyperstorctl: cert renew renews the certificate of --tls DIR \
+                 (or the tls line of hyperstorctl.conf), not through --mgmt"
+            );
+            std::process::exit(2)
+        };
+        std::process::exit(renew(&api, &dir, a.force));
+    }
     let tls = tls_dir
         .as_deref()
         .filter(|_| socket.is_none())
@@ -2170,7 +2186,18 @@ where
                 .await?
                 .into_owned();
             show(a, &r, || format!("{}\n", r.token));
-            if !a.json && role == "mgmt" {
+            if !a.json && role == "metrics" {
+                let info = r.info.as_option().cloned().unwrap_or_default();
+                eprintln!(
+                    "Token {} for scraper {:?}, single-use, expires {} (UTC). On the scraper's\n\
+                     host, enroll with it, then point Prometheus at the files (see the docs):\n  \
+                     hyperstorctl --api {} enroll --file FILE --out DIR",
+                    info.id,
+                    info.name,
+                    utc(info.expires_unix),
+                    r.api_address
+                );
+            } else if !a.json && role == "mgmt" {
                 let info = r.info.as_option().cloned().unwrap_or_default();
                 eprintln!(
                     "Token {} for management client {:?}, single-use, expires {} (UTC). Give it\n\
@@ -3208,11 +3235,100 @@ fn enroll(api: &str, a: &Args) -> i32 {
     // The identity as the cluster states it, not read back from the
     // certificate.
     println!(
-        "enrolled as {} in cluster {}; certificate in {} (renew within 30 days); map service {}",
+        "enrolled as {} in cluster {}; certificate in {} for 30 days (renew it from a daily timer: \
+         hyperstorctl --api ADDR --tls DIR cert renew); map service {}",
         r.identity,
         r.cluster_id,
         dir.display(),
         r.map_addresses
+    );
+    0
+}
+
+/// `cert renew [--force]` (D56, D234): renews the certificate in `dir`
+/// (`admin.crt` and `admin.key`) through the API, with itself, once it is
+/// past two thirds of its life, or now with `force`. For a client the
+/// installer doesn't look after, such as a scraper: run it from a daily
+/// timer.
+fn renew(api: &str, dir: &str, force: bool) -> i32 {
+    let dir = std::path::PathBuf::from(dir);
+    let crt = dir.join("admin.crt");
+    let cert = match std::fs::read_to_string(&crt) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("hyperstorctl: {}: {e}", crt.display());
+            return 2;
+        }
+    };
+    if !force && !hyperstor_pki::due_for_renewal(&cert, hyperstor_pki::LEAF_DAYS) {
+        println!(
+            "{}: not due yet (renewed in the last third of its life)",
+            crt.display()
+        );
+        return 0;
+    }
+    let tls = client_tls(&dir.to_string_lossy());
+    let (key, csr) = match hyperstor_pki::new_request() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("hyperstorctl: key: {e}");
+            return 1;
+        }
+    };
+    let uri: http::Uri = match format!("https://{api}").parse() {
+        Ok(u) => u,
+        Err(_) => {
+            eprintln!("hyperstorctl: {api}: not an address");
+            return 2;
+        }
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let r = rt.block_on(async {
+        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        CaServiceClient::new(HttpClient::with_tls(tls), config)
+            .renew_certificate(pb::RenewCertificateRequest {
+                csr,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+    });
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hyperstorctl: {api}: {}", error_text(&e));
+            return exit_code(&e);
+        }
+    };
+    // Each file whole or not at all: written aside, then renamed over.
+    let put = |name: &str, content: &str, mode: u32| -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let p = dir.join(name);
+        let new = dir.join(format!("{name}.new"));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(mode)
+            .open(&new)
+            .and_then(|mut f| f.write_all(content.as_bytes()).and_then(|()| f.sync_all()))
+            .and_then(|()| std::fs::rename(&new, &p))
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    if let Err(e) =
+        put("admin.key", &key, 0o600).and_then(|()| put("admin.crt", &r.certificate, 0o644))
+    {
+        eprintln!("hyperstorctl: {e}");
+        return 1;
+    }
+    print!(
+        "renewed {}\n{}",
+        crt.display(),
+        cert_text(&r.certificate).unwrap_or_default()
     );
     0
 }

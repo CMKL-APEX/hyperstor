@@ -1411,9 +1411,13 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Per-pool scrub metrics: hyperstor_pool_scrub_oldest_seconds and hyperstor_pool_scrub_overdue_pgs"
-spec = ["28-scrub.md §31.8"]
-status = "planned"
+what = "Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew"
+spec = ["28-scrub.md §31.8", "D234", "D235", "I269"]
+status = "done"
+tests = [
+    "enroll::a_scraper_enrolls_and_reads_only_the_metrics",
+    "hyperstor_meta::api::metrics::tests::metrics_name_each_pool_and_the_leader",
+]
 
 [[milestone]]
 id = "AD4"

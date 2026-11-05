@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 mod admin;
 mod audit;
+mod metrics;
 mod ops;
 mod perf;
 mod trash;
@@ -56,8 +57,10 @@ struct Api {
 /// What a call needs of its caller.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Need {
-    /// Any identity of this cluster but a bare-metal host.
+    /// Any identity of this cluster but a bare-metal host or a scraper.
     Read,
+    /// `GET /metrics` (D234): a scraper, or any identity that may read.
+    Metrics,
     /// `admin` or `mgmt`.
     Write,
     /// Any identity of this cluster.
@@ -418,7 +421,11 @@ impl Api {
                 }
                 let allowed = match need {
                     Need::Write => who.role.may_administer(),
-                    Need::Read => who.role != hyperstor_pki::Role::Host,
+                    Need::Read => !matches!(
+                        who.role,
+                        hyperstor_pki::Role::Host | hyperstor_pki::Role::Metrics
+                    ),
+                    Need::Metrics => who.role != hyperstor_pki::Role::Host,
                     Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
                     Need::Identity | Need::Anyone => true,
                 };
@@ -3161,21 +3168,15 @@ pub fn spawn(
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
                 let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
                 let router = hyperstor_api::AuditServiceExt::register(api.clone(), router);
-                let router = admin::register(api, router);
+                let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {
                     u.set_nonblocking(true).expect("nonblocking");
                     let u = tokio::net::UnixListener::from_std(u).expect("unix listener");
                     tokio::spawn(serve_local(u, service.clone()));
                 }
-                let mut server = connectrpc::Server::from_listener(listener);
-                if let Some(c) = config {
-                    server = server.with_tls(c);
-                }
-                if let Err(e) = server.serve_with_service(service).await {
-                    eprintln!("hyperstor-meta: cluster API: {e}");
-                    std::process::exit(1);
-                }
+                // The RPCs and `GET /metrics` (D234) on the one port.
+                metrics::serve(listener, config, service, api).await
             })
         })
         .expect("spawn the API thread")

@@ -33,7 +33,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Scrub in the web UI, and scrub start through the leader (28-scrub.md §31.8)** (`scrub-ui`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-ui`, [#190](https://github.com/CMKL-APEX/hyperstor/pull/190) | Stage 4 of 28-scrub.md: a Scrub card per pool, the PG grid's Scrub view, health linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API (I268) | The per-pool scrub metrics, once the owner picks where the map service exports them | 2026-11-05 |
+| **Scrub in the web UI and the scrub metrics; scrub start through the leader (28-scrub.md §31.8)** (`scrub-ui`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-ui`, [#190](https://github.com/CMKL-APEX/hyperstor/pull/190) | Stage 4 of 28-scrub.md: a Scrub card per pool, the PG grid's Scrub view, health linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API (I268); /metrics on the API's port for a new metrics certificate role, and hyperstorctl cert renew (D234, D235, I269) | Merge and deploy; then a metrics certificate for the pilot's Prometheus, if it has one | 2026-11-05 |
 | **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done
@@ -99,5 +99,5 @@ against the tests.
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
 | AD2 | Management service and read-only web UI | 7 | 1 | 0 |
-| AD3 | Administration from the UI and CLI, with roles, trash and audit | 16 | 0 | 1 |
+| AD3 | Administration from the UI and CLI, with roles, trash and audit | 17 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

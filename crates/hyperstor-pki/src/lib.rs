@@ -35,6 +35,9 @@ pub enum Role {
     Admin,
     /// A bare-metal host that attaches exported volumes.
     Host,
+    /// A metrics scraper such as Prometheus: the map service's `/metrics`
+    /// and nothing else (D234).
+    Metrics,
 }
 
 impl Role {
@@ -45,6 +48,7 @@ impl Role {
             Role::Mgmt => "mgmt",
             Role::Admin => "admin",
             Role::Host => "host",
+            Role::Metrics => "metrics",
         }
     }
 
@@ -55,6 +59,7 @@ impl Role {
             "mgmt" => Role::Mgmt,
             "admin" => Role::Admin,
             "host" => Role::Host,
+            "metrics" => Role::Metrics,
             _ => return None,
         })
     }
@@ -940,6 +945,8 @@ mod tests {
     fn roles_that_may_administer() {
         assert!(Role::Admin.may_administer());
         assert!(Role::Mgmt.may_administer());
+        assert!(!Role::Metrics.may_administer());
+        assert_eq!(Role::parse("metrics"), Some(Role::Metrics));
         for r in [Role::Node, Role::Meta, Role::Host] {
             assert!(!r.may_administer());
         }

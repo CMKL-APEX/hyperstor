@@ -411,8 +411,10 @@ export const SetAuditSettingsResponseSchema: GenMessage<SetAuditSettingsResponse
  */
 export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   /**
-   * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, 04-decisions.md D122).
+   * "node" (a storage host), "meta" (a map service member), "mgmt" (a
+   * management client such as glidex's control plane, 04-decisions.md D122)
+   * or "metrics" (a scraper such as Prometheus, which may read the map
+   * service's /metrics and nothing else, D234).
    *
    * @generated from field: string role = 1;
    */
@@ -426,8 +428,8 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   ttlSeconds: number;
 
   /**
-   * "mgmt": the identity's name, which its certificate carries
-   * (hyperstor://<cluster>/mgmt/<name>): 1-32 of a-z, 0-9 and -.
+   * "mgmt" and "metrics": the identity's name, which its certificate
+   * carries (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
    *
    * @generated from field: string name = 3;
    */
@@ -439,8 +441,10 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
  */
 export type CreateTokenRequestJson = {
   /**
-   * "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-   * management client such as glidex's control plane, 04-decisions.md D122).
+   * "node" (a storage host), "meta" (a map service member), "mgmt" (a
+   * management client such as glidex's control plane, 04-decisions.md D122)
+   * or "metrics" (a scraper such as Prometheus, which may read the map
+   * service's /metrics and nothing else, D234).
    *
    * @generated from field: string role = 1;
    */
@@ -454,8 +458,8 @@ export type CreateTokenRequestJson = {
   ttl_seconds?: number;
 
   /**
-   * "mgmt": the identity's name, which its certificate carries
-   * (hyperstor://<cluster>/mgmt/<name>): 1-32 of a-z, 0-9 and -.
+   * "mgmt" and "metrics": the identity's name, which its certificate
+   * carries (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
    *
    * @generated from field: string name = 3;
    */

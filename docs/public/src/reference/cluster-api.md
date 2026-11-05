@@ -24,6 +24,7 @@ a client certificate issued by the cluster's CA, whose identity
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
 | `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
+| `metrics` | Read `GET /metrics` (below) and renew its own certificate; nothing else |
 
 A certificate of another cluster is refused, and so is a revoked one:
 `RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
@@ -50,6 +51,14 @@ when certificates are broken; its use is audited like any other.
 
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
+
+**Metrics.** `GET /metrics` on the same port, beside the calls, serves
+the map service's metrics in Prometheus' text format (D234, D235): this
+member's `hyperstor_meta_leader`, and each scrubbed pool's
+`hyperstor_pool_scrub_oldest_seconds{pool,name,kind}` and
+`hyperstor_pool_scrub_overdue_pgs{pool,name}`. It needs a certificate
+of role `metrics`, or any role that may read; 401 without one, 403 for
+`host`. See [Managing a cluster](../admin-guide/managing.md#the-map-services-metrics).
 
 **Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which

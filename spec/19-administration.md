@@ -272,9 +272,11 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 **Leaf certificates** (D56):
 
 - Identity in a URI SAN: `hyperstor://<cluster id>/<role>/<id>`, with
-  role `node`, `meta`, `mgmt`, `admin` or `host`. The API authorizes
-  by role (§16): `host` may only attach volumes exported to it; `node`
-  may report and read the map; `mgmt` and `admin` may administer.
+  role `node`, `meta`, `mgmt`, `admin`, `host` or `metrics`. The API
+  authorizes by role (§16): `host` may only attach volumes exported to
+  it; `node` may report and read the map; `mgmt` and `admin` may
+  administer; `metrics` may only read the map service's `/metrics`
+  (04-decisions.md D234).
 - P-256, 30 days, renewed automatically at two thirds of their life
   over the existing mTLS session. Short lives keep revocation small.
 - **Revocation:** a serial denylist in the map, pushed with map updates

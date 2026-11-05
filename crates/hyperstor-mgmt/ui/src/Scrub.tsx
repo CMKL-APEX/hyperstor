@@ -239,13 +239,22 @@ export function ScrubCard({ pool }: { pool: number }) {
           cli={cli()}
           run={async () => {
             const req = changed();
+            let now;
             try {
-              if (req.reason) await cluster.weakenScrubSettings(req);
-              else await cluster.setScrubSettings(req);
+              now = (req.reason ? await cluster.weakenScrubSettings(req) : await cluster.setScrubSettings(req)).settings;
             } catch (e) {
               if (e instanceof ApiError && e.code === "weakens_scrub")
                 throw new Error(`${e.message}. Give a reason to weaken it; it asks for a fresh login.`);
               throw e;
+            }
+            // The status reads the published map, which follows the
+            // change a moment later: wait for it, so the card shows it.
+            const same = (x?: typeof now) =>
+              !!x && !!now && x.hours === now.hours && x.deepEvery === now.deepEvery && x.holeRepair === now.holeRepair && x.deepRateMib === now.deepRateMib;
+            for (let i = 0; i < 40; i++) {
+              const p = (await cluster.getScrubStatus({ pool })).pools[0];
+              if (same(p?.settings)) break;
+              await new Promise((r) => setTimeout(r, 250));
             }
             setNotice(`Pool ${pool}'s scrub settings changed.`);
           }}

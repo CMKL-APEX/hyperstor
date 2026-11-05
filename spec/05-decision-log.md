@@ -1206,3 +1206,13 @@ recommendation:
 | 191 | Who issues S3 access keys, and what encrypts their secrets: the map service, under its cluster key (D162), gateways fetching them (recommended); or mgmt with a key of its own, as D197 read | The map service | D231, amends D197 |
 | 192 | How buckets are created: S3's CreateBucket by any key, pools from the cluster's defaults or a named placement (recommended); or administrators only | CreateBucket | D232 |
 | 193 | Where the gateway runs: any joined host with an `s3` identity, `--s3` in the installer (recommended); or beside each storage node with its identity | Any host, its own role | D233 |
+
+## Scrub metrics (2026-11-05)
+
+Building the metrics of 28-scrub.md §31.8: the map service had no
+metrics endpoint. Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 194 | Where the map service serves its metrics, and to whom: a plain-HTTP port of its own, as storage nodes have; `/metrics` on the cluster API's port behind its mutual TLS; or mgmt's `/api/metrics`. For the API's port, which certificate Prometheus holds: a new `metrics` role that may read only `/metrics` (recommended), any cluster certificate, or an administrator's | The API's port, with a certificate; a new `metrics` role | D234 |
+| 195 | Which members export them: every member, from its replicated records, with a leader gauge (recommended); or the leader only, as §31.8 read | Every member | D235 |
