@@ -7,7 +7,7 @@ with the owner; D20–D26, D28–D37, D56–D60 and D66's merge rule were made w
 drafting and are open to review. For NFS and pNFS (22-nfs.md), D127, D129,
 D130 and D138–D141 are settled, and D128 and D131–D137 since 2026-11-05 (point 194). For networks (26-networks.md),
 D203–D213 and D215–D217 are settled, and D214 (copies and moves between pools); for load and drives (27-performance.md), D218–D222. For scrub settings and reports (28-scrub.md), D224–D230 are settled (2026-11-04) and not yet built. Host checks G1–G24 and G39–G46 (17-milestones.md
-§22), G25–G38 (22-nfs.md §26.11) and G47–G53 (26-networks.md §29.13) G54–G55 (27-performance.md §30.7) and G56 (14-s3.md §14.8) are still open. What is built, and the
+§22), G25–G38 (22-nfs.md §26.11) and G48–G53 (26-networks.md §29.13; G47 is answered) G54–G55 (27-performance.md §30.7) and G56 (14-s3.md §14.8) are still open. What is built, and the
 decision points still open, are in
 [01-implementation-notes.md](01-implementation-notes.md) and
 [05-decision-log.md](05-decision-log.md).
