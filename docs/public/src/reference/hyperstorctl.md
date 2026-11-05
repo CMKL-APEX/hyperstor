@@ -65,8 +65,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `s3 key create` | Makes an S3 access key for tenant `--tenant N` (1 or more), with an optional `--description TEXT` (up to 200 characters). Prints the key's id and secret on standard output, separated by a space: the secret is never shown again. The map service keeps it encrypted with the cluster key |
 | `s3 key list` | The access keys: id, tenant, when and by whom each was made, and its description. Never the secrets |
 | `s3 key revoke` | Deletes access key `--id`: [gateways](hyperstor-s3.md) refuse it within seconds |
-| `s3 placement set` | Sets placement `--name N` to keep new buckets' objects in pool `--data-pool NAME` and their index in `--index-pool NAME`. CreateBucket uses `default` unless its `LocationConstraint` names another placement; until `default` is set, buckets can't be created. Refused (exit 1) for a pool that doesn't exist or is a cache pool. Buckets made before keep their pools |
-| `s3 placement list` | The placements and their pools |
+| `s3 placement set` | Sets placement `--name N` to keep new buckets' objects in pool `--data-pool NAME` and their index in `--index-pool NAME`. CreateBucket uses `default` unless its `LocationConstraint` names another placement; until `default` is set, buckets can't be created. Refused (exit 1) for a pool that doesn't exist, a cache pool, or `.meta`. Kept by pool id: a renamed pool keeps its placements. Buckets made before keep their pools |
+| `s3 placement list` | The placements and their pools, by name and id; a pool deleted since shows as `#ID (deleted)` |
 | `s3 placement delete` | Removes placement `--name N`; buckets in its pools stay |
 | `op list` | Running and recent operations (drains, flattens, copies, moves, purges), newest first; finished ones are kept a week |
 | `op get` | Operation `--id` |

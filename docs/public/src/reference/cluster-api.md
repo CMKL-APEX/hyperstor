@@ -23,7 +23,7 @@ a client certificate issued by the cluster's CA, whose identity
 | Role | May |
 |---|---|
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
-| `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
+| `node`, `meta` | `meta` also `GetClusterKey`. Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
 | `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets; no other role may call it), and renew its own certificate |
 | `metrics` | Read `GET /metrics` (below) and renew its own certificate; nothing else |
@@ -151,6 +151,7 @@ values are left out of answers.
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
+| `GetClusterKey` | `{}`. Map service members (`meta` certificates) only, audited: `hyperstor-install` asks for it on a member that has none | `cluster_key`; `failed_precondition` (`no_cluster_key`) where the member answering has none |
 | `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`, `api_address`: its cluster API as it recorded when it last led, empty if it hasn't), `me` |
 | `AddMember` | `id`, `raft_address`, `map_address` | `members`. On the leader; answers once the member votes |
 | `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
@@ -159,9 +160,9 @@ values are left out of answers.
 | `CreateS3Key` (`S3Service`) | `{"tenant": 1}`, optionally `"description"` (up to 200 characters). Needs step-up through hyperstor-mgmt | `key` (`id`, `tenant`, `description`, `created_unix`, `created_by`) and `secret`, shown once: the map service keeps it encrypted with the cluster key. On the leader; `failed_precondition` (`no_cluster_key`) on a member without the cluster key, `invalid_argument` for tenant 0 |
 | `ListS3Keys` | `{}` | `keys`, without secrets |
 | `RevokeS3Key` | `{"id": "HS…"}` | `{}`: gateways refuse the key within seconds. On the leader; `not_found` for an unknown key |
-| `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. On the leader; `invalid_argument` for a bad name, a pool that doesn't exist or a cache pool |
+| `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. Kept by the pools' ids, so a renamed pool keeps its placements. On the leader; `invalid_argument` for a bad name, a pool that doesn't exist, a cache pool or `.meta` |
 | `DeleteS3Placement` | `{"name": "fast"}` | `{}`; `not_found` for an unknown placement |
-| `ListS3Placements` | `{}` | `placements` |
+| `ListS3Placements` | `{}` | `placements`, each with its pools' names now and `data_pool_id`, `index_pool_id` (a pool deleted since has an empty name) |
 | `GetS3Gateway` | `{}` | `keys` with their `secret`s, and `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
 | `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |

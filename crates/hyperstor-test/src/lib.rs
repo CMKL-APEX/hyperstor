@@ -29,13 +29,14 @@ use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-pub const BINARIES: [&str; 6] = [
+pub const BINARIES: [&str; 7] = [
     "hyperstor-install",
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
     "hyperstor-mgmt",
     "hyperstor-authd",
+    "hyperstor-s3",
 ];
 
 /// The workspace root.
@@ -566,9 +567,13 @@ pub struct Cluster {
     pub admin_port: u16,
     /// The dashboard's port (`hyperstor-mgmt`).
     pub mgmt_port: u16,
+    /// The S3 gateway's port (`hyperstor-s3`, D233), installed but
+    /// started only by [`Cluster::start_s3`].
+    pub s3_port: u16,
     pub meta_log: PathBuf,
     meta: Option<Child>,
     mgmt: Option<Child>,
+    s3: Option<Child>,
     /// Options hyperstor-mgmt gets after its installed ones.
     mgmt_extra: Vec<String>,
     /// Run mgmt on every address, as installed (D110); else on loopback
@@ -590,9 +595,10 @@ impl Cluster {
         // --root puts the data directory under the root like any path;
         // the processes use the final path, so make it.
         std::fs::create_dir_all(&data).unwrap();
-        let base = free_ports(4 + 2 * nodes as u16);
+        let base = free_ports(5 + 2 * nodes as u16);
         let (api, map, node, admin) = (base, base + 1, base + 2, base + 2 + nodes as u16);
         let mgmt = base + 2 + 2 * nodes as u16;
+        let s3 = mgmt + 1;
         install(
             &root,
             &[
@@ -613,6 +619,8 @@ impl Cluster {
                 &admin.to_string(),
                 "--mgmt-port",
                 &mgmt.to_string(),
+                "--s3-port",
+                &s3.to_string(),
             ],
         );
         let cluster_id = std::fs::read_to_string(root.join("etc/hyperstor/cluster.txt"))
@@ -631,6 +639,8 @@ impl Cluster {
             nodes,
             admin_port: admin,
             mgmt_port: mgmt,
+            s3_port: s3,
+            s3: None,
             mgmt: None,
             mgmt_extra: Vec::new(),
             mgmt_all_addresses: false,
@@ -645,6 +655,18 @@ impl Cluster {
         c.ctl(&["status", "--wait", "30"]).ok();
         c.start_mgmt();
         c
+    }
+
+    /// Starts the S3 gateway from its installed options (`s3.env`); its
+    /// log is `s3.log` in the scratch directory.
+    pub fn start_s3(&mut self) {
+        let p = Command::new(self.bin.join("hyperstor-s3"))
+            .args(env_args(&self.root, self.scratch.run(), "s3.env"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(self.scratch.path("s3.log")).unwrap())
+            .spawn()
+            .unwrap();
+        self.s3 = Some(p);
     }
 
     /// Starts the dashboard from its installed options and waits for it
@@ -1029,6 +1051,9 @@ impl Drop for Cluster {
         // directory is gone afterwards.
         if std::thread::panicking() {
             let mut logs = vec![self.meta_log.clone()];
+            if self.s3.is_some() {
+                logs.push(self.scratch.path("s3.log"));
+            }
             logs.extend((0..self.nodes).map(|n| self.scratch.path(&format!("node-{n}.log"))));
             for log in logs {
                 let text = std::fs::read_to_string(&log).unwrap_or_default();
@@ -1047,6 +1072,7 @@ impl Drop for Cluster {
             .values_mut()
             .chain(self.meta.iter_mut())
             .chain(self.mgmt.iter_mut())
+            .chain(self.s3.iter_mut())
         {
             let _ = p.kill();
             let _ = p.wait();

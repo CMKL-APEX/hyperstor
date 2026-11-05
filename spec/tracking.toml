@@ -735,9 +735,10 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster (stage 3, second part)"
-spec = ["14-s3.md §14.7", "D233"]
-status = "planned"
+what = "The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part)"
+spec = ["14-s3.md §14.7", "D233", "I269"]
+status = "done"
+tests = ["s3::a_gateway_joins_with_an_s3_token"]
 
 [[milestone.item]]
 what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4)"
