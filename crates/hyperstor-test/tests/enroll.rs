@@ -250,12 +250,12 @@ fn a_scraper_enrolls_and_reads_only_the_metrics() {
     let renewed = c
         .ctl_via(Via::Tls(&dir), &["cert", "renew", "--force"])
         .ok();
-    assert!(
-        renewed.has("renewed") && renewed.has("/metrics/prometheus"),
-        "{}",
-        renewed.out
-    );
+    assert!(renewed.has("renewed"), "{}", renewed.out);
     let now = std::fs::read_to_string(dir.join("admin.crt")).unwrap();
+    assert_eq!(
+        hyperstor_pki::identity_in(&now).unwrap().uri(),
+        hyperstor_pki::identity_in(&cert).unwrap().uri()
+    );
     assert_ne!(
         hyperstor_pki::serial_in(&now),
         hyperstor_pki::serial_in(&cert)

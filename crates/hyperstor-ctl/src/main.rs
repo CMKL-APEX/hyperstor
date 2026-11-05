@@ -3325,10 +3325,10 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
         eprintln!("hyperstorctl: {e}");
         return 1;
     }
-    print!(
-        "renewed {}\n{}",
+    println!(
+        "renewed {} (hyperstorctl cert show --file {} shows its expiry)",
         crt.display(),
-        cert_text(&r.certificate).unwrap_or_default()
+        crt.display()
     );
     0
 }
