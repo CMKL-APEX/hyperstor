@@ -221,6 +221,22 @@ impl Group {
     fn ctl(&self, i: usize, args: &[&str]) -> Run {
         ctl(&self.bin, &self.m[i].api, &self.m[i].pki(), args)
     }
+
+    /// Waits until member `i + 1`'s own store holds the map: a leader is
+    /// elected before its first map is applied, and until then the member
+    /// makes no tokens and can't be forced alone (on a slow host, seconds
+    /// later; CI). A map backup reads the member's store, and fails until
+    /// then.
+    fn formed(&self, i: usize) {
+        let mut n = 0;
+        wait_for("the map in the member's store", 40, || {
+            n += 1;
+            let out = self.s.path(&format!("formed-{i}-{n}"));
+            let r = self.ctl(i, &["map", "backup", "--out", out.to_str().unwrap()]);
+            let _ = std::fs::remove_file(&out);
+            (r.code == 0).then_some(())
+        });
+    }
 }
 
 /// Members added and removed at run time (D87): a fourth member, joined
@@ -305,6 +321,7 @@ fn a_lost_majority_is_recovered_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let mut g = group("majority", 3, 3);
     g.leader(&[0, 1, 2]);
+    g.formed(0);
     // Members 2 and 3 are lost; member 1 is left without a majority.
     g.m[2].stop();
     let s1_api = g.m[0].api.clone();
@@ -334,6 +351,7 @@ fn a_lost_majority_is_recovered_alone() {
     let (s, m0) = (&g.s, &mut g.m[0]);
     m0.start(s, &["--force-alone", &cluster]);
     g.leader(&[0]);
+    g.formed(0);
     let r = g.ctl(0, &["member", "list"]).ok();
     assert_eq!(r.out.lines().count(), 2, "one member: {}", r.out);
     let log = g.m[0].log();
