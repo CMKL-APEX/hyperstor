@@ -1,5 +1,6 @@
-//! Access keys, until the map service keeps them (14-s3.md §14.7, stage
-//! 3; D231): a file the operator writes, one key per line,
+//! Access keys: fetched from the map service, which keeps them (D231;
+//! [`crate::gateway::Source::Api`]), or, without the cluster API (tests),
+//! from a file the operator writes, one key per line,
 //!
 //! ```text
 //! # access key id, secret, tenant
@@ -60,6 +61,15 @@ impl Keys {
             }
         }
         Ok(Keys(keys))
+    }
+
+    /// From `(id, secret, tenant)`s, as the cluster API gives them.
+    pub fn from_keys(keys: impl IntoIterator<Item = (String, Zeroizing<String>, u32)>) -> Keys {
+        Keys(
+            keys.into_iter()
+                .map(|(id, secret, tenant)| (id, Key { secret, tenant }))
+                .collect(),
+        )
     }
 
     pub fn get(&self, id: &str) -> Option<&Key> {

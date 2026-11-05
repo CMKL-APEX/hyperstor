@@ -1,0 +1,298 @@
+//! S3's access keys and placements (14-s3.md §14.2, 04-decisions.md D231,
+//! D232), rows of the replicated store's settings table, so a member from
+//! before them still applies every entry (as scrub's records, I265):
+//!
+//! - `s3key/<id>`: the key's tenant, description, when and by whom it was
+//!   made, and its secret sealed with the cluster key (D162), bound to the
+//!   id. Revoking deletes the row.
+//! - `s3place/<name>`: a placement's data and index pools, by name.
+//!
+//! Writes go through the leader; reads come from the member's applied
+//! copy, so any member answers a gateway.
+
+use crate::store::{self, Db, Origin, Table};
+use crate::tokens::TokenError as Error;
+use glidex_raftstore::store::{StoreError, definition};
+use hyperstor_codec::{Dec, DecodeError, Enc};
+use redb::ReadableTable as _;
+
+const KEY: &str = "s3key/";
+const PLACE: &str = "s3place/";
+
+/// The placement CreateBucket uses when its LocationConstraint names none.
+pub const DEFAULT_PLACEMENT: &str = "default";
+
+/// An access key as stored: its secret sealed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S3Key {
+    pub id: String,
+    pub tenant: u32,
+    pub description: String,
+    pub created_unix: u64,
+    pub created_by: String,
+    /// The secret, sealed by [`hyperstor_pki::ClusterKey::seal`] for
+    /// [`context`].
+    pub sealed: Vec<u8>,
+}
+
+impl S3Key {
+    fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::new();
+        e.u32(self.tenant)
+            .str(&self.description)
+            .u64(self.created_unix)
+            .str(&self.created_by)
+            .bytes(&self.sealed);
+        e.into_vec()
+    }
+
+    fn decode(id: &str, b: &[u8]) -> Result<S3Key, DecodeError> {
+        let mut d = Dec::new(b);
+        let k = S3Key {
+            id: id.to_string(),
+            tenant: d.u32()?,
+            description: d.str()?.to_string(),
+            created_unix: d.u64()?,
+            created_by: d.str()?.to_string(),
+            sealed: d.bytes()?.to_vec(),
+        };
+        d.finish()?;
+        Ok(k)
+    }
+}
+
+/// What a key's secret is sealed for: its id, so a sealed secret copied to
+/// another key's row doesn't open.
+pub fn context(id: &str) -> String {
+    format!("hyperstor s3 key {id}")
+}
+
+/// Pools for new buckets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    pub name: String,
+    pub data_pool: String,
+    pub index_pool: String,
+}
+
+/// RFC 4648's base32 alphabet: ids that are all capitals and digits, as
+/// AWS's look, and that no shell or URL needs to quote.
+const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// A new access key id, `HS` and 18 base32 characters (90 random bits),
+/// and its secret, 40 characters of URL-safe base64 (240 random bits).
+pub fn new_key(random: impl Fn(usize) -> Vec<u8>) -> (String, String) {
+    let id: String = random(18)
+        .iter()
+        .map(|b| BASE32[usize::from(b & 31)] as char)
+        .collect();
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let secret: String = random(40)
+        .iter()
+        .map(|b| B64[usize::from(b & 63)] as char)
+        .collect();
+    (format!("HS{id}"), secret)
+}
+
+/// Whether `id` is shaped as [`new_key`] makes them.
+pub fn valid_id(id: &str) -> bool {
+    id.len() == 20 && id.starts_with("HS") && id[2..].bytes().all(|b| BASE32.contains(&b))
+}
+
+/// Whether `name` may name a placement: `default`, or what S3 allows in a
+/// LocationConstraint we accept (1-63 of a-z, 0-9 and -).
+pub fn valid_placement(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn rows(db: &Db, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    let txn = db.begin_read().map_err(|e| Error::Store(e.to_string()))?;
+    let Ok(t) = txn.open_table(definition::<store::MapSchema>(Table::Settings)) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for row in t.range(prefix..).map_err(|e| Error::Store(e.to_string()))? {
+        let (k, v) = row.map_err(|e| Error::Store(e.to_string()))?;
+        let Some(name) = k.value().strip_prefix(prefix) else {
+            break;
+        };
+        out.push((name.to_string(), v.value().to_vec()));
+    }
+    Ok(out)
+}
+
+/// Every key, from this member's copy.
+pub fn keys(db: &Db) -> Result<Vec<S3Key>, Error> {
+    rows(db, KEY)?
+        .into_iter()
+        .map(|(id, v)| S3Key::decode(&id, &v).map_err(|e| Error::Store(format!("{KEY}{id}: {e}"))))
+        .collect()
+}
+
+/// Adds `k`. Only the leader.
+pub fn create(db: &Db, k: &S3Key) -> Result<(), Error> {
+    let row = format!("{KEY}{}", k.id);
+    db.write(Origin::Leader, |tx| -> Result<(), Error> {
+        let mut t = tx
+            .open_table(definition::<store::MapSchema>(Table::Settings))
+            .map_err(StoreError::from)?;
+        // Ids are random; a clash would replace another's secret.
+        if t.get(row.as_str()).map_err(StoreError::from)?.is_some() {
+            return Err(Error::Store(format!("key {} exists", k.id)));
+        }
+        t.insert(row.as_str(), k.encode().as_slice())
+            .map_err(StoreError::from)?;
+        Ok(())
+    })
+}
+
+/// Deletes key `id`. Only the leader.
+pub fn revoke(db: &Db, id: &str) -> Result<(), Error> {
+    let row = format!("{KEY}{id}");
+    db.write(Origin::Leader, |tx| -> Result<(), Error> {
+        let mut t = tx
+            .open_table(definition::<store::MapSchema>(Table::Settings))
+            .map_err(StoreError::from)?;
+        if t.remove(row.as_str()).map_err(StoreError::from)?.is_none() {
+            return Err(Error::NotFound);
+        }
+        Ok(())
+    })
+}
+
+/// Every placement, from this member's copy: `data index` in each row.
+pub fn placements(db: &Db) -> Result<Vec<Placement>, Error> {
+    rows(db, PLACE)?
+        .into_iter()
+        .map(|(name, v)| {
+            let text = String::from_utf8_lossy(&v).into_owned();
+            let mut w = text.split(' ');
+            match (w.next(), w.next(), w.next()) {
+                (Some(d), Some(i), None) => Ok(Placement {
+                    name,
+                    data_pool: d.to_string(),
+                    index_pool: i.to_string(),
+                }),
+                _ => Err(Error::Store(format!("{PLACE}{name}: not a placement"))),
+            }
+        })
+        .collect()
+}
+
+/// Adds or replaces `p`. Only the leader. Pool names have no spaces.
+pub fn set_placement(db: &Db, p: &Placement) -> Result<(), Error> {
+    let row = format!("{PLACE}{}", p.name);
+    let value = format!("{} {}", p.data_pool, p.index_pool);
+    db.write(Origin::Leader, |tx| -> Result<(), Error> {
+        let mut t = tx
+            .open_table(definition::<store::MapSchema>(Table::Settings))
+            .map_err(StoreError::from)?;
+        t.insert(row.as_str(), value.as_bytes())
+            .map_err(StoreError::from)?;
+        Ok(())
+    })
+}
+
+/// Removes placement `name`. Only the leader.
+pub fn delete_placement(db: &Db, name: &str) -> Result<(), Error> {
+    let row = format!("{PLACE}{name}");
+    db.write(Origin::Leader, |tx| -> Result<(), Error> {
+        let mut t = tx
+            .open_table(definition::<store::MapSchema>(Table::Settings))
+            .map_err(StoreError::from)?;
+        if t.remove(row.as_str()).map_err(StoreError::from)?.is_none() {
+            return Err(Error::NotFound);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(id: &str, tenant: u32) -> S3Key {
+        S3Key {
+            id: id.into(),
+            tenant,
+            description: "backups".into(),
+            created_unix: 1_700_000_000,
+            created_by: "hyperstor://9/admin/local".into(),
+            sealed: vec![1, 2, 3],
+        }
+    }
+
+    #[test]
+    fn keys_and_placements_are_rows_of_the_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("map.redb")).unwrap();
+        assert!(keys(&db).unwrap().is_empty());
+        let (a, b) = (
+            key("HSAAAAAAAAAAAAAAAAAA", 1),
+            key("HSBBBBBBBBBBBBBBBBBB", 2),
+        );
+        create(&db, &a).unwrap();
+        create(&db, &b).unwrap();
+        assert!(create(&db, &a).is_err(), "an id is never replaced");
+        // Placements, after the keys' prefix, aren't keys.
+        set_placement(
+            &db,
+            &Placement {
+                name: DEFAULT_PLACEMENT.into(),
+                data_pool: "rep".into(),
+                index_pool: "fast".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(keys(&db).unwrap(), vec![a.clone(), b.clone()]);
+        revoke(&db, &a.id).unwrap();
+        assert_eq!(revoke(&db, &a.id), Err(Error::NotFound));
+        assert_eq!(keys(&db).unwrap(), vec![b]);
+        let p = placements(&db).unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(
+            (p[0].data_pool.as_str(), p[0].index_pool.as_str()),
+            ("rep", "fast")
+        );
+        delete_placement(&db, DEFAULT_PLACEMENT).unwrap();
+        assert_eq!(
+            delete_placement(&db, DEFAULT_PLACEMENT),
+            Err(Error::NotFound)
+        );
+        assert!(placements(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_keys_are_shaped_as_aws_keys() {
+        let random = |len: usize| {
+            (0..len)
+                .map(|i| (i as u8).wrapping_mul(37))
+                .collect::<Vec<u8>>()
+        };
+        let (id, secret) = new_key(random);
+        assert!(valid_id(&id), "{id}");
+        assert_eq!(secret.len(), 40);
+        assert!(
+            secret
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
+        for bad in [
+            "",
+            "HS",
+            "AKIAAAAAAAAAAAAAAAAA",
+            "HSaaaaaaaaaaaaaaaaaa",
+            "HSAAAAAAAAAAAAAAAAA1",
+        ] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+        assert!(valid_placement("default") && valid_placement("fast-1"));
+        for bad in ["", "Fast", "a b", "a/b", &"a".repeat(64)] {
+            assert!(!valid_placement(bad), "{bad}");
+        }
+        assert_ne!(context("HSA"), context("HSB"));
+    }
+}

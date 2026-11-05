@@ -12,8 +12,8 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `check` | Runs the host checks and changes nothing |
 | `install` | Installs, or brings an installation up to date: only what differs is changed |
 | `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
-| `root-backup` | Writes the root CA's certificate and key to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the key from this host |
-| `root-restore` | Puts the root CA from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster |
+| `root-backup` | Writes the root CA's certificate and key, and the cluster key (`cluster.key`, which encrypts the secrets the map service keeps), to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the root's key from this host |
+| `root-restore` | Puts the root CA, and the cluster key if the backup holds one, from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster, and not onto a host with another cluster key |
 | `format-device` | Formats the block device `--path` (by its `/dev/disk/by-id/` name) as device `--id` for `hyperstord`, which formats only files. It refuses a device that holds anything it recognises (a partition table, LVM, Ceph BlueStore, md RAID, LUKS, a filesystem, swap, or a hyperstor device already), naming it; `--force-format` zeroes the device's first and last 128 KiB and formats it anyway. The cluster's id comes from the installed cluster file, or the node records it at its first start |
 
 | Option | Default | Meaning |

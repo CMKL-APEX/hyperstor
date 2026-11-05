@@ -12,6 +12,11 @@
 //! - A PUT is made visible only once tokio's side has seen the whole
 //!   body and found it good: until then the reactor holds the upload
 //!   open, and gives it up if the body is bad.
+//! - **Keys and placements** (D231, D232) come from the map service:
+//!   fetched over mutual TLS with the gateway's `s3` certificate every few
+//!   seconds, so a revoked key is refused within seconds, and kept while
+//!   no member answers ([`Source::Api`]). Without the cluster API (tests),
+//!   they are fixed at start ([`Source::Fixed`]).
 //! - Object names and bodies are user data: never logged.
 
 use crate::chunked::{Algorithm, BodyError, Checks, Chunked};
@@ -51,10 +56,8 @@ pub struct Options {
     pub networks: Vec<String>,
     pub listen: Vec<SocketAddr>,
     pub tls: Arc<rustls::ServerConfig>,
-    pub keys: Keys,
-    /// Pools of new buckets, by name, until placements (D232).
-    pub data_pool: String,
-    pub index_pool: String,
+    /// Where keys and placements come from.
+    pub source: Source,
     /// Reactor threads.
     pub reactors: usize,
     /// Tokio's threads.
@@ -62,6 +65,106 @@ pub struct Options {
     pub config: Config,
     /// How often expired uploads are cleaned up (14-s3.md §14.6).
     pub clean_every: Duration,
+}
+
+/// Where the access keys and placements come from (D231, D232).
+pub enum Source {
+    /// Fixed at start: keys from a file, and new buckets in two pools,
+    /// the `default` placement. For running without the cluster API.
+    Fixed {
+        keys: Keys,
+        data_pool: String,
+        index_pool: String,
+    },
+    /// From the cluster API (`S3Service.GetS3Gateway`) at these addresses,
+    /// tried in turn, every `every`, over mutual TLS with `tls` (the
+    /// gateway's `s3` identity).
+    Api {
+        addrs: Vec<String>,
+        tls: Arc<rustls::ClientConfig>,
+        every: Duration,
+    },
+}
+
+/// What a gateway serves with: keys, and placements by name (data pool,
+/// index pool).
+struct Served {
+    keys: Keys,
+    placements: std::collections::HashMap<String, (String, String)>,
+}
+
+/// The placement CreateBucket uses unless its LocationConstraint names
+/// another (D232).
+const DEFAULT_PLACEMENT: &str = "default";
+
+/// One answer of the cluster API, or why none came.
+async fn fetch(addrs: &[String], tls: &Arc<rustls::ClientConfig>) -> Result<Served, String> {
+    use hyperstor_api::proto::hyperstor::v1 as pb;
+    let mut why = Vec::new();
+    for a in addrs {
+        let Ok(uri) = format!("https://{a}").parse::<http::Uri>() else {
+            why.push(format!("{a}: not an address"));
+            continue;
+        };
+        let client = connectrpc::client::HttpClient::with_tls(tls.clone());
+        let config =
+            connectrpc::client::ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+        match hyperstor_api::S3ServiceClient::new(client, config)
+            .get_s3_gateway(pb::GetS3GatewayRequest::default())
+            .await
+        {
+            Ok(r) => {
+                let r = r.into_owned();
+                let keys = Keys::from_keys(
+                    r.keys
+                        .into_iter()
+                        .map(|k| (k.id, zeroize::Zeroizing::new(k.secret), k.tenant)),
+                );
+                let placements = r
+                    .placements
+                    .into_iter()
+                    .map(|p| (p.name, (p.data_pool, p.index_pool)))
+                    .collect();
+                return Ok(Served { keys, placements });
+            }
+            Err(e) => why.push(format!(
+                "{a}: {}",
+                e.message.as_deref().unwrap_or("no answer")
+            )),
+        }
+    }
+    Err(why.join("; "))
+}
+
+/// Fetches every `every` and swaps in each answer; logs when the counts
+/// change or fetching starts or stops failing (never a key's secret).
+async fn refresh(
+    state: Arc<State>,
+    addrs: Vec<String>,
+    tls: Arc<rustls::ClientConfig>,
+    every: Duration,
+) {
+    let mut failing = false;
+    loop {
+        tokio::time::sleep(every).await;
+        match fetch(&addrs, &tls).await {
+            Ok(s) => {
+                let (k, p) = (s.keys.len(), s.placements.len());
+                let old = state.swap(s);
+                if failing || (old.keys.len(), old.placements.len()) != (k, p) {
+                    eprintln!("hyperstor-s3: {k} access keys, {p} placements");
+                }
+                failing = false;
+            }
+            Err(e) if !failing => {
+                eprintln!(
+                    "hyperstor-s3: keys from the cluster API: {e}; serving with the last ones"
+                );
+                failing = true;
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 type Body = http_body_util::combinators::BoxBody<Bytes, io::Error>;
@@ -285,9 +388,23 @@ impl hyper::body::Body for Streamed {
 
 struct State {
     reactors: Reactors,
-    keys: Keys,
-    data_pool: String,
-    index_pool: String,
+    served: std::sync::RwLock<Arc<Served>>,
+}
+
+impl State {
+    fn served(&self) -> Arc<Served> {
+        self.served
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn swap(&self, s: Served) -> Arc<Served> {
+        std::mem::replace(
+            &mut *self.served.write().unwrap_or_else(|e| e.into_inner()),
+            Arc::new(s),
+        )
+    }
 }
 
 /// Serves until `stop` receives (or is dropped). Calls `ready` with the
@@ -304,13 +421,51 @@ pub fn serve(
         .map_err(|e| format!("tokio: {e}"))?;
     let reactors = Reactors::start(&o)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(o.tls.clone());
-    let state = Arc::new(State {
-        reactors,
-        keys: o.keys,
-        data_pool: o.data_pool,
-        index_pool: o.index_pool,
-    });
     rt.block_on(async move {
+        let (served, api) = match o.source {
+            Source::Fixed {
+                keys,
+                data_pool,
+                index_pool,
+            } => {
+                let placements = std::collections::HashMap::from([(
+                    DEFAULT_PLACEMENT.to_string(),
+                    (data_pool, index_pool),
+                )]);
+                (Served { keys, placements }, None)
+            }
+            Source::Api { addrs, tls, every } => {
+                // Nothing to serve with until the first answer.
+                let mut said = false;
+                let served = loop {
+                    match fetch(&addrs, &tls).await {
+                        Ok(s) => break s,
+                        Err(e) => {
+                            if !said {
+                                eprintln!(
+                                    "hyperstor-s3: keys from the cluster API: {e}; trying again"
+                                );
+                                said = true;
+                            }
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        }
+                    }
+                };
+                eprintln!(
+                    "hyperstor-s3: {} access keys, {} placements",
+                    served.keys.len(),
+                    served.placements.len()
+                );
+                (served, Some((addrs, tls, every)))
+            }
+        };
+        let state = Arc::new(State {
+            reactors,
+            served: std::sync::RwLock::new(Arc::new(served)),
+        });
+        if let Some((addrs, tls, every)) = api {
+            tokio::spawn(refresh(state.clone(), addrs, tls, every));
+        }
         let mut bound = Vec::new();
         let mut listeners = Vec::new();
         for a in &o.listen {
@@ -474,7 +629,8 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
     let q = sigv4::query_pairs(&query)
         .ok_or_else(|| ApiError::new(400, "InvalidURI", "the query couldn't be decoded"))?;
     let signed = sigv4::parse(&query, req.headers())?;
-    let key = state.keys.get(&signed.key).ok_or(AuthError::UnknownKey)?;
+    let served = state.served();
+    let key = served.keys.get(&signed.key).ok_or(AuthError::UnknownKey)?;
     let signing = sigv4::verify(
         &signed,
         &key.secret,
@@ -485,6 +641,7 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         crate::now_secs(),
     )?;
     let tenant = key.tenant;
+    drop(served);
     let m = req.method().clone();
     match (target(&path)?, m) {
         (Target::Service, Method::GET) => {
@@ -502,7 +659,8 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         (Target::Bucket(b), Method::GET) => list_objects(state, &b, tenant, &q).await,
         (Target::Bucket(b), Method::PUT) => {
             only(&q, &[])?;
-            create_bucket(state, &b, tenant).await
+            let body = small_body(signed.clone(), signing, req.into_body()).await?;
+            create_bucket(state, &b, tenant, &placement_of(&body, &signed.region)?).await
         }
         (Target::Bucket(b), Method::HEAD) => {
             only(&q, &[])?;
@@ -620,12 +778,105 @@ async fn list_buckets(state: &State, tenant: u32) -> Result<Response<Body>, ApiE
     Ok(xml_ok(x.finish("ListAllMyBucketsResult")))
 }
 
-async fn create_bucket(state: &State, name: &str, tenant: u32) -> Result<Response<Body>, ApiError> {
-    let (n, data, index) = (
-        name.to_string(),
-        state.data_pool.clone(),
-        state.index_pool.clone(),
-    );
+/// The most a request's body may hold when it isn't an object.
+const SMALL_BODY: usize = 64 << 10;
+
+/// A small body (CreateBucket's), whole, checked as a PUT's is.
+async fn small_body(
+    signed: sigv4::Signed,
+    signing: ring::hmac::Key,
+    mut body: Incoming,
+) -> Result<Vec<u8>, ApiError> {
+    let sha = match signed.payload {
+        Payload::Sha256(s) => Some(s),
+        _ => None,
+    };
+    let mut checks = Checks::new(sha, None)?;
+    let mut decoder = match signed.payload {
+        Payload::Chunked => Some(Chunked::new(Some(ChunkSigner::new(signing, &signed)))),
+        Payload::ChunkedTrailer => Some(Chunked::new(None)),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    while let Some(f) = body.frame().await {
+        let f = f.map_err(|_| ApiError::new(400, "IncompleteBody", "the body ended early"))?;
+        let Ok(data) = f.into_data() else {
+            continue;
+        };
+        let start = out.len();
+        match &mut decoder {
+            Some(d) => d.feed(&data, &mut out)?,
+            None => out.extend_from_slice(&data),
+        }
+        checks.update(&out[start..]);
+        if out.len() > SMALL_BODY {
+            return Err(ApiError::new(
+                400,
+                "MaxMessageLengthExceeded",
+                "the body is too long",
+            ));
+        }
+    }
+    let trailers = match decoder {
+        Some(d) => d.finish()?,
+        None => Vec::new(),
+    };
+    checks.finish(&trailers)?;
+    Ok(out)
+}
+
+/// The placement a CreateBucket body asks for (D232): the one its
+/// LocationConstraint names, or `default` when it names none or the
+/// region the request was signed for (clients send their region there).
+fn placement_of(body: &[u8], region: &str) -> Result<String, ApiError> {
+    let text = std::str::from_utf8(body)
+        .map_err(|_| ApiError::new(400, "MalformedXML", "the body isn't UTF-8"))?;
+    let lc = match (
+        text.find("<LocationConstraint>"),
+        text.find("</LocationConstraint>"),
+    ) {
+        (Some(a), Some(b)) if a < b => text[a + "<LocationConstraint>".len()..b].trim(),
+        (None, None) if text.trim().is_empty() || text.contains("CreateBucketConfiguration") => "",
+        _ => {
+            return Err(ApiError::new(
+                400,
+                "MalformedXML",
+                "not a CreateBucketConfiguration",
+            ));
+        }
+    };
+    Ok(if lc.is_empty() || lc == region {
+        DEFAULT_PLACEMENT.to_string()
+    } else {
+        lc.to_string()
+    })
+}
+
+async fn create_bucket(
+    state: &State,
+    name: &str,
+    tenant: u32,
+    placement: &str,
+) -> Result<Response<Body>, ApiError> {
+    let Some((data, index)) = state.served().placements.get(placement).cloned() else {
+        return Err(if placement == DEFAULT_PLACEMENT {
+            eprintln!(
+                "hyperstor-s3: no default placement: buckets can't be created until one is set"
+            );
+            ApiError::new(
+                503,
+                "ServiceUnavailable",
+                "no default placement: an administrator sets one (hyperstorctl s3 placement set --name default)",
+            )
+        } else {
+            ApiError::new(
+                400,
+                "InvalidLocationConstraint",
+                format!("no placement {placement}"),
+            )
+        });
+    };
+    let n = name.to_string();
     let r = state
         .reactors
         .call(move |s3| async move {
@@ -1215,6 +1466,33 @@ async fn write_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn location_constraints_choose_a_placement() {
+        let p = |b: &str| placement_of(b.as_bytes(), "us-west-2").map_err(|e| e.code);
+        assert_eq!(p("").as_deref(), Ok("default"));
+        let cfg = |lc: &str| {
+            format!(
+                "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>{lc}</LocationConstraint></CreateBucketConfiguration>"
+            )
+        };
+        assert_eq!(p(&cfg("fast")).as_deref(), Ok("fast"));
+        // The region the client signed for is what SDKs send by default.
+        assert_eq!(p(&cfg("us-west-2")).as_deref(), Ok("default"));
+        assert_eq!(p(&cfg(" ")).as_deref(), Ok("default"));
+        assert_eq!(p("<CreateBucketConfiguration/>").as_deref(), Ok("default"));
+        for bad in [
+            "<Bucket/>",
+            "</LocationConstraint><LocationConstraint>",
+            "nonsense",
+        ] {
+            assert_eq!(p(bad), Err("MalformedXML"), "{bad}");
+        }
+        assert_eq!(
+            placement_of(&[0xff], "x").map_err(|e| e.code),
+            Err("MalformedXML")
+        );
+    }
 
     #[test]
     fn ranges_are_read_as_s3_reads_them() {
