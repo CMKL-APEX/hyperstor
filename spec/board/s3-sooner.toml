@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-05
 milestone = "HS12"
 branch = "feat/s3-keys"
-prs = [151, 175, 176, 179, 182, 183, 186]
+prs = [151, 175, 176, 179, 182, 183, 186, 191]
 now = "HS12 stage 3, first part: S3 keys and placements in the map service, sealed with the cluster key (D162, built now), hyperstorctl s3, gateways reading them over the API with an s3 certificate (I268)"
 next = "Stage 3, second part: hyperstor-install --s3 and --role s3, a gateway in the all-in-one cluster (D233); then stage 4"
