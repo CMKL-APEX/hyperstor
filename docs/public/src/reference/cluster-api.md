@@ -10,7 +10,8 @@ The definitions are
 [`cluster.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/cluster.proto)
 (`ClusterService`) and
 [`admin.proto`](https://github.com/CMKL-APEX/hyperstor/blob/main/crates/hyperstor-api/proto/hyperstor/v1/admin.proto)
-(`TokenService`, `CaService`, `NodeService`, `OperationService`), in
+(`TokenService`, `CaService`, `NodeService`, `OperationService`,
+`S3Service`), in
 `crates/hyperstor-api/proto/hyperstor/v1/`.
 
 ## Security
@@ -24,6 +25,7 @@ a client certificate issued by the cluster's CA, whose identity
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
 | `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
+| `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets; no other role may call it), and renew its own certificate |
 
 A certificate of another cluster is refused, and so is a revoked one:
 `RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
@@ -51,7 +53,7 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -129,14 +131,14 @@ values are left out of answers.
 | `GetTrashSettings` | `{"pool": 1}` | `settings`: `pool`, `grace_seconds` (default 86400), `on_full` (`keep` or `purge`) |
 | `SetTrashSettings` | `{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}` | `settings`. On the leader |
 
-`TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService` and `OperationService`:
+`TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService`, `S3Service` and `OperationService`:
 
 | Method | Request | Answer |
 |---|---|---|
-| `CreateToken` | `{"role": "node"}` (or `"meta"`, or `"mgmt"` with `"name"`: a management client such as glidex, 1–32 of a–z, 0–9 and -), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
+| `CreateToken` | `{"role": "node"}` (or `"meta"`, or `"mgmt"` with `"name"`: a management client such as glidex, 1–32 of a–z, 0–9 and -, or `"s3"` with `"name"`: an S3 gateway), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
 | `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by`, and a mgmt token's `name` |
 | `RevokeToken` | `{"id": "…"}` | `{}` |
-| `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips`; a management client: nothing more | `cluster_id`, `certificate` (chain), `root`, `identity` (the URI the certificate names); a storage host: `node`, `map_addresses`; a management client: `map_addresses` (it renews with `RenewCertificate`); a member: `intermediate`, `intermediate_key`, `cluster_file` |
+| `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips`; a management client: nothing more; a gateway: `gateway_ips`, which its certificate names | `cluster_id`, `certificate` (chain), `root`, `identity` (the URI the certificate names); a storage host: `node`, `map_addresses`; a management client: `map_addresses` (it renews with `RenewCertificate`); a member: `intermediate`, `intermediate_key`, `cluster_file`, `cluster_key` (empty where the member answering has none); a gateway: `map_addresses` |
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
@@ -145,6 +147,13 @@ values are left out of answers.
 | `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |
 | `DrainNode` | `{"node": 3}`, optionally `"dry_run": true` | `moves` (each PG's `before` and `after`) and, unless a dry run, the `operation` |
+| `CreateS3Key` (`S3Service`) | `{"tenant": 1}`, optionally `"description"` (up to 200 characters). Needs step-up through hyperstor-mgmt | `key` (`id`, `tenant`, `description`, `created_unix`, `created_by`) and `secret`, shown once: the map service keeps it encrypted with the cluster key. On the leader; `failed_precondition` (`no_cluster_key`) on a member without the cluster key, `invalid_argument` for tenant 0 |
+| `ListS3Keys` | `{}` | `keys`, without secrets |
+| `RevokeS3Key` | `{"id": "HS…"}` | `{}`: gateways refuse the key within seconds. On the leader; `not_found` for an unknown key |
+| `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. On the leader; `invalid_argument` for a bad name, a pool that doesn't exist or a cache pool |
+| `DeleteS3Placement` | `{"name": "fast"}` | `{}`; `not_found` for an unknown placement |
+| `ListS3Placements` | `{}` | `placements` |
+| `GetS3Gateway` | `{}` | `keys` with their `secret`s, and `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
 | `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |

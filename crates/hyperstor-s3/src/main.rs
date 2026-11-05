@@ -1,18 +1,24 @@
-//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR --keys FILE --data-pool NAME --index-pool NAME [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
+//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
 //!
 //! The S3 gateway (14-s3.md §14.2), until SIGINT or SIGTERM. `--tls DIR`
-//! holds `s3.crt` (the chain) and `s3.key`; `--keys FILE` the access
-//! keys ([`hyperstor_s3::keys`]). New buckets go in the two pools named.
+//! holds `s3.crt` (the chain) and `s3.key`, served for HTTPS.
+//!
+//! With `--api`, access keys and placements come from the cluster API
+//! (D231, D232), over mutual TLS with the gateway's identity in
+//! `--identity DIR` (`s3.crt`, `s3.key` and `root.crt`: an `s3`
+//! certificate, D233), fetched every 5 seconds. Without it, `--keys FILE`
+//! holds the access keys ([`hyperstor_s3::keys`]) and new buckets go in
+//! the two pools named: for running without the cluster API.
 
 use hyperstor_s3::Config;
-use hyperstor_s3::gateway::{Options, serve};
+use hyperstor_s3::gateway::{Options, Source, serve};
 use hyperstor_s3::keys::Keys;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR --keys FILE --data-pool NAME --index-pool NAME [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
+const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -58,10 +64,42 @@ fn main() {
     };
     let tls = hyperstor_pki::web_server_config(&read("s3.crt"), &read("s3.key"))
         .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
-    let keys = Keys::load(&PathBuf::from(need("--keys"))).unwrap_or_else(|e| fail(e));
-    if keys.is_empty() {
-        fail("no access keys");
-    }
+    let source = match (get("--api"), get("--keys")) {
+        (Some(api), None) => {
+            if get("--data-pool").is_some() || get("--index-pool").is_some() {
+                usage();
+            }
+            let dir = PathBuf::from(need("--identity"));
+            let read = |name: &str| {
+                let p = dir.join(name);
+                std::fs::read_to_string(&p)
+                    .unwrap_or_else(|e| fail(format!("{}: {e}", p.display())))
+            };
+            let tls =
+                hyperstor_pki::client_config(&read("s3.crt"), &read("s3.key"), &read("root.crt"))
+                    .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
+            Source::Api {
+                addrs: api.split(',').map(str::to_string).collect(),
+                tls: std::sync::Arc::new(tls),
+                every: Duration::from_secs(5),
+            }
+        }
+        (None, Some(file)) => {
+            if get("--identity").is_some() {
+                usage();
+            }
+            let keys = Keys::load(&PathBuf::from(file)).unwrap_or_else(|e| fail(e));
+            if keys.is_empty() {
+                fail("no access keys");
+            }
+            Source::Fixed {
+                keys,
+                data_pool: need("--data-pool"),
+                index_pool: need("--index-pool"),
+            }
+        }
+        _ => usage(),
+    };
     let opts = Options {
         meta: addrs(&need("--meta")),
         networks: get("--networks")
@@ -74,9 +112,7 @@ fn main() {
             .unwrap_or_default(),
         listen: addrs(&get("--listen").unwrap_or_else(|| "0.0.0.0:443".into())),
         tls: std::sync::Arc::new(tls),
-        keys,
-        data_pool: need("--data-pool"),
-        index_pool: need("--index-pool"),
+        source,
         reactors: count("--reactors", 2),
         threads: count("--threads", 2),
         config: Config::default(),

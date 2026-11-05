@@ -41,7 +41,8 @@
 //! read from `$CREDENTIALS_DIRECTORY` first, where systemd's
 //! `LoadCredential=` puts it), this member signs certificates for hosts
 //! that join with a token and renews them (spec/19-administration.md
-//! §23.4.2, §23.8).
+//! §23.4.2, §23.8). `cluster.key`, read the same way where it exists, is
+//! the cluster key (04-decisions.md D162) that seals S3's secrets (D231).
 
 use std::time::Duration;
 
@@ -131,10 +132,24 @@ fn main() {
                 std::process::exit(1)
             })
         };
-        let key = std::env::var_os("CREDENTIALS_DIRECTORY")
-            .map(|c| std::path::Path::new(&c).join("intermediate.key"))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| dir.join("intermediate.key"));
+        // A credential systemd handed over, else the file in DIR.
+        let secret = |name: &str| {
+            std::env::var_os("CREDENTIALS_DIRECTORY")
+                .map(|c| std::path::Path::new(&c).join(name))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| dir.join(name))
+        };
+        let key = secret("intermediate.key");
+        // The cluster key (D162), if this member has one: without it, S3's
+        // keys can't be made or served here.
+        let cluster_key = std::fs::read_to_string(secret("cluster.key"))
+            .ok()
+            .map(|t| {
+                std::sync::Arc::new(hyperstor_pki::ClusterKey::parse(&t).unwrap_or_else(|| {
+                    eprintln!("--ca: cluster.key: not a cluster key");
+                    std::process::exit(1)
+                }))
+            });
         hyperstor_meta::api::Signing {
             ca: hyperstor_pki::Pem {
                 cert: read(dir.join("intermediate.crt")),
@@ -149,6 +164,7 @@ fn main() {
             members: None,
             mgmt: None,
             settings: None,
+            cluster_key,
         }
     });
     if signing.is_some() && tls.is_none() {

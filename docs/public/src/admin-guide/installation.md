@@ -174,7 +174,10 @@ with the leader's address. Before the members have formed a group, the
 first member makes the `meta` tokens itself.
 
 **Back up the root CA's key** on the first host, which alone has it
-(see [hyperstor-install](../reference/hyperstor-install.md)):
+(see [hyperstor-install](../reference/hyperstor-install.md)). The backup
+also holds the cluster key, `/etc/hyperstor/pki/cluster.key`: made with
+the root, given to members as they join, it encrypts the S3 keys' secrets
+the map service keeps, which are lost without it:
 
 ```sh
 sudo hyperstor-install root-backup --out /media/usb/root.bak --passphrase-file pass

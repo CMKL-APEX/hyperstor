@@ -722,8 +722,20 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Access keys and placements in the map service, `hyperstorctl s3`, the `s3` role in the installer (stage 3)"
-spec = ["14-s3.md §14.2", "D231", "D232", "D233"]
+what = "Access keys and placements in the map service, kept with the cluster key, `hyperstorctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part)"
+spec = ["14-s3.md §14.2", "14-s3.md §14.7", "D162", "D231", "D232", "D233", "I268"]
+status = "done"
+tests = [
+    "s3::s3_keys_and_placements_come_from_the_map_service",
+    "hyperstor_meta::s3keys::tests::keys_and_placements_are_rows_of_the_settings",
+    "hyperstor_meta::s3keys::tests::new_keys_are_shaped_as_aws_keys",
+    "hyperstor_pki::tests::cluster_keys_seal_for_one_context",
+    "hyperstor_s3::gateway::tests::location_constraints_choose_a_placement",
+]
+
+[[milestone.item]]
+what = "The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster (stage 3, second part)"
+spec = ["14-s3.md §14.7", "D233"]
 status = "planned"
 
 [[milestone.item]]

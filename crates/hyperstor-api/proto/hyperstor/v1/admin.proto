@@ -21,6 +21,37 @@ service TokenService {
   rpc Join(JoinRequest) returns (JoinResponse);
 }
 
+// S3's access keys and where new buckets go (14-s3.md §14.2,
+// 04-decisions.md D231, D232).
+service S3Service {
+  // Makes an access key for a tenant. Its secret is in the reply only and
+  // is never shown again; the map service keeps it encrypted under the
+  // cluster key (D162). Write.
+  rpc CreateS3Key(CreateS3KeyRequest) returns (CreateS3KeyResponse);
+
+  // The keys, without their secrets. Read.
+  rpc ListS3Keys(ListS3KeysRequest) returns (ListS3KeysResponse);
+
+  // Deletes a key: gateways refuse it within seconds. Write.
+  rpc RevokeS3Key(RevokeS3KeyRequest) returns (RevokeS3KeyResponse);
+
+  // Adds or changes a placement: the pools a new bucket's index and data
+  // go in. CreateBucket uses "default" unless its LocationConstraint names
+  // another. Buckets made before keep their pools. Write.
+  rpc SetS3Placement(SetS3PlacementRequest) returns (SetS3PlacementResponse);
+
+  // Removes a placement; buckets in its pools stay. Write.
+  rpc DeleteS3Placement(DeleteS3PlacementRequest) returns (DeleteS3PlacementResponse);
+
+  // The placements. Read.
+  rpc ListS3Placements(ListS3PlacementsRequest) returns (ListS3PlacementsResponse);
+
+  // Every key with its secret, and every placement: what a gateway
+  // serves with, fetched every few seconds. S3 gateways ("s3"
+  // certificates, D233) only.
+  rpc GetS3Gateway(GetS3GatewayRequest) returns (GetS3GatewayResponse);
+}
+
 // Certificates (04-decisions.md D53, D56).
 service CaService {
   // A new certificate for the caller's own identity and addresses, for
@@ -170,13 +201,14 @@ service OperationService {
 }
 
 message CreateTokenRequest {
-  // "node" (a storage host), "meta" (a map service member) or "mgmt" (a
-  // management client such as glidex's control plane, 04-decisions.md D122).
+  // "node" (a storage host), "meta" (a map service member), "mgmt" (a
+  // management client such as glidex's control plane, 04-decisions.md D122)
+  // or "s3" (an S3 gateway, D233).
   string role = 1;
   // How long the token is valid; 0 means an hour. At most a week.
   uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];
-  // "mgmt": the identity's name, which its certificate carries
-  // (hyperstor://<cluster>/mgmt/<name>): 1-32 of a-z, 0-9 and -.
+  // "mgmt" and "s3": the identity's name, which its certificate carries
+  // (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
   string name = 3;
 }
 
@@ -200,7 +232,7 @@ message Token {
   bool revoked = 5;
   // Who made it, as the audit names callers.
   string created_by = 6 [json_name = "created_by"];
-  // "mgmt": the identity it enrolls.
+  // "mgmt" and "s3": the identity it enrolls.
   string name = 7;
 }
 
@@ -228,6 +260,9 @@ message JoinRequest {
   // certificate names (members are listed at install; 04-decisions.md D74).
   uint32 member_id = 5 [json_name = "member_id"];
   repeated string member_ips = 6 [json_name = "member_ips"];
+  // An S3 gateway: the addresses its certificate names, so it can serve
+  // HTTPS with it where the site brings none.
+  repeated string gateway_ips = 7 [json_name = "gateway_ips"];
 }
 
 // A "mgmt" token's join: the client's certificate, the root, and the map
@@ -248,6 +283,9 @@ message JoinResponse {
   string cluster_file = 8 [json_name = "cluster_file"];
   // The identity the certificate names (`hyperstor://<cluster>/<role>/<id>`).
   string identity = 9;
+  // A map service member: the cluster key (04-decisions.md D162), in its
+  // file's form; empty where the member answering has none.
+  string cluster_key = 10 [json_name = "cluster_key"];
 }
 
 message RenewCertificateRequest {
@@ -458,4 +496,80 @@ message ErrorInfo {
   string reason = 1;
   string domain = 2;
   map<string, string> metadata = 3;
+}
+
+message CreateS3KeyRequest {
+  // The tenant whose buckets the key reaches, 1 or more.
+  uint32 tenant = 1;
+  // What the key is for, shown in lists: up to 200 characters.
+  string description = 2;
+}
+
+message CreateS3KeyResponse {
+  S3Key key = 1;
+  // Shown once.
+  string secret = 2;
+}
+
+message S3Key {
+  // The access key id, `HS` and 18 more of A-Z and 2-7.
+  string id = 1;
+  uint32 tenant = 2;
+  string description = 3;
+  // Seconds since 1970.
+  uint64 created_unix = 4 [json_name = "created_unix"];
+  // Who made it, as the audit names callers.
+  string created_by = 5 [json_name = "created_by"];
+}
+
+message ListS3KeysRequest {}
+
+message ListS3KeysResponse {
+  repeated S3Key keys = 1;
+}
+
+message RevokeS3KeyRequest {
+  string id = 1;
+}
+
+message RevokeS3KeyResponse {}
+
+message S3Placement {
+  // "default", or 1-63 of a-z, 0-9 and -, as LocationConstraint names it.
+  string name = 1;
+  // Pool names: a bucket's objects, and its index (its listing's ranges).
+  string data_pool = 2 [json_name = "data_pool"];
+  string index_pool = 3 [json_name = "index_pool"];
+}
+
+message SetS3PlacementRequest {
+  S3Placement placement = 1;
+}
+
+message SetS3PlacementResponse {}
+
+message DeleteS3PlacementRequest {
+  string name = 1;
+}
+
+message DeleteS3PlacementResponse {}
+
+message ListS3PlacementsRequest {}
+
+message ListS3PlacementsResponse {
+  repeated S3Placement placements = 1;
+}
+
+message GetS3GatewayRequest {}
+
+// A key with its secret, for a gateway only.
+message S3GatewayKey {
+  string id = 1;
+  string secret = 2;
+  uint32 tenant = 3;
+}
+
+message GetS3GatewayResponse {
+  repeated S3GatewayKey keys = 1;
+  repeated S3Placement placements = 2;
 }

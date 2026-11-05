@@ -131,7 +131,8 @@ A check that rests on a host claim cites its host check (G…).
    joining node pins the cluster before it sends anything.
 3. The joining node generates its own key and sends a CSR with the
    token. The key never leaves the node. The intermediate signs a node
-   certificate for the role the token allows (node, meta member, mgmt).
+   certificate for the role the token allows (node, meta member, mgmt,
+   s3 gateway).
 4. `hyperstorctl token create --role …` makes more tokens;
    `token list` and `token revoke` manage them.
 5. Tokens are rows of the map service's replicated store (D81), made,
@@ -249,7 +250,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | CA | Key lives | Lifetime | Signs |
 |---|---|---|---|
 | Root | on a trusted host, readable by root only (`/etc/hyperstor/pki` on the map service's host, D70); a site may move it offline instead | 10 years | intermediates only |
-| Intermediate | every meta member, as the encrypted systemd credential `hyperstor-ca` (TPM-sealed where the host has one, G18) | 1 year, rotated at 9 months | node, meta, mgmt, admin and host certificates |
+| Intermediate | every meta member, as the encrypted systemd credential `hyperstor-ca` (TPM-sealed where the host has one, G18) | 1 year, rotated at 9 months | node, meta, mgmt, admin, host and s3 certificates |
 
 - **The root's key is backed up** encrypted with a passphrase, and may
   then leave the host (D84): `hyperstor-install root-backup`, and
@@ -260,6 +261,13 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   the map, and leaves renew under it. That is the simpler rotation the
   owner asked for: the frequent operation never touches trust stores,
   and the rare one (root rotation) is a planned procedure.
+- **The cluster key** (D162) sits beside the intermediate's on every
+  meta member, handed to the service as a credential as the
+  intermediate's is. The installer makes it with the root, a member that
+  joins gets it in the join's answer, and `root-backup` keeps it with the
+  root. It seals the S3 keys' secrets in the replicated store (D231);
+  volumes' keys come later. It isn't rotated with the intermediate: what
+  it sealed would no longer open (I268).
 - **When a meta member leaves**, the intermediate is rotated, as glidex
   rotates its cluster CA (clustering.md D20): the departed member's
   copy becomes worthless once its certificates expire.
@@ -272,9 +280,11 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 **Leaf certificates** (D56):
 
 - Identity in a URI SAN: `hyperstor://<cluster id>/<role>/<id>`, with
-  role `node`, `meta`, `mgmt`, `admin` or `host`. The API authorizes
-  by role (§16): `host` may only attach volumes exported to it; `node`
-  may report and read the map; `mgmt` and `admin` may administer.
+  role `node`, `meta`, `mgmt`, `admin`, `host` or `s3`. The API
+  authorizes by role (§16): `host` may only attach volumes exported to
+  it; `node` may report and read the map; `mgmt` and `admin` may
+  administer; `s3`, a gateway, may read S3's keys, which no other role
+  may (D233).
 - P-256, 30 days, renewed automatically at two thirds of their life
   over the existing mTLS session. Short lives keep revocation small.
 - **Revocation:** a serial denylist in the map, pushed with map updates

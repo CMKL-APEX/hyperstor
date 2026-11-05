@@ -1879,12 +1879,14 @@ name = "hyperstor-s3"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "connectrpc",
  "crc32c",
  "crc32fast",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hyperstor-api",
  "hyperstor-client",
  "hyperstor-codec",
  "hyperstor-kv",

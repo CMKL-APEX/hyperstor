@@ -18,6 +18,7 @@ pub mod operations;
 pub mod perf;
 pub mod raft_log;
 pub mod replica;
+pub mod s3keys;
 pub mod scrubs;
 pub mod settings;
 pub mod store;
