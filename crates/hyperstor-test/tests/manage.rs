@@ -514,6 +514,18 @@ fn the_installer_drops_a_removed_device() {
             &["--no-start", "--node", "0", "--remove-device", id],
         )
     };
+    // `device add` answers before the map with the device is published,
+    // and the installer reads the published map: on a slow host it could
+    // still miss the device (CI).
+    wait_for("device 1 in the map", 20, || {
+        let v: serde_json::Value = serde_json::from_str(&c.ctl(&["nodes", "--json"]).out).ok()?;
+        v["nodes"]
+            .as_array()?
+            .iter()
+            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
+            .any(|d| d["id"].as_u64() == Some(1))
+            .then_some(())
+    });
     let early = drop(&c, "1");
     assert!(
         early.code != 0 && early.has("device 1 is still in the map"),
@@ -1580,11 +1592,16 @@ fn a_full_pool_purges_its_oldest_trash() {
     // Purged, the oldest first, until the pool is no longer full.
     c.ctl(&["trash", "settings", "--pool", "1", "--on-full", "purge"])
         .ok();
+    // While the purge deletes, listing the trash reads volume headers
+    // from devices busy with its deletes: on a slow host a call can pass
+    // the CLI's 5-s deadline, and is tried again (CI).
     wait_for("the oldest purged", 60, || {
-        (!c.ctl(&["trash", "list"]).ok().has(&old)).then_some(())
+        let l = c.ctl(&["trash", "list"]);
+        (l.code == 0 && !l.has(&old)).then_some(())
     });
     wait_for("the pool no longer full", 30, || {
-        (!c.ctl(&["pools"]).ok().has("  full (device ")).then_some(())
+        let p = c.ctl(&["pools"]);
+        (p.code == 0 && !p.has("  full (device ")).then_some(())
     });
     std::thread::sleep(std::time::Duration::from_secs(12));
     let l = c.ctl(&["trash", "list"]).ok();
@@ -1715,8 +1732,10 @@ fn a_killed_node_is_reported_and_comes_back() {
 fn a_returning_node_goes_down_once() {
     let mut c = Cluster::all_in_one("return", 3);
     // On a slow host every node may be marked down once at the start, by
-    // the heartbeat timeout, while its device opens (I198): what is
-    // checked is the kill and the return.
+    // the heartbeat timeout, while its device opens (I198), and up again
+    // later: what is checked is the kill and the return, so the log is
+    // counted from once the cluster is healthy (CI).
+    c.ctl(&["status", "--wait", "60"]).ok();
     let before = c.meta_log().lines().count();
     c.kill_node(2);
     wait_for("node 2 down", 20, || {
