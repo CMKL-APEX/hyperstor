@@ -1207,6 +1207,15 @@ recommendation:
 | 192 | How buckets are created: S3's CreateBucket by any key, pools from the cluster's defaults or a named placement (recommended); or administrators only | CreateBucket | D232 |
 | 193 | Where the gateway runs: any joined host with an `s3` identity, `--s3` in the installer (recommended); or beside each storage node with its identity | Any host, its own role | D233 |
 
+## NFS and pNFS settled (2026-11-05)
+
+The eight NFS decisions still open after the reviews of points 75–83,
+gone through one by one with a recommendation for each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 194 | Settle D128 (both layouts, per-export policy), D131 (device IDs at the primaries' last change, forwarding), D132 (`DATA_SYNC`, `LAYOUTCOMMIT` max, recalls before size changes), D133 (sealed stateids; with the key's distribution decided: a cluster secret under the map service's cluster key as S3 keys are, fetched with the map, rotated by key id), D134 (all state in kv), D135 (RPC-with-TLS host certificates), D136 (v4.1 and 4.2 only) and D137 (N0–N4 after HS14) as written (recommended); or keep any open | All settled | D128, D131–D137 settled; D133 amended |
+
 ## Scrub metrics (2026-11-05)
 
 Building the metrics of 28-scrub.md §31.8: the map service had no
@@ -1214,5 +1223,5 @@ metrics endpoint. Asked, with options and a recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 194 | Where the map service serves its metrics, and to whom: a plain-HTTP port of its own, as storage nodes have; `/metrics` on the cluster API's port behind its mutual TLS; or mgmt's `/api/metrics`. For the API's port, which certificate Prometheus holds: a new `metrics` role that may read only `/metrics` (recommended), any cluster certificate, or an administrator's | The API's port, with a certificate; a new `metrics` role | D234 |
-| 195 | Which members export them: every member, from its replicated records, with a leader gauge (recommended); or the leader only, as §31.8 read | Every member | D235 |
+| 198 | Where the map service serves its metrics, and to whom: a plain-HTTP port of its own, as storage nodes have; `/metrics` on the cluster API's port behind its mutual TLS; or mgmt's `/api/metrics`. For the API's port, which certificate Prometheus holds: a new `metrics` role that may read only `/metrics` (recommended), any cluster certificate, or an administrator's | The API's port, with a certificate; a new `metrics` role | D234 |
+| 199 | Which members export them: every member, from its replicated records, with a leader gauge (recommended); or the leader only, as §31.8 read | Every member | D235 |

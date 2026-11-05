@@ -9,7 +9,7 @@ everywhere (see [README.md](README.md)).
 Status: **settled and built** (2026-11-05; 01-implementation-notes.md
 I263, I265, I267, I271, I272). The owner accepted D224–D230 as written
 (points 183–189 of [05-decision-log.md](05-decision-log.md)), and chose
-where the metrics are served in D234 and D235 (points 194, 195). It
+where the metrics are served in D234 and D235 (points 198, 199). It
 builds on scrub as built (09-replication.md §8.5; I58, I60, I104, I105,
 D223, I249, I253), the cluster API with its roles and step-up
 (19-administration.md §23.9.2), the audit log (D112), operations (D121)
