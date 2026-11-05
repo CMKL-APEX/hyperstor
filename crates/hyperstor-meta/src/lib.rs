@@ -778,6 +778,11 @@ pub const DOWN_OUT: Duration = Duration::from_secs(600);
 /// can change the map until one is elected.
 pub const NO_LEADER: &str = "this map service member isn't the leader, and no leader is known";
 
+/// How a change to the map that isn't published in time begins (D236):
+/// it is in the leader's working map, published if the leader keeps the
+/// lead, lost if it doesn't.
+pub const NOT_PUBLISHED: &str = "the change isn't published yet";
+
 /// A member's role as [`Admin::Lead`] reports it (D125).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lead {
@@ -2353,14 +2358,14 @@ impl Meta {
                     up_in,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_device_in(device, up_in));
+                    self.reply_published(reply, self.set_device_in(device, up_in), |e| e);
                 }
                 Admin::SetDeviceWeight {
                     device,
                     weight,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_device_weight(device, weight));
+                    self.reply_published(reply, self.set_device_weight(device, weight), |e| e);
                 }
                 Admin::SetFullRatios {
                     nearfull,
@@ -2368,7 +2373,11 @@ impl Meta {
                     full,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_full_ratios(nearfull, backfillfull, full));
+                    self.reply_published(
+                        reply,
+                        self.set_full_ratios(nearfull, backfillfull, full),
+                        |e| e,
+                    );
                 }
                 // Each in a task of its own: a delete runs through every
                 // chunk of the volume.
@@ -2497,7 +2506,7 @@ impl Meta {
                     });
                 }
                 Admin::AddNode { rack, addrs, reply } => {
-                    let _ = reply.send(self.add_node(rack, &addrs));
+                    self.reply_published(reply, self.add_node(rack, &addrs), |e| e);
                 }
                 Admin::SetPoolDevice {
                     pool,
@@ -2506,10 +2515,14 @@ impl Meta {
                     force,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_pool_device(pool, device, member, force));
+                    self.reply_published(
+                        reply,
+                        self.set_pool_device(pool, device, member, force),
+                        |e| e,
+                    );
                 }
                 Admin::DeletePool { pool, reply } => {
-                    let _ = reply.send(self.delete_pool(pool));
+                    self.reply_published(reply, self.delete_pool(pool), |e| e);
                 }
                 Admin::RemoveDevice {
                     device,
@@ -2517,7 +2530,8 @@ impl Meta {
                     dry_run,
                     reply,
                 } => {
-                    let _ = reply.send(self.remove_device(device, force, dry_run));
+                    let r = self.remove_device(device, force, dry_run);
+                    self.reply_published(reply, r, |e| e);
                 }
                 Admin::Release { device, reply } => {
                     let mut map = self.map.borrow_mut();
@@ -2529,10 +2543,10 @@ impl Meta {
                     });
                 }
                 Admin::FinishRemoval { device, reply } => {
-                    let _ = reply.send(self.finish_removal(device));
+                    self.reply_published(reply, self.finish_removal(device), |e| e);
                 }
                 Admin::CreatePool { new, reply } => {
-                    let _ = reply.send(self.create_pool(new));
+                    self.reply_published(reply, self.create_pool(new), |e| e);
                 }
                 Admin::SetPool {
                     pool,
@@ -2540,7 +2554,7 @@ impl Meta {
                     force,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_pool(pool, change, force));
+                    self.reply_published(reply, self.set_pool(pool, change, force), |e| e);
                 }
                 Admin::SetScrub {
                     pool,
@@ -2548,21 +2562,26 @@ impl Meta {
                     weaken,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_scrub(pool, change, weaken));
+                    self.reply_published(
+                        reply,
+                        self.set_scrub(pool, change, weaken),
+                        ScrubRefused::Invalid,
+                    );
                 }
                 Admin::SetDeviceClass {
                     device,
                     class,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_device_class(device, class.as_deref()));
+                    let r = self.set_device_class(device, class.as_deref());
+                    self.reply_published(reply, r, |e| e);
                 }
                 Admin::SetEndpoints {
                     device,
                     endpoints,
                     reply,
                 } => {
-                    let _ = reply.send(self.set_endpoints(device, endpoints));
+                    self.reply_published(reply, self.set_endpoints(device, endpoints), |e| e);
                 }
                 Admin::AddDevice {
                     node,
@@ -2570,14 +2589,15 @@ impl Meta {
                     class,
                     reply,
                 } => {
-                    let _ = reply.send(self.add_device(node, addr, class.as_deref()));
+                    let r = self.add_device(node, addr, class.as_deref());
+                    self.reply_published(reply, r, |e| e);
                 }
                 Admin::Drain {
                     node,
                     dry_run,
                     reply,
                 } => {
-                    let _ = reply.send(self.drain(node, dry_run));
+                    self.reply_published(reply, self.drain(node, dry_run), |e| e);
                 }
                 Admin::AuditRead { query, reply } => {
                     let c = connect(client.clone());
@@ -3125,6 +3145,52 @@ impl Meta {
             });
         }
         true
+    }
+
+    /// Waits until the published map holds the working map's changes up
+    /// to `epoch` (D236), so an answer that the map changed means clients
+    /// and storage nodes can read the change. Fails if this member stops
+    /// leading, or if the map service can't commit within the time a new
+    /// leader takes to change roles.
+    pub async fn published_by(&self, epoch: u64) -> Result<(), String> {
+        let t = Instant::now();
+        let deadline = 4 * self.lease + Duration::from_secs(2);
+        while self.published.borrow().epoch < epoch {
+            if !self.leads() {
+                return Err(self.not_leader());
+            }
+            if t.elapsed() > deadline {
+                return Err(format!(
+                    "{NOT_PUBLISHED} (map epoch {epoch}): the map service can't commit; \
+                     it is published if this member keeps the lead"
+                ));
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        Ok(())
+    }
+
+    /// Replies with `r` once the change it reports is published (D236):
+    /// at once if it failed or the published map already holds the working
+    /// one, else from a task of its own, so other requests go on.
+    fn reply_published<T: 'static, E: 'static>(
+        self: &Rc<Self>,
+        reply: hyperstor_reactor::chan::OneSender<Result<T, E>>,
+        r: Result<T, E>,
+        err: fn(String) -> E,
+    ) {
+        let epoch = self.map.borrow().epoch;
+        if r.is_err() || self.published.borrow().epoch >= epoch {
+            let _ = reply.send(r);
+            return;
+        }
+        let me = self.clone();
+        hyperstor_reactor::spawn(async move {
+            let _ = reply.send(match me.published_by(epoch).await {
+                Ok(()) => r,
+                Err(e) => Err(err(e)),
+            });
+        });
     }
 
     /// Blocklists client instances or lease identities (06-metadata.md §9, a
@@ -5214,6 +5280,93 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    /// D236: a change to the map is answered once the map that has it is
+    /// published, not when the working map has it; a change the map
+    /// service can't commit in time is answered `NOT_PUBLISHED`.
+    #[test]
+    fn map_changes_are_answered_once_published() {
+        use hyperstor_reactor::chan::{channel, oneshot};
+        use hyperstor_reactor::time::sleep;
+        use replica::{Leading, ToReactor};
+        let lease = Duration::from_millis(100);
+        let (commits, committed) = tokio::sync::mpsc::unbounded_channel::<replica::Commit>();
+        let m = Meta::replicated(map(), lease, commits);
+        hyperstor_reactor::block_on(async move {
+            let (tx, rx) = channel();
+            hyperstor_reactor::spawn(m.clone().follow(rx));
+            tx.send(ToReactor::Applied(Box::new(m.published.borrow().clone())))
+                .unwrap();
+            tx.send(ToReactor::Leader(Leading::Me)).unwrap();
+            sleep(lease + lease / 2).await;
+            assert!(m.may_change_roles());
+            let (admin, requests) = channel();
+            hyperstor_reactor::spawn(m.clone().admin(requests, "127.0.0.1:1".parse().unwrap()));
+            hyperstor_reactor::spawn(m.clone().publisher());
+            let add = |port: u16| {
+                let (reply, rx) = oneshot();
+                admin
+                    .send(Admin::AddDevice {
+                        node: 3,
+                        addr: format!("127.0.0.1:{port}").parse().unwrap(),
+                        class: None,
+                        reply,
+                    })
+                    .ok()
+                    .unwrap();
+                rx
+            };
+            let committed = Rc::new(RefCell::new(committed));
+            let next_commit = move || {
+                let committed = committed.clone();
+                async move {
+                    loop {
+                        if let Ok(c) = committed.borrow_mut().try_recv() {
+                            break c;
+                        }
+                        sleep(Duration::from_millis(5)).await;
+                    }
+                }
+            };
+            // Held at the commit: no answer, though the working map has it.
+            let answer = Rc::new(RefCell::new(None));
+            let rx = add(9001);
+            let a = answer.clone();
+            hyperstor_reactor::spawn(async move {
+                *a.borrow_mut() = rx.recv().await;
+            });
+            let c = next_commit().await;
+            sleep(Duration::from_millis(200)).await;
+            assert!(
+                answer.borrow().is_none(),
+                "answered before it was published"
+            );
+            assert!(m.map.borrow().devices.contains_key(&3002));
+            c.reply.send(Ok(())).unwrap();
+            while answer.borrow().is_none() {
+                sleep(Duration::from_millis(5)).await;
+            }
+            let (device, epoch) = answer.take().unwrap().unwrap();
+            assert_eq!(device, 3002);
+            assert!(m.published.borrow().epoch >= epoch);
+            assert!(m.published.borrow().devices.contains_key(&3002));
+            // Never committed: answered as not published, in time.
+            let refuse = Rc::new(Cell::new(true));
+            let r = refuse.clone();
+            let next = next_commit.clone();
+            hyperstor_reactor::spawn(async move {
+                while r.get() {
+                    let c = next().await;
+                    let _ = c.reply.send(Err("no majority".into()));
+                }
+            });
+            let t = Instant::now();
+            let e = add(9002).recv().await.unwrap().unwrap_err();
+            refuse.set(false);
+            assert!(e.starts_with(NOT_PUBLISHED), "{e}");
+            assert!(t.elapsed() < 4 * lease + Duration::from_secs(3));
         });
     }
 

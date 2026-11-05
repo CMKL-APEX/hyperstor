@@ -81,6 +81,8 @@ pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
 fn meta_error(e: String, kind: fn(String) -> ConnectError, reason: &str) -> ConnectError {
     if e.starts_with("this map service member isn't the leader") {
         with_reason(ConnectError::unavailable(e), "not_leader")
+    } else if e.starts_with(crate::NOT_PUBLISHED) {
+        with_reason(ConnectError::unavailable(e), "not_published")
     } else {
         with_reason(kind(e), reason)
     }

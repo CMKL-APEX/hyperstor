@@ -198,15 +198,18 @@ word for scripts (the message is for people, and may change):
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
 | `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished`, `not_cancellable` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished, or isn't a drain |
 | `resource_exhausted` | `rate_limited`, `pool_full` | The caller is over its rate limit; `CreateVolume`, `CloneVolume`, `CreateSnapshot` or `CreateGroupSnapshot` in a pool past `full` |
-| `unavailable` | `not_leader`, `not_formed`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); the map service is stopping |
+| `unavailable` | `not_leader`, `not_formed`, `not_published`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started); a change to the map was made but couldn't be committed in time (it is published if the leader keeps the lead: read the map before trying again); the map service is stopping |
 
 ## What the answers mean
 
 - **Reads** (`GetStatus`, `ListPgs`) come from the published map: what
   storage nodes and clients see.
-- **`SetDeviceIn`**, **`SetDeviceWeight`**, **`SetFullRatios`** and **`AddDevice`** change the map service's working map. The change is
-  published once the devices losing roles have been fenced, usually
-  within a second, and `GetStatus` then shows the PGs moving.
+- **Calls that change the map** (`SetDeviceIn`, `SetDeviceWeight`,
+  `SetFullRatios`, `AddDevice`, pools, classes, endpoints, scrub settings,
+  drains and removals) answer once the map with the change is published,
+  so the next `GetStatus` shows it. Publishing waits until devices losing
+  roles have been fenced, usually under a second. `GetStatus` then shows
+  the PGs moving.
 - **Health** is `HEALTH_ERROR` when a PG can't take writes (fewer copies
   than the pool's `min`, or no primary), `HEALTH_WARN` while a node is
   down, a device is out, or PGs are degraded or backfilling, and

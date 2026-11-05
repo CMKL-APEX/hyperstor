@@ -71,7 +71,8 @@ fn status_and_tables() {
 /// D167: a device appended to a running node waits at weight 0, so
 /// nothing moves; once the node is restarted with one more `--shard`, the
 /// device reports its capacity, is weighted, and PGs move onto it, while
-/// the data written before reads back. An address in use and a node that
+/// the data written before reads back. The answer comes once the map that
+/// has the device is published (D236). An address in use and a node that
 /// isn't there are refused, and the change is audited.
 #[test]
 fn a_device_is_added_to_a_running_node() {
@@ -122,10 +123,8 @@ fn a_device_is_added_to_a_running_node() {
         .ctl(&["device", "add", "--node", "0", "--address", &addr])
         .ok();
     assert!(add.has("device 1 added to node 0"), "{}", add.out);
-    // Published once fenced, as other map changes are.
-    wait_for("device 1 in the map at weight 0", 10, || {
-        devices(&c).contains(&(1, 0.0)).then_some(())
-    });
+    // Answered once published (D236): read at once, with no wait.
+    assert!(devices(&c).contains(&(1, 0.0)), "{:?}", devices(&c));
     assert_eq!(on_device_1(&c), 0, "nothing placed on it yet");
     c.ctl(&["device", "add", "--node", "1", "--address", &addr])
         .expect(1);
@@ -514,18 +513,8 @@ fn the_installer_drops_a_removed_device() {
             &["--no-start", "--node", "0", "--remove-device", id],
         )
     };
-    // `device add` answers before the map with the device is published,
-    // and the installer reads the published map: on a slow host it could
-    // still miss the device (CI).
-    wait_for("device 1 in the map", 20, || {
-        let v: serde_json::Value = serde_json::from_str(&c.ctl(&["nodes", "--json"]).out).ok()?;
-        v["nodes"]
-            .as_array()?
-            .iter()
-            .flat_map(|n| n["devices"].as_array().cloned().unwrap_or_default())
-            .any(|d| d["id"].as_u64() == Some(1))
-            .then_some(())
-    });
+    // `device add` answers once the map with the device is published
+    // (D236), which the installer reads: no wait.
     let early = drop(&c, "1");
     assert!(
         early.code != 0 && early.has("device 1 is still in the map"),

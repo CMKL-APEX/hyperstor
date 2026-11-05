@@ -1426,12 +1426,8 @@ impl OperationService for Api {
             }
         }
         if message.is_empty() {
-            // Answered once the map that has them back is published, so
-            // what's read next shows it (it is fenced first).
-            let t = std::time::Instant::now();
-            while self.published().await?.0.epoch < epoch && t.elapsed() < Duration::from_secs(5) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+            // Each `SetDeviceIn` answered once the map that has it back
+            // was published (D236), so what's read next shows it.
             message = format!("cancelled; {what} back in");
         }
         audit(&who, "CancelOperation", &target, &format!("ok, {message}"));
