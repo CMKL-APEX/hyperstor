@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 2 | 23 |
+| 8 | 0 | 2 | 24 |
 
 ## In progress
 
@@ -41,6 +41,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Four end-to-end tests that fail on slow CI runners (I270)** (`ci-flakes`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD1 | `test/ci-flakes`, [#189](https://github.com/CMKL-APEX/hyperstor/pull/189) | 2026-11-05 |
 | **Scrub settings per pool in the map, the API and the CLI (D224–D226)** (`scrub-settings`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-settings`, [#184](https://github.com/CMKL-APEX/hyperstor/pull/184) | 2026-11-04 |
 | **Scrub reports per PG and their health checks (D227, D228)** (`scrub-reports`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-reports`, [#187](https://github.com/CMKL-APEX/hyperstor/pull/187) | 2026-11-04 |
 | **Scrub settings and reports in the API, CLI and UI (D224–D230)** (`scrub-admin`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `spec/scrub-admin`, [#174](https://github.com/CMKL-APEX/hyperstor/pull/174) | 2026-11-04 |
