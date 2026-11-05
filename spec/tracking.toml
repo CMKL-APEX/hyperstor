@@ -233,7 +233,7 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I271"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
@@ -1428,9 +1428,23 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The UI's Scrub card and PG grid Scrub view, and per-pool scrub metrics"
-spec = ["28-scrub.md §31.8"]
-status = "planned"
+what = "The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns"
+spec = ["28-scrub.md §31.8", "I271"]
+status = "done"
+tests = [
+    "browser::a_pool_s_scrub_is_shown_changed_and_started",
+    "members::a_scrub_started_on_a_follower_goes_to_the_leader",
+    "hyperstor_ctl::tests::leader_only_calls_find_the_leaders_api",
+]
+
+[[milestone.item]]
+what = "Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew"
+spec = ["28-scrub.md §31.8", "D234", "D235", "I272"]
+status = "done"
+tests = [
+    "enroll::a_scraper_enrolls_and_reads_only_the_metrics",
+    "hyperstor_meta::api::metrics::tests::metrics_name_each_pool_and_the_leader",
+]
 
 [[milestone]]
 id = "AD4"

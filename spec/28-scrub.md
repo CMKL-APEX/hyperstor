@@ -6,11 +6,10 @@ and UI for all of it. Part of the hyperstor design; sections keep their
 numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
 
-Status: **settled; §31.2–§31.7 and the API and CLI of §31.8 built**
-(2026-11-04; 01-implementation-notes.md I263, I265, I267). The owner
-accepted D224–D230 as written (points 183–189 of
-[05-decision-log.md](05-decision-log.md)). The UI and the metrics of
-§31.8 are still to build. It
+Status: **settled and built** (2026-11-05; 01-implementation-notes.md
+I263, I265, I267, I271, I272). The owner accepted D224–D230 as written
+(points 183–189 of [05-decision-log.md](05-decision-log.md)), and chose
+where the metrics are served in D234 and D235 (points 198, 199). It
 builds on scrub as built (09-replication.md §8.5; I58, I60, I104, I105,
 D223, I249, I253), the cluster API with its roles and step-up
 (19-administration.md §23.9.2), the audit log (D112), operations (D121)
@@ -194,10 +193,12 @@ hyperstorctl scrub start --pool P [--pg N ...] [--deep]
   shows the last reports.
 - **Overview:** the health checks of §31.5 link to the pool and its PGs.
 
-**Metrics:** the leader exports, per pool,
+**Metrics:** every map service member exports, per pool,
 `hyperstor_pool_scrub_oldest_seconds{kind="light|deep"}` and
-`hyperstor_pool_scrub_overdue_pgs`, so an alert can fire without the
-API.
+`hyperstor_pool_scrub_overdue_pgs`, with `hyperstor_meta_leader`, so an
+alert can fire without the API's RPCs (D235). They are served at
+`GET /metrics` on the cluster API's port, to a client certificate of
+role `metrics` (D234).
 
 ### 31.9 Upgrades
 

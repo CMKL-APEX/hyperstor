@@ -274,10 +274,20 @@ fn some_pgs(pgs: &[(u32, u32)]) -> String {
     s.join(", ")
 }
 
+/// One of health's scrub checks that failed: about one pool, naming its
+/// PGs (the first ten), so the UI can link to them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Concern {
+    pub level: Health,
+    pub text: String,
+    pub pool: u32,
+    pub pgs: Vec<u32>,
+}
+
 /// Health's scrub checks (28-scrub.md §31.5, D228) for each pool of `map`:
 /// PGs overdue, PGs whose hole check was skipped twice running, and PGs
 /// left damaged. `now` in Unix seconds.
-pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<(Health, String)> {
+pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<Concern> {
     let mut out = Vec::new();
     for p in map.pools.values() {
         if p.kind == PoolKind::Cache {
@@ -298,8 +308,14 @@ pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<(Health, Str
                 damaged.push(at);
             }
         }
+        let concern = |level, text: String, pgs: &[(u32, u32)]| Concern {
+            level,
+            text,
+            pool: p.id,
+            pgs: pgs.iter().take(10).map(|(_, g)| *g).collect(),
+        };
         if !damaged.is_empty() {
-            out.push((
+            out.push(concern(
                 Health::Error,
                 format!(
                     "pool {}: {} PG(s) damaged, with no good copy to repair from: {}",
@@ -307,10 +323,11 @@ pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<(Health, Str
                     damaged.len(),
                     some_pgs(&damaged)
                 ),
+                &damaged,
             ));
         }
         if !overdue.is_empty() {
-            out.push((
+            out.push(concern(
                 Health::Warn,
                 format!(
                     "pool {}: scrub overdue on {} PG(s): {}",
@@ -318,10 +335,11 @@ pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<(Health, Str
                     overdue.len(),
                     some_pgs(&overdue)
                 ),
+                &overdue,
             ));
         }
         if !unchecked.is_empty() {
-            out.push((
+            out.push(concern(
                 Health::Warn,
                 format!(
                     "pool {}: holes unchecked in the last two scrubs of {} PG(s): {}",
@@ -329,6 +347,7 @@ pub fn health(map: &ClusterMap, records: &Records, now: u64) -> Vec<(Health, Str
                     unchecked.len(),
                     some_pgs(&unchecked)
                 ),
+                &unchecked,
             ));
         }
     }
@@ -484,20 +503,22 @@ mod tests {
         assert!(health(&map, &records, 2 * day).is_empty());
         let h = health(&map, &records, 3 * day);
         assert_eq!(h.len(), 1);
-        assert_eq!(h[0].0, Health::Warn);
+        assert_eq!(h[0].level, Health::Warn);
         assert!(
-            h[0].1
+            h[0].text
                 .starts_with("pool vol: scrub overdue on 16 PG(s): 1.0, 1.1,")
-                && h[0].1.ends_with("1.9, and 6 more"),
+                && h[0].text.ends_with("1.9, and 6 more"),
             "{}",
-            h[0].1
+            h[0].text
         );
+        assert_eq!((h[0].pool, h[0].pgs.len()), (1, 10));
         let mut bad = summary(3 * day);
         bad.damaged = 1;
         records.get_mut(&(1, 4)).unwrap().note(bad, true);
         let h = health(&map, &records, 3 * day);
-        assert!(h.iter().any(|(l, w)| *l == Health::Error
-            && w == "pool vol: 1 PG(s) damaged, with no good copy to repair from: 1.4"));
+        assert!(h.iter().any(|c| c.level == Health::Error
+            && c.text == "pool vol: 1 PG(s) damaged, with no good copy to repair from: 1.4"
+            && c.pgs == [4]));
 
         // Only what changed is written again; records of PGs gone go.
         map.pgs.remove(&(1, 15));

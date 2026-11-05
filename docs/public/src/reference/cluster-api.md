@@ -26,6 +26,7 @@ a client certificate issued by the cluster's CA, whose identity
 | `node`, `meta` | Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
 | `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets; no other role may call it), and renew its own certificate |
+| `metrics` | Read `GET /metrics` (below) and renew its own certificate; nothing else |
 
 A certificate of another cluster is refused, and so is a revoked one:
 `RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
@@ -53,6 +54,14 @@ when certificates are broken; its use is audited like any other.
 Without `--api-tls` the API is plain HTTP and accepts every request:
 only for loopback and tests.
 
+**Metrics.** `GET /metrics` on the same port, beside the calls, serves
+the map service's metrics in Prometheus' text format (D234, D235): this
+member's `hyperstor_meta_leader`, and each scrubbed pool's
+`hyperstor_pool_scrub_oldest_seconds{pool,name,kind}` and
+`hyperstor_pool_scrub_overdue_pgs{pool,name}`. It needs a certificate
+of role `metrics`, or any role that may read; 401 without one, 403 for
+`host`. See [Managing a cluster](../admin-guide/managing.md#the-map-services-metrics).
+
 **Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
@@ -76,7 +85,7 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent); each device's and pool's `fullness` (`ok`, `nearfull`, `backfillfull` for a device, `full`; empty before the devices report) and a pool's `fullest_device` |
+| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons` (`level`, `text`; scrub's checks add the `pool` and its first ten `pgs`), `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent); each device's and pool's `fullness` (`ok`, `nearfull`, `backfillfull` for a device, `full`; empty before the devices report) and a pool's `fullest_device` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `GetPgHeat` | `{"pool": 1}`, optionally `"pg": 7` | Per PG, PG n at index n: `read_ops`, `write_ops`, `read_bytes`, `write_bytes` per second over its primary's last 5-s window (0: none in the last 20 s), and `primaries`, the reporting device; with `pg`, `top`: its busiest volumes (`id`, `name`, `pool`, `ops`, `bytes`). The leader answers; another member `unavailable` (`not_leader`) |
 | `ListDevicePerf` | `{}`, or `{"device": 1002}` | `devices`: each device's `node`, `kind`, `samples` (the last 15 minutes at 5 s, oldest first: `read_ops`, `write_ops`, `read_bytes`, `write_bytes` per second as primary, `reads` and `commits` service time with `p50_us`, `p99_us`, `max_us` and 14 `buckets`, `inflight_max`) and `drive` (`model`, `firmware`, `temperature_c`, `link_width`, `link_speed` and their maximums, `numa_node`, `reactor_numa_node`, `write_cache`, `smart` or `smart_note`). The leader answers |
@@ -142,7 +151,7 @@ values are left out of answers.
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
-| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`), `me` |
+| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`, `api_address`: its cluster API as it recorded when it last led, empty if it hasn't), `me` |
 | `AddMember` | `id`, `raft_address`, `map_address` | `members`. On the leader; answers once the member votes |
 | `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |

@@ -485,6 +485,49 @@ Gauges are updated once a second. `GET /health` answers `ok` while the
 process runs. The port has no authentication: it only reads, but keep
 it on the management network.
 
+### The map service's metrics
+
+Each map service member serves `GET /metrics` on its cluster API's
+port (8850), over the API's mutual TLS. Prometheus needs a certificate
+of its own, of role `metrics`: it may read `/metrics` and renew itself,
+and nothing else. Make it on the Prometheus host:
+
+```sh
+# An administrator, anywhere:
+hyperstorctl token create --role metrics --name prometheus > metrics.token
+# On the Prometheus host, with the token copied there:
+hyperstorctl --api MEMBER:8850 enroll --file metrics.token --out /etc/prometheus/hyperstor
+```
+
+The certificate lives 30 days. Renew it from a daily timer or cron
+job; it renews only in the last third of its life:
+
+```sh
+hyperstorctl --api MEMBER:8850 --tls /etc/prometheus/hyperstor cert renew
+```
+
+`deploy/prometheus/hyperstor.yml` has the scrape job (`hyperstor-meta`).
+Every member answers from its own copy of the records, up to a minute
+behind the leader:
+
+| Metric | Meaning |
+|---|---|
+| `hyperstor_meta_leader` | 1 on the member that leads, 0 on the others |
+| `hyperstor_pool_scrub_oldest_seconds{pool,name,kind}` | Seconds since the pool's PG scrubbed longest ago was last scrubbed: `light` (a deep scrub counts) or `deep` |
+| `hyperstor_pool_scrub_overdue_pgs{pool,name}` | PGs overdue: no scrub in twice the pool's interval, or no deep scrub in twice the deep interval |
+
+Cache pools aren't scrubbed and aren't listed. As alerts, take the
+maximum over the members:
+
+```yaml
+- alert: HyperstorScrubOverdue
+  expr: max by (pool, name) (hyperstor_pool_scrub_overdue_pgs) > 0
+  for: 1h
+- alert: HyperstorMapServiceLeaderless
+  expr: max(hyperstor_meta_leader) == 0
+  for: 5m
+```
+
 ## Prometheus and Grafana
 
 For history and alerts, scrape the storage nodes with Prometheus and

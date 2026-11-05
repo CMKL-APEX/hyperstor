@@ -134,7 +134,9 @@ impl AuditService for Api {
             },
         );
         if let Err(e) = r {
-            return Err(self.store_error(e).await);
+            return Err(self
+                .store_error(e, "settings are written by the leader")
+                .await);
         }
         Ok(pb::SetAuditSettingsResponse {
             settings: Some(pb::AuditSettings {
