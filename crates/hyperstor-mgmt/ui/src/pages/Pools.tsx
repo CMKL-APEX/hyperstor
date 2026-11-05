@@ -2,11 +2,15 @@
 // PG's acting and up sets when it is picked, the whole table on request.
 // Storage administrators create pools, change them (classes, name,
 // domain, a split, autoscale, a cache pool's grace), choose the devices
-// they use beyond their classes, and delete them.
+// they use beyond their classes, and delete them. An open pool shows its
+// Scrub card (28-scrub.md §31.8); `?pool=P&view=scrub&pg=G` opens one
+// there, as health's links do.
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { cluster } from "../api";
 import type { Device, Pool, Volume } from "../gen/hyperstor/v1/cluster_pb";
 import { PgGrid, type GridView } from "../PgGrid";
+import { PgScrubDetail, ScrubCard, usePgScrubs } from "../Scrub";
 import { fmtRate } from "../perf";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Space, Table, input, td, useCan, usePoll } from "../ui";
 
@@ -170,12 +174,25 @@ export default function Pools() {
       .filter(Boolean)
       .join(" ");
   };
-  const [pool, setPool] = useState<number | null>(null);
-  const [pg, setPg] = useState<number | null>(null);
+  const [params] = useSearchParams();
+  const param = (k: string) => (params.get(k) != null && /^\d+$/.test(params.get(k)!) ? Number(params.get(k)) : null);
+  const [pool, setPool] = useState<number | null>(param("pool"));
+  const [pg, setPg] = useState<number | null>(param("pg"));
   const [all, setAll] = useState(false);
-  const [view, setView] = useState<GridView>("state");
+  const [view, setView] = useState<GridView>(params.get("view") === "scrub" ? "scrub" : "state");
+  // A link followed while the page is open.
+  useEffect(() => {
+    const p = param("pool");
+    if (p == null) return;
+    setPool(p);
+    setPg(param("pg"));
+    setAll(false);
+    if (params.get("view") === "scrub") setView("scrub");
+  }, [params]);
+  const scrubs = usePgScrubs(pool, view === "scrub");
   // The picked PG's load and top volumes, every 5 s while a load view shows.
-  const pgHeat = usePoll(async () => (pool == null || pg == null || all || view === "state" ? null : await cluster.getPgHeat({ pool, pg })), view === "state" ? 0 : 5000);
+  const loadView = view === "reads" || view === "writes";
+  const pgHeat = usePoll(async () => (pool == null || pg == null || all || !loadView ? null : await cluster.getPgHeat({ pool, pg })), loadView ? 5000 : 0);
   // Loaded when asked for, not polled: a pool may have many PGs.
   const pgs = usePoll(
     async () => (pool == null || (pg == null && !all) ? null : (await cluster.listPgs({ pool, pg: all ? undefined : pg! })).pgs),
@@ -446,9 +463,9 @@ export default function Pools() {
           actions={
             <>
               <div className="flex rounded-md border border-slate-300 dark:border-slate-600 overflow-hidden text-sm" role="group" aria-label="Show">
-                {(["state", "reads", "writes"] as GridView[]).map((v) => (
+                {(["state", "reads", "writes", "scrub"] as GridView[]).map((v) => (
                   <button key={v} className={`px-2 py-1 ${view === v ? "bg-sky-600 text-white" : "bg-white dark:bg-slate-800"}`} onClick={() => setView(v)} data-testid={`grid-view-${v}`}>
-                    {v === "state" ? "State" : v === "reads" ? "Reads" : "Writes"}
+                    {v === "state" ? "State" : v === "reads" ? "Reads" : v === "writes" ? "Writes" : "Scrub"}
                   </button>
                 ))}
               </div>
@@ -456,8 +473,24 @@ export default function Pools() {
             </>
           }
         >
-          <PgGrid key={pool} pool={pool} max={16} view={view} picked={all ? null : pg} onPick={(i) => (setAll(false), setPg(i))} />
-          {pgHeat.data && pg != null && (
+          <PgGrid
+            key={pool}
+            pool={pool}
+            max={16}
+            view={view}
+            scrub={scrubs.data}
+            picked={all ? null : pg}
+            onPick={(i) => (setAll(false), setPg(i))}
+          />
+          {view === "scrub" && <ErrorText error={scrubs.error} />}
+          {view === "scrub" &&
+            pg != null &&
+            !all &&
+            (() => {
+              const g = scrubs.data?.pgs.find((x) => x.pg === pg);
+              return g ? <PgScrubDetail pool={pool} g={g} /> : null;
+            })()}
+          {pgHeat.data && pg != null && loadView && (
             <div className="text-sm grid gap-2" data-testid="pg-heat">
               <p>
                 PG {pool}.{pg}: {fmtRate(pgHeat.data.readOps[pg] ?? 0)} reads/s, {fmtRate(pgHeat.data.writeOps[pg] ?? 0)} writes/s
@@ -492,7 +525,9 @@ export default function Pools() {
           )}
           <Cli
             cmd={
-              view !== "state"
+              view === "scrub"
+                ? `scrub pgs --pool ${pool}`
+                : view !== "state"
                 ? `pg-grid --pool ${pool} --heat ${view === "reads" ? "read" : "write"}${pg != null && !all ? ` --pg ${pg}` : ""}`
                 : pg != null && !all
                   ? `pgs --pool ${pool} --pg ${pg}`
@@ -501,6 +536,7 @@ export default function Pools() {
           />
         </Card>
       )}
+      {pool != null && <ScrubCard pool={pool} />}
     </>
   );
 }

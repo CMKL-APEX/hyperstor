@@ -1,0 +1,10 @@
+title = "Scrub in the web UI, and scrub start through the leader (28-scrub.md §31.8)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-05
+updated = 2026-11-05
+milestone = "AD3"
+branch = "feat/scrub-ui"
+prs = []
+now = "Stage 4 of 28-scrub.md: a Scrub card per pool, the PG grid's Scrub view, health linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API (I268)"
+next = "The per-pool scrub metrics, once the owner picks where the map service exports them"

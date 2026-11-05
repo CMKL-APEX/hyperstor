@@ -74,7 +74,7 @@ values are left out of answers.
 
 | Method | Request | Answer |
 |---|---|---|
-| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons`, `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent); each device's and pool's `fullness` (`ok`, `nearfull`, `backfillfull` for a device, `full`; empty before the devices report) and a pool's `fullest_device` |
+| `GetStatus` | `{}` | `cluster_id`, `epoch`, `health` (`HEALTH_OK`, `HEALTH_WARN`, `HEALTH_ERROR`), `reasons` (`level`, `text`; scrub's checks add the `pool` and its first ten `pgs`), `nodes` with their `devices` and `last_heard_ms` (time since the node's last heartbeat; absent if none since the map service started, and from a member that isn't the leader, which hears none: its answer then notes where the leader is), `pools` with PG counts, `map_address`, `full_ratios` (`nearfull`, `backfillfull`, `full`, in percent); each device's and pool's `fullness` (`ok`, `nearfull`, `backfillfull` for a device, `full`; empty before the devices report) and a pool's `fullest_device` |
 | `ListPgs` | `{"pool": 1}` | `pgs`: `pool`, `pg`, `epoch`, `acting`, `up` |
 | `GetPgHeat` | `{"pool": 1}`, optionally `"pg": 7` | Per PG, PG n at index n: `read_ops`, `write_ops`, `read_bytes`, `write_bytes` per second over its primary's last 5-s window (0: none in the last 20 s), and `primaries`, the reporting device; with `pg`, `top`: its busiest volumes (`id`, `name`, `pool`, `ops`, `bytes`). The leader answers; another member `unavailable` (`not_leader`) |
 | `ListDevicePerf` | `{}`, or `{"device": 1002}` | `devices`: each device's `node`, `kind`, `samples` (the last 15 minutes at 5 s, oldest first: `read_ops`, `write_ops`, `read_bytes`, `write_bytes` per second as primary, `reads` and `commits` service time with `p50_us`, `p99_us`, `max_us` and 14 `buckets`, `inflight_max`) and `drive` (`model`, `firmware`, `temperature_c`, `link_width`, `link_speed` and their maximums, `numa_node`, `reactor_numa_node`, `write_cache`, `smart` or `smart_note`). The leader answers |
@@ -140,7 +140,7 @@ values are left out of answers.
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
 | `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
-| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`), `me` |
+| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`, `api_address`: its cluster API as it recorded when it last led, empty if it hasn't), `me` |
 | `AddMember` | `id`, `raft_address`, `map_address` | `members`. On the leader; answers once the member votes |
 | `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |

@@ -116,6 +116,16 @@ export default function Overview() {
                   <li key={i}>
                     <span className="font-semibold mr-2">{healthText(r.level)}</span>
                     {r.text}
+                    {r.pool != null && (
+                      // Scrub's checks name a pool and PGs (28-scrub.md §31.5).
+                      <Link
+                        className="ml-2 text-sky-700 dark:text-sky-300 hover:underline"
+                        to={`/pools?pool=${r.pool}&view=scrub${r.pgs.length ? `&pg=${r.pgs[0]}` : ""}`}
+                        data-testid={`health-link-${i}`}
+                      >
+                        Show
+                      </Link>
+                    )}
                   </li>
                 ))
               ) : (

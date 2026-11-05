@@ -80,6 +80,9 @@ fn meta_error(e: String, kind: fn(String) -> ConnectError, reason: &str) -> Conn
     }
 }
 
+/// Why a member that doesn't lead refuses to start an operation.
+const OPS_BY_LEADER: &str = "operations are started by the leader";
+
 /// Calls per second per caller, and the burst allowed (§23.3).
 const RATE: f64 = 200.0;
 const BURST: f64 = 1000.0;
@@ -918,7 +921,8 @@ pub fn scrub_health(
     records: &crate::scrubs::Records,
     now: u64,
 ) {
-    for (level, text) in crate::scrubs::health(map, records, now) {
+    for c in crate::scrubs::health(map, records, now) {
+        let level = c.level;
         let l = match level {
             Health::Error => pb::Health::HEALTH_ERROR,
             Health::Warn => pb::Health::HEALTH_WARN,
@@ -926,7 +930,9 @@ pub fn scrub_health(
         };
         s.reasons.push(pb::Reason {
             level: l.into(),
-            text,
+            text: c.text,
+            pool: Some(c.pool),
+            pgs: c.pgs,
             ..Default::default()
         });
         if level > health_of(s) {
@@ -1227,7 +1233,7 @@ impl ClusterService for Api {
                 ..Default::default()
             }
             .into()),
-            Err(e) => Err(self.store_error(e).await),
+            Err(e) => Err(self.store_error(e, OPS_BY_LEADER).await),
         }
     }
 
@@ -2195,7 +2201,7 @@ impl ClusterService for Api {
         );
         match op {
             Ok(o) => out.operation = buffa::MessageField::some(ops::op_pb(&o)),
-            Err(e) => return Err(self.store_error(e).await),
+            Err(e) => return Err(self.store_error(e, OPS_BY_LEADER).await),
         }
         Ok(out.into())
     }
@@ -2940,7 +2946,7 @@ impl Api {
         );
         match r {
             Ok(o) => Ok(ops::op_pb(&o)),
-            Err(e) => Err(self.store_error(e).await),
+            Err(e) => Err(self.store_error(e, OPS_BY_LEADER).await),
         }
     }
 
@@ -3127,6 +3133,14 @@ pub fn spawn(
                 let settings = store
                     .clone()
                     .map(|db| Arc::new(crate::settings::Settings::new(db)));
+                // The API others reach this member at: on every address,
+                // the map's host.
+                let advertised = listener.local_addr().ok().map(|mut a| {
+                    if a.ip().is_unspecified() {
+                        a.set_ip(map_address.ip());
+                    }
+                    (map_address.to_string(), a.to_string())
+                });
                 let runner = ops::Runner::new(
                     tx.clone(),
                     Arc::new(match store {
@@ -3134,6 +3148,7 @@ pub fn spawn(
                         None => crate::operations::Ops::in_memory(),
                     }),
                     settings,
+                    advertised,
                 );
                 tokio::spawn(runner.clone().upkeep(trash_scan));
                 let api = Arc::new(Api {
@@ -3513,6 +3528,13 @@ mod tests {
                 && texts.contains(&"pool vol: scrub overdue on 1 PG(s): 1.2"),
             "{texts:?}"
         );
+        // Each names its pool and PGs, for the UI's links.
+        let overdue = s
+            .reasons
+            .iter()
+            .find(|r| r.text.contains("overdue"))
+            .unwrap();
+        assert_eq!((overdue.pool, overdue.pgs.as_slice()), (Some(1), &[2][..]));
     }
 
     #[test]

@@ -810,31 +810,11 @@ fn main() {
         conf("socket").filter(|p| std::path::Path::new(p).exists())
     });
     let api = api_addr(api);
-    let tls = match tls
-        .or_else(|| conf("tls"))
-        .filter(|_| socket.is_none() && mgmt.is_none())
-    {
-        None => None,
-        Some(dir) => {
-            let dir = std::path::PathBuf::from(dir);
-            let read = |f: &str| {
-                std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| {
-                    eprintln!("hyperstorctl: {}: {e}", dir.join(f).display());
-                    std::process::exit(2)
-                })
-            };
-            let c = hyperstor_pki::client_config(
-                &read("admin.crt"),
-                &read("admin.key"),
-                &read("root.crt"),
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("hyperstorctl: {}: {e}", dir.display());
-                std::process::exit(2)
-            });
-            Some(std::sync::Arc::new(c))
-        }
-    };
+    let tls_dir = tls.or_else(|| conf("tls")).filter(|_| mgmt.is_none());
+    let tls = tls_dir
+        .as_deref()
+        .filter(|_| socket.is_none())
+        .map(client_tls);
 
     // The API calls run on a small tokio runtime; io-test then runs the
     // client library on a reactor, after it.
@@ -842,47 +822,51 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let outcome = rt.block_on(async {
-        let config =
-            |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
-        match (&mgmt, &socket) {
-            (Some(m), _) => {
-                let config = config(m.base.clone())
-                    .with_default_header(http::header::AUTHORIZATION, m.bearer.clone());
-                let http = match &m.tls {
-                    Some(c) => HttpClient::with_tls(c.clone()),
-                    None => HttpClient::plaintext(),
-                };
-                manage(http, config, &cmd, &a).await
-            }
-            (None, Some(path)) => {
-                let uri: http::Uri = "http://localhost".parse().expect("uri");
-                let conn =
-                    connectrpc::client::Http2Connection::connect_unix(path.clone(), uri.clone())
-                        .await?
-                        .shared(16);
-                manage(conn, config(uri), &cmd, &a).await
-            }
-            (None, None) => {
-                let scheme = if tls.is_some() { "https" } else { "http" };
-                let uri: http::Uri = format!("{scheme}://{api}")
-                    .parse()
-                    .map_err(|_| connectrpc::ConnectError::invalid_argument("bad address"))?;
-                let http = match tls {
-                    Some(c) => HttpClient::with_tls(c),
-                    None => HttpClient::plaintext(),
-                };
-                manage(http, config(uri), &cmd, &a).await
-            }
-        }
-    });
-    let api = mgmt
-        .map(|m| m.url)
+    let target = match (&mgmt, &socket) {
+        (Some(m), _) => Target::Mgmt(m),
+        (None, Some(path)) => Target::Socket(path.clone()),
+        (None, None) => Target::Api(api.clone(), tls.clone()),
+    };
+    let mut outcome = rt.block_on(run(&target, Call::Cmd(&cmd, &a)));
+    let mut api = mgmt
+        .as_ref()
+        .map(|m| m.url.clone())
         .or_else(|| socket.clone())
         .unwrap_or(api);
+    // A call only the leader serves, refused by a member that doesn't
+    // lead, goes on to the leader's API (mgmt finds the leader itself).
+    if let Err(e) = &outcome
+        && LEADER_ONLY.contains(&cmd.as_str())
+        && mgmt.is_none()
+        && hyperstor_ctl::reason_of(e).as_deref() == Some("not_leader")
+    {
+        let certs = tls_dir.as_deref().map(client_tls);
+        let plain = matches!(target, Target::Api(_, None));
+        let route = match rt.block_on(run(&target, Call::Members)) {
+            Ok(Next::Members(m)) => hyperstor_ctl::leader_api(&m, certs.is_some(), plain),
+            _ => Err("the member list isn't available".into()),
+        };
+        match route {
+            Ok(leader) => {
+                eprintln!("hyperstorctl: {api} isn't the leader; asking the leader at {leader}");
+                outcome = rt.block_on(run(
+                    &Target::Api(leader.clone(), certs),
+                    Call::Cmd(&cmd, &a),
+                ));
+                api = format!("{leader} (the leader)");
+            }
+            Err(why) => {
+                if let Err(e) = &mut outcome {
+                    let msg = e.message.take().unwrap_or_default();
+                    e.message = Some(format!("{msg}; {why}"));
+                }
+            }
+        }
+    }
     let code = match outcome {
         Ok(Next::Exit(code)) => code,
         Ok(Next::Follow(_)) => unreachable!("followed in manage"),
+        Ok(Next::Members(_)) => unreachable!("only asked for the leader"),
         Ok(Next::IoTest { map, pool }) => {
             hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib).await })
         }
@@ -974,6 +958,105 @@ enum Next {
     VolumeIo {
         map: Vec<std::net::SocketAddr>,
     },
+    /// The map service's members, to find the leader.
+    Members(Vec<pb::Member>),
+}
+
+/// Commands that, refused by a member that doesn't lead, go on to the
+/// leader's API: they start work only the leader does, and a refused
+/// one did nothing.
+const LEADER_ONLY: &[&str] = &["scrub start"];
+
+/// Where the API calls go.
+enum Target<'a> {
+    Mgmt(&'a Mgmt),
+    /// The map service's local socket.
+    Socket(String),
+    /// An API address, over TLS with these certificates or plain HTTP.
+    Api(
+        String,
+        Option<std::sync::Arc<connectrpc::rustls::ClientConfig>>,
+    ),
+}
+
+/// What to ask: a command, or the member list.
+#[derive(Clone, Copy)]
+enum Call<'a> {
+    Cmd(&'a str, &'a Args),
+    Members,
+}
+
+async fn run(target: &Target<'_>, call: Call<'_>) -> Result<Next, connectrpc::ConnectError> {
+    let config =
+        |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+    match target {
+        Target::Mgmt(m) => {
+            let config = config(m.base.clone())
+                .with_default_header(http::header::AUTHORIZATION, m.bearer.clone());
+            let http = match &m.tls {
+                Some(c) => HttpClient::with_tls(c.clone()),
+                None => HttpClient::plaintext(),
+            };
+            ask(http, config, call).await
+        }
+        Target::Socket(path) => {
+            let uri: http::Uri = "http://localhost".parse().expect("uri");
+            let conn = connectrpc::client::Http2Connection::connect_unix(path.clone(), uri.clone())
+                .await?
+                .shared(16);
+            ask(conn, config(uri), call).await
+        }
+        Target::Api(api, tls) => {
+            let scheme = if tls.is_some() { "https" } else { "http" };
+            let uri: http::Uri = format!("{scheme}://{api}")
+                .parse()
+                .map_err(|_| connectrpc::ConnectError::invalid_argument("bad address"))?;
+            let http = match tls {
+                Some(c) => HttpClient::with_tls(c.clone()),
+                None => HttpClient::plaintext(),
+            };
+            ask(http, config(uri), call).await
+        }
+    }
+}
+
+async fn ask<T>(
+    transport: T,
+    config: ClientConfig,
+    call: Call<'_>,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+    T::ResponseBody: Unpin,
+{
+    match call {
+        Call::Cmd(cmd, a) => manage(transport, config, cmd, a).await,
+        Call::Members => Ok(Next::Members(
+            MemberServiceClient::new(transport, config)
+                .list_members(pb::ListMembersRequest::default())
+                .await?
+                .into_owned()
+                .members,
+        )),
+    }
+}
+
+/// The client certificates in `dir` (§23.8); exits if they can't be read.
+fn client_tls(dir: &str) -> std::sync::Arc<connectrpc::rustls::ClientConfig> {
+    let dir = std::path::PathBuf::from(dir);
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| {
+            eprintln!("hyperstorctl: {}: {e}", dir.join(f).display());
+            std::process::exit(2)
+        })
+    };
+    let c = hyperstor_pki::client_config(&read("admin.crt"), &read("admin.key"), &read("root.crt"))
+        .unwrap_or_else(|e| {
+            eprintln!("hyperstorctl: {}: {e}", dir.display());
+            std::process::exit(2)
+        });
+    std::sync::Arc::new(c)
 }
 
 /// The API's message and, when it gave one, its reason.

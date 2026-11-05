@@ -479,3 +479,30 @@ fn a_leader_without_a_majority_says_so() {
     let log = g.m[l].log();
     assert!(log.contains("not committed"), "{log}");
 }
+
+/// A scrub started through a follower goes on to the leader, at the API
+/// the leader recorded when it began to lead; the member list names it.
+#[test]
+fn a_scrub_started_on_a_follower_goes_to_the_leader() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let g = group("scrubleader", 3, 3);
+    let l = g.leader(&[0, 1, 2]);
+    let f = (l + 1) % 3;
+    wait_for("the leader's API in the member list", 30, || {
+        let r = g.ctl(f, &["member", "list"]);
+        (r.code == 0
+            && r.out
+                .lines()
+                .any(|x| x.contains(" leader ") && x.ends_with(&g.m[l].api)))
+        .then_some(())
+    });
+    let r = g.ctl(f, &["scrub", "start", "--pool", "1"]).ok();
+    assert!(
+        r.has("isn't the leader; asking the leader at") && r.has("scrubbing 16 PG(s)"),
+        "{}",
+        r.out
+    );
+    assert!(!r.has("tokens"), "{}", r.out);
+    let ops = g.ctl(l, &["op", "list"]).ok();
+    assert!(ops.has("pool 1 scrub"), "{}", ops.out);
+}

@@ -224,4 +224,5 @@ covered by tests that run on every change.
 | Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced | Done |
 | Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs | Done |
 | Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean | Done |
-| The UI's Scrub card and PG grid Scrub view, and per-pool scrub metrics | Planned |
+| The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns | Done |
+| Per-pool scrub metrics: hyperstor_pool_scrub_oldest_seconds and hyperstor_pool_scrub_overdue_pgs | Planned |

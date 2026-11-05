@@ -172,8 +172,10 @@ impl Api {
             })
     }
 
-    pub(super) async fn store_error(&self, e: TokenError) -> ConnectError {
-        self.token_error(e).await
+    /// A refused write to the replicated store; `what` says what the
+    /// leader writes, for a member that isn't it.
+    pub(super) async fn store_error(&self, e: TokenError, what: &str) -> ConnectError {
+        self.write_error(e, what).await
     }
 
     fn signing(&self) -> Result<(&Signing, &str), ConnectError> {
@@ -217,6 +219,11 @@ impl Api {
     }
 
     async fn token_error(&self, e: TokenError) -> ConnectError {
+        self.write_error(e, "tokens and revocations are written by the leader")
+            .await
+    }
+
+    async fn write_error(&self, e: TokenError, what: &str) -> ConnectError {
         match e {
             TokenError::NotLeader => {
                 let why = match self.ask(Admin::Leads).await {
@@ -224,7 +231,7 @@ impl Api {
                     _ => "this map service member isn't the leader".into(),
                 };
                 meta_error(
-                    format!("{why}: tokens and revocations are written by the leader"),
+                    format!("{why}: {what}"),
                     ConnectError::unavailable,
                     "not_leader",
                 )
@@ -922,8 +929,14 @@ impl MemberService for Api {
             .recv()
             .await
             .ok_or_else(|| ConnectError::unavailable("map service stopped"))?;
+        let mut members = members_pb(&m);
+        for x in &mut members {
+            if let Some(a) = self.admin.runner.member_api(x.map_address.clone()).await {
+                x.api_address = a;
+            }
+        }
         Ok(pb::ListMembersResponse {
-            members: members_pb(&m),
+            members,
             me: m.me,
             ..Default::default()
         }

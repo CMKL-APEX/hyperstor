@@ -312,6 +312,9 @@ message Member {
   // A voter, or a learner still catching up.
   bool voter = 4;
   bool leader = 5;
+  // Its cluster API, as it recorded when it last led; empty if it never
+  // has, or the members are older. Leader-only calls go there.
+  string api_address = 6 [json_name = "api_address"];
 }
 
 message ListMembersRequest {}

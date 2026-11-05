@@ -1401,7 +1401,17 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The UI's Scrub card and PG grid Scrub view, and per-pool scrub metrics"
+what = "The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns"
+spec = ["28-scrub.md §31.8", "I268"]
+status = "done"
+tests = [
+    "browser::a_pool_s_scrub_is_shown_changed_and_started",
+    "members::a_scrub_started_on_a_follower_goes_to_the_leader",
+    "hyperstor_ctl::tests::leader_only_calls_find_the_leaders_api",
+]
+
+[[milestone.item]]
+what = "Per-pool scrub metrics: hyperstor_pool_scrub_oldest_seconds and hyperstor_pool_scrub_overdue_pgs"
 spec = ["28-scrub.md §31.8"]
 status = "planned"
 
