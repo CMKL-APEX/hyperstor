@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-05
 milestone = "HS12"
 branch = "feat/s3-install"
-prs = [151, 175, 176, 179, 182, 183, 186, 191]
+prs = [151, 175, 176, 179, 182, 183, 186, 191, 195]
 now = "HS12 stage 3: keys and placements in the map service (#191, I268); now hyperstor-install --s3 and --role s3, and a gateway in the all-in-one cluster (I269)"
 next = "Stage 4: multipart uploads, copy, conditional requests, multi-object delete, the checksum headers (D193, D194, D196)"
