@@ -1775,10 +1775,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "buffa",
+ "bytes",
  "connectrpc",
  "futures-util",
  "glidex-raftstore",
  "http",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "hyperstor-api",

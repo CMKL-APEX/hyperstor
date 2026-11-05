@@ -4,10 +4,12 @@
 // PG's usage (D155), a level a byte that shades its cell, sent again only
 // when a primary's report changed it. The Reads and Writes views shade
 // each PG by its requests per second instead (D219), from GetPgHeat every
-// 5 s while shown.
+// 5 s while shown, and the Scrub view by the age of each PG's last deep
+// scrub (28-scrub.md §31.8), from the records the page passes in.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { cluster } from "./api";
 import { ErrorText, fmtBytes } from "./ui";
+import { ageColor, deepAge, fmtAge, found, type PgScrubData } from "./Scrub";
 
 /** A PgState's name and colour (Tailwind's 500s, as the Pools page bars). */
 export const PG_STATES: Record<number, [string, string]> = {
@@ -18,7 +20,7 @@ export const PG_STATES: Record<number, [string, string]> = {
 };
 
 /** What the grid shows: states shaded by data, or the load. */
-export type GridView = "state" | "reads" | "writes";
+export type GridView = "state" | "reads" | "writes" | "scrub";
 
 /** Quiet to busy (Tailwind amber-200 to red-600), for a share 0 to 1. */
 export function heatColor(x: number) {
@@ -130,6 +132,7 @@ export function PgGrid({
   picked,
   onPick,
   view = "state",
+  scrub,
 }: {
   pool: number;
   width?: number;
@@ -138,10 +141,14 @@ export function PgGrid({
   /** A PG to outline. */
   picked?: number | null;
   onPick?: (pg: number) => void;
+  /** The pool's scrub records, for the Scrub view. */
+  scrub?: PgScrubData | null;
 }) {
   const { states, usage, error } = usePgGrid(pool);
-  const { heat, error: heatError } = usePgHeat(pool, view !== "state");
-  const load = view === "state" ? undefined : view === "reads" ? heat?.reads : heat?.writes;
+  const loadView = view === "reads" || view === "writes";
+  const { heat, error: heatError } = usePgHeat(pool, loadView);
+  const load = !loadView ? undefined : view === "reads" ? heat?.reads : heat?.writes;
+  const records = new Map((view === "scrub" ? (scrub?.pgs ?? []) : []).map((g) => [g.pg, g]));
   const busiest = Math.max(0, ...(load ?? []));
   const canvas = useRef<HTMLCanvasElement>(null);
   const n = states?.length ?? 0;
@@ -160,12 +167,24 @@ export function PgGrid({
       if (view === "state") {
         g.fillStyle = PG_STATES[s]?.[1] ?? "#64748b";
         g.globalAlpha = shade(usage?.levels[i]);
+      } else if (view === "scrub") {
+        const r = records.get(i);
+        g.fillStyle = r && scrub ? ageColor(deepAge(r, scrub)) : "#cbd5e1";
+        g.globalAlpha = r ? 1 : 0.5;
       } else {
         const v = load?.[i] ?? 0;
         g.fillStyle = v > 0 && busiest > 0 ? heatColor(v / busiest) : "#cbd5e1";
         g.globalAlpha = v > 0 ? 1 : 0.5;
       }
       g.fillRect((i % cols) * cell, Math.floor(i / cols) * cell, cell - gap, cell - gap);
+      // A PG whose last scrubs found something: a dark centre.
+      const r = records.get(i);
+      if (view === "scrub" && r && (found(r.light) || found(r.deep)) && cell >= 4) {
+        g.globalAlpha = 1;
+        g.fillStyle = "#0f172a";
+        const q = Math.max(1, Math.floor(cell / 4));
+        g.fillRect((i % cols) * cell + q, Math.floor(i / cols) * cell + q, cell - gap - 2 * q, cell - gap - 2 * q);
+      }
     });
     g.globalAlpha = 1;
     if (picked != null && picked < states.length && cell >= 6) {
@@ -173,7 +192,7 @@ export function PgGrid({
       g.lineWidth = 2;
       g.strokeRect((picked % cols) * cell + 1, Math.floor(picked / cols) * cell + 1, cell - gap - 2, cell - gap - 2);
     }
-  }, [states, usage, cols, rows, cell, gap, picked, view, load, busiest]);
+  }, [states, usage, cols, rows, cell, gap, picked, view, load, busiest, scrub]);
   const at = (e: MouseEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.floor((e.clientX - r.left) / cell);
@@ -185,7 +204,7 @@ export function PgGrid({
   states?.forEach((s) => counts.set(s, (counts.get(s) ?? 0) + 1));
   return (
     <div data-testid={`pg-grid-${pool}`}>
-      <ErrorText error={error ?? (view !== "state" ? heatError : undefined)} />
+      <ErrorText error={error ?? (loadView ? heatError : undefined)} />
       <div className="overflow-x-auto">
         <canvas
           ref={canvas}
@@ -197,12 +216,17 @@ export function PgGrid({
             const i = at(e);
             const l = i == null ? 0 : (usage?.levels[i] ?? 0);
             const held = l ? `, ≈ ${fmtBytes(approx(l, usage!.max))} on its primary` : "";
+            const r = i == null ? undefined : records.get(i);
+            const scrubbed =
+              r && scrub
+                ? `, deep-scrubbed ${r.deep ? `${fmtAge(Math.max(0, scrub.now - Number(r.deep.at)))} ago` : "never"}, light ${r.light ? `${fmtAge(Math.max(0, scrub.now - Number(r.light.at)))} ago` : "never"}${r.overdue ? ` (${r.overdue} overdue)` : ""}${found(r.light) || found(r.deep) ? "; findings" : ""}`
+                : "";
             const busy =
-              i != null && heat && view !== "state"
+              i != null && heat && loadView
                 ? `, ${(heat.reads[i] ?? 0).toFixed(0)} reads/s and ${(heat.writes[i] ?? 0).toFixed(0)} writes/s (${fmtBytes(Math.round((heat.readBytes[i] ?? 0) + (heat.writeBytes[i] ?? 0)))}/s)${heat.primaries[i] !== 4294967295 && heat.primaries[i] != null ? ` on device ${heat.primaries[i]}` : ""}`
                 : "";
             e.currentTarget.title =
-              i == null ? "" : `PG ${pool}.${i}: ${PG_STATES[states![i]]?.[0] ?? "unknown"}${view === "state" ? held : busy}`;
+              i == null ? "" : `PG ${pool}.${i}: ${PG_STATES[states![i]]?.[0] ?? "unknown"}${view === "state" ? held : view === "scrub" ? scrubbed : busy}`;
           }}
           onClick={(e) => {
             const i = at(e);
@@ -217,7 +241,16 @@ export function PgGrid({
             {counts.get(Number(s)) ?? 0} {name}
           </li>
         ))}
-        {view !== "state" && (
+        {view === "scrub" && (
+          <li className="flex items-center gap-1" data-testid={`pg-grid-${pool}-scrub`}>
+            <span
+              className="inline-block w-8 h-2.5 rounded-sm"
+              style={{ background: `linear-gradient(to right, ${ageColor(0)}, ${ageColor(1)}, ${ageColor(2)})` }}
+            />
+            last deep scrub fresh, due, overdue; a dark centre: findings
+          </li>
+        )}
+        {loadView && (
           <li className="flex items-center gap-1" data-testid={`pg-grid-${pool}-heat`}>
             <span className="inline-block w-8 h-2.5 rounded-sm" style={{ background: `linear-gradient(to right, ${heatColor(0)}, ${heatColor(1)})` }} />
             {busiest > 0 ? `quiet to busiest, ${busiest.toFixed(0)} ${view}/s` : `no ${view} in the last window`}

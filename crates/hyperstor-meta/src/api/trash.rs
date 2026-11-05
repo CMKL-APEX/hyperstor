@@ -232,7 +232,9 @@ impl TrashService for Api {
             },
         );
         if let Err(e) = r {
-            return Err(self.store_error(e).await);
+            return Err(self
+                .store_error(e, "settings are written by the leader")
+                .await);
         }
         Ok(pb::SetTrashSettingsResponse {
             settings: Some(Api::settings_pb(pool, t)).into(),

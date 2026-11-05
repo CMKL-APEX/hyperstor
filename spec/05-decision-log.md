@@ -1215,3 +1215,24 @@ gone through one by one with a recommendation for each:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 194 | Settle D128 (both layouts, per-export policy), D131 (device IDs at the primaries' last change, forwarding), D132 (`DATA_SYNC`, `LAYOUTCOMMIT` max, recalls before size changes), D133 (sealed stateids; with the key's distribution decided: a cluster secret under the map service's cluster key as S3 keys are, fetched with the map, rotated by key id), D134 (all state in kv), D135 (RPC-with-TLS host certificates), D136 (v4.1 and 4.2 only) and D137 (N0–N4 after HS14) as written (recommended); or keep any open | All settled | D128, D131–D137 settled; D133 amended |
+
+## Scrub metrics (2026-11-05)
+
+Building the metrics of 28-scrub.md §31.8: the map service had no
+metrics endpoint. Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 198 | Where the map service serves its metrics, and to whom: a plain-HTTP port of its own, as storage nodes have; `/metrics` on the cluster API's port behind its mutual TLS; or mgmt's `/api/metrics`. For the API's port, which certificate Prometheus holds: a new `metrics` role that may read only `/metrics` (recommended), any cluster certificate, or an administrator's | The API's port, with a certificate; a new `metrics` role | D234 |
+| 199 | Which members export them: every member, from its replicated records, with a leader gauge (recommended); or the leader only, as §31.8 read | Every member | D235 |
+
+## Flakes from product behaviour, I270 (2026-11-05)
+
+Two of the end-to-end tests that failed on slow CI runners (I270)
+failed because of how the product behaves, not only because of the
+tests' timing. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 196 | When a call that changes the map answers: once the map that has the change is published (recommended); or at once, from the leader's working map, as `device add` did | Once published | D236 |
+| 197 | Admin reads (`trash list`) that queue behind a purge's deletes on the same devices: D46's priority classes, with control-path reads ahead of bulk deletes (recommended); smaller purge batches or a longer CLI deadline now | D46's classes, no change now | D46 (HS10b) |

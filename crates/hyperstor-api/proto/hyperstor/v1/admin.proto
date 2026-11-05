@@ -207,13 +207,16 @@ service OperationService {
 
 message CreateTokenRequest {
   // "node" (a storage host), "meta" (a map service member), "mgmt" (a
-  // management client such as glidex's control plane, 04-decisions.md D122)
-  // or "s3" (an S3 gateway, D233).
+  // management client such as glidex's control plane, 04-decisions.md
+  // D122), "s3" (an S3 gateway, D233) or "metrics" (a scraper such as
+  // Prometheus, which may read the map service's /metrics and nothing
+  // else, D234).
   string role = 1;
   // How long the token is valid; 0 means an hour. At most a week.
   uint32 ttl_seconds = 2 [json_name = "ttl_seconds"];
-  // "mgmt" and "s3": the identity's name, which its certificate carries
-  // (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
+  // "mgmt", "s3" and "metrics": the identity's name, which its
+  // certificate carries (hyperstor://<cluster>/<role>/<name>): 1-32 of
+  // a-z, 0-9 and -.
   string name = 3;
 }
 
@@ -355,6 +358,9 @@ message Member {
   // A voter, or a learner still catching up.
   bool voter = 4;
   bool leader = 5;
+  // Its cluster API, as it recorded when it last led; empty if it never
+  // has, or the members are older. Leader-only calls go there.
+  string api_address = 6 [json_name = "api_address"];
 }
 
 message ListMembersRequest {}

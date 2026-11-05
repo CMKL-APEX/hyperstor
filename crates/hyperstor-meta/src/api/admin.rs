@@ -183,8 +183,10 @@ impl Api {
             })
     }
 
-    pub(super) async fn store_error(&self, e: TokenError) -> ConnectError {
-        self.token_error(e).await
+    /// A refused write to the replicated store; `what` says what the
+    /// leader writes, for a member that isn't it.
+    pub(super) async fn store_error(&self, e: TokenError, what: &str) -> ConnectError {
+        self.write_error(e, what).await
     }
 
     fn signing(&self) -> Result<(&Signing, &str), ConnectError> {
@@ -228,6 +230,11 @@ impl Api {
     }
 
     async fn token_error(&self, e: TokenError) -> ConnectError {
+        self.write_error(e, "tokens and revocations are written by the leader")
+            .await
+    }
+
+    async fn write_error(&self, e: TokenError, what: &str) -> ConnectError {
         match e {
             TokenError::NotLeader => {
                 let why = match self.ask(Admin::Leads).await {
@@ -235,7 +242,7 @@ impl Api {
                     _ => "this map service member isn't the leader".into(),
                 };
                 meta_error(
-                    format!("{why}: tokens and revocations are written by the leader"),
+                    format!("{why}: {what}"),
                     ConnectError::unavailable,
                     "not_leader",
                 )
@@ -335,16 +342,19 @@ impl TokenService for Api {
         let target = format!("role {}", req.role);
         let who = self.authorize(&ctx, "CreateToken", &target, true)?;
         let (_, root) = self.signing()?;
-        if !matches!(req.role, "node" | "meta" | "mgmt" | "s3") {
+        if !matches!(req.role, "node" | "meta" | "mgmt" | "s3" | "metrics") {
             return Err(invalid(
-                format!("{}: a token is for role node, meta, mgmt or s3", req.role),
+                format!(
+                    "{}: a token is for role node, meta, mgmt, s3 or metrics",
+                    req.role
+                ),
                 "invalid_argument",
             ));
         }
-        // A management client's or gateway's token names the identity it
-        // enrolls (D122, D233).
+        // A management client's, gateway's or scraper's token names the
+        // identity it enrolls (D122, D233, D234).
         let name = req.name.to_string();
-        if matches!(req.role, "mgmt" | "s3") {
+        if matches!(req.role, "mgmt" | "s3" | "metrics") {
             let ok = (1..=32).contains(&name.len())
                 && name
                     .bytes()
@@ -360,7 +370,7 @@ impl TokenService for Api {
             }
         } else if !name.is_empty() {
             return Err(invalid(
-                "only a mgmt or s3 token takes a name",
+                "only a mgmt, s3 or metrics token takes a name",
                 "invalid_argument",
             ));
         }
@@ -540,13 +550,18 @@ impl TokenService for Api {
                         },
                     ))
                 }
-                "mgmt" => {
-                    // A management client (D122): a client certificate
+                role @ ("mgmt" | "metrics") => {
+                    // A management client (D122), or a scraper of the map
+                    // service's metrics (D234): a client certificate
                     // naming no address, the root, and the map service's
-                    // addresses for its data path.
+                    // addresses for a management client's data path.
                     let who = Identity {
                         cluster: cluster.clone(),
-                        role: Role::Mgmt,
+                        role: if role == "mgmt" {
+                            Role::Mgmt
+                        } else {
+                            Role::Metrics
+                        },
                         id: token.name.clone(),
                     };
                     let certificate = hyperstor_pki::sign_request(
@@ -559,7 +574,7 @@ impl TokenService for Api {
                     )
                     .map_err(|e| invalid(e, "bad_request"))?;
                     Ok((
-                        format!("{who_token}: mgmt {}", token.name),
+                        format!("{who_token}: {role} {}", token.name),
                         pb::JoinResponse {
                             cluster_id: cluster.clone(),
                             certificate,
@@ -1012,8 +1027,14 @@ impl MemberService for Api {
             .recv()
             .await
             .ok_or_else(|| ConnectError::unavailable("map service stopped"))?;
+        let mut members = members_pb(&m);
+        for x in &mut members {
+            if let Some(a) = self.admin.runner.member_api(x.map_address.clone()).await {
+                x.api_address = a;
+            }
+        }
         Ok(pb::ListMembersResponse {
-            members: members_pb(&m),
+            members,
             me: m.me,
             ..Default::default()
         }
@@ -1433,12 +1454,8 @@ impl OperationService for Api {
             }
         }
         if message.is_empty() {
-            // Answered once the map that has them back is published, so
-            // what's read next shows it (it is fenced first).
-            let t = std::time::Instant::now();
-            while self.published().await?.0.epoch < epoch && t.elapsed() < Duration::from_secs(5) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+            // Each `SetDeviceIn` answered once the map that has it back
+            // was published (D236), so what's read next shows it.
             message = format!("cancelled; {what} back in");
         }
         audit(&who, "CancelOperation", &target, &format!("ok, {message}"));

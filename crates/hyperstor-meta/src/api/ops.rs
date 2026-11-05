@@ -62,6 +62,9 @@ pub(super) struct Runner {
     settings: Option<Arc<crate::settings::Settings>>,
     /// The lead this member has fenced for, by when it began.
     fenced: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
+    /// This member's map address and cluster API, recorded with each
+    /// lead so the others can name the leader's API.
+    addresses: Option<(String, String)>,
 }
 
 impl Runner {
@@ -69,6 +72,7 @@ impl Runner {
         tx: Sender<Admin>,
         ops: Arc<Ops>,
         settings: Option<Arc<crate::settings::Settings>>,
+        addresses: Option<(String, String)>,
     ) -> Runner {
         Runner {
             tx,
@@ -76,7 +80,18 @@ impl Runner {
             running: Arc::default(),
             settings,
             fenced: Arc::default(),
+            addresses,
         }
+    }
+
+    /// The cluster API that the member serving the map at `map` recorded
+    /// when it last led, if it did.
+    pub(super) async fn member_api(&self, map: String) -> Option<String> {
+        let s = self.settings.clone()?;
+        tokio::task::spawn_blocking(move || s.member_api(&map).ok().flatten())
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Fences the last leader once per lead of this member (D125): its
@@ -119,9 +134,18 @@ impl Runner {
                     None => return Err(TokenError::Store("map service stopped".into())),
                 }
             }
-            tokio::task::spawn_blocking(move || settings.set_ops_instance(instance))
-                .await
-                .map_err(|e| TokenError::Store(e.to_string()))??;
+            let addresses = self.addresses.clone();
+            tokio::task::spawn_blocking(move || {
+                settings.set_ops_instance(instance)?;
+                match addresses {
+                    Some((map, api)) if settings.member_api(&map)?.as_ref() != Some(&api) => {
+                        settings.set_member_api(&map, &api)
+                    }
+                    _ => Ok(()),
+                }
+            })
+            .await
+            .map_err(|e| TokenError::Store(e.to_string()))??;
         }
         *fenced = Some(since);
         Ok(())
@@ -236,22 +260,8 @@ impl Runner {
                             Ok(()) => rx.recv().await,
                             Err(_) => None,
                         };
-                        // Done once the published map, which clients and
-                        // the installer read, lacks it (it is fenced first).
-                        if let Some(Ok(Some((_, epoch)))) = &r {
-                            let t = std::time::Instant::now();
-                            while t.elapsed() < Duration::from_secs(10) {
-                                let (reply, rx) = oneshot();
-                                if me.tx.send(Admin::Published(reply)).is_err() {
-                                    break;
-                                }
-                                match rx.recv().await {
-                                    Some((map, ..)) if map.epoch < *epoch => {}
-                                    _ => break,
-                                }
-                                tokio::time::sleep(Duration::from_millis(20)).await;
-                            }
-                        }
+                        // Answered once the published map, which clients and
+                        // the installer read, lacks it (D236).
                         let done = match &r {
                             Some(Ok(Some((true, _)))) => format!(
                                 "device {device} removed from the map, and node {} with it",

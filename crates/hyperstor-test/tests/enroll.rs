@@ -172,3 +172,100 @@ fn a_management_client_enrolls_and_manages_volumes() {
     ])
     .expect(1);
 }
+
+/// A scraper such as Prometheus (D234, D235): it enrolls with a metrics
+/// token, reads the map service's `/metrics` on the API's port with the
+/// certificate it got, may read nothing else, and renews it itself.
+#[test]
+fn a_scraper_enrolls_and_reads_only_the_metrics() {
+    let c = Cluster::all_in_one("scraper", 1);
+    c.ctl(&["token", "create", "--role", "metrics"]).expect(1);
+    let t = token(&c, &["--role", "metrics", "--name", "prometheus"]);
+    let file = c.scratch.path("metrics.token");
+    std::fs::write(&file, &t).unwrap();
+    let dir = c.scratch.path("prometheus-pki");
+    let e = c
+        .ctl_via(
+            Via::Plain,
+            &[
+                "enroll",
+                "--file",
+                file.to_str().unwrap(),
+                "--out",
+                dir.to_str().unwrap(),
+            ],
+        )
+        .ok();
+    assert!(
+        e.has("/metrics/prometheus") && e.has("cert renew"),
+        "{}",
+        e.out
+    );
+    let cert = std::fs::read_to_string(dir.join("admin.crt")).unwrap();
+    assert_eq!(
+        hyperstor_pki::identity_in(&cert).unwrap().role,
+        hyperstor_pki::Role::Metrics
+    );
+    // GET /metrics as Prometheus does it: its status and its text.
+    let get = |certs: Option<&Path>| {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-sS", "-w", "\n%{http_code}", "--cacert"])
+            .arg(c.pki().join("root.crt"));
+        if let Some(d) = certs {
+            cmd.arg("--cert")
+                .arg(d.join("admin.crt"))
+                .arg("--key")
+                .arg(d.join("admin.key"));
+        }
+        let o = cmd
+            .arg(format!("https://{}/metrics", c.api))
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&o.stdout).into_owned();
+        let (body, code) = out.rsplit_once('\n').unwrap();
+        (code.to_string(), body.to_string())
+    };
+    let (code, body) = get(Some(&dir));
+    assert_eq!(code, "200", "{body}");
+    assert!(
+        body.contains("hyperstor_meta_leader 1\n")
+            && body.contains("hyperstor_pool_scrub_oldest_seconds{pool=\"1\",name=")
+            && body.contains(",kind=\"deep\"} ")
+            && body.contains("hyperstor_pool_scrub_overdue_pgs{pool=\"1\",name="),
+        "{body}"
+    );
+    // Cache pools aren't scrubbed, so they have none.
+    assert!(!body.contains("pool=\"2\""), "{body}");
+    // Without a certificate, refused; an administrator's reads it too.
+    assert_eq!(get(None).0, "401");
+    assert_eq!(get(Some(&c.pki())).0, "200");
+    // The scraper's certificate reads nothing else, and changes nothing.
+    let status = c.ctl_via(Via::Tls(&dir), &["status"]).expect(4);
+    assert!(status.has("may not read"), "{}", status.out);
+    c.ctl_via(Via::Tls(&dir), &["scrub", "start", "--pool", "1"])
+        .expect(4);
+    // It renews itself: not before it is due, unless forced.
+    let early = c.ctl_via(Via::Tls(&dir), &["cert", "renew"]).ok();
+    assert!(early.has("not due yet"), "{}", early.out);
+    let renewed = c
+        .ctl_via(Via::Tls(&dir), &["cert", "renew", "--force"])
+        .ok();
+    assert!(renewed.has("renewed"), "{}", renewed.out);
+    let now = std::fs::read_to_string(dir.join("admin.crt")).unwrap();
+    assert_eq!(
+        hyperstor_pki::identity_in(&now).unwrap().uri(),
+        hyperstor_pki::identity_in(&cert).unwrap().uri()
+    );
+    assert_ne!(
+        hyperstor_pki::serial_in(&now),
+        hyperstor_pki::serial_in(&cert)
+    );
+    assert_eq!(get(Some(&dir)).0, "200");
+    let audit = c.audit();
+    assert!(
+        audit
+            .iter()
+            .any(|l| l.contains("\"op\":\"RenewCertificate\"") && l.contains("/metrics/prometheus")),
+        "{audit:?}"
+    );
+}

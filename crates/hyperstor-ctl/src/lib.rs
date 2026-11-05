@@ -849,8 +849,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TokenService.RevokeToken", "token revoke"),
     // Called by hyperstor-install, which joins the host it runs on.
     ("TokenService.Join", "hyperstor-install install --join"),
-    // Called by hyperstor-install's daily run.
-    ("CaService.RenewCertificate", "hyperstor-install install"),
+    // Also by hyperstor-install's daily run, for the host's own.
+    ("CaService.RenewCertificate", "cert renew"),
     ("CaService.ListCertificates", "cert list"),
     ("CaService.RevokeCertificate", "cert revoke"),
     // A member without the cluster key asks another (D162).
@@ -1005,20 +1005,55 @@ pub fn utc(unix: u64) -> String {
 /// `hyperstorctl member list`, and what `member add` and `remove` print.
 pub fn members_text(members: &[pb::Member]) -> String {
     let mut o = String::new();
-    let _ = writeln!(o, "{:<6} {:<8} {:<22} MAP", "MEMBER", "ROLE", "RAFT");
+    let _ = writeln!(
+        o,
+        "{:<6} {:<8} {:<22} {:<22} API",
+        "MEMBER", "ROLE", "RAFT", "MAP"
+    );
     for m in members {
         let role = match (m.leader, m.voter) {
             (true, _) => "leader",
             (false, true) => "voter",
             (false, false) => "learner",
         };
+        let api = if m.api_address.is_empty() {
+            "-"
+        } else {
+            &m.api_address
+        };
         let _ = writeln!(
             o,
-            "{:<6} {:<8} {:<22} {}",
+            "{:<6} {:<8} {:<22} {:<22} {api}",
             m.id, role, m.raft_address, m.map_address
         );
     }
     o
+}
+
+/// Where a call that only the leader serves goes, after the member asked
+/// refused it as not the leader: the leader's API, from the member list,
+/// or why it can't go there. `certs`: whether hyperstorctl has
+/// certificates for another member's API; `plain`: whether it asked over
+/// plain HTTP, so the leader may be asked so too.
+pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<String, String> {
+    let Some(l) = members.iter().find(|m| m.leader) else {
+        return Err("no member leads now; run it again once one does".into());
+    };
+    if l.api_address.is_empty() {
+        return Err(format!(
+            "member {} leads, and hasn't recorded its API (older members): \
+             run it on the leader's host",
+            l.id
+        ));
+    }
+    if !certs && !plain {
+        return Err(format!(
+            "the leader's API is at {}, and hyperstorctl has no certificates \
+             for it: run it on the leader's host, or with --api {} --tls DIR",
+            l.api_address, l.api_address
+        ));
+    }
+    Ok(l.api_address.clone())
 }
 
 /// `hyperstorctl cert list`.
@@ -1297,6 +1332,38 @@ pub fn to_yaml(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn leader_only_calls_find_the_leaders_api() {
+        let m = |id, leader, api: &str| pb::Member {
+            id,
+            leader,
+            voter: true,
+            api_address: api.into(),
+            ..Default::default()
+        };
+        let three = [
+            m(1, false, "10.0.0.1:8850"),
+            m(2, true, "10.0.0.2:8850"),
+            m(3, false, ""),
+        ];
+        assert_eq!(leader_api(&three, true, false).unwrap(), "10.0.0.2:8850");
+        assert_eq!(leader_api(&three, false, true).unwrap(), "10.0.0.2:8850");
+        let e = leader_api(&three, false, false).unwrap_err();
+        assert!(e.contains("10.0.0.2:8850") && e.contains("--tls"), "{e}");
+        let older = [m(1, false, ""), m(2, true, "")];
+        let e = leader_api(&older, true, false).unwrap_err();
+        assert!(e.contains("member 2 leads"), "{e}");
+        let none = [m(1, false, "10.0.0.1:8850")];
+        assert!(
+            leader_api(&none, true, false)
+                .unwrap_err()
+                .contains("no member leads")
+        );
+        let text = members_text(&three);
+        assert!(text.lines().next().unwrap().ends_with("API"), "{text}");
+        assert!(text.contains("10.0.0.2:8850") && text.lines().nth(3).unwrap().ends_with(" -"));
+    }
+
     #[test]
     fn heat_shows_a_digit_per_pg_and_the_busiest_volumes() {
         let r = pb::GetPgHeatResponse {

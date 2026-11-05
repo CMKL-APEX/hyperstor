@@ -224,6 +224,41 @@ test("the load and the drives are shown", async ({ page }) => {
   await expect(page.getByText("hyperstorctl advise")).toBeVisible();
 });
 
+test("a pool's scrub is shown, changed and started", async ({ page }) => {
+  await logIn(page, "ann");
+  const dialog = page.getByRole("dialog");
+  // Its Scrub card: settings and coverage (28-scrub.md §31.8).
+  await page.getByRole("link", { name: "Pools" }).click();
+  await page.getByTestId("pool-1").getByRole("button", { name: "PGs" }).click();
+  const card = page.getByTestId("scrub-1");
+  await expect(card).toContainText("light-scrubbed every 24 h, and deep every 7 scrubs");
+  await expect(page.getByTestId("scrub-1-deep")).toContainText("Oldest deep scrub");
+  await expect(page.getByText("hyperstorctl scrub status --pool 1")).toBeVisible();
+  // Weakening takes a reason (D226); restoring it doesn't.
+  await page.getByRole("button", { name: "Change" }).click();
+  await dialog.getByLabel(/Deep every/).fill("14");
+  await expect(dialog.getByText("hyperstorctl scrub set --pool 1 --deep-every 14")).toBeVisible();
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toContainText("Give a reason");
+  await dialog.getByLabel(/Reason/).fill("browser test");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(card).toContainText("reduced");
+  await page.getByRole("button", { name: "Change" }).click();
+  await dialog.getByLabel(/Deep every/).fill("7");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(card).not.toContainText("reduced");
+  // Scrub now, as an operation (D229).
+  await page.getByRole("button", { name: "Scrub now" }).click();
+  await expect(page.getByText(/Scrubbing \d+ PG\(s\): operation [0-9a-f]+/)).toBeVisible();
+  // The grid's Scrub view, and a PG's last scrubs, as health links to it.
+  await page.getByTestId("grid-view-scrub").click();
+  await expect(page.getByTestId("pg-grid-1-scrub")).toContainText("last deep scrub");
+  await expect(page.getByText("hyperstorctl scrub pgs --pool 1")).toBeVisible();
+  await page.goto(`${url()}/pools?pool=1&view=scrub&pg=0`);
+  await expect(page.getByTestId("pg-scrub")).toContainText("PG 1.0");
+  await expect(page.getByTestId("pg-scrub")).toContainText("deep");
+});
+
 test("the trash restores and purges", async ({ page }) => {
   await logIn(page, "ann");
   await page.getByRole("link", { name: "Trash" }).click();
