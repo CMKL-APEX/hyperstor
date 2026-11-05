@@ -1206,3 +1206,14 @@ recommendation:
 | 191 | Who issues S3 access keys, and what encrypts their secrets: the map service, under its cluster key (D162), gateways fetching them (recommended); or mgmt with a key of its own, as D197 read | The map service | D231, amends D197 |
 | 192 | How buckets are created: S3's CreateBucket by any key, pools from the cluster's defaults or a named placement (recommended); or administrators only | CreateBucket | D232 |
 | 193 | Where the gateway runs: any joined host with an `s3` identity, `--s3` in the installer (recommended); or beside each storage node with its identity | Any host, its own role | D233 |
+
+## Flakes from product behaviour, I270 (2026-11-05)
+
+Two of the end-to-end tests that failed on slow CI runners (I270)
+failed because of how the product behaves, not only because of the
+tests' timing. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 196 | When a call that changes the map answers: once the map that has the change is published (recommended); or at once, from the leader's working map, as `device add` did | Once published | D236 |
+| 197 | Admin reads (`trash list`) that queue behind a purge's deletes on the same devices: D46's priority classes, with control-path reads ahead of bulk deletes (recommended); smaller purge batches or a longer CLI deadline now | D46's classes, no change now | D46 (HS10b) |
