@@ -65,6 +65,11 @@ service CaService {
   // Refuses a certificate, by serial, on every map service member from
   // now until it would have expired (04-decisions.md D56, D93). Write.
   rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+
+  // The cluster key (04-decisions.md D162), for a map service member
+  // that has none, such as one that joined before the key existed.
+  // Map service members ("meta" certificates) only; audited.
+  rpc GetClusterKey(GetClusterKeyRequest) returns (GetClusterKeyResponse);
 }
 
 // Backups of the map service's store (04-decisions.md D86).
@@ -538,8 +543,13 @@ message S3Placement {
   // "default", or 1-63 of a-z, 0-9 and -, as LocationConstraint names it.
   string name = 1;
   // Pool names: a bucket's objects, and its index (its listing's ranges).
+  // Set by name; kept by id, so a renamed pool keeps its placements, and
+  // answered with the pools' names now (empty for a pool deleted since).
   string data_pool = 2 [json_name = "data_pool"];
   string index_pool = 3 [json_name = "index_pool"];
+  // In answers: the pools' ids, which gateways go by.
+  uint32 data_pool_id = 4 [json_name = "data_pool_id"];
+  uint32 index_pool_id = 5 [json_name = "index_pool_id"];
 }
 
 message SetS3PlacementRequest {
@@ -572,4 +582,12 @@ message S3GatewayKey {
 message GetS3GatewayResponse {
   repeated S3GatewayKey keys = 1;
   repeated S3Placement placements = 2;
+}
+
+message GetClusterKeyRequest {}
+
+message GetClusterKeyResponse {
+  // In its file's form; failed_precondition (no_cluster_key) where the
+  // member answering has none.
+  string cluster_key = 1 [json_name = "cluster_key"];
 }

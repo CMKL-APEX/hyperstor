@@ -167,11 +167,13 @@ fn s3_keys_and_placements_come_from_the_map_service() {
         again.out
     );
     assert!(c.ctl(&["s3", "placement", "list"]).ok().has("default"));
-    // Placements of a cache pool or a missing pool are refused.
+    // Placements of a cache pool, a missing pool or `.meta` are refused.
     let r = placement(&c, "fast", "cache").expect(1);
     assert!(r.has("cache pool"), "{}", r.out);
     let r = placement(&c, "fast", "nope").expect(1);
     assert!(r.has("no pool"), "{}", r.out);
+    let r = placement(&c, "fast", ".meta").expect(1);
+    assert!(r.has("the map service's own pool"), "{}", r.out);
     // A key: the id and secret once, then only the id.
     c.ctl(&["s3", "key", "create", "--tenant", "0"]).expect(1);
     let made = c
@@ -270,6 +272,16 @@ fn s3_keys_and_placements_come_from_the_map_service() {
         (step(&["create", "second", "fast"]) == "created").then_some(())
     });
     assert_eq!(step(&["roundtrip", "second"]), "roundtrip ok");
+    // A renamed pool keeps its placements: they go by id.
+    c.ctl(&["pool", "set", "--pool", "1", "--name", "renamed"])
+        .ok();
+    let list = wait_for("the new name published", 15, || {
+        let r = c.ctl(&["s3", "placement", "list"]).ok();
+        r.has("renamed (#1)").then_some(r)
+    });
+    assert!(!list.has("vol"), "{}", list.out);
+    assert_eq!(step(&["create", "third"]), "created");
+    assert_eq!(step(&["roundtrip", "third"]), "roundtrip ok");
     // A wrong secret is refused; a revoked key within seconds.
     let wrong = sdk(&python, port, &ca, &id, &"x".repeat(40), &["denied"]);
     assert_eq!(wrong, "SignatureDoesNotMatch");

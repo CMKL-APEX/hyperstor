@@ -254,6 +254,37 @@ hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
 hyperstorctl s3 key create --tenant 1 --description backups
 ```
 
+**Several gateways.** Gateways keep no state, so any of them may take
+any request: run one per host and put DNS round-robin or a load
+balancer in front. The balancer must leave the `Host` header and the
+path as the client sent them, since SigV4 signs both: forward TCP, or
+proxy HTTP keeping `Host`. Give every gateway the certificate of the
+name clients use (`--s3-tls DIR`), or end TLS at the balancer and have
+it reach the gateways over HTTPS, trusting `/etc/hyperstor/pki/root.crt`.
+An unsigned `GET /` answers 403 from a gateway that is up.
+
+**Behind a Cloudflare Tunnel** (not yet tried on real hardware). Run `cloudflared` on each gateway's
+host, routing the public name to the gateway, and leave the `Host`
+header alone (no `httpHostHeader`). Clients see Cloudflare's
+certificate; `cloudflared` checks the gateway's against the cluster's
+root:
+
+```yaml
+ingress:
+  - hostname: s3.example.com
+    service: https://localhost:443
+    originRequest:
+      caPool: /etc/hyperstor/pki/root.crt
+      originServerName: localhost
+  - service: http_status:404
+```
+
+Cloudflare limits a request's body (100 MB on its Free and Pro plans),
+so larger objects need multipart uploads, which come with the gateway's
+next stage, and it ends requests the gateway is silent on for 100 s.
+Cloudflare sees the traffic in the clear at its edge: keep data that
+must not leave your hands off a tunnel.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:

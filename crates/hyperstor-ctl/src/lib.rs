@@ -853,6 +853,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("CaService.RenewCertificate", "hyperstor-install install"),
     ("CaService.ListCertificates", "cert list"),
     ("CaService.RevokeCertificate", "cert revoke"),
+    // A member without the cluster key asks another (D162).
+    ("CaService.GetClusterKey", "hyperstor-install install"),
     ("NodeService.DrainNode", "drain"),
     ("MapService.GetMapBackup", "map backup"),
     ("MemberService.ListMembers", "member list"),
@@ -1104,8 +1106,22 @@ pub fn s3_placements_text(r: &pb::ListS3PlacementsResponse) -> String {
         "{:<20}  {:<20}  {}\n",
         "PLACEMENT", "DATA POOL", "INDEX POOL"
     );
+    // A pool deleted since shows by its id.
+    let pool = |name: &str, id: u32| {
+        if name.is_empty() {
+            format!("#{id} (deleted)")
+        } else {
+            format!("{name} (#{id})")
+        }
+    };
     for p in &r.placements {
-        let _ = writeln!(o, "{:<20}  {:<20}  {}", p.name, p.data_pool, p.index_pool);
+        let _ = writeln!(
+            o,
+            "{:<20}  {:<20}  {}",
+            p.name,
+            pool(&p.data_pool, p.data_pool_id),
+            pool(&p.index_pool, p.index_pool_id)
+        );
     }
     o
 }

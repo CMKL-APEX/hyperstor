@@ -127,6 +127,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("MgmtStoreService.ListRows", Group::Machine, false),
     // S3's secrets, for gateways alone (D231).
     ("S3Service.GetS3Gateway", Group::Machine, false),
+    // The cluster key, for map service members alone (D162).
+    ("CaService.GetClusterKey", Group::Machine, false),
 ];
 
 /// The row of `action`, if it is one.

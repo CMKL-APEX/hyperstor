@@ -572,7 +572,12 @@ fn map_service_members_join_the_first() {
                 !pki.join("root.key").exists(),
                 "the root key stays on the first host"
             );
-            for f in ["root.crt", "intermediate.crt", "intermediate.key"] {
+            for f in [
+                "root.crt",
+                "intermediate.crt",
+                "intermediate.key",
+                "cluster.key",
+            ] {
                 assert_eq!(
                     std::fs::read(pki.join(f)).unwrap(),
                     std::fs::read(first_pki.join(f)).unwrap(),
@@ -703,6 +708,44 @@ fn map_service_members_join_the_first() {
         let r = ctl(&bin, &apis[i], &pkis[i], &["token", "list"]).ok();
         assert!(r.has("used"), "member {}: {}", i + 1, r.out);
     }
+    // A member without the cluster key (one that joined before it existed,
+    // or lost it) gets it from the member it joined through (D162); only
+    // members may ask, so an administrator's certificate is refused.
+    let third = s.path("member-3");
+    std::fs::remove_file(pkis[2].join("cluster.key")).unwrap();
+    let r = install(&third, &[]);
+    assert!(r.has("Fetched the cluster key from member"), "{}", r.out);
+    assert_eq!(
+        std::fs::read(pkis[2].join("cluster.key")).unwrap(),
+        std::fs::read(first_pki.join("cluster.key")).unwrap()
+    );
+    let wrong = hyperstor_pki::client_config(
+        &std::fs::read_to_string(first_pki.join("admin.crt")).unwrap(),
+        &std::fs::read_to_string(first_pki.join("admin.key")).unwrap(),
+        &std::fs::read_to_string(first_pki.join("root.crt")).unwrap(),
+    )
+    .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let refused = rt.block_on(async {
+        let client = connectrpc::client::HttpClient::with_tls(std::sync::Arc::new(wrong));
+        let config =
+            connectrpc::client::ClientConfig::new(format!("https://{}", apis[0]).parse().unwrap());
+        hyperstor_api::CaServiceClient::new(client, config)
+            .get_cluster_key(hyperstor_api::GetClusterKeyRequest::default())
+            .await
+            .map(|_| ())
+    });
+    let e = refused.expect_err("an administrator may not read the cluster key");
+    assert!(
+        e.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("may not read the cluster key"),
+        "{e:?}"
+    );
 
     // The first member is lost: the other two elect a leader, which makes
     // tokens and adds hosts without it.

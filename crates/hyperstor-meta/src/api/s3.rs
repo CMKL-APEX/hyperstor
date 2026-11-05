@@ -7,8 +7,9 @@
 //!   keys nor answer gateways.
 //! - **Gateways** (`s3` certificates, D233) fetch every key with its
 //!   secret, and the placements, from any member's applied copy.
-//! - **Placements** name pools of the map; setting one checks they exist,
-//!   and that neither is a cache pool (S3's data must not be evicted).
+//! - **Placements** name pools of the map, kept by id so a renamed pool
+//!   keeps its placements; setting one checks they exist, and that neither
+//!   is a cache pool (S3's data must not be evicted) or `.meta`.
 
 use super::admin::random_bytes;
 use super::{Api, Need, audit, with_reason};
@@ -31,11 +32,21 @@ fn invalid(msg: impl Into<String>) -> ConnectError {
     )
 }
 
-fn placement_pb(p: Placement) -> pb::S3Placement {
+/// `p` as the API answers it: the pools' ids, and their names in `map`
+/// now (empty for a pool deleted since).
+fn placement_pb(p: Placement, map: &crate::ClusterMap) -> pb::S3Placement {
+    let name = |id: u32| {
+        map.pools
+            .get(&id)
+            .map(|q| q.name.clone())
+            .unwrap_or_default()
+    };
     pb::S3Placement {
+        data_pool: name(p.data_pool),
+        index_pool: name(p.index_pool),
+        data_pool_id: p.data_pool,
+        index_pool_id: p.index_pool,
         name: p.name,
-        data_pool: p.data_pool,
-        index_pool: p.index_pool,
         ..Default::default()
     }
 }
@@ -216,6 +227,7 @@ impl S3Service for Api {
                 )));
             }
             let (map, ..) = self.published().await?;
+            let mut ids = Vec::new();
             for name in [&p.data_pool, &p.index_pool] {
                 match map.pools.values().find(|q| &q.name == name) {
                     None => return Err(invalid(format!("no pool {name:?}"))),
@@ -224,13 +236,16 @@ impl S3Service for Api {
                             "{name} is a cache pool: S3's objects must not be evicted"
                         )));
                     }
-                    Some(_) => {}
+                    Some(q) if q.id == hyperstor_map::META_POOL => {
+                        return Err(invalid(format!("{name} is the map service's own pool")));
+                    }
+                    Some(q) => ids.push(q.id),
                 }
             }
             let place = Placement {
                 name: p.name.to_string(),
-                data_pool: p.data_pool.to_string(),
-                index_pool: p.index_pool.to_string(),
+                data_pool: ids[0],
+                index_pool: ids[1],
             };
             self.s3_rows("placement", move |db| s3keys::set_placement(db, &place))
                 .await
@@ -265,8 +280,9 @@ impl S3Service for Api {
     ) -> ServiceResult<pb::ListS3PlacementsResponse> {
         self.authorize(&ctx, "ListS3Placements", "s3 placements", false)?;
         let p = self.s3_rows("placement", s3keys::placements).await?;
+        let (map, ..) = self.published().await?;
         Ok(pb::ListS3PlacementsResponse {
-            placements: p.into_iter().map(placement_pb).collect(),
+            placements: p.into_iter().map(|p| placement_pb(p, &map)).collect(),
             ..Default::default()
         }
         .into())
@@ -284,6 +300,7 @@ impl S3Service for Api {
         let (keys, placements) = self
             .s3_rows("key", |db| Ok((s3keys::keys(db)?, s3keys::placements(db)?)))
             .await?;
+        let (map, ..) = self.published().await?;
         let mut out = Vec::with_capacity(keys.len());
         for k in keys {
             let Some(secret) = key.open(&s3keys::context(&k.id), &k.sealed) else {
@@ -304,7 +321,10 @@ impl S3Service for Api {
         }
         Ok(pb::GetS3GatewayResponse {
             keys: out,
-            placements: placements.into_iter().map(placement_pb).collect(),
+            placements: placements
+                .into_iter()
+                .map(|p| placement_pb(p, &map))
+                .collect(),
             ..Default::default()
         }
         .into())

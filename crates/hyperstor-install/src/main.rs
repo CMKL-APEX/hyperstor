@@ -2774,6 +2774,19 @@ fn install(
             (s.mgmt_listen == "all" && s.web_tls.is_empty()).then(glidex_tls::LocalNames::discover);
         // The gateway's names, for its certificate (D233).
         let s3_names = p.s3.as_ref().map(|_| glidex_tls::LocalNames::discover());
+        // Other members' cluster APIs, where a missing cluster key comes
+        // from: the one this host joined through, and each listed
+        // member's address on this host's API port.
+        let mut peers: Vec<String> = Vec::new();
+        if !s.join.is_empty() {
+            peers.push(s.join.clone());
+        }
+        for m in &p.members {
+            if Some(m.id) != p.member_id {
+                peers.push(format!("{}:{}", m.map.ip(), s.api_port));
+            }
+        }
+        peers.dedup();
         restart.extend(pki(
             root,
             real,
@@ -2782,6 +2795,7 @@ fn install(
             &p.server_ips,
             web.as_ref(),
             s3_names.as_ref(),
+            &peers,
             &mut changed,
         ));
         p.cluster_key = under(root, "/etc/hyperstor/pki/cluster.key").exists();
@@ -3002,6 +3016,41 @@ fn install(
     }
 }
 
+/// The root certificate this host trusts.
+fn root_cert_of(root: &Path) -> String {
+    fs::read_to_string(under(root, "/etc/hyperstor/pki/root.crt")).unwrap_or_default()
+}
+
+/// The cluster key from the first of `peers` (cluster API addresses) that
+/// has one, asked with this member's own certificate (`GetClusterKey`,
+/// for members only).
+fn fetch_cluster_key(
+    api: &hyperstor_pki::Pem,
+    root_cert: &str,
+    peers: &[String],
+) -> Option<hyperstor_pki::ClusterKey> {
+    for peer in peers {
+        let Ok(tls) = hyperstor_pki::client_config(&api.cert, &api.key, root_cert) else {
+            return None;
+        };
+        let r = api_call(peer, tls, |c| async move {
+            hyperstor_api::CaServiceClient::new(c.0, c.1)
+                .get_cluster_key(hyperstor_api::GetClusterKeyRequest::default())
+                .await
+                .map(|r| r.into_owned())
+        });
+        match r.map(|r| hyperstor_pki::ClusterKey::parse(&r.cluster_key)) {
+            Ok(Some(k)) => {
+                println!("Fetched the cluster key from member {peer}.");
+                return Some(k);
+            }
+            Ok(None) => eprintln!("hyperstor-install: {peer} answered something not a cluster key"),
+            Err(e) => eprintln!("hyperstor-install: the cluster key from {peer}: {e}"),
+        }
+    }
+    None
+}
+
 /// Where a run records that it set the all-in-one's default placement.
 const S3_PLACED: &str = "/etc/hyperstor/s3-placement.set";
 
@@ -3085,6 +3134,7 @@ fn pki(
     server_ips: &[std::net::IpAddr],
     web: Option<&glidex_tls::LocalNames>,
     s3: Option<&glidex_tls::LocalNames>,
+    peers: &[String],
     changed: &mut Vec<String>,
 ) -> Vec<String> {
     use hyperstor_pki::*;
@@ -3140,21 +3190,31 @@ fn pki(
         }
         (None, None) => fail("no intermediate CA and no root key to make one: join again"),
     };
-    // The cluster key (D162): made with the root, on the first host;
-    // members that join get it with the intermediate.
+    // The cluster key (D162): from another member that has it (a member
+    // that joined before it existed, or lost it), else made where the
+    // root is; members that join get it with the intermediate.
     if read("cluster.key").is_none() {
-        if rootca.is_some() {
-            let k = ClusterKey::generate().unwrap_or_else(|e| fail(&format!("cluster key: {e}")));
-            converge(
-                &under(root, &format!("{dir}/cluster.key")),
-                k.text().as_bytes(),
-                0o600,
-            );
-            changed.push(format!("{dir}/cluster.key"));
-        } else {
-            eprintln!(
-                "hyperstor-install: no cluster key on this host: the map service can't keep S3 keys here; copy {dir}/cluster.key (mode 0600) from the first member, or restore the root key there and install again"
-            );
+        let fetched =
+            pair("api").and_then(|api| fetch_cluster_key(&api, &root_cert_of(root), peers));
+        let made = match (&fetched, &rootca) {
+            (Some(_), _) => fetched,
+            (None, Some(_)) => {
+                Some(ClusterKey::generate().unwrap_or_else(|e| fail(&format!("cluster key: {e}"))))
+            }
+            (None, None) => None,
+        };
+        match made {
+            Some(k) => {
+                converge(
+                    &under(root, &format!("{dir}/cluster.key")),
+                    k.text().as_bytes(),
+                    0o600,
+                );
+                changed.push(format!("{dir}/cluster.key"));
+            }
+            None => eprintln!(
+                "hyperstor-install: no cluster key on this host, and no other member gave one: the map service can't keep S3 keys here until one does (run install again once another member has one), or restore the root key here (root-restore) and install again"
+            ),
         }
     }
     // Services read their certificates at start: restart those whose
@@ -4194,6 +4254,7 @@ mod tests {
             &ips(&["10.0.0.12"]),
             None,
             None,
+            &[],
             &mut changed,
         );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
@@ -4210,6 +4271,7 @@ mod tests {
             &ips(&["10.0.0.12"]),
             None,
             None,
+            &[],
             &mut changed,
         );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
@@ -4221,6 +4283,7 @@ mod tests {
             &ips(&["10.0.0.13"]),
             None,
             None,
+            &[],
             &mut changed,
         );
         assert_ne!(cert(root.path()), first, "new addresses: issued again");
@@ -4248,6 +4311,7 @@ mod tests {
             &[],
             Some(&a),
             None,
+            &[],
             &mut changed,
         );
         let first = web(root.path());
@@ -4268,6 +4332,7 @@ mod tests {
             &[],
             Some(&a),
             None,
+            &[],
             &mut changed,
         );
         assert_eq!(web(root.path()), first, "same names: kept");
@@ -4280,6 +4345,7 @@ mod tests {
             &[],
             Some(&b),
             None,
+            &[],
             &mut changed,
         );
         assert_ne!(web(root.path()), first, "a new address: issued again");
