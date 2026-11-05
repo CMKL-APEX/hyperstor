@@ -93,10 +93,11 @@
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares;
-//! - `token create --role node|meta|mgmt|metrics [--name N] [--ttl SECS]`,
-//!   `token list`, `token revoke --id ID`: join tokens (§23.4.2); a `mgmt`
-//!   token enrolls a management client named N, such as glidex (D122), a
-//!   `metrics` one a scraper that may read only `/metrics` (D234); `create`
+//! - `token create --role node|meta|mgmt|s3|metrics [--name N] [--ttl
+//!   SECS]`, `token list`, `token revoke --id ID`: join tokens (§23.4.2);
+//!   a `mgmt` token enrolls a management client named N, such as glidex
+//!   (D122), an `s3` token an S3 gateway named N (D233), and a `metrics`
+//!   one a scraper that may read only `/metrics` (D234); `create`
 //!   prints the token alone on standard output, and how to use it on
 //!   standard error;
 //! - `enroll --file TOKEN --out DIR`: a management client's or scraper's
@@ -125,6 +126,13 @@
 //! - `map backup --out FILE`: a backup of the map service's store
 //!   (D86), for `hyperstor-meta --restore`; written mode 0600, never over
 //!   an existing file;
+//! - `s3 key create --tenant N [--description TEXT]`, `s3 key list`, `s3
+//!   key revoke --id ID`: S3 access keys (14-s3.md §14.2, D231); `create`
+//!   prints the key's id and secret on standard output, the secret this
+//!   once; gateways refuse a revoked key within seconds. `s3 placement set
+//!   --name N --data-pool NAME --index-pool NAME`, `s3 placement list`, `s3
+//!   placement delete --name N`: the pools new buckets go in (D232), `default`
+//!   unless CreateBucket's LocationConstraint names another;
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -164,14 +172,14 @@ use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
     AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
-    MemberServiceClient, NodeServiceClient, OperationServiceClient, TokenServiceClient,
-    TrashServiceClient,
+    MemberServiceClient, NodeServiceClient, OperationServiceClient, S3ServiceClient,
+    TokenServiceClient, TrashServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -293,6 +301,12 @@ struct Args {
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
+    /// `s3 key create`.
+    tenant: Option<u32>,
+    description: Option<String>,
+    /// `s3 placement set`: pool names.
+    data_pool: Option<String>,
+    index_pool: Option<String>,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -374,6 +388,10 @@ fn main() {
         chunk: None,
         domain: None,
         poll: false,
+        tenant: None,
+        description: None,
+        data_pool: None,
+        index_pool: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -398,6 +416,28 @@ fn main() {
             },
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
+            "--tenant" => a.tenant = Some(num(it.next())),
+            "--description" => a.description = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--data-pool" => a.data_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--index-pool" => a.index_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            // Three words: s3, what, and what to do (D231, D232).
+            "s3" if cmd.is_none() => {
+                let what = it.next().map(String::as_str);
+                let sub = it.next().map(String::as_str);
+                let ok = match what {
+                    Some("key") => matches!(sub, Some("create" | "list" | "revoke")),
+                    Some("placement") => matches!(sub, Some("set" | "list" | "delete")),
+                    _ => false,
+                };
+                if !ok {
+                    usage();
+                }
+                cmd = Some(format!(
+                    "s3 {} {}",
+                    what.unwrap_or_default(),
+                    sub.unwrap_or_default()
+                ));
+            }
             "--dry-run" => a.dry_run = true,
             "--usage" => a.usage = true,
             "--overdue" => a.overdue = true,
@@ -667,9 +707,21 @@ fn main() {
     if cmd != "full-ratios" && a.ratios.iter().any(Option::is_some) {
         usage();
     }
+    // S3's own flags, on their commands only; key create needs a tenant,
+    // placement set a name and both pools, placement delete a name.
+    let placement_set = cmd == "s3 placement set";
+    if (cmd == "s3 key create") != a.tenant.is_some()
+        || (a.description.is_some() && cmd != "s3 key create")
+        || placement_set != (a.data_pool.is_some() && a.index_pool.is_some())
+        || (!placement_set && (a.data_pool.is_some() || a.index_pool.is_some()))
+        || (matches!(cmd.as_str(), "s3 placement set" | "s3 placement delete") && a.name.is_empty())
+    {
+        usage();
+    }
     let needs_id = matches!(
         cmd.as_str(),
         "token revoke"
+            | "s3 key revoke"
             | "op get"
             | "op watch"
             | "op cancel"
@@ -1254,6 +1306,7 @@ where
 {
     match cmd.split_once(' ').map_or(cmd, |(g, _)| g) {
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
+        "s3" => return s3(S3ServiceClient::new(transport, config), cmd, a).await,
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
@@ -2213,6 +2266,8 @@ where
                 let info = r.info.as_option().cloned().unwrap_or_default();
                 let how = if role == "meta" {
                     "--role meta --members LIST --member-id N"
+                } else if role == "s3" {
+                    "--role s3 --address IP"
                 } else {
                     "--role storage --address IP"
                 };
@@ -2247,6 +2302,97 @@ where
             Next::Exit(0)
         }
     })
+}
+
+/// `s3 key create|list|revoke`, `s3 placement set|list|delete` (14-s3.md
+/// §14.2, D231, D232).
+async fn s3<T>(
+    client: S3ServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    match cmd {
+        "s3 key create" => {
+            let r = client
+                .create_s3_key(pb::CreateS3KeyRequest {
+                    tenant: a.tenant.expect("checked with the arguments"),
+                    description: a.description.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            // The id and secret alone on standard output, for scripts.
+            let id = r.key.as_option().map(|k| k.id.clone()).unwrap_or_default();
+            show(a, &r, || format!("{id} {}\n", r.secret));
+            if !a.json {
+                eprintln!(
+                    "Access key {id} for tenant {}, and its secret: shown this once. Give both to\n\
+                     the S3 client (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).",
+                    a.tenant.unwrap_or_default()
+                );
+            }
+        }
+        "s3 key list" => {
+            let r = client
+                .list_s3_keys(pb::ListS3KeysRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || s3_keys_text(&r));
+        }
+        "s3 key revoke" => {
+            let id = a.id.clone().expect("checked with the arguments");
+            client
+                .revoke_s3_key(pb::RevokeS3KeyRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("S3 key {id} revoked: gateways refuse it within seconds");
+        }
+        "s3 placement set" => {
+            client
+                .set_s3_placement(pb::SetS3PlacementRequest {
+                    placement: buffa::MessageField::some(pb::S3Placement {
+                        name: a.name.clone(),
+                        data_pool: a.data_pool.clone().unwrap_or_default(),
+                        index_pool: a.index_pool.clone().unwrap_or_default(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .await?;
+            println!(
+                "S3 placement {}: data in {}, index in {}",
+                a.name,
+                a.data_pool.as_deref().unwrap_or_default(),
+                a.index_pool.as_deref().unwrap_or_default()
+            );
+        }
+        "s3 placement list" => {
+            let r = client
+                .list_s3_placements(pb::ListS3PlacementsRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || s3_placements_text(&r));
+        }
+        _ => {
+            client
+                .delete_s3_placement(pb::DeleteS3PlacementRequest {
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!(
+                "S3 placement {} deleted; its buckets keep their pools",
+                a.name
+            );
+        }
+    }
+    Ok(Next::Exit(0))
 }
 
 /// `snapshot list|create|delete|group|group-delete`, `clone-volume`,

@@ -7,7 +7,7 @@ numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
 
 Status: **settled and built** (2026-11-05; 01-implementation-notes.md
-I263, I265, I267, I268, I269). The owner accepted D224–D230 as written
+I263, I265, I267, I271, I272). The owner accepted D224–D230 as written
 (points 183–189 of [05-decision-log.md](05-decision-log.md)), and chose
 where the metrics are served in D234 and D235 (points 194, 195). It
 builds on scrub as built (09-replication.md §8.5; I58, I60, I104, I105,

@@ -7270,7 +7270,7 @@ fn s3_objects_match_a_model() {
 fn s3_gateway_serves_an_sdk() {
     use hyperstor_pki::{Identity, Role};
     use hyperstor_s3::Config;
-    use hyperstor_s3::gateway::{Options, serve};
+    use hyperstor_s3::gateway::{Options, Source, serve};
     use hyperstor_s3::keys::Keys;
     use std::process::Command;
     let python = std::env::var("HS_S3_SDK_PYTHON").unwrap_or_else(|_| "python3".into());
@@ -7323,9 +7323,11 @@ fn s3_gateway_serves_an_sdk() {
         networks: Vec::new(),
         listen: vec!["127.0.0.1:0".parse().unwrap()],
         tls: std::sync::Arc::new(hyperstor_pki::web_server_config(&leaf.cert, &leaf.key).unwrap()),
-        keys,
-        data_pool: "vol".into(),
-        index_pool: "vol".into(),
+        source: Source::Fixed {
+            keys,
+            data_pool: "vol".into(),
+            index_pool: "vol".into(),
+        },
         reactors: 2,
         threads: 2,
         config: Config {

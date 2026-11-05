@@ -8,11 +8,11 @@
 //!   fails when an RPC of the protos has no row.
 //! - Roles: `viewer` reads; `operator` also drains, takes devices out and
 //!   in, cancels operations, takes snapshots and restores from the trash
-//!   (D114); `storage-admin` also manages volumes and
-//!   members; `security-admin` manages people, tokens, certificates and
-//!   backups, and reads the audit log, and nothing else.
+//!   (D114); `storage-admin` also manages volumes, members and S3
+//!   placements; `security-admin` manages people, tokens, S3 keys,
+//!   certificates and backups, and reads the audit log, and nothing else.
 //! - Step-up: what is hard to undo (deleting volumes, snapshots and
-//!   members, rolling a volume back, tokens, revocations, backups, people's
+//!   members, rolling a volume back, tokens, S3 keys, revocations, backups, people's
 //!   roles) needs a login of the last 10 minutes.
 //!   An API token is never fresh (as glidex's personal tokens), so those
 //!   calls need a person at a browser, the local socket, or a certificate.
@@ -56,6 +56,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("OperationService.ListOperations", Group::Read, false),
     ("OperationService.WatchOperation", Group::Read, false),
     ("MemberService.ListMembers", Group::Read, false),
+    ("S3Service.ListS3Placements", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
@@ -75,6 +76,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrashService.RestoreFromTrash", Group::Operate, false),
     ("ClusterService.CreatePool", Group::Store, false),
     ("ClusterService.SetPool", Group::Store, false),
+    // Where new buckets go (D232).
+    ("S3Service.SetS3Placement", Group::Store, false),
+    ("S3Service.DeleteS3Placement", Group::Store, false),
     // Weakening scrub is a deliberate choice (D226): a fresh login.
     ("ClusterService.SetScrubSettings", Group::Store, false),
     ("ClusterService.WeakenScrubSettings", Group::Store, true),
@@ -98,6 +102,10 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TokenService.CreateToken", Group::Secure, true),
     ("TokenService.ListTokens", Group::Secure, false),
     ("TokenService.RevokeToken", Group::Secure, false),
+    // S3's access keys are credentials, as tokens are (D231).
+    ("S3Service.CreateS3Key", Group::Secure, true),
+    ("S3Service.ListS3Keys", Group::Secure, false),
+    ("S3Service.RevokeS3Key", Group::Secure, false),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),
@@ -117,6 +125,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("MgmtStoreService.PutRow", Group::Machine, false),
     ("MgmtStoreService.DeleteRow", Group::Machine, false),
     ("MgmtStoreService.ListRows", Group::Machine, false),
+    // S3's secrets, for gateways alone (D231).
+    ("S3Service.GetS3Gateway", Group::Machine, false),
 ];
 
 /// The row of `action`, if it is one.

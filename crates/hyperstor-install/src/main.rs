@@ -912,7 +912,7 @@ ExecStart=/usr/local/bin/hyperstor-meta $HS_ARGS $HS_ONCE
 # The intermediate CA's key, readable by root only on disk, handed to the
 # service alone (spec/19-administration.md §23.8).
 LoadCredential=intermediate.key:/etc/hyperstor/pki/intermediate.key
-# The local socket, /run/hyperstor-meta/api.sock (break-glass).
+CLUSTER_KEY# The local socket, /run/hyperstor-meta/api.sock (break-glass).
 RuntimeDirectory=hyperstor-meta
 RuntimeDirectoryMode=0755
 Restart=on-failure
@@ -1189,6 +1189,9 @@ struct Plan {
     tailscale: bool,
     /// `hyperstor-vhost`, if this host runs it (D142).
     vhost: Option<VhostPlan>,
+    /// `/etc/hyperstor/pki/cluster.key` is there, for the map service
+    /// (D162); found after the certificates are made.
+    cluster_key: bool,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -1332,6 +1335,7 @@ fn vhost_only_plan(s: &Settings) -> Plan {
         nodes: Vec::new(),
         metrics: Vec::new(),
         vhost: None,
+        cluster_key: false,
     }
 }
 
@@ -1372,6 +1376,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             .collect();
         return Plan {
             vhost: None,
+            cluster_key: false,
             ui: false,
             tailscale: false,
             api: format!("127.0.0.1:{}", s.api_port),
@@ -1513,6 +1518,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     }
     Plan {
         vhost: None,
+        cluster_key: false,
         ui: false,
         tailscale: false,
         api,
@@ -1548,6 +1554,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
         .unwrap_or_else(|_| fail("--address IP is needed: where this host's reactors listen"));
     Plan {
         vhost: None,
+        cluster_key: false,
         ui: false,
         tailscale: false,
         api: String::new(),
@@ -1664,6 +1671,10 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         // finds everything a member needs.
         write("intermediate.crt", &r.intermediate, 0o644);
         write("intermediate.key", &r.intermediate_key, 0o600);
+        // The cluster key (D162), from a member that has one.
+        if !r.cluster_key.is_empty() {
+            write("cluster.key", &r.cluster_key, 0o600);
+        }
         converge(
             &under(root, "/etc/hyperstor/cluster.txt"),
             r.cluster_file.as_bytes(),
@@ -1995,7 +2006,15 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             ),
             (
                 "/etc/systemd/system/hyperstor-meta.service".to_string(),
-                META_UNIT.replace("DATA_DIR", data),
+                META_UNIT.replace("DATA_DIR", data).replace(
+                    "CLUSTER_KEY",
+                    if p.cluster_key {
+                        // The cluster key (D162), as the intermediate's.
+                        "LoadCredential=cluster.key:/etc/hyperstor/pki/cluster.key\n"
+                    } else {
+                        ""
+                    },
+                ),
                 0o644,
             ),
             (
@@ -2488,6 +2507,7 @@ fn install(
             web.as_ref(),
             &mut changed,
         ));
+        p.cluster_key = under(root, "/etc/hyperstor/pki/cluster.key").exists();
     }
     // The node's Tailscale certificate for mgmt (D109): granted by a
     // tailscaled drop-in, unless someone else holds the grant.
@@ -2758,6 +2778,23 @@ fn pki(
         }
         (None, None) => fail("no intermediate CA and no root key to make one: join again"),
     };
+    // The cluster key (D162): made with the root, on the first host;
+    // members that join get it with the intermediate.
+    if read("cluster.key").is_none() {
+        if rootca.is_some() {
+            let k = ClusterKey::generate().unwrap_or_else(|e| fail(&format!("cluster key: {e}")));
+            converge(
+                &under(root, &format!("{dir}/cluster.key")),
+                k.text().as_bytes(),
+                0o600,
+            );
+            changed.push(format!("{dir}/cluster.key"));
+        } else {
+            eprintln!(
+                "hyperstor-install: no cluster key on this host: the map service can't keep S3 keys here; copy {dir}/cluster.key (mode 0600) from the first member, or restore the root key there and install again"
+            );
+        }
+    }
     // Services read their certificates at start: restart those whose
     // certificate is new.
     let mut restart = Vec::new();
@@ -3216,8 +3253,17 @@ fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
         cert: read("root.crt"),
         key: read("root.key"),
     };
+    // The cluster key (D162) goes with the root, where this host has it.
+    let cluster_key = fs::read_to_string(pki.join("cluster.key")).ok().map(|t| {
+        hyperstor_pki::ClusterKey::parse(&t).unwrap_or_else(|| {
+            fail(&format!(
+                "{}: not a cluster key",
+                pki.join("cluster.key").display()
+            ))
+        })
+    });
     let cluster = cluster_id(root).to_string();
-    let text = hyperstor_pki::root_backup(&ca, &cluster, passphrase)
+    let text = hyperstor_pki::root_backup(&ca, cluster_key.as_ref(), &cluster, passphrase)
         // A fixed message: nothing derived from the passphrase is printed.
         .unwrap_or_else(|_| fail("encrypting the backup failed"));
     let out_path = Path::new(out);
@@ -3240,7 +3286,11 @@ fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
     // Read back and opened before anything is recorded or removed.
     let back = fs::read_to_string(out_path).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
     match hyperstor_pki::root_restore(&back, passphrase) {
-        Ok((_, r)) if r.key == ca.key && r.cert == ca.cert => {}
+        Ok(r)
+            if r.root.key == ca.key
+                && r.root.cert == ca.cert
+                && r.cluster_key.as_ref().map(|k| k.text())
+                    == cluster_key.as_ref().map(|k| k.text()) => {}
         _ => fail(&format!(
             "{out} doesn't open as written: not recorded, key kept"
         )),
@@ -3259,7 +3309,12 @@ fn root_backup(root: &Path, out: &str, passphrase: &str, remove_key: bool) {
         0o644,
     );
     println!(
-        "Wrote {out}: the root CA, encrypted. Keep it, and the passphrase, apart and offline."
+        "Wrote {out}: the root CA{}, encrypted. Keep it, and the passphrase, apart and offline.",
+        if cluster_key.is_some() {
+            " and the cluster key"
+        } else {
+            ""
+        }
     );
     if remove_key {
         fs::remove_file(pki.join("root.key"))
@@ -3278,7 +3333,12 @@ fn root_restore(root: &Path, input: &str, passphrase: &str) {
     // passphrase opened.
     let cluster = hyperstor_pki::backup_cluster(&text)
         .unwrap_or_else(|| fail(&format!("{input}: not a hyperstor root backup")));
-    let Ok((_, ca)) = hyperstor_pki::root_restore(&text, passphrase) else {
+    let Ok(hyperstor_pki::Restored {
+        root: ca,
+        cluster_key,
+        ..
+    }) = hyperstor_pki::root_restore(&text, passphrase)
+    else {
         fail(&format!(
             "{input}: wrong passphrase, or the backup was changed"
         ))
@@ -3297,8 +3357,20 @@ fn root_restore(root: &Path, input: &str, passphrase: &str) {
             "the backup is cluster {cluster}'s, not this host's"
         ));
     }
+    // Only the cluster key this host already has, if any: another would
+    // leave the secrets sealed with this one unreadable.
+    if let (Some(k), Ok(have)) = (&cluster_key, fs::read_to_string(pki.join("cluster.key")))
+        && have != k.text()
+    {
+        fail(
+            "this host has another cluster key: the backup's would make the stored secrets unreadable",
+        );
+    }
     converge(&pki.join("root.crt"), ca.cert.as_bytes(), 0o644);
     converge(&pki.join("root.key"), ca.key.as_bytes(), 0o600);
+    if let Some(k) = &cluster_key {
+        converge(&pki.join("cluster.key"), k.text().as_bytes(), 0o600);
+    }
     println!(
         "Restored the root CA of cluster {cluster} to {}.",
         pki.display()

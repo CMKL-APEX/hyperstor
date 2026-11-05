@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/admin.proto.
  */
 export const file_hyperstor_v1_admin: GenFile = /*@__PURE__*/
-  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSKPAQoQTGlzdEF1ZGl0UmVxdWVzdBIeCgpzaW5jZV91bml4GAEgASgEUgpzaW5jZV91bml4Eh4KCnVudGlsX3VuaXgYAiABKARSCnVudGlsX3VuaXgSEQoJcHJpbmNpcGFsGAMgASgJEgoKAm9wGAQgASgJEg0KBWxpbWl0GAUgASgNEg0KBWFmdGVyGAYgASgJImYKC0F1ZGl0UmVjb3JkEhgKB3RpbWVfbXMYASABKARSB3RpbWVfbXMSEQoJcHJpbmNpcGFsGAIgASgJEgoKAm9wGAMgASgJEg4KBnRhcmdldBgEIAEoCRIOCgZyZXN1bHQYBSABKAkiTQoRTGlzdEF1ZGl0UmVzcG9uc2USKgoHcmVjb3JkcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5BdWRpdFJlY29yZBIMCgRuZXh0GAIgASgJIiMKEkFwcGVuZEF1ZGl0UmVxdWVzdBINCgVsaW5lcxgBIAMoCSIVChNBcHBlbmRBdWRpdFJlc3BvbnNlIjcKDUF1ZGl0U2V0dGluZ3MSJgoOcmV0ZW50aW9uX2RheXMYASABKA1SDnJldGVudGlvbl9kYXlzIhkKF0dldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0IkkKGEdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRItCghzZXR0aW5ncxgBIAEoCzIbLmh5cGVyc3Rvci52MS5BdWRpdFNldHRpbmdzIkEKF1NldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0EiYKDnJldGVudGlvbl9kYXlzGAEgASgNUg5yZXRlbnRpb25fZGF5cyJJChhTZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuQXVkaXRTZXR0aW5ncyJSChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMSDAoEbmFtZRgDIAEoCSJpChNDcmVhdGVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJEiEKBGluZm8YAiABKAsyEy5oeXBlcnN0b3IudjEuVG9rZW4SIAoLYXBpX2FkZHJlc3MYAyABKAlSC2FwaV9hZGRyZXNzIpIBCgVUb2tlbhIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEiIKDGV4cGlyZXNfdW5peBgDIAEoBFIMZXhwaXJlc191bml4EgwKBHVzZWQYBCABKAgSDwoHcmV2b2tlZBgFIAEoCBIeCgpjcmVhdGVkX2J5GAYgASgJUgpjcmVhdGVkX2J5EgwKBG5hbWUYByABKAkiEwoRTGlzdFRva2Vuc1JlcXVlc3QiOQoSTGlzdFRva2Vuc1Jlc3BvbnNlEiMKBnRva2VucxgBIAMoCzITLmh5cGVyc3Rvci52MS5Ub2tlbiIgChJSZXZva2VUb2tlblJlcXVlc3QSCgoCaWQYASABKAkiFQoTUmV2b2tlVG9rZW5SZXNwb25zZSKIAQoLSm9pblJlcXVlc3QSDQoFdG9rZW4YASABKAkSCwoDY3NyGAIgASgJEhEKCWFkZHJlc3NlcxgDIAMoCRIMCgRyYWNrGAQgASgNEhwKCW1lbWJlcl9pZBgFIAEoDVIJbWVtYmVyX2lkEh4KCm1lbWJlcl9pcHMYBiADKAlSCm1lbWJlcl9pcHMi/QEKDEpvaW5SZXNwb25zZRIeCgpjbHVzdGVyX2lkGAEgASgJUgpjbHVzdGVyX2lkEhMKC2NlcnRpZmljYXRlGAIgASgJEgwKBHJvb3QYAyABKAkSDAoEbm9kZRgEIAEoDRIkCg1tYXBfYWRkcmVzc2VzGAUgASgJUg1tYXBfYWRkcmVzc2VzEhQKDGludGVybWVkaWF0ZRgGIAEoCRIqChBpbnRlcm1lZGlhdGVfa2V5GAcgASgJUhBpbnRlcm1lZGlhdGVfa2V5EiIKDGNsdXN0ZXJfZmlsZRgIIAEoCVIMY2x1c3Rlcl9maWxlEhAKCGlkZW50aXR5GAkgASgJIiYKF1JlbmV3Q2VydGlmaWNhdGVSZXF1ZXN0EgsKA2NzchgBIAEoCSI9ChhSZW5ld0NlcnRpZmljYXRlUmVzcG9uc2USEwoLY2VydGlmaWNhdGUYASABKAkSDAoEcm9vdBgCIAEoCSIZChdMaXN0Q2VydGlmaWNhdGVzUmVxdWVzdCKoAQoLQ2VydGlmaWNhdGUSDgoGc2VyaWFsGAEgASgJEhAKCGlkZW50aXR5GAIgASgJEiYKDm5vdF9hZnRlcl91bml4GAMgASgEUg5ub3RfYWZ0ZXJfdW5peBIgCgtpc3N1ZWRfdW5peBgEIAEoBFILaXNzdWVkX3VuaXgSHAoJaXNzdWVkX2J5GAUgASgJUglpc3N1ZWRfYnkSDwoHcmV2b2tlZBgGIAEoCCKDAQoNUmV2b2tlZFNlcmlhbBIOCgZzZXJpYWwYASABKAkSHgoKdW50aWxfdW5peBgCIAEoBFIKdW50aWxfdW5peBIiCgxyZXZva2VkX3VuaXgYAyABKARSDHJldm9rZWRfdW5peBIeCgpyZXZva2VkX2J5GAQgASgJUgpyZXZva2VkX2J5InkKGExpc3RDZXJ0aWZpY2F0ZXNSZXNwb25zZRIvCgxjZXJ0aWZpY2F0ZXMYASADKAsyGS5oeXBlcnN0b3IudjEuQ2VydGlmaWNhdGUSLAoHcmV2b2tlZBgCIAMoCzIbLmh5cGVyc3Rvci52MS5SZXZva2VkU2VyaWFsIioKGFJldm9rZUNlcnRpZmljYXRlUmVxdWVzdBIOCgZzZXJpYWwYASABKAkiSQoZUmV2b2tlQ2VydGlmaWNhdGVSZXNwb25zZRIsCgdyZXZva2VkGAEgASgLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiFQoTR2V0TWFwQmFja3VwUmVxdWVzdCJVChRHZXRNYXBCYWNrdXBSZXNwb25zZRIOCgZiYWNrdXAYASABKAwSHgoKY2x1c3Rlcl9pZBgCIAEoCVIKY2x1c3Rlcl9pZBINCgVlcG9jaBgDIAEoBCKbAQoGTWVtYmVyEgoKAmlkGAEgASgEEiIKDHJhZnRfYWRkcmVzcxgCIAEoCVIMcmFmdF9hZGRyZXNzEiAKC21hcF9hZGRyZXNzGAMgASgJUgttYXBfYWRkcmVzcxINCgV2b3RlchgEIAEoCBIOCgZsZWFkZXIYBSABKAgSIAoLYXBpX2FkZHJlc3MYBiABKAlSC2FwaV9hZGRyZXNzIhQKEkxpc3RNZW1iZXJzUmVxdWVzdCJIChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyEgoKAm1lGAIgASgEImQKEEFkZE1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzIjoKEUFkZE1lbWJlclJlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC5oeXBlcnN0b3IudjEuTWVtYmVyIjAKE1JlbW92ZU1lbWJlclJlcXVlc3QSCgoCaWQYASABKAQSDQoFZm9yY2UYAiABKAgiPQoUUmVtb3ZlTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiHAoNR2V0Um93UmVxdWVzdBILCgNrZXkYASABKAkiLgoOR2V0Um93UmVzcG9uc2USDQoFZm91bmQYASABKAgSDQoFdmFsdWUYAiABKAwiSQoNUHV0Um93UmVxdWVzdBILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwSHAoJaWZfYWJzZW50GAMgASgIUglpZl9hYnNlbnQiEAoOUHV0Um93UmVzcG9uc2UiHwoQRGVsZXRlUm93UmVxdWVzdBILCgNrZXkYASABKAkiIgoRRGVsZXRlUm93UmVzcG9uc2USDQoFZm91bmQYASABKAgiPwoPTGlzdFJvd3NSZXF1ZXN0Eg4KBnByZWZpeBgBIAEoCRINCgVhZnRlchgCIAEoCRINCgVsaW1pdBgDIAEoDSIhCgNSb3cSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgMIjMKEExpc3RSb3dzUmVzcG9uc2USHwoEcm93cxgBIAMoCzIRLmh5cGVyc3Rvci52MS5Sb3ciOgoQRHJhaW5Ob2RlUmVxdWVzdBIMCgRub2RlGAEgASgNEhgKB2RyeV9ydW4YAiABKAhSB2RyeV9ydW4iZAoRRHJhaW5Ob2RlUmVzcG9uc2USKgoJb3BlcmF0aW9uGAEgASgLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhIjCgVtb3ZlcxgCIAMoCzIULmh5cGVyc3Rvci52MS5QZ01vdmUiQQoGUGdNb3ZlEgwKBHBvb2wYASABKA0SCgoCcGcYAiABKA0SDgoGYmVmb3JlGAMgAygNEg0KBWFmdGVyGAQgAygNIvoBCglPcGVyYXRpb24SCgoCaWQYASABKAkSDAoEa2luZBgCIAEoCRIOCgZ0YXJnZXQYAyABKAkSKwoFc3RhdGUYBCABKA4yHC5oeXBlcnN0b3IudjEuT3BlcmF0aW9uU3RhdGUSDAoEZG9uZRgFIAEoDRINCgV0b3RhbBgGIAEoDRIPCgdtZXNzYWdlGAcgASgJEiIKDHN0YXJ0ZWRfdW5peBgIIAEoBFIMc3RhcnRlZF91bml4EiQKDWZpbmlzaGVkX3VuaXgYCSABKARSDWZpbmlzaGVkX3VuaXgSHgoKY3JlYXRlZF9ieRgKIAEoCVIKY3JlYXRlZF9ieSIhChNHZXRPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIhcKFUxpc3RPcGVyYXRpb25zUmVxdWVzdCIjChVXYXRjaE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkiRAoWV2F0Y2hPcGVyYXRpb25SZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uIkUKFkxpc3RPcGVyYXRpb25zUmVzcG9uc2USKwoKb3BlcmF0aW9ucxgBIAMoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iJAoWQ2FuY2VsT3BlcmF0aW9uUmVxdWVzdBIKCgJpZBgBIAEoCSKVAQoJRXJyb3JJbmZvEg4KBnJlYXNvbhgBIAEoCRIOCgZkb21haW4YAiABKAkSNwoIbWV0YWRhdGEYAyADKAsyJS5oeXBlcnN0b3IudjEuRXJyb3JJbmZvLk1ldGFkYXRhRW50cnkaLwoNTWV0YWRhdGFFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBKqMBCg5PcGVyYXRpb25TdGF0ZRIfChtPUEVSQVRJT05fU1RBVEVfVU5TUEVDSUZJRUQQABIbChdPUEVSQVRJT05fU1RBVEVfUlVOTklORxABEhgKFE9QRVJBVElPTl9TVEFURV9ET05FEAISGgoWT1BFUkFUSU9OX1NUQVRFX0ZBSUxFRBADEh0KGU9QRVJBVElPTl9TVEFURV9DQU5DRUxMRUQQBDLGAgoMVG9rZW5TZXJ2aWNlElIKC0NyZWF0ZVRva2VuEiAuaHlwZXJzdG9yLnYxLkNyZWF0ZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlc3BvbnNlEk8KCkxpc3RUb2tlbnMSHy5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1JlcXVlc3QaIC5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1Jlc3BvbnNlElIKC1Jldm9rZVRva2VuEiAuaHlwZXJzdG9yLnYxLlJldm9rZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlc3BvbnNlEj0KBEpvaW4SGS5oeXBlcnN0b3IudjEuSm9pblJlcXVlc3QaGi5oeXBlcnN0b3IudjEuSm9pblJlc3BvbnNlMrcCCglDYVNlcnZpY2USYQoQUmVuZXdDZXJ0aWZpY2F0ZRIlLmh5cGVyc3Rvci52MS5SZW5ld0NlcnRpZmljYXRlUmVxdWVzdBomLmh5cGVyc3Rvci52MS5SZW5ld0NlcnRpZmljYXRlUmVzcG9uc2USYQoQTGlzdENlcnRpZmljYXRlcxIlLmh5cGVyc3Rvci52MS5MaXN0Q2VydGlmaWNhdGVzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5MaXN0Q2VydGlmaWNhdGVzUmVzcG9uc2USZAoRUmV2b2tlQ2VydGlmaWNhdGUSJi5oeXBlcnN0b3IudjEuUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0GicuaHlwZXJzdG9yLnYxLlJldm9rZUNlcnRpZmljYXRlUmVzcG9uc2UyYwoKTWFwU2VydmljZRJVCgxHZXRNYXBCYWNrdXASIS5oeXBlcnN0b3IudjEuR2V0TWFwQmFja3VwUmVxdWVzdBoiLmh5cGVyc3Rvci52MS5HZXRNYXBCYWNrdXBSZXNwb25zZTKIAgoNTWVtYmVyU2VydmljZRJSCgtMaXN0TWVtYmVycxIgLmh5cGVyc3Rvci52MS5MaXN0TWVtYmVyc1JlcXVlc3QaIS5oeXBlcnN0b3IudjEuTGlzdE1lbWJlcnNSZXNwb25zZRJMCglBZGRNZW1iZXISHi5oeXBlcnN0b3IudjEuQWRkTWVtYmVyUmVxdWVzdBofLmh5cGVyc3Rvci52MS5BZGRNZW1iZXJSZXNwb25zZRJVCgxSZW1vdmVNZW1iZXISIS5oeXBlcnN0b3IudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLmh5cGVyc3Rvci52MS5SZW1vdmVNZW1iZXJSZXNwb25zZTK1AgoQTWdtdFN0b3JlU2VydmljZRJDCgZHZXRSb3cSGy5oeXBlcnN0b3IudjEuR2V0Um93UmVxdWVzdBocLmh5cGVyc3Rvci52MS5HZXRSb3dSZXNwb25zZRJDCgZQdXRSb3cSGy5oeXBlcnN0b3IudjEuUHV0Um93UmVxdWVzdBocLmh5cGVyc3Rvci52MS5QdXRSb3dSZXNwb25zZRJMCglEZWxldGVSb3cSHi5oeXBlcnN0b3IudjEuRGVsZXRlUm93UmVxdWVzdBofLmh5cGVyc3Rvci52MS5EZWxldGVSb3dSZXNwb25zZRJJCghMaXN0Um93cxIdLmh5cGVyc3Rvci52MS5MaXN0Um93c1JlcXVlc3QaHi5oeXBlcnN0b3IudjEuTGlzdFJvd3NSZXNwb25zZTJbCgtOb2RlU2VydmljZRJMCglEcmFpbk5vZGUSHi5oeXBlcnN0b3IudjEuRHJhaW5Ob2RlUmVxdWVzdBofLmh5cGVyc3Rvci52MS5EcmFpbk5vZGVSZXNwb25zZTL2AgoMQXVkaXRTZXJ2aWNlEkwKCUxpc3RBdWRpdBIeLmh5cGVyc3Rvci52MS5MaXN0QXVkaXRSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkxpc3RBdWRpdFJlc3BvbnNlElIKC0FwcGVuZEF1ZGl0EiAuaHlwZXJzdG9yLnYxLkFwcGVuZEF1ZGl0UmVxdWVzdBohLmh5cGVyc3Rvci52MS5BcHBlbmRBdWRpdFJlc3BvbnNlEmEKEEdldEF1ZGl0U2V0dGluZ3MSJS5oeXBlcnN0b3IudjEuR2V0QXVkaXRTZXR0aW5nc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuR2V0QXVkaXRTZXR0aW5nc1Jlc3BvbnNlEmEKEFNldEF1ZGl0U2V0dGluZ3MSJS5oeXBlcnN0b3IudjEuU2V0QXVkaXRTZXR0aW5nc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuU2V0QXVkaXRTZXR0aW5nc1Jlc3BvbnNlMuwCChBPcGVyYXRpb25TZXJ2aWNlEkoKDEdldE9wZXJhdGlvbhIhLmh5cGVyc3Rvci52MS5HZXRPcGVyYXRpb25SZXF1ZXN0GhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhJbCg5MaXN0T3BlcmF0aW9ucxIjLmh5cGVyc3Rvci52MS5MaXN0T3BlcmF0aW9uc1JlcXVlc3QaJC5oeXBlcnN0b3IudjEuTGlzdE9wZXJhdGlvbnNSZXNwb25zZRJdCg5XYXRjaE9wZXJhdGlvbhIjLmh5cGVyc3Rvci52MS5XYXRjaE9wZXJhdGlvblJlcXVlc3QaJC5oeXBlcnN0b3IudjEuV2F0Y2hPcGVyYXRpb25SZXNwb25zZTABElAKD0NhbmNlbE9wZXJhdGlvbhIkLmh5cGVyc3Rvci52MS5DYW5jZWxPcGVyYXRpb25SZXF1ZXN0GhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbmIGcHJvdG8z");
+  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSKPAQoQTGlzdEF1ZGl0UmVxdWVzdBIeCgpzaW5jZV91bml4GAEgASgEUgpzaW5jZV91bml4Eh4KCnVudGlsX3VuaXgYAiABKARSCnVudGlsX3VuaXgSEQoJcHJpbmNpcGFsGAMgASgJEgoKAm9wGAQgASgJEg0KBWxpbWl0GAUgASgNEg0KBWFmdGVyGAYgASgJImYKC0F1ZGl0UmVjb3JkEhgKB3RpbWVfbXMYASABKARSB3RpbWVfbXMSEQoJcHJpbmNpcGFsGAIgASgJEgoKAm9wGAMgASgJEg4KBnRhcmdldBgEIAEoCRIOCgZyZXN1bHQYBSABKAkiTQoRTGlzdEF1ZGl0UmVzcG9uc2USKgoHcmVjb3JkcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5BdWRpdFJlY29yZBIMCgRuZXh0GAIgASgJIiMKEkFwcGVuZEF1ZGl0UmVxdWVzdBINCgVsaW5lcxgBIAMoCSIVChNBcHBlbmRBdWRpdFJlc3BvbnNlIjcKDUF1ZGl0U2V0dGluZ3MSJgoOcmV0ZW50aW9uX2RheXMYASABKA1SDnJldGVudGlvbl9kYXlzIhkKF0dldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0IkkKGEdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRItCghzZXR0aW5ncxgBIAEoCzIbLmh5cGVyc3Rvci52MS5BdWRpdFNldHRpbmdzIkEKF1NldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0EiYKDnJldGVudGlvbl9kYXlzGAEgASgNUg5yZXRlbnRpb25fZGF5cyJJChhTZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuQXVkaXRTZXR0aW5ncyJSChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMSDAoEbmFtZRgDIAEoCSJpChNDcmVhdGVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJEiEKBGluZm8YAiABKAsyEy5oeXBlcnN0b3IudjEuVG9rZW4SIAoLYXBpX2FkZHJlc3MYAyABKAlSC2FwaV9hZGRyZXNzIpIBCgVUb2tlbhIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEiIKDGV4cGlyZXNfdW5peBgDIAEoBFIMZXhwaXJlc191bml4EgwKBHVzZWQYBCABKAgSDwoHcmV2b2tlZBgFIAEoCBIeCgpjcmVhdGVkX2J5GAYgASgJUgpjcmVhdGVkX2J5EgwKBG5hbWUYByABKAkiEwoRTGlzdFRva2Vuc1JlcXVlc3QiOQoSTGlzdFRva2Vuc1Jlc3BvbnNlEiMKBnRva2VucxgBIAMoCzITLmh5cGVyc3Rvci52MS5Ub2tlbiIgChJSZXZva2VUb2tlblJlcXVlc3QSCgoCaWQYASABKAkiFQoTUmV2b2tlVG9rZW5SZXNwb25zZSKqAQoLSm9pblJlcXVlc3QSDQoFdG9rZW4YASABKAkSCwoDY3NyGAIgASgJEhEKCWFkZHJlc3NlcxgDIAMoCRIMCgRyYWNrGAQgASgNEhwKCW1lbWJlcl9pZBgFIAEoDVIJbWVtYmVyX2lkEh4KCm1lbWJlcl9pcHMYBiADKAlSCm1lbWJlcl9pcHMSIAoLZ2F0ZXdheV9pcHMYByADKAlSC2dhdGV3YXlfaXBzIp8CCgxKb2luUmVzcG9uc2USHgoKY2x1c3Rlcl9pZBgBIAEoCVIKY2x1c3Rlcl9pZBITCgtjZXJ0aWZpY2F0ZRgCIAEoCRIMCgRyb290GAMgASgJEgwKBG5vZGUYBCABKA0SJAoNbWFwX2FkZHJlc3NlcxgFIAEoCVINbWFwX2FkZHJlc3NlcxIUCgxpbnRlcm1lZGlhdGUYBiABKAkSKgoQaW50ZXJtZWRpYXRlX2tleRgHIAEoCVIQaW50ZXJtZWRpYXRlX2tleRIiCgxjbHVzdGVyX2ZpbGUYCCABKAlSDGNsdXN0ZXJfZmlsZRIQCghpZGVudGl0eRgJIAEoCRIgCgtjbHVzdGVyX2tleRgKIAEoCVILY2x1c3Rlcl9rZXkiJgoXUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QSCwoDY3NyGAEgASgJIj0KGFJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRITCgtjZXJ0aWZpY2F0ZRgBIAEoCRIMCgRyb290GAIgASgJIhkKF0xpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0IqgBCgtDZXJ0aWZpY2F0ZRIOCgZzZXJpYWwYASABKAkSEAoIaWRlbnRpdHkYAiABKAkSJgoObm90X2FmdGVyX3VuaXgYAyABKARSDm5vdF9hZnRlcl91bml4EiAKC2lzc3VlZF91bml4GAQgASgEUgtpc3N1ZWRfdW5peBIcCglpc3N1ZWRfYnkYBSABKAlSCWlzc3VlZF9ieRIPCgdyZXZva2VkGAYgASgIIoMBCg1SZXZva2VkU2VyaWFsEg4KBnNlcmlhbBgBIAEoCRIeCgp1bnRpbF91bml4GAIgASgEUgp1bnRpbF91bml4EiIKDHJldm9rZWRfdW5peBgDIAEoBFIMcmV2b2tlZF91bml4Eh4KCnJldm9rZWRfYnkYBCABKAlSCnJldm9rZWRfYnkieQoYTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEi8KDGNlcnRpZmljYXRlcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5DZXJ0aWZpY2F0ZRIsCgdyZXZva2VkGAIgAygLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiKgoYUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0Eg4KBnNlcmlhbBgBIAEoCSJJChlSZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlEiwKB3Jldm9rZWQYASABKAsyGy5oeXBlcnN0b3IudjEuUmV2b2tlZFNlcmlhbCIVChNHZXRNYXBCYWNrdXBSZXF1ZXN0IlUKFEdldE1hcEJhY2t1cFJlc3BvbnNlEg4KBmJhY2t1cBgBIAEoDBIeCgpjbHVzdGVyX2lkGAIgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAMgASgEIpsBCgZNZW1iZXISCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzEg0KBXZvdGVyGAQgASgIEg4KBmxlYWRlchgFIAEoCBIgCgthcGlfYWRkcmVzcxgGIAEoCVILYXBpX2FkZHJlc3MiFAoSTGlzdE1lbWJlcnNSZXF1ZXN0IkgKE0xpc3RNZW1iZXJzUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXISCgoCbWUYAiABKAQiZAoQQWRkTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBIiCgxyYWZ0X2FkZHJlc3MYAiABKAlSDHJhZnRfYWRkcmVzcxIgCgttYXBfYWRkcmVzcxgDIAEoCVILbWFwX2FkZHJlc3MiOgoRQWRkTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiMAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBINCgVmb3JjZRgCIAEoCCI9ChRSZW1vdmVNZW1iZXJSZXNwb25zZRIlCgdtZW1iZXJzGAEgAygLMhQuaHlwZXJzdG9yLnYxLk1lbWJlciIcCg1HZXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIuCg5HZXRSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCBINCgV2YWx1ZRgCIAEoDCJJCg1QdXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDBIcCglpZl9hYnNlbnQYAyABKAhSCWlmX2Fic2VudCIQCg5QdXRSb3dSZXNwb25zZSIfChBEZWxldGVSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIiChFEZWxldGVSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCCI/Cg9MaXN0Um93c1JlcXVlc3QSDgoGcHJlZml4GAEgASgJEg0KBWFmdGVyGAIgASgJEg0KBWxpbWl0GAMgASgNIiEKA1JvdxILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwiMwoQTGlzdFJvd3NSZXNwb25zZRIfCgRyb3dzGAEgAygLMhEuaHlwZXJzdG9yLnYxLlJvdyI6ChBEcmFpbk5vZGVSZXF1ZXN0EgwKBG5vZGUYASABKA0SGAoHZHJ5X3J1bhgCIAEoCFIHZHJ5X3J1biJkChFEcmFpbk5vZGVSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uEiMKBW1vdmVzGAIgAygLMhQuaHlwZXJzdG9yLnYxLlBnTW92ZSJBCgZQZ01vdmUSDAoEcG9vbBgBIAEoDRIKCgJwZxgCIAEoDRIOCgZiZWZvcmUYAyADKA0SDQoFYWZ0ZXIYBCADKA0i+gEKCU9wZXJhdGlvbhIKCgJpZBgBIAEoCRIMCgRraW5kGAIgASgJEg4KBnRhcmdldBgDIAEoCRIrCgVzdGF0ZRgEIAEoDjIcLmh5cGVyc3Rvci52MS5PcGVyYXRpb25TdGF0ZRIMCgRkb25lGAUgASgNEg0KBXRvdGFsGAYgASgNEg8KB21lc3NhZ2UYByABKAkSIgoMc3RhcnRlZF91bml4GAggASgEUgxzdGFydGVkX3VuaXgSJAoNZmluaXNoZWRfdW5peBgJIAEoBFINZmluaXNoZWRfdW5peBIeCgpjcmVhdGVkX2J5GAogASgJUgpjcmVhdGVkX2J5IiEKE0dldE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkiFwoVTGlzdE9wZXJhdGlvbnNSZXF1ZXN0IiMKFVdhdGNoT3BlcmF0aW9uUmVxdWVzdBIKCgJpZBgBIAEoCSJEChZXYXRjaE9wZXJhdGlvblJlc3BvbnNlEioKCW9wZXJhdGlvbhgBIAEoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iRQoWTGlzdE9wZXJhdGlvbnNSZXNwb25zZRIrCgpvcGVyYXRpb25zGAEgAygLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbiIkChZDYW5jZWxPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIpUBCglFcnJvckluZm8SDgoGcmVhc29uGAEgASgJEg4KBmRvbWFpbhgCIAEoCRI3CghtZXRhZGF0YRgDIAMoCzIlLmh5cGVyc3Rvci52MS5FcnJvckluZm8uTWV0YWRhdGFFbnRyeRovCg1NZXRhZGF0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiOQoSQ3JlYXRlUzNLZXlSZXF1ZXN0Eg4KBnRlbmFudBgBIAEoDRITCgtkZXNjcmlwdGlvbhgCIAEoCSJHChNDcmVhdGVTM0tleVJlc3BvbnNlEiAKA2tleRgBIAEoCzITLmh5cGVyc3Rvci52MS5TM0tleRIOCgZzZWNyZXQYAiABKAkifAoFUzNLZXkSCgoCaWQYASABKAkSDgoGdGVuYW50GAIgASgNEhMKC2Rlc2NyaXB0aW9uGAMgASgJEiIKDGNyZWF0ZWRfdW5peBgEIAEoBFIMY3JlYXRlZF91bml4Eh4KCmNyZWF0ZWRfYnkYBSABKAlSCmNyZWF0ZWRfYnkiEwoRTGlzdFMzS2V5c1JlcXVlc3QiNwoSTGlzdFMzS2V5c1Jlc3BvbnNlEiEKBGtleXMYASADKAsyEy5oeXBlcnN0b3IudjEuUzNLZXkiIAoSUmV2b2tlUzNLZXlSZXF1ZXN0EgoKAmlkGAEgASgJIhUKE1Jldm9rZVMzS2V5UmVzcG9uc2UiWQoLUzNQbGFjZW1lbnQSDAoEbmFtZRgBIAEoCRIcCglkYXRhX3Bvb2wYAiABKAlSCWRhdGFfcG9vbBIeCgppbmRleF9wb29sGAMgASgJUgppbmRleF9wb29sIkUKFVNldFMzUGxhY2VtZW50UmVxdWVzdBIsCglwbGFjZW1lbnQYASABKAsyGS5oeXBlcnN0b3IudjEuUzNQbGFjZW1lbnQiGAoWU2V0UzNQbGFjZW1lbnRSZXNwb25zZSIoChhEZWxldGVTM1BsYWNlbWVudFJlcXVlc3QSDAoEbmFtZRgBIAEoCSIbChlEZWxldGVTM1BsYWNlbWVudFJlc3BvbnNlIhkKF0xpc3RTM1BsYWNlbWVudHNSZXF1ZXN0IkkKGExpc3RTM1BsYWNlbWVudHNSZXNwb25zZRItCgpwbGFjZW1lbnRzGAEgAygLMhkuaHlwZXJzdG9yLnYxLlMzUGxhY2VtZW50IhUKE0dldFMzR2F0ZXdheVJlcXVlc3QiOgoMUzNHYXRld2F5S2V5EgoKAmlkGAEgASgJEg4KBnNlY3JldBgCIAEoCRIOCgZ0ZW5hbnQYAyABKA0ibwoUR2V0UzNHYXRld2F5UmVzcG9uc2USKAoEa2V5cxgBIAMoCzIaLmh5cGVyc3Rvci52MS5TM0dhdGV3YXlLZXkSLQoKcGxhY2VtZW50cxgCIAMoCzIZLmh5cGVyc3Rvci52MS5TM1BsYWNlbWVudCqjAQoOT3BlcmF0aW9uU3RhdGUSHwobT1BFUkFUSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASGwoXT1BFUkFUSU9OX1NUQVRFX1JVTk5JTkcQARIYChRPUEVSQVRJT05fU1RBVEVfRE9ORRACEhoKFk9QRVJBVElPTl9TVEFURV9GQUlMRUQQAxIdChlPUEVSQVRJT05fU1RBVEVfQ0FOQ0VMTEVEEAQyxgIKDFRva2VuU2VydmljZRJSCgtDcmVhdGVUb2tlbhIgLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQ3JlYXRlVG9rZW5SZXNwb25zZRJPCgpMaXN0VG9rZW5zEh8uaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXF1ZXN0GiAuaHlwZXJzdG9yLnYxLkxpc3RUb2tlbnNSZXNwb25zZRJSCgtSZXZva2VUb2tlbhIgLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlcXVlc3QaIS5oeXBlcnN0b3IudjEuUmV2b2tlVG9rZW5SZXNwb25zZRI9CgRKb2luEhkuaHlwZXJzdG9yLnYxLkpvaW5SZXF1ZXN0GhouaHlwZXJzdG9yLnYxLkpvaW5SZXNwb25zZTKBBQoJUzNTZXJ2aWNlElIKC0NyZWF0ZVMzS2V5EiAuaHlwZXJzdG9yLnYxLkNyZWF0ZVMzS2V5UmVxdWVzdBohLmh5cGVyc3Rvci52MS5DcmVhdGVTM0tleVJlc3BvbnNlEk8KCkxpc3RTM0tleXMSHy5oeXBlcnN0b3IudjEuTGlzdFMzS2V5c1JlcXVlc3QaIC5oeXBlcnN0b3IudjEuTGlzdFMzS2V5c1Jlc3BvbnNlElIKC1Jldm9rZVMzS2V5EiAuaHlwZXJzdG9yLnYxLlJldm9rZVMzS2V5UmVxdWVzdBohLmh5cGVyc3Rvci52MS5SZXZva2VTM0tleVJlc3BvbnNlElsKDlNldFMzUGxhY2VtZW50EiMuaHlwZXJzdG9yLnYxLlNldFMzUGxhY2VtZW50UmVxdWVzdBokLmh5cGVyc3Rvci52MS5TZXRTM1BsYWNlbWVudFJlc3BvbnNlEmQKEURlbGV0ZVMzUGxhY2VtZW50EiYuaHlwZXJzdG9yLnYxLkRlbGV0ZVMzUGxhY2VtZW50UmVxdWVzdBonLmh5cGVyc3Rvci52MS5EZWxldGVTM1BsYWNlbWVudFJlc3BvbnNlEmEKEExpc3RTM1BsYWNlbWVudHMSJS5oeXBlcnN0b3IudjEuTGlzdFMzUGxhY2VtZW50c1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuTGlzdFMzUGxhY2VtZW50c1Jlc3BvbnNlElUKDEdldFMzR2F0ZXdheRIhLmh5cGVyc3Rvci52MS5HZXRTM0dhdGV3YXlSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkdldFMzR2F0ZXdheVJlc3BvbnNlMrcCCglDYVNlcnZpY2USYQoQUmVuZXdDZXJ0aWZpY2F0ZRIlLmh5cGVyc3Rvci52MS5SZW5ld0NlcnRpZmljYXRlUmVxdWVzdBomLmh5cGVyc3Rvci52MS5SZW5ld0NlcnRpZmljYXRlUmVzcG9uc2USYQoQTGlzdENlcnRpZmljYXRlcxIlLmh5cGVyc3Rvci52MS5MaXN0Q2VydGlmaWNhdGVzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5MaXN0Q2VydGlmaWNhdGVzUmVzcG9uc2USZAoRUmV2b2tlQ2VydGlmaWNhdGUSJi5oeXBlcnN0b3IudjEuUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0GicuaHlwZXJzdG9yLnYxLlJldm9rZUNlcnRpZmljYXRlUmVzcG9uc2UyYwoKTWFwU2VydmljZRJVCgxHZXRNYXBCYWNrdXASIS5oeXBlcnN0b3IudjEuR2V0TWFwQmFja3VwUmVxdWVzdBoiLmh5cGVyc3Rvci52MS5HZXRNYXBCYWNrdXBSZXNwb25zZTKIAgoNTWVtYmVyU2VydmljZRJSCgtMaXN0TWVtYmVycxIgLmh5cGVyc3Rvci52MS5MaXN0TWVtYmVyc1JlcXVlc3QaIS5oeXBlcnN0b3IudjEuTGlzdE1lbWJlcnNSZXNwb25zZRJMCglBZGRNZW1iZXISHi5oeXBlcnN0b3IudjEuQWRkTWVtYmVyUmVxdWVzdBofLmh5cGVyc3Rvci52MS5BZGRNZW1iZXJSZXNwb25zZRJVCgxSZW1vdmVNZW1iZXISIS5oeXBlcnN0b3IudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLmh5cGVyc3Rvci52MS5SZW1vdmVNZW1iZXJSZXNwb25zZTK1AgoQTWdtdFN0b3JlU2VydmljZRJDCgZHZXRSb3cSGy5oeXBlcnN0b3IudjEuR2V0Um93UmVxdWVzdBocLmh5cGVyc3Rvci52MS5HZXRSb3dSZXNwb25zZRJDCgZQdXRSb3cSGy5oeXBlcnN0b3IudjEuUHV0Um93UmVxdWVzdBocLmh5cGVyc3Rvci52MS5QdXRSb3dSZXNwb25zZRJMCglEZWxldGVSb3cSHi5oeXBlcnN0b3IudjEuRGVsZXRlUm93UmVxdWVzdBofLmh5cGVyc3Rvci52MS5EZWxldGVSb3dSZXNwb25zZRJJCghMaXN0Um93cxIdLmh5cGVyc3Rvci52MS5MaXN0Um93c1JlcXVlc3QaHi5oeXBlcnN0b3IudjEuTGlzdFJvd3NSZXNwb25zZTJbCgtOb2RlU2VydmljZRJMCglEcmFpbk5vZGUSHi5oeXBlcnN0b3IudjEuRHJhaW5Ob2RlUmVxdWVzdBofLmh5cGVyc3Rvci52MS5EcmFpbk5vZGVSZXNwb25zZTL2AgoMQXVkaXRTZXJ2aWNlEkwKCUxpc3RBdWRpdBIeLmh5cGVyc3Rvci52MS5MaXN0QXVkaXRSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkxpc3RBdWRpdFJlc3BvbnNlElIKC0FwcGVuZEF1ZGl0EiAuaHlwZXJzdG9yLnYxLkFwcGVuZEF1ZGl0UmVxdWVzdBohLmh5cGVyc3Rvci52MS5BcHBlbmRBdWRpdFJlc3BvbnNlEmEKEEdldEF1ZGl0U2V0dGluZ3MSJS5oeXBlcnN0b3IudjEuR2V0QXVkaXRTZXR0aW5nc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuR2V0QXVkaXRTZXR0aW5nc1Jlc3BvbnNlEmEKEFNldEF1ZGl0U2V0dGluZ3MSJS5oeXBlcnN0b3IudjEuU2V0QXVkaXRTZXR0aW5nc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuU2V0QXVkaXRTZXR0aW5nc1Jlc3BvbnNlMuwCChBPcGVyYXRpb25TZXJ2aWNlEkoKDEdldE9wZXJhdGlvbhIhLmh5cGVyc3Rvci52MS5HZXRPcGVyYXRpb25SZXF1ZXN0GhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbhJbCg5MaXN0T3BlcmF0aW9ucxIjLmh5cGVyc3Rvci52MS5MaXN0T3BlcmF0aW9uc1JlcXVlc3QaJC5oeXBlcnN0b3IudjEuTGlzdE9wZXJhdGlvbnNSZXNwb25zZRJdCg5XYXRjaE9wZXJhdGlvbhIjLmh5cGVyc3Rvci52MS5XYXRjaE9wZXJhdGlvblJlcXVlc3QaJC5oeXBlcnN0b3IudjEuV2F0Y2hPcGVyYXRpb25SZXNwb25zZTABElAKD0NhbmNlbE9wZXJhdGlvbhIkLmh5cGVyc3Rvci52MS5DYW5jZWxPcGVyYXRpb25SZXF1ZXN0GhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbmIGcHJvdG8z");
 
 /**
  * @generated from message hyperstor.v1.ListAuditRequest
@@ -412,9 +412,10 @@ export const SetAuditSettingsResponseSchema: GenMessage<SetAuditSettingsResponse
 export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   /**
    * "node" (a storage host), "meta" (a map service member), "mgmt" (a
-   * management client such as glidex's control plane, 04-decisions.md D122)
-   * or "metrics" (a scraper such as Prometheus, which may read the map
-   * service's /metrics and nothing else, D234).
+   * management client such as glidex's control plane, 04-decisions.md
+   * D122), "s3" (an S3 gateway, D233) or "metrics" (a scraper such as
+   * Prometheus, which may read the map service's /metrics and nothing
+   * else, D234).
    *
    * @generated from field: string role = 1;
    */
@@ -428,8 +429,9 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
   ttlSeconds: number;
 
   /**
-   * "mgmt" and "metrics": the identity's name, which its certificate
-   * carries (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
+   * "mgmt", "s3" and "metrics": the identity's name, which its
+   * certificate carries (hyperstor://<cluster>/<role>/<name>): 1-32 of
+   * a-z, 0-9 and -.
    *
    * @generated from field: string name = 3;
    */
@@ -442,9 +444,10 @@ export type CreateTokenRequest = Message<"hyperstor.v1.CreateTokenRequest"> & {
 export type CreateTokenRequestJson = {
   /**
    * "node" (a storage host), "meta" (a map service member), "mgmt" (a
-   * management client such as glidex's control plane, 04-decisions.md D122)
-   * or "metrics" (a scraper such as Prometheus, which may read the map
-   * service's /metrics and nothing else, D234).
+   * management client such as glidex's control plane, 04-decisions.md
+   * D122), "s3" (an S3 gateway, D233) or "metrics" (a scraper such as
+   * Prometheus, which may read the map service's /metrics and nothing
+   * else, D234).
    *
    * @generated from field: string role = 1;
    */
@@ -458,8 +461,9 @@ export type CreateTokenRequestJson = {
   ttl_seconds?: number;
 
   /**
-   * "mgmt" and "metrics": the identity's name, which its certificate
-   * carries (hyperstor://<cluster>/<role>/<name>): 1-32 of a-z, 0-9 and -.
+   * "mgmt", "s3" and "metrics": the identity's name, which its
+   * certificate carries (hyperstor://<cluster>/<role>/<name>): 1-32 of
+   * a-z, 0-9 and -.
    *
    * @generated from field: string name = 3;
    */
@@ -572,7 +576,7 @@ export type Token = Message<"hyperstor.v1.Token"> & {
   createdBy: string;
 
   /**
-   * "mgmt": the identity it enrolls.
+   * "mgmt" and "s3": the identity it enrolls.
    *
    * @generated from field: string name = 7;
    */
@@ -623,7 +627,7 @@ export type TokenJson = {
   created_by?: string;
 
   /**
-   * "mgmt": the identity it enrolls.
+   * "mgmt" and "s3": the identity it enrolls.
    *
    * @generated from field: string name = 7;
    */
@@ -771,6 +775,14 @@ export type JoinRequest = Message<"hyperstor.v1.JoinRequest"> & {
    * @generated from field: repeated string member_ips = 6 [json_name = "member_ips"];
    */
   memberIps: string[];
+
+  /**
+   * An S3 gateway: the addresses its certificate names, so it can serve
+   * HTTPS with it where the site brings none.
+   *
+   * @generated from field: repeated string gateway_ips = 7 [json_name = "gateway_ips"];
+   */
+  gatewayIps: string[];
 };
 
 /**
@@ -815,6 +827,14 @@ export type JoinRequestJson = {
    * @generated from field: repeated string member_ips = 6 [json_name = "member_ips"];
    */
   member_ips?: string[];
+
+  /**
+   * An S3 gateway: the addresses its certificate names, so it can serve
+   * HTTPS with it where the site brings none.
+   *
+   * @generated from field: repeated string gateway_ips = 7 [json_name = "gateway_ips"];
+   */
+  gateway_ips?: string[];
 };
 
 /**
@@ -885,6 +905,14 @@ export type JoinResponse = Message<"hyperstor.v1.JoinResponse"> & {
    * @generated from field: string identity = 9;
    */
   identity: string;
+
+  /**
+   * A map service member: the cluster key (04-decisions.md D162), in its
+   * file's form; empty where the member answering has none.
+   *
+   * @generated from field: string cluster_key = 10 [json_name = "cluster_key"];
+   */
+  clusterKey: string;
 };
 
 /**
@@ -948,6 +976,14 @@ export type JoinResponseJson = {
    * @generated from field: string identity = 9;
    */
   identity?: string;
+
+  /**
+   * A map service member: the cluster key (04-decisions.md D162), in its
+   * file's form; empty where the member answering has none.
+   *
+   * @generated from field: string cluster_key = 10 [json_name = "cluster_key"];
+   */
+  cluster_key?: string;
 };
 
 /**
@@ -2435,6 +2471,563 @@ export const ErrorInfoSchema: GenMessage<ErrorInfo, {jsonType: ErrorInfoJson}> =
   messageDesc(file_hyperstor_v1_admin, 55);
 
 /**
+ * @generated from message hyperstor.v1.CreateS3KeyRequest
+ */
+export type CreateS3KeyRequest = Message<"hyperstor.v1.CreateS3KeyRequest"> & {
+  /**
+   * The tenant whose buckets the key reaches, 1 or more.
+   *
+   * @generated from field: uint32 tenant = 1;
+   */
+  tenant: number;
+
+  /**
+   * What the key is for, shown in lists: up to 200 characters.
+   *
+   * @generated from field: string description = 2;
+   */
+  description: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.CreateS3KeyRequest
+ */
+export type CreateS3KeyRequestJson = {
+  /**
+   * The tenant whose buckets the key reaches, 1 or more.
+   *
+   * @generated from field: uint32 tenant = 1;
+   */
+  tenant?: number;
+
+  /**
+   * What the key is for, shown in lists: up to 200 characters.
+   *
+   * @generated from field: string description = 2;
+   */
+  description?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.CreateS3KeyRequest.
+ * Use `create(CreateS3KeyRequestSchema)` to create a new message.
+ */
+export const CreateS3KeyRequestSchema: GenMessage<CreateS3KeyRequest, {jsonType: CreateS3KeyRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 56);
+
+/**
+ * @generated from message hyperstor.v1.CreateS3KeyResponse
+ */
+export type CreateS3KeyResponse = Message<"hyperstor.v1.CreateS3KeyResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.S3Key key = 1;
+   */
+  key?: S3Key | undefined;
+
+  /**
+   * Shown once.
+   *
+   * @generated from field: string secret = 2;
+   */
+  secret: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.CreateS3KeyResponse
+ */
+export type CreateS3KeyResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.S3Key key = 1;
+   */
+  key?: S3KeyJson;
+
+  /**
+   * Shown once.
+   *
+   * @generated from field: string secret = 2;
+   */
+  secret?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.CreateS3KeyResponse.
+ * Use `create(CreateS3KeyResponseSchema)` to create a new message.
+ */
+export const CreateS3KeyResponseSchema: GenMessage<CreateS3KeyResponse, {jsonType: CreateS3KeyResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 57);
+
+/**
+ * @generated from message hyperstor.v1.S3Key
+ */
+export type S3Key = Message<"hyperstor.v1.S3Key"> & {
+  /**
+   * The access key id, `HS` and 18 more of A-Z and 2-7.
+   *
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: uint32 tenant = 2;
+   */
+  tenant: number;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description: string;
+
+  /**
+   * Seconds since 1970.
+   *
+   * @generated from field: uint64 created_unix = 4 [json_name = "created_unix"];
+   */
+  createdUnix: bigint;
+
+  /**
+   * Who made it, as the audit names callers.
+   *
+   * @generated from field: string created_by = 5 [json_name = "created_by"];
+   */
+  createdBy: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.S3Key
+ */
+export type S3KeyJson = {
+  /**
+   * The access key id, `HS` and 18 more of A-Z and 2-7.
+   *
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * @generated from field: uint32 tenant = 2;
+   */
+  tenant?: number;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description?: string;
+
+  /**
+   * Seconds since 1970.
+   *
+   * @generated from field: uint64 created_unix = 4 [json_name = "created_unix"];
+   */
+  created_unix?: string;
+
+  /**
+   * Who made it, as the audit names callers.
+   *
+   * @generated from field: string created_by = 5 [json_name = "created_by"];
+   */
+  created_by?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.S3Key.
+ * Use `create(S3KeySchema)` to create a new message.
+ */
+export const S3KeySchema: GenMessage<S3Key, {jsonType: S3KeyJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 58);
+
+/**
+ * @generated from message hyperstor.v1.ListS3KeysRequest
+ */
+export type ListS3KeysRequest = Message<"hyperstor.v1.ListS3KeysRequest"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.ListS3KeysRequest
+ */
+export type ListS3KeysRequestJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.ListS3KeysRequest.
+ * Use `create(ListS3KeysRequestSchema)` to create a new message.
+ */
+export const ListS3KeysRequestSchema: GenMessage<ListS3KeysRequest, {jsonType: ListS3KeysRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 59);
+
+/**
+ * @generated from message hyperstor.v1.ListS3KeysResponse
+ */
+export type ListS3KeysResponse = Message<"hyperstor.v1.ListS3KeysResponse"> & {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Key keys = 1;
+   */
+  keys: S3Key[];
+};
+
+/**
+ * @generated from message hyperstor.v1.ListS3KeysResponse
+ */
+export type ListS3KeysResponseJson = {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Key keys = 1;
+   */
+  keys?: S3KeyJson[];
+};
+
+/**
+ * Describes the message hyperstor.v1.ListS3KeysResponse.
+ * Use `create(ListS3KeysResponseSchema)` to create a new message.
+ */
+export const ListS3KeysResponseSchema: GenMessage<ListS3KeysResponse, {jsonType: ListS3KeysResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 60);
+
+/**
+ * @generated from message hyperstor.v1.RevokeS3KeyRequest
+ */
+export type RevokeS3KeyRequest = Message<"hyperstor.v1.RevokeS3KeyRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.RevokeS3KeyRequest
+ */
+export type RevokeS3KeyRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.RevokeS3KeyRequest.
+ * Use `create(RevokeS3KeyRequestSchema)` to create a new message.
+ */
+export const RevokeS3KeyRequestSchema: GenMessage<RevokeS3KeyRequest, {jsonType: RevokeS3KeyRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 61);
+
+/**
+ * @generated from message hyperstor.v1.RevokeS3KeyResponse
+ */
+export type RevokeS3KeyResponse = Message<"hyperstor.v1.RevokeS3KeyResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.RevokeS3KeyResponse
+ */
+export type RevokeS3KeyResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.RevokeS3KeyResponse.
+ * Use `create(RevokeS3KeyResponseSchema)` to create a new message.
+ */
+export const RevokeS3KeyResponseSchema: GenMessage<RevokeS3KeyResponse, {jsonType: RevokeS3KeyResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 62);
+
+/**
+ * @generated from message hyperstor.v1.S3Placement
+ */
+export type S3Placement = Message<"hyperstor.v1.S3Placement"> & {
+  /**
+   * "default", or 1-63 of a-z, 0-9 and -, as LocationConstraint names it.
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * Pool names: a bucket's objects, and its index (its listing's ranges).
+   *
+   * @generated from field: string data_pool = 2 [json_name = "data_pool"];
+   */
+  dataPool: string;
+
+  /**
+   * @generated from field: string index_pool = 3 [json_name = "index_pool"];
+   */
+  indexPool: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.S3Placement
+ */
+export type S3PlacementJson = {
+  /**
+   * "default", or 1-63 of a-z, 0-9 and -, as LocationConstraint names it.
+   *
+   * @generated from field: string name = 1;
+   */
+  name?: string;
+
+  /**
+   * Pool names: a bucket's objects, and its index (its listing's ranges).
+   *
+   * @generated from field: string data_pool = 2 [json_name = "data_pool"];
+   */
+  data_pool?: string;
+
+  /**
+   * @generated from field: string index_pool = 3 [json_name = "index_pool"];
+   */
+  index_pool?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.S3Placement.
+ * Use `create(S3PlacementSchema)` to create a new message.
+ */
+export const S3PlacementSchema: GenMessage<S3Placement, {jsonType: S3PlacementJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 63);
+
+/**
+ * @generated from message hyperstor.v1.SetS3PlacementRequest
+ */
+export type SetS3PlacementRequest = Message<"hyperstor.v1.SetS3PlacementRequest"> & {
+  /**
+   * @generated from field: hyperstor.v1.S3Placement placement = 1;
+   */
+  placement?: S3Placement | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetS3PlacementRequest
+ */
+export type SetS3PlacementRequestJson = {
+  /**
+   * @generated from field: hyperstor.v1.S3Placement placement = 1;
+   */
+  placement?: S3PlacementJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetS3PlacementRequest.
+ * Use `create(SetS3PlacementRequestSchema)` to create a new message.
+ */
+export const SetS3PlacementRequestSchema: GenMessage<SetS3PlacementRequest, {jsonType: SetS3PlacementRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 64);
+
+/**
+ * @generated from message hyperstor.v1.SetS3PlacementResponse
+ */
+export type SetS3PlacementResponse = Message<"hyperstor.v1.SetS3PlacementResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.SetS3PlacementResponse
+ */
+export type SetS3PlacementResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.SetS3PlacementResponse.
+ * Use `create(SetS3PlacementResponseSchema)` to create a new message.
+ */
+export const SetS3PlacementResponseSchema: GenMessage<SetS3PlacementResponse, {jsonType: SetS3PlacementResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 65);
+
+/**
+ * @generated from message hyperstor.v1.DeleteS3PlacementRequest
+ */
+export type DeleteS3PlacementRequest = Message<"hyperstor.v1.DeleteS3PlacementRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.DeleteS3PlacementRequest
+ */
+export type DeleteS3PlacementRequestJson = {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.DeleteS3PlacementRequest.
+ * Use `create(DeleteS3PlacementRequestSchema)` to create a new message.
+ */
+export const DeleteS3PlacementRequestSchema: GenMessage<DeleteS3PlacementRequest, {jsonType: DeleteS3PlacementRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 66);
+
+/**
+ * @generated from message hyperstor.v1.DeleteS3PlacementResponse
+ */
+export type DeleteS3PlacementResponse = Message<"hyperstor.v1.DeleteS3PlacementResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.DeleteS3PlacementResponse
+ */
+export type DeleteS3PlacementResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.DeleteS3PlacementResponse.
+ * Use `create(DeleteS3PlacementResponseSchema)` to create a new message.
+ */
+export const DeleteS3PlacementResponseSchema: GenMessage<DeleteS3PlacementResponse, {jsonType: DeleteS3PlacementResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 67);
+
+/**
+ * @generated from message hyperstor.v1.ListS3PlacementsRequest
+ */
+export type ListS3PlacementsRequest = Message<"hyperstor.v1.ListS3PlacementsRequest"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.ListS3PlacementsRequest
+ */
+export type ListS3PlacementsRequestJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.ListS3PlacementsRequest.
+ * Use `create(ListS3PlacementsRequestSchema)` to create a new message.
+ */
+export const ListS3PlacementsRequestSchema: GenMessage<ListS3PlacementsRequest, {jsonType: ListS3PlacementsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 68);
+
+/**
+ * @generated from message hyperstor.v1.ListS3PlacementsResponse
+ */
+export type ListS3PlacementsResponse = Message<"hyperstor.v1.ListS3PlacementsResponse"> & {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Placement placements = 1;
+   */
+  placements: S3Placement[];
+};
+
+/**
+ * @generated from message hyperstor.v1.ListS3PlacementsResponse
+ */
+export type ListS3PlacementsResponseJson = {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Placement placements = 1;
+   */
+  placements?: S3PlacementJson[];
+};
+
+/**
+ * Describes the message hyperstor.v1.ListS3PlacementsResponse.
+ * Use `create(ListS3PlacementsResponseSchema)` to create a new message.
+ */
+export const ListS3PlacementsResponseSchema: GenMessage<ListS3PlacementsResponse, {jsonType: ListS3PlacementsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 69);
+
+/**
+ * @generated from message hyperstor.v1.GetS3GatewayRequest
+ */
+export type GetS3GatewayRequest = Message<"hyperstor.v1.GetS3GatewayRequest"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.GetS3GatewayRequest
+ */
+export type GetS3GatewayRequestJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.GetS3GatewayRequest.
+ * Use `create(GetS3GatewayRequestSchema)` to create a new message.
+ */
+export const GetS3GatewayRequestSchema: GenMessage<GetS3GatewayRequest, {jsonType: GetS3GatewayRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 70);
+
+/**
+ * A key with its secret, for a gateway only.
+ *
+ * @generated from message hyperstor.v1.S3GatewayKey
+ */
+export type S3GatewayKey = Message<"hyperstor.v1.S3GatewayKey"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: string secret = 2;
+   */
+  secret: string;
+
+  /**
+   * @generated from field: uint32 tenant = 3;
+   */
+  tenant: number;
+};
+
+/**
+ * A key with its secret, for a gateway only.
+ *
+ * @generated from message hyperstor.v1.S3GatewayKey
+ */
+export type S3GatewayKeyJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * @generated from field: string secret = 2;
+   */
+  secret?: string;
+
+  /**
+   * @generated from field: uint32 tenant = 3;
+   */
+  tenant?: number;
+};
+
+/**
+ * Describes the message hyperstor.v1.S3GatewayKey.
+ * Use `create(S3GatewayKeySchema)` to create a new message.
+ */
+export const S3GatewayKeySchema: GenMessage<S3GatewayKey, {jsonType: S3GatewayKeyJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 71);
+
+/**
+ * @generated from message hyperstor.v1.GetS3GatewayResponse
+ */
+export type GetS3GatewayResponse = Message<"hyperstor.v1.GetS3GatewayResponse"> & {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3GatewayKey keys = 1;
+   */
+  keys: S3GatewayKey[];
+
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Placement placements = 2;
+   */
+  placements: S3Placement[];
+};
+
+/**
+ * @generated from message hyperstor.v1.GetS3GatewayResponse
+ */
+export type GetS3GatewayResponseJson = {
+  /**
+   * @generated from field: repeated hyperstor.v1.S3GatewayKey keys = 1;
+   */
+  keys?: S3GatewayKeyJson[];
+
+  /**
+   * @generated from field: repeated hyperstor.v1.S3Placement placements = 2;
+   */
+  placements?: S3PlacementJson[];
+};
+
+/**
+ * Describes the message hyperstor.v1.GetS3GatewayResponse.
+ * Use `create(GetS3GatewayResponseSchema)` to create a new message.
+ */
+export const GetS3GatewayResponseSchema: GenMessage<GetS3GatewayResponse, {jsonType: GetS3GatewayResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 72);
+
+/**
  * @generated from enum hyperstor.v1.OperationState
  */
 export enum OperationState {
@@ -2526,6 +3119,92 @@ export const TokenService: GenService<{
   serviceDesc(file_hyperstor_v1_admin, 0);
 
 /**
+ * S3's access keys and where new buckets go (14-s3.md §14.2,
+ * 04-decisions.md D231, D232).
+ *
+ * @generated from service hyperstor.v1.S3Service
+ */
+export const S3Service: GenService<{
+  /**
+   * Makes an access key for a tenant. Its secret is in the reply only and
+   * is never shown again; the map service keeps it encrypted under the
+   * cluster key (D162). Write.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.CreateS3Key
+   */
+  createS3Key: {
+    methodKind: "unary";
+    input: typeof CreateS3KeyRequestSchema;
+    output: typeof CreateS3KeyResponseSchema;
+  },
+  /**
+   * The keys, without their secrets. Read.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.ListS3Keys
+   */
+  listS3Keys: {
+    methodKind: "unary";
+    input: typeof ListS3KeysRequestSchema;
+    output: typeof ListS3KeysResponseSchema;
+  },
+  /**
+   * Deletes a key: gateways refuse it within seconds. Write.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.RevokeS3Key
+   */
+  revokeS3Key: {
+    methodKind: "unary";
+    input: typeof RevokeS3KeyRequestSchema;
+    output: typeof RevokeS3KeyResponseSchema;
+  },
+  /**
+   * Adds or changes a placement: the pools a new bucket's index and data
+   * go in. CreateBucket uses "default" unless its LocationConstraint names
+   * another. Buckets made before keep their pools. Write.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.SetS3Placement
+   */
+  setS3Placement: {
+    methodKind: "unary";
+    input: typeof SetS3PlacementRequestSchema;
+    output: typeof SetS3PlacementResponseSchema;
+  },
+  /**
+   * Removes a placement; buckets in its pools stay. Write.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.DeleteS3Placement
+   */
+  deleteS3Placement: {
+    methodKind: "unary";
+    input: typeof DeleteS3PlacementRequestSchema;
+    output: typeof DeleteS3PlacementResponseSchema;
+  },
+  /**
+   * The placements. Read.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.ListS3Placements
+   */
+  listS3Placements: {
+    methodKind: "unary";
+    input: typeof ListS3PlacementsRequestSchema;
+    output: typeof ListS3PlacementsResponseSchema;
+  },
+  /**
+   * Every key with its secret, and every placement: what a gateway
+   * serves with, fetched every few seconds. S3 gateways ("s3"
+   * certificates, D233) only.
+   *
+   * @generated from rpc hyperstor.v1.S3Service.GetS3Gateway
+   */
+  getS3Gateway: {
+    methodKind: "unary";
+    input: typeof GetS3GatewayRequestSchema;
+    output: typeof GetS3GatewayResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hyperstor_v1_admin, 1);
+
+/**
  * Certificates (04-decisions.md D53, D56).
  *
  * @generated from service hyperstor.v1.CaService
@@ -2565,7 +3244,7 @@ export const CaService: GenService<{
     output: typeof RevokeCertificateResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 1);
+  serviceDesc(file_hyperstor_v1_admin, 2);
 
 /**
  * Backups of the map service's store (04-decisions.md D86).
@@ -2586,7 +3265,7 @@ export const MapService: GenService<{
     output: typeof GetMapBackupResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 2);
+  serviceDesc(file_hyperstor_v1_admin, 3);
 
 /**
  * The map service's members (04-decisions.md D87).
@@ -2627,7 +3306,7 @@ export const MemberService: GenService<{
     output: typeof RemoveMemberResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 3);
+  serviceDesc(file_hyperstor_v1_admin, 4);
 
 /**
  * hyperstor-mgmt's rows in the map service's store: people's accounts,
@@ -2674,7 +3353,7 @@ export const MgmtStoreService: GenService<{
     output: typeof ListRowsResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 4);
+  serviceDesc(file_hyperstor_v1_admin, 5);
 
 /**
  * Changes to nodes that run as operations.
@@ -2695,7 +3374,7 @@ export const NodeService: GenService<{
     output: typeof DrainNodeResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 5);
+  serviceDesc(file_hyperstor_v1_admin, 6);
 
 /**
  * Long operations (§23.6): drains for now.
@@ -2748,7 +3427,7 @@ export const AuditService: GenService<{
     output: typeof SetAuditSettingsResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 6);
+  serviceDesc(file_hyperstor_v1_admin, 7);
 
 /**
  * @generated from service hyperstor.v1.OperationService
@@ -2798,5 +3477,5 @@ export const OperationService: GenService<{
     output: typeof OperationSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 7);
+  serviceDesc(file_hyperstor_v1_admin, 8);
 

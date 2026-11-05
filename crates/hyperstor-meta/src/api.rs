@@ -40,6 +40,7 @@ mod audit;
 mod metrics;
 mod ops;
 mod perf;
+mod s3;
 mod trash;
 pub use admin::{Signing, parse_token};
 
@@ -69,6 +70,8 @@ enum Need {
     Anyone,
     /// The management service's own identity (`mgmt`) only: its rows.
     Mgmt,
+    /// S3 gateways (`s3`, D233) only: S3's secrets.
+    S3,
 }
 
 pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
@@ -427,6 +430,7 @@ impl Api {
                     ),
                     Need::Metrics => who.role != hyperstor_pki::Role::Host,
                     Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
+                    Need::S3 => who.role == hyperstor_pki::Role::S3,
                     Need::Identity | Need::Anyone => true,
                 };
                 if !allowed {
@@ -436,10 +440,10 @@ impl Api {
                             ConnectError::permission_denied(format!(
                                 "{} may not {}",
                                 who.uri(),
-                                if need == Need::Write {
-                                    "change the cluster"
-                                } else {
-                                    "read the cluster's status"
+                                match need {
+                                    Need::Write => "change the cluster",
+                                    Need::S3 => "read S3's keys",
+                                    _ => "read the cluster's status",
                                 }
                             )),
                             "permission_denied",
@@ -3168,6 +3172,7 @@ pub fn spawn(
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
                 let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
                 let router = hyperstor_api::AuditServiceExt::register(api.clone(), router);
+                let router = s3::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {

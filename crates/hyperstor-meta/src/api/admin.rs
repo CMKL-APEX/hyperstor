@@ -60,6 +60,9 @@ pub struct Signing {
     /// The cluster's settings, the trash's among them (D54, D115); none
     /// without `--data` (then the defaults).
     pub settings: Option<Arc<crate::settings::Settings>>,
+    /// The cluster key (D162), which seals S3's secrets (D231); none
+    /// where `cluster.key` isn't beside the intermediate CA.
+    pub cluster_key: Option<Arc<hyperstor_pki::ClusterKey>>,
 }
 
 /// Tokens live an hour by default and a week at most.
@@ -67,7 +70,7 @@ const TOKEN_TTL: u32 = 3600;
 const TOKEN_TTL_MAX: u32 = 7 * 86400;
 
 pub(super) struct State {
-    signing: Option<Signing>,
+    pub(super) signing: Option<Signing>,
     root: Option<String>,
     api_address: String,
     pub(super) runner: super::ops::Runner,
@@ -107,7 +110,7 @@ pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc:
     OperationServiceExt::register(api, router)
 }
 
-fn now_unix() -> u64 {
+pub(super) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -115,11 +118,19 @@ fn now_unix() -> u64 {
 }
 
 pub(super) fn random_hex(bytes: usize) -> String {
-    let mut b = vec![0u8; bytes];
+    random_bytes(bytes)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
+}
+
+/// `len` bytes from the kernel's random source.
+pub(super) fn random_bytes(len: usize) -> Vec<u8> {
+    let mut b = vec![0u8; len];
     // SAFETY: getrandom writes at most `b.len()` bytes into `b`.
     let n = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
     assert_eq!(n, b.len() as isize, "getrandom");
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    b
 }
 
 /// A join token's parts: the root's fingerprint and the secret.
@@ -331,19 +342,19 @@ impl TokenService for Api {
         let target = format!("role {}", req.role);
         let who = self.authorize(&ctx, "CreateToken", &target, true)?;
         let (_, root) = self.signing()?;
-        if !matches!(req.role, "node" | "meta" | "mgmt" | "metrics") {
+        if !matches!(req.role, "node" | "meta" | "mgmt" | "s3" | "metrics") {
             return Err(invalid(
                 format!(
-                    "{}: a token is for role node, meta, mgmt or metrics",
+                    "{}: a token is for role node, meta, mgmt, s3 or metrics",
                     req.role
                 ),
                 "invalid_argument",
             ));
         }
-        // A management client's or scraper's token names the identity it
-        // enrolls (D122, D234).
+        // A management client's, gateway's or scraper's token names the
+        // identity it enrolls (D122, D233, D234).
         let name = req.name.to_string();
-        if matches!(req.role, "mgmt" | "metrics") {
+        if matches!(req.role, "mgmt" | "s3" | "metrics") {
             let ok = (1..=32).contains(&name.len())
                 && name
                     .bytes()
@@ -359,7 +370,7 @@ impl TokenService for Api {
             }
         } else if !name.is_empty() {
             return Err(invalid(
-                "only a mgmt or metrics token takes a name",
+                "only a mgmt, s3 or metrics token takes a name",
                 "invalid_argument",
             ));
         }
@@ -574,6 +585,48 @@ impl TokenService for Api {
                         },
                     ))
                 }
+                "s3" => {
+                    // An S3 gateway (D233): its certificate names the
+                    // gateway's addresses, so it may serve HTTPS with it
+                    // where the site brings no certificate of its own.
+                    let mut ips: Vec<IpAddr> = req
+                        .gateway_ips
+                        .iter()
+                        .map(|a| {
+                            a.parse::<IpAddr>().map_err(|_| {
+                                invalid(format!("{a}: not an IP address"), "invalid_argument")
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    ips.push(IpAddr::from([127, 0, 0, 1]));
+                    ips.sort();
+                    ips.dedup();
+                    let who = Identity {
+                        cluster: cluster.clone(),
+                        role: Role::S3,
+                        id: token.name.clone(),
+                    };
+                    let certificate = hyperstor_pki::sign_request(
+                        &signing.ca,
+                        req.csr,
+                        &who,
+                        &ips,
+                        &["localhost".to_string()],
+                        hyperstor_pki::LEAF_DAYS,
+                    )
+                    .map_err(|e| invalid(e, "bad_request"))?;
+                    Ok((
+                        format!("{who_token}: s3 {}", token.name),
+                        pb::JoinResponse {
+                            cluster_id: cluster.clone(),
+                            certificate,
+                            root: root.to_string(),
+                            map_addresses: signing.map_addresses.clone(),
+                            identity: who.uri(),
+                            ..Default::default()
+                        },
+                    ))
+                }
                 _ => {
                     if req.member_id == 0 {
                         return Err(invalid(
@@ -618,6 +671,11 @@ impl TokenService for Api {
                             intermediate_key: signing.ca.key.clone(),
                             cluster_file: signing.cluster_file.clone(),
                             identity: who.uri(),
+                            cluster_key: signing
+                                .cluster_key
+                                .as_ref()
+                                .map(|k| k.text())
+                                .unwrap_or_default(),
                             ..Default::default()
                         },
                     ))

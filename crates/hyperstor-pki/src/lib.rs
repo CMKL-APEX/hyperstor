@@ -35,6 +35,8 @@ pub enum Role {
     Admin,
     /// A bare-metal host that attaches exported volumes.
     Host,
+    /// An S3 gateway (`hyperstor-s3`, D233): reads the S3 access keys.
+    S3,
     /// A metrics scraper such as Prometheus: the map service's `/metrics`
     /// and nothing else (D234).
     Metrics,
@@ -48,6 +50,7 @@ impl Role {
             Role::Mgmt => "mgmt",
             Role::Admin => "admin",
             Role::Host => "host",
+            Role::S3 => "s3",
             Role::Metrics => "metrics",
         }
     }
@@ -59,6 +62,7 @@ impl Role {
             "mgmt" => Role::Mgmt,
             "admin" => Role::Admin,
             "host" => Role::Host,
+            "s3" => Role::S3,
             "metrics" => Role::Metrics,
             _ => return None,
         })
@@ -649,8 +653,15 @@ fn backup_key(passphrase: &str, salt: &[u8]) -> Result<ring::aead::LessSafeKey, 
 /// text of a backup file (spec/19-administration.md §23.8, D84): AES-256-GCM
 /// with a key derived by PBKDF2-HMAC-SHA256 from the passphrase and a
 /// random salt. The cluster and the root's fingerprint are in the clear,
-/// to tell backups apart, and authenticated with the rest.
-pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String, String> {
+/// to tell backups apart, and authenticated with the rest. The cluster key
+/// (D162), where given, is encrypted with the root after its key; backups
+/// from before it hold none.
+pub fn root_backup(
+    root: &Pem,
+    cluster_key: Option<&ClusterKey>,
+    cluster: &str,
+    passphrase: &str,
+) -> Result<String, String> {
     let rng = ring::rand::SystemRandom::new();
     let salt: [u8; 16] = ring::rand::generate(&rng).map_err(err)?.expose();
     let nonce: [u8; 12] = ring::rand::generate(&rng).map_err(err)?.expose();
@@ -660,7 +671,13 @@ pub fn root_backup(root: &Pem, cluster: &str, passphrase: &str) -> Result<String
         hex(&salt),
         hex(&nonce)
     );
-    let mut data = format!("{}{}", root.cert, root.key).into_bytes();
+    let mut data = format!(
+        "{}{}{}",
+        root.cert,
+        root.key,
+        cluster_key.map(ClusterKey::text).unwrap_or_default()
+    )
+    .into_bytes();
     backup_key(passphrase, &salt)?
         .seal_in_place_append_tag(
             ring::aead::Nonce::assume_unique_for_key(nonce),
@@ -679,9 +696,17 @@ pub fn backup_cluster(text: &str) -> Option<String> {
         .flatten()
 }
 
-/// Opens a [`root_backup`]: the cluster and the root CA. A wrong
-/// passphrase, or a file changed in any way, fails.
-pub fn root_restore(text: &str, passphrase: &str) -> Result<(String, Pem), String> {
+/// What a [`root_backup`] holds.
+pub struct Restored {
+    pub cluster: String,
+    pub root: Pem,
+    /// None in a backup from before the cluster key.
+    pub cluster_key: Option<ClusterKey>,
+}
+
+/// Opens a [`root_backup`]. A wrong passphrase, or a file changed in any
+/// way, fails.
+pub fn root_restore(text: &str, passphrase: &str) -> Result<Restored, String> {
     let bad = || "not a hyperstor root backup".to_string();
     let lines: Vec<&str> = text.lines().collect();
     let [magic, cluster, fp, kdf, nonce, data, ..] = lines[..] else {
@@ -715,9 +740,15 @@ pub fn root_restore(text: &str, passphrase: &str) -> Result<(String, Pem), Strin
         .map_err(|_| "wrong passphrase, or the backup was changed".to_string())?;
     let plain = std::str::from_utf8(plain).map_err(|_| bad())?;
     let at = plain.find("-----BEGIN PRIVATE KEY-----").ok_or_else(bad)?;
+    const END: &str = "-----END PRIVATE KEY-----\n";
+    let end = at + plain[at..].find(END).ok_or_else(bad)? + END.len();
     let root = Pem {
         cert: plain[..at].to_string(),
-        key: plain[at..].to_string(),
+        key: plain[at..end].to_string(),
+    };
+    let cluster_key = match &plain[end..] {
+        "" => None,
+        k => Some(ClusterKey::parse(k).ok_or_else(bad)?),
     };
     if fingerprint(&root.cert)? != fp {
         return Err(bad());
@@ -726,7 +757,100 @@ pub fn root_restore(text: &str, passphrase: &str) -> Result<(String, Pem), Strin
     KeyPair::from_pem(&root.key).map_err(err)?;
     Issuer::from_ca_cert_pem(&root.cert, KeyPair::from_pem(&root.key).map_err(err)?)
         .map_err(err)?;
-    Ok((cluster.to_string(), root))
+    Ok(Restored {
+        cluster: cluster.to_string(),
+        root,
+        cluster_key,
+    })
+}
+
+const CLUSTER_KEY_MAGIC: &str = "hyperstor cluster key v1";
+
+/// The cluster's key-encryption key (04-decisions.md D162): 32 random
+/// bytes the map service members hold, which encrypt the secrets they keep
+/// in the replicated store (S3's, D231) with AES-256-GCM. Its file is
+/// `hyperstor cluster key v1` and the key in hex, a line each.
+pub struct ClusterKey([u8; 32]);
+
+impl ClusterKey {
+    pub fn generate() -> Result<ClusterKey, String> {
+        let rng = ring::rand::SystemRandom::new();
+        Ok(ClusterKey(
+            ring::rand::generate(&rng).map_err(err)?.expose(),
+        ))
+    }
+
+    /// From its file's text.
+    pub fn parse(text: &str) -> Option<ClusterKey> {
+        let mut l = text.lines();
+        if l.next()? != CLUSTER_KEY_MAGIC {
+            return None;
+        }
+        let k = unhex(l.next()?)?.try_into().ok()?;
+        l.next().is_none().then_some(ClusterKey(k))
+    }
+
+    /// Its file's text.
+    pub fn text(&self) -> String {
+        format!("{CLUSTER_KEY_MAGIC}\n{}\n", hex(&self.0))
+    }
+
+    fn aead(&self) -> ring::aead::LessSafeKey {
+        let k = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &self.0)
+            .expect("a 32-byte AES-256 key");
+        ring::aead::LessSafeKey::new(k)
+    }
+
+    /// `plain` encrypted, bound to `context` (what it is, such as an S3
+    /// key's id, so a sealed value can't be moved to another): a random
+    /// nonce, then the ciphertext and its tag.
+    pub fn seal(&self, context: &str, plain: &[u8]) -> Result<Vec<u8>, String> {
+        let rng = ring::rand::SystemRandom::new();
+        let nonce: [u8; 12] = ring::rand::generate(&rng).map_err(err)?.expose();
+        let mut data = plain.to_vec();
+        self.aead()
+            .seal_in_place_append_tag(
+                ring::aead::Nonce::assume_unique_for_key(nonce),
+                ring::aead::Aad::from(context.as_bytes()),
+                &mut data,
+            )
+            .map_err(err)?;
+        let mut out = nonce.to_vec();
+        out.append(&mut data);
+        Ok(out)
+    }
+
+    /// Opens what [`ClusterKey::seal`] made with the same `context`; None
+    /// for another key, another context or any change.
+    pub fn open(&self, context: &str, sealed: &[u8]) -> Option<Vec<u8>> {
+        let (nonce, ct) = sealed.split_at_checked(12)?;
+        let mut ct = ct.to_vec();
+        let plain = self
+            .aead()
+            .open_in_place(
+                ring::aead::Nonce::assume_unique_for_key(nonce.try_into().ok()?),
+                ring::aead::Aad::from(context.as_bytes()),
+                &mut ct,
+            )
+            .ok()?;
+        Some(plain.to_vec())
+    }
+}
+
+impl Drop for ClusterKey {
+    fn drop(&mut self) {
+        // Not left in freed memory; volatile so it isn't optimized away.
+        for b in &mut self.0 {
+            // SAFETY: a valid, aligned, exclusive reference to a byte.
+            unsafe { std::ptr::write_volatile(b, 0) };
+        }
+    }
+}
+
+impl std::fmt::Debug for ClusterKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClusterKey(..)")
+    }
 }
 
 #[cfg(test)]
@@ -899,14 +1023,26 @@ mod tests {
     #[test]
     fn root_backups_open_only_with_their_passphrase() {
         let root = new_root("42").unwrap();
-        let b = root_backup(&root, "42", "correct horse battery").unwrap();
+        let ck = ClusterKey::generate().unwrap();
+        let b = root_backup(&root, Some(&ck), "42", "correct horse battery").unwrap();
         assert!(b.starts_with("hyperstor root backup v1\ncluster 42\n"));
         assert!(!b.contains("PRIVATE KEY"), "the key is encrypted");
-        let (cluster, back) = root_restore(&b, "correct horse battery").unwrap();
+        assert!(!b.contains(&hex(&ck.0)), "the cluster key is encrypted");
+        let back = root_restore(&b, "correct horse battery").unwrap();
         assert_eq!(
-            (cluster.as_str(), back.cert.as_str(), back.key.as_str()),
+            (
+                back.cluster.as_str(),
+                back.root.cert.as_str(),
+                back.root.key.as_str()
+            ),
             ("42", root.cert.as_str(), root.key.as_str())
         );
+        assert_eq!(back.cluster_key.map(|k| k.text()), Some(ck.text()));
+        // A backup without the cluster key, as before it, opens to none.
+        let old = root_backup(&root, None, "42", "correct horse battery").unwrap();
+        let back = root_restore(&old, "correct horse battery").unwrap();
+        assert!(back.cluster_key.is_none());
+        assert_eq!(back.root.key, root.key);
         assert!(root_restore(&b, "correct horse batter").is_err());
         // The clear header is authenticated: a changed cluster fails.
         assert!(
@@ -920,8 +1056,45 @@ mod tests {
         // Each backup is salted afresh.
         assert_ne!(
             b,
-            root_backup(&root, "42", "correct horse battery").unwrap()
+            root_backup(&root, Some(&ck), "42", "correct horse battery").unwrap()
         );
+    }
+
+    #[test]
+    fn cluster_keys_seal_for_one_context() {
+        let k = ClusterKey::generate().unwrap();
+        let again = ClusterKey::parse(&k.text()).unwrap();
+        assert_eq!(again.0, k.0);
+        let sealed = k.seal("s3 key HS1", b"secret").unwrap();
+        assert_eq!(
+            again.open("s3 key HS1", &sealed).as_deref(),
+            Some(&b"secret"[..])
+        );
+        // Another context, another key, a changed byte or a short value:
+        // nothing.
+        assert!(k.open("s3 key HS2", &sealed).is_none());
+        assert!(
+            ClusterKey::generate()
+                .unwrap()
+                .open("s3 key HS1", &sealed)
+                .is_none()
+        );
+        let mut bad = sealed.clone();
+        bad[14] ^= 1;
+        assert!(k.open("s3 key HS1", &bad).is_none());
+        assert!(k.open("s3 key HS1", &sealed[..11]).is_none());
+        // Nonces are fresh.
+        assert_ne!(sealed, k.seal("s3 key HS1", b"secret").unwrap());
+        for bad in [
+            "",
+            "hyperstor cluster key v1\n",
+            "hyperstor cluster key v1\nabcd\n",
+            &k.text().replace("v1", "v2"),
+            &format!("{}more\n", k.text()),
+        ] {
+            assert!(ClusterKey::parse(bad).is_none(), "{bad:?}");
+        }
+        assert_eq!(format!("{k:?}"), "ClusterKey(..)");
     }
 
     #[test]
@@ -952,7 +1125,7 @@ mod tests {
         assert!(Role::Mgmt.may_administer());
         assert!(!Role::Metrics.may_administer());
         assert_eq!(Role::parse("metrics"), Some(Role::Metrics));
-        for r in [Role::Node, Role::Meta, Role::Host] {
+        for r in [Role::Node, Role::Meta, Role::Host, Role::S3] {
             assert!(!r.may_administer());
         }
     }

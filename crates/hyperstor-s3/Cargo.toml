@@ -14,6 +14,9 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+# Keys and placements from the map service (D231, D232).
+hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-codec = { path = "../hyperstor-codec" }
 hyperstor-kv = { path = "../hyperstor-kv" }

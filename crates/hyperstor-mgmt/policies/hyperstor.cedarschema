@@ -56,6 +56,9 @@ namespace Hyperstor {
   action "MemberService.ListMembers" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "S3Service.ListS3Placements" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "Dashboard.Read" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -90,6 +93,13 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetPool" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // Where new buckets go (D232).
+  action "S3Service.SetS3Placement" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "S3Service.DeleteS3Placement" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {
@@ -184,6 +194,16 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "TokenService.RevokeToken" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // S3's access keys are credentials, as tokens are (D231).
+  action "S3Service.CreateS3Key" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "S3Service.ListS3Keys" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "S3Service.RevokeS3Key" in [Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "CaService.ListCertificates" in [Action::"secure"] appliesTo {

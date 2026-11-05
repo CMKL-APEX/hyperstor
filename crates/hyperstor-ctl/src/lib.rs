@@ -878,6 +878,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "AuditService.SetAuditSettings",
         "audit settings --retention-days N",
     ),
+    ("S3Service.CreateS3Key", "s3 key create"),
+    ("S3Service.ListS3Keys", "s3 key list"),
+    ("S3Service.RevokeS3Key", "s3 key revoke"),
+    ("S3Service.SetS3Placement", "s3 placement set"),
+    ("S3Service.DeleteS3Placement", "s3 placement delete"),
+    ("S3Service.ListS3Placements", "s3 placement list"),
+    // The gateways' own call (D231): secrets, for s3 certificates only.
+    ("S3Service.GetS3Gateway", "hyperstor-s3"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),
@@ -1099,6 +1107,44 @@ pub fn cert_text(pem: &str) -> Option<String> {
 }
 
 /// `hyperstorctl token list`.
+/// S3's access keys (D231), without secrets.
+pub fn s3_keys_text(r: &pb::ListS3KeysResponse) -> String {
+    if r.keys.is_empty() {
+        return "no S3 keys\n".into();
+    }
+    let mut o = format!(
+        "{:<20}  {:>6}  {:<16}  {:<20}  {}\n",
+        "KEY", "TENANT", "CREATED (UTC)", "BY", "DESCRIPTION"
+    );
+    for k in &r.keys {
+        let _ = writeln!(
+            o,
+            "{:<20}  {:>6}  {:<16}  {:<20}  {}",
+            k.id,
+            k.tenant,
+            utc(k.created_unix),
+            k.created_by,
+            k.description
+        );
+    }
+    o
+}
+
+/// Where new buckets go (D232).
+pub fn s3_placements_text(r: &pb::ListS3PlacementsResponse) -> String {
+    if r.placements.is_empty() {
+        return "no S3 placements: buckets can't be created until `s3 placement set --name default` names pools\n".into();
+    }
+    let mut o = format!(
+        "{:<20}  {:<20}  {}\n",
+        "PLACEMENT", "DATA POOL", "INDEX POOL"
+    );
+    for p in &r.placements {
+        let _ = writeln!(o, "{:<20}  {:<20}  {}", p.name, p.data_pool, p.index_pool);
+    }
+    o
+}
+
 pub fn tokens_text(r: &pb::ListTokensResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(

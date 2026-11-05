@@ -390,7 +390,8 @@ fn established_on(ip: [u8; 4]) -> std::collections::BTreeSet<u16> {
 /// The root CA's key (D84): an install says it has no backup; a backup
 /// is encrypted, opens only with its passphrase, may take the key off the
 /// host (later runs still converge), and restores only onto its own
-/// cluster.
+/// cluster. The cluster key (D162) is made with the root, handed to the
+/// map service as a credential, and goes in the backup with it.
 #[test]
 fn root_key_backup_and_restore() {
     let _one = one_at_a_time();
@@ -409,6 +410,21 @@ fn root_key_backup_and_restore() {
     );
     let pki = root.join("etc/hyperstor/pki");
     let key = std::fs::read_to_string(pki.join("root.key")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let cluster_key = std::fs::read_to_string(pki.join("cluster.key")).unwrap();
+    assert!(cluster_key.starts_with("hyperstor cluster key v1\n"));
+    let mode = std::fs::metadata(pki.join("cluster.key"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "readable by root only");
+    let unit =
+        std::fs::read_to_string(root.join("etc/systemd/system/hyperstor-meta.service")).unwrap();
+    assert!(
+        unit.contains("LoadCredential=cluster.key:/etc/hyperstor/pki/cluster.key"),
+        "{unit}"
+    );
     let pass = s.path("pass");
     std::fs::write(&pass, "short\n").unwrap();
     let bak = s.path("root.bak");
@@ -425,12 +441,18 @@ fn root_key_backup_and_restore() {
     let r = run("root-backup", &args(&[])).expect(1);
     assert!(r.has("at least 12 characters"), "{}", r.out);
     std::fs::write(&pass, "a long enough passphrase\n").unwrap();
-    run("root-backup", &args(&["--remove-key"])).ok();
-    use std::os::unix::fs::PermissionsExt;
+    let r = run("root-backup", &args(&["--remove-key"])).ok();
+    assert!(
+        r.has("the root CA and the cluster key, encrypted"),
+        "{}",
+        r.out
+    );
     let mode = std::fs::metadata(&bak).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     let text = std::fs::read_to_string(&bak).unwrap();
     assert!(!text.contains("PRIVATE KEY") && text.starts_with("hyperstor root backup v1"));
+    let hex_key = cluster_key.lines().nth(1).unwrap();
+    assert!(!text.contains(hex_key), "the cluster key is encrypted");
     assert!(!pki.join("root.key").exists(), "taken off the host");
     // Without the key, installs still converge, and stop asking.
     let again = install(&root, &[]);
@@ -470,8 +492,19 @@ fn root_key_backup_and_restore() {
     install(&other, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
     let r = restore("a long enough passphrase", &other).expect(1);
     assert!(r.has("another cluster's"), "{}", r.out);
+    // Not onto a host with another cluster key: the secrets it sealed
+    // would no longer open.
+    std::fs::write(pki.join("cluster.key"), "hyperstor cluster key v1\n").unwrap();
+    let r = restore("a long enough passphrase", &root).expect(1);
+    assert!(r.has("another cluster key"), "{}", r.out);
+    // Lost, it comes back with the root.
+    std::fs::remove_file(pki.join("cluster.key")).unwrap();
     restore("a long enough passphrase", &root).ok();
     assert_eq!(std::fs::read_to_string(pki.join("root.key")).unwrap(), key);
+    assert_eq!(
+        std::fs::read_to_string(pki.join("cluster.key")).unwrap(),
+        cluster_key
+    );
     // --out belongs to the backup commands only.
     install_cmd(&root, "install", &["--out", "x"]).expect(2);
 }
