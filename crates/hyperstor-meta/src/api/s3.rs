@@ -86,7 +86,9 @@ impl Api {
                 ConnectError::not_found(format!("no {what}")),
                 "not_found",
             )),
-            Ok(Err(e)) => Err(self.store_error(e).await),
+            Ok(Err(e)) => Err(self
+                .store_error(e, "S3 keys and placements are written by the leader")
+                .await),
             Err(e) => Err(ConnectError::internal(e.to_string())),
         }
     }
