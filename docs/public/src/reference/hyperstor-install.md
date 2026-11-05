@@ -4,14 +4,14 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
 ```
 
 | Command | Does |
 |---|---|
 | `check` | Runs the host checks and changes nothing |
 | `install` | Installs, or brings an installation up to date: only what differs is changed |
-| `uninstall` | Stops and removes the services and binaries; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
+| `uninstall` | Stops and removes the services and binaries, the S3 gateway's among them; keeps `/etc/hyperstor` and the data. Detaches `hyperstor-vhost`'s volumes first |
 | `root-backup` | Writes the root CA's certificate and key, and the cluster key (`cluster.key`, which encrypts the secrets the map service keeps), to `--out`, encrypted with the passphrase, checks that it opens, and records the backup; with `--remove-key`, then removes the root's key from this host |
 | `root-restore` | Puts the root CA, and the cluster key if the backup holds one, from the backup `--in` back into `/etc/hyperstor/pki`, only onto its own cluster, and not onto a host with another cluster key |
 | `format-device` | Formats the block device `--path` (by its `/dev/disk/by-id/` name) as device `--id` for `hyperstord`, which formats only files. It refuses a device that holds anything it recognises (a partition table, LVM, Ceph BlueStore, md RAID, LUKS, a filesystem, swap, or a hyperstor device already), naming it; `--force-format` zeroes the device's first and last 128 KiB and formats it anyway. The cluster's id comes from the installed cluster file, or the node records it at its first start |
@@ -20,13 +20,13 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 |---|---|---|
 | `--all-in-one` | off | A trial cluster on this host: the map service and several storage nodes on files |
 | `--cluster FILE` | | Install this host's part of the cluster the [cluster file](cluster-file.md) describes; give every host the same file. Needed the first time; later runs use the installed copy |
-| `--join API` | | Join this host to a running cluster through its cluster API (`IP:PORT`) with a token (see [Joining hosts](../admin-guide/installation.md#joining-hosts-with-tokens)): with `--role storage`, as a new storage node; with `--role meta`, as a map service member listed in `--members`; with `--role both --node N`, as that member, also running node N of the cluster file it gets. Later runs need no token |
+| `--join API` | | Join this host to a running cluster through its cluster API (`IP:PORT`) with a token (see [Joining hosts](../admin-guide/installation.md#joining-hosts-with-tokens)): with `--role storage`, as a new storage node; with `--role meta`, as a map service member listed in `--members`; with `--role both --node N`, as that member, also running node N of the cluster file it gets; with `--role s3`, as a host that only runs an S3 gateway, with an `s3` token. Later runs need no token |
 | `--token-file F` | | The join token, from `hyperstorctl token create`, read from a file. Also `--token T` or `$HYPERSTOR_JOIN_TOKEN`; the token is never saved |
 | `--token T` | | The join token itself (it shows in the process list: prefer `--token-file`) |
-| `--address IP` | | A joining storage host: the IP its reactors listen on, on the storage network; the metrics port is on it too |
+| `--address IP` | | A joining storage host: the IP its reactors listen on, on the storage network; the metrics port is on it too. A joining gateway: the IP clients reach it at, which its certificate names |
 | `--reactors N` | 1 | A joining storage host: how many reactors, each on its own device file and port (`--node-port` + i) |
 | `--rack R` | 0 | A joining storage host: its rack, the failure domain pools may spread copies across |
-| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage`, `meta` or `both`. `vhost`: a host that only runs VMs, with [`hyperstor-vhost`](hyperstor-vhost.md) for the map service at `--map` |
+| `--role R` | | With `--cluster`: `meta` (the map service, its API and the CAs), `storage` (one storage node), or `both`. With `--join`: `storage`, `meta`, `both` or `s3` (an S3 gateway alone). `vhost`: a host that only runs VMs, with [`hyperstor-vhost`](hyperstor-vhost.md) for the map service at `--map` |
 | `--node N` | | With a `storage` or `both` role: which node of the cluster file this host runs. It gets one reactor per address the file lists for it, each on a file in the data directory |
 | `--map ADDR` | | With `--cluster`: `IP:PORT` where the map service listens; the storage nodes connect there. Not needed with `--members`. With `--role vhost`: the map service's members, separated by commas |
 | `--members LIST` | | With `--cluster`, for a map service of several members: every member as `N=RAFT_ADDR/MAP_ADDR`, separated by commas, the same on every host (see [the map service](../admin-guide/map-service.md#several-members)). Storage nodes connect to all of them |
@@ -53,6 +53,10 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--remove-key` | off | `root-backup`: once the backup opens, remove the root's key from this host, keeping the root offline |
 | `--vhost` | off | Also run [`hyperstor-vhost`](hyperstor-vhost.md) here, for VMs on this host (glidex's `hyperstor` datastores): the unit `hyperstor-vhost.service`, its sockets in `/run/hyperstor/vhost`. Restarting it keeps the VMs' disks. Saved |
 | `--no-vhost` | | Remove it again: its volumes are detached first |
+| `--s3` | off; on for `--all-in-one` | Also run the S3 gateway, [`hyperstor-s3`](hyperstor-s3.md), here: the unit `hyperstor-s3.service`, reading access keys from the cluster API with its own `s3` certificate (`/etc/hyperstor/pki/s3.crt`). On a map service host that certificate is signed here; on a joined storage host it needs an `s3` token, given with `--s3` in a run after the host's join. The all-in-one cluster runs one and, once its map service answers, sets the `default` placement to its pool `vol`, once. Saved |
+| `--no-s3` | | Remove it again |
+| `--s3-port P` | 443 | Where the gateway listens, on every address. Saved |
+| `--s3-tls DIR` | | The site's certificate for the gateway, `DIR/s3.crt` (the chain) and `DIR/s3.key`, readable by the `hyperstor` user; empty: its own certificate from the cluster CA, which names this host's names and addresses. Saved |
 | `--vhost-user NAME` | | A user who may use `hyperstor-vhost` (glidex's, say): its control socket, and, for the first one named, the sockets go to the user's primary group. Repeat for more; given at all, it replaces the saved list. Saved |
 | `--path P` | | `format-device`: the device to format |
 | `--id D` | | `format-device`: its device id (`N × 1000 + i`, as `hyperstorctl device add` gave it) |

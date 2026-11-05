@@ -7,9 +7,9 @@ may send any request to any of them.
 
 > **Early.** This is stage 3 of 5 (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
-> [`hyperstorctl s3`](hyperstorctl.md); `hyperstor-install --s3` is next.
-> Multipart uploads, copies, conditional requests and multi-object
-> deletes come in stage 4.
+> [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
+> --s3`](hyperstor-install.md) installs gateways. Multipart uploads,
+> copies, conditional requests and multi-object deletes come in stage 4.
 
 ```text
 usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]

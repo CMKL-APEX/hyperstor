@@ -88,6 +88,17 @@ install` is enough later. `sudo hyperstor-install uninstall` stops and
 removes the services and binaries and keeps the configuration and data.
 All options are in the [reference](../reference/hyperstor-install.md).
 
+The trial cluster also runs an S3 gateway,
+[`hyperstor-s3`](../reference/hyperstor-s3.md), on port 443 of every
+address (`--s3-port P` for another, `--no-s3` for none), with new
+buckets in the pool `vol`. Make a key and point an S3 client at it,
+trusting the cluster's root certificate:
+
+```sh
+sudo hyperstorctl s3 key create --tenant 1      # prints the key's id and secret
+aws --endpoint-url https://localhost --ca-bundle /etc/hyperstor/pki/root.crt s3 mb s3://first
+```
+
 `hyperstorctl` needs the administrator certificate, readable by root
 and the `hyperstor-admin` group: run it with `sudo`, or join the group
 (`sudo usermod -aG hyperstor-admin $USER`, then log in again).
@@ -218,6 +229,30 @@ sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user g
 hypervisors open their sockets. Restarting the service (an upgrade, say)
 keeps the VMs' disks; `--no-vhost` and `uninstall` detach them first.
 See [VM disks](managing.md#vm-disks).
+
+## S3 gateways
+
+[`hyperstor-s3`](../reference/hyperstor-s3.md) serves S3 over HTTPS.
+It keeps nothing of its own, so run as many as you like behind a load
+balancer. Add one to a map service host, or install a host that only
+runs a gateway with an `s3` token:
+
+```bash
+sudo hyperstor-install install --s3                 # on a map service host
+hyperstorctl token create --role s3 --name gw1      # then, on the gateway's host:
+sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s3 --address 192.0.2.30
+```
+
+On a joined storage host, add it in a later run with a token of its own:
+`--s3 --token-file FILE`. The gateway reads the access keys from the
+cluster API with its own `s3` certificate and serves HTTPS with it,
+unless `--s3-tls DIR` gives the site's certificate (`s3.crt`, `s3.key`).
+Before buckets can be made, an administrator names their pools:
+
+```bash
+hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
+hyperstorctl s3 key create --tenant 1 --description backups
+```
 
 ## Running as services by hand
 
