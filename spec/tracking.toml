@@ -772,8 +772,19 @@ status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 
 [[milestone.item]]
-what = "Bucket names per tenant, and realms on S3: pools listed per realm, a gateway per realm (before stage 4)"
-spec = ["14-s3.md §14.9", "20-tenants.md §24.8", "D243", "D244", "D245", "D246", "D248", "D249", "D250"]
+what = "Bucket names per tenant: tables named by tenant and name; another tenant's buckets don't exist to a key (stage 3b)"
+spec = ["14-s3.md §14.9", "D243", "D244"]
+status = "done"
+tests = [
+    "cluster::s3_objects_match_a_model",
+    "cluster::s3_gateway_serves_an_sdk",
+    "hyperstor_s3::layout::tests::records_decode_as_encoded",
+    "hyperstor_s3::layout::tests::uploads_sort_by_expiry_and_chunks_by_index",
+]
+
+[[milestone.item]]
+what = "Realms on S3: pools listed per realm, a gateway per realm (before stage 4)"
+spec = ["20-tenants.md §24.8", "D248", "D249", "D250"]
 status = "planned"
 
 [[milestone.item]]
@@ -783,7 +794,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5)"
-spec = ["14-s3.md §14.2", "D199"]
+spec = ["14-s3.md §14.2", "D199", "D245", "D246"]
 status = "planned"
 
 [[milestone]]

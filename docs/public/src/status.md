@@ -140,7 +140,8 @@ covered by tests that run on every change.
 | The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors, replaced chunks kept 15 minutes (stage 2) | Done |
 | Access keys and placements in the map service, kept with the cluster key, `hyperstorctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part) | Done |
 | The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part) | Done |
-| Bucket names per tenant, and realms on S3: pools listed per realm, a gateway per realm (before stage 4) | Planned |
+| Bucket names per tenant: tables named by tenant and name; another tenant's buckets don't exist to a key (stage 3b) | Done |
+| Realms on S3: pools listed per realm, a gateway per realm (before stage 4) | Planned |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Planned |
 | Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5) | Planned |
 
