@@ -635,6 +635,60 @@ pub fn perf_text(r: &pb::ListDevicePerfResponse) -> String {
     o
 }
 
+/// `hyperstorctl port list`: each node's ports, their roles, traffic and
+/// the fabric reconciler's lease and weight (26-networks.md §29.8).
+pub fn ports_text(r: &pb::ListPortsResponse) -> String {
+    let mut o = format!(
+        "{:>4} {:<12} {:<10} {:<5} {:>7} {:>9} {:>9} {:>9} {:<9} {:>8}  {}\n",
+        "NODE",
+        "PORT",
+        "ROLE",
+        "STATE",
+        "GBIT/S",
+        "TX MB/S",
+        "RX MB/S",
+        "OTHER",
+        "LEASE",
+        "WEIGHT",
+        "ADDRESSES"
+    );
+    let mb = |b: u64| format!("{:.1}", b as f64 / 1e6);
+    for p in &r.ports {
+        let role = format!("{}{}", p.role, if p.role_set { "*" } else { "" });
+        let state = match (p.reported, p.up) {
+            (false, _) => "-",
+            (true, true) => "up",
+            (true, false) => "down",
+        };
+        let lease = match (p.lent, p.revoking_until_ms) {
+            (true, 0) => "lent",
+            (true, _) => "revoking",
+            _ => "-",
+        };
+        let _ = writeln!(
+            o,
+            "{:>4} {:<12} {:<10} {:<5} {:>7} {:>9} {:>9} {:>9} {:<9} {:>8}  {}",
+            p.node,
+            p.name,
+            role,
+            state,
+            p.speed_mbps / 1000,
+            mb(p.tx_bytes_per_sec),
+            mb(p.rx_bytes_per_sec),
+            mb(p.other_bytes_per_sec),
+            lease,
+            if p.weight_mbs == 0 {
+                "-".into()
+            } else {
+                format!("{:.1}G", f64::from(p.weight_mbs) / 1000.0)
+            },
+            p.addresses.join(",")
+        );
+    }
+    o.push_str("* set by the operator; else storage where it carries an endpoint\n");
+    o
+}
+
 /// `hyperstorctl perf --device D`: its drive, then each 5-s window.
 pub fn device_perf_text(d: &pb::DevicePerf) -> String {
     let mut o = format!("device {} on node {}, {}\n", d.device, d.node, d.kind);
@@ -815,6 +869,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.RemoveDevice", "device remove"),
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.SetEndpoints", "device endpoints"),
+    ("ClusterService.ListPorts", "port list"),
+    ("ClusterService.SetPortRole", "port role"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
     ("ClusterService.SetScrubSettings", "scrub set"),

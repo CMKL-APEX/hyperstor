@@ -233,7 +233,7 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I277"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
@@ -986,14 +986,20 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built)"
-spec = ["26-networks.md §29.8", "D203", "D209", "G52"]
-status = "partial"
+what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it)"
+spec = ["26-networks.md §29.8", "D203", "D208", "D209", "D237", "D238", "G52", "I277"]
+status = "done"
 tests = [
     "hyperstor_fabric::tests::an_idle_rail_is_lent_after_the_dwell_and_revoked_on_traffic",
     "hyperstor_fabric::tests::a_claim_takes_a_rail_back_and_keeps_it",
     "hyperstor_fabric::tests::lending_off_never_lends",
     "hyperstor_fabric::tests::reconciler_invariants_hold_under_random_load",
+    "hyperstor_map::port_tests::ports_have_roles_by_default_or_set_and_weights_for_senders",
+    "hyperstor_meta::fabric::tests::ports_are_weighted_lent_while_idle_and_taken_back",
+    "hyperstor_meta::fabric::tests::a_cluster_without_endpoints_keeps_its_map",
+    "hyperstor_daemon::ports::tests::ports_are_counted_where_all_their_traffic_shows",
+    "endpoints::a_compute_port_is_lent_while_idle_and_left_when_busy",
+    "manage::a_ports_role_is_set_and_returned_to_its_default",
 ]
 
 [[milestone.item]]
@@ -1116,12 +1122,13 @@ tests = [
 
 [[milestone.item]]
 what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates"
-spec = ["19-administration.md §23.4.2", "D57"]
+spec = ["19-administration.md §23.4.2", "D57", "I275"]
 status = "done"
 tests = [
     "join::storage_hosts_join_with_tokens",
     "join::map_service_members_join_the_first",
     "join::a_member_host_also_runs_storage",
+    "members::a_token_waits_for_the_first_map",
     "hyperstor_meta::tests::joined_hosts_are_added_to_an_empty_map",
     "hyperstor_meta::api::admin::tests::tokens_parse_only_in_their_form",
     "hyperstor_map::join_tests::pools_made_before_any_host_place_their_pgs_when_hosts_join",

@@ -183,6 +183,11 @@ fn sockaddr(addr: SocketAddr) -> Box<(libc::sockaddr_storage, libc::socklen_t)> 
 }
 
 impl TcpStream {
+    /// The local address the connection is bound to.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
     /// The keepalive this socket has: on, idle seconds before probing, and
     /// the user timeout in milliseconds ([`KEEPALIVE_IDLE`], [`USER_TIMEOUT`]).
     pub fn keepalive(&self) -> io::Result<(bool, u32, u32)> {

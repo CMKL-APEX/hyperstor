@@ -80,6 +80,16 @@ impl Drop for Group {
 /// new cluster: the first from a cluster file, the others joined with
 /// meta tokens.
 fn group(name: &str, n: u16, listed: u16) -> Group {
+    let (mut g, list, file) = unstarted(name, n, listed);
+    for i in 0..n {
+        g.add_host(i, &list, if i == 0 { Some(&file) } else { None });
+    }
+    g
+}
+
+/// A group of `n` members, none installed yet: the group, its `--members`
+/// list and its cluster file.
+fn unstarted(name: &str, n: u16, listed: u16) -> (Group, String, PathBuf) {
     let s = Scratch::new(name);
     let base = free_ports(3 * listed + 8);
     let addr = |i: u16| {
@@ -101,7 +111,7 @@ fn group(name: &str, n: u16, listed: u16) -> Group {
         "cluster 21\npool 1 vol replicated size 1 min 1 pgs 16 domain host\n",
     )
     .unwrap();
-    let mut g = Group {
+    let g = Group {
         bin: PathBuf::new(),
         cluster: "21".into(),
         base,
@@ -109,16 +119,27 @@ fn group(name: &str, n: u16, listed: u16) -> Group {
         others: Vec::new(),
         s,
     };
-    for i in 0..n {
-        g.add_host(i, &list.join(","), if i == 0 { Some(&file) } else { None });
-    }
-    g
+    (g, list.join(","), file)
 }
 
 impl Group {
     /// Installs and starts member `i + 1` (joining through the leader
     /// unless `file` makes it the first).
     fn add_host(&mut self, i: u16, members: &str, file: Option<&Path>) {
+        let mut m = self.install_host(i, members, file);
+        m.start(&self.s, &[]);
+        self.m.push(m);
+        if file.is_some() {
+            let (bin, api, pki) = (self.bin.clone(), self.m[0].api.clone(), self.m[0].pki());
+            wait_for("the first member's API", 20, || {
+                (ctl(&bin, &api, &pki, &["token", "list"]).code == 0).then_some(())
+            });
+        }
+    }
+
+    /// Installs member `i + 1`, as [`Group::add_host`] does, without
+    /// starting it.
+    fn install_host(&mut self, i: u16, members: &str, file: Option<&Path>) -> M {
         let (api, map, raft) = (
             format!("127.0.0.1:{}", self.base + 3 * i),
             format!("127.0.0.1:{}", self.base + 3 * i + 1),
@@ -175,21 +196,13 @@ impl Group {
         if file.is_some() {
             self.bin = root.join("usr/local/bin");
         }
-        let mut m = M {
+        M {
             log: self.s.path(&format!("member-{}.log", i + 1)),
             root,
             api,
             raft,
             map,
             proc: None,
-        };
-        m.start(&self.s, &[]);
-        self.m.push(m);
-        if file.is_some() {
-            let (bin, api, pki) = (self.bin.clone(), self.m[0].api.clone(), self.m[0].pki());
-            wait_for("the first member's API", 20, || {
-                (ctl(&bin, &api, &pki, &["token", "list"]).code == 0).then_some(())
-            });
         }
     }
 
@@ -527,7 +540,7 @@ fn a_scrub_started_on_a_follower_goes_to_the_leader() {
 
 /// Members restarted one at a time, in the installer's order (3, 2, 1),
 /// keep committing: after each restart the leader takes a write within
-/// seconds, and the restarted member catches up (issue #177, I277).
+/// seconds, and the restarted member catches up (issue #177, I279).
 #[test]
 fn a_rolling_restart_of_the_members_keeps_committing() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -557,4 +570,43 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
             (g.ctl(i, &["token", "list"]).out == want).then_some(())
         });
     }
+}
+
+/// A token asked for before the group has committed its first map waits
+/// for it (I275), rather than failing with `not_formed` at once: the first
+/// of three members, alone, can't elect, so it answers `not_formed` only
+/// after the wait; asked again while a second member starts, it waits
+/// and makes the token.
+#[test]
+fn a_token_waits_for_the_first_map() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut g, list, file) = unstarted("firstmap", 3, 3);
+    g.add_host(0, &list, Some(&file));
+    let t = std::time::Instant::now();
+    let r = g.ctl(0, &["token", "create", "--role", "node"]);
+    assert!(r.code != 0 && r.has("(not_formed)"), "{}", r.out);
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(3),
+        "refused after {:?}, without waiting",
+        t.elapsed()
+    );
+    let mut second = g.install_host(1, &list, None);
+    let (bin, api, pki) = (g.bin.clone(), g.m[0].api.clone(), g.m[0].pki());
+    let asked = std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        (
+            ctl(&bin, &api, &pki, &["token", "create", "--role", "node"]),
+            t.elapsed(),
+        )
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    second.start(&g.s, &[]);
+    g.m.push(second);
+    let (r, took) = asked.join().unwrap();
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.starts_with("hsj1-"), "{}", r.out);
+    assert!(
+        took >= std::time::Duration::from_millis(500),
+        "made in {took:?}, before the second member started"
+    );
 }

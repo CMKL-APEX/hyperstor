@@ -65,6 +65,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetDeviceClass", Group::Operate, false),
     // A device's endpoints (D215): where its traffic goes.
     ("ClusterService.SetEndpoints", Group::Operate, false),
+    ("ClusterService.ListPorts", Group::Read, false),
+    ("ClusterService.SetPortRole", Group::Operate, false),
     // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),
     ("NodeService.DrainNode", Group::Operate, false),

@@ -248,23 +248,23 @@ impl Client {
 
     /// Where to reach `device` in `map` for one request: among its
     /// endpoints on this client's first network that has any, by two
-    /// random choices taking the one with fewer requests outstanding
-    /// (D208); else its address.
+    /// random choices, weighted by their ports' weights, taking the one
+    /// with fewer requests outstanding (D208); else its address.
     pub fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
-        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        let addrs = map.weighted_addrs_on(device, &self.networks.borrow());
         if addrs.len() < 2 {
-            return addrs.first().copied();
+            return addrs.first().map(|(a, _)| *a);
         }
         let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
             .iter()
-            .map(|a| hyperstor_fabric::path::PathLoad {
-                weight: 1.0,
+            .map(|(a, w)| hyperstor_fabric::path::PathLoad {
+                weight: *w,
                 bytes_in_flight: self.conns.pending(*a) as u64,
                 rtt_us: 0,
             })
             .collect();
         let i = hyperstor_fabric::path::choose(&loads, &mut *self.rng.borrow_mut())?;
-        Some(addrs[i])
+        Some(addrs[i].0)
     }
 
     /// The label recorded with the leases this client takes from now on

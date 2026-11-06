@@ -605,7 +605,7 @@ impl Tcp {
         // the answer is read. Raft drops a call that outlasts its heartbeat
         // (50 ms), and a handshake or connection dropped with it would start
         // over on every retry, never getting through if it takes longer
-        // (I277). A dropped call's answer is read and dropped, so the
+        // (I279). A dropped call's answer is read and dropped, so the
         // connection kept never hands it to the next call (I194).
         tokio::spawn(async move {
             let mut conn = slot.lock().await;
@@ -925,7 +925,7 @@ mod tests {
     /// A member whose TLS handshake takes longer than Raft gives a call
     /// (the 50 ms heartbeat) is still reached: the handshake goes on after
     /// the call that started it is dropped, and a later call uses it
-    /// (I277, issue #177).
+    /// (I279, issue #177).
     #[test]
     fn a_slow_handshake_outlives_the_call_that_started_it() {
         let dir = tempfile::tempdir().unwrap();

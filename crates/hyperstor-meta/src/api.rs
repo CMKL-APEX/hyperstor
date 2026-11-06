@@ -1773,6 +1773,82 @@ impl ClusterService for Api {
         }
     }
 
+    async fn list_ports(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListPortsRequest>,
+    ) -> ServiceResult<pb::ListPortsResponse> {
+        let target = req.node.map_or("all nodes".into(), |n| format!("node {n}"));
+        self.authorize(&ctx, "ListPorts", &target, false)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Ports(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let (seen, map) = rx
+            .recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))?
+            .map_err(|e| meta_error(e, ConnectError::unavailable, "unavailable"))?;
+        Ok(pb::ListPortsResponse {
+            ports: ports_pb(&seen, &map, req.node),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn set_port_role(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPortRoleRequest>,
+    ) -> ServiceResult<pb::SetPortRoleResponse> {
+        let port = format!("{}/{}", req.node, req.name);
+        let role = req.role.map(str::to_string);
+        let target = format!("port {port} role={}", role.as_deref().unwrap_or("default"));
+        let who = self.authorize(&ctx, "SetPortRole", &target, true)?;
+        let role = match role.as_deref() {
+            None => None,
+            Some(r) => Some(hyperstor_map::PortRole::from_name(r).ok_or_else(|| {
+                admin::invalid(
+                    format!(
+                        "{r}: a port's role is host, uplink, storage, compute, converged or vm"
+                    ),
+                    "invalid_argument",
+                )
+            })?),
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPortRole { port, role, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetPortRole",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetPortRoleResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no node") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn set_device_class(
         &self,
         ctx: RequestContext,
@@ -3286,6 +3362,56 @@ async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::Co
                     .await;
         });
     }
+}
+
+/// The ports for `ListPorts`: every one its node reported recently, and
+/// those the map has that it didn't (D237), in order, `node` only if given.
+fn ports_pb(
+    seen: &BTreeMap<String, crate::fabric::Seen>,
+    map: &ClusterMap,
+    node: Option<u32>,
+) -> Vec<pb::Port> {
+    let mut ids: Vec<&String> = seen.keys().chain(map.ports.keys()).collect();
+    ids.sort_by_key(|id| {
+        let (n, d) = id.split_once('/').unwrap_or(("", id));
+        (n.parse::<u32>().unwrap_or(u32::MAX), d.to_string())
+    });
+    ids.dedup();
+    ids.into_iter()
+        .filter_map(|id| {
+            let (n, name) = id.split_once('/')?;
+            let n: u32 = n.parse().ok()?;
+            if node.is_some_and(|x| x != n) {
+                return None;
+            }
+            let s = seen.get(id);
+            let p = map.ports.get(id);
+            let (tx, rx) = s.and_then(|s| s.rates).unwrap_or((0.0, 0.0));
+            Some(pb::Port {
+                node: n,
+                name: name.into(),
+                role: map.port_role(id).name().into(),
+                role_set: p.is_some_and(|p| p.role.is_some()),
+                reported: s.is_some(),
+                up: s.is_some_and(|s| s.sample.up),
+                speed_mbps: s.map_or(0, |s| s.sample.speed_mbps),
+                addresses: s
+                    .map(|s| s.sample.addrs.clone())
+                    .or_else(|| p.map(|p| p.addrs.clone()))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect(),
+                tx_bytes_per_sec: tx as u64,
+                rx_bytes_per_sec: rx as u64,
+                other_bytes_per_sec: s.and_then(|s| s.other).unwrap_or(0.0) as u64,
+                lent: p.is_some_and(|p| p.lent),
+                revoking_until_ms: p.and_then(|p| p.revoking).unwrap_or(0),
+                weight_mbs: p.map_or(0, |p| p.weight_mbs),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

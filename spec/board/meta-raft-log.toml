@@ -6,5 +6,5 @@ updated = 2026-11-06
 milestone = "HS2"
 branch = "fix/meta-raft-stall"
 prs = [180, 204]
-now = "#180's logging is deployed and showed the cause: appends that outlast the 50 ms heartbeat start over for ever. glidex-raftstore pinned at 9992197 (4 entries per append, writes that give up) and Raft calls that keep their connection when dropped (I277)"
+now = "#180's logging is deployed and showed the cause: appends that outlast the 50 ms heartbeat start over for ever. glidex-raftstore pinned at 9992197 (4 entries per append, writes that give up) and Raft calls that keep their connection when dropped (I279)"
 next = "Merge #204, then a rolling install on the pilot to check no stall follows; then close #177"

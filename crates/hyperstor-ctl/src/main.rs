@@ -1,7 +1,7 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
-//!               [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
+//!               [--force] [--role R|default] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
 //!
@@ -179,7 +179,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -585,7 +585,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool" | "scrub"
+            | "device" | "pool" | "scrub" | "port"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -602,6 +602,7 @@ fn main() {
                     "audit" => matches!(sub, Some("list" | "settings")),
                     "scrub" => matches!(sub, Some("set" | "status" | "pgs" | "start")),
                     "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
+                    "port" => matches!(sub, Some("list" | "role")),
                     "pool" => {
                         matches!(
                             sub,
@@ -672,10 +673,20 @@ fn main() {
     {
         usage();
     }
+    // port role takes a node, a port's name and a role; port list maybe a
+    // node.
+    let port = cmd.starts_with("port ");
+    if (cmd == "port role" && (a.node.is_none() || a.name.is_empty()))
+        || (port && a.device.is_some())
+        || (cmd == "port list" && !a.name.is_empty())
+    {
+        usage();
+    }
     if !device_add
         && !device_class
         && !device_endpoints
         && !pool_device
+        && !port
         && (cmd == "out"
             || cmd == "in"
             || cmd == "drain"
@@ -821,7 +832,7 @@ fn main() {
             volume_io(map, &cmd, &a).await
         }));
     }
-    if (cmd == "token create") != a.role.is_some()
+    if (cmd == "token create" || cmd == "port role") != a.role.is_some()
         || (a.dry_run && cmd != "drain" && cmd != "pool delete" && cmd != "device remove")
         || (cmd == "pool delete" && a.pool.is_none())
         || (a.ttl != 0 && cmd != "token create")
@@ -1890,6 +1901,53 @@ where
                     if matches!(
                         e.code,
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        "port list" => {
+            let r = client
+                .list_ports(pb::ListPortsRequest {
+                    node: a.node,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || ports_text(&r));
+            Next::Exit(0)
+        }
+        "port role" => {
+            let (Some(node), Some(role)) = (a.node, a.role.clone()) else {
+                unreachable!("checked with the arguments")
+            };
+            let r = client
+                .set_port_role(pb::SetPortRoleRequest {
+                    node,
+                    name: a.name.clone(),
+                    role: (role != "default").then(|| role.clone()),
+                    ..Default::default()
+                })
+                .await;
+            match r {
+                Ok(r) => {
+                    println!(
+                        "port {node}/{}: role {role} (map epoch {})",
+                        a.name,
+                        r.into_owned().map_epoch
+                    );
+                    Next::Exit(0)
+                }
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::InvalidArgument
                     ) =>
                 {
                     eprintln!(
