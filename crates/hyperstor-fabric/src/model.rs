@@ -63,9 +63,34 @@ pub enum Role {
 }
 
 impl Role {
+    pub const ALL: [Role; 6] = [
+        Role::Host,
+        Role::Uplink,
+        Role::Storage,
+        Role::Compute,
+        Role::Converged,
+        Role::Vm,
+    ];
+
     /// Hyperstor's data traffic may use the port without a loan.
     pub fn storage_may_use(self) -> bool {
         matches!(self, Role::Storage | Role::Converged)
+    }
+
+    /// As the cluster file and `hyperstorctl` spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Host => "host",
+            Role::Uplink => "uplink",
+            Role::Storage => "storage",
+            Role::Compute => "compute",
+            Role::Converged => "converged",
+            Role::Vm => "vm",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|r| r.name() == s)
     }
 }
 

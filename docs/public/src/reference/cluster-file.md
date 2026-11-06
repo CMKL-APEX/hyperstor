@@ -80,6 +80,23 @@ endpoint 0 ib 192.0.2.10:9100
 endpoint 0 ib 192.0.2.11:9100
 ```
 
+## `port`
+
+```text
+port NODE NETDEV ROLE
+```
+
+Gives node `NODE`'s network port `NETDEV` a role: `host`, `uplink`,
+`storage`, `compute`, `converged` or `vm`. Without a `port` line, a port
+is `storage` when one of its addresses is an endpoint of the node's
+devices, and `host` otherwise. Storage uses `storage` and `converged`
+ports, and a `compute` port (a GPU host's rail, say) only while it is
+idle. `hyperstorctl port role` changes it while the cluster runs.
+
+```text
+port 0 ibp12s0 compute
+```
+
 ## `pool`
 
 ```text

@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 hyperstor-codec = { path = "../hyperstor-codec" }
 hyperstor-map = { path = "../hyperstor-map" }
+# The fabric reconciler's decisions, run by the leader (D203).
+hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
 # Volume operations of the cluster API, as a client of .meta (§4.2).
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-placement = { path = "../hyperstor-placement" }

@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 hyperstor-codec = { path = "../hyperstor-codec" }
+# Port roles (D209): the model only, without reading hosts.
+hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
 hyperstor-placement = { path = "../hyperstor-placement" }
 
 [lints]

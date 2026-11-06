@@ -65,8 +65,70 @@ pub struct Conn {
     pub addr: SocketAddr,
 }
 
+/// Bytes hyperstor's connections sent and received in this process, by
+/// local address (26-networks.md §29.8): a node reports them with its
+/// ports' counters, so the fabric reconciler can tell its own traffic
+/// from other traffic on a port.
+pub mod traffic {
+    use std::collections::BTreeMap;
+    use std::net::IpAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Default)]
+    pub struct Counter {
+        pub tx: AtomicU64,
+        pub rx: AtomicU64,
+    }
+
+    impl Counter {
+        pub fn sent(&self, n: usize) {
+            self.tx.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        pub fn received(&self, n: usize) {
+            self.rx.fetch_add(n as u64, Ordering::Relaxed);
+        }
+    }
+
+    static TABLE: Mutex<BTreeMap<IpAddr, Arc<Counter>>> = Mutex::new(BTreeMap::new());
+
+    /// The counter of connections from `ip`. Taken once per connection,
+    /// so the lock is off the data path.
+    pub fn of(ip: IpAddr) -> Arc<Counter> {
+        let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        t.entry(ip).or_default().clone()
+    }
+
+    /// Every local address's bytes so far, as (address, sent, received).
+    pub fn totals() -> Vec<(IpAddr, u64, u64)> {
+        let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        t.iter()
+            .map(|(ip, c)| {
+                (
+                    *ip,
+                    c.tx.load(Ordering::Relaxed),
+                    c.rx.load(Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+}
+
+/// The traffic counter of `s`'s local address, if it has one.
+pub fn counter_of(s: &TcpStream) -> Option<std::sync::Arc<traffic::Counter>> {
+    s.local_addr().ok().map(|a| traffic::of(a.ip()))
+}
+
 /// Reads one frame: header, body (decoded) and payload.
 pub async fn read_frame(s: &TcpStream) -> Result<(Header, Msg, Vec<u8>), RpcError> {
+    read_frame_counted(s, None).await
+}
+
+/// [`read_frame`], adding the frame's bytes to `counter`.
+pub async fn read_frame_counted(
+    s: &TcpStream,
+    counter: Option<&traffic::Counter>,
+) -> Result<(Header, Msg, Vec<u8>), RpcError> {
     let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     let h = Header::decode(hb[..].try_into().unwrap())?;
@@ -76,17 +138,25 @@ pub async fn read_frame(s: &TcpStream) -> Result<(Header, Msg, Vec<u8>), RpcErro
         r.map_err(|e| RpcError::Io(e.to_string()))?;
         rest = b;
     }
+    if let Some(c) = counter {
+        c.received(HEADER_LEN + rest.len());
+    }
     let payload = rest.split_off(h.body_len as usize);
     let msg = Msg::decode(h.kind, &rest)?;
     Ok((h, msg, payload))
 }
 
-/// Sends frames from `rx` on `s`, batching what has queued up.
+/// Sends frames from `rx` on `s`, batching what has queued up, and
+/// counts them as its local address's traffic.
 pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Vec<u8>>) {
+    let counter = counter_of(&s);
     while let Some(first) = rx.recv().await {
         let mut buf = first;
         for more in rx.drain() {
             buf.extend_from_slice(&more);
+        }
+        if let Some(c) = &counter {
+            c.sent(buf.len());
         }
         let (r, _) = s.write_all(buf).await;
         if r.is_err() {
@@ -116,9 +186,10 @@ impl Conn {
         });
         spawn(writer(s.clone(), rx));
         let rd = inner.clone();
+        let counter = counter_of(&s);
         spawn(async move {
             let err = loop {
-                match read_frame(&s).await {
+                match read_frame_counted(&s, counter.as_deref()).await {
                     Ok((h, msg, payload)) => {
                         if let Some(tx) = rd.pending.borrow_mut().remove(&h.req) {
                             let _ = tx.send(Ok((msg, payload)));

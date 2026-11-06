@@ -12,7 +12,9 @@
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+
+pub use hyperstor_fabric::model::Role as PortRole;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeInfo {
@@ -357,6 +359,29 @@ pub struct ClusterMap {
     /// Endpoints peers report silent (D210): senders take the device's
     /// others. The leader keeps it from peer reports.
     pub endpoints_down: BTreeSet<SocketAddr>,
+    /// Nodes' network ports, as `NODE/NETDEV` (26-networks.md §29.3,
+    /// §29.8; D209, D237): the role the operator set, and the fabric
+    /// reconciler's leases and weights, which the leader keeps.
+    pub ports: BTreeMap<String, PortInfo>,
+}
+
+/// A node's network port in the map (D209, D237).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PortInfo {
+    /// The role the operator set; `None`: by its endpoints (D237).
+    pub role: Option<PortRole>,
+    /// Its addresses, from its node's reports: an endpoint is on the port
+    /// that has its address.
+    pub addrs: Vec<IpAddr>,
+    /// A `compute` port lent to storage (D209).
+    pub lent: bool,
+    /// Lent and being taken back until then (Unix ms): senders open no
+    /// new requests on it.
+    pub revoking: Option<u64>,
+    /// Senders' weight for its endpoints, in MB/s; 0 takes them out.
+    pub weight_mbs: u32,
+    /// The last lend or return (Unix ms).
+    pub last_change: Option<u64>,
 }
 
 /// What a network carries (D206).
@@ -821,6 +846,8 @@ impl ClusterMap {
         if last {
             self.nodes.remove(&node);
             self.removed_nodes.insert(node);
+            let prefix = format!("{node}/");
+            self.ports.retain(|id, _| !id.starts_with(&prefix));
         }
         self.recompute();
         Some(last)
@@ -1457,6 +1484,99 @@ impl ClusterMap {
             .map(|(d, _)| *d)
     }
 
+    /// The port `NODE/NETDEV` that carries endpoint `addr`, by its node's
+    /// reported addresses.
+    pub fn endpoint_port(&self, addr: SocketAddr) -> Option<&str> {
+        let node = self.devices.get(&self.endpoint_device(addr)?)?.node;
+        self.ports
+            .iter()
+            .find(|(id, p)| {
+                id.split_once('/').and_then(|(n, _)| n.parse::<u32>().ok()) == Some(node)
+                    && p.addrs.contains(&addr.ip())
+            })
+            .map(|(id, _)| id.as_str())
+    }
+
+    /// [`Self::device_addrs_on`] with each endpoint's weight (D208): its
+    /// port's, or 1 while its port isn't known. Endpoints of weight 0 are
+    /// left out, and when that leaves none, the device's address.
+    pub fn weighted_addrs_on(&self, device: u32, networks: &[String]) -> Vec<(SocketAddr, f64)> {
+        let w: Vec<(SocketAddr, f64)> = self
+            .device_addrs_on(device, networks)
+            .into_iter()
+            .map(|a| (a, self.endpoint_weight(a).unwrap_or(1.0)))
+            .filter(|(_, w)| *w > 0.0)
+            .collect();
+        if w.is_empty() {
+            self.device_addr(device)
+                .map(|a| (a, 1.0))
+                .into_iter()
+                .collect()
+        } else {
+            w
+        }
+    }
+
+    /// Senders' weight for endpoint `addr` (D208): its port's, from the
+    /// reconciler; `None` when its port isn't known yet.
+    pub fn endpoint_weight(&self, addr: SocketAddr) -> Option<f64> {
+        let p = &self.ports[self.endpoint_port(addr)?];
+        Some(f64::from(p.weight_mbs) / 1000.0)
+    }
+
+    /// Port `id`'s role (D237): the operator's, else `storage` when one
+    /// of its addresses is an endpoint, on a network that carries data,
+    /// of one of its node's devices, else `host`.
+    pub fn port_role(&self, id: &str) -> PortRole {
+        let Some(p) = self.ports.get(id) else {
+            return PortRole::Host;
+        };
+        if let Some(r) = p.role {
+            return r;
+        }
+        let node: Option<u32> = id.split_once('/').and_then(|(n, _)| n.parse().ok());
+        let carries = self.endpoints.iter().any(|(d, eps)| {
+            self.devices.get(d).map(|d| d.node) == node
+                && eps.iter().any(|(_, a)| p.addrs.contains(&a.ip()))
+        });
+        if carries {
+            PortRole::Storage
+        } else {
+            PortRole::Host
+        }
+    }
+
+    fn role_code(r: PortRole) -> u8 {
+        PortRole::ALL.iter().position(|x| *x == r).unwrap_or(0) as u8
+    }
+
+    /// Sets port `NODE/NETDEV`'s role, or with `None` returns it to the
+    /// default (D237). Whether it changed; the epoch moves when it did.
+    pub fn set_port_role(&mut self, id: &str, role: Option<PortRole>) -> Result<bool, String> {
+        let (node, dev) = id
+            .split_once('/')
+            .ok_or_else(|| format!("{id}: a port is NODE/NETDEV"))?;
+        let node: u32 = node
+            .parse()
+            .map_err(|_| format!("{id}: a port is NODE/NETDEV"))?;
+        if !self.nodes.contains_key(&node) {
+            return Err(format!("no node {node}"));
+        }
+        if dev.is_empty() || dev.contains(char::is_whitespace) {
+            return Err(format!("{id}: no such network device name"));
+        }
+        let p = self.ports.entry(id.to_string()).or_default();
+        if p.role == role {
+            return Ok(false);
+        }
+        p.role = role;
+        if role.is_none() && p.addrs.is_empty() && *p == PortInfo::default() {
+            self.ports.remove(id);
+        }
+        self.epoch += 1;
+        Ok(true)
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         // Format 2 adds the blocklist, 3 the devices out by the down-out
@@ -1471,8 +1591,11 @@ impl ClusterMap {
         // on the pilot before main's fullness took 9 (I216). 13: cache
         // pools' grace other than the default, and what they wait for.
         // 14: networks and endpoints; 15: endpoints down (D210); 16:
-        // pools' scrub settings other than the defaults (D224).
-        let format = if self
+        // pools' scrub settings other than the defaults (D224); 17: ports'
+        // roles, leases and weights (D209, D237).
+        let format = if !self.ports.is_empty() {
+            17
+        } else if self
             .pools
             .values()
             .any(|p| p.scrub != ScrubSettings::default())
@@ -1712,13 +1835,30 @@ impl ClusterMap {
                     .u16(s.deep_rate_mib);
             }
         }
+        if format >= 17 {
+            let ports: Vec<(&String, &PortInfo)> = self.ports.iter().collect();
+            e.seq(&ports, |e, (id, p)| {
+                let opt = |e: &mut Enc, v: Option<u64>| {
+                    e.bool(v.is_some()).u64(v.unwrap_or(0));
+                };
+                e.str(id)
+                    .u8(p.role.map_or(0, |r| 1 + Self::role_code(r)))
+                    .seq(&p.addrs, |e, a| {
+                        e.str(&a.to_string());
+                    })
+                    .bool(p.lent);
+                opt(e, p.revoking);
+                e.u32(p.weight_mbs);
+                opt(e, p.last_change);
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=16).contains(&v) {
+        if !(1..=17).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -1953,6 +2093,41 @@ impl ClusterMap {
                 };
             }
         }
+        if v >= 17 {
+            let ports = d.seq(2, |d| {
+                let id = d.str()?.to_string();
+                let role = match d.u8()? {
+                    0 => None,
+                    c => Some(
+                        *PortRole::ALL
+                            .get(usize::from(c) - 1)
+                            .ok_or(DecodeError::Utf8)?,
+                    ),
+                };
+                let addrs = d.seq(2, |d| d.str()?.parse().map_err(|_| DecodeError::Utf8))?;
+                let lent = d.bool()?;
+                let opt = |d: &mut Dec| -> Result<Option<u64>, DecodeError> {
+                    let some = d.bool()?;
+                    let v = d.u64()?;
+                    Ok(some.then_some(v))
+                };
+                let revoking = opt(d)?;
+                let weight_mbs = d.u32()?;
+                let last_change = opt(d)?;
+                Ok((
+                    id,
+                    PortInfo {
+                        role,
+                        addrs,
+                        lent,
+                        revoking,
+                        weight_mbs,
+                        last_change,
+                    },
+                ))
+            })?;
+            m.ports = ports.into_iter().collect();
+        }
         d.finish()?;
         Ok(m)
     }
@@ -2107,6 +2282,14 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
                     return Err(bad("endpoint given twice"));
                 }
                 eps.push((w[2].to_string(), a));
+            }
+            // port NODE NETDEV ROLE (D237)
+            "port" if w.len() == 4 => {
+                let role = PortRole::from_name(w[3]).ok_or_else(|| {
+                    bad("a port's role is host, uplink, storage, compute, converged or vm")
+                })?;
+                map.set_port_role(&format!("{}/{}", num(w[1])?, w[2]), Some(role))
+                    .map_err(|e| bad(&e))?;
             }
             "pool" if w.len() >= 4 => {
                 if num(w[1])? as u32 == META_POOL {
@@ -3287,5 +3470,81 @@ mod tests {
         assert_eq!(parsed.pools[&3].kind, PoolKind::Cache);
         assert_eq!(parsed.pools[&3].size, 2);
         assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    const FILE: &str = "cluster 1
+network ib data trusted subnet 192.0.2.0/24
+node 0 rack 0 203.0.113.10:9100
+endpoint 0 ib 192.0.2.10:9100
+node 1 rack 0 203.0.113.11:9100
+port 1 ibp12s0 compute
+pool 1 v replicated size 2 min 1 pgs 8
+";
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// Ports travel in format 17 only once the map has any; a port with
+    /// no role set is `storage` when it carries an endpoint and `host`
+    /// otherwise (D237); senders weight an endpoint by its port's weight.
+    #[test]
+    fn ports_have_roles_by_default_or_set_and_weights_for_senders() {
+        let mut m = parse_cluster(FILE).unwrap();
+        assert_eq!(m.ports["1/ibp12s0"].role, Some(PortRole::Compute));
+        assert_eq!(m.port_role("1/ibp12s0"), PortRole::Compute);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 17);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+
+        // Node 0's ports, as its report gives them.
+        let ep: SocketAddr = "192.0.2.10:9100".parse().unwrap();
+        assert_eq!(m.endpoint_weight(ep), None, "port not known yet");
+        for (id, a) in [("0/ibp12s0", "192.0.2.10"), ("0/eno1", "203.0.113.10")] {
+            m.ports.entry(id.into()).or_default().addrs = vec![ip(a)];
+        }
+        assert_eq!(m.port_role("0/ibp12s0"), PortRole::Storage);
+        assert_eq!(m.port_role("0/eno1"), PortRole::Host);
+        assert_eq!(m.port_role("0/nothing"), PortRole::Host);
+        assert_eq!(m.endpoint_port(ep), Some("0/ibp12s0"));
+        m.ports.get_mut("0/ibp12s0").unwrap().weight_mbs = 22_500;
+        assert_eq!(m.endpoint_weight(ep), Some(22.5));
+        {
+            let p = m.ports.get_mut("0/ibp12s0").unwrap();
+            p.lent = true;
+            p.revoking = Some(1_700_000_030_000);
+            p.last_change = Some(1_700_000_000_000);
+        }
+        assert_eq!(ClusterMap::decode(&m.encode()).unwrap(), m);
+
+        // Set and back to the default; the epoch moves only on a change.
+        let e = m.epoch;
+        assert_eq!(
+            m.set_port_role("0/eno1", Some(PortRole::Converged)),
+            Ok(true)
+        );
+        assert_eq!(m.port_role("0/eno1"), PortRole::Converged);
+        assert_eq!(
+            m.set_port_role("0/eno1", Some(PortRole::Converged)),
+            Ok(false)
+        );
+        assert_eq!(m.set_port_role("0/eno1", None), Ok(true));
+        assert_eq!(m.epoch, e + 2);
+        assert!(m.set_port_role("7/eno1", None).is_err(), "no node 7");
+        assert!(m.set_port_role("eno1", None).is_err());
+        assert!(parse_cluster(&FILE.replace("compute", "gpu")).is_err());
+
+        // A removed node's ports go with it.
+        m.remove_device(1000);
+        assert!(m.ports.keys().all(|id| !id.starts_with("1/")));
+        let mut plain = m.clone();
+        plain.ports.clear();
+        let b = plain.encode();
+        assert!(u32::from_le_bytes(b[..4].try_into().unwrap()) < 17);
     }
 }

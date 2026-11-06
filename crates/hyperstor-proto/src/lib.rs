@@ -344,6 +344,13 @@ pub enum Msg {
         reporter: u32,
         addr: std::net::SocketAddr,
     },
+    /// Storage node to map service: its network ports every 10 s, for
+    /// the fabric reconciler (26-networks.md §29.8, D203, D208). Answered
+    /// `Noted`.
+    PortReport {
+        node: u32,
+        ports: Vec<PortSample>,
+    },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (09-replication.md §8.5).
     Push {
@@ -817,6 +824,7 @@ mod kind {
     pub const STUCK: u16 = 89;
     pub const STUCK_STATE: u16 = 90;
     pub const STUCK_STATE_OK: u16 = 91;
+    pub const PORT_REPORT: u16 = 92;
     pub const ERROR: u16 = 99;
 }
 
@@ -893,6 +901,7 @@ impl Msg {
             Msg::PeerDown { .. } => PEER_DOWN,
             Msg::PeerDownOk => PEER_DOWN_OK,
             Msg::EndpointDown { .. } => ENDPOINT_DOWN,
+            Msg::PortReport { .. } => PORT_REPORT,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
             Msg::LeaseHeld { .. } => LEASE_HELD,
@@ -1060,6 +1069,9 @@ impl Msg {
             }
             Msg::EndpointDown { reporter, addr } => {
                 e.u32(*reporter).str(&addr.to_string());
+            }
+            Msg::PortReport { node, ports } => {
+                e.u32(*node).seq(ports, |e, p| p.encode(e));
             }
             Msg::Fence { epoch, pgs } => {
                 e.u64(*epoch).seq(pgs, |e, (p, g)| {
@@ -1521,6 +1533,10 @@ impl Msg {
             ENDPOINT_DOWN => Msg::EndpointDown {
                 reporter: d.u32()?,
                 addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
+            },
+            PORT_REPORT => Msg::PortReport {
+                node: d.u32()?,
+                ports: d.seq(4, PortSample::decode)?,
             },
             BACKFILL_DONE => Msg::BackfillDone {
                 pool: d.u32()?,
@@ -2212,6 +2228,52 @@ pub fn decode_object(b: &[u8]) -> Result<WireObject, DecodeError> {
 }
 
 /// Encodes a frame: header, body, then `payload`.
+/// One network port of a node, in its `PortReport` (26-networks.md
+/// §29.8): its state, and its byte counters since boot, all traffic and
+/// hyperstor's own (bytes its connections sent and received from the
+/// port's addresses), so the reconciler sees what else uses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSample {
+    /// The netdev (`ibp12s0`).
+    pub name: String,
+    pub up: bool,
+    /// Link speed, Mb/s; 0 when the link reports none.
+    pub speed_mbps: u32,
+    pub addrs: Vec<std::net::IpAddr>,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+    pub own_tx: u64,
+    pub own_rx: u64,
+}
+
+impl PortSample {
+    fn encode(&self, e: &mut Enc) {
+        e.str(&self.name)
+            .bool(self.up)
+            .u32(self.speed_mbps)
+            .seq(&self.addrs, |e, a| {
+                e.str(&a.to_string());
+            })
+            .u64(self.tx_bytes)
+            .u64(self.rx_bytes)
+            .u64(self.own_tx)
+            .u64(self.own_rx);
+    }
+
+    fn decode(d: &mut Dec) -> Result<PortSample, DecodeError> {
+        Ok(PortSample {
+            name: d.str()?.to_string(),
+            up: d.bool()?,
+            speed_mbps: d.u32()?,
+            addrs: d.seq(2, |d| d.str()?.parse().map_err(|_| DecodeError::Utf8))?,
+            tx_bytes: d.u64()?,
+            rx_bytes: d.u64()?,
+            own_tx: d.u64()?,
+            own_rx: d.u64()?,
+        })
+    }
+}
+
 pub fn encode_frame(req: u64, msg: &Msg, payload: &[u8]) -> Vec<u8> {
     let mut body = Enc::with_capacity(64);
     msg.encode_body(&mut body);
@@ -2401,6 +2463,19 @@ mod tests {
             Msg::EndpointDown {
                 reporter: 1,
                 addr: "192.0.2.1:9100".parse().unwrap(),
+            },
+            Msg::PortReport {
+                node: 1,
+                ports: vec![PortSample {
+                    name: "ibp12s0".into(),
+                    up: true,
+                    speed_mbps: 200_000,
+                    addrs: vec!["192.0.2.1".parse().unwrap()],
+                    tx_bytes: 1 << 40,
+                    rx_bytes: 7,
+                    own_tx: 1 << 30,
+                    own_rx: 3,
+                }],
             },
             Msg::BackfillDone {
                 pool: 1,

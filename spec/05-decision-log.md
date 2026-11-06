@@ -1236,3 +1236,15 @@ tests' timing. Asked, with a recommendation:
 |---|---|---|---|
 | 196 | When a call that changes the map answers: once the map that has the change is published (recommended); or at once, from the leader's working map, as `device add` did | Once published | D236 |
 | 197 | Admin reads (`trash list`) that queue behind a purge's deletes on the same devices: D46's priority classes, with control-path reads ahead of bulk deletes (recommended); smaller purge batches or a longer CLI deadline now | D46's classes, no change now | D46 (HS10b) |
+
+## The fabric reconciler in the leader (2026-11-06)
+
+Before building stage 3 of HS19 (26-networks.md §29.8), two of its
+inputs had no answer: where a port's role comes from, and whether
+lending waits for G52. Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 200 | Where a port's base role comes from: the map, set by the operator with `hyperstorctl` and the cluster file, `storage` by default for ports with endpoints and `host` otherwise (recommended); a file on each host, reported by its node; or glidex's topology or netd | The map, set by the operator | D237 |
+| 201 | How stage 3 ships before G52: lending `off` by default until G52 is measured (recommended); G52 first; or `idle` at §29.8's starting values | `idle` as specified | D238 |
+

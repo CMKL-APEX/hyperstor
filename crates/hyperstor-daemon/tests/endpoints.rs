@@ -9,6 +9,7 @@ use hyperstor_meta::{ClusterMap, NetKind, NetworkDef, replicated_pool};
 use hyperstor_reactor::{block_on, spawn};
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,6 +64,21 @@ impl Rig {
         peer_timeout: Duration,
         partitions: Option<Arc<faults::Partitions>>,
     ) -> Rig {
+        Rig::start_with(nodes, copies, per, peer_timeout, partitions, None)
+    }
+
+    /// [`Rig::start`], and with `fabric`, each node's endpoint i on
+    /// 127.0.0.(2 + i), port `ep{i}` of its node for the fabric
+    /// reconciler, which runs every 200 ms with that policy, and each
+    /// node's `ep1` a `compute` port.
+    fn start_with(
+        nodes: bool,
+        copies: u8,
+        per: u16,
+        peer_timeout: Duration,
+        partitions: Option<Arc<faults::Partitions>>,
+        fabric: Option<hyperstor_fabric::reconcile::Policy>,
+    ) -> Rig {
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -79,7 +95,11 @@ impl Rig {
         for n in 0..3u32 {
             let main = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let eps: Vec<std::net::TcpListener> = (0..per)
-                .map(|_| std::net::TcpListener::bind("127.0.0.2:0").unwrap())
+                .map(|i| {
+                    let ip = if fabric.is_some() { 2 + i as u8 } else { 2 };
+                    std::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, ip), 0))
+                        .unwrap()
+                })
                 .collect();
             let addrs: Vec<SocketAddr> = eps.iter().map(|l| l.local_addr().unwrap()).collect();
             map.add_node(n, &[main.local_addr().unwrap()], 0);
@@ -89,6 +109,12 @@ impl Rig {
             );
             endpoints.push(addrs);
             specs.push((n, main, eps));
+        }
+        if fabric.is_some() {
+            for n in 0..3u32 {
+                map.set_port_role(&format!("{n}/ep1"), Some(hyperstor_meta::PortRole::Compute))
+                    .unwrap();
+            }
         }
         let mut pool = replicated_pool(POOL, "vol", copies, 16);
         pool.min_size = 1;
@@ -101,6 +127,9 @@ impl Rig {
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
                 let meta = hyperstor_meta::Meta::with_lease(map, Duration::from_millis(400));
+                if let Some(p) = fabric {
+                    meta.set_fabric(p, Duration::from_millis(200));
+                }
                 spawn(hyperstor_meta::serve(
                     hyperstor_reactor::net::TcpListener::from_std(meta_l),
                     meta.clone(),
@@ -366,6 +395,130 @@ fn a_fenced_holder_is_refused_on_every_network() {
                     "on fast {on}: {e:?}"
                 );
             }
+        })
+    })
+    .join()
+    .unwrap();
+    rig.stop();
+}
+
+/// Bytes hyperstor's connections in this process sent and received from
+/// `ip`.
+fn own_bytes(ip: [u8; 4]) -> u64 {
+    let ip = std::net::IpAddr::from(ip);
+    hyperstor_rpc::traffic::totals()
+        .into_iter()
+        .filter(|(a, _, _)| *a == ip)
+        .map(|(_, tx, rx)| tx + rx)
+        .sum()
+}
+
+/// The fabric reconciler in the leader (26-networks.md §29.8; D208, D209,
+/// D237, D238): nodes report their ports, a `compute` port idle for the
+/// dwell is lent and senders spread over it; when other traffic appears
+/// it is taken back, and senders leave it at once.
+#[test]
+fn a_compute_port_is_lent_while_idle_and_left_when_busy() {
+    use hyperstor_fabric::reconcile::Policy;
+    use hyperstor_proto::{Msg, PortSample};
+    let policy = Policy {
+        dwell_ms: 600,
+        revoke_ms: 600,
+        ..Policy::default()
+    };
+    let rig = Rig::start_with(true, 3, 2, Duration::ZERO, None, Some(policy));
+    let meta_addr = rig.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta_addr, 7).await.unwrap();
+            cl.set_networks(networks(true));
+            wait_map(&cl, "nodes up", |m| m.nodes.values().all(|n| n.up)).await;
+            // Each node's two ports, as its report would give them: 100
+            // Gb/s, with `other` bytes on ep1 since the last report.
+            let busy = Rc::new(std::cell::Cell::new(false));
+            let reporter = {
+                let busy = busy.clone();
+                spawn(async move {
+                    let c = hyperstor_rpc::Conn::connect(meta_addr).await.unwrap();
+                    let mut ep1 = 0u64;
+                    loop {
+                        if busy.get() {
+                            ep1 += 2_000_000_000;
+                        }
+                        for node in 0..3 {
+                            let port = |name: &str, ip: [u8; 4], tx: u64| PortSample {
+                                name: name.into(),
+                                up: true,
+                                speed_mbps: 100_000,
+                                addrs: vec![ip.into()],
+                                tx_bytes: tx,
+                                rx_bytes: 0,
+                                own_tx: 0,
+                                own_rx: 0,
+                            };
+                            let ports = vec![
+                                port("ep0", [127, 0, 0, 2], 0),
+                                port("ep1", [127, 0, 0, 3], ep1),
+                            ];
+                            let _ = c.call(&Msg::PortReport { node, ports }, &[]).await;
+                        }
+                        hyperstor_reactor::time::sleep(Duration::from_millis(100)).await;
+                    }
+                })
+            };
+            let ep = |i: usize| -> SocketAddr {
+                let m = cl.map();
+                m.endpoints[&0][i].1
+            };
+            wait_map(&cl, "ep1 lent", |m| {
+                m.ports
+                    .get("0/ep1")
+                    .is_some_and(|p| p.lent && p.weight_mbs > 0)
+            })
+            .await;
+            let m = cl.map();
+            assert_eq!(m.port_role("0/ep0"), hyperstor_meta::PortRole::Storage);
+            assert_eq!(m.endpoint_weight(ep(0)), Some(12.5));
+            assert_eq!(m.endpoint_weight(ep(1)), Some(12.5));
+            // Writes reach every node over both its endpoints.
+            let before = own_bytes([127, 0, 0, 3]);
+            let data = vec![7u8; 2 * CHUNK as usize];
+            for v in 1..=8u128 {
+                cl.write(POOL, v, 0, data.clone()).await.unwrap();
+            }
+            assert!(
+                own_bytes([127, 0, 0, 3]) - before > 4 * CHUNK as u64,
+                "lent: used"
+            );
+
+            // A job starts on ep1: taken back, weight 0 at once.
+            busy.set(true);
+            wait_map(&cl, "ep1 taken back", |m| {
+                m.ports.get("0/ep1").is_some_and(|p| p.weight_mbs == 0)
+            })
+            .await;
+            assert_eq!(
+                cl.map().weighted_addrs_on(0, &networks(true)),
+                vec![(ep(0), 12.5)]
+            );
+            // The nodes have the map too (pushed as it's published).
+            hyperstor_reactor::time::sleep(Duration::from_millis(500)).await;
+            let before = own_bytes([127, 0, 0, 3]);
+            for v in 1..=8u128 {
+                cl.write(POOL, v, 0, data.clone()).await.unwrap();
+                assert_eq!(cl.read(POOL, v, 0, data.len() as u64).await.unwrap(), data);
+            }
+            assert!(
+                own_bytes([127, 0, 0, 3]) - before < CHUNK as u64,
+                "taken back: left, but for pings"
+            );
+            wait_map(&cl, "ep1 returned", |m| {
+                m.ports
+                    .get("0/ep1")
+                    .is_some_and(|p| !p.lent && p.revoking.is_none())
+            })
+            .await;
+            drop(reporter);
         })
     })
     .join()

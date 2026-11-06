@@ -641,6 +641,50 @@ fn devices_report_their_kind_and_classes_follow_it() {
     });
 }
 
+/// D237: an operator gives a port a role, `port list` shows it as set,
+/// and `default` returns it to the default; a bad role, an unknown node
+/// or a missing name is refused. Audited.
+#[test]
+fn a_ports_role_is_set_and_returned_to_its_default() {
+    let c = Cluster::all_in_one("portrole", 1);
+    let set = c
+        .ctl(&[
+            "port", "role", "--node", "0", "--name", "ib9", "--role", "compute",
+        ])
+        .ok();
+    assert!(set.has("port 0/ib9: role compute"), "{}", set.out);
+    let l = c.ctl(&["port", "list", "--node", "0"]).ok();
+    assert!(l.has(" ib9 ") && l.has(" compute* "), "{}", l.out);
+    let j = c.ctl(&["port", "list", "--json"]).ok();
+    assert!(
+        j.has("\"name\":\"ib9\"") && j.has("\"role_set\":true"),
+        "{}",
+        j.out
+    );
+    c.ctl(&[
+        "port", "role", "--node", "0", "--name", "ib9", "--role", "gpu",
+    ])
+    .expect(1);
+    c.ctl(&[
+        "port", "role", "--node", "9", "--name", "ib9", "--role", "host",
+    ])
+    .expect(1);
+    c.ctl(&["port", "role", "--node", "0", "--role", "host"])
+        .expect(2);
+    let d = c
+        .ctl(&[
+            "port", "role", "--node", "0", "--name", "ib9", "--role", "default",
+        ])
+        .ok();
+    assert!(d.has("port 0/ib9: role default"), "{}", d.out);
+    let l = c.ctl(&["port", "list"]).ok();
+    assert!(!l.has(" ib9 "), "no role, no report: gone: {}", l.out);
+    wait_for("both changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPortRole"]).ok();
+        (a.has("role=compute") && a.has("role=default")).then_some(())
+    });
+}
+
 /// D164: a pool's class set: refused when its devices span fewer hosts
 /// than the pool's copies; set, its PGs leave devices of other classes;
 /// `any` brings every device back. Audited.
