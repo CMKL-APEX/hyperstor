@@ -1259,3 +1259,13 @@ parts needed a decision. Asked, with options and a recommendation:
 | 203 | How `Watch` ships: `ListClaims` now, polled with renewals, and a stream later (recommended); or the API's first server-streaming call now | List now, stream later | D240 |
 | 204 | glidex's scheduler as the first client: a glidex issue, with hyperstor's side tested end to end here (recommended); or a glidex pull request too | A glidex issue | D241 |
 
+## Starting is not flapping (2026-11-06)
+
+CI's end-to-end runs after #210 failed on health held at `warn` by D149's
+flapping warning: nodes marked down while their devices opened, then
+once more for a test's own kill, made two transitions. The owner's
+answer, when shown the flakes:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 205 | Whether a node's down before it is first heard from counts as a flap | No: starting a node isn't flapping; the product, not only the tests, changes | D242 |

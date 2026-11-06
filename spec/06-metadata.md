@@ -58,7 +58,8 @@ that no single node sees every change (D28):
 - **Flap damping** (D149). A node marked down comes back up only after a
   hold: 2 s, doubled for each further down within 10 minutes, at most
   60 s. Health warns about a node that went down twice or more in that
-  window. As built (I183), long work on a storage node's reactor
+  window. A node not yet heard from since the leader began leading is
+  starting: it is down, but not held and not counted (D242). As built (I183), long work on a storage node's reactor
   (digests and backfill's comparison) also yields in batches, so it
   misses fewer pings in the first place. As built (I188), a large
   key–value table's digest is taken in parts with yields between; a
