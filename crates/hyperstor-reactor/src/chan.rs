@@ -91,6 +91,11 @@ impl<T> Receiver<T> {
     pub fn drain(&mut self) -> Vec<T> {
         self.s.lock().unwrap().queue.drain(..).collect()
     }
+
+    /// The next value queued now, without waiting.
+    pub fn try_recv(&mut self) -> Option<T> {
+        self.s.lock().unwrap().queue.pop_front()
+    }
 }
 
 impl<T> Drop for Receiver<T> {

@@ -146,15 +146,41 @@ pub async fn read_frame_counted(
     Ok((h, msg, payload))
 }
 
-/// Sends frames from `rx` on `s`, batching what has queued up, and
-/// counts them as its local address's traffic.
+/// How many bytes of queued frames [`writer`] joins into one send.
+pub const BATCH_BYTES: usize = 256 << 10;
+
+/// The next send: `first`, joined by the frames queued behind it while
+/// the whole fits in [`BATCH_BYTES`]. A frame that doesn't fit is left in
+/// `next` and sent on its own, uncopied: joining every queued push into
+/// one buffer copied hundreds of MB and held the reactor 100–125 ms
+/// (I281).
+fn next_send(first: Vec<u8>, rx: &mut Receiver<Vec<u8>>, next: &mut Option<Vec<u8>>) -> Vec<u8> {
+    let mut buf = first;
+    while buf.len() < BATCH_BYTES {
+        let Some(more) = rx.try_recv() else { break };
+        if buf.len() + more.len() > BATCH_BYTES {
+            *next = Some(more);
+            break;
+        }
+        buf.extend_from_slice(&more);
+    }
+    buf
+}
+
+/// Sends frames from `rx` on `s`, batching small frames that have queued
+/// up ([`next_send`]), and counts them as its local address's traffic.
 pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Vec<u8>>) {
     let counter = counter_of(&s);
-    while let Some(first) = rx.recv().await {
-        let mut buf = first;
-        for more in rx.drain() {
-            buf.extend_from_slice(&more);
-        }
+    let mut next = None;
+    loop {
+        let first = match next.take() {
+            Some(f) => f,
+            None => match rx.recv().await {
+                Some(f) => f,
+                None => return,
+            },
+        };
+        let buf = next_send(first, &mut rx, &mut next);
         if let Some(c) = &counter {
             c.sent(buf.len());
         }
@@ -549,6 +575,72 @@ mod pool_tests {
                 assert!(c.await);
             }
             assert_eq!(pool.connects(), 2);
+        });
+    }
+
+    /// I281: small frames queued together go out in one send of at most
+    /// [`BATCH_BYTES`]; a frame that doesn't fit goes out on its own,
+    /// uncopied, and the order holds.
+    #[test]
+    fn the_writer_joins_small_frames_and_sends_large_ones_alone() {
+        let (tx, mut rx) = channel::<Vec<u8>>();
+        let push = vec![7u8; 4 << 20];
+        let push_at = push.as_ptr();
+        for f in [vec![1u8; 100], vec![2; 200], push, vec![3; 300]] {
+            tx.send(f).unwrap();
+        }
+        for _ in 0..2 * BATCH_BYTES / 1000 {
+            tx.send(vec![4; 1000]).unwrap();
+        }
+        let mut next = None;
+        let mut sends = Vec::new();
+        while let Some(first) = next.take().or_else(|| rx.try_recv()) {
+            sends.push(next_send(first, &mut rx, &mut next));
+        }
+        assert_eq!(sends[0], [vec![1u8; 100], vec![2; 200]].concat());
+        assert_eq!(sends[1].as_ptr(), push_at, "the push is sent as queued");
+        assert_eq!(sends[1].len(), 4 << 20);
+        assert!(sends[2].starts_with(&[3; 300]));
+        assert!(sends[2..].iter().all(|b| b.len() <= BATCH_BYTES));
+        assert_eq!(sends.len(), 5, "small frames fill sends of the batch size");
+        let tail: Vec<u8> = sends[2..].concat();
+        assert_eq!(tail.len(), 300 + 2 * BATCH_BYTES / 1000 * 1000);
+    }
+
+    /// I281: frames of every size reach the peer whole and in order.
+    #[test]
+    fn the_writer_delivers_mixed_frames_in_order() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let frames: Vec<Vec<u8>> = (0..40u32)
+                .map(|i| {
+                    vec![
+                        i as u8;
+                        if i % 7 == 3 {
+                            3 << 20
+                        } else {
+                            100 + i as usize * 50
+                        }
+                    ]
+                })
+                .collect();
+            let want = frames.concat();
+            let n = want.len();
+            let reader = spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let (r, got) = s.read_exact(vec![0; n]).await;
+                r.unwrap();
+                got
+            });
+            let s = Rc::new(TcpStream::connect(addr).await.unwrap());
+            let (tx, rx) = channel();
+            for f in frames {
+                tx.send(f).unwrap();
+            }
+            drop(tx);
+            writer(s, rx).await;
+            assert!(reader.await == want);
         });
     }
 }
