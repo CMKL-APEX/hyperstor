@@ -12,7 +12,7 @@ may send any request to any of them.
 > copies, conditional requests and multi-object deletes come in stage 4.
 
 ```text
-usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
+usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
 ```
 
 | Option | Default | Meaning |
@@ -21,6 +21,7 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--tls DIR` | | Holds `s3.crt` (the certificate chain, leaf first) and `s3.key`: the name clients connect to must be in the certificate. Read at start |
 | `--api ADDR[,ADDR...]` | | The cluster API of the map service's members, tried in turn: the access keys and placements come from there, every 5 seconds |
 | `--identity DIR` | | With `--api`: the gateway's own certificate, `s3.crt` and `s3.key`, of role `s3`, and the cluster's `root.crt`. Only an `s3` certificate may read the keys. It names the gateway's addresses, so `--tls` may be the same directory where clients trust the cluster's root |
+| `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`) |
 | `--keys FILE` | | Instead of `--api`, for running without the cluster API: the access keys, one per line: `ID SECRET TENANT`; `#` starts a comment. Readable by its owner only (`chmod 600`), or the gateway won't start |
 | `--data-pool NAME` | | With `--keys`: the pool new buckets keep their objects' bytes in |
 | `--index-pool NAME` | | With `--keys`: the pool new buckets keep their index in: flash, ideally |

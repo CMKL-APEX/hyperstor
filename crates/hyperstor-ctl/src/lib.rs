@@ -983,6 +983,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("S3Service.ListS3Placements", "s3 placement list"),
     // The gateways' own call (D231): secrets, for s3 certificates only.
     ("S3Service.GetS3Gateway", "hyperstor-s3"),
+    ("RealmService.CreateRealm", "realm create"),
+    ("RealmService.ListRealms", "realm list"),
+    ("RealmService.DeleteRealm", "realm delete"),
+    ("RealmService.SetTenantRealm", "realm tenant"),
+    ("RealmService.SetPoolRealms", "realm pool"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),
@@ -1210,20 +1215,58 @@ pub fn s3_keys_text(r: &pb::ListS3KeysResponse) -> String {
         return "no S3 keys\n".into();
     }
     let mut o = format!(
-        "{:<20}  {:>6}  {:<16}  {:<20}  {}\n",
-        "KEY", "TENANT", "CREATED (UTC)", "BY", "DESCRIPTION"
+        "{:<20}  {:>6}  {:<12}  {:<16}  {:<20}  {}\n",
+        "KEY", "TENANT", "REALM", "CREATED (UTC)", "BY", "DESCRIPTION"
     );
     for k in &r.keys {
         let _ = writeln!(
             o,
-            "{:<20}  {:>6}  {:<16}  {:<20}  {}",
+            "{:<20}  {:>6}  {:<12}  {:<16}  {:<20}  {}",
             k.id,
             k.tenant,
+            k.realm,
             utc(k.created_unix),
             k.created_by,
             k.description
         );
     }
+    o
+}
+
+/// Realms, their tenants and pools (D248, D249).
+pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
+    let mut o = format!(
+        "{:<12}  {:>4}  {:<24}  {:<24}  {}\n",
+        "REALM", "ID", "TENANTS", "POOLS", "DESCRIPTION"
+    );
+    let list = |v: Vec<String>, none: &str| {
+        if v.is_empty() {
+            none.to_string()
+        } else {
+            v.join(",")
+        }
+    };
+    for x in &r.realms {
+        let tenants = if x.id == 0 {
+            "the others".to_string()
+        } else {
+            list(x.tenants.iter().map(u32::to_string).collect(), "-")
+        };
+        let _ = writeln!(
+            o,
+            "{:<12}  {:>4}  {:<24}  {:<24}  {}",
+            x.name,
+            x.id,
+            tenants,
+            list(x.pools.clone(), "-"),
+            x.description
+        );
+    }
+    let _ = writeln!(
+        o,
+        "Every realm may use: {}",
+        list(r.open_pools.clone(), "no pool")
+    );
     o
 }
 
@@ -1233,8 +1276,8 @@ pub fn s3_placements_text(r: &pb::ListS3PlacementsResponse) -> String {
         return "no S3 placements: buckets can't be created until `s3 placement set --name default` names pools\n".into();
     }
     let mut o = format!(
-        "{:<20}  {:<20}  {}\n",
-        "PLACEMENT", "DATA POOL", "INDEX POOL"
+        "{:<12}  {:<20}  {:<20}  {}\n",
+        "REALM", "PLACEMENT", "DATA POOL", "INDEX POOL"
     );
     // A pool deleted since shows by its id.
     let pool = |name: &str, id: u32| {
@@ -1247,7 +1290,8 @@ pub fn s3_placements_text(r: &pb::ListS3PlacementsResponse) -> String {
     for p in &r.placements {
         let _ = writeln!(
             o,
-            "{:<20}  {:<20}  {}",
+            "{:<12}  {:<20}  {:<20}  {}",
+            p.realm,
             p.name,
             pool(&p.data_pool, p.data_pool_id),
             pool(&p.index_pool, p.index_pool_id)

@@ -419,3 +419,118 @@ fn a_gateway_joins_with_an_s3_token() {
     install(&c.root, &[]);
     assert!(!c.root.join("etc/hyperstor/s3.env").exists());
 }
+
+/// A realm (20-tenants.md §24.8, D248–D250) has its own gateway, keys and
+/// pools on the same cluster: its tenants' keys work only at its gateway,
+/// its placements name only pools it may use, a pool isn't taken from a
+/// realm whose placement uses it, and it isn't deleted while used. Two
+/// tenants in two realms may both have `photos` (D243).
+#[test]
+fn a_realm_has_its_own_gateway_keys_and_pools() {
+    let mut c = Cluster::all_in_one("s3realm", 3);
+    install(&c.root, &[]);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "acmedata", "--classes", "file"])
+        .ok();
+    wait_for("pool 3 in the map", 10, || {
+        c.ctl(&["pools"]).has("acmedata").then_some(())
+    });
+    let made = c
+        .ctl(&["realm", "create", "--name", "acme", "--description", "a customer"])
+        .ok();
+    assert!(made.has("realm acme made (id 1)"), "{}", made.out);
+    let again = c.ctl(&["realm", "create", "--name", "acme"]).expect(1);
+    assert!(again.has("exists"), "{}", again.out);
+    c.ctl(&["realm", "create", "--name", "default"]).expect(1);
+    // Pool 3 is acme's alone; its placement may use it, default's may not.
+    c.ctl(&["realm", "pool", "--pool", "3", "--realm", "acme"])
+        .ok();
+    let r = placement(&c, "other", "acmedata").expect(1);
+    assert!(r.has("may not use pool"), "{}", r.out);
+    c.ctl(&[
+        "s3",
+        "placement",
+        "set",
+        "--realm",
+        "acme",
+        "--name",
+        "default",
+        "--data-pool",
+        "acmedata",
+        "--index-pool",
+        "vol",
+    ])
+    .ok();
+    let r = c
+        .ctl(&["realm", "pool", "--pool", "3", "--realm", "default"])
+        .expect(1);
+    assert!(r.has("uses the pool"), "{}", r.out);
+    // Tenant 2 is acme's; tenant 1 stays in default.
+    c.ctl(&["realm", "tenant", "--tenant", "2", "--realm", "acme"])
+        .ok();
+    c.ctl(&["realm", "tenant", "--tenant", "2", "--realm", "nope"])
+        .expect(1);
+    let (id1, secret1) = new_key(&c);
+    let made = c.ctl(&["s3", "key", "create", "--tenant", "2"]).ok();
+    let line = made.out.lines().next().unwrap().to_string();
+    let (id2, secret2) = line.split_once(' ').unwrap();
+    let (id2, secret2) = (id2.to_string(), secret2.trim().to_string());
+    let list = c.ctl(&["realm", "list"]).ok();
+    let acme = list.out.lines().find(|l| l.starts_with("acme")).unwrap_or_default();
+    assert!(acme.contains(" 2 ") && acme.contains("acmedata"), "{}", list.out);
+    let keys = c.ctl(&["s3", "key", "list"]).ok();
+    let k2 = keys.out.lines().find(|l| l.starts_with(&id2)).unwrap_or_default();
+    assert!(k2.contains("acme"), "{}", keys.out);
+    let places = c.ctl(&["s3", "placement", "list"]).ok();
+    assert!(
+        places.out.lines().any(|l| l.starts_with("acme") && l.contains("acmedata (#3)")),
+        "{}",
+        places.out
+    );
+    // Not deleted while it has a tenant, a pool and a placement.
+    let r = c.ctl(&["realm", "delete", "--name", "acme"]).expect(1);
+    assert!(r.has("1 tenant(s)"), "{}", r.out);
+
+    // default's gateway, as installed, and acme's, started by hand: each
+    // has its own realm's key and placement.
+    c.start_s3();
+    let gw_log = c.scratch.path("s3.log");
+    wait_for("default's gateway's keys", 30, || {
+        log(&gw_log)
+            .contains("1 access keys, 1 placements")
+            .then_some(())
+    });
+    let me = identity(&c, hyperstor_pki::Role::S3, "acme-gateway");
+    let acme_port = free_ports(1);
+    let acme_log = c.scratch.path("acme.log");
+    let _acme = Gateway(
+        Command::new(bin_dir().join("hyperstor-s3"))
+            .args(["--meta", &c.map, "--api", &c.api, "--realm", "acme"])
+            .args(["--tls", me.to_str().unwrap()])
+            .args(["--identity", me.to_str().unwrap()])
+            .args(["--listen", &format!("127.0.0.1:{acme_port}")])
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&acme_log).unwrap())
+            .spawn()
+            .unwrap(),
+        acme_log.clone(),
+    );
+    wait_for("acme's gateway's keys", 30, || {
+        log(&acme_log)
+            .contains("1 access keys, 1 placements")
+            .then_some(())
+    });
+    let Some(python) = sdk_python() else { return };
+    let ca = c.pki().join("root.crt");
+    let at = |port: u16, id: &str, secret: &str, s: &[&str]| sdk(&python, port, &ca, id, secret, s);
+    // Each key at its own realm's gateway; unknown at the other's (D250).
+    assert_eq!(at(acme_port, &id2, &secret2, &["create", "photos"]), "created");
+    assert_eq!(at(acme_port, &id2, &secret2, &["roundtrip", "photos"]), "roundtrip ok");
+    assert_eq!(at(c.s3_port, &id1, &secret1, &["create", "photos"]), "created");
+    assert_eq!(at(c.s3_port, &id1, &secret1, &["roundtrip", "photos"]), "roundtrip ok");
+    assert_eq!(at(c.s3_port, &id2, &secret2, &["denied"]), "InvalidAccessKeyId");
+    assert_eq!(at(acme_port, &id1, &secret1, &["denied"]), "InvalidAccessKeyId");
+}

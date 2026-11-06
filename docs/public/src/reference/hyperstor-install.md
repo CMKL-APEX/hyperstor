@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
 ```
 
 | Command | Does |
@@ -56,6 +56,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--s3` | off; on for `--all-in-one` | Also run the S3 gateway, [`hyperstor-s3`](hyperstor-s3.md), here: the unit `hyperstor-s3.service`, reading access keys from the cluster API with its own `s3` certificate (`/etc/hyperstor/pki/s3.crt`). On a map service host that certificate is signed here; on a joined storage host it needs an `s3` token, given with `--s3` in a run after the host's join. The all-in-one cluster runs one and, once its map service answers, sets the `default` placement to its pool `vol`, once. Saved |
 | `--no-s3` | | Remove it again |
 | `--s3-port P` | 8848 | Where the gateway listens, on every address. Saved |
+| `--s3-realm NAME` | `default` | The [realm](../admin-guide/installation.md#realms) the gateway serves; empty: `default`. Saved |
 | `--s3-tls DIR` | | The site's certificate for the gateway, `DIR/s3.crt` (the chain) and `DIR/s3.key`, readable by the `hyperstor` user; empty: its own certificate from the cluster CA, which names this host's names and addresses. Saved |
 | `--vhost-user NAME` | | A user who may use `hyperstor-vhost` (glidex's, say): its control socket, and, for the first one named, the sockets go to the user's primary group. Repeat for more; given at all, it replaces the saved list. Saved |
 | `--path P` | | `format-device`: the device to format |

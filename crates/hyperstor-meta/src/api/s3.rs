@@ -8,12 +8,16 @@
 //! - **Gateways** (`s3` certificates, D233) fetch every key with its
 //!   secret, and the placements, from any member's applied copy.
 //! - **Placements** name pools of the map, kept by id so a renamed pool
-//!   keeps its placements; setting one checks they exist, and that neither
-//!   is a cache pool (S3's data must not be evicted) or `.meta`.
+//!   keeps its placements; setting one checks they exist, that neither
+//!   is a cache pool (S3's data must not be evicted) or `.meta`, and that
+//!   the placement's realm may use them (D249).
+//! - **Realms** (D248, D250): a gateway serves one, and is answered only
+//!   its tenants' keys and its placements.
 
 use super::admin::random_bytes;
 use super::{Api, Need, audit, with_reason};
 use crate::PoolKind;
+use crate::realms::{self, Realms};
 use crate::s3keys::{self, Placement, S3Key};
 use crate::tokens::TokenError;
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
@@ -34,7 +38,7 @@ fn invalid(msg: impl Into<String>) -> ConnectError {
 
 /// `p` as the API answers it: the pools' ids, and their names in `map`
 /// now (empty for a pool deleted since).
-fn placement_pb(p: Placement, map: &crate::ClusterMap) -> pb::S3Placement {
+fn placement_pb(p: Placement, map: &crate::ClusterMap, realms: &Realms) -> pb::S3Placement {
     let name = |id: u32| {
         map.pools
             .get(&id)
@@ -46,6 +50,7 @@ fn placement_pb(p: Placement, map: &crate::ClusterMap) -> pb::S3Placement {
         index_pool: name(p.index_pool),
         data_pool_id: p.data_pool,
         index_pool_id: p.index_pool,
+        realm: realms.name(p.realm),
         name: p.name,
         ..Default::default()
     }
@@ -53,7 +58,7 @@ fn placement_pb(p: Placement, map: &crate::ClusterMap) -> pb::S3Placement {
 
 impl Api {
     /// The replicated store, where S3's rows live.
-    fn s3_store(&self) -> Result<Arc<crate::store::Db>, ConnectError> {
+    pub(super) fn s3_store(&self) -> Result<Arc<crate::store::Db>, ConnectError> {
         self.admin
             .signing
             .as_ref()
@@ -105,7 +110,7 @@ impl Api {
     }
 
     /// Audits `r` as the outcome of `op` on `target`, then returns it.
-    fn audited<T>(
+    pub(super) fn audited<T>(
         who: &str,
         op: &str,
         target: &str,
@@ -178,10 +183,12 @@ impl S3Service for Api {
     ) -> ServiceResult<pb::ListS3KeysResponse> {
         self.authorize(&ctx, "ListS3Keys", "s3 keys", false)?;
         let keys = self.s3_rows("key", s3keys::keys).await?;
+        let realms = self.realms().await?;
         Ok(pb::ListS3KeysResponse {
             keys: keys
                 .into_iter()
                 .map(|k| pb::S3Key {
+                    realm: realms.name(realms.realm_of(k.tenant)),
                     id: k.id,
                     tenant: k.tenant,
                     description: k.description,
@@ -219,7 +226,10 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::SetS3PlacementRequest>,
     ) -> ServiceResult<pb::SetS3PlacementResponse> {
         let p = req.placement.as_option().cloned().unwrap_or_default();
-        let target = format!("placement {}", p.name);
+        let target = match p.realm.as_ref() {
+            "" | realms::DEFAULT_REALM => format!("placement {}", p.name),
+            r => format!("realm {r}'s placement {}", p.name),
+        };
         let who = self.authorize(&ctx, "SetS3Placement", &target, true)?;
         let r = async {
             if !s3keys::valid_placement(p.name) {
@@ -248,9 +258,12 @@ impl S3Service for Api {
                 name: p.name.to_string(),
                 data_pool: ids[0],
                 index_pool: ids[1],
+                realm: self.realm_id(p.realm).await?,
             };
-            self.s3_rows("placement", move |db| s3keys::set_placement(db, &place))
-                .await
+            self.realm_rows("such realm", move |db| {
+                realms::set_placement(db, &place)
+            })
+            .await
         }
         .await;
         let target = format!("{target}: data {}, index {}", p.data_pool, p.index_pool);
@@ -263,14 +276,20 @@ impl S3Service for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::DeleteS3PlacementRequest>,
     ) -> ServiceResult<pb::DeleteS3PlacementResponse> {
-        let target = format!("placement {}", req.name);
+        let target = match req.realm.as_ref() {
+            "" | realms::DEFAULT_REALM => format!("placement {}", req.name),
+            r => format!("realm {r}'s placement {}", req.name),
+        };
         let who = self.authorize(&ctx, "DeleteS3Placement", &target, true)?;
         let name = req.name.to_string();
-        let r = self
-            .s3_rows("such placement", move |db| {
-                s3keys::delete_placement(db, &name)
+        let r = async {
+            let realm = self.realm_id(req.realm).await?;
+            self.s3_rows("such placement", move |db| {
+                s3keys::delete_placement(db, realm, &name)
             })
-            .await;
+            .await
+        }
+        .await;
         Self::audited(&who, "DeleteS3Placement", &target, r)?;
         Ok(pb::DeleteS3PlacementResponse::default().into())
     }
@@ -282,9 +301,13 @@ impl S3Service for Api {
     ) -> ServiceResult<pb::ListS3PlacementsResponse> {
         self.authorize(&ctx, "ListS3Placements", "s3 placements", false)?;
         let p = self.s3_rows("placement", s3keys::placements).await?;
+        let realms = self.realms().await?;
         let (map, ..) = self.published().await?;
         Ok(pb::ListS3PlacementsResponse {
-            placements: p.into_iter().map(|p| placement_pb(p, &map)).collect(),
+            placements: p
+                .into_iter()
+                .map(|p| placement_pb(p, &map, &realms))
+                .collect(),
             ..Default::default()
         }
         .into())
@@ -293,18 +316,32 @@ impl S3Service for Api {
     async fn get_s3_gateway(
         &self,
         ctx: RequestContext,
-        _req: ServiceRequest<'_, pb::GetS3GatewayRequest>,
+        req: ServiceRequest<'_, pb::GetS3GatewayRequest>,
     ) -> ServiceResult<pb::GetS3GatewayResponse> {
         // Every few seconds from every gateway: refusals are audited,
         // answers aren't.
         self.authorize_as(&ctx, "GetS3Gateway", "s3 keys", Need::S3)?;
         let key = self.cluster_key()?;
-        let (keys, placements) = self
-            .s3_rows("key", |db| Ok((s3keys::keys(db)?, s3keys::placements(db)?)))
+        let (keys, placements, realms) = self
+            .s3_rows("key", |db| {
+                Ok((
+                    s3keys::keys(db)?,
+                    s3keys::placements(db)?,
+                    realms::load(db)?,
+                ))
+            })
             .await?;
+        // Only the realm's tenants' keys and its placements (D250): another
+        // realm's key is unknown here.
+        let realm = realms.id(req.realm).ok_or_else(|| {
+            with_reason(
+                ConnectError::not_found(format!("no realm {:?}", req.realm)),
+                "not_found",
+            )
+        })?;
         let (map, ..) = self.published().await?;
         let mut out = Vec::with_capacity(keys.len());
-        for k in keys {
+        for k in keys.into_iter().filter(|k| realms.realm_of(k.tenant) == realm) {
             let Some(secret) = key.open(&s3keys::context(&k.id), &k.sealed) else {
                 // Sealed with another key (a member that made its own):
                 // that key can't be served; the others can.
@@ -325,7 +362,8 @@ impl S3Service for Api {
             keys: out,
             placements: placements
                 .into_iter()
-                .map(|p| placement_pb(p, &map))
+                .filter(|p| p.realm == realm)
+                .map(|p| placement_pb(p, &map, &realms))
                 .collect(),
             ..Default::default()
         }

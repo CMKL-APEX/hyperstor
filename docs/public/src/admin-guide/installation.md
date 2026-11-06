@@ -285,6 +285,34 @@ next stage, and it ends requests the gateway is silent on for 100 s.
 Cloudflare sees the traffic in the clear at its edge: keep data that
 must not leave your hands off a tunnel.
 
+### Realms
+
+A realm is a group of tenants that looks like a separate S3 service:
+its own gateways (and so its own name and certificate), keys and pools,
+on the same cluster and, if you like, the same drives. Every tenant is
+in the realm `default` until you put it in another. Unlike Ceph's
+realms, a Hyperstor realm is within one cluster.
+
+```bash
+hyperstorctl realm create --name acme --description "a customer"
+hyperstorctl pool create --name acme-data --classes hdd    # or share a pool
+hyperstorctl realm pool --pool 3 --realm acme              # only acme may use pool 3
+hyperstorctl s3 placement set --realm acme --name default --data-pool acme-data --index-pool flash
+hyperstorctl realm tenant --tenant 42 --realm acme         # before it has buckets
+sudo hyperstor-install install --s3 --s3-realm acme        # on acme's gateway hosts
+```
+
+- A gateway serves one realm: it knows only the keys of that realm's
+  tenants, so another realm's key is refused as unknown.
+- A realm's placements may name only pools it may use. A pool with no
+  list (`realm pool --realm any`) is open to every realm.
+- Bucket names are per tenant: two tenants may both have `photos`, and
+  another tenant's bucket is never found.
+- Realms share the drives' time: a realm that must not feel another's
+  load needs pools on devices of its own.
+- Move a tenant to another realm before it has buckets: the check that
+  its buckets' pools suit the new realm comes later.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:
