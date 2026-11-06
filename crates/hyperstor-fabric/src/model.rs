@@ -105,6 +105,23 @@ pub enum Lending {
     Always,
 }
 
+impl Lending {
+    pub const ALL: [Lending; 3] = [Lending::Off, Lending::Idle, Lending::Always];
+
+    /// As `hyperstorctl` and the API spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Lending::Off => "off",
+            Lending::Idle => "idle",
+            Lending::Always => "always",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Lending> {
+        Lending::ALL.into_iter().find(|l| l.name() == s)
+    }
+}
+
 impl Network {
     /// A network as the map and the API give it: kind `control`, `data`
     /// or `both`; `matches` `subnet IP/LEN` or `ib PREFIX`.

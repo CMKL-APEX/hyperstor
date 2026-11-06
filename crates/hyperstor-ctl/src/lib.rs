@@ -689,6 +689,40 @@ pub fn ports_text(r: &pb::ListPortsResponse) -> String {
     o
 }
 
+/// `hyperstorctl claim list`: the live claims on ports, and the lending
+/// settings (26-networks.md §29.9, D205, D209).
+pub fn claims_text(r: &pb::ListClaimsResponse) -> String {
+    let mut o = format!("lending: {}", r.lending);
+    for p in &r.port_lending {
+        let _ = write!(o, ", port {}/{} {}", p.node, p.name, p.lending);
+    }
+    o.push('\n');
+    if r.claims.is_empty() {
+        o.push_str("no claims\n");
+        return o;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let _ = writeln!(
+        o,
+        "{:>4} {:<12} {:<9} {:>8}  HOLDER",
+        "NODE", "PORT", "MODE", "LAPSES"
+    );
+    for c in &r.claims {
+        let _ = writeln!(
+            o,
+            "{:>4} {:<12} {:<9} {:>7}s  {}",
+            c.node,
+            c.name,
+            if c.exclusive { "exclusive" } else { "shared" },
+            c.expires_ms.saturating_sub(now) / 1000,
+            c.holder
+        );
+    }
+    o
+}
+
 /// `hyperstorctl perf --device D`: its drive, then each 5-s window.
 pub fn device_perf_text(d: &pb::DevicePerf) -> String {
     let mut o = format!("device {} on node {}, {}\n", d.device, d.node, d.kind);
@@ -871,6 +905,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetEndpoints", "device endpoints"),
     ("ClusterService.ListPorts", "port list"),
     ("ClusterService.SetPortRole", "port role"),
+    ("ClusterService.SetLending", "port lending"),
+    ("ClusterService.ClaimPort", "claim port"),
+    ("ClusterService.RenewClaim", "claim renew"),
+    ("ClusterService.ReleaseClaim", "claim release"),
+    ("ClusterService.ListClaims", "claim list"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
     ("ClusterService.SetScrubSettings", "scrub set"),

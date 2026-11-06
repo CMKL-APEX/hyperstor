@@ -16,14 +16,16 @@ dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
 D215–D217 (points 178–180) settle how endpoints are chosen and kept,
 and who routes by source. D237–D238 (points 200–201) settle where a
-port's role comes from and how stage 3 lends before G52.
+port's role comes from and how stage 3 lends before G52; D239–D241
+(points 202–204), what stage 4 claims and how.
 G47–G53 are the host checks they rest on. Built so far (HS19, branch
 `feat/fabric`; 01-implementation-notes.md I233–I238): networks and
 endpoints in the cluster file and the map, nodes and clients reaching
 devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired;
 health per network (§29.7; I258); the reconciler in the leader, with
-port roles set by the operator (§29.8; I277). It builds on 13-protocol.md §13.2 (networks and transports in
+port roles set by the operator (§29.8; I277); claims on ports by the
+`orchestrator` role and lending settings (§29.9; I278). It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D217)
@@ -335,6 +337,16 @@ the cluster API, as the role `orchestrator` (beside `node`, `meta` and
 - **glidex** is one such client: its scheduler claims rails its GPU VMs
   use, and asks for storage VFs for GPU-direct VMs (§29.10). glidex
   without hyperstor needs none of this.
+- **In stages (D239–D241).** Stage 4 claims ports; claims on VFs,
+  requests and grants come with GPU-direct pairing in stage 5. `Watch`
+  is `ListClaims` for now, read with renewals. glidex's scheduler is
+  glidex's change, against these calls.
+- **As built** (I278): `ClaimPort`, `RenewClaim`, `ReleaseClaim`,
+  `ListClaims` and `SetLending` in the cluster API, and `hyperstorctl
+  claim` and `port lending`. Claims and lending settings are in the map
+  (format 18); the leader drops lapsed claims and gives the live ones to
+  the reconciler, each port under its own lending setting, else the
+  cluster's.
 
 ### 29.10 GPU-direct pairing (D211, D212)
 
@@ -385,8 +397,8 @@ the cluster API, as the role `orchestrator` (beside `node`, `meta` and
 | 1 | glidex's topology crate with port facts (a glidex change); networks in the cluster file; endpoints in the map; control apart from data; reactors bind close endpoints; source routing checked (G47); TCP only | HS2 |
 | 2 | Path choice per I/O and warm paths (§29.6); health per network (§29.7); the fencing test (§29.11) | 1 |
 | 3 | The reconciler in the leader: roles as leases, weights from counters, dwell and revocation (§29.8) | 2 |
-| 4 | Claims and the `orchestrator` role; lending policies; glidex's scheduler as the first client (§29.9) | 3 |
-| 5 | RDMA endpoints with HS6; GPU-direct pairing with HS8 and HS9 (§29.10) | 4, HS6 |
+| 4 | Claims on ports and the `orchestrator` role; lending policies; glidex's scheduler as the first client, in glidex (§29.9; D239, D241) | 3 |
+| 5 | RDMA endpoints with HS6; GPU-direct pairing with HS8 and HS9, with claims on VFs, requests and grants (§29.10; D239) | 4, HS6 |
 
 Stage 1 alone moves the GPU host's data off 1 GbE, onto IPoIB or a host
 port on the 100 GbE bond, with no RDMA work.

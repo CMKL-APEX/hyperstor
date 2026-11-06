@@ -1003,9 +1003,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4)"
-spec = ["26-networks.md §29.9", "D205"]
-status = "planned"
+what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex)"
+spec = ["26-networks.md §29.9", "D205", "D239", "D240", "D241", "I278"]
+status = "done"
+tests = [
+    "hyperstor_map::port_tests::claims_and_lending_round_trip_in_format_18",
+    "hyperstor_meta::fabric::tests::claims_take_ports_back_and_lending_follows_its_setting",
+    "enroll::an_orchestrator_claims_ports_and_nothing_else",
+]
 
 [[milestone.item]]
 what = "RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5)"

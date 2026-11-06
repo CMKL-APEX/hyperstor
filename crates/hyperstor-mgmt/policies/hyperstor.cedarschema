@@ -38,6 +38,9 @@ namespace Hyperstor {
   action "ClusterService.ListPorts" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.ListClaims" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.ListTopVolumes" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -87,6 +90,12 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetPortRole" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.SetLending" in [Action::"operate"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "ClusterService.ReleaseClaim" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "NodeService.DrainNode" in [Action::"operate"] appliesTo {
