@@ -45,6 +45,8 @@ enum MetaCmd {
     ),
     /// Starts scrub after recovery (D230), each PG once clean this long.
     RecoveryScrubs(std::time::Duration),
+    /// The PGs devices report stuck (I276).
+    Stuck(std::sync::mpsc::Sender<hyperstor_meta::Stuck>),
 }
 
 /// Each stopped device, by device id.
@@ -358,6 +360,9 @@ impl Cluster {
                         MetaCmd::RecoveryScrubs(settle) => {
                             spawn(meta.clone().recovery_scrubs(settle));
                         }
+                        MetaCmd::Stuck(tx) => {
+                            let _ = tx.send(meta.stuck_now(std::time::Instant::now()));
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -539,6 +544,12 @@ impl Cluster {
     }
 
     /// Each PG's last scrubs, as the map service keeps them (D227).
+    fn stuck(&self) -> hyperstor_meta::Stuck {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Stuck(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
     fn scrub_records(&self) -> hyperstor_meta::scrubs::Records {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Scrubs(tx)).is_ok());
@@ -1243,6 +1254,132 @@ fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
 /// copy different. The new primary makes the members' copies the same as
 /// its own before it serves, so the PG's copies agree at once, not only
 /// after a scrub.
+/// I276: a fence for a map epoch no leader published, as a leader that
+/// fenced and then lost the lead before it could commit leaves behind,
+/// holds the PG's writes only until the device reports it: the leader
+/// takes that epoch and publishes, and writes go on within seconds.
+/// Meanwhile the leader lists the PG as stuck, for health.
+#[test]
+fn a_fence_no_leader_published_is_lifted() {
+    use hyperstor_proto::Msg;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let (pg, primary, fence) = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, pattern(91, 4096)).await.unwrap();
+            let m = cl.map();
+            let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+            let primary = m.pg(POOL, pg).unwrap().primary().unwrap();
+            // The deposed leader's fence, for an epoch it never published.
+            let fence = m.epoch + 50;
+            let conn = hyperstor_rpc::Conn::connect(m.device_addr(primary).unwrap())
+                .await
+                .unwrap();
+            let (reply, _) = conn
+                .call(
+                    &Msg::Fence {
+                        epoch: fence,
+                        pgs: vec![(POOL, pg)],
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply, Msg::FenceOk), "{reply:?}");
+            (pg, primary, fence)
+        })
+    })
+    .join()
+    .unwrap();
+    // Listed as stuck once the fence is over a second old.
+    let t = std::time::Instant::now();
+    loop {
+        let s = c.stuck();
+        if s.contains(&(primary, POOL, pg, fence)) {
+            break;
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "{s:?}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            let t = std::time::Instant::now();
+            let data = pattern(92, 4096);
+            while let Err(e) = cl.write(POOL, 1, 0, data.clone()).await {
+                assert!(t.elapsed() < std::time::Duration::from_secs(15), "{e:?}");
+            }
+            assert!(cl.map().epoch >= fence, "map epoch {}", cl.map().epoch);
+            assert_eq!(cl.read(POOL, 1, 0, 4096).await.unwrap(), data);
+        })
+    })
+    .join()
+    .unwrap();
+    let t = std::time::Instant::now();
+    while !c.stuck().is_empty() {
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// I276: a primary that can't reach a member, which the map still counts
+/// up (no peer reports here), fails to peer and refuses the PG's writes;
+/// after 5 s of that the leader lists the PG as stuck, for health, and
+/// once the partition heals and a write peers, it no longer does.
+#[test]
+fn a_pg_that_cannot_peer_is_listed_stuck() {
+    let c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        std::time::Duration::from_secs(60),
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(60),
+    );
+    let meta = c.meta_addr;
+    let (pg, primary, member) = with_client(meta, 5, |cl| async move {
+        wait_all_up(&cl).await;
+        let m = cl.map();
+        let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+        let info = m.pg(POOL, pg).unwrap();
+        (pg, info.primary().unwrap(), info.acting[1])
+    });
+    // Cut before the PG's first write, so it hasn't peered at this epoch.
+    c.partitions.cut(primary / 1000, member / 1000);
+    let t = std::time::Instant::now();
+    let listed = loop {
+        let s = c.stuck();
+        if s.contains(&(primary, POOL, pg, 0)) {
+            break t.elapsed();
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "{s:?}");
+        let r = with_client(meta, 6, |cl| async move {
+            cl.write(POOL, 1, 0, pattern(93, 4096)).await
+        });
+        assert!(r.is_err(), "a write went through without peering");
+    };
+    assert!(
+        listed >= std::time::Duration::from_secs(5),
+        "listed after {listed:?}"
+    );
+    c.partitions.heal_all();
+    with_client(meta, 7, |cl| async move {
+        let data = pattern(94, 4096);
+        let t = std::time::Instant::now();
+        while let Err(e) = cl.write(POOL, 1, 0, data.clone()).await {
+            assert!(t.elapsed() < std::time::Duration::from_secs(15), "{e:?}");
+        }
+    });
+    let t = std::time::Instant::now();
+    while !c.stuck().is_empty() {
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    c.stop();
+}
+
 #[test]
 fn a_new_primary_makes_its_members_agree_before_serving() {
     use hyperstor_proto::{Msg, Target, WireKey, block_crcs};
