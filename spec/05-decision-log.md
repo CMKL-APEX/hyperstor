@@ -1259,3 +1259,27 @@ parts needed a decision. Asked, with options and a recommendation:
 | 203 | How `Watch` ships: `ListClaims` now, polled with renewals, and a stream later (recommended); or the API's first server-streaming call now | List now, stream later | D240 |
 | 204 | glidex's scheduler as the first client: a glidex issue, with hyperstor's side tested end to end here (recommended); or a glidex pull request too | A glidex issue | D241 |
 
+## Starting is not flapping (2026-11-06)
+
+CI's end-to-end runs after #210 failed on health held at `warn` by D149's
+flapping warning: nodes marked down while their devices opened, then
+once more for a test's own kill, made two transitions. The owner's
+answer, when shown the flakes:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 205 | Whether a node's down before it is first heard from counts as a flap | No: starting a node isn't flapping; the product, not only the tests, changes | D242 |
+
+## S3 bucket names per tenant (2026-11-06)
+
+The owner asked whether tenants could have their own bucket names
+without separate pools or endpoints, and how AWS S3 and R2 do it.
+Proposed with 14-s3.md §14.9, from a security and a usability
+standpoint; the owner accepted every recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 207 | Bucket names: a namespace per tenant, the tenant from the signing key (recommended); or one namespace per cluster, as now | A namespace per tenant | D243 |
+| 208 | Another tenant's buckets: they don't exist to a key, 404 and `BucketAlreadyOwnedByYou`, with no `tenant:bucket` syntax (recommended); or RGW's cross-tenant syntax | They don't exist | D244 |
+| 209 | Virtual-hosted requests: resolved in the signer's tenant under one wildcard name (recommended); or a tenant label in the hostname | One wildcard name | D245 |
+| 210 | How administrators name buckets: `tenant/bucket`, with `--tenant` on bucket commands (recommended) | `tenant/bucket` | D246 |
