@@ -231,6 +231,7 @@ fn cluster_file_install_across_hosts() {
     let pki = meta_root.join("etc/hyperstor/pki");
     let ctl = |args: &[&str]| {
         let o = Command::new(bin.join("hyperstorctl"))
+            .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
             .args(["--api", &api, "--tls", pki.to_str().unwrap()])
             .args(args)
             .output()
@@ -346,6 +347,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let pki = meta_root.join("etc/hyperstor/pki");
     let ctl = |args: &[&str]| {
         let o = Command::new(bin.join("hyperstorctl"))
+            .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
             .args(["--api", &api, "--tls", pki.to_str().unwrap()])
             .args(args)
             .output()

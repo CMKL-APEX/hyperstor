@@ -163,6 +163,9 @@
 //! without it the cluster's root where `hyperstorctl.conf` names one
 //! (mgmt's certificate is the cluster CA's by default, D108).
 //!
+//! Each call gives up after `--timeout-secs N` (or `$HYPERSTOR_TIMEOUT`),
+//! 5 s by default; the change it asked for may still be made.
+//!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a failed request or test, 2 usage, 3 the API unreachable (or the
 //! member asked isn't the leader), 4 not allowed: no certificate, or one
@@ -179,7 +182,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -209,6 +212,15 @@ fn refused_or<T>(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Each call's deadline: `--timeout-secs`, else `$HYPERSTOR_TIMEOUT`.
+static TIMEOUT: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+
+/// How long a call may take before the client gives up (5 s unless
+/// set).
+fn call_timeout() -> Duration {
+    TIMEOUT.get().copied().unwrap_or(Duration::from_secs(5))
 }
 
 fn usage() -> ! {
@@ -365,6 +377,7 @@ fn main() {
     let mut mgmt = None;
     let mut token_file = None;
     let mut mgmt_ca = None;
+    let mut timeout = None;
     let mut a = Args {
         endpoints: None,
         json: false,
@@ -447,6 +460,7 @@ fn main() {
             }
             "--token-file" => token_file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--mgmt-ca" => mgmt_ca = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--timeout-secs" => timeout = Some(num(it.next())),
             "--json" => a.json = true,
             "-o" => match it.next().map(String::as_str) {
                 Some("json") => a.json = true,
@@ -663,6 +677,20 @@ fn main() {
         }
     }
     let Some(cmd) = cmd else { usage() };
+    let timeout = timeout.or_else(|| {
+        let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
+        Some(v.parse().unwrap_or_else(|_| {
+            eprintln!("hyperstorctl: bad $HYPERSTOR_TIMEOUT {v}");
+            std::process::exit(2)
+        }))
+    });
+    match timeout {
+        Some(0) => usage(),
+        Some(secs) => TIMEOUT
+            .set(Duration::from_secs(secs.into()))
+            .expect("set once"),
+        None => {}
+    }
     // device add takes a node, an address and maybe a class; nothing else
     // takes the last two.
     let device_add = cmd == "device add";
@@ -1123,8 +1151,7 @@ enum Call<'a> {
 }
 
 async fn run(target: &Target<'_>, call: Call<'_>) -> Result<Next, connectrpc::ConnectError> {
-    let config =
-        |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+    let config = |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(call_timeout());
     match target {
         Target::Mgmt(m) => {
             let config = config(m.base.clone())
@@ -3547,7 +3574,8 @@ fn enroll(api: &str, a: &Args) -> i32 {
         .build()
         .expect("tokio runtime");
     let r = rt.block_on(async {
-        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        let config = ClientConfig::new(uri)
+            .with_default_timeout(call_timeout().max(Duration::from_secs(10)));
         hyperstor_api::TokenServiceClient::new(HttpClient::with_tls(tls), config)
             .join(pb::JoinRequest {
                 token: token.clone(),
@@ -3638,7 +3666,8 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
         .build()
         .expect("tokio runtime");
     let r = rt.block_on(async {
-        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        let config = ClientConfig::new(uri)
+            .with_default_timeout(call_timeout().max(Duration::from_secs(10)));
         CaServiceClient::new(HttpClient::with_tls(tls), config)
             .renew_certificate(pb::RenewCertificateRequest {
                 csr,

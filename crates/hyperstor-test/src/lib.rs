@@ -201,11 +201,19 @@ impl Drop for Scratch {
     }
 }
 
+/// How long each `hyperstorctl` call the tests make may take
+/// (`$HYPERSTOR_TIMEOUT`). CI's runners wait 100–250 ms for each flush,
+/// and a change that commits to the `.meta` pool several times passes
+/// the default 5 s (I282).
+pub const CTL_TIMEOUT: &str = "30";
+
 /// A command's exit status and output, stdout then stderr.
 #[derive(Debug)]
 pub struct Run {
     pub code: i32,
     pub out: String,
+    /// The command, for a failure's message.
+    what: String,
 }
 
 impl Run {
@@ -214,12 +222,18 @@ impl Run {
             code: o.status.code().unwrap_or(-1),
             out: String::from_utf8_lossy(&o.stdout).into_owned()
                 + &String::from_utf8_lossy(&o.stderr),
+            what: String::new(),
         }
     }
 
-    /// Panics, showing the output, unless the exit status is `code`.
+    /// Panics, showing the command and its output, unless the exit
+    /// status is `code`.
     pub fn expect(self, code: i32) -> Run {
-        assert_eq!(self.code, code, "exit status {}:\n{}", self.code, self.out);
+        assert_eq!(
+            self.code, code,
+            "{}exit status {}:\n{}",
+            self.what, self.code, self.out
+        );
         self
     }
 
@@ -230,6 +244,32 @@ impl Run {
     pub fn has(&self, s: &str) -> bool {
         self.out.contains(s)
     }
+}
+
+/// `hyperstorctl` in `bin` against the API at `api`, over mutual TLS
+/// with the certificates in `pki`.
+pub fn ctl_at(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
+    let mut c = Command::new(bin.join("hyperstorctl"));
+    c.args(["--api", api, "--tls", pki.to_str().unwrap()]);
+    run_ctl(c, args)
+}
+
+/// Runs `hyperstorctl` with `args` after the options `c` has, with
+/// [`CTL_TIMEOUT`]; a failure names the command and how long it took.
+fn run_ctl(mut c: Command, args: &[&str]) -> Run {
+    let began = std::time::Instant::now();
+    let mut r = Run::of(
+        c.env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
+            .args(args)
+            .output()
+            .unwrap(),
+    );
+    r.what = format!(
+        "hyperstorctl {} ({} ms): ",
+        args.join(" "),
+        began.elapsed().as_millis()
+    );
+    r
 }
 
 /// Hard-links the built binaries into `root/usr/local/bin`, so an install
@@ -990,7 +1030,7 @@ impl Cluster {
             Via::Socket => c.args(["--socket", self.socket().to_str().unwrap()]),
             Via::Plain => c.args(["--api", &self.api]),
         };
-        Run::of(c.args(args).output().unwrap())
+        run_ctl(c, args)
     }
 
     /// A certificate directory for `role`/`id`, issued by this cluster's
