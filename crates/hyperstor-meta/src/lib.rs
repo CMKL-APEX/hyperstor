@@ -11,6 +11,7 @@ pub mod api;
 pub mod audit_log;
 pub mod backup;
 pub mod certs;
+pub mod fabric;
 pub mod fullness;
 pub mod health;
 pub mod mgmt_store;
@@ -286,6 +287,16 @@ pub enum Admin {
         endpoints: Vec<(String, SocketAddr)>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Sets a port's role, or returns it to the default (D237). Replies
+    /// with the working map's epoch.
+    SetPortRole {
+        port: String,
+        role: Option<hyperstor_map::PortRole>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
+    /// The ports nodes reported, as the leader holds them, with the
+    /// published map; only the leader has them.
+    Ports(hyperstor_reactor::chan::OneSender<Result<PortsView, String>>),
     /// Appends a device to a node (D167). Replies with the device's id
     /// and the working map's epoch.
     AddDevice {
@@ -706,6 +717,9 @@ pub struct Meta {
     usage_version: Cell<u64>,
     /// The devices' load and drives (D218): the leader's, in memory only.
     perf: RefCell<perf::Perf>,
+    /// Nodes' port reports and the fabric reconciler's idle times
+    /// (26-networks.md §29.8): the leader's, in memory only.
+    fabric: RefCell<fabric::Fabric>,
     /// Each PG's last light and deep scrub (D227): the leader's, loaded
     /// from the store when it takes over, with the PGs changed since its
     /// last write.
@@ -908,6 +922,7 @@ impl Meta {
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
             perf: RefCell::new(perf::Perf::default()),
+            fabric: RefCell::new(fabric::Fabric::default()),
             scrubs: RefCell::new(BTreeMap::new()),
             scrubs_changed: RefCell::new(BTreeSet::new()),
             scrub_store: RefCell::new(None),
@@ -1220,6 +1235,19 @@ impl Meta {
     /// The leader's view of the devices' load and drives (D218).
     pub fn perf(&self) -> perf::Perf {
         self.perf.borrow().clone()
+    }
+
+    /// Sets the fabric reconciler's policy and how often it runs (D208,
+    /// D238); for tests, which can't wait out a 60 s dwell.
+    pub fn set_fabric(&self, policy: hyperstor_fabric::reconcile::Policy, every: Duration) {
+        let mut f = self.fabric.borrow_mut();
+        f.policy = policy;
+        f.every = every;
+    }
+
+    /// The ports nodes reported recently, as the leader last saw them.
+    pub fn ports_seen(&self) -> std::collections::BTreeMap<String, fabric::Seen> {
+        self.fabric.borrow().seen(Instant::now())
     }
 
     /// Sets how long a node stays down before its devices are marked out.
@@ -1849,6 +1877,21 @@ impl Meta {
         }
         let mut map = self.map.borrow_mut();
         map.set_endpoints(device, endpoints)?;
+        Ok(map.epoch)
+    }
+
+    /// Sets port `NODE/NETDEV`'s role, or with `None` returns it to the
+    /// default (D237). Returns the working map's epoch.
+    pub fn set_port_role(
+        &self,
+        port: &str,
+        role: Option<hyperstor_map::PortRole>,
+    ) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.set_port_role(port, role)?;
         Ok(map.epoch)
     }
 
@@ -2583,6 +2626,16 @@ impl Meta {
                 } => {
                     self.reply_published(reply, self.set_endpoints(device, endpoints), |e| e);
                 }
+                Admin::SetPortRole { port, role, reply } => {
+                    self.reply_published(reply, self.set_port_role(&port, role), |e| e);
+                }
+                Admin::Ports(reply) => {
+                    let _ = reply.send(if self.leads() {
+                        Ok((self.ports_seen(), (*self.published.borrow()).clone()))
+                    } else {
+                        Err(self.not_leader())
+                    });
+                }
                 Admin::AddDevice {
                     node,
                     addr,
@@ -2665,6 +2718,9 @@ impl Meta {
             sleep((timeout / 4).min(Duration::from_millis(100))).await;
             if self.may_change_roles() && self.liveness_tick(timeout, Instant::now()) {
                 self.map.borrow_mut().recompute();
+            }
+            if self.may_change_roles() {
+                self.fabric_tick(Instant::now());
             }
             if self.may_change_roles() {
                 self.advance_splits();
@@ -2954,6 +3010,18 @@ impl Meta {
             }
         }
         changed
+    }
+
+    /// The fabric reconciler's pass, when one is due (26-networks.md §29.8).
+    fn fabric_tick(&self, now: Instant) {
+        let mut f = self.fabric.borrow_mut();
+        if !f.due(now) {
+            return;
+        }
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        f.tick(&mut self.map.borrow_mut(), now, unix_ms);
     }
 
     /// Endpoints from peer reports (26-networks.md §29.7, D210): one two
@@ -3359,7 +3427,8 @@ impl Meta {
                     | Msg::ScrubReport { .. }
                     | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
-                    | Msg::PerfReport { .. })
+                    | Msg::PerfReport { .. }
+                    | Msg::PortReport { .. })
             )
         {
             return Msg::Error {
@@ -3464,6 +3533,14 @@ impl Meta {
                 }
             }
             Ok(Msg::Ping) => Msg::Pong,
+            Ok(Msg::PortReport { node, ports }) => {
+                if self.beats.borrow().contains_key(&node) {
+                    self.fabric.borrow_mut().note(node, ports, Instant::now());
+                }
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
             Ok(Msg::PerfReport { report }) => {
                 self.perf.borrow_mut().note(report);
                 Msg::Noted {
@@ -3638,6 +3715,9 @@ pub(crate) fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
+
+/// The ports nodes reported, by `NODE/NETDEV`, with the published map.
+pub type PortsView = (BTreeMap<String, fabric::Seen>, ClusterMap);
 
 /// Serves the map service on `listener` until the reactor stops.
 pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>) {

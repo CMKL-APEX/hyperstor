@@ -144,9 +144,9 @@ one of them unless each address has a routing rule of its own; add
 those, or traffic leaves by one port. `hyperstor-install check` warns
 about endpoints without one, and fails when the port also filters
 reverse paths strictly (`rp_filter` 1), where connections to the
-endpoint would fail. On glidex hosts, glidex is to manage these rules
-(planned); on another host, and until then, netplan can keep them, a
-table per port:
+endpoint would fail. On glidex hosts, glidex's network daemon adds them
+for the subnets in its configuration (`source_routes`); on another
+host, netplan can keep them, a table per port:
 
 ```yaml
 network:
@@ -174,5 +174,21 @@ network:
 
 Apply it with `netplan try`, then check again.
 
-Choosing endpoints for you, from the host's topology, and moving traffic
-between ports as load changes are planned.
+**Ports and their roles.** Each node reports its ports every 10 s, and
+the map service weights each port that carries endpoints by the
+bandwidth other traffic leaves it: senders spread their requests over a
+device's endpoints by those weights. A port's role says what storage may
+do with it (`hyperstorctl port list` shows them):
+
+| Role | Storage |
+|---|---|
+| `storage`, `converged` | uses it; the default for a port with endpoints |
+| `compute` | uses it only while idle: lent once its other traffic stays under 5% of the link for 60 s, taken back within 30 s when traffic appears |
+| `host`, `uplink`, `vm` | doesn't use it; `host` is the default for a port without endpoints |
+
+On a GPU host whose InfiniBand ports are its GPUs' rails, mark them
+`compute` (`hyperstorctl port role --node N --name ibp12s0 --role
+compute`, or a [`port` line](../reference/cluster-file.md#port)) and
+give devices endpoints there: storage then uses the rails while jobs
+leave them idle, and its devices' other endpoints, or their addresses,
+while jobs run.

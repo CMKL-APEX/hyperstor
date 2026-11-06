@@ -981,14 +981,20 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; its decisions are built)"
-spec = ["26-networks.md §29.8", "D203", "D209", "G52"]
-status = "partial"
+what = "The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it)"
+spec = ["26-networks.md §29.8", "D203", "D208", "D209", "D237", "D238", "G52", "I276"]
+status = "done"
 tests = [
     "hyperstor_fabric::tests::an_idle_rail_is_lent_after_the_dwell_and_revoked_on_traffic",
     "hyperstor_fabric::tests::a_claim_takes_a_rail_back_and_keeps_it",
     "hyperstor_fabric::tests::lending_off_never_lends",
     "hyperstor_fabric::tests::reconciler_invariants_hold_under_random_load",
+    "hyperstor_map::port_tests::ports_have_roles_by_default_or_set_and_weights_for_senders",
+    "hyperstor_meta::fabric::tests::ports_are_weighted_lent_while_idle_and_taken_back",
+    "hyperstor_meta::fabric::tests::a_cluster_without_endpoints_keeps_its_map",
+    "hyperstor_daemon::ports::tests::ports_are_counted_where_all_their_traffic_shows",
+    "endpoints::a_compute_port_is_lent_while_idle_and_left_when_busy",
+    "manage::a_ports_role_is_set_and_returned_to_its_default",
 ]
 
 [[milestone.item]]

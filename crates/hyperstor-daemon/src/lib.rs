@@ -30,10 +30,11 @@ pub mod faults;
 pub mod heat;
 mod kv;
 pub mod metrics;
+mod ports;
 mod shard_cell;
 use shard_cell::ReadKind;
 
-use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, read_frame, writer};
+use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, counter_of, read_frame_counted, writer};
 use hyperstor_client::volume::{
     DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
     encode_holder, header_deleting, header_version,
@@ -307,6 +308,8 @@ const SPACE_EVERY: Duration = Duration::from_secs(5);
 
 /// How often a device reports its load to the leader (D218).
 pub const PERF_EVERY: Duration = Duration::from_secs(5);
+/// How often a node reports its network ports (26-networks.md §29.8).
+pub const PORTS_EVERY: Duration = Duration::from_secs(10);
 
 /// One backfill's bytes in its target's [`BACKFILL_BUDGET`], given back
 /// once answered, or when the backfill gives up.
@@ -558,6 +561,15 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         *st.drive.borrow_mut() =
                             Some(drive::watch(sh.device_id, drive_path, cpu));
                         spawn(st.clone().perf(perf_every));
+                        // One device's thread reports the node's ports, every
+                        // 10 s (HS_PORTS_MS for tests).
+                        if i == 0 {
+                            let every = std::env::var("HS_PORTS_MS")
+                                .ok()
+                                .and_then(|v| v.parse().ok())
+                                .map_or(PORTS_EVERY, Duration::from_millis);
+                            spawn(st.clone().port_report(node, every));
+                        }
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -1833,23 +1845,24 @@ impl ShardState {
     }
 
     /// Where to reach `device` for one request: among its endpoints on
-    /// this node's first network that has any, by two random choices on
-    /// requests outstanding (D207, D208); else its address.
+    /// this node's first network that has any, by two random choices,
+    /// weighted by their ports' weights, on requests outstanding (D207,
+    /// D208); else its address.
     fn addr_of(&self, map: &ClusterMap, device: u32) -> Option<SocketAddr> {
-        let addrs = map.device_addrs_on(device, &self.networks.borrow());
+        let addrs = map.weighted_addrs_on(device, &self.networks.borrow());
         if addrs.len() < 2 {
-            return addrs.first().copied();
+            return addrs.first().map(|(a, _)| *a);
         }
         let loads: Vec<hyperstor_fabric::path::PathLoad> = addrs
             .iter()
-            .map(|a| hyperstor_fabric::path::PathLoad {
-                weight: 1.0,
+            .map(|(a, w)| hyperstor_fabric::path::PathLoad {
+                weight: *w,
                 bytes_in_flight: self.peers.pending(*a) as u64,
                 rtt_us: 0,
             })
             .collect();
         let i = hyperstor_fabric::path::choose(&loads, &mut *self.path_rng.borrow_mut())?;
-        Some(addrs[i])
+        Some(addrs[i].0)
     }
 
     /// Refuses a peer the partitions test hook cuts this node from, and
@@ -1914,8 +1927,9 @@ impl ShardState {
         // The client instance named at `Hello`; 0 for peers, which don't
         // send one and are never blocklisted.
         let mut instance = 0;
+        let counter = counter_of(&s);
         loop {
-            let Ok((h, msg, payload)) = read_frame(&s).await else {
+            let Ok((h, msg, payload)) = read_frame_counted(&s, counter.as_deref()).await else {
                 let _ = s.shutdown();
                 return;
             };
@@ -4435,6 +4449,27 @@ impl ShardState {
                 drive,
             };
             let _ = self.client.call_meta(&Msg::PerfReport { report }).await;
+        }
+    }
+
+    /// Reports this node's network ports to the map service every `every`
+    /// (26-networks.md §29.8, D203): their state, addresses and counters,
+    /// and hyperstor's own bytes from their addresses. Best effort: the
+    /// reconciler waits for the next.
+    async fn port_report(self: Rc<Self>, node: u32, every: Duration) {
+        let sys = std::path::Path::new("/sys");
+        loop {
+            sleep(every).await;
+            if self.cut_off() {
+                continue;
+            }
+            let found = glidex_topology::net::read(sys, &glidex_topology::net::addresses());
+            let own = hyperstor_client::rpc::traffic::totals();
+            let ports = ports::sample(sys, &found, &own);
+            let _ = self
+                .client
+                .call_meta(&Msg::PortReport { node, ports })
+                .await;
         }
     }
 

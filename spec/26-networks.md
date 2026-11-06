@@ -15,13 +15,15 @@ move out (D203); host topology comes from glidex's reader, as a build
 dependency (D204); any orchestrator may claim (D205); compute ports are
 lent to storage while idle by default (D209); the rest as recommended.
 D215–D217 (points 178–180) settle how endpoints are chosen and kept,
-and who routes by source.
+and who routes by source. D237–D238 (points 200–201) settle where a
+port's role comes from and how stage 3 lends before G52.
 G47–G53 are the host checks they rest on. Built so far (HS19, branch
 `feat/fabric`; 01-implementation-notes.md I233–I238): networks and
 endpoints in the cluster file and the map, nodes and clients reaching
 devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired;
-health per network (§29.7; I258). It builds on 13-protocol.md §13.2 (networks and transports in
+health per network (§29.7; I258); the reconciler in the leader, with
+port roles set by the operator (§29.8; I276). It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D217)
@@ -116,8 +118,13 @@ subnet. Hosts discover it from their ports; the map records it. Why:
 two hosts on networks with the same name but no shared fabric must not
 pick each other's endpoints.
 
-**Ports and roles (D209).** Each port has a role, held as a lease from
-the reconciler (§29.8):
+**Ports and roles (D209, D237).** Each port has a role, held as a lease
+from the reconciler (§29.8). The base role is the operator's, kept in the
+map (`hyperstorctl port role NODE/PORT ROLE`, or a `port` line in the
+cluster file); a port with none set is `storage` when one of its
+addresses is an endpoint on a data network, else `host` (D237). Why:
+hyperstor runs without glidex, and the defaults change nothing on a
+running cluster.
 
 | Role | Carries | Example |
 |---|---|---|
@@ -281,11 +288,21 @@ Why `idle` by default: on a GPU host most of the fast ports are rails,
 idle much of the time, and storage would otherwise stay on far less
 bandwidth. A lent rail is revoked as soon as its counters show traffic
 or a claim names it, and a claim always wins. What counts as idle, and
-how fast a rail is handed back, is set from G52 before stage 3 ships.
+how fast a rail is handed back, ships at the starting values above and
+is tuned from G52 once measured (D238).
 
 **Never:** it never changes host network configuration (§29.1), never
 uses a port or VF a claim holds, and never moves data onto a network
 that isn't `trusted` without TLS (§29.11).
+
+- **As built** (I276): each node reports its ports every 10 s
+  (`PortReport`), with hyperstor's own bytes from their addresses; the
+  leader keeps the reports in memory and every 10 s reconciles the ports
+  that carry an endpoint or have a role set, writing leases and weights
+  into the map (format 17). Senders weight a device's endpoints by their
+  ports'. `hyperstorctl port list` and `port role` show and set them.
+  Claims (stage 4) are none yet, and the lending policy is `idle`, with
+  no setting yet.
 
 **Standalone.** With no orchestrator there are no claims: the loop
 weights storage ports, and lends compute ports only under `idle` or

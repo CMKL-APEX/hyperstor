@@ -1692,6 +1692,7 @@ name = "hyperstor-daemon"
 version = "0.1.0"
 dependencies = [
  "crc32c",
+ "glidex-topology",
  "hyperstor-client",
  "hyperstor-engine",
  "hyperstor-fabric",
@@ -1766,6 +1767,7 @@ name = "hyperstor-map"
 version = "0.1.0"
 dependencies = [
  "hyperstor-codec",
+ "hyperstor-fabric",
  "hyperstor-placement",
 ]
 
@@ -1786,6 +1788,7 @@ dependencies = [
  "hyperstor-api",
  "hyperstor-client",
  "hyperstor-codec",
+ "hyperstor-fabric",
  "hyperstor-map",
  "hyperstor-pki",
  "hyperstor-placement",
