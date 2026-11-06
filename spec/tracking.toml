@@ -1120,12 +1120,13 @@ tests = [
 
 [[milestone.item]]
 what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates"
-spec = ["19-administration.md §23.4.2", "D57"]
+spec = ["19-administration.md §23.4.2", "D57", "I275"]
 status = "done"
 tests = [
     "join::storage_hosts_join_with_tokens",
     "join::map_service_members_join_the_first",
     "join::a_member_host_also_runs_storage",
+    "members::a_token_waits_for_the_first_map",
     "hyperstor_meta::tests::joined_hosts_are_added_to_an_empty_map",
     "hyperstor_meta::api::admin::tests::tokens_parse_only_in_their_form",
     "hyperstor_map::join_tests::pools_made_before_any_host_place_their_pgs_when_hosts_join",
