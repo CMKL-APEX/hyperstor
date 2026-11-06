@@ -653,8 +653,23 @@ impl Cluster {
             c.start_node(n);
         }
         c.ctl(&["status", "--wait", "30"]).ok();
+        c.formed();
         c.start_mgmt();
         c
+    }
+
+    /// Waits until the map service's store holds its first map. Health
+    /// is answered from the cluster file's map before a leader is elected
+    /// and commits it, and until then the map service makes no tokens
+    /// (`not_formed`; on a slow host, seconds later). A map backup reads
+    /// the store, and fails until then.
+    pub fn formed(&self) {
+        let out = self.scratch.path("formed.backup");
+        wait_for("the map in the map service's store", 40, || {
+            let r = self.ctl(&["map", "backup", "--out", out.to_str().unwrap()]);
+            let _ = std::fs::remove_file(&out);
+            (r.code == 0).then_some(())
+        });
     }
 
     /// Starts the S3 gateway from its installed options (`s3.env`); its
