@@ -5,7 +5,8 @@
 //! - `s3key/<id>`: the key's tenant, description, when and by whom it was
 //!   made, and its secret sealed with the cluster key (D162), bound to the
 //!   id. Revoking deletes the row.
-//! - `s3place/<name>`: a placement's data and index pools, by name.
+//! - `s3place/<name>`: a placement's data and index pools, by id, so a
+//!   renamed pool keeps its placements.
 //!
 //! Writes go through the leader; reads come from the member's applied
 //! copy, so any member answers a gateway.
@@ -67,12 +68,12 @@ pub fn context(id: &str) -> String {
     format!("hyperstor s3 key {id}")
 }
 
-/// Pools for new buckets.
+/// Pools for new buckets, by id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub name: String,
-    pub data_pool: String,
-    pub index_pool: String,
+    pub data_pool: u32,
+    pub index_pool: u32,
 }
 
 /// RFC 4648's base32 alphabet: ids that are all capitals and digits, as
@@ -163,34 +164,38 @@ pub fn revoke(db: &Db, id: &str) -> Result<(), Error> {
     })
 }
 
-/// Every placement, from this member's copy: `data index` in each row.
+/// Every placement, from this member's copy: the data and index pools'
+/// ids in each row.
 pub fn placements(db: &Db) -> Result<Vec<Placement>, Error> {
     rows(db, PLACE)?
         .into_iter()
         .map(|(name, v)| {
-            let text = String::from_utf8_lossy(&v).into_owned();
-            let mut w = text.split(' ');
-            match (w.next(), w.next(), w.next()) {
-                (Some(d), Some(i), None) => Ok(Placement {
-                    name,
-                    data_pool: d.to_string(),
-                    index_pool: i.to_string(),
-                }),
-                _ => Err(Error::Store(format!("{PLACE}{name}: not a placement"))),
-            }
+            let decode = || -> Result<Placement, DecodeError> {
+                let mut d = Dec::new(&v);
+                let p = Placement {
+                    name: name.clone(),
+                    data_pool: d.u32()?,
+                    index_pool: d.u32()?,
+                };
+                d.finish()?;
+                Ok(p)
+            };
+            decode().map_err(|e| Error::Store(format!("{PLACE}{name}: {e}")))
         })
         .collect()
 }
 
-/// Adds or replaces `p`. Only the leader. Pool names have no spaces.
+/// Adds or replaces `p`. Only the leader.
 pub fn set_placement(db: &Db, p: &Placement) -> Result<(), Error> {
     let row = format!("{PLACE}{}", p.name);
-    let value = format!("{} {}", p.data_pool, p.index_pool);
+    let mut e = Enc::new();
+    e.u32(p.data_pool).u32(p.index_pool);
+    let value = e.into_vec();
     db.write(Origin::Leader, |tx| -> Result<(), Error> {
         let mut t = tx
             .open_table(definition::<store::MapSchema>(Table::Settings))
             .map_err(StoreError::from)?;
-        t.insert(row.as_str(), value.as_bytes())
+        t.insert(row.as_str(), value.as_slice())
             .map_err(StoreError::from)?;
         Ok(())
     })
@@ -242,8 +247,8 @@ mod tests {
             &db,
             &Placement {
                 name: DEFAULT_PLACEMENT.into(),
-                data_pool: "rep".into(),
-                index_pool: "fast".into(),
+                data_pool: 1,
+                index_pool: 3,
             },
         )
         .unwrap();
@@ -253,10 +258,7 @@ mod tests {
         assert_eq!(keys(&db).unwrap(), vec![b]);
         let p = placements(&db).unwrap();
         assert_eq!(p.len(), 1);
-        assert_eq!(
-            (p[0].data_pool.as_str(), p[0].index_pool.as_str()),
-            ("rep", "fast")
-        );
+        assert_eq!((p[0].data_pool, p[0].index_pool), (1, 3));
         delete_placement(&db, DEFAULT_PLACEMENT).unwrap();
         assert_eq!(
             delete_placement(&db, DEFAULT_PLACEMENT),

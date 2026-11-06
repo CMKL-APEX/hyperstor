@@ -86,11 +86,19 @@ pub enum Source {
     },
 }
 
+/// A placement's pool: by id from the cluster API, by name when fixed at
+/// start.
+#[derive(Debug, Clone)]
+enum Pool {
+    Id(u32),
+    Name(String),
+}
+
 /// What a gateway serves with: keys, and placements by name (data pool,
 /// index pool).
 struct Served {
     keys: Keys,
-    placements: std::collections::HashMap<String, (String, String)>,
+    placements: std::collections::HashMap<String, (Pool, Pool)>,
 }
 
 /// The placement CreateBucket uses unless its LocationConstraint names
@@ -123,7 +131,12 @@ async fn fetch(addrs: &[String], tls: &Arc<rustls::ClientConfig>) -> Result<Serv
                 let placements = r
                     .placements
                     .into_iter()
-                    .map(|p| (p.name, (p.data_pool, p.index_pool)))
+                    .map(|p| {
+                        (
+                            p.name,
+                            (Pool::Id(p.data_pool_id), Pool::Id(p.index_pool_id)),
+                        )
+                    })
                     .collect();
                 return Ok(Served { keys, placements });
             }
@@ -430,7 +443,7 @@ pub fn serve(
             } => {
                 let placements = std::collections::HashMap::from([(
                     DEFAULT_PLACEMENT.to_string(),
-                    (data_pool, index_pool),
+                    (Pool::Name(data_pool), Pool::Name(index_pool)),
                 )]);
                 (Served { keys, placements }, None)
             }
@@ -881,10 +894,13 @@ async fn create_bucket(
         .reactors
         .call(move |s3| async move {
             let map = s3.client().map();
-            let pool = |name: &str| map.pools.values().find(|p| p.name == name).map(|p| p.id);
-            let (Some(d), Some(i)) = (pool(&data), pool(&index)) else {
+            let id = |p: &Pool| match p {
+                Pool::Id(id) => map.pools.contains_key(id).then_some(*id),
+                Pool::Name(n) => map.pools.values().find(|q| &q.name == n).map(|q| q.id),
+            };
+            let (Some(d), Some(i)) = (id(&data), id(&index)) else {
                 eprintln!(
-                    "hyperstor-s3: the pools for new buckets ({data}, {index}) aren't in the map"
+                    "hyperstor-s3: the pools for new buckets ({data:?}, {index:?}) aren't in the map"
                 );
                 return Err(ApiError::new(
                     503,

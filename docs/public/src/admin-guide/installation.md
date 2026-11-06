@@ -88,6 +88,17 @@ install` is enough later. `sudo hyperstor-install uninstall` stops and
 removes the services and binaries and keeps the configuration and data.
 All options are in the [reference](../reference/hyperstor-install.md).
 
+The trial cluster also runs an S3 gateway,
+[`hyperstor-s3`](../reference/hyperstor-s3.md), on port 443 of every
+address (`--s3-port P` for another, `--no-s3` for none), with new
+buckets in the pool `vol`. Make a key and point an S3 client at it,
+trusting the cluster's root certificate:
+
+```sh
+sudo hyperstorctl s3 key create --tenant 1      # prints the key's id and secret
+aws --endpoint-url https://localhost --ca-bundle /etc/hyperstor/pki/root.crt s3 mb s3://first
+```
+
 `hyperstorctl` needs the administrator certificate, readable by root
 and the `hyperstor-admin` group: run it with `sudo`, or join the group
 (`sudo usermod -aG hyperstor-admin $USER`, then log in again).
@@ -218,6 +229,61 @@ sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user g
 hypervisors open their sockets. Restarting the service (an upgrade, say)
 keeps the VMs' disks; `--no-vhost` and `uninstall` detach them first.
 See [VM disks](managing.md#vm-disks).
+
+## S3 gateways
+
+[`hyperstor-s3`](../reference/hyperstor-s3.md) serves S3 over HTTPS.
+It keeps nothing of its own, so run as many as you like behind a load
+balancer. Add one to a map service host, or install a host that only
+runs a gateway with an `s3` token:
+
+```bash
+sudo hyperstor-install install --s3                 # on a map service host
+hyperstorctl token create --role s3 --name gw1      # then, on the gateway's host:
+sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s3 --address 192.0.2.30
+```
+
+On a joined storage host, add it in a later run with a token of its own:
+`--s3 --token-file FILE`. The gateway reads the access keys from the
+cluster API with its own `s3` certificate and serves HTTPS with it,
+unless `--s3-tls DIR` gives the site's certificate (`s3.crt`, `s3.key`).
+Before buckets can be made, an administrator names their pools:
+
+```bash
+hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
+hyperstorctl s3 key create --tenant 1 --description backups
+```
+
+**Several gateways.** Gateways keep no state, so any of them may take
+any request: run one per host and put DNS round-robin or a load
+balancer in front. The balancer must leave the `Host` header and the
+path as the client sent them, since SigV4 signs both: forward TCP, or
+proxy HTTP keeping `Host`. Give every gateway the certificate of the
+name clients use (`--s3-tls DIR`), or end TLS at the balancer and have
+it reach the gateways over HTTPS, trusting `/etc/hyperstor/pki/root.crt`.
+An unsigned `GET /` answers 403 from a gateway that is up.
+
+**Behind a Cloudflare Tunnel** (not yet tried on real hardware). Run `cloudflared` on each gateway's
+host, routing the public name to the gateway, and leave the `Host`
+header alone (no `httpHostHeader`). Clients see Cloudflare's
+certificate; `cloudflared` checks the gateway's against the cluster's
+root:
+
+```yaml
+ingress:
+  - hostname: s3.example.com
+    service: https://localhost:443
+    originRequest:
+      caPool: /etc/hyperstor/pki/root.crt
+      originServerName: localhost
+  - service: http_status:404
+```
+
+Cloudflare limits a request's body (100 MB on its Free and Pro plans),
+so larger objects need multipart uploads, which come with the gateway's
+next stage, and it ends requests the gateway is silent on for 100 s.
+Cloudflare sees the traffic in the clear at its edge: keep data that
+must not leave your hands off a tunnel.
 
 ## Running as services by hand
 

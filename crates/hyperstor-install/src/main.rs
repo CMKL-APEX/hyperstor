@@ -39,6 +39,17 @@
 //!   runs VMs. `--vhost-user NAME` (repeatable) lets that user use its
 //!   control socket and gives its sockets the user's primary group
 //!   (D144); `--no-vhost` removes it. A restart keeps its volumes (D143).
+//! - `--s3` adds `hyperstor-s3`, the S3 gateway (14-s3.md §14.2, D233),
+//!   listening on every address on `--s3-port` (443), with the site's
+//!   certificate in `--s3-tls DIR` (`s3.crt`, `s3.key`) or its own `s3`
+//!   certificate from the cluster CA. On a map service host the
+//!   certificate is signed here; elsewhere it comes from a join with an
+//!   `s3` token (`hyperstorctl token create --role s3 --name N`): `install
+//!   --join API --token-file F --role s3 --address IP` sets up a host that
+//!   only runs a gateway, and a joined storage host takes `--s3` with a
+//!   token of its own in a later run. The all-in-one cluster runs one and
+//!   sets the `default` placement to its pool once the map service
+//!   answers; `--no-s3` removes it.
 //! - `uninstall` stops and removes the units and binaries; configuration
 //!   and data stay. It detaches `hyperstor-vhost`'s volumes first.
 //! - `root-backup --out FILE --passphrase-file F [--remove-key]` writes the
@@ -68,9 +79,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
-const BINARIES: [&str; 7] = [
+const BINARIES: [&str; 8] = [
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
@@ -78,6 +89,7 @@ const BINARIES: [&str; 7] = [
     "hyperstor-authd",
     "hyperstor-vhost",
     "hyperstor-smart",
+    "hyperstor-s3",
 ];
 
 /// Where `hyperstor-vhost`'s sockets and state file are (its unit's
@@ -142,6 +154,14 @@ struct Settings {
     vhost: bool,
     /// The users who may use it (D144), comma-separated.
     vhost_users: String,
+    /// Run `hyperstor-s3` here (D233), besides the role. The all-in-one
+    /// cluster runs one unless told not to.
+    s3: bool,
+    /// Where the gateway listens, on every address.
+    s3_port: u16,
+    /// The site's certificate's directory (`s3.crt`, `s3.key`); empty:
+    /// the gateway's own certificate from the cluster CA serves HTTPS.
+    s3_tls: String,
     /// Block devices added to this host's nodes (D167, D168), as
     /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
     devices: String,
@@ -178,6 +198,9 @@ impl Settings {
             tailscale_cert: false,
             vhost: false,
             vhost_users: String::new(),
+            s3: false,
+            s3_port: 443,
+            s3_tls: String::new(),
             devices: String::new(),
             removed_devices: String::new(),
         }
@@ -206,6 +229,11 @@ impl Settings {
     /// Whether this host runs `hyperstor-vhost`.
     fn runs_vhost(&self) -> bool {
         self.vhost || self.role == "vhost"
+    }
+
+    /// Whether this host runs `hyperstor-s3`.
+    fn runs_s3(&self) -> bool {
+        self.s3 || self.role == "s3"
     }
 
     fn vhost_users(&self) -> Vec<&str> {
@@ -247,6 +275,9 @@ impl Settings {
                 "tailscale_cert" => self.tailscale_cert = v == "true",
                 "vhost" => self.vhost = v == "true",
                 "vhost_users" => self.vhost_users = v.to_string(),
+                "s3" => self.s3 = v == "true",
+                "s3_port" => self.s3_port = v.parse().unwrap_or(self.s3_port),
+                "s3_tls" => self.s3_tls = v.to_string(),
                 "devices" => self.devices = v.to_string(),
                 "removed_devices" => self.removed_devices = v.to_string(),
                 _ => {}
@@ -295,6 +326,15 @@ impl Settings {
             String::new()
         } else {
             format!("endpoints = {}\n", self.endpoints)
+        } + &if self.s3 || self.all_in_one || self.s3_port != 443 || !self.s3_tls.is_empty() {
+            // The all-in-one's choice is kept either way: it runs one
+            // unless told not to.
+            format!(
+                "s3 = {}\ns3_port = {}\ns3_tls = {}\n",
+                self.s3, self.s3_port, self.s3_tls
+            )
+        } else {
+            String::new()
         }
     }
 }
@@ -383,6 +423,14 @@ fn main() {
                 given.insert("vhost", "false".into());
                 continue;
             }
+            "--s3" => {
+                given.insert("s3", "true".into());
+                continue;
+            }
+            "--no-s3" => {
+                given.insert("s3", "false".into());
+                continue;
+            }
             "--vhost-user" => {
                 let u = val();
                 if !user_name_ok(&u) {
@@ -456,20 +504,22 @@ fn main() {
             "--mgmt-listen" => "mgmt_listen",
             "--endpoints" => "endpoints",
             "--web-tls" => "web_tls",
+            "--s3-port" => "s3_port",
+            "--s3-tls" => "s3_tls",
             _ => usage(),
         };
         let v = val();
         let ok = match key {
             "nodes" => v.parse::<u32>().is_ok_and(|n| (1..=16).contains(&n)),
             "size_gib" => v.parse::<u64>().is_ok_and(|n| n >= 1),
-            "api_port" | "map_port" | "node_port" | "admin_port" | "mgmt_port" => {
+            "api_port" | "map_port" | "node_port" | "admin_port" | "mgmt_port" | "s3_port" => {
                 v.parse::<u16>().is_ok_and(|n| n > 0)
             }
-            "role" => matches!(v.as_str(), "meta" | "storage" | "both" | "vhost"),
+            "role" => matches!(v.as_str(), "meta" | "storage" | "both" | "vhost" | "s3"),
             "mgmt_listen" => matches!(v.as_str(), "all" | "loopback"),
             "endpoints" => matches!(v.as_str(), "auto" | "off"),
             // Empty: back to the cluster CA's certificate.
-            "web_tls" => v.is_empty() || v.starts_with('/'),
+            "web_tls" | "s3_tls" => v.is_empty() || v.starts_with('/'),
             "node" => v.parse::<u32>().is_ok(),
             // One address, or a map service's members for `--role vhost`.
             "map" => v
@@ -497,13 +547,20 @@ fn main() {
     let real = root == Path::new("/");
     let mut s = Settings::defaults();
     let token = token.filter(|t| !t.trim().is_empty());
-    s.apply(&fs::read_to_string(root.join("etc/hyperstor/install.conf")).unwrap_or_default());
+    let saved = fs::read_to_string(root.join("etc/hyperstor/install.conf")).unwrap_or_default();
+    s.apply(&saved);
+    // The all-in-one cluster runs a gateway (D233) unless told not to.
+    let s3_said =
+        given.contains_key("s3") || saved.lines().any(|l| l.trim_start().starts_with("s3 ="));
     s.apply(
         &given
             .iter()
             .map(|(k, v)| format!("{k} = {v}\n"))
             .collect::<String>(),
     );
+    if s.all_in_one && !s3_said {
+        s.s3 = true;
+    }
 
     // --device, its options and --remove-device belong to install only.
     if cmd != "install"
@@ -544,8 +601,24 @@ fn main() {
                 if real && unsafe { libc::geteuid() } != 0 {
                     fail("installing to / needs root: run it with sudo (or use --root DIR)");
                 }
+                let storage_joined = root.join("etc/hyperstor/pki/node.crt").exists();
                 if let Some(f) = join(&root, real, &mut s, token.as_deref()) {
                     cluster_file = Some(f);
+                }
+                // A storage host's gateway joins with an s3 token of its
+                // own; one spent on the storage join can't serve.
+                if s.role == "storage"
+                    && s.runs_s3()
+                    && !root.join("etc/hyperstor/pki/s3.crt").exists()
+                {
+                    if storage_joined && token.is_some() {
+                        join_gateway(&root, real, &mut s, token.as_deref());
+                    } else {
+                        eprintln!(
+                            "hyperstor-install: the gateway needs an s3 token of its own: run again with --s3 --token-file F (hyperstorctl token create --role s3 --name N)"
+                        );
+                        s.s3 = false;
+                    }
                 }
             }
             if !new_devices.is_empty() {
@@ -1152,6 +1225,33 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ";
 
+const S3_UNIT: &str = "\
+# Written by hyperstor-install. The S3 gateway (14-s3.md §14.2, D233).
+[Unit]
+Description=Hyperstor S3 gateway
+Documentation=https://github.com/CMKL-APEX/hyperstor
+After=network-online.target hyperstor-meta.service
+Wants=network-online.target
+
+[Service]
+User=hyperstor
+EnvironmentFile=/etc/hyperstor/s3.env
+ExecStart=/usr/local/bin/hyperstor-s3 $HS_ARGS
+# Port 443 without root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=1
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+";
+
 /// `hyperstor-vhost`'s users (D144), as ids: who may use its control
 /// socket, and the groups its sockets go to (the first) and it runs in.
 #[derive(Debug, Clone, PartialEq)]
@@ -1192,6 +1292,17 @@ struct Plan {
     /// `/etc/hyperstor/pki/cluster.key` is there, for the map service
     /// (D162); found after the certificates are made.
     cluster_key: bool,
+    /// `hyperstor-s3`, if this host runs it (D233).
+    s3: Option<S3Plan>,
+}
+
+/// A gateway's options (D233): the cluster API it reads keys from, the
+/// directory of the certificate it serves, and where it listens.
+#[derive(Debug, Clone, PartialEq)]
+struct S3Plan {
+    api: String,
+    tls: String,
+    listen: String,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -1273,6 +1384,47 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     if p.vhost.is_some() && p.map.is_empty() {
         fail("--vhost needs the map service's addresses: --map ADDR[,ADDR...]");
     }
+    p.s3 = s.runs_s3().then(|| s3_plan(s, &p));
+    p
+}
+
+/// The gateway's options (D233): the cluster API is this host's own where
+/// it runs the map service, else the one it joined through.
+fn s3_plan(s: &Settings, p: &Plan) -> S3Plan {
+    let api = if p.meta.is_some() {
+        p.api.clone()
+    } else {
+        s.join.clone()
+    };
+    if api.is_empty() || p.map.is_empty() {
+        fail(
+            "--s3 needs the cluster API: run it on a map service host, or on one joined with --join API",
+        );
+    }
+    S3Plan {
+        api,
+        tls: if s.s3_tls.is_empty() {
+            "/etc/hyperstor/pki".into()
+        } else {
+            s.s3_tls.clone()
+        },
+        listen: format!("0.0.0.0:{}", s.s3_port),
+    }
+}
+
+/// A host that only runs an S3 gateway (D233), joined with an `s3` token:
+/// the map service's addresses came with its join.
+fn s3_only_plan(s: &Settings) -> Plan {
+    if s.join.is_empty() {
+        fail(
+            "--role s3 needs --join API and an s3 token (hyperstorctl token create --role s3 --name N)",
+        );
+    }
+    if s.map.is_empty() {
+        fail("this host's join left no map service addresses: join again with a new s3 token");
+    }
+    let mut p = vhost_only_plan(s);
+    p.vhost = None;
     p
 }
 
@@ -1336,6 +1488,7 @@ fn vhost_only_plan(s: &Settings) -> Plan {
         metrics: Vec::new(),
         vhost: None,
         cluster_key: false,
+        s3: None,
     }
 }
 
@@ -1377,6 +1530,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         return Plan {
             vhost: None,
             cluster_key: false,
+            s3: None,
             ui: false,
             tailscale: false,
             api: format!("127.0.0.1:{}", s.api_port),
@@ -1408,6 +1562,9 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     }
     if s.role == "vhost" {
         return vhost_only_plan(s);
+    }
+    if s.role == "s3" {
+        return s3_only_plan(s);
     }
     if !s.join.is_empty() && s.role == "storage" {
         return joined_storage_plan(s);
@@ -1519,6 +1676,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     Plan {
         vhost: None,
         cluster_key: false,
+        s3: None,
         ui: false,
         tailscale: false,
         api,
@@ -1555,6 +1713,7 @@ fn joined_storage_plan(s: &Settings) -> Plan {
     Plan {
         vhost: None,
         cluster_key: false,
+        s3: None,
         ui: false,
         tailscale: false,
         api: String::new(),
@@ -1586,6 +1745,10 @@ fn joined_storage_plan(s: &Settings) -> Plan {
 /// service's addresses in `s`; returns the cluster file for a map service
 /// member.
 fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Option<String> {
+    if s.role == "s3" {
+        join_gateway(root, real, s, token);
+        return None;
+    }
     let dir = under(root, "/etc/hyperstor/pki");
     let (cert_name, key_group) = match s.role.as_str() {
         "storage" => ("node", "hyperstor"),
@@ -1593,7 +1756,7 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         // as the member; its node, like the first member's, has no
         // certificate of its own (the storage network uses none yet).
         "meta" | "both" => ("api", "hyperstor"),
-        _ => fail("--join takes --role storage, meta or both"),
+        _ => fail("--join takes --role storage, meta, both or s3"),
     };
     if s.role == "both" && s.node.is_none() {
         fail("--node N is needed for a storage role: which node of the cluster file");
@@ -1732,13 +1895,20 @@ fn service_user(s: &Settings) -> bool {
 /// Renews a joined storage host's certificate over the API, with the
 /// certificate itself (D56), once it is past two thirds of its life.
 fn renew_node(root: &Path, real: bool, s: &Settings) {
+    renew_leaf(root, real, s, "node");
+}
+
+/// Renews this host's certificate `name` (`node.crt`, `s3.crt`) over the
+/// API it joined through, with the certificate itself (D56), once it is
+/// past two thirds of its life.
+fn renew_leaf(root: &Path, real: bool, s: &Settings, name: &str) -> bool {
     let dir = under(root, "/etc/hyperstor/pki");
     let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
-    let cert = read("node.crt");
+    let cert = read(&format!("{name}.crt"));
     if !hyperstor_pki::due_for_renewal(&cert, hyperstor_pki::LEAF_DAYS) {
-        return;
+        return false;
     }
-    let tls = hyperstor_pki::client_config(&cert, &read("node.key"), &read("root.crt"))
+    let tls = hyperstor_pki::client_config(&cert, &read(&format!("{name}.key")), &read("root.crt"))
         .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display())));
     let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
     let r = api_call(&s.join, tls, |c| async move {
@@ -1752,20 +1922,87 @@ fn renew_node(root: &Path, real: bool, s: &Settings) {
     });
     match r {
         Ok(r) => {
-            converge(&dir.join("node.key"), key.as_bytes(), 0o640);
-            converge(&dir.join("node.crt"), r.certificate.as_bytes(), 0o644);
-            if real && !run("chgrp", &["hyperstor", "/etc/hyperstor/pki/node.key"]) {
-                fail("chgrp hyperstor /etc/hyperstor/pki/node.key failed");
+            converge(&dir.join(format!("{name}.key")), key.as_bytes(), 0o640);
+            converge(
+                &dir.join(format!("{name}.crt")),
+                r.certificate.as_bytes(),
+                0o644,
+            );
+            let k = format!("/etc/hyperstor/pki/{name}.key");
+            if real && !run("chgrp", &["hyperstor", &k]) {
+                fail(&format!("chgrp hyperstor {k} failed"));
             }
-            println!("Renewed /etc/hyperstor/pki/node.crt.");
+            println!("Renewed /etc/hyperstor/pki/{name}.crt.");
+            true
         }
         // Not fatal: the next daily run tries again, and the certificate
         // has a third of its life left.
-        Err(e) => eprintln!(
-            "hyperstor-install: renewing node.crt through {}: {e}",
-            s.join
-        ),
+        Err(e) => {
+            eprintln!(
+                "hyperstor-install: renewing {name}.crt through {}: {e}",
+                s.join
+            );
+            false
+        }
     }
+}
+
+/// An S3 gateway's identity (D233), on a host without the map service:
+/// joined with an `s3` token the first time, its certificate naming
+/// `--address`; renewed by later runs.
+fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) {
+    let dir = under(root, "/etc/hyperstor/pki");
+    if dir.join("s3.crt").exists() {
+        return;
+    }
+    let token = token.unwrap_or_else(|| {
+        fail("the gateway needs an s3 token: --token-file F (from hyperstorctl token create --role s3 --name N)")
+    });
+    let (pin, _) = hyperstor_meta::api::parse_token(token)
+        .unwrap_or_else(|| fail("the token isn't a hyperstor join token (hsj1-…)"));
+    let ip: std::net::IpAddr = s
+        .address
+        .parse()
+        .unwrap_or_else(|_| fail("--address IP is needed: where clients reach the gateway"));
+    let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
+    let req = hyperstor_api::JoinRequest {
+        token: token.trim().to_string(),
+        csr,
+        gateway_ips: vec![ip.to_string()],
+        ..Default::default()
+    };
+    let tls = hyperstor_pki::pinned_client_config(pin).unwrap_or_else(|e| fail(&e));
+    let r = api_call(&s.join, tls, |c| async move {
+        hyperstor_api::TokenServiceClient::new(c.0, c.1)
+            .join(req)
+            .await
+            .map(|r| r.into_owned())
+    })
+    .unwrap_or_else(|e| fail(&format!("join through {}: {e}", s.join)));
+    if hyperstor_pki::identity_in(&r.certificate).map(|i| i.role) != Some(hyperstor_pki::Role::S3) {
+        fail(
+            "the token isn't an s3 token: make one with hyperstorctl token create --role s3 --name N",
+        );
+    }
+    if real {
+        service_user(s);
+    }
+    let write = |name: &str, content: &str, mode: u32| {
+        converge(&dir.join(name), content.as_bytes(), mode);
+    };
+    write("root.crt", &r.root, 0o644);
+    write("s3.key", &key, 0o640);
+    write("s3.crt", &r.certificate, 0o644);
+    if real && !run("chgrp", &["hyperstor", "/etc/hyperstor/pki/s3.key"]) {
+        fail("chgrp hyperstor /etc/hyperstor/pki/s3.key failed");
+    }
+    if s.map.is_empty() {
+        s.map = r.map_addresses.clone();
+    }
+    println!(
+        "Joined cluster {} through {} as gateway {}.",
+        r.cluster_id, s.join, r.identity
+    );
 }
 
 /// D215: proposes this host's nodes' endpoints from its topology and
@@ -2110,6 +2347,23 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             ),
         ]);
     }
+    if let Some(g) = &p.s3 {
+        out.extend([
+            (
+                "/etc/hyperstor/s3.env".to_string(),
+                format!(
+                    "HS_ARGS=--meta {} --api {} --identity /etc/hyperstor/pki --tls {} --listen {}\n",
+                    p.map, g.api, g.tls, g.listen
+                ),
+                0o644,
+            ),
+            (
+                "/etc/systemd/system/hyperstor-s3.service".to_string(),
+                S3_UNIT.to_string(),
+                0o644,
+            ),
+        ]);
+    }
     for node in &p.nodes {
         let n = node.n;
         let shards: Vec<String> = node
@@ -2263,6 +2517,7 @@ fn units(p: &Plan) -> Vec<String> {
                 .first()
                 .map(|_| "hyperstor-smart.socket".to_string()),
         )
+        .chain(p.s3.iter().map(|_| "hyperstor-s3.service".to_string()))
         .chain(
             p.vhost
                 .iter()
@@ -2298,6 +2553,25 @@ fn remove_vhost(root: &Path, real: bool) -> Vec<String> {
     }
     let mut removed = Vec::new();
     for f in [unit, "/etc/hyperstor/vhost.env"] {
+        if fs::remove_file(under(root, f)).is_ok() {
+            removed.push(f.to_string());
+        }
+    }
+    removed
+}
+
+/// Stops and removes `hyperstor-s3` (`--no-s3`, uninstall); its
+/// certificate stays, as other certificates do.
+fn remove_s3(root: &Path, real: bool) -> Vec<String> {
+    let unit = "/etc/systemd/system/hyperstor-s3.service";
+    if !under(root, unit).exists() {
+        return Vec::new();
+    }
+    if real {
+        let _ = run("systemctl", &["disable", "--now", "hyperstor-s3.service"]);
+    }
+    let mut removed = Vec::new();
+    for f in [unit, "/etc/hyperstor/s3.env"] {
         if fs::remove_file(under(root, f)).is_ok() {
             removed.push(f.to_string());
         }
@@ -2498,6 +2772,21 @@ fn install(
         // operator brings their own.
         let web =
             (s.mgmt_listen == "all" && s.web_tls.is_empty()).then(glidex_tls::LocalNames::discover);
+        // The gateway's names, for its certificate (D233).
+        let s3_names = p.s3.as_ref().map(|_| glidex_tls::LocalNames::discover());
+        // Other members' cluster APIs, where a missing cluster key comes
+        // from: the one this host joined through, and each listed
+        // member's address on this host's API port.
+        let mut peers: Vec<String> = Vec::new();
+        if !s.join.is_empty() {
+            peers.push(s.join.clone());
+        }
+        for m in &p.members {
+            if Some(m.id) != p.member_id {
+                peers.push(format!("{}:{}", m.map.ip(), s.api_port));
+            }
+        }
+        peers.dedup();
         restart.extend(pki(
             root,
             real,
@@ -2505,9 +2794,14 @@ fn install(
             &member,
             &p.server_ips,
             web.as_ref(),
+            s3_names.as_ref(),
+            &peers,
             &mut changed,
         ));
         p.cluster_key = under(root, "/etc/hyperstor/pki/cluster.key").exists();
+    } else if p.s3.is_some() && renew_leaf(root, real, s, "s3") {
+        // A joined gateway's own certificate; it reads it at start.
+        restart.push("hyperstor-s3.service".into());
     }
     // The node's Tailscale certificate for mgmt (D109): granted by a
     // tailscaled drop-in, unless someone else holds the grant.
@@ -2573,6 +2867,11 @@ fn install(
         units_changed |= !removed.is_empty();
         changed.extend(removed.into_iter().map(|r| format!("removed {r}")));
     }
+    if p.s3.is_none() {
+        let removed = remove_s3(root, real && !no_start);
+        units_changed |= !removed.is_empty();
+        changed.extend(removed.into_iter().map(|r| format!("removed {r}")));
+    }
     let mut service_units_changed: Vec<&str> = Vec::new();
     for (path, content, mode) in files(s, &p) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
@@ -2602,6 +2901,9 @@ fn install(
         if path.ends_with("hyperstor-vhost.service") || path.ends_with("vhost.env") {
             restart.push("hyperstor-vhost.service".into());
         }
+        if path.ends_with("hyperstor-s3.service") || path.ends_with("s3.env") {
+            restart.push("hyperstor-s3.service".into());
+        }
         if path.ends_with("cluster.txt") || path.ends_with("meta.env") {
             restart.push("hyperstor-meta.service".into());
         }
@@ -2629,6 +2931,7 @@ fn install(
             "hyperstor-meta" => u == "hyperstor-meta.service",
             "hyperstor-mgmt" => u == "hyperstor-mgmt.service",
             "hyperstor-vhost" => u == "hyperstor-vhost.service",
+            "hyperstor-s3" => u == "hyperstor-s3.service",
             _ => false,
         }));
         // The helper's service, not its socket, which stays: systemd hands
@@ -2670,6 +2973,10 @@ fn install(
         }
     }
 
+    // The all-in-one's default placement, once its map service answers.
+    if let Some(done) = s3_default_placement(root, s, &p, if real && !no_start { 30 } else { 1 }) {
+        changed.push(done);
+    }
     if !(real && !no_start) && !restart.is_empty() {
         // Not started here: say what a real run would restart.
         changed.push(format!("would restart {}", restart.join(" ")));
@@ -2694,6 +3001,12 @@ fn install(
         println!(
             "\nNext: hyperstorctl status, then hyperstorctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
         );
+        if let Some(g) = &p.s3 {
+            println!(
+                "S3 on https://<this host>:{}/ : hyperstorctl s3 key create --tenant 1 prints a key and its secret",
+                g.listen.rsplit(':').next().unwrap_or("443")
+            );
+        }
         if !s.all_in_one {
             println!(
                 "Add a storage host: hyperstorctl token create --role node, then on that host\n  sudo hyperstor-install install --join {} --token-file FILE --role storage --address IP",
@@ -2701,6 +3014,102 @@ fn install(
             );
         }
     }
+}
+
+/// The root certificate this host trusts.
+fn root_cert_of(root: &Path) -> String {
+    fs::read_to_string(under(root, "/etc/hyperstor/pki/root.crt")).unwrap_or_default()
+}
+
+/// The cluster key from the first of `peers` (cluster API addresses) that
+/// has one, asked with this member's own certificate (`GetClusterKey`,
+/// for members only).
+fn fetch_cluster_key(
+    api: &hyperstor_pki::Pem,
+    root_cert: &str,
+    peers: &[String],
+) -> Option<hyperstor_pki::ClusterKey> {
+    for peer in peers {
+        let Ok(tls) = hyperstor_pki::client_config(&api.cert, &api.key, root_cert) else {
+            return None;
+        };
+        let r = api_call(peer, tls, |c| async move {
+            hyperstor_api::CaServiceClient::new(c.0, c.1)
+                .get_cluster_key(hyperstor_api::GetClusterKeyRequest::default())
+                .await
+                .map(|r| r.into_owned())
+        });
+        match r.map(|r| hyperstor_pki::ClusterKey::parse(&r.cluster_key)) {
+            Ok(Some(k)) => {
+                println!("Fetched the cluster key from member {peer}.");
+                return Some(k);
+            }
+            Ok(None) => eprintln!("hyperstor-install: {peer} answered something not a cluster key"),
+            Err(e) => eprintln!("hyperstor-install: the cluster key from {peer}: {e}"),
+        }
+    }
+    None
+}
+
+/// Where a run records that it set the all-in-one's default placement.
+const S3_PLACED: &str = "/etc/hyperstor/s3-placement.set";
+
+/// The all-in-one cluster's `default` S3 placement (D232): its replicated
+/// pool, `vol`, for data and index, set through the API with the
+/// administrator's certificate when no placement is, once: what an
+/// administrator sets or deletes later stays. Tries `tries` times, a
+/// second apart, while the map service starts; what it did, if anything.
+fn s3_default_placement(root: &Path, s: &Settings, p: &Plan, tries: u32) -> Option<String> {
+    if !s.all_in_one || p.s3.is_none() || p.meta.is_none() || under(root, S3_PLACED).exists() {
+        return None;
+    }
+    let dir = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
+    for i in 0..tries {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let tls =
+            hyperstor_pki::client_config(&read("admin.crt"), &read("admin.key"), &read("root.crt"))
+                .ok()?;
+        let r = api_call(&p.api, tls, |c| async move {
+            let client = hyperstor_api::S3ServiceClient::new(c.0, c.1);
+            let have = client
+                .list_s3_placements(hyperstor_api::ListS3PlacementsRequest::default())
+                .await?
+                .into_owned();
+            if !have.placements.is_empty() {
+                return Ok(false);
+            }
+            client
+                .set_s3_placement(hyperstor_api::SetS3PlacementRequest {
+                    placement: Some(hyperstor_api::S3Placement {
+                        name: "default".into(),
+                        data_pool: "vol".into(),
+                        index_pool: "vol".into(),
+                        ..Default::default()
+                    })
+                    .into(),
+                    ..Default::default()
+                })
+                .await?;
+            Ok(true)
+        });
+        match r {
+            Ok(set) => {
+                converge(&under(root, S3_PLACED), b"", 0o644);
+                return set.then(|| "S3's default placement: pool vol".to_string());
+            }
+            Err(e) if i + 1 == tries && tries > 1 => {
+                eprintln!(
+                    "hyperstor-install: S3's default placement through {}: {e}",
+                    p.api
+                );
+            }
+            Err(_) => {}
+        }
+    }
+    None
 }
 
 /// The cluster's certificates in `/etc/hyperstor/pki` (§23.8, D53, D56):
@@ -2716,6 +3125,7 @@ fn install(
 /// Leaves are renewed after two thirds of their 30 days, or when the
 /// intermediate changes. Returns the services to restart for new
 /// certificates.
+#[allow(clippy::too_many_arguments)]
 fn pki(
     root: &Path,
     real: bool,
@@ -2723,6 +3133,8 @@ fn pki(
     member: &str,
     server_ips: &[std::net::IpAddr],
     web: Option<&glidex_tls::LocalNames>,
+    s3: Option<&glidex_tls::LocalNames>,
+    peers: &[String],
     changed: &mut Vec<String>,
 ) -> Vec<String> {
     use hyperstor_pki::*;
@@ -2778,21 +3190,31 @@ fn pki(
         }
         (None, None) => fail("no intermediate CA and no root key to make one: join again"),
     };
-    // The cluster key (D162): made with the root, on the first host;
-    // members that join get it with the intermediate.
+    // The cluster key (D162): from another member that has it (a member
+    // that joined before it existed, or lost it), else made where the
+    // root is; members that join get it with the intermediate.
     if read("cluster.key").is_none() {
-        if rootca.is_some() {
-            let k = ClusterKey::generate().unwrap_or_else(|e| fail(&format!("cluster key: {e}")));
-            converge(
-                &under(root, &format!("{dir}/cluster.key")),
-                k.text().as_bytes(),
-                0o600,
-            );
-            changed.push(format!("{dir}/cluster.key"));
-        } else {
-            eprintln!(
-                "hyperstor-install: no cluster key on this host: the map service can't keep S3 keys here; copy {dir}/cluster.key (mode 0600) from the first member, or restore the root key there and install again"
-            );
+        let fetched =
+            pair("api").and_then(|api| fetch_cluster_key(&api, &root_cert_of(root), peers));
+        let made = match (&fetched, &rootca) {
+            (Some(_), _) => fetched,
+            (None, Some(_)) => {
+                Some(ClusterKey::generate().unwrap_or_else(|e| fail(&format!("cluster key: {e}"))))
+            }
+            (None, None) => None,
+        };
+        match made {
+            Some(k) => {
+                converge(
+                    &under(root, &format!("{dir}/cluster.key")),
+                    k.text().as_bytes(),
+                    0o600,
+                );
+                changed.push(format!("{dir}/cluster.key"));
+            }
+            None => eprintln!(
+                "hyperstor-install: no cluster key on this host, and no other member gave one: the map service can't keep S3 keys here until one does (run install again once another member has one), or restore the root key here (root-restore) and install again"
+            ),
         }
     }
     // Services read their certificates at start: restart those whose
@@ -2809,12 +3231,29 @@ fn pki(
         // address of this host. mgmt re-reads it when it changes.
         leaves.push(("web", Role::Mgmt, "web", true, "hyperstor"));
     }
+    if s3.is_some() {
+        // The gateway's identity (D233), which reads S3's keys; it serves
+        // HTTPS with it too unless the site brings a certificate, so it
+        // names this host's names and addresses.
+        leaves.push(("s3", Role::S3, member, true, "hyperstor"));
+    }
     for (name, role, id, server, group) in leaves {
         // A server certificate names where it is reached: loopback, and
         // for a map service member its addresses (D72). Kept only while it
         // names the same ones, recorded beside it.
         let (ips, names) = if let (Some(w), "web") = (web, name) {
             (w.ips.clone(), w.dns.clone())
+        } else if let (Some(n), "s3") = (s3, name) {
+            let mut ips: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+            ips.extend(server_ips.iter().copied());
+            ips.extend(n.ips.iter().copied());
+            ips.sort();
+            ips.dedup();
+            let mut dns = n.dns.clone();
+            dns.push("localhost".into());
+            dns.sort();
+            dns.dedup();
+            (ips, dns)
         } else if server {
             let mut ips: Vec<std::net::IpAddr> = vec!["127.0.0.1".parse().unwrap()];
             ips.extend(server_ips.iter().copied());
@@ -2827,7 +3266,11 @@ fn pki(
         let recorded: String = ips
             .iter()
             .map(|ip| ip.to_string())
-            .chain(if name == "web" { names.clone() } else { vec![] })
+            .chain(if name == "web" || name == "s3" {
+                names.clone()
+            } else {
+                vec![]
+            })
             .map(|l| format!("{l}\n"))
             .collect();
         let same_ips =
@@ -2866,6 +3309,7 @@ fn pki(
         match name {
             "api" => restart.push("hyperstor-meta.service".to_string()),
             "mgmt" => restart.push("hyperstor-mgmt.service".to_string()),
+            "s3" => restart.push("hyperstor-s3.service".to_string()),
             _ => {}
         }
     }
@@ -3384,6 +3828,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     }
     // Its volumes detached first, so they don't stay held (D143).
     let mut removed = remove_vhost(root, real);
+    removed.extend(remove_s3(root, real));
     if real {
         // What was installed: the map service if its options are, and
         // every storage node with an options file.
@@ -3808,6 +4253,8 @@ mod tests {
             "0",
             &ips(&["10.0.0.12"]),
             None,
+            None,
+            &[],
             &mut changed,
         );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
@@ -3823,6 +4270,8 @@ mod tests {
             "0",
             &ips(&["10.0.0.12"]),
             None,
+            None,
+            &[],
             &mut changed,
         );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
@@ -3833,6 +4282,8 @@ mod tests {
             "0",
             &ips(&["10.0.0.13"]),
             None,
+            None,
+            &[],
             &mut changed,
         );
         assert_ne!(cert(root.path()), first, "new addresses: issued again");
@@ -3852,7 +4303,17 @@ mod tests {
         let web = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/web.crt")).unwrap();
         let mut changed = Vec::new();
         let a = names(&["box.example", "localhost"], &["127.0.0.1", "10.0.0.5"]);
-        pki(root.path(), false, "9", "0", &[], Some(&a), &mut changed);
+        pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &[],
+            Some(&a),
+            None,
+            &[],
+            &mut changed,
+        );
         let first = web(root.path());
         let (ips, dns) = hyperstor_pki::names_of(&first).unwrap();
         // No certificate data in the failure message.
@@ -3863,10 +4324,30 @@ mod tests {
             !first.contains(root_pem.trim()),
             "the root isn't in the chain"
         );
-        pki(root.path(), false, "9", "0", &[], Some(&a), &mut changed);
+        pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &[],
+            Some(&a),
+            None,
+            &[],
+            &mut changed,
+        );
         assert_eq!(web(root.path()), first, "same names: kept");
         let b = names(&["box.example", "localhost"], &["127.0.0.1", "10.0.0.6"]);
-        let restart = pki(root.path(), false, "9", "0", &[], Some(&b), &mut changed);
+        let restart = pki(
+            root.path(),
+            false,
+            "9",
+            "0",
+            &[],
+            Some(&b),
+            None,
+            &[],
+            &mut changed,
+        );
         assert_ne!(web(root.path()), first, "a new address: issued again");
         assert!(!restart.iter().any(|r| r.contains("mgmt")), "{restart:?}");
     }

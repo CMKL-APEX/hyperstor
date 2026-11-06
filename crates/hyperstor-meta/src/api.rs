@@ -72,6 +72,8 @@ enum Need {
     Mgmt,
     /// S3 gateways (`s3`, D233) only: S3's secrets.
     S3,
+    /// Map service members (`meta`) only: the cluster key (D162).
+    Member,
 }
 
 pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
@@ -433,6 +435,7 @@ impl Api {
                     Need::Metrics => who.role != hyperstor_pki::Role::Host,
                     Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
                     Need::S3 => who.role == hyperstor_pki::Role::S3,
+                    Need::Member => who.role == hyperstor_pki::Role::Meta,
                     Need::Identity | Need::Anyone => true,
                 };
                 if !allowed {
@@ -445,6 +448,7 @@ impl Api {
                                 match need {
                                     Need::Write => "change the cluster",
                                     Need::S3 => "read S3's keys",
+                                    Need::Member => "read the cluster key",
                                     _ => "read the cluster's status",
                                 }
                             )),

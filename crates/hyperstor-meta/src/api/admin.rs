@@ -704,6 +704,34 @@ impl TokenService for Api {
 
 #[allow(refining_impl_trait)]
 impl CaService for Api {
+    async fn get_cluster_key(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetClusterKeyRequest>,
+    ) -> ServiceResult<pb::GetClusterKeyResponse> {
+        let who = self.authorize_as(&ctx, "GetClusterKey", "cluster key", Need::Member)?;
+        let key = self
+            .admin
+            .signing
+            .as_ref()
+            .and_then(|s| s.cluster_key.as_ref())
+            .map(|k| k.text());
+        // Audited either way: it is a secret handed over.
+        let Some(cluster_key) = key else {
+            audit(&who, "GetClusterKey", "cluster key", "failed: none here");
+            return Err(with_reason(
+                ConnectError::failed_precondition("this map service member has no cluster key"),
+                "no_cluster_key",
+            ));
+        };
+        audit(&who, "GetClusterKey", "cluster key", "ok");
+        Ok(pb::GetClusterKeyResponse {
+            cluster_key,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn renew_certificate(
         &self,
         ctx: RequestContext,

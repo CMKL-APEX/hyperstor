@@ -9,6 +9,9 @@ publish = false
 
 [dependencies]
 hyperstor-pki = { path = "../hyperstor-pki" }
+# The cluster API, for calls no command makes (GetClusterKey's refusal).
+hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
 # A PAM helper with made-up people, for hyperstor-mgmt's logins.
 glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "6500c1f08164ad6de38916b1fe53541711713823" }
 serde_json = "1"
