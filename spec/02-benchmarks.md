@@ -1614,3 +1614,54 @@ cargo test --release -p hyperstor-daemon --test cluster s3_put_throughput -- --i
 2. **The first GET round was slow** (259 MiB/s) and later ones not, with
    nothing else changed: warm-up of the in-process cluster, not the
    gateway.
+
+## 2026-11-06: eight reactors, eight ports in one subnet (G47)
+
+Whether traffic from 8 addresses in one IPoIB subnet leaves by each
+address's own port, with and without a routing rule per source address.
+Two of the pilot's HGX A100 hosts (Linux 6.8.0, ConnectX-6 HDR, IPoIB in
+datagram mode, eight ports in one /24, `arp_ignore=1`, `arp_announce=2`,
+`rp_filter` 2). The rules are glidex netd's (glidex networking M9): a
+table and a rule `from ADDR` at priority 1000 per address.
+
+On the serving host, a temporary one-node cluster apart from the pilot:
+`hyperstor-meta`, and `hyperstord --buffered` with 8 devices on tmpfs,
+each served on one of the 8 IPoIB addresses (`--shard ADDR:PORT=PATH`),
+one reactor per device on its own CPU; a pool of one copy, 128 PGs. On
+the other host, one client reactor, main at 262507a:
+
+```sh
+HS_BENCH_SECS=20 HS_BENCH_ONLY="1 MiB reads, QD4" hyperstor-bench remote MAP
+```
+
+The serving host's `tx_bytes` per port (`/sys/class/net/PORT/statistics`)
+were read before and after. For the run without rules, all 8 were
+deleted right after one of netd's passes and the run finished before the
+next; netd restored them 34 s later. 15 s runs, except the first (20 s).
+
+| Port | With rules, MB sent | Without rules | With rules, again |
+|---|---|---|---|
+| ibp12s0 | 2351 | 0 | 2248 |
+| ibp18s0 | 3314 | 16249 | 3188 |
+| ibp75s0 | 1322 | 0 | 1168 |
+| ibp84s0 | 1750 | 0 | 1620 |
+| ibp141s0 | 2812 | 0 | 2663 |
+| ibp148s0 | 1781 | 0 | 1649 |
+| ibp186s0 | 2208 | 0 | 2101 |
+| ibp204s0 | 1932 | 0 | 1803 |
+| **Client MB/s** | 848 | 1052 | 1064 |
+
+**Findings.**
+
+1. **With the rules, each reactor's replies leave by its own port**; all
+8 ports carry traffic. The shares follow how many chunks each device
+holds, not routing (the requests' RX was spread the same way).
+2. **Without them, everything leaves by one port**, the port of the
+subnet's first route in the main table (`ibp18s0` here), while requests
+still arrive on all 8.
+3. **One client doesn't tell the throughput apart** (1052 against
+1064 MB/s; the first run, 848): its single
+reactor, about 1 GB/s over IPoIB (G48), is the limit, far below one
+port. What the spread is worth needs several clients at once, G48's
+remaining part.
+
