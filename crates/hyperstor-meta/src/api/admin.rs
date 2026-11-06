@@ -342,19 +342,23 @@ impl TokenService for Api {
         let target = format!("role {}", req.role);
         let who = self.authorize(&ctx, "CreateToken", &target, true)?;
         let (_, root) = self.signing()?;
-        if !matches!(req.role, "node" | "meta" | "mgmt" | "s3" | "metrics") {
+        if !matches!(
+            req.role,
+            "node" | "meta" | "mgmt" | "s3" | "metrics" | "orchestrator"
+        ) {
             return Err(invalid(
                 format!(
-                    "{}: a token is for role node, meta, mgmt, s3 or metrics",
+                    "{}: a token is for role node, meta, mgmt, s3, metrics or orchestrator",
                     req.role
                 ),
                 "invalid_argument",
             ));
         }
         // A management client's, gateway's or scraper's token names the
-        // identity it enrolls (D122, D233, D234).
+        // identity it enrolls (D122, D233, D234), as does an
+        // orchestrator's (D205).
         let name = req.name.to_string();
-        if matches!(req.role, "mgmt" | "s3" | "metrics") {
+        if matches!(req.role, "mgmt" | "s3" | "metrics" | "orchestrator") {
             let ok = (1..=32).contains(&name.len())
                 && name
                     .bytes()
@@ -550,17 +554,18 @@ impl TokenService for Api {
                         },
                     ))
                 }
-                role @ ("mgmt" | "metrics") => {
-                    // A management client (D122), or a scraper of the map
-                    // service's metrics (D234): a client certificate
+                role @ ("mgmt" | "metrics" | "orchestrator") => {
+                    // A management client (D122), a scraper of the map
+                    // service's metrics (D234), or an orchestrator (D205):
+                    // a client certificate
                     // naming no address, the root, and the map service's
                     // addresses for a management client's data path.
                     let who = Identity {
                         cluster: cluster.clone(),
-                        role: if role == "mgmt" {
-                            Role::Mgmt
-                        } else {
-                            Role::Metrics
+                        role: match role {
+                            "mgmt" => Role::Mgmt,
+                            "metrics" => Role::Metrics,
+                            _ => Role::Orchestrator,
                         },
                         id: token.name.clone(),
                     };

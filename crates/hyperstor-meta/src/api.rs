@@ -58,8 +58,14 @@ struct Api {
 /// What a call needs of its caller.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Need {
-    /// Any identity of this cluster but a bare-metal host or a scraper.
+    /// Any identity of this cluster but a bare-metal host, a scraper or
+    /// an orchestrator.
     Read,
+    /// What an orchestrator reads (ports and its claims), or anyone who
+    /// may read (26-networks.md §29.9, D205).
+    Ports,
+    /// Claiming ports: an orchestrator, `admin` or `mgmt` (D205).
+    Claim,
     /// `GET /metrics` (D234): a scraper, or any identity that may read.
     Metrics,
     /// `admin` or `mgmt`.
@@ -430,9 +436,21 @@ impl Api {
                     Need::Write => who.role.may_administer(),
                     Need::Read => !matches!(
                         who.role,
+                        hyperstor_pki::Role::Host
+                            | hyperstor_pki::Role::Metrics
+                            | hyperstor_pki::Role::Orchestrator
+                    ),
+                    Need::Ports => !matches!(
+                        who.role,
                         hyperstor_pki::Role::Host | hyperstor_pki::Role::Metrics
                     ),
-                    Need::Metrics => who.role != hyperstor_pki::Role::Host,
+                    Need::Claim => {
+                        who.role.may_administer() || who.role == hyperstor_pki::Role::Orchestrator
+                    }
+                    Need::Metrics => !matches!(
+                        who.role,
+                        hyperstor_pki::Role::Host | hyperstor_pki::Role::Orchestrator
+                    ),
                     Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
                     Need::S3 => who.role == hyperstor_pki::Role::S3,
                     Need::Member => who.role == hyperstor_pki::Role::Meta,
@@ -1779,7 +1797,7 @@ impl ClusterService for Api {
         req: ServiceRequest<'_, pb::ListPortsRequest>,
     ) -> ServiceResult<pb::ListPortsResponse> {
         let target = req.node.map_or("all nodes".into(), |n| format!("node {n}"));
-        self.authorize(&ctx, "ListPorts", &target, false)?;
+        self.authorize_as(&ctx, "ListPorts", &target, Need::Ports)?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::Ports(reply))
@@ -1791,6 +1809,225 @@ impl ClusterService for Api {
             .map_err(|e| meta_error(e, ConnectError::unavailable, "unavailable"))?;
         Ok(pb::ListPortsResponse {
             ports: ports_pb(&seen, &map, req.node),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn set_lending(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetLendingRequest>,
+    ) -> ServiceResult<pb::SetLendingResponse> {
+        let port = match (req.node, req.name.is_empty()) {
+            (None, true) => None,
+            (Some(n), false) => Some(format!("{n}/{}", req.name)),
+            _ => {
+                return Err(admin::invalid(
+                    "give a port's node and name, or neither for the cluster",
+                    "invalid_argument",
+                ));
+            }
+        };
+        let lending = req.lending.map(str::to_string);
+        let target = format!(
+            "{} lending={}",
+            port.as_deref()
+                .map_or("cluster".into(), |p| format!("port {p}")),
+            lending.as_deref().unwrap_or("default")
+        );
+        let who = self.authorize(&ctx, "SetLending", &target, true)?;
+        let lending = match lending.as_deref() {
+            None => None,
+            Some(l) => Some(hyperstor_map::Lending::from_name(l).ok_or_else(|| {
+                admin::invalid(
+                    format!("{l}: lending is off, idle or always"),
+                    "invalid_argument",
+                )
+            })?),
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetLending {
+                port,
+                lending,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(&who, "SetLending", &target, &outcome(&r));
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetLendingResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(port_error(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn claim_port(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ClaimPortRequest>,
+    ) -> ServiceResult<pb::ClaimPortResponse> {
+        let port = format!("{}/{}", req.node, req.name);
+        let target = format!(
+            "port {port} holder={:?} {}",
+            req.holder,
+            if req.exclusive { "exclusive" } else { "shared" }
+        );
+        let who = self.authorize_as(&ctx, "ClaimPort", &target, Need::Claim)?;
+        let holder = holder_of(&ctx, req.holder);
+        let ttl = claim_ttl(req.ttl_secs)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ClaimPort {
+                port: port.clone(),
+                holder: holder.clone(),
+                exclusive: Some(req.exclusive),
+                ttl,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "ClaimPort",
+            &target,
+            &outcome(&r.clone().map(|r| r.map(|c| c.2))),
+        );
+        match r {
+            Some(Ok((expires_ms, exclusive, map_epoch))) => Ok(pb::ClaimPortResponse {
+                claim: claim_pb(req.node, req.name, &holder, exclusive, expires_ms).into(),
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(port_error(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn renew_claim(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RenewClaimRequest>,
+    ) -> ServiceResult<pb::RenewClaimResponse> {
+        let port = format!("{}/{}", req.node, req.name);
+        let target = format!("port {port} holder={:?}", req.holder);
+        self.authorize_as(&ctx, "RenewClaim", &target, Need::Claim)?;
+        let holder = holder_of(&ctx, req.holder);
+        let ttl = claim_ttl(req.ttl_secs)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ClaimPort {
+                port,
+                holder: holder.clone(),
+                exclusive: None,
+                ttl,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        match rx.recv().await {
+            Some(Ok((expires_ms, exclusive, _))) => Ok(pb::RenewClaimResponse {
+                claim: claim_pb(req.node, req.name, &holder, exclusive, expires_ms).into(),
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(port_error(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn release_claim(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ReleaseClaimRequest>,
+    ) -> ServiceResult<pb::ReleaseClaimResponse> {
+        let port = format!("{}/{}", req.node, req.name);
+        let target = format!(
+            "port {port} holder={:?}{}",
+            req.holder,
+            if req.any { " any" } else { "" }
+        );
+        // Whoever holds it: only those who may administer.
+        let who = if req.any {
+            self.authorize(&ctx, "ReleaseClaim", &target, true)?
+        } else {
+            self.authorize_as(&ctx, "ReleaseClaim", &target, Need::Claim)?
+        };
+        let holder = holder_of(&ctx, req.holder);
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::ReleaseClaim {
+                port,
+                holder,
+                any: req.any,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(&who, "ReleaseClaim", &target, &outcome(&r));
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::ReleaseClaimResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(port_error(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn list_claims(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListClaimsRequest>,
+    ) -> ServiceResult<pb::ListClaimsResponse> {
+        self.authorize_as(&ctx, "ListClaims", "claims", Need::Ports)?;
+        // An orchestrator sees its own claims only.
+        let holder = req.holder.map(|h| holder_of(&ctx, h));
+        let mine = orchestrator_of(&ctx).map(|id| format!("{id}: "));
+        let (map, ..) = self.published().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let split = |id: &str| -> Option<(u32, String)> {
+            let (n, d) = id.split_once('/')?;
+            Some((n.parse().ok()?, d.to_string()))
+        };
+        let claims = map
+            .claims
+            .iter()
+            .filter(|(_, c)| c.expires_ms > now)
+            .filter(|(_, c)| holder.as_ref().is_none_or(|h| &c.holder == h))
+            .filter(|(_, c)| {
+                mine.as_ref()
+                    .is_none_or(|m| c.holder.starts_with(m.as_str()))
+            })
+            .filter_map(|(id, c)| {
+                let (n, d) = split(id)?;
+                Some(claim_pb(n, &d, &c.holder, c.exclusive, c.expires_ms))
+            })
+            .collect();
+        Ok(pb::ListClaimsResponse {
+            claims,
+            lending: map.lending.unwrap_or_default().name().into(),
+            port_lending: map
+                .port_lending
+                .iter()
+                .filter_map(|(id, l)| {
+                    let (node, name) = split(id)?;
+                    Some(pb::PortLending {
+                        node,
+                        name,
+                        lending: l.name().into(),
+                        ..Default::default()
+                    })
+                })
+                .collect(),
             ..Default::default()
         }
         .into())
@@ -3361,6 +3598,73 @@ async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::Co
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
                     .await;
         });
+    }
+}
+
+/// An orchestrator's certificate name, if the caller is one (D205).
+fn orchestrator_of(ctx: &RequestContext) -> Option<String> {
+    let id = ctx
+        .peer_certs()
+        .and_then(|c| c.first())
+        .and_then(|leaf| hyperstor_pki::identity_of(leaf))?;
+    (id.role == hyperstor_pki::Role::Orchestrator).then_some(id.id)
+}
+
+/// The holder a claim is kept under: an orchestrator's own name before
+/// the one it gives, so no orchestrator renews or ends another's claim;
+/// as given for `admin` and `mgmt`.
+fn holder_of(ctx: &RequestContext, holder: &str) -> String {
+    match orchestrator_of(ctx) {
+        Some(id) => format!("{id}: {holder}"),
+        None => holder.to_string(),
+    }
+}
+
+/// A claim's time to live: 10 s to an hour.
+fn claim_ttl(secs: u32) -> Result<std::time::Duration, ConnectError> {
+    if !(10..=3600).contains(&secs) {
+        return Err(admin::invalid(
+            format!("ttl_secs {secs}: a claim lives 10 to 3600 s"),
+            "invalid_argument",
+        ));
+    }
+    Ok(std::time::Duration::from_secs(u64::from(secs)))
+}
+
+fn claim_pb(
+    node: u32,
+    name: &str,
+    holder: &str,
+    exclusive: bool,
+    expires_ms: u64,
+) -> pb::PortClaim {
+    pb::PortClaim {
+        node,
+        name: name.into(),
+        holder: holder.into(),
+        exclusive,
+        expires_ms,
+        ..Default::default()
+    }
+}
+
+/// An audit outcome for a map change answered with its epoch.
+fn outcome(r: &Option<Result<u64, String>>) -> String {
+    match r {
+        Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+        Some(Err(e)) => format!("failed: {e}"),
+        None => "failed: map service stopped".into(),
+    }
+}
+
+/// A port call's error as the API gives it.
+fn port_error(e: String) -> ConnectError {
+    if e.starts_with("no node") || e.contains("has no claim") {
+        meta_error(e, ConnectError::not_found, "not_found")
+    } else if e.contains("is claimed by") {
+        meta_error(e, ConnectError::failed_precondition, "claimed")
+    } else {
+        meta_error(e, ConnectError::invalid_argument, "invalid_argument")
     }
 }
 

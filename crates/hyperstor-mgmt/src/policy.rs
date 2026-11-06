@@ -67,6 +67,11 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetEndpoints", Group::Operate, false),
     ("ClusterService.ListPorts", Group::Read, false),
     ("ClusterService.SetPortRole", Group::Operate, false),
+    ("ClusterService.SetLending", Group::Operate, false),
+    ("ClusterService.ClaimPort", Group::Machine, false),
+    ("ClusterService.RenewClaim", Group::Machine, false),
+    ("ClusterService.ReleaseClaim", Group::Operate, false),
+    ("ClusterService.ListClaims", Group::Read, false),
     // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),
     ("NodeService.DrainNode", Group::Operate, false),

@@ -40,6 +40,9 @@ pub enum Role {
     /// A metrics scraper such as Prometheus: the map service's `/metrics`
     /// and nothing else (D234).
     Metrics,
+    /// An orchestrator such as glidex's scheduler: claims ports, and
+    /// reads ports and its claims (26-networks.md §29.9, D205).
+    Orchestrator,
 }
 
 impl Role {
@@ -52,6 +55,7 @@ impl Role {
             Role::Host => "host",
             Role::S3 => "s3",
             Role::Metrics => "metrics",
+            Role::Orchestrator => "orchestrator",
         }
     }
 
@@ -64,6 +68,7 @@ impl Role {
             "host" => Role::Host,
             "s3" => Role::S3,
             "metrics" => Role::Metrics,
+            "orchestrator" => Role::Orchestrator,
             _ => return None,
         })
     }
@@ -1125,7 +1130,14 @@ mod tests {
         assert!(Role::Mgmt.may_administer());
         assert!(!Role::Metrics.may_administer());
         assert_eq!(Role::parse("metrics"), Some(Role::Metrics));
-        for r in [Role::Node, Role::Meta, Role::Host, Role::S3] {
+        assert_eq!(Role::parse("orchestrator"), Some(Role::Orchestrator));
+        for r in [
+            Role::Node,
+            Role::Meta,
+            Role::Host,
+            Role::S3,
+            Role::Orchestrator,
+        ] {
             assert!(!r.may_administer());
         }
     }

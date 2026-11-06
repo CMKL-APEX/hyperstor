@@ -10,8 +10,8 @@
 //! in the map: a new leader starts them again, which delays a loan by at
 //! most a dwell.
 
-use hyperstor_fabric::reconcile::{Change, Observed, Policy, PortState, apply, reconcile};
-use hyperstor_map::ClusterMap;
+use hyperstor_fabric::reconcile::{Change, Claim, Observed, Policy, PortState, apply, reconcile};
+use hyperstor_map::{ClusterMap, Lending};
 use hyperstor_proto::PortSample;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -32,6 +32,8 @@ pub struct Seen {
 
 #[derive(Debug)]
 pub struct Fabric {
+    /// Dwell, hysteresis, idleness and revocation; lending comes from the
+    /// map's settings (D209).
     pub policy: Policy,
     pub every: Duration,
     seen: HashMap<String, Seen>,
@@ -116,6 +118,25 @@ impl Fabric {
         let seen = self.seen(now);
         self.seen.retain(|id, _| seen.contains_key(id));
         let mut changed = false;
+        // Claims not renewed in time lapse, and their ports return (D205).
+        for (id, c) in map.lapse_claims(unix_ms) {
+            eprintln!("hyperstor-meta: claim on port {id} by {} lapsed", c.holder);
+            changed = true;
+        }
+        let claims: BTreeMap<String, Claim> = map
+            .claims
+            .iter()
+            .map(|(id, c)| {
+                (
+                    id.clone(),
+                    Claim {
+                        holder: c.holder.clone(),
+                        exclusive: c.exclusive,
+                        expires: c.expires_ms,
+                    },
+                )
+            })
+            .collect();
         // A port matters when it carries one of its node's endpoints, or
         // the operator gave it a role.
         let matters = |map: &ClusterMap, id: &str, addrs: &[std::net::IpAddr]| {
@@ -192,7 +213,24 @@ impl Fabric {
                 )
             })
             .collect();
-        let changes = reconcile(unix_ms, &self.policy, &observed, &BTreeMap::new(), &state);
+        // Each port under its own lending setting, else the cluster's
+        // (D209).
+        let mut changes = Vec::new();
+        for lending in Lending::ALL {
+            let some: BTreeMap<String, Observed> = observed
+                .iter()
+                .filter(|(id, _)| map.lending_of(id) == lending)
+                .map(|(id, o)| (id.clone(), *o))
+                .collect();
+            if some.is_empty() {
+                continue;
+            }
+            let policy = Policy {
+                lending,
+                ..self.policy
+            };
+            changes.extend(reconcile(unix_ms, &policy, &some, &claims, &state));
+        }
         apply(&mut state, &changes);
         for c in &changes {
             match c {
@@ -376,5 +414,67 @@ pool 1 v replicated size 2 min 1 pgs 8
         n0.report(&mut f, t0 + Duration::from_secs(10), 0, 0);
         assert!(!f.tick(&mut map, t0 + Duration::from_secs(10), 1));
         assert_eq!(map, before);
+    }
+
+    /// Claims always win (D205): an exclusive claim takes a storage port
+    /// from senders, a shared one leaves it, any claim takes back a lent
+    /// port, and a claim not renewed lapses. Lending follows each port's
+    /// setting, else the cluster's (D209).
+    #[test]
+    fn claims_take_ports_back_and_lending_follows_its_setting() {
+        let mut map = parse_cluster(FILE).unwrap();
+        map.set_port_role("0/ib1", Some(PortRole::Compute)).unwrap();
+        map.set_lending(Some("0/ib1"), Some(Lending::Always))
+            .unwrap();
+        let mut f = Fabric::default();
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let ms = |s: u64| 1_700_000_000_000 + s * 1000;
+        let mut n0 = Node0::default();
+        let mut step = |f: &mut Fabric, map: &mut ClusterMap, s: u64| {
+            n0.report(f, at(s), 0, 0);
+            f.tick(map, at(s), ms(s));
+        };
+        step(&mut f, &mut map, 0);
+        step(&mut f, &mut map, 10);
+        assert!(map.ports["0/ib1"].lent, "always: lent without a dwell");
+
+        // A shared claim on ib0 leaves it to storage; an exclusive one
+        // takes it.
+        map.claim_port("0/ib0", "job 1", false, ms(40), ms(20))
+            .unwrap();
+        step(&mut f, &mut map, 20);
+        assert_eq!(map.ports["0/ib0"].weight_mbs, 25_000);
+        map.claim_port("0/ib0", "job 1", true, ms(40), ms(25))
+            .unwrap();
+        assert!(
+            map.claim_port("0/ib0", "job 2", true, ms(40), ms(25))
+                .is_err(),
+            "one holder"
+        );
+        step(&mut f, &mut map, 30);
+        assert_eq!(map.ports["0/ib0"].weight_mbs, 0);
+        // Not renewed: it lapses, and the port comes back.
+        step(&mut f, &mut map, 40);
+        assert!(map.claims.is_empty());
+        step(&mut f, &mut map, 50);
+        assert_eq!(map.ports["0/ib0"].weight_mbs, 25_000);
+
+        // Any claim takes back a lent port, with the deadline.
+        map.claim_port("0/ib1", "job 3", false, ms(600), ms(55))
+            .unwrap();
+        step(&mut f, &mut map, 60);
+        assert!(map.ports["0/ib1"].revoking.is_some());
+        assert_eq!(map.ports["0/ib1"].weight_mbs, 0);
+        map.release_claim("0/ib1", "job 3", false).unwrap();
+
+        // Off for the cluster, nothing set on the port: never lent.
+        map.set_lending(Some("0/ib1"), None).unwrap();
+        map.set_lending(None, Some(Lending::Off)).unwrap();
+        for s in (100..=200).step_by(10) {
+            step(&mut f, &mut map, s);
+        }
+        assert!(!map.ports["0/ib1"].lent);
+        assert_eq!(map.lending_of("0/ib1"), Lending::Off);
     }
 }

@@ -194,6 +194,9 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         endpoints: map.endpoints.clone(),
         endpoints_down: map.endpoints_down.clone(),
         ports: map.ports.clone(),
+        claims: map.claims.clone(),
+        lending: map.lending,
+        port_lending: map.port_lending.clone(),
     }
     .encode()
 }

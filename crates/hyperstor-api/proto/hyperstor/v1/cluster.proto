@@ -89,6 +89,29 @@ service ClusterService {
   // `compute` port is lent to storage only while idle (D238). Write.
   rpc SetPortRole(SetPortRoleRequest) returns (SetPortRoleResponse);
 
+  // When `compute` ports are lent to storage (D209): for the cluster, or
+  // with `node` and `name` for one port; without `lending`, the default
+  // again (the cluster's: `idle`, D238). Write.
+  rpc SetLending(SetLendingRequest) returns (SetLendingResponse);
+
+  // An orchestrator claims a port for `ttl_secs` (26-networks.md §29.9,
+  // D205, D239): exclusive, storage leaves it; shared, storage may stay;
+  // a lent port is taken back either way. Refused while another holder's
+  // claim is live. The orchestrator role, admin and mgmt.
+  rpc ClaimPort(ClaimPortRequest) returns (ClaimPortResponse);
+
+  // Keeps a claim for `ttl_secs` more; only its holder. Not audited, as
+  // it repeats. The orchestrator role, admin and mgmt.
+  rpc RenewClaim(RenewClaimRequest) returns (RenewClaimResponse);
+
+  // Ends a claim: its holder's, or with `any` (admin and mgmt) whoever
+  // holds it. The orchestrator role, admin and mgmt.
+  rpc ReleaseClaim(ReleaseClaimRequest) returns (ReleaseClaimResponse);
+
+  // The live claims, or `holder`'s (D240): what an orchestrator reads
+  // with its renewals. The orchestrator role and anyone who may read.
+  rpc ListClaims(ListClaimsRequest) returns (ListClaimsResponse);
+
   // Changes a pool (24-pools-and-devices.md §27.3.2): its device classes
   // (D164) or failure domain, and PGs move to match, or its name; or
   // doubles its PG count, splitting its PGs in place, a few at a time,
@@ -892,6 +915,87 @@ message SetPortRoleRequest {
   string name = 2;
   // One of Port.role's; absent: the default again.
   optional string role = 3;
+}
+
+message SetLendingRequest {
+  // With `name`, one port of this node; neither, the cluster.
+  optional uint32 node = 1;
+  string name = 2;
+  // "off", "idle" or "always"; absent: the default again.
+  optional string lending = 3;
+}
+
+message SetLendingResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+}
+
+// An orchestrator's claim on a port (D205).
+message PortClaim {
+  uint32 node = 1;
+  // The netdev.
+  string name = 2;
+  // As the orchestrator names it (`glidex job 42`).
+  string holder = 3;
+  bool exclusive = 4;
+  // When it lapses unless renewed (Unix ms).
+  uint64 expires_ms = 5 [json_name = "expires_ms"];
+}
+
+message ClaimPortRequest {
+  uint32 node = 1;
+  string name = 2;
+  string holder = 3;
+  bool exclusive = 4;
+  // 10 to 3600.
+  uint32 ttl_secs = 5 [json_name = "ttl_secs"];
+}
+
+message ClaimPortResponse {
+  PortClaim claim = 1;
+  uint64 map_epoch = 2 [json_name = "map_epoch"];
+}
+
+message RenewClaimRequest {
+  uint32 node = 1;
+  string name = 2;
+  string holder = 3;
+  // 10 to 3600.
+  uint32 ttl_secs = 4 [json_name = "ttl_secs"];
+}
+
+message RenewClaimResponse {
+  PortClaim claim = 1;
+}
+
+message ReleaseClaimRequest {
+  uint32 node = 1;
+  string name = 2;
+  string holder = 3;
+  // Whoever holds it (admin and mgmt).
+  bool any = 4;
+}
+
+message ReleaseClaimResponse {
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+}
+
+message ListClaimsRequest {
+  // Only this holder's.
+  optional string holder = 1;
+}
+
+message ListClaimsResponse {
+  repeated PortClaim claims = 1;
+  // The cluster's lending (D209), and the ports with their own.
+  string lending = 2;
+  repeated PortLending port_lending = 3 [json_name = "port_lending"];
+}
+
+message PortLending {
+  uint32 node = 1;
+  string name = 2;
+  string lending = 3;
 }
 
 message SetPortRoleResponse {

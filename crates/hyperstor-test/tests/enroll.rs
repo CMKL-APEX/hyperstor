@@ -269,3 +269,104 @@ fn a_scraper_enrolls_and_reads_only_the_metrics() {
         "{audit:?}"
     );
 }
+
+/// An orchestrator (26-networks.md §29.9; D205, D239, D240): it enrolls,
+/// claims a port, renews and lists its own claims under its name, and may
+/// not take another's claim, read the rest of the cluster or change it.
+/// An administrator sets lending, sees the claim and releases it. Audited.
+#[test]
+fn an_orchestrator_claims_ports_and_nothing_else() {
+    let c = Cluster::all_in_one("orchestrator", 1);
+    let t = token(&c, &["--role", "orchestrator", "--name", "glidex"]);
+    let file = c.scratch.path("orchestrator.token");
+    std::fs::write(&file, &t).unwrap();
+    let dir = c.scratch.path("glidex-pki");
+    c.ctl_via(
+        Via::Plain,
+        &[
+            "enroll",
+            "--file",
+            file.to_str().unwrap(),
+            "--out",
+            dir.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    let cert = std::fs::read_to_string(dir.join("admin.crt")).unwrap();
+    assert_eq!(
+        hyperstor_pki::identity_in(&cert).unwrap().role,
+        hyperstor_pki::Role::Orchestrator
+    );
+    let o = |args: &[&str]| c.ctl_via(Via::Tls(&dir), args);
+    let port = ["--node", "0", "--name", "ib0"];
+    let claimed = o(&[
+        &["claim", "port"][..],
+        &port,
+        &["--holder", "job 1", "--ttl", "60", "--exclusive"],
+    ]
+    .concat())
+    .ok();
+    assert!(
+        claimed.has("port 0/ib0: claimed by glidex: job 1, exclusive, for 60 s"),
+        "{}",
+        claimed.out
+    );
+    let renewed = o(&[
+        &["claim", "renew"][..],
+        &port,
+        &["--holder", "job 1", "--ttl", "120"],
+    ]
+    .concat())
+    .ok();
+    assert!(renewed.has("exclusive, for 120 s"), "{}", renewed.out);
+    o(&[
+        &["claim", "renew"][..],
+        &port,
+        &["--holder", "job 2", "--ttl", "60"],
+    ]
+    .concat())
+    .expect(1);
+    let taken = c
+        .ctl(
+            &[
+                &["claim", "port"][..],
+                &port,
+                &["--holder", "other", "--ttl", "60"],
+            ]
+            .concat(),
+        )
+        .expect(1);
+    assert!(taken.has("claimed by glidex: job 1"), "{}", taken.out);
+    let mine = o(&["claim", "list"]).ok();
+    assert!(
+        mine.has("glidex: job 1") && mine.has("exclusive"),
+        "{}",
+        mine.out
+    );
+    o(&["port", "list"]).ok();
+    // Nothing else.
+    let status = o(&["status"]).expect(4);
+    assert!(status.has("may not read"), "{}", status.out);
+    o(&["port", "lending", "--lending", "off"]).expect(4);
+    o(&[&["claim", "release"][..], &port, &["--force"]].concat()).expect(4);
+    // The administrator.
+    c.ctl(&["port", "lending", "--lending", "off"]).ok();
+    let all = c.ctl(&["claim", "list"]).ok();
+    assert!(
+        all.has("lending: off") && all.has("glidex: job 1"),
+        "{}",
+        all.out
+    );
+    c.ctl(&[&["claim", "release"][..], &port, &["--force"]].concat())
+        .ok();
+    assert!(c.ctl(&["claim", "list"]).ok().has("no claims"));
+    let audit = c.audit();
+    for op in ["ClaimPort", "ReleaseClaim", "SetLending"] {
+        assert!(
+            audit
+                .iter()
+                .any(|l| l.contains(&format!("\"op\":\"{op}\""))),
+            "{op}: {audit:?}"
+        );
+    }
+}
