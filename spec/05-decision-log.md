@@ -1270,6 +1270,15 @@ answer, when shown the flakes:
 |---|---|---|---|
 | 205 | Whether a node's down before it is first heard from counts as a flap | No: starting a node isn't flapping; the product, not only the tests, changes | D242 |
 
+## The S3 gateway's default port (2026-11-06)
+
+Before a gateway went on the pilot, the owner asked for a port other
+than 443. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 206 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D247 |
+
 ## S3 bucket names per tenant (2026-11-06)
 
 The owner asked whether tenants could have their own bucket names

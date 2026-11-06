@@ -110,7 +110,7 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default(),
-        listen: addrs(&get("--listen").unwrap_or_else(|| "0.0.0.0:443".into())),
+        listen: addrs(&get("--listen").unwrap_or_else(|| "0.0.0.0:8848".into())),
         tls: std::sync::Arc::new(tls),
         source,
         reactors: count("--reactors", 2),
