@@ -108,6 +108,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Checkpoints and deferred in-place writes go on the ring with the commit round (third stage)"
+spec = ["08-engine.md §6.2", "I281"]
+status = "done"
+tests = [
+    "engine::commit_rounds_leave_every_write_to_their_writer",
+]
+
+[[milestone.item]]
 what = "Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage)"
 spec = ["08-engine.md §6.2", "D190", "I230"]
 status = "partial"
