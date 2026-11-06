@@ -1292,3 +1292,20 @@ standpoint; the owner accepted every recommendation:
 | 208 | Another tenant's buckets: they don't exist to a key, 404 and `BucketAlreadyOwnedByYou`, with no `tenant:bucket` syntax (recommended); or RGW's cross-tenant syntax | They don't exist | D244 |
 | 209 | Virtual-hosted requests: resolved in the signer's tenant under one wildcard name (recommended); or a tenant label in the hostname | One wildcard name | D245 |
 | 210 | How administrators name buckets: `tenant/bucket`, with `--tenant` on bucket commands (recommended) | `tenant/bucket` | D246 |
+
+## Realms (2026-11-06)
+
+After per-tenant bucket names, the owner asked for a level above
+tenants, like a separate S3 installation that still shares the drives,
+then whether it could cover volumes and NFS too. Asked, with
+recommendations; the owner chose the name and accepted the design
+(20-tenants.md §24.8):
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 211 | A realm: a group of tenants, each tenant in one realm, the realm derived from the tenant (recommended); or a realm prefix on every container and bucket table | Derived from the tenant | D248 |
+| 212 | A realm's pools: each pool lists the realms that may use it, pools may share drives (recommended); or pools only by placement | Pools list realms | D249 |
+| 213 | Endpoints: an S3 gateway and an NFS address per realm, other realms' keys unknown to it (recommended) | Per realm | D250 |
+| 214 | Hosts: unbound by default, bindable to realms (recommended); or every host bound to one realm | Unbound by default | D251 |
+| 215 | Administration: roles granted on a realm, with pools, devices and hosts the cluster's (recommended) | Roles on a realm | D252 |
+| 216 | The name: realm (recommended); partition, site, zone, namespace, account, S3 service | Realm | D253 |

@@ -772,6 +772,11 @@ status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 
 [[milestone.item]]
+what = "Bucket names per tenant, and realms on S3: pools listed per realm, a gateway per realm (before stage 4)"
+spec = ["14-s3.md §14.9", "20-tenants.md §24.8", "D243", "D244", "D245", "D246", "D248", "D249", "D250"]
+status = "planned"
+
+[[milestone.item]]
 what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4)"
 spec = ["14-s3.md §14.2", "D193", "D194", "D196"]
 status = "planned"
@@ -792,6 +797,11 @@ title = "Distributed filesystem"
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"
+
+[[milestone.item]]
+what = "Realms beyond S3: hosts bound to realms, roles granted on a realm, `--realm` in hyperstorctl and the UI"
+spec = ["20-tenants.md §24.8", "D251", "D252", "D253"]
+status = "planned"
 
 [[milestone]]
 id = "HS16"
