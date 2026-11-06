@@ -1269,3 +1269,26 @@ answer, when shown the flakes:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 205 | Whether a node's down before it is first heard from counts as a flap | No: starting a node isn't flapping; the product, not only the tests, changes | D242 |
+
+## The S3 gateway's default port (2026-11-06)
+
+Before a gateway went on the pilot, the owner asked for a port other
+than 443. Asked, with a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 206 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D247 |
+
+## S3 bucket names per tenant (2026-11-06)
+
+The owner asked whether tenants could have their own bucket names
+without separate pools or endpoints, and how AWS S3 and R2 do it.
+Proposed with 14-s3.md §14.9, from a security and a usability
+standpoint; the owner accepted every recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 207 | Bucket names: a namespace per tenant, the tenant from the signing key (recommended); or one namespace per cluster, as now | A namespace per tenant | D243 |
+| 208 | Another tenant's buckets: they don't exist to a key, 404 and `BucketAlreadyOwnedByYou`, with no `tenant:bucket` syntax (recommended); or RGW's cross-tenant syntax | They don't exist | D244 |
+| 209 | Virtual-hosted requests: resolved in the signer's tenant under one wildcard name (recommended); or a tenant label in the hostname | One wildcard name | D245 |
+| 210 | How administrators name buckets: `tenant/bucket`, with `--tenant` on bucket commands (recommended) | `tenant/bucket` | D246 |
