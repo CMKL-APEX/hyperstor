@@ -1671,7 +1671,7 @@ remaining part.
 Whether backfill holds a reactor once its reads are on the ring (I257).
 Every host ran the build from `main` installed that morning, which has
 I257. Eight 64 MiB volumes in pool 1 (ids 0–7, purged after). From node
-2's host, `HS_BENCH_ONLY="4 KiB random writes, QD32"` (then `QD1`)
+2's host (so the client shared node 2's 1 GbE link), `HS_BENCH_ONLY="4 KiB random writes, QD32"` (then `QD1`)
 `HS_BENCH_SECS=150 hyperstor-bench remote`, and 25 s in,
 `hyperstorctl out --device 2000`, which moves about 125 of pool 1's
 PGs to device 2001 by backfill. `in` after each run. A device that comes
@@ -1699,13 +1699,21 @@ not backfill, and shows no backfill.
    CPU** (36 times, from the first baseline on, with or without
    backfill). Another session was building Rust on node 0's host, whose
    root RAID holds node 0's device files: I/O pressure stayed about 41%
-   "full". This, not the code, is why the baselines are a tenth of
-   2026-11-02's and p99 is in the hundreds of ms; not comparable.
+   "full". This and finding 4, not the code, are why the baselines are
+   a tenth of 2026-11-02's and p99 is in the hundreds of ms; not
+   comparable.
 4. **Node 2 was reported silent, and reported its peers silent, many
    times** (43 reports in the hour), and was marked down and flapping
-   after the runs, with no load. Its own reactor never held. Pings
-   on the 1 GbE network to and from node 2's host lost 2–20% of packets
-   while the link was idle; between nodes 0 and 1, none. Node 2's NIC
-   counted no errors, drops or carrier changes, so the loss is in its
-   cable, switch port or switch. Fewer silences involving node 2 were
-   logged every day since 2026-11-02 (8–40).
+   after the runs. Its own reactor never held. During the runs, node
+   2's link carried the client's traffic as well as its own, and the
+   QD32 run's backfill into device 2001; some of those silences may be
+   that. But after the load stopped, pings on the 1 GbE network to and
+   from node 2's host still lost 2–20% of packets with the link idle,
+   and none between nodes 0 and 1. Node 2's NIC counted no errors, drops
+   or carrier changes. Seven hours later the loss was gone (0% each
+   way, no silences, health ok). Cause unknown: the cable or switch,
+   or something on node 2's host, which also runs other work (a VM,
+   vGPU daemons; I/O pressure about 60% "some" when checked). Fewer
+   silences involving node 2 were logged every day since 2026-11-02
+   (8–40). The next run should drive the load from a host that isn't a
+   node.
