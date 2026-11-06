@@ -23,7 +23,7 @@ endpoints in the cluster file and the map, nodes and clients reaching
 devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired;
 health per network (§29.7; I258); the reconciler in the leader, with
-port roles set by the operator (§29.8; I276). It builds on 13-protocol.md §13.2 (networks and transports in
+port roles set by the operator (§29.8; I277). It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D217)
@@ -295,7 +295,7 @@ is tuned from G52 once measured (D238).
 uses a port or VF a claim holds, and never moves data onto a network
 that isn't `trusted` without TLS (§29.11).
 
-- **As built** (I276): each node reports its ports every 10 s
+- **As built** (I277): each node reports its ports every 10 s
   (`PortReport`), with hyperstor's own bytes from their addresses; the
   leader keeps the reports in memory and every 10 s reconciles the ports
   that carry an endpoint or have a role set, writing leases and weights

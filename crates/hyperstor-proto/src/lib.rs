@@ -500,6 +500,25 @@ pub enum Msg {
     ScrubNowOk {
         queued: u32,
     },
+    /// Device to map service, about once a second while it has any: its
+    /// PGs that can't serve. Each is (pool, PG, epoch): a fence held for
+    /// over a second for map `epoch`, newer than the device's map; or,
+    /// with epoch 0, a PG it is primary of that has failed to peer with
+    /// its members for over 5 s (I276). A leader whose map is older than
+    /// a fence raises its epoch past it: the fence was left by a leader
+    /// that never published that epoch. Answered `Noted`.
+    Stuck {
+        device: u32,
+        pgs: Vec<(u32, u32, u64)>,
+    },
+    /// Follower to leader: the PGs devices report stuck (I276), for a
+    /// follower's status.
+    StuckState,
+    /// Answer to `StuckState`: (device, pool, PG, epoch) as `Stuck`
+    /// reported them, from reports of the last 3 s.
+    StuckStateOk {
+        stuck: Vec<(u32, u32, u32, u64)>,
+    },
     /// Primary `device` to map service: the bytes its copy of each PG
     /// holds (D155), for the PGs whose bytes changed since its last
     /// report, or for all it is primary of if `full`.
@@ -802,7 +821,10 @@ mod kind {
     pub const SCRUB_AGES_OK: u16 = 86;
     pub const SCRUB_NOW: u16 = 87;
     pub const SCRUB_NOW_OK: u16 = 88;
-    pub const PORT_REPORT: u16 = 89;
+    pub const STUCK: u16 = 89;
+    pub const STUCK_STATE: u16 = 90;
+    pub const STUCK_STATE_OK: u16 = 91;
+    pub const PORT_REPORT: u16 = 92;
     pub const ERROR: u16 = 99;
 }
 
@@ -904,6 +926,9 @@ impl Msg {
             Msg::ScrubAgesOk { .. } => SCRUB_AGES_OK,
             Msg::ScrubNow { .. } => SCRUB_NOW,
             Msg::ScrubNowOk { .. } => SCRUB_NOW_OK,
+            Msg::Stuck { .. } => STUCK,
+            Msg::StuckState => STUCK_STATE,
+            Msg::StuckStateOk { .. } => STUCK_STATE_OK,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
             Msg::PerfReport { .. } => PERF_REPORT,
@@ -956,6 +981,7 @@ impl Msg {
                 | Msg::Noted { .. }
                 | Msg::PgUsageOk { .. }
                 | Msg::LeaderStateOk { .. }
+                | Msg::StuckStateOk { .. }
                 | Msg::FetchOk { .. }
                 | Msg::FetchPartOk { .. }
                 | Msg::VersionsOk { .. }
@@ -1245,6 +1271,17 @@ impl Msg {
             }
             Msg::ScrubNowOk { queued } => {
                 e.u32(*queued);
+            }
+            Msg::Stuck { device, pgs } => {
+                e.u32(*device).seq(pgs, |e, (p, g, ep)| {
+                    e.u32(*p).u32(*g).u64(*ep);
+                });
+            }
+            Msg::StuckState => {}
+            Msg::StuckStateOk { stuck } => {
+                e.seq(stuck, |e, (d, p, g, ep)| {
+                    e.u32(*d).u32(*p).u32(*g).u64(*ep);
+                });
             }
             Msg::PgUsage { device, full, pgs } => {
                 e.u32(*device).bool(*full).seq(pgs, |e, (p, g, b)| {
@@ -1602,6 +1639,14 @@ impl Msg {
                 cancel: d.bool()?,
             },
             SCRUB_NOW_OK => Msg::ScrubNowOk { queued: d.u32()? },
+            STUCK => Msg::Stuck {
+                device: d.u32()?,
+                pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
+            },
+            STUCK_STATE => Msg::StuckState,
+            STUCK_STATE_OK => Msg::StuckStateOk {
+                stuck: d.seq(20, |d| Ok((d.u32()?, d.u32()?, d.u32()?, d.u64()?)))?,
+            },
             NOTED => Msg::Noted {
                 map_epoch: d.u64()?,
             },
@@ -2545,6 +2590,14 @@ mod tests {
                 cancel: false,
             },
             Msg::ScrubNowOk { queued: 2 },
+            Msg::Stuck {
+                device: 1000,
+                pgs: vec![(1, 2, 6_305_791), (1, 9, 0)],
+            },
+            Msg::StuckState,
+            Msg::StuckStateOk {
+                stuck: vec![(1000, 1, 2, 6_305_791)],
+            },
             Msg::PgUsage {
                 device: 2000,
                 full: true,

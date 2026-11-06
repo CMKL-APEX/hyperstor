@@ -709,6 +709,8 @@ pub struct Meta {
     /// PGs whose last scrub left objects it couldn't repair, with how many
     /// (their primaries' `ScrubReport`s, kept by the leader).
     pub inconsistent: RefCell<Inconsistent>,
+    /// Each device's last stuck report (I276), with when it came.
+    stuck: RefCell<BTreeMap<u32, (Instant, StuckPgs)>>,
     /// The bytes on each PG's primary, with the device that reported
     /// them (D155): the leader's, in memory only.
     usage: RefCell<BTreeMap<(u32, u32), (u32, u64)>>,
@@ -750,6 +752,18 @@ struct ScrubStore {
 /// PGs whose last scrub left objects unresolved, with how many.
 pub type Inconsistent = BTreeMap<(u32, u32), u32>;
 
+/// One device's stuck PGs, as `Stuck` reports them: (pool, PG, epoch).
+type StuckPgs = Vec<(u32, u32, u64)>;
+
+/// PGs devices report they can't serve (I276): (device, pool, PG,
+/// epoch), the epoch a fence waits for, or 0 for a primary that can't
+/// peer.
+pub type Stuck = Vec<(u32, u32, u32, u64)>;
+
+/// How long a device's stuck report counts: devices send one about every
+/// second while any PG is stuck.
+const STUCK_FOR: Duration = Duration::from_secs(3);
+
 /// A pool's usage as [`Admin::PgUsage`] answers it: the reports' version
 /// and, unless unchanged, the bytes of PG n at n (`None`: not reported).
 pub type PoolUsage = (u64, Option<Vec<Option<u64>>>);
@@ -776,6 +790,7 @@ pub struct LeaderView {
     pub inconsistent: Inconsistent,
     pub flapping: Flapping,
     pub space: DeviceSpace,
+    pub stuck: Stuck,
 }
 
 /// How long a follower keeps the leader's view: `GetStatus` is polled
@@ -919,6 +934,7 @@ impl Meta {
             down_since: RefCell::new(HashMap::new()),
             damping: RefCell::new(HashMap::new()),
             inconsistent: RefCell::new(BTreeMap::new()),
+            stuck: RefCell::new(BTreeMap::new()),
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
             perf: RefCell::new(perf::Perf::default()),
@@ -1304,7 +1320,18 @@ impl Meta {
             inconsistent: self.inconsistent.borrow().clone(),
             flapping: self.flapping(now),
             space: self.space.borrow().clone(),
+            stuck: self.stuck_now(now),
         }
+    }
+
+    /// The PGs devices reported stuck in the last [`STUCK_FOR`] (I276).
+    pub fn stuck_now(&self, now: Instant) -> Stuck {
+        self.stuck
+            .borrow()
+            .iter()
+            .filter(|(_, (at, _))| now.duration_since(*at) < STUCK_FOR)
+            .flat_map(|(d, (_, pgs))| pgs.iter().map(move |&(p, g, e)| (*d, p, g, e)))
+            .collect()
     }
 
     /// [`Admin::LeaderView`]'s answer.
@@ -1319,18 +1346,28 @@ impl Meta {
         {
             return Some(v.clone());
         }
+        // Stuck PGs asked apart (I276): a leader from before them answers
+        // that with an error, and the rest of its view still counts.
         let asked = async {
             let c = self.conn(leader).await.ok()?;
-            c.call(&hyperstor_proto::Msg::LeaderState, &[]).await.ok()
+            let state = c.call(&hyperstor_proto::Msg::LeaderState, &[]).await.ok()?;
+            let stuck = match c.call(&hyperstor_proto::Msg::StuckState, &[]).await {
+                Ok((hyperstor_proto::Msg::StuckStateOk { stuck }, _)) => stuck,
+                _ => Vec::new(),
+            };
+            Some((state, stuck))
         };
         let Ok(Some((
-            hyperstor_proto::Msg::LeaderStateOk {
-                heard,
-                inconsistent,
-                flapping,
-                space,
-            },
-            _,
+            (
+                hyperstor_proto::Msg::LeaderStateOk {
+                    heard,
+                    inconsistent,
+                    flapping,
+                    space,
+                },
+                _,
+            ),
+            stuck,
         ))) = hyperstor_reactor::time::timeout(LEADER_VIEW_FOR, asked).await
         else {
             return None;
@@ -1346,6 +1383,7 @@ impl Meta {
                 .collect(),
             flapping: flapping.into_iter().collect(),
             space: space.into_iter().map(|(d, t, f)| (d, (t, f))).collect(),
+            stuck,
         };
         *self.leader_view.borrow_mut() = Some((Instant::now(), v.clone()));
         Some(v)
@@ -3425,6 +3463,8 @@ impl Meta {
                     | Msg::LeaderState
                     | Msg::MemberSlow { .. }
                     | Msg::ScrubReport { .. }
+                    | Msg::Stuck { .. }
+                    | Msg::StuckState
                     | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. }
@@ -3562,6 +3602,34 @@ impl Meta {
                     map_epoch: map.epoch,
                 }
             }
+            // A fence for an epoch newer than this leader's map was left
+            // by a leader that never published it (a change it couldn't
+            // commit before it lost the lead): nothing lifts it until a
+            // map that new comes, so this map takes that epoch (I276).
+            // Raising the epoch is always safe; an epoch a past leader did
+            // commit is in this map already.
+            Ok(Msg::Stuck { device, pgs }) => {
+                let fence = pgs.iter().map(|&(_, _, e)| e).max().unwrap_or(0);
+                {
+                    let mut map = self.map.borrow_mut();
+                    if fence > map.epoch {
+                        eprintln!(
+                            "hyperstor-meta: device {device} holds a fence for map epoch {fence}, past this leader's {}: the map takes that epoch",
+                            map.epoch
+                        );
+                        map.epoch = fence;
+                    }
+                }
+                self.stuck
+                    .borrow_mut()
+                    .insert(device, (Instant::now(), pgs));
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
+            Ok(Msg::StuckState) => Msg::StuckStateOk {
+                stuck: self.stuck_now(Instant::now()),
+            },
             Ok(Msg::LeaderState) => {
                 let v = self.own_view(Instant::now());
                 Msg::LeaderStateOk {
@@ -5361,6 +5429,54 @@ mod tests {
                 }
             ));
         });
+    }
+
+    /// I276: a device reports a fence for an epoch past the leader's map
+    /// (left by a leader that never published it): the map takes that
+    /// epoch, so publishing lifts it; an older fence, or a primary that
+    /// can't peer (epoch 0), changes nothing. Both are listed as stuck,
+    /// and health shows them as errors.
+    #[test]
+    fn a_fence_past_the_map_raises_its_epoch() {
+        use hyperstor_proto::*;
+        let meta = Meta::new(map());
+        let e = meta.map.borrow().epoch;
+        let stuck = |pgs: Vec<(u32, u32, u64)>| meta.handle(Ok(Msg::Stuck { device: 1000, pgs }));
+        assert!(matches!(
+            stuck(vec![(1, 2, e), (1, 3, 0)]),
+            Msg::Noted { .. }
+        ));
+        assert_eq!(meta.map.borrow().epoch, e, "nothing past the map");
+        assert!(matches!(stuck(vec![(1, 2, e + 40)]), Msg::Noted { .. }));
+        assert_eq!(meta.map.borrow().epoch, e + 40);
+        assert_eq!(meta.stuck_now(Instant::now()), vec![(1000, 1, 2, e + 40)]);
+        meta.handle(Ok(Msg::Stuck {
+            device: 2000,
+            pgs: vec![(1, 5, 0)],
+        }));
+        let mut s = crate::api::status(
+            &meta.map.borrow(),
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        crate::api::stuck(&mut s, &meta.stuck_now(Instant::now()));
+        assert_eq!(s.health, hyperstor_api::Health::HEALTH_ERROR);
+        let text: Vec<&str> = s.reasons.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            text.iter()
+                .any(|t| t.contains(&format!("fenced for map epoch {}", e + 40))
+                    && t.contains("1.2 on device 1000")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|t| t.contains("failed to peer") && t.contains("1.5 on device 2000")),
+            "{text:?}"
+        );
+        // A report counts for a few seconds only.
+        assert!(meta.stuck_now(Instant::now() + STUCK_FOR).is_empty());
     }
 
     /// D236: a change to the map is answered once the map that has it is

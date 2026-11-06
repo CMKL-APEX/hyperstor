@@ -1,10 +1,9 @@
 title = "Recovery keeps a clone's holes (issue #158)"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-02
-updated = 2026-11-02
+updated = 2026-11-06
 milestone = "HS4"
 branch = "fix/hole-check-skips"
 prs = [162, 163, 172]
-now = "#163 on the pilot (cb76f56) with hourly scrub and --hole-repair: the dry run found 266 objects, repair replaced 292 (26 the dry run hadn't reported), and four passes since found none. Scrub now logs and counts PGs whose holes it skips (I253)"
-next = "Merge and deploy the skip logging, watch a pass for unchecked PGs, then remove the scrub drop-in from the pilot and mark this done"
+now = "Pushes keep holes (#162), scrub compares block maps (#163, D223) and counts PGs whose holes it skips (#172, I253); all deployed. On the pilot, 7 days of scrubs found no holes and skipped no hole check, with no PG unchecked, and the scrub drop-in is gone (settings in the map since #184)"

@@ -546,6 +546,49 @@ fn domain(d: Domain) -> String {
     .into()
 }
 
+/// Adds the PGs devices report they can't serve (I276): fenced for a map
+/// epoch not yet published, or whose primary can't peer with its members.
+/// Either refuses the PG's writes, so it is an error, as a PG below
+/// `min` is.
+pub fn stuck(s: &mut pb::GetStatusResponse, stuck: &crate::Stuck) {
+    let list = |which: &[&(u32, u32, u32, u64)]| {
+        let mut l: Vec<String> = which
+            .iter()
+            .take(8)
+            .map(|(d, p, g, _)| format!("{p}.{g} on device {d}"))
+            .collect();
+        if which.len() > 8 {
+            l.push(format!("and {} more", which.len() - 8));
+        }
+        l.join(", ")
+    };
+    let fenced: Vec<_> = stuck.iter().filter(|s| s.3 > 0).collect();
+    let unpeered: Vec<_> = stuck.iter().filter(|s| s.3 == 0).collect();
+    let mut add = |text: String| {
+        s.health = pb::Health::HEALTH_ERROR.into();
+        s.reasons.push(pb::Reason {
+            level: pb::Health::HEALTH_ERROR.into(),
+            text,
+            ..Default::default()
+        });
+    };
+    if !fenced.is_empty() {
+        let epoch = fenced.iter().map(|s| s.3).max().unwrap_or(0);
+        add(format!(
+            "{} PG(s) fenced for map epoch {epoch}, not published yet: their writes wait for it: {}",
+            fenced.len(),
+            list(&fenced)
+        ));
+    }
+    if !unpeered.is_empty() {
+        add(format!(
+            "{} PG(s) whose primary has failed to peer with its members for over 5 s: their writes wait for it: {}",
+            unpeered.len(),
+            list(&unpeered)
+        ));
+    }
+}
+
 /// Adds that the leader hasn't committed a map change for `d`: the map
 /// shown may be out of date, and failures aren't acted on.
 pub fn stalled(s: &mut pb::GetStatusResponse, d: std::time::Duration) {
@@ -1147,6 +1190,7 @@ impl ClusterService for Api {
                 );
                 pool_space(&mut s, &map, &v.space);
                 fullness(&mut s, &map, &v.space);
+                stuck(&mut s, &v.stuck);
                 s
             }
             // No leader, or it didn't answer: the map alone.
