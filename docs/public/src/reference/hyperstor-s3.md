@@ -24,7 +24,7 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--keys FILE` | | Instead of `--api`, for running without the cluster API: the access keys, one per line: `ID SECRET TENANT`; `#` starts a comment. Readable by its owner only (`chmod 600`), or the gateway won't start |
 | `--data-pool NAME` | | With `--keys`: the pool new buckets keep their objects' bytes in |
 | `--index-pool NAME` | | With `--keys`: the pool new buckets keep their index in: flash, ideally |
-| `--listen ADDR[,ADDR...]` | `0.0.0.0:443` | Where clients connect |
+| `--listen ADDR[,ADDR...]` | `0.0.0.0:8848` | Where clients connect |
 | `--reactors N` | 2 | Threads that talk to the cluster (1–64) |
 | `--threads N` | 2 | Threads for HTTPS and signatures (1–64) |
 | `--networks NAME[,NAME...]` | none | The data networks this host reaches storage nodes on, in order, as for [hyperstor-vhost](hyperstor-vhost.md) |
@@ -34,8 +34,8 @@ hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
 hyperstorctl s3 key create --tenant 1 --description photos   # prints ID SECRET
 hyperstor-s3 --meta 192.0.2.10:8849 --api 192.0.2.10:8850 \
   --identity /etc/hyperstor/pki --tls /etc/hyperstor/s3 &
-aws --endpoint-url https://s3.example.com s3 mb s3://photos
-aws --endpoint-url https://s3.example.com s3 cp cat.jpg s3://photos/
+aws --endpoint-url https://s3.example.com:8848 s3 mb s3://photos
+aws --endpoint-url https://s3.example.com:8848 s3 cp cat.jpg s3://photos/
 ```
 
 Give each user a key of their own; the tenant number groups the buckets
