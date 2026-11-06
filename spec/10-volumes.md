@@ -86,7 +86,9 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
 - **Flatten** copies into the clone's branch every block it still reads
   from its parents, then clears the parent link. The lineage doesn't
   change, so placement stays the same and the copy stays on each PG's own
-  devices.
+  devices. Each chunk's primary reads the blocks to copy on the reactor's
+  ring, holding the chunk: a write to it meanwhile is refused and retried,
+  then wins over the copy (I286).
 - A snapshot with clones can't be deleted until its clones are flattened
   or deleted.
 
