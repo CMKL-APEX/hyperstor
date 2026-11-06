@@ -1121,3 +1121,133 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
     let sh = reopen(&d);
     assert_eq!(sh.read(&key("again"), 0, 4096).unwrap()[0], 9);
 }
+
+/// A device that counts the writes and flushes made through it.
+struct Counting {
+    inner: Arc<MemDev>,
+    writes: std::sync::atomic::AtomicU64,
+}
+
+impl Counting {
+    fn count(&self) {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl BlockDev for Counting {
+    fn len(&self) -> u64 {
+        self.inner.len()
+    }
+    fn read(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(off, buf)
+    }
+    fn write(&self, off: u64, buf: &[u8]) -> std::io::Result<()> {
+        self.count();
+        self.inner.write(off, buf)
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        self.count();
+        self.inner.flush()
+    }
+}
+
+#[test]
+fn commit_rounds_leave_every_write_to_their_writer() {
+    // The daemon writes each round on its reactor's ring (I199): the
+    // shard's own device calls would hold the reactor, so a round must
+    // carry all of its upkeep too, checkpoints and deferred blocks
+    // included (I281). A tiny log forces many checkpoints, small slices
+    // and pages many rounds of each, and a pending limit of 0 applies
+    // deferred blocks in every round.
+    let mem = Arc::new(MemDev::new(4096 * BLOCK as u64));
+    let plain: Arc<dyn BlockDev> = mem.clone();
+    format(&plain, &cfg(1, Some(64))).unwrap();
+    let counting = Arc::new(Counting {
+        inner: mem.clone(),
+        writes: Default::default(),
+    });
+    let d: Arc<dyn BlockDev> = counting.clone();
+    let mut sh = open(&d).unwrap().1.pop().unwrap();
+    // Opening may write a first checkpoint; from here on, nothing.
+    counting
+        .writes
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    sh.set_checkpoint_slice(256);
+    sh.set_checkpoint_page(512);
+    sh.set_pending_limit(0);
+    let mut model: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+    let mut deferred = 0;
+    for round in 0..400u32 {
+        let name = format!("o{}", round % 7);
+        let fill = (round % 251) as u8 + 1;
+        let ops = match model.get(&name) {
+            None => vec![Op::Write {
+                off: 0,
+                data: block(fill, 16),
+            }],
+            Some(_) if round % 23 == 0 => vec![Op::Delete],
+            Some(_) => vec![Op::Write {
+                off: (round as u64 % 16) * BLOCK as u64,
+                data: block(fill, 1),
+            }],
+        };
+        let mut lists: std::collections::VecDeque<OpList> = vec![OpList {
+            key: key(&name),
+            ops: ops.clone(),
+        }]
+        .into();
+        match &ops[0] {
+            Op::Delete => {
+                model.remove(&name);
+            }
+            Op::Write { off, data } => {
+                let v = model.entry(name.clone()).or_default();
+                let end = *off as usize + data.len();
+                if v.len() < end {
+                    v.resize(end, 0);
+                }
+                v[*off as usize..end].copy_from_slice(data);
+            }
+            _ => unreachable!(),
+        }
+        let mut r = sh.commit_begin(&mut lists).unwrap();
+        // Blocks of other objects applied in place in this round read as
+        // they will be while their writes wait. (The round's own object
+        // may be on extents not yet written: nothing reads it until the
+        // round ends.)
+        for (n, want) in model.iter().filter(|(n, _)| **n != name) {
+            let got = sh.read(&key(n), 0, want.len() as u64).unwrap();
+            assert!(got[..] == want[..], "{n} mid-round {round}");
+        }
+        let writes = r.take_writes();
+        let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
+        mem.write_batch(&io).unwrap();
+        mem.flush().unwrap();
+        if let Some((at, sup)) = r.take_seal() {
+            mem.write(at, &sup).unwrap();
+            mem.flush().unwrap();
+        }
+        deferred += sh.stats().pending_blocks;
+        for c in sh.commit_end(r, Ok(())).unwrap() {
+            c.unwrap();
+        }
+        sh.commit_done();
+    }
+    assert_eq!(
+        counting.writes.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "the shard wrote or flushed in its own device calls"
+    );
+    let st = sh.stats();
+    assert!(st.checkpoints > 5, "{st:?}");
+    assert!(st.checkpoint_slices > 5, "{st:?}");
+    assert!(deferred > 100, "deferred writes: {deferred}");
+    drop(sh);
+    let sh = reopen(&plain);
+    for (n, want) in &model {
+        let got = sh.read(&key(n), 0, want.len() as u64).unwrap();
+        assert!(got[..] == want[..], "{n} after reopen");
+    }
+    assert_eq!(sh.stats().objects, model.len() as u64);
+}
