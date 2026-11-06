@@ -151,6 +151,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied"
+spec = ["I283"]
+status = "done"
+tests = [
+    "hyperstor_rpc::pool_tests::the_writer_joins_small_frames_and_sends_large_ones_alone",
+    "hyperstor_rpc::pool_tests::the_writer_delivers_mixed_frames_in_order",
+]
+
+[[milestone.item]]
 what = "Crash safety: randomized crash tests against a model"
 spec = ["D22"]
 status = "done"
