@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-06
 milestone = "HS12"
 branch = "feat/s3-tenant-buckets"
-prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212, 213, 217]
+prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212, 213, 217, 218]
 now = "Bucket names per tenant built (D243, D244); then realms on S3 (D248–D250). A gateway checked on the pilot (2026-11-07: port 8848, placement nvme/vol, boto3 round-trip, test key revoked)"
 next = "Realms on S3 (D248–D250), then stage 4: multipart uploads, copy, conditional requests, multi-object delete, the checksum headers (D193, D194, D196)"
