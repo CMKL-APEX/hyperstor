@@ -247,7 +247,8 @@ its peers wait. Each storage node logs:
 
 - `device D open in N ms` when it starts. A node is marked up only once
   every device of it is open, so a slow open delays the node but doesn't
-  make it flap.
+  make it flap: until a node is first heard from, it is down but neither
+  held nor counted as flapping.
 - `device D: reactor held N ms: ...` when the thread serving a device is
   held 100 ms or more, and `device D: a commit of N list(s) took N ms` when a
   commit is the cause. These count in `hyperstor_reactor_stalls_total`.
