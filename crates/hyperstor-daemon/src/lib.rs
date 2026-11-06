@@ -305,6 +305,13 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
 
+/// A fence held this long is reported to the map service (I274): a
+/// publish, fence to map, takes milliseconds.
+const FENCE_STUCK: Duration = Duration::from_secs(1);
+
+/// A PG whose primary has failed to peer this long is reported (I274).
+const PEER_STUCK: Duration = Duration::from_secs(5);
+
 /// How often a device reports its load to the leader (D218).
 pub const PERF_EVERY: Duration = Duration::from_secs(5);
 
@@ -527,6 +534,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().splitter());
                         spawn(st.clone().heartbeat(node, all_open));
                         spawn(st.clone().space());
+                        spawn(st.clone().stuck());
                         if !peer_timeout.is_zero() {
                             spawn(st.clone().peer_watch(node, peer_timeout));
                         }
@@ -649,6 +657,11 @@ struct ShardState {
     lease_until: Cell<Option<std::time::Instant>>,
     /// PGs fenced by the map service, with the map epoch that lifts each.
     fenced: RefCell<HashMap<(u32, u32), u64>>,
+    /// When each fence was last raised (I274).
+    fenced_at: RefCell<HashMap<(u32, u32), std::time::Instant>>,
+    /// PGs this device is primary of that failed to peer: the first and
+    /// the latest failure; gone once one peers (I274).
+    unpeered: RefCell<HashMap<(u32, u32), (std::time::Instant, std::time::Instant)>>,
     /// PGs paused while this device splits them, until the map flips them
     /// (24-pools-and-devices.md §27.5, D187), with the PG epoch the split
     /// was last reported at (0: not yet).
@@ -1206,6 +1219,8 @@ impl ShardState {
             required: RefCell::new(std::collections::HashSet::new()),
             lease_until: Cell::new(None),
             fenced: RefCell::new(HashMap::new()),
+            fenced_at: RefCell::new(HashMap::new()),
+            unpeered: RefCell::new(HashMap::new()),
             splitting: RefCell::new(HashMap::new()),
             pg_inflight: RefCell::new(HashMap::new()),
             no_digests: Cell::new(false),
@@ -1722,13 +1737,18 @@ impl ShardState {
         if primary
             && pg.acting.len() > 1
             && map.pools.get(&to.pool).map(|p| p.kind) != Some(hyperstor_meta::PoolKind::Cache)
-            && !self.peer_pg(to.pool, to.pg, pg).await
         {
-            return Err(err(
-                Code::Unavailable,
-                &map,
-                "peering with the PG's members",
-            ));
+            let k = (to.pool, to.pg);
+            if !self.peer_pg(to.pool, to.pg, pg).await {
+                let now = std::time::Instant::now();
+                self.unpeered.borrow_mut().entry(k).or_insert((now, now)).1 = now;
+                return Err(err(
+                    Code::Unavailable,
+                    &map,
+                    "peering with the PG's members",
+                ));
+            }
+            self.unpeered.borrow_mut().remove(&k);
         }
         Ok(pg.clone())
     }
@@ -2060,7 +2080,12 @@ impl ShardState {
                     for k in &pgs {
                         let mut f = self.fenced.borrow_mut();
                         let e = f.entry(*k).or_default();
-                        *e = (*e).max(epoch);
+                        if epoch > *e {
+                            *e = epoch;
+                            self.fenced_at
+                                .borrow_mut()
+                                .insert(*k, std::time::Instant::now());
+                        }
                     }
                     // Answer once every write already accepted for these
                     // PGs has been answered.
@@ -4300,6 +4325,63 @@ impl ShardState {
                 }
             }
             sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Reports this device's stuck PGs to the map service about once a
+    /// second (I274): fences held over [`FENCE_STUCK`] for an epoch newer
+    /// than its map, and PGs it is primary of that have failed to peer
+    /// for over [`PEER_STUCK`]. The leader raises its map's epoch past
+    /// such a fence and shows both in health. Nothing is sent while
+    /// nothing is stuck; an older map service refuses it, harmlessly.
+    async fn stuck(self: Rc<Self>) {
+        loop {
+            sleep(Duration::from_secs(1)).await;
+            if self.cut_off() {
+                continue;
+            }
+            let map = self.map();
+            let now = std::time::Instant::now();
+            let mut pgs: Vec<(u32, u32, u64)> = {
+                let at = self.fenced_at.borrow();
+                self.fenced
+                    .borrow()
+                    .iter()
+                    .filter(|(k, e)| {
+                        **e > map.epoch
+                            && at
+                                .get(k)
+                                .is_some_and(|t| now.duration_since(*t) >= FENCE_STUCK)
+                    })
+                    .map(|((p, g), e)| (*p, *g, *e))
+                    .collect()
+            };
+            // Only PGs it still leads, and that requests still find
+            // unpeered: one no request has tried lately waits for no one.
+            self.unpeered.borrow_mut().retain(|(p, g), (_, last)| {
+                now.duration_since(*last) < PEER_STUCK
+                    && map
+                        .pg(*p, *g)
+                        .is_some_and(|pg| pg.primary() == Some(self.me))
+            });
+            pgs.extend(
+                self.unpeered
+                    .borrow()
+                    .iter()
+                    .filter(|(_, (first, _))| now.duration_since(*first) >= PEER_STUCK)
+                    .map(|((p, g), _)| (*p, *g, 0)),
+            );
+            if pgs.is_empty() {
+                continue;
+            }
+            pgs.sort_unstable();
+            let _ = self
+                .client
+                .call_meta(&Msg::Stuck {
+                    device: self.me,
+                    pgs,
+                })
+                .await;
         }
     }
 
