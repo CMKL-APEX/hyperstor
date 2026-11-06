@@ -58,18 +58,29 @@ def get(key, **kw):
     return s3.get_object(Bucket="sdk", Key=key, **kw)["Body"].read()
 
 
-# Buckets: made by any key, for its tenant (D232).
+# Buckets: made by any key, for its tenant (D232). Names are per tenant,
+# and another tenant's buckets don't exist to a key (D243, D244).
 s3.create_bucket(Bucket="sdk")
 c = code(lambda: s3.create_bucket(Bucket="sdk"))
 assert c == "BucketAlreadyOwnedByYou", c
-assert code(lambda: theirs.create_bucket(Bucket="sdk")) == "BucketAlreadyExists"
 assert code(lambda: s3.create_bucket(Bucket="Bad_Name")) == "InvalidBucketName"
 assert [b["Name"] for b in s3.list_buckets()["Buckets"]] == ["sdk"]
 assert theirs.list_buckets()["Buckets"] == []
 s3.head_bucket(Bucket="sdk")
-assert code(lambda: theirs.head_bucket(Bucket="sdk")) == "403"
-assert code(lambda: theirs.get_object(Bucket="sdk", Key="x")) == "AccessDenied"
+assert code(lambda: theirs.head_bucket(Bucket="sdk")) == "404"
+c = code(lambda: theirs.get_object(Bucket="sdk", Key="x"))
+assert c == "NoSuchBucket", c
+assert code(lambda: theirs.delete_bucket(Bucket="sdk")) == "NoSuchBucket"
 assert code(lambda: s3.head_bucket(Bucket="nope")) == "404"
+# The same name in another tenant is another bucket.
+theirs.create_bucket(Bucket="sdk")
+theirs.put_object(Bucket="sdk", Key="x", Body=b"theirs")
+assert code(lambda: get("x")) == "NoSuchKey"
+assert [b["Name"] for b in theirs.list_buckets()["Buckets"]] == ["sdk"]
+theirs.delete_object(Bucket="sdk", Key="x")
+theirs.delete_bucket(Bucket="sdk")
+assert code(lambda: theirs.head_bucket(Bucket="sdk")) == "404"
+s3.head_bucket(Bucket="sdk")
 assert s3.get_bucket_location(Bucket="sdk").get("LocationConstraint") is None
 
 # Objects: inline and in chunks (the gateway's are 64 KiB here).

@@ -7138,15 +7138,22 @@ fn s3_objects_match_a_model() {
             for name in ["one", "two.b"] {
                 buckets.push(g[0].create_bucket(name, 1, POOL, POOL).await.unwrap());
             }
+            let r = g[1].create_bucket("one", 1, POOL, POOL).await;
+            assert!(matches!(r, Err(S3Error::BucketExists(_))), "{r:?}");
+            // Names are per tenant (D243): tenant 2's "one" is another bucket.
             let other = g[1].create_bucket("theirs", 2, POOL, POOL).await.unwrap();
-            let r = g[1].create_bucket("one", 2, POOL, POOL).await;
-            assert!(matches!(r, Err(S3Error::BucketExists(_))));
+            let theirs = g[1].create_bucket("one", 2, POOL, POOL).await.unwrap();
+            assert_ne!(theirs.id(), buckets[0].id());
             let names = |bs: Vec<hyperstor_s3::Bucket>| -> Vec<String> {
                 bs.into_iter().map(|b| b.name).collect()
             };
             assert_eq!(names(g[1].buckets(1).await.unwrap()), ["one", "two.b"]);
-            assert_eq!(names(g[0].buckets(2).await.unwrap()), ["theirs"]);
-            assert_eq!(g[1].bucket("two.b").await.unwrap(), buckets[1]);
+            assert_eq!(names(g[0].buckets(2).await.unwrap()), ["one", "theirs"]);
+            assert_eq!(names(g[0].buckets(3).await.unwrap()), Vec::<String>::new());
+            assert_eq!(g[1].bucket(1, "two.b").await.unwrap(), buckets[1]);
+            assert_eq!(g[0].bucket(2, "one").await.unwrap(), theirs);
+            let r = g[0].bucket(2, "two.b").await;
+            assert!(matches!(r, Err(S3Error::NoSuchBucket(_))), "{r:?}");
             // Objects.
             let mut model: Vec<BTreeMap<Vec<u8>, Vec<u8>>> = vec![BTreeMap::new(); 2];
             // Every chunk an upload may have written.
@@ -7398,15 +7405,18 @@ fn s3_objects_match_a_model() {
                 assert!(exists(name).await, "a live object's chunk is gone");
             }
             // Deleted only empty.
-            let r = g[0].delete_bucket("one").await;
+            let r = g[0].delete_bucket(1, "one").await;
             assert!(matches!(r, Err(S3Error::BucketNotEmpty(_))), "{r:?}");
             for k in model[0].keys() {
                 g[1].delete(b, k).await.unwrap();
             }
-            g[0].delete_bucket("one").await.unwrap();
-            let r = g[0].bucket("one").await;
+            g[0].delete_bucket(1, "one").await.unwrap();
+            let r = g[0].bucket(1, "one").await;
             assert!(matches!(r, Err(S3Error::NoSuchBucket(_))), "{r:?}");
             assert_eq!(names(g[1].buckets(1).await.unwrap()), ["two.b"]);
+            // Tenant 2's of the same name is untouched.
+            assert_eq!(g[1].bucket(2, "one").await.unwrap(), theirs);
+            assert_eq!(names(g[1].buckets(2).await.unwrap()), ["one", "theirs"]);
             let _ = other;
             // The deleted objects' chunks are dead now too.
             live.clear();

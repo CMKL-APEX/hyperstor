@@ -298,7 +298,8 @@ impl From<S3Error> for ApiError {
         let m = e.to_string();
         match e {
             S3Error::NoSuchBucket(_) => ApiError::new(404, "NoSuchBucket", m),
-            S3Error::BucketExists(_) => ApiError::new(409, "BucketAlreadyExists", m),
+            // Only ever the tenant's own (D244).
+            S3Error::BucketExists(_) => ApiError::new(409, "BucketAlreadyOwnedByYou", m),
             S3Error::BucketNotEmpty(_) => ApiError::new(409, "BucketNotEmpty", m),
             S3Error::InvalidBucketName(_) => ApiError::new(400, "InvalidBucketName", m),
             S3Error::InvalidKey => ApiError::new(400, "KeyTooLongError", m),
@@ -682,10 +683,9 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         }
         (Target::Bucket(b), Method::DELETE) => {
             only(&q, &[])?;
-            state.bucket(&b, tenant).await?;
             state
                 .reactors
-                .call(move |s3| async move { s3.delete_bucket(&b).await })
+                .call(move |s3| async move { s3.delete_bucket(tenant, &b).await })
                 .await??;
             Ok(status(204))
         }
@@ -752,21 +752,13 @@ fn xml_ok(text: String) -> Response<Body> {
 }
 
 impl State {
-    /// Bucket `name`, if `tenant` owns it.
+    /// `tenant`'s bucket `name`; another tenant's don't exist to it (D244).
     async fn bucket(&self, name: &str, tenant: u32) -> Result<Bucket, ApiError> {
         let n = name.to_string();
-        let b = self
+        Ok(self
             .reactors
-            .call(move |s3| async move { s3.bucket(&n).await })
-            .await??;
-        if b.info.tenant != tenant {
-            return Err(ApiError::new(
-                403,
-                "AccessDenied",
-                "the bucket is another tenant's",
-            ));
-        }
-        Ok(b)
+            .call(move |s3| async move { s3.bucket(tenant, &n).await })
+            .await??)
     }
 }
 
@@ -911,17 +903,7 @@ async fn create_bucket(
             Ok(s3.create_bucket(&n, tenant, i, d).await)
         })
         .await??;
-    match r {
-        Ok(_) => {}
-        Err(S3Error::BucketExists(_)) if state.bucket(name, tenant).await.is_ok() => {
-            return Err(ApiError::new(
-                409,
-                "BucketAlreadyOwnedByYou",
-                "you own the bucket already",
-            ));
-        }
-        Err(e) => return Err(e.into()),
-    }
+    r?;
     let mut r = Response::new(empty());
     if let Ok(v) = HeaderValue::from_str(&format!("/{}", sigv4::aws_encode(name.as_bytes(), true)))
     {
