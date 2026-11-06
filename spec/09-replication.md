@@ -67,6 +67,15 @@ members, as long as there are at least `min_size` of them. Below
   lease running out. So a primary that serves a read is still the
   primary, and no write is acknowledged by a member that has been
   replaced.
+- **A fence no map follows** (01-implementation-notes.md I276). A device
+  lifts a fence only on a map at least as new as the fence's epoch. A
+  leader that fences and then loses the lead before committing leaves
+  such a fence behind, below no map the next leader would publish. Each
+  device reports a fence held over a second, and a PG it leads that
+  can't peer for over 5 s, to the leader. A leader whose map is older
+  than a reported fence takes that epoch and publishes it, and status
+  shows both as errors. Raising an epoch is always safe; lifting the
+  fence on a timer isn't, since the leader may still commit.
 - **As built** (HS2): leases and fencing as above, pushes as the fast
   path, polling every 200 ms as the fallback. Replica-granted read leases
   (below) are not built, by D89; they would let reads continue through an

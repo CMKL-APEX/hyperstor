@@ -212,7 +212,9 @@ word for scripts (the message is for people, and may change):
   roles have been fenced, usually under a second. `GetStatus` then shows
   the PGs moving.
 - **Health** is `HEALTH_ERROR` when a PG can't take writes (fewer copies
-  than the pool's `min`, or no primary), `HEALTH_WARN` while a node is
+  than the pool's `min`, no primary, a device holding it fenced for a map
+  change not yet published, or a primary that has failed to peer with its
+  members for over 5 s), `HEALTH_WARN` while a node is
   down, a device is out, or PGs are degraded or backfilling, and
   `HEALTH_OK` otherwise. Each reason is listed. A node the map service
   hasn't heard from since it started is also `HEALTH_WARN`: the map
