@@ -89,14 +89,14 @@ removes the services and binaries and keeps the configuration and data.
 All options are in the [reference](../reference/hyperstor-install.md).
 
 The trial cluster also runs an S3 gateway,
-[`hyperstor-s3`](../reference/hyperstor-s3.md), on port 443 of every
+[`hyperstor-s3`](../reference/hyperstor-s3.md), on port 8848 of every
 address (`--s3-port P` for another, `--no-s3` for none), with new
 buckets in the pool `vol`. Make a key and point an S3 client at it,
 trusting the cluster's root certificate:
 
 ```sh
 sudo hyperstorctl s3 key create --tenant 1      # prints the key's id and secret
-aws --endpoint-url https://localhost --ca-bundle /etc/hyperstor/pki/root.crt s3 mb s3://first
+aws --endpoint-url https://localhost:8848 --ca-bundle /etc/hyperstor/pki/root.crt s3 mb s3://first
 ```
 
 `hyperstorctl` needs the administrator certificate, readable by root
@@ -272,7 +272,7 @@ root:
 ```yaml
 ingress:
   - hostname: s3.example.com
-    service: https://localhost:443
+    service: https://localhost:8848
     originRequest:
       caPool: /etc/hyperstor/pki/root.crt
       originServerName: localhost

@@ -40,7 +40,7 @@
 //!   control socket and gives its sockets the user's primary group
 //!   (D144); `--no-vhost` removes it. A restart keeps its volumes (D143).
 //! - `--s3` adds `hyperstor-s3`, the S3 gateway (14-s3.md §14.2, D233),
-//!   listening on every address on `--s3-port` (443), with the site's
+//!   listening on every address on `--s3-port` (8848, D239), with the site's
 //!   certificate in `--s3-tls DIR` (`s3.crt`, `s3.key`) or its own `s3`
 //!   certificate from the cluster CA. On a map service host the
 //!   certificate is signed here; elsewhere it comes from a join with an
@@ -199,7 +199,7 @@ impl Settings {
             vhost: false,
             vhost_users: String::new(),
             s3: false,
-            s3_port: 443,
+            s3_port: DEFAULT_S3_PORT,
             s3_tls: String::new(),
             devices: String::new(),
             removed_devices: String::new(),
@@ -326,7 +326,11 @@ impl Settings {
             String::new()
         } else {
             format!("endpoints = {}\n", self.endpoints)
-        } + &if self.s3 || self.all_in_one || self.s3_port != 443 || !self.s3_tls.is_empty() {
+        } + &if self.s3
+            || self.all_in_one
+            || self.s3_port != DEFAULT_S3_PORT
+            || !self.s3_tls.is_empty()
+        {
             // The all-in-one's choice is kept either way: it runs one
             // unless told not to.
             format!(
@@ -1237,7 +1241,7 @@ Wants=network-online.target
 User=hyperstor
 EnvironmentFile=/etc/hyperstor/s3.env
 ExecStart=/usr/local/bin/hyperstor-s3 $HS_ARGS
-# Port 443 without root.
+# A port under 1024 (--s3-port 443) without root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 Restart=on-failure
@@ -2615,6 +2619,11 @@ fn mgmt_listen_args(s: &Settings, p: &Plan) -> String {
 /// Where the web UI's files go (D100).
 const UI_DIR: &str = "/usr/local/share/hyperstor/ui";
 
+/// The S3 gateway's port unless `--s3-port` says otherwise (D239): just
+/// below the map service's 8849, since the all-in-one's ports per node
+/// (metrics from 8853, storage from 9100) grow upward.
+const DEFAULT_S3_PORT: u16 = 8848;
+
 /// Makes `UI_DIR` under `root` hold exactly `src`'s files (mode 0644):
 /// changed ones written, gone ones removed. Whether anything changed.
 fn sync_ui(root: &Path, src: &Path) -> bool {
@@ -3004,7 +3013,7 @@ fn install(
         if let Some(g) = &p.s3 {
             println!(
                 "S3 on https://<this host>:{}/ : hyperstorctl s3 key create --tenant 1 prints a key and its secret",
-                g.listen.rsplit(':').next().unwrap_or("443")
+                g.listen.rsplit(':').next().unwrap_or("8848")
             );
         }
         if !s.all_in_one {
@@ -3908,6 +3917,23 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D239: the gateway's default port is none of the ports the
+    /// installer gives anything else by default, for an all-in-one of up
+    /// to 64 nodes (each node takes a metrics and a storage port).
+    #[test]
+    fn the_default_s3_port_is_no_other_default_port() {
+        let s = Settings::defaults();
+        assert_eq!(s.s3_port, 8848);
+        for nodes in 1..=64u16 {
+            let others: Vec<u16> = [s.api_port, s.map_port, s.mgmt_port]
+                .into_iter()
+                .chain((0..nodes).map(|n| s.admin_port + n))
+                .chain((0..nodes).map(|n| s.node_port + n))
+                .collect();
+            assert!(!others.contains(&s.s3_port), "{nodes} nodes: {others:?}");
+        }
+    }
 
     /// D168: format-device formats a blank device with the installed
     /// cluster's id, refuses one that holds another system's signature
