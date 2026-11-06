@@ -49,6 +49,7 @@ covered by tests that run on every change.
 | Feature flags in the device superblock; only a blank device is formatted | Done |
 | Each device's superblock names its device and cluster: a device of another device or cluster (a drive moved, swapped paths) is refused before it is opened, and one formatted without a cluster gets it recorded | Done |
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
+| Checkpoints and deferred in-place writes go on the ring with the commit round (third stage) | Done |
 | Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage) | In progress |
 | A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned | Done |
 | Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again | Done |
