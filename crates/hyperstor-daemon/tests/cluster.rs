@@ -4409,25 +4409,29 @@ fn a_slow_read_holds_no_reactor() {
 /// writes to another volume go on.
 #[test]
 fn a_slow_backfill_holds_no_reactor() {
-    let (downs, _) = slow_backfill(false);
+    let (downs, _, _) = slow_backfill(false);
     assert_eq!(downs, 0, "a node was seen down while its device read");
 }
 
 /// I257: a push whose object is written while its read waits for the
 /// device is read again rather than sent stale behind the write; after
-/// three tries it reads holding the reactor, as before. Every copy agrees.
+/// three tries its key is held against writes for one more read, still on
+/// the ring (I285), so no node is seen down. Every copy agrees.
 #[test]
 fn a_push_is_read_again_when_its_object_is_written() {
-    let (_, rereads) = slow_backfill(true);
+    let (downs, rereads, holds) = slow_backfill(true);
     assert!(rereads > 0, "no push was read again");
+    eprintln!("{rereads} push(es) read again, {holds} key(s) held");
+    assert!(holds > 0, "no key was held for a push");
+    assert_eq!(downs, 0, "a node was seen down while its device read");
 }
 
 /// Volume 1 written, node 2 killed and its PGs backfilled elsewhere while
 /// every read on the other devices takes 300 ms, and blocks written
 /// meanwhile, to volume 1 (`to_pushed`) or 2; each block once, so a stale
 /// push would lose it for good. Returns how often a node was seen down,
-/// and the pushes read again.
-fn slow_backfill(to_pushed: bool) -> (usize, u64) {
+/// the pushes read again and the keys held for a push.
+fn slow_backfill(to_pushed: bool) -> (usize, u64, u64) {
     use std::time::{Duration, Instant};
     let mut c = Cluster::start_full(
         4,
@@ -4485,21 +4489,20 @@ fn slow_backfill(to_pushed: bool) -> (usize, u64) {
         c.commit_delays.set_reads(d, Duration::ZERO);
     }
     assert!(rounds >= 3, "writes went on during backfill");
-    let rereads = [0, 1, 3]
-        .iter()
-        .map(|n| {
-            c.nodes[*n].as_ref().unwrap().metrics[0]
-                .1
-                .push_rereads
-                .load(std::sync::atomic::Ordering::Relaxed)
-        })
-        .sum();
+    let count = |f: fn(&hyperstor_daemon::metrics::ShardMetrics) -> u64| -> u64 {
+        [0, 1, 3]
+            .iter()
+            .map(|n| f(&c.nodes[*n].as_ref().unwrap().metrics[0].1))
+            .sum()
+    };
+    let rereads = count(|m| m.push_rereads.load(std::sync::atomic::Ordering::Relaxed));
+    let holds = count(|m| m.push_holds.load(std::sync::atomic::Ordering::Relaxed));
     let (map, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (1..=2u128)
         .flat_map(|v| (0..CHUNKS).map(move |i| (v, i)))
         .collect();
     copies_agree(&map, devs, &chunks);
-    (downs, rereads)
+    (downs, rereads, holds)
 }
 
 /// D190: a read that waits for its device past the read timeout is served

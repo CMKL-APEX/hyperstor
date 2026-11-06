@@ -1259,6 +1259,17 @@ parts needed a decision. Asked, with options and a recommendation:
 | 203 | How `Watch` ships: `ListClaims` now, polled with renewals, and a stream later (recommended); or the API's first server-streaming call now | List now, stream later | D240 |
 | 204 | glidex's scheduler as the first client: a glidex issue, with hyperstor's side tested end to end here (recommended); or a glidex pull request too | A glidex issue | D241 |
 
+## Starting is not flapping (2026-11-06)
+
+CI's end-to-end runs after #210 failed on health held at `warn` by D149's
+flapping warning: nodes marked down while their devices opened, then
+once more for a test's own kill, made two transitions. The owner's
+answer, when shown the flakes:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 205 | Whether a node's down before it is first heard from counts as a flap | No: starting a node isn't flapping; the product, not only the tests, changes | D242 |
+
 ## The S3 gateway's default port (2026-11-06)
 
 Before a gateway went on the pilot, the owner asked for a port other
@@ -1266,4 +1277,4 @@ than 443. Asked, with a recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 205 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D242 |
+| 206 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D247 |

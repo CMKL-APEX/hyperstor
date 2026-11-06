@@ -405,6 +405,7 @@ spec = ["06-metadata.md", "D149", "I183"]
 status = "done"
 tests = [
     "hyperstor_meta::tests::a_flapping_node_is_held_down_longer_each_time",
+    "hyperstor_meta::tests::a_starting_node_is_down_but_not_flapping",
 ]
 
 [[milestone.item]]
@@ -758,7 +759,7 @@ tests = [
 
 [[milestone.item]]
 what = "The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part)"
-spec = ["14-s3.md §14.7", "D233", "I269", "D242"]
+spec = ["14-s3.md §14.7", "D233", "I269", "D247"]
 status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 

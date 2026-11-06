@@ -3041,6 +3041,9 @@ impl Meta {
             }
             let mut damping = self.damping.borrow_mut();
             for n in map.nodes.values_mut() {
+                // A node not heard from since this member began leading is
+                // starting, or down from before: down, but not flapping.
+                let heard = beats.contains_key(&n.id);
                 let last = beats.get(&n.id).copied().unwrap_or(self.started.get());
                 let silent = now.duration_since(last) >= timeout;
                 let reported = suspect.contains(&n.id);
@@ -3055,7 +3058,9 @@ impl Meta {
                         .is_some_and(|t| now < t);
                 if n.up != alive && !held {
                     let mut hold_note = String::new();
-                    if !alive {
+                    if !alive && !heard {
+                        hold_note = "; not heard from yet, not counted as a flap".into();
+                    } else if !alive {
                         let d = damping.entry(n.id).or_default();
                         d.downs.push_back(now);
                         while d
@@ -3075,6 +3080,10 @@ impl Meta {
                     // question about any failover.
                     let why = match (silent, reported) {
                         (false, false) => "heartbeats again".to_string(),
+                        (true, _) if !heard => format!(
+                            "no heartbeat in the {} ms since this member began leading",
+                            now.duration_since(last).as_millis()
+                        ),
                         (true, _) => format!(
                             "no heartbeat for {} ms",
                             now.duration_since(last).as_millis()
@@ -5227,6 +5236,56 @@ mod tests {
         beats(at(quiet + 2100));
         assert!(m.liveness_tick(timeout, at(quiet + 2100)), "back after 2 s");
         assert!(up());
+    }
+
+    /// D149 (I284): a node not yet heard from goes down when the timeout
+    /// passes, but that is starting, not flapping: no hold, so its first
+    /// heartbeat brings it up, and it doesn't count toward the warning.
+    /// Its first real down after that is held as usual.
+    #[test]
+    fn a_starting_node_is_down_but_not_flapping() {
+        let m = Meta::with_lease(map(), Duration::from_millis(400));
+        let timeout = Duration::from_millis(800);
+        let t0 = m.started.get();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let up = || m.map.borrow().nodes[&3].up;
+        // Nodes 0 to 2 heartbeat; node 3 is still opening its devices.
+        for n in 0..3 {
+            m.beats.borrow_mut().insert(n, at(850));
+        }
+        assert!(m.liveness_tick(timeout, at(900)));
+        assert!(!up(), "down until it is heard");
+        assert!(m.flapping(at(900)).is_empty());
+        // Its first heartbeat brings it up at once: no hold.
+        let beats = |t: Instant| {
+            for n in 0..4 {
+                m.beats.borrow_mut().insert(n, t);
+            }
+        };
+        beats(at(1000));
+        assert!(m.liveness_tick(timeout, at(1000)));
+        assert!(up());
+        // Killed: down, held 2 s, and one transition is not flapping.
+        for n in 0..3 {
+            m.beats.borrow_mut().insert(n, at(2000));
+        }
+        assert!(m.liveness_tick(timeout, at(2000)));
+        assert!(!up());
+        assert!(m.flapping(at(2000)).is_empty(), "one down after starting");
+        beats(at(3500));
+        assert!(!m.liveness_tick(timeout, at(3500)), "held down");
+        beats(at(4100));
+        assert!(m.liveness_tick(timeout, at(4100)));
+        assert!(up());
+        // A second down within the window is flapping, as before.
+        for n in 0..3 {
+            m.beats.borrow_mut().insert(n, at(5000));
+        }
+        assert!(m.liveness_tick(timeout, at(5000)));
+        assert_eq!(
+            m.flapping(at(5000)),
+            [(3, 2)].into_iter().collect::<Flapping>()
+        );
     }
 
     /// D91: a slow member leaves a PG on its primary's report only; a
