@@ -376,16 +376,16 @@ port on the 100 GbE bond, with no RDMA work.
 
 ### 29.13 Host checks
 
-- **G47. Several ports in one subnet** (D207). Seen on the pilot's GPU
-  hosts (01-implementation-notes.md I237): no rules by source, so the
-  risk is real; the measurement with and without rules is open.
-  glidex's netd adds the rules (glidex networking M9), and the
-  installer's check passes with them and warns without them on that
-  host (I274). On a host with several
+- **G47. Several ports in one subnet** (D207). On a host with several
   IPoIB ports in one subnet: with `arp_ignore=1`, `arp_announce=2` and a
   routing rule per source address, does each reactor's traffic leave by
   its own port? Measure per-port counters while 8 reactors send, with
-  and without the rules.
+  and without the rules. **Answered: yes** (2026-11-06, on a pilot GPU
+  host; 02-benchmarks.md). With glidex netd's rules (glidex networking
+  M9), 8 reactors' replies left by all 8 ports, each by its own; without
+  them, all by the first route's port. The pilot's GPU hosts had no
+  rules before netd added them (01-implementation-notes.md I237), and
+  the installer's check passes with them and warns without them (I274).
 - **G48. TCP over IPoIB and 100 GbE** (D206, stage 1). First part
   measured 2026-11-02 (02-benchmarks.md): one IPoIB port in datagram mode
   gives 6–7 times 1 GbE for 1 MiB I/O and 3–4 times lower latency at
