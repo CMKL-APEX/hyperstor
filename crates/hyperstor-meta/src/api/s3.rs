@@ -226,7 +226,7 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::SetS3PlacementRequest>,
     ) -> ServiceResult<pb::SetS3PlacementResponse> {
         let p = req.placement.as_option().cloned().unwrap_or_default();
-        let target = match p.realm.as_ref() {
+        let target = match p.realm {
             "" | realms::DEFAULT_REALM => format!("placement {}", p.name),
             r => format!("realm {r}'s placement {}", p.name),
         };
@@ -260,10 +260,8 @@ impl S3Service for Api {
                 index_pool: ids[1],
                 realm: self.realm_id(p.realm).await?,
             };
-            self.realm_rows("such realm", move |db| {
-                realms::set_placement(db, &place)
-            })
-            .await
+            self.realm_rows("such realm", move |db| realms::set_placement(db, &place))
+                .await
         }
         .await;
         let target = format!("{target}: data {}, index {}", p.data_pool, p.index_pool);
@@ -276,7 +274,7 @@ impl S3Service for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::DeleteS3PlacementRequest>,
     ) -> ServiceResult<pb::DeleteS3PlacementResponse> {
-        let target = match req.realm.as_ref() {
+        let target = match req.realm {
             "" | realms::DEFAULT_REALM => format!("placement {}", req.name),
             r => format!("realm {r}'s placement {}", req.name),
         };
@@ -341,7 +339,10 @@ impl S3Service for Api {
         })?;
         let (map, ..) = self.published().await?;
         let mut out = Vec::with_capacity(keys.len());
-        for k in keys.into_iter().filter(|k| realms.realm_of(k.tenant) == realm) {
+        for k in keys
+            .into_iter()
+            .filter(|k| realms.realm_of(k.tenant) == realm)
+        {
             let Some(secret) = key.open(&s3keys::context(&k.id), &k.sealed) else {
                 // Sealed with another key (a member that made its own):
                 // that key can't be served; the others can.

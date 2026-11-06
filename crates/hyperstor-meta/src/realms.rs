@@ -16,7 +16,7 @@
 use crate::s3keys::{self, Placement};
 use crate::store::{self, Db, Origin, Table};
 use crate::tokens::TokenError as Error;
-use glidex_raftstore::store::{StoreError, definition};
+use glidex_raftstore::store::{RecTable, StoreError, definition};
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use redb::ReadableTable;
 use std::collections::BTreeMap;
@@ -135,12 +135,15 @@ fn read(t: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Realms, E
     let bad = |row: &str, e: String| Error::Store(format!("{row}: {e}"));
     let mut out = Realms::default();
     for (name, v) in scan(t, REALM)? {
-        out.realms
-            .push(Realm::decode(&name, &v).map_err(|e| bad(&format!("{REALM}{name}"), e.to_string()))?);
+        out.realms.push(
+            Realm::decode(&name, &v).map_err(|e| bad(&format!("{REALM}{name}"), e.to_string()))?,
+        );
     }
     for (tenant, v) in scan(t, TENANT)? {
         let row = format!("{TENANT}{tenant}");
-        let tenant = tenant.parse().map_err(|_| bad(&row, "not a tenant".into()))?;
+        let tenant = tenant
+            .parse()
+            .map_err(|_| bad(&row, "not a tenant".into()))?;
         let mut d = Dec::new(&v);
         let realm = d.u32().map_err(|e| bad(&row, e.to_string()))?;
         out.tenants.insert(tenant, realm);
@@ -171,13 +174,13 @@ fn refused(reason: &'static str, why: String) -> Error {
 /// write. Only the leader.
 fn write<T>(
     db: &Db,
-    f: impl FnOnce(&mut redb::Table<&'static str, &'static [u8]>, &Realms) -> Result<T, Error>,
+    f: impl FnOnce(&mut RecTable<'_, store::MapSchema>, &Realms) -> Result<T, Error>,
 ) -> Result<T, Error> {
     db.write(Origin::Leader, |tx| -> Result<T, Error> {
         let mut t = tx
             .open_table(definition::<store::MapSchema>(Table::Settings))
             .map_err(StoreError::from)?;
-        let now = read(&t)?;
+        let now = read(&*t)?;
         f(&mut t, &now)
     })
 }
@@ -190,8 +193,11 @@ pub fn create(db: &Db, r: &Realm) -> Result<u32, Error> {
         }
         let id = now.realms.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         let made = Realm { id, ..r.clone() };
-        t.insert(format!("{REALM}{}", r.name).as_str(), made.encode().as_slice())
-            .map_err(StoreError::from)?;
+        t.insert(
+            format!("{REALM}{}", r.name).as_str(),
+            made.encode().as_slice(),
+        )
+        .map_err(StoreError::from)?;
         Ok(id)
     })
 }
@@ -261,9 +267,10 @@ pub fn set_pool(db: &Db, pool: u32, realms: &[u32]) -> Result<(), Error> {
             },
             ..now.clone()
         };
-        if let Some(p) = placements.iter().find(|p| {
-            [p.data_pool, p.index_pool].contains(&pool) && !after.may_use(p.realm, pool)
-        }) {
+        if let Some(p) = placements
+            .iter()
+            .find(|p| [p.data_pool, p.index_pool].contains(&pool) && !after.may_use(p.realm, pool))
+        {
             return Err(refused(
                 "pool_in_use",
                 format!(
@@ -338,7 +345,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::create(dir.path().join("map.redb")).unwrap();
         let none = load(&db).unwrap();
-        assert_eq!((none.id("default"), none.id(""), none.id("a")), (Some(0), Some(0), None));
+        assert_eq!(
+            (none.id("default"), none.id(""), none.id("a")),
+            (Some(0), Some(0), None)
+        );
         assert_eq!(none.realm_of(5), 0);
         assert!(none.may_use(0, 1) && none.may_use(9, 1));
         let a = create(&db, &realm("acme")).unwrap();
@@ -346,7 +356,10 @@ mod tests {
         assert_eq!((a, b), (1, 2));
         assert!(matches!(
             create(&db, &realm("acme")),
-            Err(Error::Refused { reason: "realm_exists", .. })
+            Err(Error::Refused {
+                reason: "realm_exists",
+                ..
+            })
         ));
         // Tenants: "default" until put elsewhere.
         set_tenant(&db, 5, a).unwrap();
@@ -354,7 +367,10 @@ mod tests {
         assert_eq!(set_tenant(&db, 7, 9), Err(Error::NotFound));
         let r = load(&db).unwrap();
         assert_eq!((r.realm_of(5), r.realm_of(6), r.realm_of(7)), (a, b, 0));
-        assert_eq!((r.name(a), r.name(0)), ("acme".to_string(), "default".to_string()));
+        assert_eq!(
+            (r.name(a), r.name(0)),
+            ("acme".to_string(), "default".to_string())
+        );
         // Pools: open to all, until listed.
         set_pool(&db, 3, &[a]).unwrap();
         let r = load(&db).unwrap();
@@ -363,7 +379,10 @@ mod tests {
         // A placement only in pools its realm may use.
         assert!(matches!(
             set_placement(&db, &placement(b, 3)),
-            Err(Error::Refused { reason: "pool_not_in_realm", .. })
+            Err(Error::Refused {
+                reason: "pool_not_in_realm",
+                ..
+            })
         ));
         assert_eq!(set_placement(&db, &placement(9, 4)), Err(Error::NotFound));
         set_placement(&db, &placement(a, 3)).unwrap();
@@ -371,11 +390,17 @@ mod tests {
         // ... and kept so: a pool isn't taken from a realm that uses it.
         assert!(matches!(
             set_pool(&db, 3, &[b]),
-            Err(Error::Refused { reason: "pool_in_use", .. })
+            Err(Error::Refused {
+                reason: "pool_in_use",
+                ..
+            })
         ));
         assert!(matches!(
             set_pool(&db, 4, &[a]),
-            Err(Error::Refused { reason: "pool_in_use", .. })
+            Err(Error::Refused {
+                reason: "pool_in_use",
+                ..
+            })
         ));
         set_pool(&db, 3, &[a, b]).unwrap();
         set_pool(&db, 3, &[]).unwrap();
@@ -383,7 +408,10 @@ mod tests {
         // Deleted only when nothing names it.
         assert!(matches!(
             delete(&db, "acme"),
-            Err(Error::Refused { reason: "realm_in_use", .. })
+            Err(Error::Refused {
+                reason: "realm_in_use",
+                ..
+            })
         ));
         s3keys::delete_placement(&db, a, "default").unwrap();
         set_tenant(&db, 5, 0).unwrap();

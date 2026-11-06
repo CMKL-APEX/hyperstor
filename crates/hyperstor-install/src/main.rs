@@ -533,8 +533,7 @@ fn main() {
             // A realm's name (D248); empty: back to "default".
             "s3_realm" => {
                 v.len() <= 63
-                    && v
-                        .bytes()
+                    && v.bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             }
             "node" => v.parse::<u32>().is_ok(),

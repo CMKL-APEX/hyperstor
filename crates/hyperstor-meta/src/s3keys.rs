@@ -15,7 +15,7 @@
 
 use crate::store::{self, Db, Origin, Table};
 use crate::tokens::TokenError as Error;
-use glidex_raftstore::store::{StoreError, definition};
+use glidex_raftstore::store::{RecTable, StoreError, definition};
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use redb::ReadableTable as _;
 
@@ -197,8 +197,7 @@ pub fn placements(db: &Db) -> Result<Vec<Placement>, Error> {
     let mut out = Vec::new();
     for (name, v) in rows(db, PLACE)? {
         out.push(
-            placement_of(0, &name, &v)
-                .map_err(|e| Error::Store(format!("{PLACE}{name}: {e}")))?,
+            placement_of(0, &name, &v).map_err(|e| Error::Store(format!("{PLACE}{name}: {e}")))?,
         );
     }
     let mut others = Vec::new();
@@ -228,13 +227,16 @@ pub fn set_placement(db: &Db, p: &Placement) -> Result<(), Error> {
 
 /// Writes `p`'s row in a write's settings table `t`.
 pub(crate) fn put_placement(
-    t: &mut redb::Table<&'static str, &'static [u8]>,
+    t: &mut RecTable<'_, store::MapSchema>,
     p: &Placement,
 ) -> Result<(), Error> {
     let mut e = Enc::new();
     e.u32(p.data_pool).u32(p.index_pool);
-    t.insert(Placement::row(p.realm, &p.name).as_str(), e.into_vec().as_slice())
-        .map_err(StoreError::from)?;
+    t.insert(
+        Placement::row(p.realm, &p.name).as_str(),
+        e.into_vec().as_slice(),
+    )
+    .map_err(StoreError::from)?;
     Ok(())
 }
 

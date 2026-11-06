@@ -2,7 +2,7 @@
 //! the tenants in them and the pools they may use, kept by
 //! `crate::realms`. Pools are named here and kept by id, as placements are.
 
-use super::{Api, audit, with_reason};
+use super::{Api, with_reason};
 use crate::realms::{self, DEFAULT_REALM, Realm, Realms};
 use crate::tokens::TokenError;
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};

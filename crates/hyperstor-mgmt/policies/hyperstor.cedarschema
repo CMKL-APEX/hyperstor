@@ -65,6 +65,9 @@ namespace Hyperstor {
   action "S3Service.ListS3Placements" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "RealmService.ListRealms" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "Dashboard.Read" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -115,6 +118,16 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "S3Service.DeleteS3Placement" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // Realms (D248, D249): which pools a realm's tenants may use.
+  action "RealmService.CreateRealm" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "RealmService.SetPoolRealms" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "RealmService.DeleteRealm" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {
@@ -219,6 +232,10 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "S3Service.RevokeS3Key" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // Which gateway takes a tenant's keys (D250).
+  action "RealmService.SetTenantRealm" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "CaService.ListCertificates" in [Action::"secure"] appliesTo {

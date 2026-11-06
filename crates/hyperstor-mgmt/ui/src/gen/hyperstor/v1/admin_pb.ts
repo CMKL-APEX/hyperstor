@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hyperstor/v1/admin.proto.
  */
 export const file_hyperstor_v1_admin: GenFile = /*@__PURE__*/
-  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSKPAQoQTGlzdEF1ZGl0UmVxdWVzdBIeCgpzaW5jZV91bml4GAEgASgEUgpzaW5jZV91bml4Eh4KCnVudGlsX3VuaXgYAiABKARSCnVudGlsX3VuaXgSEQoJcHJpbmNpcGFsGAMgASgJEgoKAm9wGAQgASgJEg0KBWxpbWl0GAUgASgNEg0KBWFmdGVyGAYgASgJImYKC0F1ZGl0UmVjb3JkEhgKB3RpbWVfbXMYASABKARSB3RpbWVfbXMSEQoJcHJpbmNpcGFsGAIgASgJEgoKAm9wGAMgASgJEg4KBnRhcmdldBgEIAEoCRIOCgZyZXN1bHQYBSABKAkiTQoRTGlzdEF1ZGl0UmVzcG9uc2USKgoHcmVjb3JkcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5BdWRpdFJlY29yZBIMCgRuZXh0GAIgASgJIiMKEkFwcGVuZEF1ZGl0UmVxdWVzdBINCgVsaW5lcxgBIAMoCSIVChNBcHBlbmRBdWRpdFJlc3BvbnNlIjcKDUF1ZGl0U2V0dGluZ3MSJgoOcmV0ZW50aW9uX2RheXMYASABKA1SDnJldGVudGlvbl9kYXlzIhkKF0dldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0IkkKGEdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRItCghzZXR0aW5ncxgBIAEoCzIbLmh5cGVyc3Rvci52MS5BdWRpdFNldHRpbmdzIkEKF1NldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0EiYKDnJldGVudGlvbl9kYXlzGAEgASgNUg5yZXRlbnRpb25fZGF5cyJJChhTZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuQXVkaXRTZXR0aW5ncyJSChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMSDAoEbmFtZRgDIAEoCSJpChNDcmVhdGVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJEiEKBGluZm8YAiABKAsyEy5oeXBlcnN0b3IudjEuVG9rZW4SIAoLYXBpX2FkZHJlc3MYAyABKAlSC2FwaV9hZGRyZXNzIpIBCgVUb2tlbhIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEiIKDGV4cGlyZXNfdW5peBgDIAEoBFIMZXhwaXJlc191bml4EgwKBHVzZWQYBCABKAgSDwoHcmV2b2tlZBgFIAEoCBIeCgpjcmVhdGVkX2J5GAYgASgJUgpjcmVhdGVkX2J5EgwKBG5hbWUYByABKAkiEwoRTGlzdFRva2Vuc1JlcXVlc3QiOQoSTGlzdFRva2Vuc1Jlc3BvbnNlEiMKBnRva2VucxgBIAMoCzITLmh5cGVyc3Rvci52MS5Ub2tlbiIgChJSZXZva2VUb2tlblJlcXVlc3QSCgoCaWQYASABKAkiFQoTUmV2b2tlVG9rZW5SZXNwb25zZSKqAQoLSm9pblJlcXVlc3QSDQoFdG9rZW4YASABKAkSCwoDY3NyGAIgASgJEhEKCWFkZHJlc3NlcxgDIAMoCRIMCgRyYWNrGAQgASgNEhwKCW1lbWJlcl9pZBgFIAEoDVIJbWVtYmVyX2lkEh4KCm1lbWJlcl9pcHMYBiADKAlSCm1lbWJlcl9pcHMSIAoLZ2F0ZXdheV9pcHMYByADKAlSC2dhdGV3YXlfaXBzIp8CCgxKb2luUmVzcG9uc2USHgoKY2x1c3Rlcl9pZBgBIAEoCVIKY2x1c3Rlcl9pZBITCgtjZXJ0aWZpY2F0ZRgCIAEoCRIMCgRyb290GAMgASgJEgwKBG5vZGUYBCABKA0SJAoNbWFwX2FkZHJlc3NlcxgFIAEoCVINbWFwX2FkZHJlc3NlcxIUCgxpbnRlcm1lZGlhdGUYBiABKAkSKgoQaW50ZXJtZWRpYXRlX2tleRgHIAEoCVIQaW50ZXJtZWRpYXRlX2tleRIiCgxjbHVzdGVyX2ZpbGUYCCABKAlSDGNsdXN0ZXJfZmlsZRIQCghpZGVudGl0eRgJIAEoCRIgCgtjbHVzdGVyX2tleRgKIAEoCVILY2x1c3Rlcl9rZXkiJgoXUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QSCwoDY3NyGAEgASgJIj0KGFJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRITCgtjZXJ0aWZpY2F0ZRgBIAEoCRIMCgRyb290GAIgASgJIhkKF0xpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0IqgBCgtDZXJ0aWZpY2F0ZRIOCgZzZXJpYWwYASABKAkSEAoIaWRlbnRpdHkYAiABKAkSJgoObm90X2FmdGVyX3VuaXgYAyABKARSDm5vdF9hZnRlcl91bml4EiAKC2lzc3VlZF91bml4GAQgASgEUgtpc3N1ZWRfdW5peBIcCglpc3N1ZWRfYnkYBSABKAlSCWlzc3VlZF9ieRIPCgdyZXZva2VkGAYgASgIIoMBCg1SZXZva2VkU2VyaWFsEg4KBnNlcmlhbBgBIAEoCRIeCgp1bnRpbF91bml4GAIgASgEUgp1bnRpbF91bml4EiIKDHJldm9rZWRfdW5peBgDIAEoBFIMcmV2b2tlZF91bml4Eh4KCnJldm9rZWRfYnkYBCABKAlSCnJldm9rZWRfYnkieQoYTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEi8KDGNlcnRpZmljYXRlcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5DZXJ0aWZpY2F0ZRIsCgdyZXZva2VkGAIgAygLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiKgoYUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0Eg4KBnNlcmlhbBgBIAEoCSJJChlSZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlEiwKB3Jldm9rZWQYASABKAsyGy5oeXBlcnN0b3IudjEuUmV2b2tlZFNlcmlhbCIVChNHZXRNYXBCYWNrdXBSZXF1ZXN0IlUKFEdldE1hcEJhY2t1cFJlc3BvbnNlEg4KBmJhY2t1cBgBIAEoDBIeCgpjbHVzdGVyX2lkGAIgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAMgASgEIpsBCgZNZW1iZXISCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzEg0KBXZvdGVyGAQgASgIEg4KBmxlYWRlchgFIAEoCBIgCgthcGlfYWRkcmVzcxgGIAEoCVILYXBpX2FkZHJlc3MiFAoSTGlzdE1lbWJlcnNSZXF1ZXN0IkgKE0xpc3RNZW1iZXJzUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXISCgoCbWUYAiABKAQiZAoQQWRkTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBIiCgxyYWZ0X2FkZHJlc3MYAiABKAlSDHJhZnRfYWRkcmVzcxIgCgttYXBfYWRkcmVzcxgDIAEoCVILbWFwX2FkZHJlc3MiOgoRQWRkTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiMAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBINCgVmb3JjZRgCIAEoCCI9ChRSZW1vdmVNZW1iZXJSZXNwb25zZRIlCgdtZW1iZXJzGAEgAygLMhQuaHlwZXJzdG9yLnYxLk1lbWJlciIcCg1HZXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIuCg5HZXRSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCBINCgV2YWx1ZRgCIAEoDCJJCg1QdXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDBIcCglpZl9hYnNlbnQYAyABKAhSCWlmX2Fic2VudCIQCg5QdXRSb3dSZXNwb25zZSIfChBEZWxldGVSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIiChFEZWxldGVSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCCI/Cg9MaXN0Um93c1JlcXVlc3QSDgoGcHJlZml4GAEgASgJEg0KBWFmdGVyGAIgASgJEg0KBWxpbWl0GAMgASgNIiEKA1JvdxILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwiMwoQTGlzdFJvd3NSZXNwb25zZRIfCgRyb3dzGAEgAygLMhEuaHlwZXJzdG9yLnYxLlJvdyI6ChBEcmFpbk5vZGVSZXF1ZXN0EgwKBG5vZGUYASABKA0SGAoHZHJ5X3J1bhgCIAEoCFIHZHJ5X3J1biJkChFEcmFpbk5vZGVSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uEiMKBW1vdmVzGAIgAygLMhQuaHlwZXJzdG9yLnYxLlBnTW92ZSJBCgZQZ01vdmUSDAoEcG9vbBgBIAEoDRIKCgJwZxgCIAEoDRIOCgZiZWZvcmUYAyADKA0SDQoFYWZ0ZXIYBCADKA0i+gEKCU9wZXJhdGlvbhIKCgJpZBgBIAEoCRIMCgRraW5kGAIgASgJEg4KBnRhcmdldBgDIAEoCRIrCgVzdGF0ZRgEIAEoDjIcLmh5cGVyc3Rvci52MS5PcGVyYXRpb25TdGF0ZRIMCgRkb25lGAUgASgNEg0KBXRvdGFsGAYgASgNEg8KB21lc3NhZ2UYByABKAkSIgoMc3RhcnRlZF91bml4GAggASgEUgxzdGFydGVkX3VuaXgSJAoNZmluaXNoZWRfdW5peBgJIAEoBFINZmluaXNoZWRfdW5peBIeCgpjcmVhdGVkX2J5GAogASgJUgpjcmVhdGVkX2J5IiEKE0dldE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkiFwoVTGlzdE9wZXJhdGlvbnNSZXF1ZXN0IiMKFVdhdGNoT3BlcmF0aW9uUmVxdWVzdBIKCgJpZBgBIAEoCSJEChZXYXRjaE9wZXJhdGlvblJlc3BvbnNlEioKCW9wZXJhdGlvbhgBIAEoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iRQoWTGlzdE9wZXJhdGlvbnNSZXNwb25zZRIrCgpvcGVyYXRpb25zGAEgAygLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbiIkChZDYW5jZWxPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIpUBCglFcnJvckluZm8SDgoGcmVhc29uGAEgASgJEg4KBmRvbWFpbhgCIAEoCRI3CghtZXRhZGF0YRgDIAMoCzIlLmh5cGVyc3Rvci52MS5FcnJvckluZm8uTWV0YWRhdGFFbnRyeRovCg1NZXRhZGF0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiOQoSQ3JlYXRlUzNLZXlSZXF1ZXN0Eg4KBnRlbmFudBgBIAEoDRITCgtkZXNjcmlwdGlvbhgCIAEoCSJHChNDcmVhdGVTM0tleVJlc3BvbnNlEiAKA2tleRgBIAEoCzITLmh5cGVyc3Rvci52MS5TM0tleRIOCgZzZWNyZXQYAiABKAkifAoFUzNLZXkSCgoCaWQYASABKAkSDgoGdGVuYW50GAIgASgNEhMKC2Rlc2NyaXB0aW9uGAMgASgJEiIKDGNyZWF0ZWRfdW5peBgEIAEoBFIMY3JlYXRlZF91bml4Eh4KCmNyZWF0ZWRfYnkYBSABKAlSCmNyZWF0ZWRfYnkiEwoRTGlzdFMzS2V5c1JlcXVlc3QiNwoSTGlzdFMzS2V5c1Jlc3BvbnNlEiEKBGtleXMYASADKAsyEy5oeXBlcnN0b3IudjEuUzNLZXkiIAoSUmV2b2tlUzNLZXlSZXF1ZXN0EgoKAmlkGAEgASgJIhUKE1Jldm9rZVMzS2V5UmVzcG9uc2UiowEKC1MzUGxhY2VtZW50EgwKBG5hbWUYASABKAkSHAoJZGF0YV9wb29sGAIgASgJUglkYXRhX3Bvb2wSHgoKaW5kZXhfcG9vbBgDIAEoCVIKaW5kZXhfcG9vbBIiCgxkYXRhX3Bvb2xfaWQYBCABKA1SDGRhdGFfcG9vbF9pZBIkCg1pbmRleF9wb29sX2lkGAUgASgNUg1pbmRleF9wb29sX2lkIkUKFVNldFMzUGxhY2VtZW50UmVxdWVzdBIsCglwbGFjZW1lbnQYASABKAsyGS5oeXBlcnN0b3IudjEuUzNQbGFjZW1lbnQiGAoWU2V0UzNQbGFjZW1lbnRSZXNwb25zZSIoChhEZWxldGVTM1BsYWNlbWVudFJlcXVlc3QSDAoEbmFtZRgBIAEoCSIbChlEZWxldGVTM1BsYWNlbWVudFJlc3BvbnNlIhkKF0xpc3RTM1BsYWNlbWVudHNSZXF1ZXN0IkkKGExpc3RTM1BsYWNlbWVudHNSZXNwb25zZRItCgpwbGFjZW1lbnRzGAEgAygLMhkuaHlwZXJzdG9yLnYxLlMzUGxhY2VtZW50IhUKE0dldFMzR2F0ZXdheVJlcXVlc3QiOgoMUzNHYXRld2F5S2V5EgoKAmlkGAEgASgJEg4KBnNlY3JldBgCIAEoCRIOCgZ0ZW5hbnQYAyABKA0ibwoUR2V0UzNHYXRld2F5UmVzcG9uc2USKAoEa2V5cxgBIAMoCzIaLmh5cGVyc3Rvci52MS5TM0dhdGV3YXlLZXkSLQoKcGxhY2VtZW50cxgCIAMoCzIZLmh5cGVyc3Rvci52MS5TM1BsYWNlbWVudCIWChRHZXRDbHVzdGVyS2V5UmVxdWVzdCI5ChVHZXRDbHVzdGVyS2V5UmVzcG9uc2USIAoLY2x1c3Rlcl9rZXkYASABKAlSC2NsdXN0ZXJfa2V5KqMBCg5PcGVyYXRpb25TdGF0ZRIfChtPUEVSQVRJT05fU1RBVEVfVU5TUEVDSUZJRUQQABIbChdPUEVSQVRJT05fU1RBVEVfUlVOTklORxABEhgKFE9QRVJBVElPTl9TVEFURV9ET05FEAISGgoWT1BFUkFUSU9OX1NUQVRFX0ZBSUxFRBADEh0KGU9QRVJBVElPTl9TVEFURV9DQU5DRUxMRUQQBDLGAgoMVG9rZW5TZXJ2aWNlElIKC0NyZWF0ZVRva2VuEiAuaHlwZXJzdG9yLnYxLkNyZWF0ZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlc3BvbnNlEk8KCkxpc3RUb2tlbnMSHy5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1JlcXVlc3QaIC5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1Jlc3BvbnNlElIKC1Jldm9rZVRva2VuEiAuaHlwZXJzdG9yLnYxLlJldm9rZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlc3BvbnNlEj0KBEpvaW4SGS5oeXBlcnN0b3IudjEuSm9pblJlcXVlc3QaGi5oeXBlcnN0b3IudjEuSm9pblJlc3BvbnNlMoEFCglTM1NlcnZpY2USUgoLQ3JlYXRlUzNLZXkSIC5oeXBlcnN0b3IudjEuQ3JlYXRlUzNLZXlSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkNyZWF0ZVMzS2V5UmVzcG9uc2USTwoKTGlzdFMzS2V5cxIfLmh5cGVyc3Rvci52MS5MaXN0UzNLZXlzUmVxdWVzdBogLmh5cGVyc3Rvci52MS5MaXN0UzNLZXlzUmVzcG9uc2USUgoLUmV2b2tlUzNLZXkSIC5oeXBlcnN0b3IudjEuUmV2b2tlUzNLZXlSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLlJldm9rZVMzS2V5UmVzcG9uc2USWwoOU2V0UzNQbGFjZW1lbnQSIy5oeXBlcnN0b3IudjEuU2V0UzNQbGFjZW1lbnRSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlNldFMzUGxhY2VtZW50UmVzcG9uc2USZAoRRGVsZXRlUzNQbGFjZW1lbnQSJi5oeXBlcnN0b3IudjEuRGVsZXRlUzNQbGFjZW1lbnRSZXF1ZXN0GicuaHlwZXJzdG9yLnYxLkRlbGV0ZVMzUGxhY2VtZW50UmVzcG9uc2USYQoQTGlzdFMzUGxhY2VtZW50cxIlLmh5cGVyc3Rvci52MS5MaXN0UzNQbGFjZW1lbnRzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5MaXN0UzNQbGFjZW1lbnRzUmVzcG9uc2USVQoMR2V0UzNHYXRld2F5EiEuaHlwZXJzdG9yLnYxLkdldFMzR2F0ZXdheVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuR2V0UzNHYXRld2F5UmVzcG9uc2UykQMKCUNhU2VydmljZRJhChBSZW5ld0NlcnRpZmljYXRlEiUuaHlwZXJzdG9yLnYxLlJlbmV3Q2VydGlmaWNhdGVSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRJhChBMaXN0Q2VydGlmaWNhdGVzEiUuaHlwZXJzdG9yLnYxLkxpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkxpc3RDZXJ0aWZpY2F0ZXNSZXNwb25zZRJkChFSZXZva2VDZXJ0aWZpY2F0ZRImLmh5cGVyc3Rvci52MS5SZXZva2VDZXJ0aWZpY2F0ZVJlcXVlc3QaJy5oeXBlcnN0b3IudjEuUmV2b2tlQ2VydGlmaWNhdGVSZXNwb25zZRJYCg1HZXRDbHVzdGVyS2V5EiIuaHlwZXJzdG9yLnYxLkdldENsdXN0ZXJLZXlSZXF1ZXN0GiMuaHlwZXJzdG9yLnYxLkdldENsdXN0ZXJLZXlSZXNwb25zZTJjCgpNYXBTZXJ2aWNlElUKDEdldE1hcEJhY2t1cBIhLmh5cGVyc3Rvci52MS5HZXRNYXBCYWNrdXBSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLkdldE1hcEJhY2t1cFJlc3BvbnNlMogCCg1NZW1iZXJTZXJ2aWNlElIKC0xpc3RNZW1iZXJzEiAuaHlwZXJzdG9yLnYxLkxpc3RNZW1iZXJzUmVxdWVzdBohLmh5cGVyc3Rvci52MS5MaXN0TWVtYmVyc1Jlc3BvbnNlEkwKCUFkZE1lbWJlchIeLmh5cGVyc3Rvci52MS5BZGRNZW1iZXJSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkFkZE1lbWJlclJlc3BvbnNlElUKDFJlbW92ZU1lbWJlchIhLmh5cGVyc3Rvci52MS5SZW1vdmVNZW1iZXJSZXF1ZXN0GiIuaHlwZXJzdG9yLnYxLlJlbW92ZU1lbWJlclJlc3BvbnNlMrUCChBNZ210U3RvcmVTZXJ2aWNlEkMKBkdldFJvdxIbLmh5cGVyc3Rvci52MS5HZXRSb3dSZXF1ZXN0GhwuaHlwZXJzdG9yLnYxLkdldFJvd1Jlc3BvbnNlEkMKBlB1dFJvdxIbLmh5cGVyc3Rvci52MS5QdXRSb3dSZXF1ZXN0GhwuaHlwZXJzdG9yLnYxLlB1dFJvd1Jlc3BvbnNlEkwKCURlbGV0ZVJvdxIeLmh5cGVyc3Rvci52MS5EZWxldGVSb3dSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkRlbGV0ZVJvd1Jlc3BvbnNlEkkKCExpc3RSb3dzEh0uaHlwZXJzdG9yLnYxLkxpc3RSb3dzUmVxdWVzdBoeLmh5cGVyc3Rvci52MS5MaXN0Um93c1Jlc3BvbnNlMlsKC05vZGVTZXJ2aWNlEkwKCURyYWluTm9kZRIeLmh5cGVyc3Rvci52MS5EcmFpbk5vZGVSZXF1ZXN0Gh8uaHlwZXJzdG9yLnYxLkRyYWluTm9kZVJlc3BvbnNlMvYCCgxBdWRpdFNlcnZpY2USTAoJTGlzdEF1ZGl0Eh4uaHlwZXJzdG9yLnYxLkxpc3RBdWRpdFJlcXVlc3QaHy5oeXBlcnN0b3IudjEuTGlzdEF1ZGl0UmVzcG9uc2USUgoLQXBwZW5kQXVkaXQSIC5oeXBlcnN0b3IudjEuQXBwZW5kQXVkaXRSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkFwcGVuZEF1ZGl0UmVzcG9uc2USYQoQR2V0QXVkaXRTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5HZXRBdWRpdFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5HZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USYQoQU2V0QXVkaXRTZXR0aW5ncxIlLmh5cGVyc3Rvci52MS5TZXRBdWRpdFNldHRpbmdzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5TZXRBdWRpdFNldHRpbmdzUmVzcG9uc2Uy7AIKEE9wZXJhdGlvblNlcnZpY2USSgoMR2V0T3BlcmF0aW9uEiEuaHlwZXJzdG9yLnYxLkdldE9wZXJhdGlvblJlcXVlc3QaFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uElsKDkxpc3RPcGVyYXRpb25zEiMuaHlwZXJzdG9yLnYxLkxpc3RPcGVyYXRpb25zUmVxdWVzdBokLmh5cGVyc3Rvci52MS5MaXN0T3BlcmF0aW9uc1Jlc3BvbnNlEl0KDldhdGNoT3BlcmF0aW9uEiMuaHlwZXJzdG9yLnYxLldhdGNoT3BlcmF0aW9uUmVxdWVzdBokLmh5cGVyc3Rvci52MS5XYXRjaE9wZXJhdGlvblJlc3BvbnNlMAESUAoPQ2FuY2VsT3BlcmF0aW9uEiQuaHlwZXJzdG9yLnYxLkNhbmNlbE9wZXJhdGlvblJlcXVlc3QaFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uYgZwcm90bzM");
+  fileDesc("ChhoeXBlcnN0b3IvdjEvYWRtaW4ucHJvdG8SDGh5cGVyc3Rvci52MSKPAQoQTGlzdEF1ZGl0UmVxdWVzdBIeCgpzaW5jZV91bml4GAEgASgEUgpzaW5jZV91bml4Eh4KCnVudGlsX3VuaXgYAiABKARSCnVudGlsX3VuaXgSEQoJcHJpbmNpcGFsGAMgASgJEgoKAm9wGAQgASgJEg0KBWxpbWl0GAUgASgNEg0KBWFmdGVyGAYgASgJImYKC0F1ZGl0UmVjb3JkEhgKB3RpbWVfbXMYASABKARSB3RpbWVfbXMSEQoJcHJpbmNpcGFsGAIgASgJEgoKAm9wGAMgASgJEg4KBnRhcmdldBgEIAEoCRIOCgZyZXN1bHQYBSABKAkiTQoRTGlzdEF1ZGl0UmVzcG9uc2USKgoHcmVjb3JkcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5BdWRpdFJlY29yZBIMCgRuZXh0GAIgASgJIiMKEkFwcGVuZEF1ZGl0UmVxdWVzdBINCgVsaW5lcxgBIAMoCSIVChNBcHBlbmRBdWRpdFJlc3BvbnNlIjcKDUF1ZGl0U2V0dGluZ3MSJgoOcmV0ZW50aW9uX2RheXMYASABKA1SDnJldGVudGlvbl9kYXlzIhkKF0dldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0IkkKGEdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRItCghzZXR0aW5ncxgBIAEoCzIbLmh5cGVyc3Rvci52MS5BdWRpdFNldHRpbmdzIkEKF1NldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0EiYKDnJldGVudGlvbl9kYXlzGAEgASgNUg5yZXRlbnRpb25fZGF5cyJJChhTZXRBdWRpdFNldHRpbmdzUmVzcG9uc2USLQoIc2V0dGluZ3MYASABKAsyGy5oeXBlcnN0b3IudjEuQXVkaXRTZXR0aW5ncyJSChJDcmVhdGVUb2tlblJlcXVlc3QSDAoEcm9sZRgBIAEoCRIgCgt0dGxfc2Vjb25kcxgCIAEoDVILdHRsX3NlY29uZHMSDAoEbmFtZRgDIAEoCSJpChNDcmVhdGVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJEiEKBGluZm8YAiABKAsyEy5oeXBlcnN0b3IudjEuVG9rZW4SIAoLYXBpX2FkZHJlc3MYAyABKAlSC2FwaV9hZGRyZXNzIpIBCgVUb2tlbhIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEiIKDGV4cGlyZXNfdW5peBgDIAEoBFIMZXhwaXJlc191bml4EgwKBHVzZWQYBCABKAgSDwoHcmV2b2tlZBgFIAEoCBIeCgpjcmVhdGVkX2J5GAYgASgJUgpjcmVhdGVkX2J5EgwKBG5hbWUYByABKAkiEwoRTGlzdFRva2Vuc1JlcXVlc3QiOQoSTGlzdFRva2Vuc1Jlc3BvbnNlEiMKBnRva2VucxgBIAMoCzITLmh5cGVyc3Rvci52MS5Ub2tlbiIgChJSZXZva2VUb2tlblJlcXVlc3QSCgoCaWQYASABKAkiFQoTUmV2b2tlVG9rZW5SZXNwb25zZSKqAQoLSm9pblJlcXVlc3QSDQoFdG9rZW4YASABKAkSCwoDY3NyGAIgASgJEhEKCWFkZHJlc3NlcxgDIAMoCRIMCgRyYWNrGAQgASgNEhwKCW1lbWJlcl9pZBgFIAEoDVIJbWVtYmVyX2lkEh4KCm1lbWJlcl9pcHMYBiADKAlSCm1lbWJlcl9pcHMSIAoLZ2F0ZXdheV9pcHMYByADKAlSC2dhdGV3YXlfaXBzIp8CCgxKb2luUmVzcG9uc2USHgoKY2x1c3Rlcl9pZBgBIAEoCVIKY2x1c3Rlcl9pZBITCgtjZXJ0aWZpY2F0ZRgCIAEoCRIMCgRyb290GAMgASgJEgwKBG5vZGUYBCABKA0SJAoNbWFwX2FkZHJlc3NlcxgFIAEoCVINbWFwX2FkZHJlc3NlcxIUCgxpbnRlcm1lZGlhdGUYBiABKAkSKgoQaW50ZXJtZWRpYXRlX2tleRgHIAEoCVIQaW50ZXJtZWRpYXRlX2tleRIiCgxjbHVzdGVyX2ZpbGUYCCABKAlSDGNsdXN0ZXJfZmlsZRIQCghpZGVudGl0eRgJIAEoCRIgCgtjbHVzdGVyX2tleRgKIAEoCVILY2x1c3Rlcl9rZXkiJgoXUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QSCwoDY3NyGAEgASgJIj0KGFJlbmV3Q2VydGlmaWNhdGVSZXNwb25zZRITCgtjZXJ0aWZpY2F0ZRgBIAEoCRIMCgRyb290GAIgASgJIhkKF0xpc3RDZXJ0aWZpY2F0ZXNSZXF1ZXN0IqgBCgtDZXJ0aWZpY2F0ZRIOCgZzZXJpYWwYASABKAkSEAoIaWRlbnRpdHkYAiABKAkSJgoObm90X2FmdGVyX3VuaXgYAyABKARSDm5vdF9hZnRlcl91bml4EiAKC2lzc3VlZF91bml4GAQgASgEUgtpc3N1ZWRfdW5peBIcCglpc3N1ZWRfYnkYBSABKAlSCWlzc3VlZF9ieRIPCgdyZXZva2VkGAYgASgIIoMBCg1SZXZva2VkU2VyaWFsEg4KBnNlcmlhbBgBIAEoCRIeCgp1bnRpbF91bml4GAIgASgEUgp1bnRpbF91bml4EiIKDHJldm9rZWRfdW5peBgDIAEoBFIMcmV2b2tlZF91bml4Eh4KCnJldm9rZWRfYnkYBCABKAlSCnJldm9rZWRfYnkieQoYTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEi8KDGNlcnRpZmljYXRlcxgBIAMoCzIZLmh5cGVyc3Rvci52MS5DZXJ0aWZpY2F0ZRIsCgdyZXZva2VkGAIgAygLMhsuaHlwZXJzdG9yLnYxLlJldm9rZWRTZXJpYWwiKgoYUmV2b2tlQ2VydGlmaWNhdGVSZXF1ZXN0Eg4KBnNlcmlhbBgBIAEoCSJJChlSZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlEiwKB3Jldm9rZWQYASABKAsyGy5oeXBlcnN0b3IudjEuUmV2b2tlZFNlcmlhbCIVChNHZXRNYXBCYWNrdXBSZXF1ZXN0IlUKFEdldE1hcEJhY2t1cFJlc3BvbnNlEg4KBmJhY2t1cBgBIAEoDBIeCgpjbHVzdGVyX2lkGAIgASgJUgpjbHVzdGVyX2lkEg0KBWVwb2NoGAMgASgEIpsBCgZNZW1iZXISCgoCaWQYASABKAQSIgoMcmFmdF9hZGRyZXNzGAIgASgJUgxyYWZ0X2FkZHJlc3MSIAoLbWFwX2FkZHJlc3MYAyABKAlSC21hcF9hZGRyZXNzEg0KBXZvdGVyGAQgASgIEg4KBmxlYWRlchgFIAEoCBIgCgthcGlfYWRkcmVzcxgGIAEoCVILYXBpX2FkZHJlc3MiFAoSTGlzdE1lbWJlcnNSZXF1ZXN0IkgKE0xpc3RNZW1iZXJzUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXISCgoCbWUYAiABKAQiZAoQQWRkTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBIiCgxyYWZ0X2FkZHJlc3MYAiABKAlSDHJhZnRfYWRkcmVzcxIgCgttYXBfYWRkcmVzcxgDIAEoCVILbWFwX2FkZHJlc3MiOgoRQWRkTWVtYmVyUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULmh5cGVyc3Rvci52MS5NZW1iZXIiMAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoBBINCgVmb3JjZRgCIAEoCCI9ChRSZW1vdmVNZW1iZXJSZXNwb25zZRIlCgdtZW1iZXJzGAEgAygLMhQuaHlwZXJzdG9yLnYxLk1lbWJlciIcCg1HZXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIuCg5HZXRSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCBINCgV2YWx1ZRgCIAEoDCJJCg1QdXRSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDBIcCglpZl9hYnNlbnQYAyABKAhSCWlmX2Fic2VudCIQCg5QdXRSb3dSZXNwb25zZSIfChBEZWxldGVSb3dSZXF1ZXN0EgsKA2tleRgBIAEoCSIiChFEZWxldGVSb3dSZXNwb25zZRINCgVmb3VuZBgBIAEoCCI/Cg9MaXN0Um93c1JlcXVlc3QSDgoGcHJlZml4GAEgASgJEg0KBWFmdGVyGAIgASgJEg0KBWxpbWl0GAMgASgNIiEKA1JvdxILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAwiMwoQTGlzdFJvd3NSZXNwb25zZRIfCgRyb3dzGAEgAygLMhEuaHlwZXJzdG9yLnYxLlJvdyI6ChBEcmFpbk5vZGVSZXF1ZXN0EgwKBG5vZGUYASABKA0SGAoHZHJ5X3J1bhgCIAEoCFIHZHJ5X3J1biJkChFEcmFpbk5vZGVSZXNwb25zZRIqCglvcGVyYXRpb24YASABKAsyFy5oeXBlcnN0b3IudjEuT3BlcmF0aW9uEiMKBW1vdmVzGAIgAygLMhQuaHlwZXJzdG9yLnYxLlBnTW92ZSJBCgZQZ01vdmUSDAoEcG9vbBgBIAEoDRIKCgJwZxgCIAEoDRIOCgZiZWZvcmUYAyADKA0SDQoFYWZ0ZXIYBCADKA0i+gEKCU9wZXJhdGlvbhIKCgJpZBgBIAEoCRIMCgRraW5kGAIgASgJEg4KBnRhcmdldBgDIAEoCRIrCgVzdGF0ZRgEIAEoDjIcLmh5cGVyc3Rvci52MS5PcGVyYXRpb25TdGF0ZRIMCgRkb25lGAUgASgNEg0KBXRvdGFsGAYgASgNEg8KB21lc3NhZ2UYByABKAkSIgoMc3RhcnRlZF91bml4GAggASgEUgxzdGFydGVkX3VuaXgSJAoNZmluaXNoZWRfdW5peBgJIAEoBFINZmluaXNoZWRfdW5peBIeCgpjcmVhdGVkX2J5GAogASgJUgpjcmVhdGVkX2J5IiEKE0dldE9wZXJhdGlvblJlcXVlc3QSCgoCaWQYASABKAkiFwoVTGlzdE9wZXJhdGlvbnNSZXF1ZXN0IiMKFVdhdGNoT3BlcmF0aW9uUmVxdWVzdBIKCgJpZBgBIAEoCSJEChZXYXRjaE9wZXJhdGlvblJlc3BvbnNlEioKCW9wZXJhdGlvbhgBIAEoCzIXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24iRQoWTGlzdE9wZXJhdGlvbnNSZXNwb25zZRIrCgpvcGVyYXRpb25zGAEgAygLMhcuaHlwZXJzdG9yLnYxLk9wZXJhdGlvbiIkChZDYW5jZWxPcGVyYXRpb25SZXF1ZXN0EgoKAmlkGAEgASgJIpUBCglFcnJvckluZm8SDgoGcmVhc29uGAEgASgJEg4KBmRvbWFpbhgCIAEoCRI3CghtZXRhZGF0YRgDIAMoCzIlLmh5cGVyc3Rvci52MS5FcnJvckluZm8uTWV0YWRhdGFFbnRyeRovCg1NZXRhZGF0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiOQoSQ3JlYXRlUzNLZXlSZXF1ZXN0Eg4KBnRlbmFudBgBIAEoDRITCgtkZXNjcmlwdGlvbhgCIAEoCSJHChNDcmVhdGVTM0tleVJlc3BvbnNlEiAKA2tleRgBIAEoCzITLmh5cGVyc3Rvci52MS5TM0tleRIOCgZzZWNyZXQYAiABKAkiiwEKBVMzS2V5EgoKAmlkGAEgASgJEg4KBnRlbmFudBgCIAEoDRITCgtkZXNjcmlwdGlvbhgDIAEoCRIiCgxjcmVhdGVkX3VuaXgYBCABKARSDGNyZWF0ZWRfdW5peBIeCgpjcmVhdGVkX2J5GAUgASgJUgpjcmVhdGVkX2J5Eg0KBXJlYWxtGAYgASgJIhMKEUxpc3RTM0tleXNSZXF1ZXN0IjcKEkxpc3RTM0tleXNSZXNwb25zZRIhCgRrZXlzGAEgAygLMhMuaHlwZXJzdG9yLnYxLlMzS2V5IiAKElJldm9rZVMzS2V5UmVxdWVzdBIKCgJpZBgBIAEoCSIVChNSZXZva2VTM0tleVJlc3BvbnNlIrIBCgtTM1BsYWNlbWVudBIMCgRuYW1lGAEgASgJEhwKCWRhdGFfcG9vbBgCIAEoCVIJZGF0YV9wb29sEh4KCmluZGV4X3Bvb2wYAyABKAlSCmluZGV4X3Bvb2wSIgoMZGF0YV9wb29sX2lkGAQgASgNUgxkYXRhX3Bvb2xfaWQSJAoNaW5kZXhfcG9vbF9pZBgFIAEoDVINaW5kZXhfcG9vbF9pZBINCgVyZWFsbRgGIAEoCSJFChVTZXRTM1BsYWNlbWVudFJlcXVlc3QSLAoJcGxhY2VtZW50GAEgASgLMhkuaHlwZXJzdG9yLnYxLlMzUGxhY2VtZW50IhgKFlNldFMzUGxhY2VtZW50UmVzcG9uc2UiNwoYRGVsZXRlUzNQbGFjZW1lbnRSZXF1ZXN0EgwKBG5hbWUYASABKAkSDQoFcmVhbG0YAiABKAkiGwoZRGVsZXRlUzNQbGFjZW1lbnRSZXNwb25zZSIZChdMaXN0UzNQbGFjZW1lbnRzUmVxdWVzdCJJChhMaXN0UzNQbGFjZW1lbnRzUmVzcG9uc2USLQoKcGxhY2VtZW50cxgBIAMoCzIZLmh5cGVyc3Rvci52MS5TM1BsYWNlbWVudCIkChNHZXRTM0dhdGV3YXlSZXF1ZXN0Eg0KBXJlYWxtGAEgASgJIjoKDFMzR2F0ZXdheUtleRIKCgJpZBgBIAEoCRIOCgZzZWNyZXQYAiABKAkSDgoGdGVuYW50GAMgASgNIm8KFEdldFMzR2F0ZXdheVJlc3BvbnNlEigKBGtleXMYASADKAsyGi5oeXBlcnN0b3IudjEuUzNHYXRld2F5S2V5Ei0KCnBsYWNlbWVudHMYAiADKAsyGS5oeXBlcnN0b3IudjEuUzNQbGFjZW1lbnQimgEKBVJlYWxtEgoKAmlkGAEgASgNEgwKBG5hbWUYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSIgoMY3JlYXRlZF91bml4GAQgASgEUgxjcmVhdGVkX3VuaXgSHgoKY3JlYXRlZF9ieRgFIAEoCVIKY3JlYXRlZF9ieRIPCgd0ZW5hbnRzGAYgAygNEg0KBXBvb2xzGAcgAygJIjcKEkNyZWF0ZVJlYWxtUmVxdWVzdBIMCgRuYW1lGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJIjkKE0NyZWF0ZVJlYWxtUmVzcG9uc2USIgoFcmVhbG0YASABKAsyEy5oeXBlcnN0b3IudjEuUmVhbG0iEwoRTGlzdFJlYWxtc1JlcXVlc3QiWQoSTGlzdFJlYWxtc1Jlc3BvbnNlEiMKBnJlYWxtcxgBIAMoCzITLmh5cGVyc3Rvci52MS5SZWFsbRIeCgpvcGVuX3Bvb2xzGAIgAygJUgpvcGVuX3Bvb2xzIiIKEkRlbGV0ZVJlYWxtUmVxdWVzdBIMCgRuYW1lGAEgASgJIhUKE0RlbGV0ZVJlYWxtUmVzcG9uc2UiNgoVU2V0VGVuYW50UmVhbG1SZXF1ZXN0Eg4KBnRlbmFudBgBIAEoDRINCgVyZWFsbRgCIAEoCSIYChZTZXRUZW5hbnRSZWFsbVJlc3BvbnNlIjQKFFNldFBvb2xSZWFsbXNSZXF1ZXN0EgwKBHBvb2wYASABKA0SDgoGcmVhbG1zGAIgAygJIhcKFVNldFBvb2xSZWFsbXNSZXNwb25zZSIWChRHZXRDbHVzdGVyS2V5UmVxdWVzdCI5ChVHZXRDbHVzdGVyS2V5UmVzcG9uc2USIAoLY2x1c3Rlcl9rZXkYASABKAlSC2NsdXN0ZXJfa2V5KqMBCg5PcGVyYXRpb25TdGF0ZRIfChtPUEVSQVRJT05fU1RBVEVfVU5TUEVDSUZJRUQQABIbChdPUEVSQVRJT05fU1RBVEVfUlVOTklORxABEhgKFE9QRVJBVElPTl9TVEFURV9ET05FEAISGgoWT1BFUkFUSU9OX1NUQVRFX0ZBSUxFRBADEh0KGU9QRVJBVElPTl9TVEFURV9DQU5DRUxMRUQQBDLGAgoMVG9rZW5TZXJ2aWNlElIKC0NyZWF0ZVRva2VuEiAuaHlwZXJzdG9yLnYxLkNyZWF0ZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5DcmVhdGVUb2tlblJlc3BvbnNlEk8KCkxpc3RUb2tlbnMSHy5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1JlcXVlc3QaIC5oeXBlcnN0b3IudjEuTGlzdFRva2Vuc1Jlc3BvbnNlElIKC1Jldm9rZVRva2VuEiAuaHlwZXJzdG9yLnYxLlJldm9rZVRva2VuUmVxdWVzdBohLmh5cGVyc3Rvci52MS5SZXZva2VUb2tlblJlc3BvbnNlEj0KBEpvaW4SGS5oeXBlcnN0b3IudjEuSm9pblJlcXVlc3QaGi5oeXBlcnN0b3IudjEuSm9pblJlc3BvbnNlMoEFCglTM1NlcnZpY2USUgoLQ3JlYXRlUzNLZXkSIC5oeXBlcnN0b3IudjEuQ3JlYXRlUzNLZXlSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkNyZWF0ZVMzS2V5UmVzcG9uc2USTwoKTGlzdFMzS2V5cxIfLmh5cGVyc3Rvci52MS5MaXN0UzNLZXlzUmVxdWVzdBogLmh5cGVyc3Rvci52MS5MaXN0UzNLZXlzUmVzcG9uc2USUgoLUmV2b2tlUzNLZXkSIC5oeXBlcnN0b3IudjEuUmV2b2tlUzNLZXlSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLlJldm9rZVMzS2V5UmVzcG9uc2USWwoOU2V0UzNQbGFjZW1lbnQSIy5oeXBlcnN0b3IudjEuU2V0UzNQbGFjZW1lbnRSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLlNldFMzUGxhY2VtZW50UmVzcG9uc2USZAoRRGVsZXRlUzNQbGFjZW1lbnQSJi5oeXBlcnN0b3IudjEuRGVsZXRlUzNQbGFjZW1lbnRSZXF1ZXN0GicuaHlwZXJzdG9yLnYxLkRlbGV0ZVMzUGxhY2VtZW50UmVzcG9uc2USYQoQTGlzdFMzUGxhY2VtZW50cxIlLmh5cGVyc3Rvci52MS5MaXN0UzNQbGFjZW1lbnRzUmVxdWVzdBomLmh5cGVyc3Rvci52MS5MaXN0UzNQbGFjZW1lbnRzUmVzcG9uc2USVQoMR2V0UzNHYXRld2F5EiEuaHlwZXJzdG9yLnYxLkdldFMzR2F0ZXdheVJlcXVlc3QaIi5oeXBlcnN0b3IudjEuR2V0UzNHYXRld2F5UmVzcG9uc2UyvgMKDFJlYWxtU2VydmljZRJSCgtDcmVhdGVSZWFsbRIgLmh5cGVyc3Rvci52MS5DcmVhdGVSZWFsbVJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQ3JlYXRlUmVhbG1SZXNwb25zZRJPCgpMaXN0UmVhbG1zEh8uaHlwZXJzdG9yLnYxLkxpc3RSZWFsbXNSZXF1ZXN0GiAuaHlwZXJzdG9yLnYxLkxpc3RSZWFsbXNSZXNwb25zZRJSCgtEZWxldGVSZWFsbRIgLmh5cGVyc3Rvci52MS5EZWxldGVSZWFsbVJlcXVlc3QaIS5oeXBlcnN0b3IudjEuRGVsZXRlUmVhbG1SZXNwb25zZRJbCg5TZXRUZW5hbnRSZWFsbRIjLmh5cGVyc3Rvci52MS5TZXRUZW5hbnRSZWFsbVJlcXVlc3QaJC5oeXBlcnN0b3IudjEuU2V0VGVuYW50UmVhbG1SZXNwb25zZRJYCg1TZXRQb29sUmVhbG1zEiIuaHlwZXJzdG9yLnYxLlNldFBvb2xSZWFsbXNSZXF1ZXN0GiMuaHlwZXJzdG9yLnYxLlNldFBvb2xSZWFsbXNSZXNwb25zZTKRAwoJQ2FTZXJ2aWNlEmEKEFJlbmV3Q2VydGlmaWNhdGUSJS5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlcXVlc3QaJi5oeXBlcnN0b3IudjEuUmVuZXdDZXJ0aWZpY2F0ZVJlc3BvbnNlEmEKEExpc3RDZXJ0aWZpY2F0ZXMSJS5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1JlcXVlc3QaJi5oeXBlcnN0b3IudjEuTGlzdENlcnRpZmljYXRlc1Jlc3BvbnNlEmQKEVJldm9rZUNlcnRpZmljYXRlEiYuaHlwZXJzdG9yLnYxLlJldm9rZUNlcnRpZmljYXRlUmVxdWVzdBonLmh5cGVyc3Rvci52MS5SZXZva2VDZXJ0aWZpY2F0ZVJlc3BvbnNlElgKDUdldENsdXN0ZXJLZXkSIi5oeXBlcnN0b3IudjEuR2V0Q2x1c3RlcktleVJlcXVlc3QaIy5oeXBlcnN0b3IudjEuR2V0Q2x1c3RlcktleVJlc3BvbnNlMmMKCk1hcFNlcnZpY2USVQoMR2V0TWFwQmFja3VwEiEuaHlwZXJzdG9yLnYxLkdldE1hcEJhY2t1cFJlcXVlc3QaIi5oeXBlcnN0b3IudjEuR2V0TWFwQmFja3VwUmVzcG9uc2UyiAIKDU1lbWJlclNlcnZpY2USUgoLTGlzdE1lbWJlcnMSIC5oeXBlcnN0b3IudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiEuaHlwZXJzdG9yLnYxLkxpc3RNZW1iZXJzUmVzcG9uc2USTAoJQWRkTWVtYmVyEh4uaHlwZXJzdG9yLnYxLkFkZE1lbWJlclJlcXVlc3QaHy5oeXBlcnN0b3IudjEuQWRkTWVtYmVyUmVzcG9uc2USVQoMUmVtb3ZlTWVtYmVyEiEuaHlwZXJzdG9yLnYxLlJlbW92ZU1lbWJlclJlcXVlc3QaIi5oeXBlcnN0b3IudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UytQIKEE1nbXRTdG9yZVNlcnZpY2USQwoGR2V0Um93EhsuaHlwZXJzdG9yLnYxLkdldFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuR2V0Um93UmVzcG9uc2USQwoGUHV0Um93EhsuaHlwZXJzdG9yLnYxLlB1dFJvd1JlcXVlc3QaHC5oeXBlcnN0b3IudjEuUHV0Um93UmVzcG9uc2USTAoJRGVsZXRlUm93Eh4uaHlwZXJzdG9yLnYxLkRlbGV0ZVJvd1JlcXVlc3QaHy5oeXBlcnN0b3IudjEuRGVsZXRlUm93UmVzcG9uc2USSQoITGlzdFJvd3MSHS5oeXBlcnN0b3IudjEuTGlzdFJvd3NSZXF1ZXN0Gh4uaHlwZXJzdG9yLnYxLkxpc3RSb3dzUmVzcG9uc2UyWwoLTm9kZVNlcnZpY2USTAoJRHJhaW5Ob2RlEh4uaHlwZXJzdG9yLnYxLkRyYWluTm9kZVJlcXVlc3QaHy5oeXBlcnN0b3IudjEuRHJhaW5Ob2RlUmVzcG9uc2Uy9gIKDEF1ZGl0U2VydmljZRJMCglMaXN0QXVkaXQSHi5oeXBlcnN0b3IudjEuTGlzdEF1ZGl0UmVxdWVzdBofLmh5cGVyc3Rvci52MS5MaXN0QXVkaXRSZXNwb25zZRJSCgtBcHBlbmRBdWRpdBIgLmh5cGVyc3Rvci52MS5BcHBlbmRBdWRpdFJlcXVlc3QaIS5oeXBlcnN0b3IudjEuQXBwZW5kQXVkaXRSZXNwb25zZRJhChBHZXRBdWRpdFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLkdldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLkdldEF1ZGl0U2V0dGluZ3NSZXNwb25zZRJhChBTZXRBdWRpdFNldHRpbmdzEiUuaHlwZXJzdG9yLnYxLlNldEF1ZGl0U2V0dGluZ3NSZXF1ZXN0GiYuaHlwZXJzdG9yLnYxLlNldEF1ZGl0U2V0dGluZ3NSZXNwb25zZTLsAgoQT3BlcmF0aW9uU2VydmljZRJKCgxHZXRPcGVyYXRpb24SIS5oeXBlcnN0b3IudjEuR2V0T3BlcmF0aW9uUmVxdWVzdBoXLmh5cGVyc3Rvci52MS5PcGVyYXRpb24SWwoOTGlzdE9wZXJhdGlvbnMSIy5oeXBlcnN0b3IudjEuTGlzdE9wZXJhdGlvbnNSZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLkxpc3RPcGVyYXRpb25zUmVzcG9uc2USXQoOV2F0Y2hPcGVyYXRpb24SIy5oeXBlcnN0b3IudjEuV2F0Y2hPcGVyYXRpb25SZXF1ZXN0GiQuaHlwZXJzdG9yLnYxLldhdGNoT3BlcmF0aW9uUmVzcG9uc2UwARJQCg9DYW5jZWxPcGVyYXRpb24SJC5oeXBlcnN0b3IudjEuQ2FuY2VsT3BlcmF0aW9uUmVxdWVzdBoXLmh5cGVyc3Rvci52MS5PcGVyYXRpb25iBnByb3RvMw");
 
 /**
  * @generated from message hyperstor.v1.ListAuditRequest
@@ -2590,6 +2590,13 @@ export type S3Key = Message<"hyperstor.v1.S3Key"> & {
    * @generated from field: string created_by = 5 [json_name = "created_by"];
    */
   createdBy: string;
+
+  /**
+   * In answers: the realm of the key's tenant (D248).
+   *
+   * @generated from field: string realm = 6;
+   */
+  realm: string;
 };
 
 /**
@@ -2626,6 +2633,13 @@ export type S3KeyJson = {
    * @generated from field: string created_by = 5 [json_name = "created_by"];
    */
   created_by?: string;
+
+  /**
+   * In answers: the realm of the key's tenant (D248).
+   *
+   * @generated from field: string realm = 6;
+   */
+  realm?: string;
 };
 
 /**
@@ -2763,6 +2777,14 @@ export type S3Placement = Message<"hyperstor.v1.S3Placement"> & {
    * @generated from field: uint32 index_pool_id = 5 [json_name = "index_pool_id"];
    */
   indexPoolId: number;
+
+  /**
+   * The realm whose buckets it places (D249); empty: "default". Each realm
+   * has its own placements, in pools it may use.
+   *
+   * @generated from field: string realm = 6;
+   */
+  realm: string;
 };
 
 /**
@@ -2801,6 +2823,14 @@ export type S3PlacementJson = {
    * @generated from field: uint32 index_pool_id = 5 [json_name = "index_pool_id"];
    */
   index_pool_id?: number;
+
+  /**
+   * The realm whose buckets it places (D249); empty: "default". Each realm
+   * has its own placements, in pools it may use.
+   *
+   * @generated from field: string realm = 6;
+   */
+  realm?: string;
 };
 
 /**
@@ -2864,6 +2894,13 @@ export type DeleteS3PlacementRequest = Message<"hyperstor.v1.DeleteS3PlacementRe
    * @generated from field: string name = 1;
    */
   name: string;
+
+  /**
+   * Empty: "default".
+   *
+   * @generated from field: string realm = 2;
+   */
+  realm: string;
 };
 
 /**
@@ -2874,6 +2911,13 @@ export type DeleteS3PlacementRequestJson = {
    * @generated from field: string name = 1;
    */
   name?: string;
+
+  /**
+   * Empty: "default".
+   *
+   * @generated from field: string realm = 2;
+   */
+  realm?: string;
 };
 
 /**
@@ -2952,12 +2996,26 @@ export const ListS3PlacementsResponseSchema: GenMessage<ListS3PlacementsResponse
  * @generated from message hyperstor.v1.GetS3GatewayRequest
  */
 export type GetS3GatewayRequest = Message<"hyperstor.v1.GetS3GatewayRequest"> & {
+  /**
+   * The realm the gateway serves (D250); empty: "default". Only its
+   * tenants' keys and its placements are answered.
+   *
+   * @generated from field: string realm = 1;
+   */
+  realm: string;
 };
 
 /**
  * @generated from message hyperstor.v1.GetS3GatewayRequest
  */
 export type GetS3GatewayRequestJson = {
+  /**
+   * The realm the gateway serves (D250); empty: "default". Only its
+   * tenants' keys and its placements are answered.
+   *
+   * @generated from field: string realm = 1;
+   */
+  realm?: string;
 };
 
 /**
@@ -3056,6 +3114,405 @@ export const GetS3GatewayResponseSchema: GenMessage<GetS3GatewayResponse, {jsonT
   messageDesc(file_hyperstor_v1_admin, 72);
 
 /**
+ * @generated from message hyperstor.v1.Realm
+ */
+export type Realm = Message<"hyperstor.v1.Realm"> & {
+  /**
+   * 1 or more; 0 is "default".
+   *
+   * @generated from field: uint32 id = 1;
+   */
+  id: number;
+
+  /**
+   * 1-63 of a-z, 0-9 and -.
+   *
+   * @generated from field: string name = 2;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description: string;
+
+  /**
+   * @generated from field: uint64 created_unix = 4 [json_name = "created_unix"];
+   */
+  createdUnix: bigint;
+
+  /**
+   * @generated from field: string created_by = 5 [json_name = "created_by"];
+   */
+  createdBy: string;
+
+  /**
+   * In answers: the tenants put in it ("default": those put elsewhere
+   * aren't), and the pools whose lists name it.
+   *
+   * @generated from field: repeated uint32 tenants = 6;
+   */
+  tenants: number[];
+
+  /**
+   * @generated from field: repeated string pools = 7;
+   */
+  pools: string[];
+};
+
+/**
+ * @generated from message hyperstor.v1.Realm
+ */
+export type RealmJson = {
+  /**
+   * 1 or more; 0 is "default".
+   *
+   * @generated from field: uint32 id = 1;
+   */
+  id?: number;
+
+  /**
+   * 1-63 of a-z, 0-9 and -.
+   *
+   * @generated from field: string name = 2;
+   */
+  name?: string;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description?: string;
+
+  /**
+   * @generated from field: uint64 created_unix = 4 [json_name = "created_unix"];
+   */
+  created_unix?: string;
+
+  /**
+   * @generated from field: string created_by = 5 [json_name = "created_by"];
+   */
+  created_by?: string;
+
+  /**
+   * In answers: the tenants put in it ("default": those put elsewhere
+   * aren't), and the pools whose lists name it.
+   *
+   * @generated from field: repeated uint32 tenants = 6;
+   */
+  tenants?: number[];
+
+  /**
+   * @generated from field: repeated string pools = 7;
+   */
+  pools?: string[];
+};
+
+/**
+ * Describes the message hyperstor.v1.Realm.
+ * Use `create(RealmSchema)` to create a new message.
+ */
+export const RealmSchema: GenMessage<Realm, {jsonType: RealmJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 73);
+
+/**
+ * @generated from message hyperstor.v1.CreateRealmRequest
+ */
+export type CreateRealmRequest = Message<"hyperstor.v1.CreateRealmRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * Up to 200 characters.
+   *
+   * @generated from field: string description = 2;
+   */
+  description: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.CreateRealmRequest
+ */
+export type CreateRealmRequestJson = {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name?: string;
+
+  /**
+   * Up to 200 characters.
+   *
+   * @generated from field: string description = 2;
+   */
+  description?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.CreateRealmRequest.
+ * Use `create(CreateRealmRequestSchema)` to create a new message.
+ */
+export const CreateRealmRequestSchema: GenMessage<CreateRealmRequest, {jsonType: CreateRealmRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 74);
+
+/**
+ * @generated from message hyperstor.v1.CreateRealmResponse
+ */
+export type CreateRealmResponse = Message<"hyperstor.v1.CreateRealmResponse"> & {
+  /**
+   * @generated from field: hyperstor.v1.Realm realm = 1;
+   */
+  realm?: Realm | undefined;
+};
+
+/**
+ * @generated from message hyperstor.v1.CreateRealmResponse
+ */
+export type CreateRealmResponseJson = {
+  /**
+   * @generated from field: hyperstor.v1.Realm realm = 1;
+   */
+  realm?: RealmJson;
+};
+
+/**
+ * Describes the message hyperstor.v1.CreateRealmResponse.
+ * Use `create(CreateRealmResponseSchema)` to create a new message.
+ */
+export const CreateRealmResponseSchema: GenMessage<CreateRealmResponse, {jsonType: CreateRealmResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 75);
+
+/**
+ * @generated from message hyperstor.v1.ListRealmsRequest
+ */
+export type ListRealmsRequest = Message<"hyperstor.v1.ListRealmsRequest"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.ListRealmsRequest
+ */
+export type ListRealmsRequestJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.ListRealmsRequest.
+ * Use `create(ListRealmsRequestSchema)` to create a new message.
+ */
+export const ListRealmsRequestSchema: GenMessage<ListRealmsRequest, {jsonType: ListRealmsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 76);
+
+/**
+ * @generated from message hyperstor.v1.ListRealmsResponse
+ */
+export type ListRealmsResponse = Message<"hyperstor.v1.ListRealmsResponse"> & {
+  /**
+   * "default" first, then by name.
+   *
+   * @generated from field: repeated hyperstor.v1.Realm realms = 1;
+   */
+  realms: Realm[];
+
+  /**
+   * Pools with no list, which every realm may use.
+   *
+   * @generated from field: repeated string open_pools = 2 [json_name = "open_pools"];
+   */
+  openPools: string[];
+};
+
+/**
+ * @generated from message hyperstor.v1.ListRealmsResponse
+ */
+export type ListRealmsResponseJson = {
+  /**
+   * "default" first, then by name.
+   *
+   * @generated from field: repeated hyperstor.v1.Realm realms = 1;
+   */
+  realms?: RealmJson[];
+
+  /**
+   * Pools with no list, which every realm may use.
+   *
+   * @generated from field: repeated string open_pools = 2 [json_name = "open_pools"];
+   */
+  open_pools?: string[];
+};
+
+/**
+ * Describes the message hyperstor.v1.ListRealmsResponse.
+ * Use `create(ListRealmsResponseSchema)` to create a new message.
+ */
+export const ListRealmsResponseSchema: GenMessage<ListRealmsResponse, {jsonType: ListRealmsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 77);
+
+/**
+ * @generated from message hyperstor.v1.DeleteRealmRequest
+ */
+export type DeleteRealmRequest = Message<"hyperstor.v1.DeleteRealmRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.DeleteRealmRequest
+ */
+export type DeleteRealmRequestJson = {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.DeleteRealmRequest.
+ * Use `create(DeleteRealmRequestSchema)` to create a new message.
+ */
+export const DeleteRealmRequestSchema: GenMessage<DeleteRealmRequest, {jsonType: DeleteRealmRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 78);
+
+/**
+ * @generated from message hyperstor.v1.DeleteRealmResponse
+ */
+export type DeleteRealmResponse = Message<"hyperstor.v1.DeleteRealmResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.DeleteRealmResponse
+ */
+export type DeleteRealmResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.DeleteRealmResponse.
+ * Use `create(DeleteRealmResponseSchema)` to create a new message.
+ */
+export const DeleteRealmResponseSchema: GenMessage<DeleteRealmResponse, {jsonType: DeleteRealmResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 79);
+
+/**
+ * @generated from message hyperstor.v1.SetTenantRealmRequest
+ */
+export type SetTenantRealmRequest = Message<"hyperstor.v1.SetTenantRealmRequest"> & {
+  /**
+   * @generated from field: uint32 tenant = 1;
+   */
+  tenant: number;
+
+  /**
+   * @generated from field: string realm = 2;
+   */
+  realm: string;
+};
+
+/**
+ * @generated from message hyperstor.v1.SetTenantRealmRequest
+ */
+export type SetTenantRealmRequestJson = {
+  /**
+   * @generated from field: uint32 tenant = 1;
+   */
+  tenant?: number;
+
+  /**
+   * @generated from field: string realm = 2;
+   */
+  realm?: string;
+};
+
+/**
+ * Describes the message hyperstor.v1.SetTenantRealmRequest.
+ * Use `create(SetTenantRealmRequestSchema)` to create a new message.
+ */
+export const SetTenantRealmRequestSchema: GenMessage<SetTenantRealmRequest, {jsonType: SetTenantRealmRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 80);
+
+/**
+ * @generated from message hyperstor.v1.SetTenantRealmResponse
+ */
+export type SetTenantRealmResponse = Message<"hyperstor.v1.SetTenantRealmResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.SetTenantRealmResponse
+ */
+export type SetTenantRealmResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.SetTenantRealmResponse.
+ * Use `create(SetTenantRealmResponseSchema)` to create a new message.
+ */
+export const SetTenantRealmResponseSchema: GenMessage<SetTenantRealmResponse, {jsonType: SetTenantRealmResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 81);
+
+/**
+ * @generated from message hyperstor.v1.SetPoolRealmsRequest
+ */
+export type SetPoolRealmsRequest = Message<"hyperstor.v1.SetPoolRealmsRequest"> & {
+  /**
+   * The pool's id.
+   *
+   * @generated from field: uint32 pool = 1;
+   */
+  pool: number;
+
+  /**
+   * Realm names; none: every realm may use the pool.
+   *
+   * @generated from field: repeated string realms = 2;
+   */
+  realms: string[];
+};
+
+/**
+ * @generated from message hyperstor.v1.SetPoolRealmsRequest
+ */
+export type SetPoolRealmsRequestJson = {
+  /**
+   * The pool's id.
+   *
+   * @generated from field: uint32 pool = 1;
+   */
+  pool?: number;
+
+  /**
+   * Realm names; none: every realm may use the pool.
+   *
+   * @generated from field: repeated string realms = 2;
+   */
+  realms?: string[];
+};
+
+/**
+ * Describes the message hyperstor.v1.SetPoolRealmsRequest.
+ * Use `create(SetPoolRealmsRequestSchema)` to create a new message.
+ */
+export const SetPoolRealmsRequestSchema: GenMessage<SetPoolRealmsRequest, {jsonType: SetPoolRealmsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 82);
+
+/**
+ * @generated from message hyperstor.v1.SetPoolRealmsResponse
+ */
+export type SetPoolRealmsResponse = Message<"hyperstor.v1.SetPoolRealmsResponse"> & {
+};
+
+/**
+ * @generated from message hyperstor.v1.SetPoolRealmsResponse
+ */
+export type SetPoolRealmsResponseJson = {
+};
+
+/**
+ * Describes the message hyperstor.v1.SetPoolRealmsResponse.
+ * Use `create(SetPoolRealmsResponseSchema)` to create a new message.
+ */
+export const SetPoolRealmsResponseSchema: GenMessage<SetPoolRealmsResponse, {jsonType: SetPoolRealmsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_hyperstor_v1_admin, 83);
+
+/**
  * @generated from message hyperstor.v1.GetClusterKeyRequest
  */
 export type GetClusterKeyRequest = Message<"hyperstor.v1.GetClusterKeyRequest"> & {
@@ -3072,7 +3529,7 @@ export type GetClusterKeyRequestJson = {
  * Use `create(GetClusterKeyRequestSchema)` to create a new message.
  */
 export const GetClusterKeyRequestSchema: GenMessage<GetClusterKeyRequest, {jsonType: GetClusterKeyRequestJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 73);
+  messageDesc(file_hyperstor_v1_admin, 84);
 
 /**
  * @generated from message hyperstor.v1.GetClusterKeyResponse
@@ -3105,7 +3562,7 @@ export type GetClusterKeyResponseJson = {
  * Use `create(GetClusterKeyResponseSchema)` to create a new message.
  */
 export const GetClusterKeyResponseSchema: GenMessage<GetClusterKeyResponse, {jsonType: GetClusterKeyResponseJson}> = /*@__PURE__*/
-  messageDesc(file_hyperstor_v1_admin, 74);
+  messageDesc(file_hyperstor_v1_admin, 85);
 
 /**
  * @generated from enum hyperstor.v1.OperationState
@@ -3285,6 +3742,68 @@ export const S3Service: GenService<{
   serviceDesc(file_hyperstor_v1_admin, 1);
 
 /**
+ * Realms (20-tenants.md §24.8, 04-decisions.md D248–D253): groups of
+ * tenants with their own pools and endpoints. The realm "default" always
+ * exists, and holds every tenant not put in another.
+ *
+ * @generated from service hyperstor.v1.RealmService
+ */
+export const RealmService: GenService<{
+  /**
+   * Makes a realm. Write.
+   *
+   * @generated from rpc hyperstor.v1.RealmService.CreateRealm
+   */
+  createRealm: {
+    methodKind: "unary";
+    input: typeof CreateRealmRequestSchema;
+    output: typeof CreateRealmResponseSchema;
+  },
+  /**
+   * The realms, with their tenants and the pools that list them. Read.
+   *
+   * @generated from rpc hyperstor.v1.RealmService.ListRealms
+   */
+  listRealms: {
+    methodKind: "unary";
+    input: typeof ListRealmsRequestSchema;
+    output: typeof ListRealmsResponseSchema;
+  },
+  /**
+   * Deletes a realm that no tenant, pool or S3 placement names. Write.
+   *
+   * @generated from rpc hyperstor.v1.RealmService.DeleteRealm
+   */
+  deleteRealm: {
+    methodKind: "unary";
+    input: typeof DeleteRealmRequestSchema;
+    output: typeof DeleteRealmResponseSchema;
+  },
+  /**
+   * Puts a tenant in a realm; "default" takes it back. Write.
+   *
+   * @generated from rpc hyperstor.v1.RealmService.SetTenantRealm
+   */
+  setTenantRealm: {
+    methodKind: "unary";
+    input: typeof SetTenantRealmRequestSchema;
+    output: typeof SetTenantRealmResponseSchema;
+  },
+  /**
+   * Sets the realms that may use a pool (D249); none: every realm. Refused
+   * while a placement of a realm taken off the list names the pool. Write.
+   *
+   * @generated from rpc hyperstor.v1.RealmService.SetPoolRealms
+   */
+  setPoolRealms: {
+    methodKind: "unary";
+    input: typeof SetPoolRealmsRequestSchema;
+    output: typeof SetPoolRealmsResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hyperstor_v1_admin, 2);
+
+/**
  * Certificates (04-decisions.md D53, D56).
  *
  * @generated from service hyperstor.v1.CaService
@@ -3336,7 +3855,7 @@ export const CaService: GenService<{
     output: typeof GetClusterKeyResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 2);
+  serviceDesc(file_hyperstor_v1_admin, 3);
 
 /**
  * Backups of the map service's store (04-decisions.md D86).
@@ -3357,7 +3876,7 @@ export const MapService: GenService<{
     output: typeof GetMapBackupResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 3);
+  serviceDesc(file_hyperstor_v1_admin, 4);
 
 /**
  * The map service's members (04-decisions.md D87).
@@ -3398,7 +3917,7 @@ export const MemberService: GenService<{
     output: typeof RemoveMemberResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 4);
+  serviceDesc(file_hyperstor_v1_admin, 5);
 
 /**
  * hyperstor-mgmt's rows in the map service's store: people's accounts,
@@ -3445,7 +3964,7 @@ export const MgmtStoreService: GenService<{
     output: typeof ListRowsResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 5);
+  serviceDesc(file_hyperstor_v1_admin, 6);
 
 /**
  * Changes to nodes that run as operations.
@@ -3466,7 +3985,7 @@ export const NodeService: GenService<{
     output: typeof DrainNodeResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 6);
+  serviceDesc(file_hyperstor_v1_admin, 7);
 
 /**
  * Long operations (§23.6): drains for now.
@@ -3519,7 +4038,7 @@ export const AuditService: GenService<{
     output: typeof SetAuditSettingsResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 7);
+  serviceDesc(file_hyperstor_v1_admin, 8);
 
 /**
  * @generated from service hyperstor.v1.OperationService
@@ -3569,5 +4088,5 @@ export const OperationService: GenService<{
     output: typeof OperationSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_hyperstor_v1_admin, 8);
+  serviceDesc(file_hyperstor_v1_admin, 9);
 

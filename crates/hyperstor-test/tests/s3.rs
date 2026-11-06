@@ -439,7 +439,14 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
         c.ctl(&["pools"]).has("acmedata").then_some(())
     });
     let made = c
-        .ctl(&["realm", "create", "--name", "acme", "--description", "a customer"])
+        .ctl(&[
+            "realm",
+            "create",
+            "--name",
+            "acme",
+            "--description",
+            "a customer",
+        ])
         .ok();
     assert!(made.has("realm acme made (id 1)"), "{}", made.out);
     let again = c.ctl(&["realm", "create", "--name", "acme"]).expect(1);
@@ -479,14 +486,29 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     let (id2, secret2) = line.split_once(' ').unwrap();
     let (id2, secret2) = (id2.to_string(), secret2.trim().to_string());
     let list = c.ctl(&["realm", "list"]).ok();
-    let acme = list.out.lines().find(|l| l.starts_with("acme")).unwrap_or_default();
-    assert!(acme.contains(" 2 ") && acme.contains("acmedata"), "{}", list.out);
+    let acme = list
+        .out
+        .lines()
+        .find(|l| l.starts_with("acme"))
+        .unwrap_or_default();
+    assert!(
+        acme.contains(" 2 ") && acme.contains("acmedata"),
+        "{}",
+        list.out
+    );
     let keys = c.ctl(&["s3", "key", "list"]).ok();
-    let k2 = keys.out.lines().find(|l| l.starts_with(&id2)).unwrap_or_default();
+    let k2 = keys
+        .out
+        .lines()
+        .find(|l| l.starts_with(&id2))
+        .unwrap_or_default();
     assert!(k2.contains("acme"), "{}", keys.out);
     let places = c.ctl(&["s3", "placement", "list"]).ok();
     assert!(
-        places.out.lines().any(|l| l.starts_with("acme") && l.contains("acmedata (#3)")),
+        places
+            .out
+            .lines()
+            .any(|l| l.starts_with("acme") && l.contains("acmedata (#3)")),
         "{}",
         places.out
     );
@@ -527,10 +549,28 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     let ca = c.pki().join("root.crt");
     let at = |port: u16, id: &str, secret: &str, s: &[&str]| sdk(&python, port, &ca, id, secret, s);
     // Each key at its own realm's gateway; unknown at the other's (D250).
-    assert_eq!(at(acme_port, &id2, &secret2, &["create", "photos"]), "created");
-    assert_eq!(at(acme_port, &id2, &secret2, &["roundtrip", "photos"]), "roundtrip ok");
-    assert_eq!(at(c.s3_port, &id1, &secret1, &["create", "photos"]), "created");
-    assert_eq!(at(c.s3_port, &id1, &secret1, &["roundtrip", "photos"]), "roundtrip ok");
-    assert_eq!(at(c.s3_port, &id2, &secret2, &["denied"]), "InvalidAccessKeyId");
-    assert_eq!(at(acme_port, &id1, &secret1, &["denied"]), "InvalidAccessKeyId");
+    assert_eq!(
+        at(acme_port, &id2, &secret2, &["create", "photos"]),
+        "created"
+    );
+    assert_eq!(
+        at(acme_port, &id2, &secret2, &["roundtrip", "photos"]),
+        "roundtrip ok"
+    );
+    assert_eq!(
+        at(c.s3_port, &id1, &secret1, &["create", "photos"]),
+        "created"
+    );
+    assert_eq!(
+        at(c.s3_port, &id1, &secret1, &["roundtrip", "photos"]),
+        "roundtrip ok"
+    );
+    assert_eq!(
+        at(c.s3_port, &id2, &secret2, &["denied"]),
+        "InvalidAccessKeyId"
+    );
+    assert_eq!(
+        at(acme_port, &id1, &secret1, &["denied"]),
+        "InvalidAccessKeyId"
+    );
 }

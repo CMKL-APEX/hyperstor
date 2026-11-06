@@ -449,6 +449,7 @@ fn main() {
         domain: None,
         poll: false,
         tenant: None,
+        realm: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -2725,7 +2726,11 @@ where
             let realms: Vec<String> = if realm == "any" {
                 Vec::new()
             } else {
-                realm.split(',').filter(|r| !r.is_empty()).map(String::from).collect()
+                realm
+                    .split(',')
+                    .filter(|r| !r.is_empty())
+                    .map(String::from)
+                    .collect()
             };
             client
                 .set_pool_realms(pb::SetPoolRealmsRequest {
@@ -2737,7 +2742,10 @@ where
             if realms.is_empty() {
                 println!("pool {pool}: every realm may use it");
             } else {
-                println!("pool {pool}: only realm(s) {} may use it", realms.join(", "));
+                println!(
+                    "pool {pool}: only realm(s) {} may use it",
+                    realms.join(", ")
+                );
             }
         }
     }
