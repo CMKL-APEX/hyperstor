@@ -49,9 +49,11 @@ covered by tests that run on every change.
 | Feature flags in the device superblock; only a blank device is formatted | Done |
 | Each device's superblock names its device and cluster: a device of another device or cluster (a drive moved, swapped paths) is refused before it is opened, and one formatted without a cluster gets it recorded | Done |
 | A slow device no longer holds its reactor: commits wait for the device in the background (first stage) | In progress |
+| Checkpoints and deferred in-place writes go on the ring with the commit round (third stage) | Done |
 | Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage) | In progress |
 | A held reactor logs where the time went: on a CPU, waiting for one or off it, and its longest task poll by where the task was spawned | Done |
 | Recovery, backfill, repair and deep scrub read on the ring, with a share of reads of their own; a push whose object is written meanwhile is read again | Done |
+| The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied | Done |
 | Crash safety: randomized crash tests against a model | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
@@ -168,7 +170,7 @@ covered by tests that run on every change.
 | Networks in the cluster file, endpoints per reactor ranked by closeness, control apart from data, on glidex's topology crate (stage 1; built: networks and endpoints in the cluster file and the map, nodes and clients using them; the installer proposing endpoints from the host's topology and keeping them in the map) | In progress |
 | Path choice per I/O with warm paths, health per network, fencing independent of the path (stage 2; built: a device's endpoints chosen per request by outstanding requests; health per network, with endpoints marked down on peer reports and damped; fencing shown on two networks; warm paths wait for RDMA) | In progress |
 | The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it) | Done |
-| Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4) | Planned |
+| Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex) | Done |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
 
 ## AD0: Administration API, identities and CLI

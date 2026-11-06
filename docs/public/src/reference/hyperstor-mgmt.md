@@ -96,7 +96,7 @@ With `--oidc FILE`, people can log in with an OIDC identity provider
 | `issuer`, `client_id` | required | The provider, and this client as registered with it |
 | `client_secret_file` | required | A file holding the client's secret (mode 0640, group `hyperstor`), read at each use |
 | `scopes` | `["openid", "email", "profile"]` | Asked for; `openid` is required |
-| `allowed_domains` | any | Email domains that may log in |
+| `allowed_domains` | any | Email domains that may log in; the address must be one the provider verified (`email_verified`) |
 | `required_groups`, `groups_claim` | none, `groups` | Groups (in the ID token's `groups_claim`) of which a person must be in one |
 | `redirect_uri` | `<scheme>://<host>/auth/oidc/callback` | Where the provider sends the browser back; register it with the provider |
 

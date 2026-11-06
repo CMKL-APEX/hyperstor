@@ -1665,3 +1665,55 @@ reactor, about 1 GB/s over IPoIB (G48), is the limit, far below one
 port. What the spread is worth needs several clients at once, G48's
 remaining part.
 
+
+## 2026-11-06: a backfill under load with I257 (pilot)
+
+Whether backfill holds a reactor once its reads are on the ring (I257).
+Every host ran the build from `main` installed that morning, which has
+I257. Eight 64 MiB volumes in pool 1 (ids 0–7, purged after). From node
+2's host (so the client shared node 2's 1 GbE link), `HS_BENCH_ONLY="4 KiB random writes, QD32"` (then `QD1`)
+`HS_BENCH_SECS=150 hyperstor-bench remote`, and 25 s in,
+`hyperstorctl out --device 2000`, which moves about 125 of pool 1's
+PGs to device 2001 by backfill. `in` after each run. A device that comes
+back in still holds its data, so it is brought up to date by recovery,
+not backfill, and shows no backfill.
+
+| Run | Backfill | 4 KiB writes (ops/s) | p50 | p99 |
+|---|---|---|---|---|
+| No load | 35 s | – | – | – |
+| Baseline, QD32 | – | 1,377 | 1.97 ms | 251 ms |
+| During backfill, QD32 | 130 s | 1,028 | 2.31 ms | 267 ms |
+| Baseline, QD1 | – | 256 | 0.88 ms | 104 ms |
+| During backfill, QD1 | 64 s | 300 | 0.87 ms | 117 ms |
+
+### Findings
+
+1. **No reactor held for a device read, and no read timed out.**
+   `hyperstor_push_rereads_total` stayed 0: writes spread over 128
+   objects never hit one while its push was read, so the pilot didn't
+   exercise the re-read path (the cluster test does).
+2. **The sending nodes' connection writer held the reactor 100–125 ms,
+   all on a CPU** (seven times, nodes 1 and 0): it joined every queued
+   4 MiB push into one buffer. Fixed by I283.
+3. **Node 0 held its reactor 100–506 ms inside `io_uring_enter`, off a
+   CPU** (36 times, from the first baseline on, with or without
+   backfill). Another session was building Rust on node 0's host, whose
+   root RAID holds node 0's device files: I/O pressure stayed about 41%
+   "full". This and finding 4, not the code, are why the baselines are
+   a tenth of 2026-11-02's and p99 is in the hundreds of ms; not
+   comparable.
+4. **Node 2 was reported silent, and reported its peers silent, many
+   times** (43 reports in the hour), and was marked down and flapping
+   after the runs. Its own reactor never held. During the runs, node
+   2's link carried the client's traffic as well as its own, and the
+   QD32 run's backfill into device 2001; some of those silences may be
+   that. But after the load stopped, pings on the 1 GbE network to and
+   from node 2's host still lost 2–20% of packets with the link idle,
+   and none between nodes 0 and 1. Node 2's NIC counted no errors, drops
+   or carrier changes. Seven hours later the loss was gone (0% each
+   way, no silences, health ok). Cause unknown: the cable or switch,
+   or something on node 2's host, which also runs other work (a VM,
+   vGPU daemons; I/O pressure about 60% "some" when checked). Fewer
+   silences involving node 2 were logged every day since 2026-11-02
+   (8–40). The next run should drive the load from a host that isn't a
+   node.

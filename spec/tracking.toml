@@ -108,6 +108,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Checkpoints and deferred in-place writes go on the ring with the commit round (third stage)"
+spec = ["08-engine.md §6.2", "I281"]
+status = "done"
+tests = [
+    "engine::commit_rounds_leave_every_write_to_their_writer",
+]
+
+[[milestone.item]]
 what = "Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage)"
 spec = ["08-engine.md §6.2", "D190", "I230"]
 status = "partial"
@@ -140,6 +148,15 @@ tests = [
     "hyperstor_daemon::shard_cell::tests::background_reads_have_a_share_of_their_own",
     "cluster::a_slow_backfill_holds_no_reactor",
     "cluster::a_push_is_read_again_when_its_object_is_written",
+]
+
+[[milestone.item]]
+what = "The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied"
+spec = ["I283"]
+status = "done"
+tests = [
+    "hyperstor_rpc::pool_tests::the_writer_joins_small_frames_and_sends_large_ones_alone",
+    "hyperstor_rpc::pool_tests::the_writer_delivers_mixed_frames_in_order",
 ]
 
 [[milestone.item]]
@@ -233,7 +250,7 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
@@ -246,6 +263,8 @@ tests = [
     "hyperstor_meta::store::tests::a_change_writes_what_changed",
     "hyperstor_meta::store::tests::a_large_map_fits_one_write_set",
     "hyperstor_meta::replica::tests::a_dropped_call_leaves_no_answer_behind",
+    "hyperstor_meta::replica::tests::a_slow_handshake_outlives_the_call_that_started_it",
+    "members::a_rolling_restart_of_the_members_keeps_committing",
 ]
 
 [[milestone.item]]
@@ -739,7 +758,7 @@ tests = [
 
 [[milestone.item]]
 what = "The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part)"
-spec = ["14-s3.md §14.7", "D233", "I269", "D239"]
+spec = ["14-s3.md §14.7", "D233", "I269", "D242"]
 status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 
@@ -1001,9 +1020,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4)"
-spec = ["26-networks.md §29.9", "D205"]
-status = "planned"
+what = "Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex)"
+spec = ["26-networks.md §29.9", "D205", "D239", "D240", "D241", "I278"]
+status = "done"
+tests = [
+    "hyperstor_map::port_tests::claims_and_lending_round_trip_in_format_18",
+    "hyperstor_meta::fabric::tests::claims_take_ports_back_and_lending_follows_its_setting",
+    "enroll::an_orchestrator_claims_ports_and_nothing_else",
+]
 
 [[milestone.item]]
 what = "RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5)"

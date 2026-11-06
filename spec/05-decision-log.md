@@ -1248,6 +1248,17 @@ lending waits for G52. Asked, with options and a recommendation:
 | 200 | Where a port's base role comes from: the map, set by the operator with `hyperstorctl` and the cluster file, `storage` by default for ports with endpoints and `host` otherwise (recommended); a file on each host, reported by its node; or glidex's topology or netd | The map, set by the operator | D237 |
 | 201 | How stage 3 ships before G52: lending `off` by default until G52 is measured (recommended); G52 first; or `idle` at §29.8's starting values | `idle` as specified | D238 |
 
+## Claims (2026-11-06)
+
+Before building stage 4 of HS19 (26-networks.md §29.9), three of its
+parts needed a decision. Asked, with options and a recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 202 | What stage 4 covers: claims on ports, the `orchestrator` role and lending settings, with VF claims and requests in stage 5 (recommended); or VFs and grants too | Ports now, VFs in stage 5 | D239 |
+| 203 | How `Watch` ships: `ListClaims` now, polled with renewals, and a stream later (recommended); or the API's first server-streaming call now | List now, stream later | D240 |
+| 204 | glidex's scheduler as the first client: a glidex issue, with hyperstor's side tested end to end here (recommended); or a glidex pull request too | A glidex issue | D241 |
+
 ## The S3 gateway's default port (2026-11-06)
 
 Before a gateway went on the pilot, the owner asked for a port other
@@ -1255,4 +1266,4 @@ than 443. Asked, with a recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 202 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D239 |
+| 205 | The gateway's default port: 8848, just below the map service's 8849 and clear of the all-in-one's ports per node (recommended); 9000, MinIO's; or 8854 with the all-in-one's metrics ports moved (8854 is node 1's metrics port there) | 8848 | D242 |

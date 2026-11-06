@@ -98,6 +98,9 @@ pub fn load(path: &Path) -> Result<Oidc, String> {
         scopes: f.scopes,
         groups_claim: f.groups_claim,
         allowed_domains: f.allowed_domains,
+        // A token without `email_verified` is unverified, so it passes
+        // no domain rule (glidex D75).
+        trust_email: false,
         required_groups: f.required_groups,
         redirect_uri: f.redirect_uri,
         callback_path: CALLBACK.into(),

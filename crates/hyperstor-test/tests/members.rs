@@ -10,15 +10,7 @@ use std::process::{Child, Command};
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn ctl(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
-    let o = Command::new(bin.join("hyperstorctl"))
-        .args(["--api", api, "--tls", pki.to_str().unwrap()])
-        .args(args)
-        .output()
-        .unwrap();
-    Run {
-        code: o.status.code().unwrap_or(-1),
-        out: String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
-    }
+    ctl_at(bin, api, pki, args)
 }
 
 struct M {
@@ -536,6 +528,40 @@ fn a_scrub_started_on_a_follower_goes_to_the_leader() {
     assert!(!r.has("tokens"), "{}", r.out);
     let ops = g.ctl(l, &["op", "list"]).ok();
     assert!(ops.has("pool 1 scrub"), "{}", ops.out);
+}
+
+/// Members restarted one at a time, in the installer's order (3, 2, 1),
+/// keep committing: after each restart the leader takes a write within
+/// seconds, and the restarted member catches up (issue #177, I279).
+#[test]
+fn a_rolling_restart_of_the_members_keeps_committing() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = group("rolling", 3, 3);
+    g.leader(&[0, 1, 2]);
+    for i in [2, 1, 0] {
+        g.m[i].stop();
+        g.m[i].start(&g.s, &[]);
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_for("a write through the leader", 15, || {
+                let l = g.leader_once(&[0, 1, 2]);
+                let r = g.ctl(l, &["token", "create", "--role", "meta"]);
+                (r.code == 0).then_some(())
+            })
+        }));
+        if let Err(e) = made {
+            for (j, m) in g.m.iter().enumerate() {
+                eprintln!("--- member {}:\n{}", j + 1, m.log());
+            }
+            std::panic::resume_unwind(e);
+        }
+        // The restarted member has the write too: its token list matches
+        // the leader's.
+        let l = g.leader(&[0, 1, 2]);
+        let want = g.ctl(l, &["token", "list"]).ok().out;
+        wait_for("the restarted member to catch up", 15, || {
+            (g.ctl(i, &["token", "list"]).out == want).then_some(())
+        });
+    }
 }
 
 /// A token asked for before the group has committed its first map waits

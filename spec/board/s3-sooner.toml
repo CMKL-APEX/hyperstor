@@ -6,5 +6,5 @@ updated = 2026-11-06
 milestone = "HS12"
 branch = "feat/s3-port-8848"
 prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212]
-now = "HS12 stage 3 on the pilot (#191, #195; I268, I269); the gateway's default port becomes 8848 (D239), then a gateway checked on the pilot"
+now = "HS12 stage 3 on the pilot (#191, #195; I268, I269); the gateway's default port becomes 8848 (D242), then a gateway checked on the pilot"
 next = "Stage 4: multipart uploads, copy, conditional requests, multi-object delete, the checksum headers (D193, D194, D196)"

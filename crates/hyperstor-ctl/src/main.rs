@@ -163,6 +163,9 @@
 //! without it the cluster's root where `hyperstorctl.conf` names one
 //! (mgmt's certificate is the cluster CA's by default, D108).
 //!
+//! Each call gives up after `--timeout-secs N` (or `$HYPERSTOR_TIMEOUT`),
+//! 5 s by default; the change it asked for may still be made.
+//!
 //! Exit status: 0 done (and, for `status`, health ok), 1 health warn or
 //! error, a failed request or test, 2 usage, 3 the API unreachable (or the
 //! member asked isn't the leader), 4 not allowed: no certificate, or one
@@ -179,7 +182,46 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+
+/// Prints with `ok` on success; a refusal the caller can act on (not
+/// found, invalid, claimed) as a message and exit 1. Not being allowed
+/// exits 4, as for every command.
+fn refused_or<T>(
+    r: Result<T, connectrpc::ConnectError>,
+    ok: impl FnOnce(T),
+) -> Result<Next, connectrpc::ConnectError> {
+    match r {
+        Ok(v) => {
+            ok(v);
+            Ok(Next::Exit(0))
+        }
+        Err(e)
+            if matches!(
+                e.code,
+                connectrpc::ErrorCode::NotFound
+                    | connectrpc::ErrorCode::InvalidArgument
+                    | connectrpc::ErrorCode::FailedPrecondition
+            ) =>
+        {
+            eprintln!(
+                "hyperstorctl: {}",
+                e.message.as_deref().unwrap_or("refused")
+            );
+            Ok(Next::Exit(1))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Each call's deadline: `--timeout-secs`, else `$HYPERSTOR_TIMEOUT`.
+static TIMEOUT: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+
+/// How long a call may take before the client gives up (5 s unless
+/// set).
+fn call_timeout() -> Duration {
+    TIMEOUT.get().copied().unwrap_or(Duration::from_secs(5))
+}
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -222,6 +264,12 @@ fn random_u64() -> u64 {
 struct Args {
     /// `device endpoints`: `NET=ADDR,...` or `none`.
     endpoints: Option<String>,
+    /// `claim ...`: the claim's holder (D205).
+    holder: Option<String>,
+    /// `claim port`: storage leaves the port.
+    exclusive: bool,
+    /// `port lending`: off, idle, always or default (D209).
+    lending: Option<String>,
     json: bool,
     yaml: bool,
     role: Option<String>,
@@ -329,6 +377,7 @@ fn main() {
     let mut mgmt = None;
     let mut token_file = None;
     let mut mgmt_ca = None;
+    let mut timeout = None;
     let mut a = Args {
         endpoints: None,
         json: false,
@@ -351,6 +400,9 @@ fn main() {
         name: String::new(),
         id: None,
         force: false,
+        holder: None,
+        exclusive: false,
+        lending: None,
         epoch: None,
         ids: Vec::new(),
         group: None,
@@ -408,6 +460,7 @@ fn main() {
             }
             "--token-file" => token_file = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--mgmt-ca" => mgmt_ca = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--timeout-secs" => timeout = Some(num(it.next())),
             "--json" => a.json = true,
             "-o" => match it.next().map(String::as_str) {
                 Some("json") => a.json = true,
@@ -520,6 +573,9 @@ fn main() {
             "--sparse" => a.sparse = true,
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--force" => a.force = true,
+            "--holder" => a.holder = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--exclusive" => a.exclusive = true,
+            "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--epoch" => {
                 a.epoch = Some(
                     it.next()
@@ -585,7 +641,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool" | "scrub" | "port"
+            | "device" | "pool" | "scrub" | "port" | "claim"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -602,7 +658,8 @@ fn main() {
                     "audit" => matches!(sub, Some("list" | "settings")),
                     "scrub" => matches!(sub, Some("set" | "status" | "pgs" | "start")),
                     "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
-                    "port" => matches!(sub, Some("list" | "role")),
+                    "port" => matches!(sub, Some("list" | "role" | "lending")),
+                    "claim" => matches!(sub, Some("list" | "port" | "renew" | "release")),
                     "pool" => {
                         matches!(
                             sub,
@@ -620,6 +677,20 @@ fn main() {
         }
     }
     let Some(cmd) = cmd else { usage() };
+    let timeout = timeout.or_else(|| {
+        let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
+        Some(v.parse().unwrap_or_else(|_| {
+            eprintln!("hyperstorctl: bad $HYPERSTOR_TIMEOUT {v}");
+            std::process::exit(2)
+        }))
+    });
+    match timeout {
+        Some(0) => usage(),
+        Some(secs) => TIMEOUT
+            .set(Duration::from_secs(secs.into()))
+            .expect("set once"),
+        None => {}
+    }
     // device add takes a node, an address and maybe a class; nothing else
     // takes the last two.
     let device_add = cmd == "device add";
@@ -674,11 +745,24 @@ fn main() {
         usage();
     }
     // port role takes a node, a port's name and a role; port list maybe a
-    // node.
-    let port = cmd.starts_with("port ");
+    // node; port lending a lending, and a node and name or neither. The
+    // claim commands but list take a node, a name and a holder (release:
+    // or --force); claim port and renew a ttl.
+    let claim_one = matches!(cmd.as_str(), "claim port" | "claim renew" | "claim release");
+    let port = cmd.starts_with("port ") || cmd.starts_with("claim ");
     if (cmd == "port role" && (a.node.is_none() || a.name.is_empty()))
         || (port && a.device.is_some())
         || (cmd == "port list" && !a.name.is_empty())
+        || (cmd == "port lending") != a.lending.is_some()
+        || (cmd == "port lending" && a.node.is_some() == a.name.is_empty())
+        || (claim_one
+            && (a.node.is_none()
+                || a.name.is_empty()
+                || (a.holder.is_none() && !(cmd == "claim release" && a.force))))
+        || (cmd == "claim list" && (a.node.is_some() || !a.name.is_empty()))
+        || (!cmd.starts_with("claim ") && a.holder.is_some())
+        || (cmd != "claim port" && a.exclusive)
+        || (matches!(cmd.as_str(), "claim port" | "claim renew") && a.ttl == 0)
     {
         usage();
     }
@@ -835,7 +919,7 @@ fn main() {
     if (cmd == "token create" || cmd == "port role") != a.role.is_some()
         || (a.dry_run && cmd != "drain" && cmd != "pool delete" && cmd != "device remove")
         || (cmd == "pool delete" && a.pool.is_none())
-        || (a.ttl != 0 && cmd != "token create")
+        || (a.ttl != 0 && !matches!(cmd.as_str(), "token create" | "claim port" | "claim renew"))
         || (needs_id && a.id.is_none())
     {
         usage();
@@ -856,7 +940,8 @@ fn main() {
             && cmd != "pool add-device"
             && cmd != "pool delete"
             && cmd != "device remove"
-            && cmd != "cert renew")
+            && cmd != "cert renew"
+            && cmd != "claim release")
     {
         usage();
     }
@@ -1066,8 +1151,7 @@ enum Call<'a> {
 }
 
 async fn run(target: &Target<'_>, call: Call<'_>) -> Result<Next, connectrpc::ConnectError> {
-    let config =
-        |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+    let config = |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(call_timeout());
     match target {
         Target::Mgmt(m) => {
             let config = config(m.base.clone())
@@ -1922,6 +2006,96 @@ where
                 .into_owned();
             show(a, &r, || ports_text(&r));
             Next::Exit(0)
+        }
+        "port lending" => {
+            let lending = a.lending.clone().expect("checked with the arguments");
+            let r = client
+                .set_lending(pb::SetLendingRequest {
+                    node: a.node,
+                    name: a.name.clone(),
+                    lending: (lending != "default").then(|| lending.clone()),
+                    ..Default::default()
+                })
+                .await;
+            let what = a
+                .node
+                .map_or("cluster".into(), |n| format!("port {n}/{}", a.name));
+            refused_or(r, |r| {
+                println!(
+                    "{what}: lending {lending} (map epoch {})",
+                    r.into_owned().map_epoch
+                )
+            })?
+        }
+        "claim list" => {
+            let r = client
+                .list_claims(pb::ListClaimsRequest {
+                    holder: a.holder.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || claims_text(&r));
+            Next::Exit(0)
+        }
+        "claim port" | "claim renew" => {
+            let (node, name) = (a.node.expect("checked"), a.name.clone());
+            let holder = a.holder.clone().expect("checked with the arguments");
+            let claim = if cmd == "claim port" {
+                client
+                    .claim_port(pb::ClaimPortRequest {
+                        node,
+                        name,
+                        holder,
+                        exclusive: a.exclusive,
+                        ttl_secs: a.ttl,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| r.into_owned().claim.into_option())
+            } else {
+                client
+                    .renew_claim(pb::RenewClaimRequest {
+                        node,
+                        name,
+                        holder,
+                        ttl_secs: a.ttl,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| r.into_owned().claim.into_option())
+            };
+            refused_or(claim, |c| {
+                if let Some(c) = c {
+                    println!(
+                        "port {}/{}: claimed by {}, {}, for {} s",
+                        c.node,
+                        c.name,
+                        c.holder,
+                        if c.exclusive { "exclusive" } else { "shared" },
+                        a.ttl
+                    )
+                }
+            })?
+        }
+        "claim release" => {
+            let node = a.node.expect("checked");
+            let r = client
+                .release_claim(pb::ReleaseClaimRequest {
+                    node,
+                    name: a.name.clone(),
+                    holder: a.holder.clone().unwrap_or_default(),
+                    any: a.force,
+                    ..Default::default()
+                })
+                .await;
+            refused_or(r, |r| {
+                println!(
+                    "port {node}/{}: claim released (map epoch {})",
+                    a.name,
+                    r.into_owned().map_epoch
+                )
+            })?
         }
         "port role" => {
             let (Some(node), Some(role)) = (a.node, a.role.clone()) else {
@@ -3400,7 +3574,8 @@ fn enroll(api: &str, a: &Args) -> i32 {
         .build()
         .expect("tokio runtime");
     let r = rt.block_on(async {
-        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        let config = ClientConfig::new(uri)
+            .with_default_timeout(call_timeout().max(Duration::from_secs(10)));
         hyperstor_api::TokenServiceClient::new(HttpClient::with_tls(tls), config)
             .join(pb::JoinRequest {
                 token: token.clone(),
@@ -3491,7 +3666,8 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
         .build()
         .expect("tokio runtime");
     let r = rt.block_on(async {
-        let config = ClientConfig::new(uri).with_default_timeout(Duration::from_secs(10));
+        let config = ClientConfig::new(uri)
+            .with_default_timeout(call_timeout().max(Duration::from_secs(10)));
         CaServiceClient::new(HttpClient::with_tls(tls), config)
             .renew_certificate(pb::RenewCertificateRequest {
                 csr,

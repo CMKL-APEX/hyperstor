@@ -557,27 +557,36 @@ fn check_peer(
     }
 }
 
-impl Tcp {
-    async fn connect(&self, addr: &str) -> Result<Box<dyn Stream>, String> {
-        let tcp = tokio::net::TcpStream::connect(addr)
-            .await
-            .map_err(|e| format!("{addr}: {e}"))?;
-        let _ = tcp.set_nodelay(true);
-        let Some(tls) = &self.tls else {
-            return Ok(Box::new(tcp));
-        };
-        let sock: SocketAddr = addr
-            .parse()
-            .map_err(|_| format!("{addr}: not an address"))?;
-        let name = rustls::pki_types::ServerName::IpAddress(sock.ip().into());
-        let s = tokio_rustls::TlsConnector::from(tls.client.clone())
-            .connect(name, tcp)
-            .await
-            .map_err(|e| format!("{addr}: TLS: {e}"))?;
-        check_peer(s.get_ref().1.peer_certificates(), &tls.cluster, &self.db)?;
-        Ok(Box::new(s))
-    }
+/// How long a member may take to accept a connection and finish the TLS
+/// handshake, and to answer a request: a member that stops answering
+/// gives up its connection (and the next call makes a new one) after that.
+const CONNECT: std::time::Duration = std::time::Duration::from_secs(2);
+const ANSWER: std::time::Duration = std::time::Duration::from_secs(5);
+/// A snapshot is the whole map.
+const SNAPSHOT_ANSWER: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A connection to the member at `addr`, its certificate checked.
+async fn dial(tls: Option<PeerTls>, db: Arc<Db>, addr: &str) -> Result<Box<dyn Stream>, String> {
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|e| format!("{addr}: {e}"))?;
+    let _ = tcp.set_nodelay(true);
+    let Some(tls) = tls else {
+        return Ok(Box::new(tcp));
+    };
+    let sock: SocketAddr = addr
+        .parse()
+        .map_err(|_| format!("{addr}: not an address"))?;
+    let name = rustls::pki_types::ServerName::IpAddress(sock.ip().into());
+    let s = tokio_rustls::TlsConnector::from(tls.client.clone())
+        .connect(name, tcp)
+        .await
+        .map_err(|e| format!("{addr}: TLS: {e}"))?;
+    check_peer(s.get_ref().1.peer_certificates(), &tls.cluster, &db)?;
+    Ok(Box::new(s))
+}
+
+impl Tcp {
     async fn request(&self, addr: &str, kind: u8, body: &[u8]) -> Result<Vec<u8>, TransportError> {
         let slot = self
             .conns
@@ -586,28 +595,53 @@ impl Tcp {
             .entry(addr.to_string())
             .or_default()
             .clone();
-        let mut conn = slot.lock().await;
-        // A connection kept from before may have been closed by the peer
-        // (a restart): one fresh try.
-        for attempt in 0..2 {
-            // Out of the slot while in use, back once its answer is read:
-            // Raft drops a call that times out, and a connection kept with
-            // that answer unread would hand it to the next call, and every
-            // later call the one before's (I194).
-            let mut s = match conn.take() {
-                Some(s) => s,
-                None => self.connect(addr).await.map_err(TransportError)?,
-            };
-            match exchange(&mut s, kind, body).await {
-                Ok(r) => {
-                    *conn = Some(s);
-                    return Ok(r);
+        let (tls, db, to, body) = (
+            self.tls.clone(),
+            self.db.clone(),
+            addr.to_string(),
+            body.to_vec(),
+        );
+        // In a task of its own, which holds the member's connection until
+        // the answer is read. Raft drops a call that outlasts its heartbeat
+        // (50 ms), and a handshake or connection dropped with it would start
+        // over on every retry, never getting through if it takes longer
+        // (I279). A dropped call's answer is read and dropped, so the
+        // connection kept never hands it to the next call (I194).
+        tokio::spawn(async move {
+            let mut conn = slot.lock().await;
+            // A connection kept from before may have been closed by the peer
+            // (a restart): one fresh try.
+            for attempt in 0..2 {
+                let mut s = match conn.take() {
+                    Some(s) => s,
+                    None => tokio::time::timeout(CONNECT, dial(tls.clone(), db.clone(), &to))
+                        .await
+                        .unwrap_or_else(|_| Err(format!("{to}: no connection in {CONNECT:?}")))
+                        .map_err(TransportError)?,
+                };
+                let within = if kind == SNAPSHOT {
+                    SNAPSHOT_ANSWER
+                } else {
+                    ANSWER
+                };
+                let answer = tokio::time::timeout(within, exchange(&mut s, kind, &body))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(std::io::Error::other(format!("no answer in {within:?}")))
+                    });
+                match answer {
+                    Ok(r) => {
+                        *conn = Some(s);
+                        return Ok(r);
+                    }
+                    Err(e) if attempt == 1 => return Err(TransportError(format!("{to}: {e}"))),
+                    Err(_) => {}
                 }
-                Err(e) if attempt == 1 => return Err(TransportError(format!("{addr}: {e}"))),
-                Err(_) => {}
             }
-        }
-        unreachable!()
+            unreachable!()
+        })
+        .await
+        .map_err(|e| TransportError(format!("{addr}: {e}")))?
     }
 }
 
@@ -885,6 +919,99 @@ mod tests {
             for b in [&b"b"[..], b"c", b"d"] {
                 assert_eq!(tcp.request(&addr, APPEND, b).await.unwrap(), b);
             }
+        });
+    }
+
+    /// A member whose TLS handshake takes longer than Raft gives a call
+    /// (the 50 ms heartbeat) is still reached: the handshake goes on after
+    /// the call that started it is dropped, and a later call uses it
+    /// (I279, issue #177).
+    #[test]
+    fn a_slow_handshake_outlives_the_call_that_started_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("map.redb")).unwrap());
+        let root = hyperstor_pki::new_root("5").unwrap();
+        let ca = hyperstor_pki::new_intermediate(&root, "5").unwrap();
+        let tls = |id: &str| {
+            let who = hyperstor_pki::Identity {
+                cluster: "5".into(),
+                role: hyperstor_pki::Role::Meta,
+                id: id.into(),
+            };
+            let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let m = hyperstor_pki::issue(&ca, &who, &[ip], &[], 30).unwrap();
+            PeerTls {
+                server: Arc::new(
+                    hyperstor_pki::server_config(&m.cert, &m.key, &root.cert).unwrap(),
+                ),
+                client: Arc::new(
+                    hyperstor_pki::client_config(&m.cert, &m.key, &root.cert).unwrap(),
+                ),
+                cluster: "5".into(),
+            }
+        };
+        let (server, client) = (tls("2"), tls("1"));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // A member that starts each handshake 200 ms after accepting,
+            // then echoes requests.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = accepted.clone();
+            let acceptor = tokio_rustls::TlsAcceptor::from(server.server.clone());
+            tokio::spawn(async move {
+                loop {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let acceptor = acceptor.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let Ok(mut s) = acceptor.accept(tcp).await else {
+                            return;
+                        };
+                        while let Ok(_kind) = s.read_u8().await {
+                            let len = s.read_u32_le().await.unwrap();
+                            let mut body = vec![0; len as usize];
+                            s.read_exact(&mut body).await.unwrap();
+                            let mut frame = vec![1u8];
+                            frame.extend_from_slice(&len.to_le_bytes());
+                            frame.extend_from_slice(&body);
+                            if s.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            let tcp = Tcp {
+                tls: Some(client),
+                conns: tokio::sync::Mutex::new(HashMap::new()),
+                db,
+            };
+            // Calls given 50 ms each, as Raft gives them, one after another.
+            let mut answered = None;
+            for i in 0..40 {
+                let call = tokio::time::timeout(
+                    std::time::Duration::from_millis(50),
+                    tcp.request(&addr, APPEND, b"a"),
+                );
+                if let Ok(r) = call.await {
+                    answered = Some((i, r.unwrap()));
+                    break;
+                }
+            }
+            let (i, r) = answered.expect("no call answered in 2 s");
+            assert_eq!(r, b"a");
+            assert!(
+                i >= 3,
+                "answered by call {i}, before the handshake could end"
+            );
+            // One handshake, not one per call.
+            assert_eq!(accepted.load(std::sync::atomic::Ordering::Relaxed), 1);
         });
     }
 }

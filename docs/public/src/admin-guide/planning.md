@@ -191,4 +191,15 @@ On a GPU host whose InfiniBand ports are its GPUs' rails, mark them
 compute`, or a [`port` line](../reference/cluster-file.md#port)) and
 give devices endpoints there: storage then uses the rails while jobs
 leave them idle, and its devices' other endpoints, or their addresses,
-while jobs run.
+while jobs run. `hyperstorctl port lending` turns lending `off`, or to
+`always`, for the cluster or one port.
+
+**Claims.** A scheduler that knows when its jobs need the rails says so
+rather than waiting for their traffic: with an `orchestrator`
+certificate (`hyperstorctl token create --role orchestrator --name
+NAME`, then `enroll` on its host), it claims a port for a job
+(`hyperstorctl claim port`, or the API's `ClaimPort`) and renews the
+claim while the job runs. A claimed port is taken back from storage at
+once, and an exclusive claim keeps storage off it until the claim is
+released or lapses. The orchestrator's certificate may claim, renew,
+release and list its own claims, and list ports, and nothing else.

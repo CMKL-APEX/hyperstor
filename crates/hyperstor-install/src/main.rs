@@ -40,7 +40,7 @@
 //!   control socket and gives its sockets the user's primary group
 //!   (D144); `--no-vhost` removes it. A restart keeps its volumes (D143).
 //! - `--s3` adds `hyperstor-s3`, the S3 gateway (14-s3.md §14.2, D233),
-//!   listening on every address on `--s3-port` (8848, D239), with the site's
+//!   listening on every address on `--s3-port` (8848, D242), with the site's
 //!   certificate in `--s3-tls DIR` (`s3.crt`, `s3.key`) or its own `s3`
 //!   certificate from the cluster CA. On a map service host the
 //!   certificate is signed here; elsewhere it comes from a join with an
@@ -2619,7 +2619,7 @@ fn mgmt_listen_args(s: &Settings, p: &Plan) -> String {
 /// Where the web UI's files go (D100).
 const UI_DIR: &str = "/usr/local/share/hyperstor/ui";
 
-/// The S3 gateway's port unless `--s3-port` says otherwise (D239): just
+/// The S3 gateway's port unless `--s3-port` says otherwise (D242): just
 /// below the map service's 8849, since the all-in-one's ports per node
 /// (metrics from 8853, storage from 9100) grow upward.
 const DEFAULT_S3_PORT: u16 = 8848;
@@ -3918,7 +3918,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 mod tests {
     use super::*;
 
-    /// D239: the gateway's default port is none of the ports the
+    /// D242: the gateway's default port is none of the ports the
     /// installer gives anything else by default, for an all-in-one of up
     /// to 64 nodes (each node takes a metrics and a storage port).
     #[test]

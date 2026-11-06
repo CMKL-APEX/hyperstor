@@ -294,6 +294,30 @@ pub enum Admin {
         role: Option<hyperstor_map::PortRole>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Sets the lending of a port, or with `port` `None` of the cluster
+    /// (D209). Replies with the working map's epoch.
+    SetLending {
+        port: Option<String>,
+        lending: Option<hyperstor_map::Lending>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
+    /// Claims or renews a port for `holder` (D205); `renew` only an
+    /// existing claim of its holder's. Replies with the claim's expiry
+    /// (Unix ms) and the working map's epoch.
+    ClaimPort {
+        port: String,
+        holder: String,
+        exclusive: Option<bool>,
+        ttl: Duration,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool, u64), String>>,
+    },
+    /// Ends a claim: `holder`'s, or with `any` whoever's.
+    ReleaseClaim {
+        port: String,
+        holder: String,
+        any: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// The ports nodes reported, as the leader holds them, with the
     /// published map; only the leader has them.
     Ports(hyperstor_reactor::chan::OneSender<Result<PortsView, String>>),
@@ -1933,6 +1957,61 @@ impl Meta {
         Ok(map.epoch)
     }
 
+    /// Sets a port's lending, or the cluster's (D209). Returns the working
+    /// map's epoch.
+    pub fn set_lending(
+        &self,
+        port: Option<&str>,
+        lending: Option<hyperstor_map::Lending>,
+    ) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.set_lending(port, lending)?;
+        Ok(map.epoch)
+    }
+
+    /// Claims port `NODE/NETDEV` for `holder` for `ttl` (D205), or with
+    /// `exclusive` `None` renews its claim, keeping its mode. Returns the
+    /// expiry (Unix ms), the mode and the working map's epoch.
+    pub fn claim_port(
+        &self,
+        port: &str,
+        holder: &str,
+        exclusive: Option<bool>,
+        ttl: Duration,
+    ) -> Result<(u64, bool, u64), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let mut map = self.map.borrow_mut();
+        let exclusive = match exclusive {
+            Some(e) => e,
+            None => match map.claims.get(port) {
+                Some(c) if c.holder == holder && c.expires_ms > now => c.exclusive,
+                _ => return Err(format!("{holder} has no claim on port {port}")),
+            },
+        };
+        let expires = now + ttl.as_millis() as u64;
+        map.claim_port(port, holder, exclusive, expires, now)?;
+        Ok((expires, exclusive, map.epoch))
+    }
+
+    /// Ends a claim on port `port`: `holder`'s, or with `any` whoever's.
+    /// Returns the working map's epoch.
+    pub fn release_claim(&self, port: &str, holder: &str, any: bool) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.release_claim(port, holder, any)?;
+        Ok(map.epoch)
+    }
+
     /// Deletes pool `pool` (24-pools-and-devices.md §27.3.4; D176, D181):
     /// it leaves the map at once, its id kept so none is given again, and
     /// each device deletes what it holds of it. The caller checks first
@@ -2663,6 +2742,31 @@ impl Meta {
                     reply,
                 } => {
                     self.reply_published(reply, self.set_endpoints(device, endpoints), |e| e);
+                }
+                Admin::SetLending {
+                    port,
+                    lending,
+                    reply,
+                } => {
+                    self.reply_published(reply, self.set_lending(port.as_deref(), lending), |e| e);
+                }
+                Admin::ClaimPort {
+                    port,
+                    holder,
+                    exclusive,
+                    ttl,
+                    reply,
+                } => {
+                    let r = self.claim_port(&port, &holder, exclusive, ttl);
+                    self.reply_published(reply, r, |e| e);
+                }
+                Admin::ReleaseClaim {
+                    port,
+                    holder,
+                    any,
+                    reply,
+                } => {
+                    self.reply_published(reply, self.release_claim(&port, &holder, any), |e| e);
                 }
                 Admin::SetPortRole { port, role, reply } => {
                     self.reply_published(reply, self.set_port_role(&port, role), |e| e);

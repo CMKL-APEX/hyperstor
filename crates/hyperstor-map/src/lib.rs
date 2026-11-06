@@ -14,7 +14,7 @@ use hyperstor_placement::{Device, Domain, Rule, Topology, assign_positions};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 
-pub use hyperstor_fabric::model::Role as PortRole;
+pub use hyperstor_fabric::model::{Lending, Role as PortRole};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeInfo {
@@ -363,6 +363,25 @@ pub struct ClusterMap {
     /// §29.8; D209, D237): the role the operator set, and the fabric
     /// reconciler's leases and weights, which the leader keeps.
     pub ports: BTreeMap<String, PortInfo>,
+    /// Orchestrators' claims on ports, by `NODE/NETDEV` (26-networks.md
+    /// §29.9, D205, D239): one holder per port, until it lapses.
+    pub claims: BTreeMap<String, ClaimInfo>,
+    /// When `compute` ports are lent to storage (D209): the cluster's
+    /// setting, `None` for the default (`idle`, D238), and ports' own.
+    pub lending: Option<Lending>,
+    pub port_lending: BTreeMap<String, Lending>,
+}
+
+/// An orchestrator's claim on a port (D205).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimInfo {
+    /// Who holds it, as the orchestrator names it (`glidex job 42`).
+    pub holder: String,
+    /// Storage must leave the port; else it may stay, in its traffic
+    /// class.
+    pub exclusive: bool,
+    /// When it lapses unless renewed (Unix ms).
+    pub expires_ms: u64,
 }
 
 /// A node's network port in the map (D209, D237).
@@ -848,6 +867,8 @@ impl ClusterMap {
             self.removed_nodes.insert(node);
             let prefix = format!("{node}/");
             self.ports.retain(|id, _| !id.starts_with(&prefix));
+            self.claims.retain(|id, _| !id.starts_with(&prefix));
+            self.port_lending.retain(|id, _| !id.starts_with(&prefix));
         }
         self.recompute();
         Some(last)
@@ -1546,13 +1567,107 @@ impl ClusterMap {
         }
     }
 
-    fn role_code(r: PortRole) -> u8 {
-        PortRole::ALL.iter().position(|x| *x == r).unwrap_or(0) as u8
+    /// The lending in force on port `id` (D209): its own, else the
+    /// cluster's, else `idle`.
+    pub fn lending_of(&self, id: &str) -> Lending {
+        self.port_lending
+            .get(id)
+            .copied()
+            .or(self.lending)
+            .unwrap_or_default()
     }
 
-    /// Sets port `NODE/NETDEV`'s role, or with `None` returns it to the
-    /// default (D237). Whether it changed; the epoch moves when it did.
-    pub fn set_port_role(&mut self, id: &str, role: Option<PortRole>) -> Result<bool, String> {
+    /// Sets the lending of port `NODE/NETDEV`, or with `None` of the
+    /// cluster; `lending` `None` returns it to the default. Whether it
+    /// changed; the epoch moves when it did.
+    pub fn set_lending(
+        &mut self,
+        port: Option<&str>,
+        lending: Option<Lending>,
+    ) -> Result<bool, String> {
+        let changed = match port {
+            None => std::mem::replace(&mut self.lending, lending) != lending,
+            Some(id) => {
+                self.port_node(id)?;
+                match lending {
+                    Some(l) => self.port_lending.insert(id.to_string(), l) != Some(l),
+                    None => self.port_lending.remove(id).is_some(),
+                }
+            }
+        };
+        if changed {
+            self.epoch += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Claims port `NODE/NETDEV` for `holder` until `expires_ms` (D205):
+    /// a new claim, or its holder's renewal or change. Refused while
+    /// another holder's claim on it is live at `now_ms`.
+    pub fn claim_port(
+        &mut self,
+        id: &str,
+        holder: &str,
+        exclusive: bool,
+        expires_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        self.port_node(id)?;
+        if holder.is_empty() || holder.len() > 128 {
+            return Err("a claim's holder is 1 to 128 bytes".into());
+        }
+        if let Some(c) = self.claims.get(id)
+            && c.holder != holder
+            && c.expires_ms > now_ms
+        {
+            return Err(format!("port {id} is claimed by {}", c.holder));
+        }
+        let new = ClaimInfo {
+            holder: holder.to_string(),
+            exclusive,
+            expires_ms,
+        };
+        if self.claims.insert(id.to_string(), new.clone()) != Some(new) {
+            self.epoch += 1;
+        }
+        Ok(())
+    }
+
+    /// Ends `holder`'s claim on port `id`, or with `any` whoever holds it.
+    pub fn release_claim(&mut self, id: &str, holder: &str, any: bool) -> Result<(), String> {
+        match self.claims.get(id) {
+            None => Err(format!("port {id} has no claim")),
+            Some(c) if !any && c.holder != holder => {
+                Err(format!("port {id} is claimed by {}", c.holder))
+            }
+            Some(_) => {
+                self.claims.remove(id);
+                self.epoch += 1;
+                Ok(())
+            }
+        }
+    }
+
+    /// Drops the claims that lapsed by `now_ms`, returning them. The
+    /// epoch moves when any did.
+    pub fn lapse_claims(&mut self, now_ms: u64) -> Vec<(String, ClaimInfo)> {
+        let gone: Vec<(String, ClaimInfo)> = self
+            .claims
+            .iter()
+            .filter(|(_, c)| c.expires_ms <= now_ms)
+            .map(|(id, c)| (id.clone(), c.clone()))
+            .collect();
+        for (id, _) in &gone {
+            self.claims.remove(id);
+        }
+        if !gone.is_empty() {
+            self.epoch += 1;
+        }
+        gone
+    }
+
+    /// The node of port `NODE/NETDEV`, which must be the map's.
+    fn port_node(&self, id: &str) -> Result<u32, String> {
         let (node, dev) = id
             .split_once('/')
             .ok_or_else(|| format!("{id}: a port is NODE/NETDEV"))?;
@@ -1565,6 +1680,21 @@ impl ClusterMap {
         if dev.is_empty() || dev.contains(char::is_whitespace) {
             return Err(format!("{id}: no such network device name"));
         }
+        Ok(node)
+    }
+
+    fn lending_code(l: Lending) -> u8 {
+        Lending::ALL.iter().position(|x| *x == l).unwrap_or(0) as u8
+    }
+
+    fn role_code(r: PortRole) -> u8 {
+        PortRole::ALL.iter().position(|x| *x == r).unwrap_or(0) as u8
+    }
+
+    /// Sets port `NODE/NETDEV`'s role, or with `None` returns it to the
+    /// default (D237). Whether it changed; the epoch moves when it did.
+    pub fn set_port_role(&mut self, id: &str, role: Option<PortRole>) -> Result<bool, String> {
+        self.port_node(id)?;
         let p = self.ports.entry(id.to_string()).or_default();
         if p.role == role {
             return Ok(false);
@@ -1592,60 +1722,64 @@ impl ClusterMap {
         // pools' grace other than the default, and what they wait for.
         // 14: networks and endpoints; 15: endpoints down (D210); 16:
         // pools' scrub settings other than the defaults (D224); 17: ports'
-        // roles, leases and weights (D209, D237).
-        let format = if !self.ports.is_empty() {
-            17
-        } else if self
-            .pools
-            .values()
-            .any(|p| p.scrub != ScrubSettings::default())
-        {
-            16
-        } else if !self.endpoints_down.is_empty() {
-            15
-        } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
-            14
-        } else if !self.cache_held.is_empty()
-            || !self.cache_released.is_empty()
-            || self
+        // roles, leases and weights (D209, D237); 18: claims and lending
+        // settings (D205, D209, D239).
+        let format =
+            if !self.claims.is_empty() || self.lending.is_some() || !self.port_lending.is_empty() {
+                18
+            } else if !self.ports.is_empty() {
+                17
+            } else if self
                 .pools
                 .values()
-                .any(|p| p.cache_grace != CACHE_GRACE_SECS)
-        {
-            13
-        } else if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
-            12
-        } else if !self.cache_gens.is_empty() {
-            11
-        } else if self
-            .pools
-            .values()
-            .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
-        {
-            10
-        } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
-            9
-        } else if !self.deleted_pools.is_empty() {
-            8
-        } else if self
-            .pools
-            .values()
-            .any(|p| !p.added.is_empty() || !p.removed.is_empty())
-        {
-            7
-        } else if self.pools.values().any(|p| p.classes.len() > 1) {
-            6
-        } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
-            5
-        } else if !self.fixed_weights.is_empty() {
-            4
-        } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
-            3
-        } else if !self.blocklist.is_empty() {
-            2
-        } else {
-            1
-        };
+                .any(|p| p.scrub != ScrubSettings::default())
+            {
+                16
+            } else if !self.endpoints_down.is_empty() {
+                15
+            } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
+                14
+            } else if !self.cache_held.is_empty()
+                || !self.cache_released.is_empty()
+                || self
+                    .pools
+                    .values()
+                    .any(|p| p.cache_grace != CACHE_GRACE_SECS)
+            {
+                13
+            } else if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+                12
+            } else if !self.cache_gens.is_empty() {
+                11
+            } else if self
+                .pools
+                .values()
+                .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
+            {
+                10
+            } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
+                9
+            } else if !self.deleted_pools.is_empty() {
+                8
+            } else if self
+                .pools
+                .values()
+                .any(|p| !p.added.is_empty() || !p.removed.is_empty())
+            {
+                7
+            } else if self.pools.values().any(|p| p.classes.len() > 1) {
+                6
+            } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
+                5
+            } else if !self.fixed_weights.is_empty() {
+                4
+            } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
+                3
+            } else if !self.blocklist.is_empty() {
+                2
+            } else {
+                1
+            };
         e.u32(format).u64(self.epoch).u128(self.cluster_id);
         e.u32(self.nodes.len() as u32);
         for n in self.nodes.values() {
@@ -1852,13 +1986,24 @@ impl ClusterMap {
                 opt(e, p.last_change);
             });
         }
+        if format >= 18 {
+            let claims: Vec<(&String, &ClaimInfo)> = self.claims.iter().collect();
+            e.seq(&claims, |e, (id, c)| {
+                e.str(id).str(&c.holder).bool(c.exclusive).u64(c.expires_ms);
+            });
+            e.u8(self.lending.map_or(0, |l| 1 + Self::lending_code(l)));
+            let lending: Vec<(&String, &Lending)> = self.port_lending.iter().collect();
+            e.seq(&lending, |e, (id, l)| {
+                e.str(id).u8(Self::lending_code(**l));
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=17).contains(&v) {
+        if !(1..=18).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2127,6 +2272,35 @@ impl ClusterMap {
                 ))
             })?;
             m.ports = ports.into_iter().collect();
+        }
+        if v >= 18 {
+            let lending = |c: u8| {
+                Lending::ALL
+                    .get(usize::from(c))
+                    .copied()
+                    .ok_or(DecodeError::Utf8)
+            };
+            m.claims = d
+                .seq(2, |d| {
+                    Ok((
+                        d.str()?.to_string(),
+                        ClaimInfo {
+                            holder: d.str()?.to_string(),
+                            exclusive: d.bool()?,
+                            expires_ms: d.u64()?,
+                        },
+                    ))
+                })?
+                .into_iter()
+                .collect();
+            m.lending = match d.u8()? {
+                0 => None,
+                c => Some(lending(c - 1)?),
+            };
+            m.port_lending = d
+                .seq(2, |d| Ok((d.str()?.to_string(), lending(d.u8()?)?)))?
+                .into_iter()
+                .collect();
         }
         d.finish()?;
         Ok(m)
@@ -3546,5 +3720,42 @@ pool 1 v replicated size 2 min 1 pgs 8
         plain.ports.clear();
         let b = plain.encode();
         assert!(u32::from_le_bytes(b[..4].try_into().unwrap()) < 17);
+    }
+
+    /// Claims and lending settings travel in format 18 only when there
+    /// are any; one holder per port while its claim is live; a removed
+    /// node's go with it (D205, D209).
+    #[test]
+    fn claims_and_lending_round_trip_in_format_18() {
+        let mut m = parse_cluster(FILE).unwrap();
+        assert!(u32::from_le_bytes(m.encode()[..4].try_into().unwrap()) < 18);
+        m.claim_port("1/ibp12s0", "glidex job 7", true, 2_000, 1_000)
+            .unwrap();
+        assert_eq!(
+            m.claim_port("1/ibp12s0", "other", false, 3_000, 1_500),
+            Err("port 1/ibp12s0 is claimed by glidex job 7".into())
+        );
+        m.claim_port("1/ibp12s0", "other", false, 3_000, 2_000)
+            .unwrap();
+        assert_eq!(m.claims["1/ibp12s0"].holder, "other", "lapsed: taken");
+        assert!(m.claim_port("9/x", "a", true, 1, 0).is_err());
+        assert!(m.claim_port("1/x", "", true, 1, 0).is_err());
+        m.set_lending(None, Some(Lending::Off)).unwrap();
+        m.set_lending(Some("1/ibp12s0"), Some(Lending::Always))
+            .unwrap();
+        assert_eq!(m.lending_of("1/ibp12s0"), Lending::Always);
+        assert_eq!(m.lending_of("1/other"), Lending::Off);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 18);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+
+        assert!(m.release_claim("1/ibp12s0", "glidex job 7", false).is_err());
+        m.release_claim("1/ibp12s0", "x", true).unwrap();
+        m.claim_port("1/ibp12s0", "y", true, 10, 0).unwrap();
+        assert_eq!(m.lapse_claims(10).len(), 1);
+        assert!(m.claims.is_empty());
+        m.claim_port("1/ibp12s0", "y", true, 10, 0).unwrap();
+        m.remove_device(1000);
+        assert!(m.claims.is_empty() && m.port_lending.is_empty());
     }
 }
