@@ -10,15 +10,7 @@ use std::process::{Child, Command};
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn ctl(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
-    let o = Command::new(bin.join("hyperstorctl"))
-        .args(["--api", api, "--tls", pki.to_str().unwrap()])
-        .args(args)
-        .output()
-        .unwrap();
-    Run {
-        code: o.status.code().unwrap_or(-1),
-        out: String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
-    }
+    ctl_at(bin, api, pki, args)
 }
 
 struct M {

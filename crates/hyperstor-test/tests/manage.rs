@@ -1626,8 +1626,8 @@ fn a_full_pool_purges_its_oldest_trash() {
     c.ctl(&["trash", "settings", "--pool", "1", "--on-full", "purge"])
         .ok();
     // While the purge deletes, listing the trash reads volume headers
-    // from devices busy with its deletes: on a slow host a call can pass
-    // the CLI's 5-s deadline, and is tried again (CI).
+    // from devices busy with its deletes: on a slow host a call can fail,
+    // and is tried again (CI).
     wait_for("the oldest purged", 60, || {
         let l = c.ctl(&["trash", "list"]);
         (l.code == 0 && !l.has(&old)).then_some(())
