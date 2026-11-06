@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 2 | 26 |
+| 7 | 0 | 1 | 27 |
 
 ## In progress
 
@@ -33,13 +33,13 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Scrub in the web UI and the scrub metrics; scrub start through the leader (28-scrub.md §31.8)** (`scrub-ui`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-ui`, [#190](https://github.com/CMKL-APEX/hyperstor/pull/190) | Stage 4 of 28-scrub.md: a Scrub card per pool, the PG grid's Scrub view, health linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API (I271); /metrics on the API's port for a new metrics certificate role, and hyperstorctl cert renew (D234, D235, I272) | Merge and deploy; then a metrics certificate for the pilot's Prometheus, if it has one | 2026-11-05 |
 | **The map service's stall at a rolling install (issue #177)** (`meta-raft-log`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/meta-raft-log`, [#180](https://github.com/CMKL-APEX/hyperstor/pull/180) | hyperstor-meta logs openraft's warnings and errors, rate-limited, with HS_LOG for more (I259), so a repeat can be diagnosed | Deploy before the next rolling install; a timeout on ensure_linearizable in glidex-raftstore; reproduce in the fault rig | 2026-11-03 |
 
 ## Done
 
 | Workstream | Owner | Milestone | Branch and PRs | Updated |
 |---|---|---|---|---|
+| **Scrub in the web UI and the scrub metrics; scrub start through the leader (28-scrub.md §31.8)** (`scrub-ui`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-ui`, [#190](https://github.com/CMKL-APEX/hyperstor/pull/190) | 2026-11-06 |
 | **Scrubbing now and after recovery (D229, D230)** (`scrub-now`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | AD3 | `feat/scrub-now`, [#188](https://github.com/CMKL-APEX/hyperstor/pull/188) | 2026-11-05 |
 | **Map changes answered once published (D236, I273)** (`publish-before-reply`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD1 | `fix/publish-before-reply`, [#193](https://github.com/CMKL-APEX/hyperstor/pull/193) | 2026-11-05 |
 | **Four end-to-end tests that fail on slow CI runners (I270)** (`ci-flakes`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD1 | `test/ci-flakes`, [#189](https://github.com/CMKL-APEX/hyperstor/pull/189) | 2026-11-05 |
