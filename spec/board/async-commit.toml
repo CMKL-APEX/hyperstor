@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-06
 milestone = "HS0"
 branch = "fix/writer-batch-copy"
-prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178]
+prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209]
 now = "I257 measured on the pilot under load: no hold for a device read; the connection writer's copy of every queued push held reactors 100–125 ms, now sends a push uncopied (I281)"
 next = "Rerun the backfill test once node 2's packet loss is fixed and node 0's host is quiet; why 1 MiB reads lose throughput above QD1; then stage 3 (checkpoint slices, deferred writes)"
