@@ -10,7 +10,7 @@ repository.workspace = true
 # Path choice per request among a peer's endpoints (D208).
 hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
 # The host's network ports, for the fabric reconciler (D204).
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "7e47d6ca10a77ac1b2e85392d9b0ce2abf7f5d0c" }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "70da7640dd05438a1f82ff613951088cec4ac354" }
 rand.workspace = true
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-engine = { path = "../hyperstor-engine" }
