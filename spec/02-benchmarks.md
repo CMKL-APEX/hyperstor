@@ -1694,7 +1694,7 @@ not backfill, and shows no backfill.
    exercise the re-read path (the cluster test does).
 2. **The sending nodes' connection writer held the reactor 100–125 ms,
    all on a CPU** (seven times, nodes 1 and 0): it joined every queued
-   4 MiB push into one buffer. Fixed by I281.
+   4 MiB push into one buffer. Fixed by I283.
 3. **Node 0 held its reactor 100–506 ms inside `io_uring_enter`, off a
    CPU** (36 times, from the first baseline on, with or without
    backfill). Another session was building Rust on node 0's host, whose

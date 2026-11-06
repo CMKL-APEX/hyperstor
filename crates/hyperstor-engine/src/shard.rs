@@ -190,6 +190,21 @@ struct Fuzzy {
     replaced: Vec<Option<ObjKey>>,
 }
 
+/// A checkpoint whose pages and directory are written and whose
+/// superblock is next: its writer writes and flushes the superblock once
+/// the round's writes are durable, and [`Shard::seal_done`] then moves the
+/// log's head and frees what it replaced.
+struct Seal {
+    /// The superblock and its byte offset.
+    sup: (u64, AlignedBuf),
+    seq: u64,
+    head_lsn: u64,
+    ckpt: Ckpt,
+    pages: BTreeMap<Option<ObjKey>, PageLoc>,
+    /// Extents of the pages it replaced, freed once it is named.
+    free: Vec<(u64, u64)>,
+}
+
 /// A changed page being written. It is cut into pieces of about
 /// `page_bytes`, each a page of its own; an empty page other than the
 /// first is dropped, its range joining the page before.
@@ -281,14 +296,27 @@ pub struct Round {
     nblocks: u64,
     freed: Vec<(u64, u64)>,
     results: Vec<Result<Committed, OpError>>,
+    /// A checkpoint the round completes, named after its writes.
+    seal: Option<Seal>,
 }
 
 impl Round {
     /// The writes to make, by byte offset, which the caller then owns: an
     /// asynchronous writer keeps them until the device is done with them.
-    /// Empty when the round changed nothing, and then nothing is flushed.
+    /// They include the shard's upkeep (checkpoint pages, deferred writes
+    /// applied in place), so that no commit round writes in the shard's
+    /// own device calls. Empty when the round changed nothing, and then
+    /// nothing is flushed.
     pub fn take_writes(&mut self) -> Vec<(u64, AlignedBuf)> {
         std::mem::take(&mut self.writes)
+    }
+
+    /// The superblock of a checkpoint the round completes, by byte
+    /// offset: written and flushed only once the writes above are
+    /// durable, before [`Shard::commit_end`].
+    pub fn take_seal(&mut self) -> Option<(u64, AlignedBuf)> {
+        let s = self.seal.as_mut()?;
+        Some(std::mem::replace(&mut s.sup, (0, AlignedBuf::zeroed(0))))
     }
 }
 
@@ -301,6 +329,19 @@ pub struct Shard {
     alloc: Allocator,
     /// Deferred in-place writes not yet applied (physical block -> data).
     pending: BTreeMap<u64, Box<[u8]>>,
+    /// Deferred writes being applied in the round in flight, read from
+    /// here until they are on the device.
+    applying: BTreeMap<u64, Box<[u8]>>,
+    /// More deferred blocks than this are applied in the next round.
+    pending_limit: usize,
+    /// Writes upkeep made, which the next round's writer makes, or
+    /// [`Shard::write_staged`] in the shard's own device calls: deferred
+    /// blocks in place, and the checkpoint in progress's pages and
+    /// directory (dropped with it if it is abandoned).
+    staged: Vec<(u64, AlignedBuf)>,
+    staged_ckpt: Vec<(u64, AlignedBuf)>,
+    /// A checkpoint ready to be named.
+    sealing: Option<Seal>,
     salt: u32,
     super_seq: u64,
     head_lsn: u64,
@@ -475,6 +516,11 @@ impl Shard {
             index: Index::default(),
             alloc: Allocator::default(),
             pending: BTreeMap::new(),
+            applying: BTreeMap::new(),
+            pending_limit: PENDING_LIMIT,
+            staged: Vec::new(),
+            staged_ckpt: Vec::new(),
+            sealing: None,
             salt: sup.salt,
             super_seq: sup.seq,
             head_lsn: sup.head_lsn,
@@ -849,7 +895,7 @@ impl Shard {
             let Loc::Mapped { pblock: pb, crc } = o.lookup(lb) else {
                 continue;
             };
-            if pb != pblock || fx.pending.contains_key(&pb) {
+            if pb != pblock || fx.pending.contains_key(&pb) || self.applying.contains_key(&pb) {
                 continue;
             }
             let mut buf = AlignedBuf::zeroed(BLOCK);
@@ -882,11 +928,14 @@ impl Shard {
             let mut round = self.commit_begin(&mut rest)?;
             let writes = round.take_writes();
             let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
-            let r = if io.is_empty() {
+            let mut r = if io.is_empty() {
                 Ok(())
             } else {
                 self.dev.write_batch(&io).and_then(|()| self.dev.flush())
             };
+            if let (Ok(()), Some((at, sup))) = (&r, round.take_seal()) {
+                r = self.dev.write(at, &sup).and_then(|()| self.dev.flush());
+            }
             results.append(&mut self.commit_end(round, r)?);
         }
         self.commit_done();
@@ -908,7 +957,7 @@ impl Shard {
         assert!(!self.in_flight, "a commit round is already in flight");
         match self.commit_round(lists) {
             Ok(r) => {
-                self.in_flight = !r.writes.is_empty();
+                self.in_flight = !r.writes.is_empty() || r.seal.is_some();
                 Ok(r)
             }
             Err(e) => {
@@ -928,6 +977,7 @@ impl Shard {
         io: std::io::Result<()>,
     ) -> Result<Vec<Result<Committed, OpError>>, EngineError> {
         self.in_flight = false;
+        self.applying.clear();
         if let Err(e) = io {
             self.poisoned = true;
             return Err(e.into());
@@ -935,6 +985,9 @@ impl Shard {
         if round.nblocks > 0 {
             self.tail_lsn += round.nblocks;
             self.records += 1;
+        }
+        if let Some(seal) = round.seal {
+            self.seal_done(seal);
         }
         self.free_after_reads(round.freed);
         Ok(round.results)
@@ -950,6 +1003,12 @@ impl Shard {
     /// every write to new extents.
     pub fn set_defer_max(&mut self, bytes: usize) {
         self.defer_max = bytes;
+    }
+
+    /// Sets how many deferred blocks the shard holds before the next
+    /// commit round applies them in place.
+    pub fn set_pending_limit(&mut self, blocks: usize) {
+        self.pending_limit = blocks;
     }
 
     /// Sets when block maps switch to and from the dense representation
@@ -971,8 +1030,8 @@ impl Shard {
         &mut self,
         lists: &mut std::collections::VecDeque<OpList>,
     ) -> Result<Round, EngineError> {
-        if self.pending.len() > PENDING_LIMIT {
-            self.apply_deferred()?;
+        if self.pending.len() > self.pending_limit {
+            self.stage_deferred();
         }
         // Fuzzy checkpoints (D43): start one when a quarter of the log is
         // used, write a slice of it each round, and finish it at once if
@@ -1070,12 +1129,19 @@ impl Shard {
             }
         }
         self.pending = fx.pending;
+        // Upkeep's writes go with the round's: no ordering between them
+        // matters until the flush, after which the superblock of a
+        // checkpoint the round completes names it.
+        let mut io = std::mem::take(&mut self.staged);
+        io.append(&mut self.staged_ckpt);
+        let seal = self.sealing.take();
         if count == 0 {
             return Ok(Round {
-                writes: Vec::new(),
+                writes: io,
                 nblocks: 0,
                 freed: fx.freed,
                 results,
+                seal,
             });
         }
         payload.patch_u32(0, count);
@@ -1084,10 +1150,7 @@ impl Shard {
         let rec = self.encode_record(group, payload.as_slice());
         let nblocks = (rec.len() / BLOCK) as u64;
         let lsn = self.tail_lsn;
-        let mut io: Vec<(u64, AlignedBuf)> = writes
-            .into_iter()
-            .map(|(pb, b)| (pb * BLOCK as u64, b))
-            .collect();
+        io.extend(writes.into_iter().map(|(pb, b)| (pb * BLOCK as u64, b)));
         let first = (self.region.log_blocks - lsn % self.region.log_blocks).min(nblocks);
         if nblocks > first {
             // The record wraps around the ring: two writes.
@@ -1105,6 +1168,7 @@ impl Shard {
             nblocks,
             freed: fx.freed,
             results,
+            seal,
         })
     }
 
@@ -1406,38 +1470,71 @@ impl Shard {
     }
 
     /// Writes deferred data in place (without a flush: the log still holds
-    /// it until the next checkpoint).
+    /// it until the next checkpoint), in this shard's own device calls.
     pub fn apply_deferred(&mut self) -> Result<(), EngineError> {
+        self.check()?;
+        assert!(!self.in_flight, "a commit round is in flight");
+        self.stage_deferred();
+        self.write_staged()
+    }
+
+    /// Moves the deferred blocks to `staged`, as writes in place, one per
+    /// run of consecutive blocks; reads find them in `applying` until
+    /// they are written.
+    fn stage_deferred(&mut self) {
         if self.pending.is_empty() {
-            return Ok(());
+            return;
         }
         let pending = std::mem::take(&mut self.pending);
-        // Coalesce consecutive blocks into one write each.
-        let mut bufs: Vec<(u64, AlignedBuf)> = Vec::new();
         let mut run: Option<(u64, Vec<u8>)> = None;
-        for (pb, data) in pending {
+        for (pb, data) in &pending {
             match &mut run {
-                Some((start, v)) if *start + (v.len() / BLOCK) as u64 == pb => {
-                    v.extend_from_slice(&data)
+                Some((start, v)) if *start + (v.len() / BLOCK) as u64 == *pb => {
+                    v.extend_from_slice(data)
                 }
                 _ => {
                     if let Some((s, v)) = run.take() {
-                        bufs.push((s, AlignedBuf::from_slice(&v)));
+                        self.staged
+                            .push((s * BLOCK as u64, AlignedBuf::from_slice(&v)));
                     }
-                    run = Some((pb, data.to_vec()));
+                    run = Some((*pb, data.to_vec()));
                 }
             }
         }
         if let Some((s, v)) = run {
-            bufs.push((s, AlignedBuf::from_slice(&v)));
+            self.staged
+                .push((s * BLOCK as u64, AlignedBuf::from_slice(&v)));
         }
-        let io: Vec<(u64, &[u8])> = bufs
-            .iter()
-            .map(|(pb, b)| (pb * BLOCK as u64, &b[..]))
-            .collect();
-        if let Err(e) = self.dev.write_batch(&io) {
+        self.applying.extend(pending);
+    }
+
+    /// Makes what upkeep staged outside a commit round, in this shard's
+    /// own device calls: the writes, then a checkpoint's superblock after
+    /// a flush. A failure poisons the shard.
+    fn write_staged(&mut self) -> Result<(), EngineError> {
+        let mut writes = std::mem::take(&mut self.staged);
+        writes.append(&mut self.staged_ckpt);
+        let seal = self.sealing.take();
+        let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
+        let mut r = if io.is_empty() {
+            Ok(())
+        } else {
+            self.dev.write_batch(&io)
+        };
+        if let (Ok(()), Some(s)) = (&r, &seal) {
+            r = self
+                .dev
+                .flush()
+                .and_then(|()| self.dev.write(s.sup.0, &s.sup.1))
+                .and_then(|()| self.dev.flush());
+        }
+        self.applying.clear();
+        if let Err(e) = r {
             self.poisoned = true;
             return Err(e.into());
+        }
+        if let Some(s) = seal {
+            self.seal_done(s);
         }
         Ok(())
     }
@@ -1446,13 +1543,15 @@ impl Shard {
     /// tail, so the whole ring is free again.
     pub fn checkpoint(&mut self) -> Result<(), EngineError> {
         self.check()?;
+        assert!(!self.in_flight, "a commit round is in flight");
         let r = self.checkpoint_inner();
         match &r {
             Err(EngineError::NoSpace) => self.abandon_checkpoint(),
             Err(_) => self.poisoned = true,
             Ok(()) => {}
         }
-        r
+        r?;
+        self.write_staged()
     }
 
     /// Gives up a checkpoint that found no room: frees the pages it wrote,
@@ -1461,6 +1560,8 @@ impl Shard {
     /// changes that take space are refused until a checkpoint completes.
     fn abandon_checkpoint(&mut self) {
         self.ckpt_stalled = true;
+        // Pages not yet written go with it: their extents are free again.
+        self.staged_ckpt.clear();
         let Some(f) = self.fuzzy.take() else { return };
         for loc in f.written.values() {
             for &(s, n) in &loc.runs {
@@ -1557,7 +1658,7 @@ impl Shard {
     /// changed since the last one began (D105): a page nothing changed
     /// since then holds what replay from here needs.
     fn checkpoint_start(&mut self) -> Result<(), EngineError> {
-        self.apply_deferred()?;
+        self.stage_deferred();
         if !self.pages.contains_key(&None) {
             // A new shard: the first page is always written.
             self.index.mark(None);
@@ -1707,17 +1808,15 @@ impl Shard {
         let crc = crc32c(&bytes);
         let nblocks = bytes.len().div_ceil(BLOCK) as u64;
         let runs = self.alloc.alloc(nblocks).ok_or(EngineError::NoSpace)?;
-        let data = AlignedBuf::from_slice(&bytes);
-        let mut io = Vec::new();
         let mut at = 0usize;
         for &(s, n) in &runs {
-            io.push((
+            let end = ((at + n as usize) * BLOCK).min(bytes.len());
+            self.staged_ckpt.push((
                 s * BLOCK as u64,
-                &data[at * BLOCK..(at + n as usize) * BLOCK],
+                AlignedBuf::from_slice(&bytes[at * BLOCK..end]),
             ));
             at += n as usize;
         }
-        self.dev.write_batch(&io)?;
         self.ckpt_written += nblocks * BLOCK as u64;
         self.ckpt_pages_written += 1;
         f.written.insert(
@@ -1731,10 +1830,11 @@ impl Shard {
         Ok(())
     }
 
-    /// Writes the directory, makes everything durable, and points the
-    /// superblock at the new checkpoint with the log's head at its start;
-    /// then frees the pages it replaced.
+    /// Stages the directory and readies the superblock that points at the
+    /// new checkpoint with the log's head at its start ([`Seal`]); once
+    /// it is written, [`Shard::seal_done`] frees the pages it replaced.
     fn checkpoint_finish(&mut self, f: Fuzzy) -> Result<(), EngineError> {
+        assert!(self.sealing.is_none(), "a checkpoint is already sealing");
         let mut pages = self.pages.clone();
         let mut free = Vec::new();
         for p in &f.replaced {
@@ -1787,21 +1887,19 @@ impl Shard {
                 return Err(EngineError::NoSpace);
             }
         };
-        let buf = AlignedBuf::from_slice(&dir);
-        let mut io = Vec::new();
         let mut done = 0usize;
         for &(s, n) in &dir_runs {
-            io.push((
+            let end = ((done + n as usize) * BLOCK).min(dir.len());
+            self.staged_ckpt.push((
                 s * BLOCK as u64,
-                &buf[done * BLOCK..(done + n as usize) * BLOCK],
+                AlignedBuf::from_slice(&dir[done * BLOCK..end]),
             ));
             done += n as usize;
         }
-        self.dev.write_batch(&io)?;
         self.ckpt_written += nblocks * BLOCK as u64;
         // Pages, directory, and every deferred write applied since the
-        // start become durable before the superblock refers to them.
-        self.dev.flush()?;
+        // start become durable (the flush after the round's writes)
+        // before the superblock refers to them.
         let ckpt = Ckpt {
             runs: dir_runs,
             len: dir.len() as u64,
@@ -1816,10 +1914,30 @@ impl Shard {
             ckpt: Some(ckpt.clone()),
         };
         let slot = self.region.start + (sup.seq % 2);
-        self.dev.write(slot * BLOCK as u64, &sup.encode())?;
-        self.dev.flush()?;
-        self.super_seq = sup.seq;
-        self.head_lsn = f.start_lsn;
+        self.sealing = Some(Seal {
+            sup: (slot * BLOCK as u64, sup.encode()),
+            seq: sup.seq,
+            head_lsn: f.start_lsn,
+            ckpt,
+            pages,
+            free,
+        });
+        Ok(())
+    }
+
+    /// Ends a checkpoint whose superblock is durable: the log's head moves
+    /// to its start, and the pages and directory it replaced are free.
+    fn seal_done(&mut self, seal: Seal) {
+        let Seal {
+            seq,
+            head_lsn,
+            ckpt,
+            pages,
+            mut free,
+            ..
+        } = seal;
+        self.super_seq = seq;
+        self.head_lsn = head_lsn;
         if let Some(old) = self.ckpt.replace(ckpt) {
             free.extend(old.runs);
         }
@@ -1830,7 +1948,6 @@ impl Shard {
         self.pages = pages;
         self.checkpoints += 1;
         self.ckpt_stalled = false;
-        Ok(())
     }
 
     /// Reads `[off, off + len)` of an object. Holes read as zeros; every
@@ -1967,7 +2084,7 @@ impl Shard {
         for i in 0..n {
             let lb = lb0 + i;
             if let Some((pblock, crc)) = locate(lb) {
-                if let Some(d) = self.pending.get(&pblock) {
+                if let Some(d) = self.pending.get(&pblock).or(self.applying.get(&pblock)) {
                     let at = (i as usize) * BLOCK;
                     out[at..at + BLOCK].copy_from_slice(d);
                     continue;

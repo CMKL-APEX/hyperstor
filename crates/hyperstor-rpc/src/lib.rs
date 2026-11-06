@@ -153,7 +153,7 @@ pub const BATCH_BYTES: usize = 256 << 10;
 /// the whole fits in [`BATCH_BYTES`]. A frame that doesn't fit is left in
 /// `next` and sent on its own, uncopied: joining every queued push into
 /// one buffer copied hundreds of MB and held the reactor 100–125 ms
-/// (I281).
+/// (I283).
 fn next_send(first: Vec<u8>, rx: &mut Receiver<Vec<u8>>, next: &mut Option<Vec<u8>>) -> Vec<u8> {
     let mut buf = first;
     while buf.len() < BATCH_BYTES {
@@ -578,7 +578,7 @@ mod pool_tests {
         });
     }
 
-    /// I281: small frames queued together go out in one send of at most
+    /// I283: small frames queued together go out in one send of at most
     /// [`BATCH_BYTES`]; a frame that doesn't fit goes out on its own,
     /// uncopied, and the order holds.
     #[test]
@@ -607,7 +607,7 @@ mod pool_tests {
         assert_eq!(tail.len(), 300 + 2 * BATCH_BYTES / 1000 * 1000);
     }
 
-    /// I281: frames of every size reach the peer whole and in order.
+    /// I283: frames of every size reach the peer whole and in order.
     #[test]
     fn the_writer_delivers_mixed_frames_in_order() {
         block_on(async {

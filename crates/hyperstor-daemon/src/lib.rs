@@ -288,6 +288,9 @@ const TCP_ONLY_AFTER: Duration = Duration::from_secs(5);
 /// went down; now the reactor goes on, and this ends the wait. Linux gives
 /// an NVMe command 30 s before it aborts and retries it.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deferred blocks a shard holds before its next commit round applies
+/// them in place, on the ring with the round's writes (I281).
+const PENDING_BLOCKS: usize = 4096;
 
 /// How long a read may wait for the device (D190): past it, the read is
 /// abandoned and the primary serves it from a member, as it drops a
@@ -1201,6 +1204,7 @@ impl ShardState {
             .pop()
             .ok_or("device has no shard")?;
         shard.set_defer_max(defer.unwrap_or(0));
+        shard.set_pending_limit(PENDING_BLOCKS);
         Ok(Rc::new(ShardState {
             me,
             shard: shard_cell::ShardCell::new(shard),
@@ -1311,7 +1315,12 @@ impl ShardState {
                 Err(e) => break Err(e),
             };
             let w = std::time::Instant::now();
-            let io = self.write_round(round.take_writes()).await;
+            let mut io = self.write_round(round.take_writes()).await;
+            // A checkpoint the round completes is named once its pages
+            // are durable (I281).
+            if let (Ok(()), Some(seal)) = (&io, round.take_seal()) {
+                io = self.write_round(vec![seal]).await;
+            }
             waited += w.elapsed();
             let ended = c.shard().commit_end(round, io);
             match ended {
@@ -1409,20 +1418,6 @@ impl ShardState {
         }
     }
 
-    /// Logs an engine call begun at `t` that held the reactor for
-    /// [`STALL`] or more (I188).
-    fn note_slow(&self, t: std::time::Instant, what: impl FnOnce() -> String) {
-        let took = t.elapsed();
-        if took >= STALL {
-            eprintln!(
-                "hyperstord: device {}: {} took {} ms",
-                self.me,
-                what(),
-                took.as_millis()
-            );
-        }
-    }
-
     /// Logs and counts each time this reactor's thread is held for
     /// [`STALL`] or more (I188): a 10 ms timer that fires late. Whatever
     /// held it also delayed every ping it should have answered. The log
@@ -1468,12 +1463,6 @@ impl ShardState {
             })
             .await;
             self.commit_queued().await;
-            let pending = self.shard.get().await.pending_blocks();
-            if pending > 4096 {
-                let t = std::time::Instant::now();
-                let _ = self.shard.get_mut().await.apply_deferred();
-                self.note_slow(t, || format!("applying {pending} deferred block(s)"));
-            }
             // Let request handlers queue the next batch.
             hyperstor_reactor::yield_now().await;
         }
