@@ -2,7 +2,8 @@
 
 How tenants are represented, isolated, accounted and scheduled. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
 
-Status: **draft.** D61 and D62 were settled with the owner on 2026-10-21
+Status: **draft.** D61 and D62 were settled with the owner on 2026-10-21,
+and realms (§24.8, D248–D253) on 2026-11-06
 ([05-decision-log.md](05-decision-log.md)); the details below follow from them
 and are open to review.
 
@@ -19,7 +20,8 @@ and are open to review.
   directory or a policy per request.
 - **Pools stay shared.** A cluster has a few large pools; tenants share
   them. Capacity, EC width and PG counts are tuned once per pool, not
-  once per tenant.
+  once per tenant. A realm (§24.8) may keep pools to itself, but still
+  shares the drives.
 
 ### 24.2 Where the tenant is recorded (D61)
 
@@ -124,3 +126,83 @@ per-`(pool, tenant)` counters and quotas, the two-level queues, and the
 glidex mapping. It needs snapshots and trash (HS4, AD3) for the
 counters to be complete, and the priority classes (HS10b) for the
 queue levels.
+
+### 24.8 Realms (D248–D253)
+
+Settled 2026-11-06 (05-decision-log.md points 211–216); nothing here is
+built yet. A **realm** groups tenants that should look like a separate
+installation: their own pools, endpoints and administrators, on the
+same cluster and, if the operator wants, the same drives. It answers
+strict multi-tenancy without a cluster per customer.
+
+**The model (D248).**
+
+- Each tenant belongs to exactly one realm. A cluster starts with one
+  realm, `default`, and every tenant is in it until an operator makes
+  another; nobody needs to know realms exist until then.
+- A realm id is a 32-bit number issued by meta, like a tenant id.
+- A container's realm is its tenant's realm. Nothing new is stored on
+  volumes, buckets, filesystems or KV ranges, and nothing in the
+  engine's object key (D34) or on the I/O path changes. Tenant ids are
+  unique in the cluster, so D243's bucket tables (tenant + name) already
+  keep realms apart.
+- Moving a tenant to another realm is an administrator's operation,
+  refused while any of the tenant's containers is in a pool the new
+  realm may not use (D249).
+
+**What a realm limits**, the same way for every interface:
+
+| | S3 | Volumes (ublk, vhost) | NFS and pNFS | KV ranges |
+|---|---|---|---|---|
+| Pools (D249) | placements | volume creation | exports | range creation |
+| Who reaches it (D250, D251) | a gateway per realm, with its own domain and certificate | hosts by certificate, optionally bound to realms | a metadata server address per realm; client host certificates (D135) checked against it | the API, by role |
+| Administration (D252) | realm-scoped administrators | same | same | same |
+
+- **Pools (D249).** Each pool lists the realms that may use it; a pool
+  with no list is open to every realm. A realm's tenants create
+  containers only in its pools, and its S3 placements (D232) name only
+  its pools. Pools of different realms may still share drives, since
+  pools whose classes overlap share devices (D180). Why: a realm's data
+  stays in pools its operator chose, while capacity stays pooled at the
+  device level.
+- **Endpoints (D250).** An S3 gateway serves one realm (`--realm`,
+  default `default`), with its own domain and certificate, and a key of
+  another realm's tenant doesn't exist to it: 403
+  `InvalidAccessKeyId`, as for an unknown key (in the spirit of D244).
+  An NFS metadata server address serves one realm's exports. Why: a
+  leaked key or a misdirected client works only at its own realm's
+  endpoint, and each realm can have its own names.
+- **Hosts (D251).** A host is unbound by default: it may attach volumes
+  of any realm, each attach authorized by capability as now (§24.3). An
+  operator may bind a host to one or more realms; a bound host may then
+  attach volumes and mount exports only of those realms, even with a
+  valid capability. Meta checks the binding when it grants the lease,
+  so the I/O path gains nothing. Why: shared compute stays the default,
+  and strict separation is one setting per host for those who need it.
+- **Administration (D252).** Roles (19-administration.md §23.9.2) can be
+  granted on a realm; a realm's administrators manage only its tenants,
+  keys, placements, volumes and exports, and see nothing of other
+  realms. Cluster administrators see everything; `hyperstorctl` and
+  mgmt's UI take `--realm` and show the realm in lists. Pools, devices
+  and hosts stay the cluster administrator's. Why: the operator of one
+  realm can't make keys or attach volumes in another.
+- **The name (D253).** "Realm", as in Kerberos: an administrative domain
+  with its own keys. Rejected: *partition* (network partitions),
+  *site* (21-federation.md §25), *zone* and *domain* (failure domains,
+  D159), *namespace* (D243's bucket names), *account* and
+  *organization* (read as a tenant or below). The documentation says
+  that, unlike Ceph's multi-site realm, a hyperstor realm is within one
+  cluster.
+
+**Shared across realms:** drives, storage nodes, the map service and
+pNFS data servers, which already check sealed stateids (D133).
+
+**Not isolated:** performance. Realms on the same drives compete for
+them; fair share (§24.5) has no realm level, so a realm that needs
+performance isolation is given its own devices. Whether fair share
+gains a realm level is open for the owner's review, with HS15.
+
+**Order of work:** the realm records, pool lists and `--realm` on the S3
+gateway come with D243–D246, before S3 stage 4; host binding,
+realm-scoped administrators and the NFS side come with HS15 and the NFS
+work (22-nfs.md, still proposed).
