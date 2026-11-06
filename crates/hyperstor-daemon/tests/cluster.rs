@@ -5449,6 +5449,71 @@ fn random_faults(seed: u64) {
     copies_agree(&map, devs, &chunks);
 }
 
+/// A flatten reads its parents' blocks on the ring, a run at a time,
+/// holding each chunk (I286): writes to the clone meanwhile are refused
+/// and retried, and they win; every block the clone lacked is filled.
+#[test]
+fn writes_racing_a_flatten_win() {
+    use std::cell::Cell;
+    use std::time::Duration;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    const CHUNKS: u64 = 4;
+    let size = CHUNKS * CHUNK as u64;
+    let delays = c.commit_delays.clone();
+    let writes = with_client(meta, 5, move |cl| async move {
+        let v = cl.create_volume(POOL, size, None, "v").await.unwrap();
+        let va = cl.attach(v.id).await.unwrap();
+        // Two runs in each chunk, so each chunk's flatten reads twice.
+        let mut model = vec![0u8; size as usize];
+        for i in 0..CHUNKS {
+            for r in [0, CHUNK as u64 / 2] {
+                let at = i * CHUNK as u64 + r;
+                let b = pattern(10 * i + r, 64 * 1024);
+                va.write(at, b.clone()).await.unwrap();
+                model[at as usize..][..b.len()].copy_from_slice(&b);
+            }
+        }
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        for d in [0, 1000, 2000, 3000] {
+            delays.set_reads(d, Duration::from_millis(100));
+        }
+        let done = std::rc::Rc::new(Cell::new(false));
+        let flat = spawn({
+            let (cl, done) = (cl.clone(), done.clone());
+            async move {
+                let kf = cl.flatten(k.id).await.unwrap();
+                done.set(true);
+                kf
+            }
+        });
+        // Writes into the runs the flatten copies, until it ends.
+        let mut writes = 0u64;
+        while !done.get() {
+            let i = writes % CHUNKS;
+            let at = i * CHUNK as u64 + (writes / CHUNKS % 16) * 4096;
+            let b = pattern(1000 + writes, 4096);
+            ka.write(at, b.clone()).await.unwrap();
+            model[at as usize..][..4096].copy_from_slice(&b);
+            writes += 1;
+            hyperstor_reactor::time::sleep(Duration::from_millis(5)).await;
+        }
+        let kf = flat.await;
+        assert!(kf.chain.is_empty());
+        for d in [0, 1000, 2000, 3000] {
+            delays.set_reads(d, Duration::ZERO);
+        }
+        assert!(ka.read(0, size).await.unwrap() == model, "flattened clone");
+        // It no longer depends on its parent's snapshot.
+        cl.delete_snapshot(v.id, s.epoch).await.unwrap();
+        assert!(ka.read(0, size).await.unwrap() == model, "after s went");
+        writes
+    });
+    assert!(writes > 0, "writes went on during the flatten");
+}
+
 /// Snapshots, clones, flatten, rollback and their deletion (10-volumes.md
 /// §10.3, §10.4; D101–D104): every snapshot, clone and head reads what it
 /// should at every step, a snapshot a clone depends on can't be deleted

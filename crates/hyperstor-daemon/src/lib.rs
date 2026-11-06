@@ -2619,6 +2619,23 @@ impl ShardState {
         key: WireKey,
         decide: impl FnOnce(&Self, &ObjKey) -> Result<Vec<WireOp>, Msg>,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Msg>>>> {
+        self.decide_and_apply_with(instance, to, key, async |me: &Self, okey: &ObjKey| {
+            decide(me, okey)
+        })
+        .await
+    }
+
+    /// [`Self::decide_and_apply`] with a `decide` that may wait, for reads
+    /// on the ring (`flatten`): the key stays held meanwhile, so this
+    /// primary's writes to it are refused and retried, as during a repair,
+    /// and the fence is checked again once `decide` is done.
+    async fn decide_and_apply_with(
+        self: &Rc<Self>,
+        instance: u64,
+        to: Target,
+        key: WireKey,
+        decide: impl AsyncFnOnce(&Self, &ObjKey) -> Result<Vec<WireOp>, Msg>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Msg>>>> {
         let fail = |m: Msg| -> std::pin::Pin<Box<dyn Future<Output = Result<(), Msg>>>> {
             Box::pin(async move { Err(m) })
         };
@@ -2638,8 +2655,8 @@ impl ShardState {
         }
         self.exec_locks.borrow_mut().insert(okey.clone());
         self.drained().await;
-        // From here to the queueing, no wait: nothing else reaches the
-        // object in between.
+        // From here to the queueing, only `decide` may wait, holding the
+        // key: nothing else reaches the object in between.
         let unlock = |me: &Self| {
             me.exec_locks.borrow_mut().remove(&okey);
         };
@@ -2647,13 +2664,17 @@ impl ShardState {
             unlock(self);
             return fail(m);
         }
-        let effects = match decide(self, &okey) {
+        let effects = match decide(self, &okey).await {
             Ok(e) => e,
             Err(m) => {
                 unlock(self);
                 return fail(m);
             }
         };
+        if let Some(m) = fenced(&self.map(), instance, to.lease) {
+            unlock(self);
+            return fail(m);
+        }
         if effects.is_empty() {
             unlock(self);
             return Box::pin(async { Ok(()) });
@@ -2907,6 +2928,8 @@ impl ShardState {
     /// Copies into a clone's chunk (`key`, at its head epoch) every block
     /// no version of its own branch holds, read through `layers`, its
     /// parents (10-volumes.md §10.4). Decided and replicated as writes.
+    /// The blocks are read on the ring, a run at a time, holding the key
+    /// ([`Self::decide_and_apply_with`]).
     async fn flatten(
         self: &Rc<Self>,
         instance: u64,
@@ -2914,10 +2937,10 @@ impl ShardState {
         key: WireKey,
         layers: Vec<(u32, u64, u64)>,
     ) -> Msg {
-        let decide = move |me: &Self, okey: &ObjKey| {
-            let mut parents = Vec::new();
-            {
+        let decide = async move |me: &Self, okey: &ObjKey| {
+            let (parents, runs) = {
                 let sh = me.shard.borrow();
+                let mut parents = Vec::new();
                 let ns = okey.ns;
                 for (branch, oldest, newest) in &layers {
                     // The parents' names: the chunk's name (lineage and
@@ -2936,56 +2959,56 @@ impl ShardState {
                         });
                     }
                 }
-            }
-            let sh = me.shard.borrow();
-            let own: Vec<ObjKey> = sh
-                .versions(okey)
-                .into_iter()
-                .map(|v| ObjKey {
-                    version: v,
-                    ..okey.clone()
-                })
-                .collect();
-            let blocks = parents
-                .iter()
-                .filter_map(|k| sh.stat(k))
-                .map(|s| s.size.div_ceil(hyperstor_engine::BLOCK as u64))
-                .max()
-                .unwrap_or(0);
-            let mut effects: Vec<WireOp> = Vec::new();
-            let mut run: Option<(u64, Vec<u8>)> = None;
-            for lb in 0..blocks {
-                let missing =
-                    !own.iter().any(|k| sh.holds(k, lb)) && parents.iter().any(|k| sh.holds(k, lb));
-                if missing {
-                    let b = sh
-                        .read_layered(&parents, lb * 4096, 4096)
-                        .map_err(|e| err(Code::Checksum, &me.map(), e.to_string()))?;
-                    match &mut run {
-                        Some((start, data)) if *start + (data.len() / 4096) as u64 == lb => {
-                            data.extend_from_slice(&b)
-                        }
-                        _ => {
-                            if let Some((start, data)) = run.take() {
-                                effects.push(WireOp::Write {
-                                    off: start * 4096,
-                                    data,
-                                });
-                            }
-                            run = Some((lb, b.to_vec()));
-                        }
+                let own: Vec<ObjKey> = sh
+                    .versions(okey)
+                    .into_iter()
+                    .map(|v| ObjKey {
+                        version: v,
+                        ..okey.clone()
+                    })
+                    .collect();
+                let blocks = parents
+                    .iter()
+                    .filter_map(|k| sh.stat(k))
+                    .map(|s| s.size.div_ceil(hyperstor_engine::BLOCK as u64))
+                    .max()
+                    .unwrap_or(0);
+                // Runs of blocks the clone lacks and a parent holds: (first, count).
+                let mut runs: Vec<(u64, u64)> = Vec::new();
+                for lb in 0..blocks {
+                    let missing = !own.iter().any(|k| sh.holds(k, lb))
+                        && parents.iter().any(|k| sh.holds(k, lb));
+                    if !missing {
+                        continue;
+                    }
+                    match runs.last_mut() {
+                        Some((first, n)) if *first + *n == lb => *n += 1,
+                        _ => runs.push((lb, 1)),
                     }
                 }
-            }
-            if let Some((start, data)) = run.take() {
+                (parents, runs)
+            };
+            let mut effects: Vec<WireOp> = Vec::new();
+            for (first, n) in runs {
+                let data = me
+                    .device_read(ReadKind::Background, |sh| {
+                        sh.read_layered_begin(&parents, first * 4096, n * 4096)
+                    })
+                    .await
+                    .map_err(|e| match e {
+                        EngineError::Checksum { .. } => {
+                            err(Code::Checksum, &me.map(), e.to_string())
+                        }
+                        e => err(Code::Io, &me.map(), e.to_string()),
+                    })?;
                 effects.push(WireOp::Write {
-                    off: start * 4096,
-                    data,
+                    off: first * 4096,
+                    data: data.to_vec(),
                 });
             }
             Ok(effects)
         };
-        let done = self.decide_and_apply(instance, to, key, decide).await;
+        let done = self.decide_and_apply_with(instance, to, key, decide).await;
         match done.await {
             Ok(()) => Msg::ExecOk,
             Err(m) => m,
