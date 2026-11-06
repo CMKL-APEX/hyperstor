@@ -4912,39 +4912,62 @@ impl ShardState {
     /// object from the shard and sends it before its next `.await`, so
     /// that writes queued later follow it on the connection. A write to
     /// `key` queued while the read waited plans it again; after
-    /// [`PUSH_READ_TRIES`], it reads holding the reactor, as before. None
-    /// if a read fails its checksums or times out.
+    /// [`PUSH_READ_TRIES`], the key is held as a repair holds it (writes
+    /// to it are refused and retried, operation lists wait) for one more
+    /// read on the ring (I285). None if a read fails its checksums or
+    /// times out, or the key stays held by another.
     async fn read_for_push(&self, key: &ObjKey) -> Option<PushRead> {
         for _ in 0..PUSH_READ_TRIES {
             let watch = Watch::new(&self.watched, key);
-            self.drained().await;
-            let mut held = None;
-            let r = self
-                .device_read(ReadKind::Background, |sh| {
-                    let size = sh.stat(key).ok_or(EngineError::NotFound)?.size;
-                    held = Some((size, sh.held_runs(key).ok_or(EngineError::NotFound)?));
-                    sh.read_begin(key, 0, size.div_ceil(4096) * 4096)
-                })
-                .await;
-            self.shard.idle().await;
+            let r = self.push_read(key).await;
             if watch.written() {
                 metrics::ShardMetrics::add(&self.metrics.push_rereads, 1);
                 continue;
             }
-            return match (r, held) {
-                (Ok(buf), Some((size, runs))) => {
-                    Some(PushRead::Held(size, cut_runs(&buf, size, runs)))
-                }
-                (Err(EngineError::NotFound), None) => Some(PushRead::Absent),
-                _ => None,
-            };
+            return r;
         }
+        // Released when this returns: the caller sends before its next
+        // `.await`, so no write to the key comes between.
+        let _held = self.hold_key(key).await?;
+        metrics::ShardMetrics::add(&self.metrics.push_holds, 1);
+        self.push_read(key).await
+    }
+
+    /// One read of `key` for [`Self::read_for_push`], on the ring.
+    async fn push_read(&self, key: &ObjKey) -> Option<PushRead> {
         self.drained().await;
-        let sh = self.shard.borrow();
-        let Some(st) = sh.stat(key) else {
-            return Some(PushRead::Absent);
-        };
-        held_data(&sh, key, st.size).map(|h| PushRead::Held(st.size, h))
+        let mut held = None;
+        let r = self
+            .device_read(ReadKind::Background, |sh| {
+                let size = sh.stat(key).ok_or(EngineError::NotFound)?.size;
+                held = Some((size, sh.held_runs(key).ok_or(EngineError::NotFound)?));
+                sh.read_begin(key, 0, size.div_ceil(4096) * 4096)
+            })
+            .await;
+        self.shard.idle().await;
+        match (r, held) {
+            (Ok(buf), Some((size, runs))) => Some(PushRead::Held(size, cut_runs(&buf, size, runs))),
+            (Err(EngineError::NotFound), None) => Some(PushRead::Absent),
+            _ => None,
+        }
+    }
+
+    /// Holds `key` against writes from this primary, as a repair does
+    /// (`exec_locks`): once a list on it already deciding or a repair is
+    /// done, or None after [`REPL_TIMEOUT`]. Released when dropped.
+    async fn hold_key<'a>(&'a self, key: &ObjKey) -> Option<KeyHold<'a>> {
+        let t = std::time::Instant::now();
+        while self.exec_locks.borrow().contains(key) {
+            if t.elapsed() > REPL_TIMEOUT {
+                return None;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+        self.exec_locks.borrow_mut().insert(key.clone());
+        Some(KeyHold {
+            locks: &self.exec_locks,
+            key: key.clone(),
+        })
     }
 
     /// The pushes of this node's copy of `key`, to send in order on one
@@ -6226,24 +6249,6 @@ fn hex(b: &[u8]) -> String {
 /// An object's data to send and, if it has holes, the runs it holds.
 type HeldData = (Vec<u8>, Option<Vec<(u64, u64)>>);
 
-/// The data of `key` (of `size` bytes) to send whole: every block from
-/// the start if it has no holes, as before; otherwise the blocks it holds
-/// alone, with their runs ([`WireObject::runs`]). Sent dense, a version's
-/// holes would arrive as zeros and hide what its older versions and its
-/// parent hold (issue #158). None if a read fails its checksums.
-fn held_data(sh: &hyperstor_engine::Shard, key: &ObjKey, size: u64) -> Option<HeldData> {
-    let blocks = size.div_ceil(4096);
-    let runs = sh.held_runs(key)?;
-    if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
-        return Some((sh.read(key, 0, blocks * 4096).ok()?.to_vec(), None));
-    }
-    let mut data = Vec::with_capacity(runs.iter().map(|(_, n)| *n as usize * 4096).sum());
-    for (lb, n) in &runs {
-        data.extend_from_slice(&sh.read(key, lb * 4096, n * 4096).ok()?);
-    }
-    Some((data, Some(runs)))
-}
-
 /// An object's data read for a push ([`ShardState::read_for_push`]).
 enum PushRead {
     /// It has none here: pushed as a delete.
@@ -6252,8 +6257,12 @@ enum PushRead {
     Held(u64, HeldData),
 }
 
-/// [`held_data`] of an object of `size` bytes from `buf`, a read of all
-/// its blocks (holes read as zeros), given the runs it holds.
+/// The data of an object of `size` bytes to send whole, from `buf`, a
+/// read of all its blocks (holes read as zeros), given the runs it holds:
+/// every block from the start if it has no holes, as before; otherwise the
+/// blocks it holds alone, with their runs ([`WireObject::runs`]). Sent
+/// dense, a version's holes would arrive as zeros and hide what its older
+/// versions and its parent hold (issue #158).
 fn cut_runs(buf: &[u8], size: u64, runs: Vec<(u64, u64)>) -> HeldData {
     let blocks = size.div_ceil(4096);
     if runs.is_empty() && blocks == 0 || runs == [(0, blocks)] {
@@ -6268,6 +6277,19 @@ fn cut_runs(buf: &[u8], size: u64, runs: Vec<(u64, u64)>) -> HeldData {
 
 /// A push's watch on the writes queued to its object while its read waits
 /// for the device (I257); counted by `enqueue`.
+/// A key held by [`ShardState::hold_key`], released when dropped (also
+/// when the future holding it is).
+struct KeyHold<'a> {
+    locks: &'a RefCell<HashSet<ObjKey>>,
+    key: ObjKey,
+}
+
+impl Drop for KeyHold<'_> {
+    fn drop(&mut self) {
+        self.locks.borrow_mut().remove(&self.key);
+    }
+}
+
 struct Watch<'a> {
     watched: &'a RefCell<HashMap<ObjKey, (u32, u64)>>,
     key: ObjKey,
