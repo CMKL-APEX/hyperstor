@@ -45,7 +45,7 @@ enum MetaCmd {
     ),
     /// Starts scrub after recovery (D230), each PG once clean this long.
     RecoveryScrubs(std::time::Duration),
-    /// The PGs devices report stuck (I274).
+    /// The PGs devices report stuck (I276).
     Stuck(std::sync::mpsc::Sender<hyperstor_meta::Stuck>),
 }
 
@@ -1254,7 +1254,7 @@ fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
 /// copy different. The new primary makes the members' copies the same as
 /// its own before it serves, so the PG's copies agree at once, not only
 /// after a scrub.
-/// I274: a fence for a map epoch no leader published, as a leader that
+/// I276: a fence for a map epoch no leader published, as a leader that
 /// fenced and then lost the lead before it could commit leaves behind,
 /// holds the PG's writes only until the device reports it: the leader
 /// takes that epoch and publishes, and writes go on within seconds.
@@ -1323,7 +1323,7 @@ fn a_fence_no_leader_published_is_lifted() {
     }
 }
 
-/// I274: a primary that can't reach a member, which the map still counts
+/// I276: a primary that can't reach a member, which the map still counts
 /// up (no peer reports here), fails to peer and refuses the PG's writes;
 /// after 5 s of that the leader lists the PG as stuck, for health, and
 /// once the partition heals and a write peers, it no longer does.

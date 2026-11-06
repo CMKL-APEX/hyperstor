@@ -698,8 +698,8 @@ pub struct Meta {
     /// PGs whose last scrub left objects it couldn't repair, with how many
     /// (their primaries' `ScrubReport`s, kept by the leader).
     pub inconsistent: RefCell<Inconsistent>,
-    /// Each device's last stuck report (I274), with when it came.
-    stuck: RefCell<BTreeMap<u32, (Instant, Vec<(u32, u32, u64)>)>>,
+    /// Each device's last stuck report (I276), with when it came.
+    stuck: RefCell<BTreeMap<u32, (Instant, StuckPgs)>>,
     /// The bytes on each PG's primary, with the device that reported
     /// them (D155): the leader's, in memory only.
     usage: RefCell<BTreeMap<(u32, u32), (u32, u64)>>,
@@ -738,7 +738,10 @@ struct ScrubStore {
 /// PGs whose last scrub left objects unresolved, with how many.
 pub type Inconsistent = BTreeMap<(u32, u32), u32>;
 
-/// PGs devices report they can't serve (I274): (device, pool, PG,
+/// One device's stuck PGs, as `Stuck` reports them: (pool, PG, epoch).
+type StuckPgs = Vec<(u32, u32, u64)>;
+
+/// PGs devices report they can't serve (I276): (device, pool, PG,
 /// epoch), the epoch a fence waits for, or 0 for a primary that can't
 /// peer.
 pub type Stuck = Vec<(u32, u32, u32, u64)>;
@@ -1293,7 +1296,7 @@ impl Meta {
         }
     }
 
-    /// The PGs devices reported stuck in the last [`STUCK_FOR`] (I274).
+    /// The PGs devices reported stuck in the last [`STUCK_FOR`] (I276).
     pub fn stuck_now(&self, now: Instant) -> Stuck {
         self.stuck
             .borrow()
@@ -1315,7 +1318,7 @@ impl Meta {
         {
             return Some(v.clone());
         }
-        // Stuck PGs asked apart (I274): a leader from before them answers
+        // Stuck PGs asked apart (I276): a leader from before them answers
         // that with an error, and the rest of its view still counts.
         let asked = async {
             let c = self.conn(leader).await.ok()?;
@@ -3525,7 +3528,7 @@ impl Meta {
             // A fence for an epoch newer than this leader's map was left
             // by a leader that never published it (a change it couldn't
             // commit before it lost the lead): nothing lifts it until a
-            // map that new comes, so this map takes that epoch (I274).
+            // map that new comes, so this map takes that epoch (I276).
             // Raising the epoch is always safe; an epoch a past leader did
             // commit is in this map already.
             Ok(Msg::Stuck { device, pgs }) => {
@@ -5348,7 +5351,7 @@ mod tests {
         });
     }
 
-    /// I274: a device reports a fence for an epoch past the leader's map
+    /// I276: a device reports a fence for an epoch past the leader's map
     /// (left by a leader that never published it): the map takes that
     /// epoch, so publishing lifts it; an older fence, or a primary that
     /// can't peer (epoch 0), changes nothing. Both are listed as stuck,

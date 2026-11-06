@@ -305,11 +305,11 @@ pub const STRAY_GRACE: Duration = Duration::from_secs(60);
 /// How often a device reports its space to the map service (D156).
 const SPACE_EVERY: Duration = Duration::from_secs(5);
 
-/// A fence held this long is reported to the map service (I274): a
+/// A fence held this long is reported to the map service (I276): a
 /// publish, fence to map, takes milliseconds.
 const FENCE_STUCK: Duration = Duration::from_secs(1);
 
-/// A PG whose primary has failed to peer this long is reported (I274).
+/// A PG whose primary has failed to peer this long is reported (I276).
 const PEER_STUCK: Duration = Duration::from_secs(5);
 
 /// How often a device reports its load to the leader (D218).
@@ -657,10 +657,10 @@ struct ShardState {
     lease_until: Cell<Option<std::time::Instant>>,
     /// PGs fenced by the map service, with the map epoch that lifts each.
     fenced: RefCell<HashMap<(u32, u32), u64>>,
-    /// When each fence was last raised (I274).
+    /// When each fence was last raised (I276).
     fenced_at: RefCell<HashMap<(u32, u32), std::time::Instant>>,
     /// PGs this device is primary of that failed to peer: the first and
-    /// the latest failure; gone once one peers (I274).
+    /// the latest failure; gone once one peers (I276).
     unpeered: RefCell<HashMap<(u32, u32), (std::time::Instant, std::time::Instant)>>,
     /// PGs paused while this device splits them, until the map flips them
     /// (24-pools-and-devices.md §27.5, D187), with the PG epoch the split
@@ -4329,7 +4329,7 @@ impl ShardState {
     }
 
     /// Reports this device's stuck PGs to the map service about once a
-    /// second (I274): fences held over [`FENCE_STUCK`] for an epoch newer
+    /// second (I276): fences held over [`FENCE_STUCK`] for an epoch newer
     /// than its map, and PGs it is primary of that have failed to peer
     /// for over [`PEER_STUCK`]. The leader raises its map's epoch past
     /// such a fence and shows both in health. Nothing is sent while

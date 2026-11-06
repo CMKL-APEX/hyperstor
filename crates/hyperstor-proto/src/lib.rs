@@ -497,14 +497,14 @@ pub enum Msg {
     /// PGs that can't serve. Each is (pool, PG, epoch): a fence held for
     /// over a second for map `epoch`, newer than the device's map; or,
     /// with epoch 0, a PG it is primary of that has failed to peer with
-    /// its members for over 5 s (I274). A leader whose map is older than
+    /// its members for over 5 s (I276). A leader whose map is older than
     /// a fence raises its epoch past it: the fence was left by a leader
     /// that never published that epoch. Answered `Noted`.
     Stuck {
         device: u32,
         pgs: Vec<(u32, u32, u64)>,
     },
-    /// Follower to leader: the PGs devices report stuck (I274), for a
+    /// Follower to leader: the PGs devices report stuck (I276), for a
     /// follower's status.
     StuckState,
     /// Answer to `StuckState`: (device, pool, PG, epoch) as `Stuck`

@@ -546,7 +546,7 @@ fn domain(d: Domain) -> String {
     .into()
 }
 
-/// Adds the PGs devices report they can't serve (I274): fenced for a map
+/// Adds the PGs devices report they can't serve (I276): fenced for a map
 /// epoch not yet published, or whose primary can't peer with its members.
 /// Either refuses the PG's writes, so it is an error, as a PG below
 /// `min` is.
