@@ -725,8 +725,8 @@ id = "HS12"
 title = "S3 gateway"
 
 [[milestone.item]]
-what = "The object layer: buckets, PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up"
-spec = ["14-s3.md §14.6", "14-s3.md §14.7", "D192", "D197", "D198", "I262"]
+what = "The object layer: buckets (named per tenant, D243), PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up"
+spec = ["14-s3.md §14.6", "14-s3.md §14.7", "14-s3.md §14.9", "D192", "D197", "D198", "D243", "I262", "I287"]
 status = "done"
 tests = [
     "cluster::s3_objects_match_a_model",
@@ -735,8 +735,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors, replaced chunks kept 15 minutes (stage 2)"
-spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "I264"]
+what = "The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors (another tenant's buckets unknown, D244), replaced chunks kept 15 minutes (stage 2)"
+spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "D244", "I264"]
 status = "done"
 tests = [
     "cluster::s3_gateway_serves_an_sdk",
@@ -763,7 +763,6 @@ tests = [
     "hyperstor_meta::s3keys::tests::new_keys_are_shaped_as_aws_keys",
     "hyperstor_pki::tests::cluster_keys_seal_for_one_context",
     "hyperstor_s3::gateway::tests::location_constraints_choose_a_placement",
-    "members::a_scrub_started_on_a_follower_goes_to_the_leader",
 ]
 
 [[milestone.item]]
@@ -773,17 +772,6 @@ status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 
 [[milestone.item]]
-what = "Bucket names per tenant: tables named by tenant and name; another tenant's buckets don't exist to a key (stage 3b)"
-spec = ["14-s3.md §14.9", "D243", "D244"]
-status = "done"
-tests = [
-    "cluster::s3_objects_match_a_model",
-    "cluster::s3_gateway_serves_an_sdk",
-    "hyperstor_s3::layout::tests::records_decode_as_encoded",
-    "hyperstor_s3::layout::tests::uploads_sort_by_expiry_and_chunks_by_index",
-]
-
-[[milestone.item]]
 what = "Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4)"
 spec = ["20-tenants.md §24.8", "D248", "D249", "D250", "I288"]
 status = "done"
@@ -791,7 +779,6 @@ tests = [
     "s3::a_realm_has_its_own_gateway_keys_and_pools",
     "hyperstor_meta::realms::tests::realms_hold_tenants_and_pools",
     "hyperstor_meta::realms::tests::realm_names_are_placement_names_but_default",
-    "hyperstor_meta::s3keys::tests::keys_and_placements_are_rows_of_the_settings",
 ]
 
 [[milestone.item]]
