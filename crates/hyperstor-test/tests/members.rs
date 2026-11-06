@@ -528,6 +528,26 @@ fn a_scrub_started_on_a_follower_goes_to_the_leader() {
     assert!(!r.has("tokens"), "{}", r.out);
     let ops = g.ctl(l, &["op", "list"]).ok();
     assert!(ops.has("pool 1 scrub"), "{}", ops.out);
+    // So do S3's placements, which the leader writes (I287).
+    let set = [
+        "s3",
+        "placement",
+        "set",
+        "--name",
+        "default",
+        "--data-pool",
+        "vol",
+        "--index-pool",
+        "vol",
+    ];
+    let r = g.ctl(f, &set).ok();
+    assert!(
+        r.has("isn't the leader; asking the leader at") && r.has("S3 placement default"),
+        "{}",
+        r.out
+    );
+    let r = g.ctl(f, &["s3", "placement", "list"]).ok();
+    assert!(r.has("vol (#1)"), "{}", r.out);
 }
 
 /// Members restarted one at a time, in the installer's order (3, 2, 1),

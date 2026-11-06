@@ -763,6 +763,7 @@ tests = [
     "hyperstor_meta::s3keys::tests::new_keys_are_shaped_as_aws_keys",
     "hyperstor_pki::tests::cluster_keys_seal_for_one_context",
     "hyperstor_s3::gateway::tests::location_constraints_choose_a_placement",
+    "members::a_scrub_started_on_a_follower_goes_to_the_leader",
 ]
 
 [[milestone.item]]

@@ -1129,7 +1129,15 @@ enum Next {
 /// Commands that, refused by a member that doesn't lead, go on to the
 /// leader's API: they start work only the leader does, and a refused
 /// one did nothing.
-const LEADER_ONLY: &[&str] = &["scrub start"];
+const LEADER_ONLY: &[&str] = &[
+    "scrub start",
+    // S3's keys and placements are rows the leader writes (D231, D232); a
+    // refused call wrote nothing, so asking again makes one key, not two.
+    "s3 key create",
+    "s3 key revoke",
+    "s3 placement set",
+    "s3 placement delete",
+];
 
 /// Where the API calls go.
 enum Target<'a> {
