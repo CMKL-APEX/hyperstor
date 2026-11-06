@@ -541,6 +541,13 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
     for i in [2, 1, 0] {
         g.m[i].stop();
         g.m[i].start(&g.s, &[]);
+        // Each member's log goes with a failure: why a member didn't take
+        // or catch up with a write is in them (CI).
+        let dump = |g: &Group| {
+            for (j, m) in g.m.iter().enumerate() {
+                eprintln!("--- member {}:\n{}", j + 1, m.log());
+            }
+        };
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             wait_for("a write through the leader", 15, || {
                 let l = g.leader_once(&[0, 1, 2]);
@@ -549,18 +556,29 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
             })
         }));
         if let Err(e) = made {
-            for (j, m) in g.m.iter().enumerate() {
-                eprintln!("--- member {}:\n{}", j + 1, m.log());
-            }
+            dump(&g);
             std::panic::resume_unwind(e);
         }
         // The restarted member has the write too: its token list matches
         // the leader's.
         let l = g.leader(&[0, 1, 2]);
         let want = g.ctl(l, &["token", "list"]).ok().out;
-        wait_for("the restarted member to catch up", 15, || {
-            (g.ctl(i, &["token", "list"]).out == want).then_some(())
-        });
+        let mut got = String::new();
+        let caught_up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_for("the restarted member to catch up", 15, || {
+                got = g.ctl(i, &["token", "list"]).out;
+                (got == want).then_some(())
+            })
+        }));
+        if let Err(e) = caught_up {
+            eprintln!(
+                "member {} restarted, member {} leads; the restarted member's token list:\n{got}\nthe leader's:\n{want}",
+                i + 1,
+                l + 1
+            );
+            dump(&g);
+            std::panic::resume_unwind(e);
+        }
     }
 }
 
