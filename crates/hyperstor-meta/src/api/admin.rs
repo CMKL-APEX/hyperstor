@@ -68,6 +68,10 @@ pub struct Signing {
 /// Tokens live an hour by default and a week at most.
 const TOKEN_TTL: u32 = 3600;
 const TOKEN_TTL_MAX: u32 = 7 * 86400;
+/// How long a token waits for a group that has just formed to commit its
+/// first map (I275): under the 5 s that hyperstorctl and mgmt give a
+/// call, so they get `not_formed` rather than a timeout.
+const FORMING_WAIT: Duration = Duration::from_secs(4);
 
 pub(super) struct State {
     pub(super) signing: Option<Signing>,
@@ -226,6 +230,25 @@ impl Api {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(self.token_error(e).await),
             Err(e) => Err(ConnectError::internal(e.to_string())),
+        }
+    }
+
+    /// Adds a token's record. A group that has just formed commits its
+    /// first map at once, and until then the store refuses tokens
+    /// (`not_formed`): a call made in that moment, by an operator right
+    /// after installing, waits for it, asking the store again every
+    /// 100 ms for up to [`FORMING_WAIT`] (I275).
+    async fn create_token_record(&self, rec: Record, now: u64) -> Result<(), ConnectError> {
+        let deadline = std::time::Instant::now() + FORMING_WAIT;
+        loop {
+            let r = rec.clone();
+            match self.tokens(move |t| Ok(t.create(r, now))).await? {
+                Ok(()) => return Ok(()),
+                Err(TokenError::NotFormed) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => return Err(self.token_error(e).await),
+            }
         }
     }
 
@@ -406,7 +429,7 @@ impl TokenService for Api {
             name,
         };
         let now = now_unix();
-        if let Err(e) = self.tokens(move |t| t.create(rec, now)).await {
+        if let Err(e) = self.create_token_record(rec, now).await {
             audit(
                 &who,
                 "CreateToken",
