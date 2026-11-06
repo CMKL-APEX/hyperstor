@@ -151,6 +151,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A flatten reads its parents on the ring, holding the chunk; writes racing it win"
+spec = ["I286", "10-volumes.md §10.4"]
+status = "done"
+tests = [
+    "cluster::writes_racing_a_flatten_win",
+]
+
+[[milestone.item]]
 what = "The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied"
 spec = ["I283"]
 status = "done"
