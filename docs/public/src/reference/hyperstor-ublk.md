@@ -6,7 +6,7 @@ root, with the `ublk_drv` module loaded (`modprobe ublk_drv`; Linux 6.0
 or later, tested on 6.8).
 
 ```text
-usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] | delete --dev N
+usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] | delete --dev N
 ```
 
 | Command | Does |
@@ -21,6 +21,7 @@ usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--pree
 | `--take-over` | off | The volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then blocklist it and take the lease |
 | `--preempt` | off | Take the volume from a holder that is still running: blocklist it first, so its writes are refused |
 | `--depth N` | 64 | Requests the device takes at once (1–4096) |
+| `--host NAME` | its hostname | The name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--dev N` | | `delete`: the device's number, as in `/dev/ublkbN` |
 
 Without `--take-over` or `--preempt`, `attach` is refused while another

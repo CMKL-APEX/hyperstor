@@ -197,6 +197,8 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         claims: map.claims.clone(),
         lending: map.lending,
         port_lending: map.port_lending.clone(),
+        host_realms: map.host_realms.clone(),
+        tenant_realms: map.tenant_realms.clone(),
     }
     .encode()
 }
