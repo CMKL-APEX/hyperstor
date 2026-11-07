@@ -95,6 +95,21 @@ impl Api {
         Ok(out)
     }
 
+    /// Mirrors the realm rows' host bindings and tenants' realms into the
+    /// map (D259), answered once storage nodes can read them.
+    pub(super) async fn sync_realms(&self) -> Result<(), ConnectError> {
+        let realms = self.realms().await?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SyncRealms { realms, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        match rx.recv().await {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(ConnectError::unavailable(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     /// The realms, from this member's copy.
     pub(super) async fn realms(&self) -> Result<Realms, ConnectError> {
         self.realm_rows("realm", realms::load).await
@@ -178,6 +193,13 @@ impl RealmService for Api {
                 .map(|p| p.name.clone())
                 .collect()
         };
+        let hosts_of = |id: u32| -> Vec<String> {
+            all.hosts
+                .iter()
+                .filter(|(_, l)| l.contains(&id))
+                .map(|(h, _)| h.clone())
+                .collect()
+        };
         let tenants_of = |id: u32| -> Vec<u32> {
             all.tenants
                 .iter()
@@ -190,6 +212,7 @@ impl RealmService for Api {
             name: DEFAULT_REALM.into(),
             description: "every tenant not put in another realm".into(),
             pools: pools_of(0),
+            hosts: hosts_of(0),
             ..Default::default()
         }];
         for r in &all.realms {
@@ -201,6 +224,7 @@ impl RealmService for Api {
                 created_by: r.created_by.clone(),
                 tenants: tenants_of(r.id),
                 pools: pools_of(r.id),
+                hosts: hosts_of(r.id),
                 ..Default::default()
             });
         }
@@ -254,7 +278,9 @@ impl RealmService for Api {
             self.realm_rows("such realm", move |db| {
                 realms::set_tenant(db, tenant, realm, &held)
             })
-            .await
+            .await?;
+            // Bound hosts check volumes by their tenant's realm (D259).
+            self.sync_realms().await
         }
         .await;
         Self::audited(&who, "SetTenantRealm", &target, r)?;
@@ -297,5 +323,39 @@ impl RealmService for Api {
         .await;
         Self::audited(&who, "SetPoolRealms", &target, r)?;
         Ok(pb::SetPoolRealmsResponse::default().into())
+    }
+
+    async fn set_host_realms(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetHostRealmsRequest>,
+    ) -> ServiceResult<pb::SetHostRealmsResponse> {
+        let names: Vec<&str> = req.realms.iter().map(|r| r.as_ref()).collect();
+        let target = format!("host {}: realms {}", req.host, names.join(","));
+        let who = self.authorize(&ctx, "SetHostRealms", &target, true)?;
+        let r = async {
+            let host = req.host.to_string();
+            if !realms::valid_host(&host) {
+                return Err(invalid(
+                    "a host is 1-64 of letters, digits, '.', '-' and '_'",
+                ));
+            }
+            let all = self.realms().await?;
+            let mut ids = Vec::new();
+            for n in &names {
+                let id = all
+                    .id(n)
+                    .ok_or_else(|| invalid(format!("no realm {n:?}")))?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            self.realm_rows("such realm", move |db| realms::set_host(db, &host, &ids))
+                .await?;
+            self.sync_realms().await
+        }
+        .await;
+        Self::audited(&who, "SetHostRealms", &target, r)?;
+        Ok(pb::SetHostRealmsResponse::default().into())
     }
 }

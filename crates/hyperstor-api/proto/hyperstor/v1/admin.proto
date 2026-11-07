@@ -82,6 +82,11 @@ service RealmService {
   // Sets the realms that may use a pool (D249); none: every realm. Refused
   // while a placement of a realm taken off the list names the pool. Write.
   rpc SetPoolRealms(SetPoolRealmsRequest) returns (SetPoolRealmsResponse);
+
+  // Binds a host to realms (D251, D259), by the name it gives (`--host`,
+  // D261): it then attaches only their volumes; none unbinds it. Answered
+  // once storage nodes can read it. Write.
+  rpc SetHostRealms(SetHostRealmsRequest) returns (SetHostRealmsResponse);
 }
 
 // Certificates (04-decisions.md D53, D56).
@@ -693,6 +698,8 @@ message Realm {
   // aren't), and the pools whose lists name it.
   repeated uint32 tenants = 6;
   repeated string pools = 7;
+  // In answers: the hosts bound to it (D251).
+  repeated string hosts = 8;
 }
 
 message CreateRealmRequest {
@@ -735,6 +742,16 @@ message SetPoolRealmsRequest {
 }
 
 message SetPoolRealmsResponse {}
+
+message SetHostRealmsRequest {
+  // 1-64 of letters, digits, ".", "-" and "_".
+  string host = 1;
+  // Realm names, "default" among them if it may attach volumes of no
+  // other realm; none: unbound.
+  repeated string realms = 2;
+}
+
+message SetHostRealmsResponse {}
 
 message GetClusterKeyRequest {}
 

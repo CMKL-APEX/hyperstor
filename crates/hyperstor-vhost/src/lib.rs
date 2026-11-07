@@ -49,6 +49,9 @@ pub struct Options {
     /// The data networks it reaches storage nodes on, in order
     /// (26-networks.md §29.5, D207); none: devices' addresses.
     pub networks: Vec<String>,
+    /// The host it names to storage nodes, for realm bindings (`--host`,
+    /// D259, D261); empty: none.
+    pub host: String,
 }
 
 /// The control socket's path in `dir`.
@@ -199,6 +202,7 @@ pub fn serve(
             .await
             .map_err(|e| format!("map service: {e}"))?;
         client.set_networks(opts.networks.clone());
+        client.set_host(&opts.host);
         let svc = Rc::new(Service {
             opts,
             client,

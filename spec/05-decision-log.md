@@ -1345,3 +1345,16 @@ recommendation; the owner took every recommendation:
 | 221 | A volume's tenant: optional at creation, inherited by clones, 0 for none (recommended); required; also settable later | Optional at creation | D258 |
 | 222 | Where a host's realm binding is checked: the header's primary, on the identity named at `Hello` (recommended); tickets signed by the map service; only once the data path has mutual TLS | The header's primary | D259 |
 | 223 | Where roles on a realm are enforced: in mgmt (recommended); in mgmt and in the cluster API by certificate | In mgmt | D260 |
+
+## How a host names itself (2026-11-07)
+
+Building D259, `Hello` turned out to carry no host name, and
+`hyperstor-vhost` and `hyperstor-ublk` hold no certificate. Asked how a
+host should name itself, with a recommendation; the owner took it. The
+option said older nodes would ignore a name appended to `Hello`; they
+refuse what they can't decode, so it travels in a message of its own,
+sent only to peers new enough (D261):
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 224 | A host's name: `--host`, its hostname by default, checked against its certificate once D25 comes (recommended); a host certificate now; glidex's node id | `--host`, the hostname by default | D261 |

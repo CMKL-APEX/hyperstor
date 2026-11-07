@@ -62,7 +62,7 @@ member's `hyperstor_meta_leader`, and each scrubbed pool's
 of role `metrics`, or any role that may read; 401 without one, 403 for
 `host`. See [Managing a cluster](../admin-guide/managing.md#the-map-services-metrics).
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `SetPortRole`, `SetLending`, `ClaimPort`, `ReleaseClaim`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `DeleteS3Bucket`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `SetPortRole`, `SetLending`, `ClaimPort`, `ReleaseClaim`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `DeleteS3Bucket`, `SetHostRealms`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -179,6 +179,7 @@ values are left out of answers.
 | `DeleteRealm` | `{"name": "acme"}` | `{}`; `failed_precondition` (`realm_in_use`) while a tenant, pool or placement names it |
 | `SetTenantRealm` | `{"tenant": 2, "realm": "acme"}` | `{}`; `"default"` takes it back. `failed_precondition` (`pool_not_in_realm`) while one of its buckets or volumes is in a pool the realm may not use; `unavailable` while they can't be read. Needs step-up through hyperstor-mgmt |
 | `SetPoolRealms` | `{"pool": 3, "realms": ["acme"]}` | `{}`; no realms: every realm may use it. `failed_precondition` (`pool_in_use`) while a placement of a realm it leaves names the pool, or a bucket or volume of one of that realm's tenants is in it |
+| `SetHostRealms` | `{"host": "hv-1", "realms": ["acme", "default"]}` | `{}`, once storage nodes can read it; no realms: unbound. The host then attaches only volumes of those realms' tenants (D251, D259). `invalid_argument` for a bad host name or an unknown realm. Needs step-up through hyperstor-mgmt |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
 | `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |

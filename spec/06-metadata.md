@@ -82,7 +82,8 @@ that no single node sees every change (D28):
   fallback.
 - **Blocklist.** An entry names a client *instance*: a random id each
   client process makes at start, bound to its certificate identity in
-  `Hello`. A storage node refuses every request from a blocklisted
+  `Hello`. A client may also name its host after `Hello` (`Host`,
+  protocol version 3, D261), by which hosts are bound to realms (D259). A storage node refuses every request from a blocklisted
   instance once it holds that map epoch. Entries expire after an hour
   by default. A restarted client has a new instance id, so it is never
   held back by an entry for its previous life.

@@ -996,6 +996,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("RealmService.ListRealms", "realm list"),
     ("RealmService.DeleteRealm", "realm delete"),
     ("RealmService.SetTenantRealm", "realm tenant"),
+    ("RealmService.SetHostRealms", "realm host"),
     ("RealmService.SetPoolRealms", "realm pool"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
@@ -1245,8 +1246,8 @@ pub fn s3_keys_text(r: &pb::ListS3KeysResponse) -> String {
 /// Realms, their tenants and pools (D248, D249).
 pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
     let mut o = format!(
-        "{:<12}  {:>4}  {:<24}  {:<24}  {}\n",
-        "REALM", "ID", "TENANTS", "POOLS", "DESCRIPTION"
+        "{:<12}  {:>4}  {:<24}  {:<24}  {:<24}  {}\n",
+        "REALM", "ID", "TENANTS", "POOLS", "HOSTS", "DESCRIPTION"
     );
     let list = |v: Vec<String>, none: &str| {
         if v.is_empty() {
@@ -1263,11 +1264,12 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
         };
         let _ = writeln!(
             o,
-            "{:<12}  {:>4}  {:<24}  {:<24}  {}",
+            "{:<12}  {:>4}  {:<24}  {:<24}  {:<24}  {}",
             x.name,
             x.id,
             tenants,
             list(x.pools.clone(), "-"),
+            list(x.hosts.clone(), "-"),
             x.description
         );
     }

@@ -317,6 +317,12 @@ sudo hyperstor-install install --s3 --s3-realm acme        # on acme's gateway h
   list (`realm pool --realm any`) is open to every realm.
 - Bucket names are per tenant: two tenants may both have `photos`, and
   another tenant's bucket is never found.
+- A host is unbound until bound: `hyperstorctl realm host --host hv-1
+  --realm acme` lets hv-1's `hyperstor-vhost` and `hyperstor-ublk`
+  attach only acme's tenants' volumes (add `default` for the others).
+  Hosts are named by `--host`, their hostname unless set. Until the data
+  path has mutual TLS, a host could give another name: a binding stops
+  mistakes, not a hostile host.
 - Realms share the drives' time: a realm that must not feel another's
   load needs pools on devices of its own.
 - A tenant moves to another realm only if the new realm may use every
