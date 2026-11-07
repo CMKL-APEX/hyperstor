@@ -2054,6 +2054,7 @@ fn meta_of(h: &HeaderMap) -> Result<Meta, ApiError> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn put_object(
     state: &State,
     b: &str,

@@ -7492,7 +7492,7 @@ fn s3_objects_match_a_model() {
                         let whole: Vec<u8> = chosen.iter().flat_map(|n| parts[n].clone()).collect();
                         assert_eq!(e.size, whole.len() as u64);
                         assert_eq!(e.crc32c, crc32c::crc32c(&whole), "the CRC32C combined");
-                        assert_eq!(e.etag().ends_with(&format!("-{}\"", chosen.len())), true);
+                        assert!(e.etag().ends_with(&format!("-{}\"", chosen.len())));
                         if full {
                             assert_eq!(
                                 e.checksum,
