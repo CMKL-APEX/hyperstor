@@ -191,6 +191,8 @@ pub enum Admin {
         size: u64,
         name: String,
         id: Option<u128>,
+        /// D257; 0: none.
+        tenant: u32,
         reply: VolumeReply<Volume>,
     },
     ExpandVolume {
@@ -2655,6 +2657,7 @@ impl Meta {
                     size,
                     name,
                     id,
+                    tenant,
                     reply,
                 } => {
                     let c = connect(client.clone());
@@ -2662,7 +2665,7 @@ impl Meta {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            c.create_volume(pool, size, id, &name)
+                            c.create_volume_for(pool, size, id, &name, tenant)
                                 .await
                                 .map_err(volume_fault)
                         };

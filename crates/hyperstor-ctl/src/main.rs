@@ -833,7 +833,8 @@ fn main() {
     let bucket_one = matches!(cmd.as_str(), "s3 bucket show" | "s3 bucket delete");
     let tenant_needed = bucket_one || matches!(cmd.as_str(), "s3 key create" | "realm tenant");
     let tenant_ok = match a.tenant {
-        Some(_) => tenant_needed || cmd == "s3 bucket list",
+        // A volume's tenant is optional (D257).
+        Some(_) => tenant_needed || cmd == "s3 bucket list" || cmd == "create-volume",
         None => !tenant_needed,
     };
     if !tenant_ok
@@ -1652,6 +1653,7 @@ where
                     size: a.size.expect("checked with the arguments"),
                     name: a.name.clone(),
                     id: a.id.clone().unwrap_or_default(),
+                    tenant: a.tenant.unwrap_or_default(),
                     ..Default::default()
                 })
                 .await;

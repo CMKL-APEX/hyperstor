@@ -226,11 +226,36 @@ pub fn delete(db: &Db, name: &str) -> Result<(), Error> {
     })
 }
 
-/// Puts `tenant` in realm `realm` (0: "default", which removes its row).
-pub fn set_tenant(db: &Db, tenant: u32, realm: u32) -> Result<(), Error> {
+/// A tenant's container and the pool it is in: what a change of realms
+/// must leave in pools its realm may use (D248, D249). `what` names it
+/// for a refusal ("bucket 5/photos").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InPool {
+    pub tenant: u32,
+    pub pool: u32,
+    pub what: String,
+}
+
+/// Puts `tenant` in realm `realm` (0: "default", which removes its row),
+/// refused while one of its containers in `held` is in a pool `realm` may
+/// not use (D248).
+pub fn set_tenant(db: &Db, tenant: u32, realm: u32, held: &[InPool]) -> Result<(), Error> {
     write(db, |t, now| {
         if realm != 0 && !now.realms.iter().any(|r| r.id == realm) {
             return Err(Error::NotFound);
+        }
+        if let Some(h) = held
+            .iter()
+            .find(|h| h.tenant == tenant && !now.may_use(realm, h.pool))
+        {
+            return Err(refused(
+                "pool_not_in_realm",
+                format!(
+                    "{} is in a pool realm {} may not use",
+                    h.what,
+                    now.name(realm)
+                ),
+            ));
         }
         let row = format!("{TENANT}{tenant}");
         if realm == 0 {
@@ -246,8 +271,9 @@ pub fn set_tenant(db: &Db, tenant: u32, realm: u32) -> Result<(), Error> {
 }
 
 /// Sets the realms that may use `pool` (none: every realm). A realm that
-/// loses the pool may not have a placement in it.
-pub fn set_pool(db: &Db, pool: u32, realms: &[u32]) -> Result<(), Error> {
+/// loses the pool may not have a placement in it, nor a tenant's
+/// container of `held` (D249).
+pub fn set_pool(db: &Db, pool: u32, realms: &[u32], held: &[InPool]) -> Result<(), Error> {
     let placements = s3keys::placements(db)?;
     write(db, |t, now| {
         for &r in realms {
@@ -277,6 +303,19 @@ pub fn set_pool(db: &Db, pool: u32, realms: &[u32]) -> Result<(), Error> {
                     "realm {}'s S3 placement {} uses the pool",
                     now.name(p.realm),
                     p.name
+                ),
+            ));
+        }
+        if let Some(h) = held
+            .iter()
+            .find(|h| h.pool == pool && !after.may_use(after.realm_of(h.tenant), pool))
+        {
+            return Err(refused(
+                "pool_in_use",
+                format!(
+                    "{}, of realm {}, is in the pool",
+                    h.what,
+                    now.name(now.realm_of(h.tenant))
                 ),
             ));
         }
@@ -362,9 +401,9 @@ mod tests {
             })
         ));
         // Tenants: "default" until put elsewhere.
-        set_tenant(&db, 5, a).unwrap();
-        set_tenant(&db, 6, b).unwrap();
-        assert_eq!(set_tenant(&db, 7, 9), Err(Error::NotFound));
+        set_tenant(&db, 5, a, &[]).unwrap();
+        set_tenant(&db, 6, b, &[]).unwrap();
+        assert_eq!(set_tenant(&db, 7, 9, &[]), Err(Error::NotFound));
         let r = load(&db).unwrap();
         assert_eq!((r.realm_of(5), r.realm_of(6), r.realm_of(7)), (a, b, 0));
         assert_eq!(
@@ -372,7 +411,7 @@ mod tests {
             ("acme".to_string(), "default".to_string())
         );
         // Pools: open to all, until listed.
-        set_pool(&db, 3, &[a]).unwrap();
+        set_pool(&db, 3, &[a], &[]).unwrap();
         let r = load(&db).unwrap();
         assert!(r.may_use(a, 3) && !r.may_use(b, 3) && !r.may_use(0, 3));
         assert!(r.may_use(b, 4));
@@ -389,21 +428,21 @@ mod tests {
         set_placement(&db, &placement(b, 4)).unwrap();
         // ... and kept so: a pool isn't taken from a realm that uses it.
         assert!(matches!(
-            set_pool(&db, 3, &[b]),
+            set_pool(&db, 3, &[b], &[]),
             Err(Error::Refused {
                 reason: "pool_in_use",
                 ..
             })
         ));
         assert!(matches!(
-            set_pool(&db, 4, &[a]),
+            set_pool(&db, 4, &[a], &[]),
             Err(Error::Refused {
                 reason: "pool_in_use",
                 ..
             })
         ));
-        set_pool(&db, 3, &[a, b]).unwrap();
-        set_pool(&db, 3, &[]).unwrap();
+        set_pool(&db, 3, &[a, b], &[]).unwrap();
+        set_pool(&db, 3, &[], &[]).unwrap();
         assert!(load(&db).unwrap().may_use(0, 3));
         // Deleted only when nothing names it.
         assert!(matches!(
@@ -414,7 +453,7 @@ mod tests {
             })
         ));
         s3keys::delete_placement(&db, a, "default").unwrap();
-        set_tenant(&db, 5, 0).unwrap();
+        set_tenant(&db, 5, 0, &[]).unwrap();
         delete(&db, "acme").unwrap();
         assert_eq!(delete(&db, "acme"), Err(Error::NotFound));
         let r = load(&db).unwrap();
@@ -422,6 +461,42 @@ mod tests {
         assert_eq!(r.realm_of(5), 0);
         // Ids aren't reused while a higher one lives.
         assert_eq!(create(&db, &realm("cyan")).unwrap(), b + 1);
+    }
+
+    /// A tenant's containers keep it in realms that may use their pools
+    /// (D248, D249): it doesn't move to a realm that may not, and a pool
+    /// isn't taken from a realm whose tenant has one in it.
+    #[test]
+    fn containers_stay_in_their_realms_pools() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("map.redb")).unwrap();
+        let a = create(&db, &realm("acme")).unwrap();
+        let b = create(&db, &realm("blue")).unwrap();
+        set_tenant(&db, 5, a, &[]).unwrap();
+        set_tenant(&db, 6, b, &[]).unwrap();
+        let vol = |tenant, pool| InPool {
+            tenant,
+            pool,
+            what: format!("volume of {tenant}"),
+        };
+        set_pool(&db, 3, &[a, b], &[]).unwrap();
+        let refused = |r: Result<(), Error>| match r {
+            Err(Error::Refused { reason, why }) => (reason, why),
+            r => panic!("{r:?}"),
+        };
+        let (reason, why) = refused(set_pool(&db, 3, &[a], &[vol(6, 3), vol(5, 4)]));
+        assert_eq!(reason, "pool_in_use");
+        assert!(why.contains("volume of 6") && why.contains("blue"), "{why}");
+        set_pool(&db, 3, &[a, b], &[vol(6, 3), vol(0, 4)]).unwrap();
+        let (reason, why) = refused(set_tenant(&db, 6, 0, &[vol(6, 3), vol(7, 4)]));
+        assert_eq!(reason, "pool_not_in_realm");
+        assert!(
+            why.contains("volume of 6") && why.contains("default"),
+            "{why}"
+        );
+        // Another tenant's containers don't hold it back.
+        set_tenant(&db, 7, b, &[vol(6, 3), vol(7, 4)]).unwrap();
+        set_tenant(&db, 7, 0, &[]).unwrap();
     }
 
     #[test]

@@ -848,16 +848,22 @@ pub fn findings_text(r: &pb::ListFindingsResponse) -> String {
 /// A pool's volumes: id, name, size and state.
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
-        "{:<32}  {:<20} {:>14}  {:<8}  ATTACHED BY\n",
-        "ID", "NAME", "SIZE", "STATE"
+        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  ATTACHED BY\n",
+        "ID", "NAME", "SIZE", "STATE", "TENANT"
     );
     for v in &r.volumes {
         out.push_str(&format!(
-            "{:<32}  {:<20} {:>14}  {:<8}  {}\n",
+            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {}\n",
             v.id,
             v.name,
             v.size,
             v.state,
+            // None (D257).
+            if v.tenant == 0 {
+                "-".to_string()
+            } else {
+                v.tenant.to_string()
+            },
             if v.attached_by.is_empty() {
                 "-"
             } else {
