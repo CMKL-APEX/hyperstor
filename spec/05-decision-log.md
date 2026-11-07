@@ -1309,3 +1309,15 @@ recommendations; the owner chose the name and accepted the design
 | 214 | Hosts: unbound by default, bindable to realms (recommended); or every host bound to one realm | Unbound by default | D251 |
 | 215 | Administration: roles granted on a realm, with pools, devices and hosts the cluster's (recommended) | Roles on a realm | D252 |
 | 216 | The name: realm (recommended); partition, site, zone, namespace, account, S3 service | Realm | D253 |
+
+## Buckets in the administration tools (2026-11-07)
+
+Before stage 5's D246, the owner was asked how the administration tools
+should see buckets, which live in the key–value store the map service
+doesn't read, and what administrators may do with them. Asked with
+recommendations; the owner took both:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 217 | How the tools see buckets: the map service reads them from the store when asked (recommended); gateways report them into the map service; the map service asks a gateway | The map service reads them | D254 |
+| 218 | What administrators may do: list, show, delete an empty bucket, usage later with counters (recommended); also usage by scanning; list only | List, show, delete empty | D255 |

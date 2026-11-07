@@ -79,7 +79,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -164,6 +164,9 @@ struct Settings {
     s3_tls: String,
     /// The realm the gateway serves (D250); empty: "default".
     s3_realm: String,
+    /// The gateway's domains for virtual-hosted requests (D245),
+    /// comma-separated; empty: path-style only.
+    s3_domain: String,
     /// Block devices added to this host's nodes (D167, D168), as
     /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
     devices: String,
@@ -204,6 +207,7 @@ impl Settings {
             s3_port: DEFAULT_S3_PORT,
             s3_tls: String::new(),
             s3_realm: String::new(),
+            s3_domain: String::new(),
             devices: String::new(),
             removed_devices: String::new(),
         }
@@ -282,6 +286,7 @@ impl Settings {
                 "s3_port" => self.s3_port = v.parse().unwrap_or(self.s3_port),
                 "s3_tls" => self.s3_tls = v.to_string(),
                 "s3_realm" => self.s3_realm = v.to_string(),
+                "s3_domain" => self.s3_domain = v.to_string(),
                 "devices" => self.devices = v.to_string(),
                 "removed_devices" => self.removed_devices = v.to_string(),
                 _ => {}
@@ -335,12 +340,13 @@ impl Settings {
             || self.s3_port != DEFAULT_S3_PORT
             || !self.s3_tls.is_empty()
             || !self.s3_realm.is_empty()
+            || !self.s3_domain.is_empty()
         {
             // The all-in-one's choice is kept either way: it runs one
             // unless told not to.
             format!(
-                "s3 = {}\ns3_port = {}\ns3_tls = {}\ns3_realm = {}\n",
-                self.s3, self.s3_port, self.s3_tls, self.s3_realm
+                "s3 = {}\ns3_port = {}\ns3_tls = {}\ns3_realm = {}\ns3_domain = {}\n",
+                self.s3, self.s3_port, self.s3_tls, self.s3_realm, self.s3_domain
             )
         } else {
             String::new()
@@ -516,6 +522,7 @@ fn main() {
             "--s3-port" => "s3_port",
             "--s3-tls" => "s3_tls",
             "--s3-realm" => "s3_realm",
+            "--s3-domain" => "s3_domain",
             _ => usage(),
         };
         let v = val();
@@ -536,6 +543,8 @@ fn main() {
                     && v.bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             }
+            // DNS names, comma-separated (D245); empty: path-style only.
+            "s3_domain" => v.is_empty() || v.split(',').all(valid_domain),
             "node" => v.parse::<u32>().is_ok(),
             // One address, or a map service's members for `--role vhost`.
             "map" => v
@@ -1321,6 +1330,8 @@ struct S3Plan {
     tls: String,
     listen: String,
     realm: String,
+    /// Its domains for virtual-hosted requests (D245), comma-separated.
+    domain: String,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -1428,6 +1439,7 @@ fn s3_plan(s: &Settings, p: &Plan) -> S3Plan {
         },
         listen: format!("0.0.0.0:{}", s.s3_port),
         realm: s.s3_realm.clone(),
+        domain: s.s3_domain.clone(),
     }
 }
 
@@ -2380,6 +2392,10 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                         String::new()
                     } else {
                         format!(" --realm {}", g.realm)
+                    } + &if g.domain.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" --domain {}", g.domain)
                     }
                 ),
                 0o644,
@@ -2520,6 +2536,21 @@ fn run(cmd: &str, args: &[&str]) -> bool {
             false
         }
     }
+}
+
+/// A DNS name, lowercase: labels of letters, digits and hyphens, at
+/// least two (the S3 gateway's `--domain`, D245).
+fn valid_domain(d: &str) -> bool {
+    let labels: Vec<&str> = d.split('.').collect();
+    labels.len() >= 2
+        && d.len() <= 253
+        && labels.iter().all(|l| {
+            (1..=63).contains(&l.len())
+                && l.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
 }
 
 fn units(p: &Plan) -> Vec<String> {

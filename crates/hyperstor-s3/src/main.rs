@@ -1,4 +1,4 @@
-//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
+//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--domain NAME[,NAME...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
 //!
 //! The S3 gateway (14-s3.md §14.2), until SIGINT or SIGTERM. `--tls DIR`
 //! holds `s3.crt` (the chain) and `s3.key`, served for HTTPS.
@@ -11,6 +11,10 @@
 //! `--keys FILE` holds the access keys ([`hyperstor_s3::keys`]) and new
 //! buckets go in the two pools named: for running without the cluster
 //! API.
+//!
+//! `--domain` names the gateway's domains: a request to `bucket.DOMAIN`
+//! names its bucket in the host (virtual-hosted, D245), with a wildcard
+//! DNS name and certificate for `*.DOMAIN`; others are path-style.
 
 use hyperstor_s3::Config;
 use hyperstor_s3::gateway::{Options, Source, serve};
@@ -20,7 +24,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
+const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--domain NAME[,NAME...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -120,6 +124,19 @@ fn main() {
         threads: count("--threads", 2),
         config: Config::default(),
         clean_every: Duration::from_secs(3600),
+        domains: get("--domain")
+            .map(|s| {
+                s.split(',')
+                    .map(|d| {
+                        let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+                        if !valid_domain(&d) {
+                            fail(format!("--domain {d:?} isn't a DNS name"));
+                        }
+                        d
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let stop = stop_on_signal();
     let r = serve(
@@ -134,6 +151,19 @@ fn main() {
     if let Err(e) = r {
         fail(e);
     }
+}
+
+/// A DNS name: labels of letters, digits and hyphens, at least two.
+fn valid_domain(d: &str) -> bool {
+    let labels: Vec<&str> = d.split('.').collect();
+    labels.len() >= 2
+        && d.len() <= 253
+        && labels.iter().all(|l| {
+            (1..=63).contains(&l.len())
+                && l.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
 }
 
 /// A channel that receives on SIGINT or SIGTERM. The signals are blocked

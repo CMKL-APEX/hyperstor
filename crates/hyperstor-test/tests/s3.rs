@@ -408,6 +408,18 @@ fn a_gateway_joins_with_an_s3_token() {
             .ok()
             .has("no S3 placements")
     );
+    // --s3-domain gives the gateway its domains for virtual-hosted
+    // requests (D245), kept; a name that isn't one is refused.
+    install(&c.root, &["--s3-domain", "s3.example.test,s3.local"]);
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/s3.env")).unwrap();
+    assert!(env.contains("--domain s3.example.test,s3.local"), "{env}");
+    install(&c.root, &[]);
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/s3.env")).unwrap();
+    assert!(env.contains("--domain s3.example.test,s3.local"), "{env}");
+    install_cmd(&c.root, "install", &["--s3-domain", "Bad_Name"]).expect(2);
+    install(&c.root, &["--s3-domain", ""]);
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/s3.env")).unwrap();
+    assert!(!env.contains("--domain"), "{env}");
     // --no-s3 takes the all-in-one's gateway away, and keeps it away.
     let r = install(&c.root, &["--no-s3"]);
     assert!(

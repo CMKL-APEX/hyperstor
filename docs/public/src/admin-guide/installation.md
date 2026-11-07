@@ -263,6 +263,15 @@ name clients use (`--s3-tls DIR`), or end TLS at the balancer and have
 it reach the gateways over HTTPS, trusting `/etc/hyperstor/pki/root.crt`.
 An unsigned `GET /` answers 403 from a gateway that is up.
 
+**Virtual-hosted names.** Most SDKs default to `bucket.s3.example.com`
+rather than `s3.example.com/bucket`. Give the gateway its domain with
+`--s3-domain s3.example.com`, point a wildcard DNS record
+`*.s3.example.com` at the gateways, and serve a certificate for both
+`s3.example.com` and `*.s3.example.com` (`--s3-tls DIR`). The bucket is
+always the signing key's tenant's, so one name serves every tenant. A
+wildcard covers one label: buckets with dots in their names are reached
+path-style, as on AWS.
+
 **Behind a Cloudflare Tunnel** (not yet tried on real hardware). Run `cloudflared` on each gateway's
 host, routing the public name to the gateway, and leave the `Host`
 header alone (no `httpHostHeader`). Clients see Cloudflare's
@@ -280,8 +289,8 @@ ingress:
 ```
 
 Cloudflare limits a request's body (100 MB on its Free and Pro plans),
-so larger objects need multipart uploads, which come with the gateway's
-next stage, and it ends requests the gateway is silent on for 100 s.
+so larger objects need multipart uploads (SDKs use them for large files
+on their own), and it ends requests the gateway is silent on for 100 s.
 Cloudflare sees the traffic in the clear at its edge: keep data that
 must not leave your hands off a tunnel.
 
