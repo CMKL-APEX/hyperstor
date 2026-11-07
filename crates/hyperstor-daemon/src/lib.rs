@@ -34,7 +34,7 @@ mod ports;
 mod shard_cell;
 use shard_cell::ReadKind;
 
-use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, counter_of, read_frame_counted, writer};
+use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, Frame, counter_of, read_frame_counted, writer};
 use hyperstor_client::volume::{
     DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
     encode_holder, header_deleting, header_version,
@@ -49,7 +49,7 @@ use hyperstor_proto::{
     Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
     Looked, Msg, ScrubDetail, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject,
     WireOp, block_crcs, decode_digests, decode_holds, decode_object, decode_ops, encode_digests,
-    encode_frame, encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
+    encode_holds, encode_looked, encode_object, encode_ops, verify_crcs,
 };
 use hyperstor_reactor::chan::{OneSender, Sender, channel, oneshot};
 use hyperstor_reactor::net::{TcpListener, TcpStream, UdpSocket};
@@ -1931,7 +1931,7 @@ impl ShardState {
 
     async fn serve(self: Rc<Self>, s: TcpStream) {
         let s = Rc::new(s);
-        let (tx, rx) = channel::<Vec<u8>>();
+        let (tx, rx) = channel::<Frame>();
         spawn(writer(s.clone(), rx));
         // The client instance named at `Hello`; 0 for peers, which don't
         // send one and are never blocklisted.
@@ -1951,7 +1951,7 @@ impl ShardState {
                 return;
             }
             let reply = |m: &Msg, p: &[u8]| {
-                let _ = tx.send(encode_frame(h.req, m, p));
+                let _ = tx.send(Frame::new(h.req, m, p));
             };
             if let Msg::Hello { instance: i, .. } = msg {
                 instance = i;
@@ -2030,7 +2030,7 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.lease_renew(pool, map_epoch, leases).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::ReplExec { to, key, .. } => {
@@ -2070,7 +2070,7 @@ impl ShardState {
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 // Cut off from the map service (test hook): its messages
@@ -2099,7 +2099,7 @@ impl ShardState {
                         {
                             sleep(Duration::from_millis(1)).await;
                         }
-                        let _ = tx.send(encode_frame(req, &Msg::FenceOk, &[]));
+                        let _ = tx.send(Frame::new(req, &Msg::FenceOk, &[]));
                     });
                 }
                 Msg::ScrubNow { .. } if self.cut_off() => {}
@@ -2139,7 +2139,7 @@ impl ShardState {
                         me.metrics.read_latency.observe(arrived.elapsed());
                         metrics::ShardMetrics::add(&me.metrics.reads, 1);
                         metrics::ShardMetrics::add(&me.metrics.read_bytes, p.len() as u64);
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::Sources {
@@ -2173,35 +2173,35 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.drop_versions(instance, to, key, from, upto).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Flatten { to, key, layers } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.flatten(instance, to, key, layers).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Watch { to, key, version } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.watch(to, key, version).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Quiesced { to, key, token } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.quiesced(to, key, token).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Snapshot { to, key, token } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let m = me.snapshot(instance, to, key, token, payload).await;
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Quiesce { to, key, token } => {
@@ -2211,7 +2211,7 @@ impl ShardState {
                             Ok(_) => Msg::ExecOk,
                             Err(m) => m,
                         };
-                        let _ = tx.send(encode_frame(req, &m, &[]));
+                        let _ = tx.send(Frame::new(req, &m, &[]));
                     });
                 }
                 Msg::Release { to, key, token } => {
@@ -2241,14 +2241,14 @@ impl ShardState {
                             Some(l) => me.read_at_as(to, key, l, off, len, true, false).await,
                             None => me.read_as(to, key, off, len, false).await,
                         };
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::Fetch { to, key } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.fetch(to, key).await;
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::FetchPart {
@@ -2260,7 +2260,7 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.fetch_part(to, key, first, kv_from).await;
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::Digests { .. } if self.no_digests.get() => {
@@ -2272,14 +2272,14 @@ impl ShardState {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.digests(to, deep).await;
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::Holds { to } => {
                     let (me, tx, req) = (self.clone(), tx.clone(), h.req);
                     spawn(async move {
                         let (m, p) = me.holds(to).await;
-                        let _ = tx.send(encode_frame(req, &m, &p));
+                        let _ = tx.send(Frame::owned(req, &m, p));
                     });
                 }
                 Msg::Push { to, key, crcs } => {
@@ -2302,7 +2302,7 @@ impl ShardState {
         off: u64,
         crcs: Vec<u32>,
         data: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let arrived = std::time::Instant::now();
         // Every write is answered once: an error is counted here, success
@@ -2312,7 +2312,7 @@ impl ShardState {
             if matches!(m, Msg::Error { .. }) {
                 metrics::ShardMetrics::add(&counts.write_errors, 1);
             }
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         let pg = match self.check(&to, true).await {
             Ok(p) => p,
@@ -2359,9 +2359,12 @@ impl ShardState {
             off,
             crcs,
         };
+        // One payload for every replica's frame, sent from it uncopied
+        // when large; the engine then takes a copy (HS5b).
+        let data = Rc::new(data);
         let remote: Vec<_> = conns
             .iter()
-            .map(|(d, c)| (*d, c.start(&repl, &data)))
+            .map(|(d, c)| (*d, c.start_shared(&repl, &data)))
             .collect();
         let deadline = std::time::Instant::now() + REPL_TIMEOUT;
         let filling: Vec<_> = fills
@@ -2372,12 +2375,15 @@ impl ShardState {
                     .borrow_mut()
                     .entry((to.pool, to.pg, *d))
                     .or_default() += 1;
-                (*d, c.start(&repl, &data))
+                (*d, c.start_shared(&repl, &data))
             })
             .collect();
         let local = self.enqueue(OpList {
             key: okey,
-            ops: vec![Op::Write { off, data }],
+            ops: vec![Op::Write {
+                off,
+                data: Rc::unwrap_or_clone(data),
+            }],
         });
         let me = self.clone();
         let (pool, pgn) = (to.pool, to.pg);
@@ -2578,10 +2584,10 @@ impl ShardState {
         to: Target,
         key: WireKey,
         payload: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         let Ok(ops) = decode_ops(&payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
@@ -2691,10 +2697,10 @@ impl ShardState {
             *s
         };
         let repl = Msg::ReplExec { to, seq, key };
-        let body = encode_ops(&effects);
+        let body = Rc::new(encode_ops(&effects));
         let remote: Vec<_> = conns
             .iter()
-            .map(|(d, c)| (*d, c.start(&repl, &body)))
+            .map(|(d, c)| (*d, c.start_shared(&repl, &body)))
             .collect();
         let deadline = std::time::Instant::now() + REPL_TIMEOUT;
         let filling: Vec<_> = fills
@@ -2705,7 +2711,7 @@ impl ShardState {
                     .borrow_mut()
                     .entry((to.pool, to.pg, *d))
                     .or_default() += 1;
-                (*d, c.start(&repl, &body))
+                (*d, c.start_shared(&repl, &body))
             })
             .collect();
         let local = self.enqueue(OpList {
@@ -3269,10 +3275,10 @@ impl ShardState {
         mode: u8,
         takeover: bool,
         label: String,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if mode != LEASE_RW {
             // Shared `ro` leases are for snapshots (D18), which come with
@@ -3410,10 +3416,10 @@ impl ShardState {
         instance: u64,
         to: Target,
         key: WireKey,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         let version = Rc::new(Cell::new(0));
         let v2 = version.clone();
@@ -3454,10 +3460,10 @@ impl ShardState {
         to: Target,
         key: WireKey,
         delegates: Vec<u64>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if delegates.contains(&0) {
             return send(err(Code::Invalid, &self.map(), "delegate 0"));
@@ -3586,10 +3592,10 @@ impl ShardState {
         to: Target,
         key: WireKey,
         payload: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if let Err(m) = self.check(&to, false).await {
             return send(m);
@@ -3660,10 +3666,10 @@ impl ShardState {
         to: Target,
         key: WireKey,
         payload: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if let Err(m) = self.check(&to, false).await {
             return send(m);
@@ -3712,10 +3718,10 @@ impl ShardState {
         to: Target,
         key: WireKey,
         payload: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if let Err(m) = self.check(&to, false).await {
             return send(m);
@@ -3819,10 +3825,10 @@ impl ShardState {
         off: u64,
         crcs: Vec<u32>,
         data: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if let Err(m) = self.check(&to, false).await {
             return send(m);
@@ -4015,10 +4021,10 @@ impl ShardState {
         key: WireKey,
         crcs: Vec<u32>,
         data: Vec<u8>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
-            let _ = tx.send(encode_frame(req, &m, &[]));
+            let _ = tx.send(Frame::new(req, &m, &[]));
         };
         if let Err(m) = self.check(&to, false).await {
             return send(m);
