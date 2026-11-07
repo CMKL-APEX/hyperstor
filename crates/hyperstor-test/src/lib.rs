@@ -217,7 +217,7 @@ pub struct Run {
 }
 
 impl Run {
-    fn of(o: Output) -> Run {
+    pub fn of(o: Output) -> Run {
         Run {
             code: o.status.code().unwrap_or(-1),
             out: String::from_utf8_lossy(&o.stdout).into_owned()

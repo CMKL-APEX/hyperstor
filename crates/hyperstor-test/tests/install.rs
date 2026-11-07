@@ -143,6 +143,46 @@ fn bad_flags_are_refused() {
     assert!(!root.join("etc").exists());
 }
 
+/// An installer beside an incomplete set of binaries refuses before
+/// writing any: a host is never left with some binaries new and its
+/// services still running the old ones (I293).
+#[test]
+fn a_missing_binary_installs_nothing() {
+    let _one = one_at_a_time();
+    let s = Scratch::new("missingbin");
+    let (dir, root) = (s.path("bin"), s.path("root"));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Everything the installer installs but hyperstor-smart.
+    for b in [
+        "hyperstor-install",
+        "hyperstor-meta",
+        "hyperstord",
+        "hyperstorctl",
+        "hyperstor-mgmt",
+        "hyperstor-authd",
+        "hyperstor-vhost",
+        "hyperstor-s3",
+    ] {
+        if std::fs::hard_link(bin_dir().join(b), dir.join(b)).is_err() {
+            std::fs::copy(bin_dir().join(b), dir.join(b)).unwrap();
+        }
+    }
+    let r = Run::of(
+        Command::new(dir.join("hyperstor-install"))
+            .args(["install", "--root", root.to_str().unwrap()])
+            .args(["--all-in-one", "--nodes", "1", "--size-gib", "1"])
+            .output()
+            .unwrap(),
+    )
+    .expect(1);
+    assert!(
+        r.has("hyperstor-smart") && r.has("nothing was installed"),
+        "{}",
+        r.out
+    );
+    assert!(!root.join("usr").exists() && !root.join("etc").exists());
+}
+
 /// A cluster across "hosts" from one cluster file (implementation-notes
 /// I50): the map service on one, a storage node on each of three others,
 /// each installed into a root of its own and started from what was

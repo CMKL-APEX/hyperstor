@@ -113,7 +113,7 @@ their life has passed (30 days for the API's and the administrator's,
 a year for the intermediate CA). The daily timer is such a run: it
 renews what is due, repairs anything that drifted, and otherwise changes
 nothing.
-Changed binaries, units, options or certificates restart only the services they affect; with `--root` or `--no-start`, the output says what a real run would restart.
+Changed binaries, units, options or certificates restart only the services they affect; with `--root` or `--no-start`, the output says what a real run would restart. Every binary is read before any is written, so one missing changes nothing. A running service whose binary was replaced without a restart (by a run that stopped part-way, or by hand) is restarted too.
 
 **The root CA's key.** Only the first map service host has it, and it
 signs a new intermediate CA every 9 months (the intermediate lasts a
