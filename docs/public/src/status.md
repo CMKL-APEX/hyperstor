@@ -28,7 +28,7 @@ covered by tests that run on every change.
 | HS12: S3 gateway | Done |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
-| HS15: Tenancy: quotas and fair share between tenants | In progress |
+| HS15: Tenancy: quotas and fair share between tenants | Done |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
@@ -128,7 +128,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Adaptive polling: a storage reactor polls for a window after activity before it sleeps (`hyperstord --spin-us`, default 200 µs) | Done |
-| Payloads not copied into each outgoing frame, once per replica: vectored and zero-copy sends (`SendMsg`, `SEND_ZC`) | Planned |
+| Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`) | In progress |
 | Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer | Planned |
 | Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
 
@@ -175,7 +175,7 @@ covered by tests that run on every change.
 | Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
-| Roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
+| Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
 
 ## HS18: Pools and devices at run time
 
