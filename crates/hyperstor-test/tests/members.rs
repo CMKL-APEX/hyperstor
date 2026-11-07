@@ -558,16 +558,28 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let mut g = group("rolling", 3, 3);
     g.leader(&[0, 1, 2]);
+    // Each member's log goes with a failure: why a member didn't start,
+    // take or catch up with a write is in them (CI).
+    let dump = |g: &Group| {
+        for (j, m) in g.m.iter().enumerate() {
+            eprintln!("--- member {}:\n{}", j + 1, m.log());
+        }
+    };
+    // Every member running before any restarts: a leader among the first
+    // two doesn't mean the third has finished its first start, and a kill
+    // while it creates its store leaves one redb can't open (I289,
+    // glidex#317).
+    for i in 0..3 {
+        let formed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.formed(i)));
+        if let Err(e) = formed {
+            eprintln!("member {} has no map in its store", i + 1);
+            dump(&g);
+            std::panic::resume_unwind(e);
+        }
+    }
     for i in [2, 1, 0] {
         g.m[i].stop();
         g.m[i].start(&g.s, &[]);
-        // Each member's log goes with a failure: why a member didn't take
-        // or catch up with a write is in them (CI).
-        let dump = |g: &Group| {
-            for (j, m) in g.m.iter().enumerate() {
-                eprintln!("--- member {}:\n{}", j + 1, m.log());
-            }
-        };
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             wait_for("a write through the leader", 15, || {
                 let l = g.leader_once(&[0, 1, 2]);
