@@ -23,6 +23,7 @@ use crate::chunked::{Algorithm, BodyError, Checks, Chunked};
 use crate::keys::Keys;
 use crate::sigv4::{self, AuthError, ChunkSigner, Payload};
 use crate::xml::Xml;
+use crate::layout::{Multipart, PartRecord};
 use crate::{Bucket, Condition, Config, Entry, List, Meta, S3, S3Error, dates, past_prefix};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -318,6 +319,16 @@ impl From<S3Error> for ApiError {
             S3Error::InvalidRange => ApiError::new(416, "InvalidRange", m),
             S3Error::UploadGone | S3Error::Changed => ApiError::new(500, "InternalError", m),
             S3Error::PreconditionFailed => precondition_failed(),
+            S3Error::NoSuchUpload => ApiError::new(
+                404,
+                "NoSuchUpload",
+                "the upload doesn't exist: it was completed, aborted or expired",
+            ),
+            S3Error::InvalidPart(_) => ApiError::new(400, "InvalidPart", m),
+            S3Error::InvalidPartOrder => ApiError::new(400, "InvalidPartOrder", m),
+            S3Error::EntityTooSmall(_) => ApiError::new(400, "EntityTooSmall", m),
+            S3Error::MissingPartChecksum(_) => ApiError::new(400, "InvalidRequest", m),
+            S3Error::BadDigest => ApiError::new(400, "BadDigest", m),
             S3Error::Kv(KvError::Conflict | KvError::Exhausted(..)) => {
                 ApiError::new(503, "SlowDown", "the object kept changing; try again")
             }
@@ -687,6 +698,9 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
                 Xml::new("LocationConstraint").finish("LocationConstraint"),
             ))
         }
+        (Target::Bucket(b), Method::GET) if param(&q, "uploads").is_some() => {
+            list_uploads(state, &b, tenant, &q).await
+        }
         (Target::Bucket(b), Method::GET) => list_objects(state, &b, tenant, &q).await,
         (Target::Bucket(b), Method::PUT) => {
             only(&q, &[])?;
@@ -717,6 +731,9 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
             Err(method_not_allowed())
         }
         (Target::Bucket(_), _) => Err(method_not_allowed()),
+        (Target::Object(b, k), Method::GET) if param(&q, "uploadId").is_some() => {
+            list_parts(state, &b, k, tenant, &q).await
+        }
         (Target::Object(b, k), Method::GET | Method::HEAD) => {
             only(&q, RESPONSE_OVERRIDES)?;
             get_object(
@@ -730,9 +747,34 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
             )
             .await
         }
+        (Target::Object(b, k), Method::PUT) if param(&q, "uploadId").is_some() => {
+            only(&q, &["uploadId", "partNumber"])?;
+            let id = upload_id(&q)?;
+            let n = text_param(&q, "partNumber")?
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| (1..=crate::MAX_PARTS).contains(n))
+                .ok_or_else(|| {
+                    ApiError::new(
+                        400,
+                        "InvalidArgument",
+                        "partNumber is 1 to 10000",
+                    )
+                })?;
+            put_object(state, &b, k, tenant, signed, signing, req, Some((id, n))).await
+        }
         (Target::Object(b, k), Method::PUT) => {
             only(&q, &[])?;
-            put_object(state, &b, k, tenant, signed, signing, req).await
+            put_object(state, &b, k, tenant, signed, signing, req, None).await
+        }
+        (Target::Object(b, k), Method::DELETE) if param(&q, "uploadId").is_some() => {
+            only(&q, &["uploadId"])?;
+            let id = upload_id(&q)?;
+            let bucket = state.bucket(&b, tenant).await?;
+            state
+                .reactors
+                .call(move |s3| async move { s3.abort_upload(&bucket, &k, id).await })
+                .await??;
+            Ok(status(204))
         }
         (Target::Object(b, k), Method::DELETE) => {
             only(&q, &[])?;
@@ -746,6 +788,17 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
                 .call(move |s3| async move { s3.delete_if(&bucket, &k, &cond).await })
                 .await??;
             Ok(status(204))
+        }
+        (Target::Object(b, k), Method::POST) if param(&q, "uploads").is_some() => {
+            only(&q, &["uploads"])?;
+            create_upload(state, &b, k, tenant, req.headers()).await
+        }
+        (Target::Object(b, k), Method::POST) if param(&q, "uploadId").is_some() => {
+            only(&q, &["uploadId"])?;
+            let id = upload_id(&q)?;
+            let h = req.headers().clone();
+            let body = read_body(signed, signing, None, None, req.into_body(), COMPLETE_BODY).await?;
+            complete_upload(state, &b, k, tenant, id, &h, &body).await
         }
         (Target::Object(..), Method::POST) => {
             only(&q, &[])?;
@@ -1111,11 +1164,17 @@ fn read_condition(h: &HeaderMap, e: &Entry) -> Option<u16> {
 /// The object's checksum headers: the one it was written with, else the
 /// CRC32C kept for every object.
 fn checksum_headers(h: &mut HeaderMap, e: &Entry) {
-    let (name, value) = match &e.checksum {
-        Some((a, v)) => (a.header(), B64.encode(v)),
+    let (name, value, kind) = match &e.checksum {
+        Some((a, v)) if e.composite => (
+            a.header(),
+            format!("{}-{}", B64.encode(v), e.parts),
+            "COMPOSITE",
+        ),
+        Some((a, v)) => (a.header(), B64.encode(v), "FULL_OBJECT"),
         None => (
             Algorithm::Crc32c.header(),
             B64.encode(e.crc32c.to_be_bytes()),
+            "FULL_OBJECT",
         ),
     };
     if let (Ok(k), Ok(v)) = (
@@ -1123,8 +1182,402 @@ fn checksum_headers(h: &mut HeaderMap, e: &Entry) {
         HeaderValue::from_str(&value),
     ) {
         h.insert(k, v);
-        h.insert("x-amz-checksum-type", HeaderValue::from_static("FULL_OBJECT"));
+        h.insert("x-amz-checksum-type", HeaderValue::from_static(kind));
     }
+}
+
+/// A checksum as XML elements: `ChecksumCRC32` and so on.
+fn checksum_xml(x: &mut Xml, sum: &Option<(Algorithm, Vec<u8>)>, parts: Option<u32>) {
+    if let Some((a, v)) = sum {
+        let value = match parts {
+            Some(n) => format!("{}-{n}", B64.encode(v)),
+            None => B64.encode(v),
+        };
+        x.elem(&format!("Checksum{}", a.name()), &value);
+    }
+}
+
+/// The most a CompleteMultipartUpload body may hold: 10,000 parts.
+const COMPLETE_BODY: usize = 4 << 20;
+
+/// An upload id as shown: 32 hexadecimal digits.
+fn show_upload(id: u128) -> String {
+    format!("{id:032x}")
+}
+
+/// The `uploadId` parameter; one that can't be ours names no upload.
+fn upload_id(q: &Pairs) -> Result<u128, ApiError> {
+    text_param(q, "uploadId")?
+        .filter(|t| t.len() == 32)
+        .and_then(|t| u128::from_str_radix(&t, 16).ok())
+        .ok_or_else(|| S3Error::NoSuchUpload.into())
+}
+
+/// The algorithm an `x-amz-checksum-algorithm` names.
+fn algorithm_header(h: &HeaderMap) -> Result<Option<Algorithm>, ApiError> {
+    match header(h, "x-amz-checksum-algorithm") {
+        None => Ok(None),
+        Some(a) => Ok(Some(
+            Algorithm::of_header(&format!("x-amz-checksum-{}", a.to_ascii_lowercase()))?
+                .ok_or_else(|| ApiError::new(400, "InvalidRequest", "bad checksum algorithm"))?,
+        )),
+    }
+}
+
+/// CreateMultipartUpload: the content type, metadata and checksum the
+/// completed object will have (14-s3.md §14.6, I291).
+async fn create_upload(
+    state: &State,
+    b: &str,
+    key: Vec<u8>,
+    tenant: u32,
+    h: &HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    if key.len() > 1024 {
+        return Err(S3Error::InvalidKey.into());
+    }
+    let meta = meta_of(h)?;
+    let algorithm = algorithm_header(h)?;
+    let full_object = match header(h, "x-amz-checksum-type") {
+        None | Some("COMPOSITE") => false,
+        Some("FULL_OBJECT") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                400,
+                "InvalidRequest",
+                "x-amz-checksum-type is COMPOSITE or FULL_OBJECT",
+            ));
+        }
+    };
+    if full_object
+        && !matches!(
+            algorithm,
+            Some(Algorithm::Crc32 | Algorithm::Crc32c)
+        )
+    {
+        return Err(ApiError::new(
+            400,
+            "InvalidRequest",
+            "a FULL_OBJECT checksum is a CRC32 or CRC32C",
+        ));
+    }
+    let m = Multipart {
+        initiated: 0,
+        content_type: meta.content_type,
+        meta: meta.meta,
+        algorithm,
+        full_object,
+    };
+    let bucket = state.bucket(b, tenant).await?;
+    let k = key.clone();
+    let id = state
+        .reactors
+        .call(move |s3| async move { s3.create_upload(&bucket, &k, m).await })
+        .await??;
+    let mut x = Xml::new("InitiateMultipartUploadResult");
+    x.elem("Bucket", b)
+        .elem("Key", &String::from_utf8_lossy(&key))
+        .elem("UploadId", &show_upload(id));
+    let mut r = xml_ok(x.finish("InitiateMultipartUploadResult"));
+    if let Some(a) = algorithm {
+        let hs = r.headers_mut();
+        if let Ok(v) = HeaderValue::from_str(a.name()) {
+            hs.insert("x-amz-checksum-algorithm", v);
+        }
+        hs.insert(
+            "x-amz-checksum-type",
+            HeaderValue::from_static(if full_object {
+                "FULL_OBJECT"
+            } else {
+                "COMPOSITE"
+            }),
+        );
+    }
+    Ok(r)
+}
+
+/// CompleteMultipartUpload: the parts a `<CompleteMultipartUpload>`
+/// names, in order, by number and ETag (and checksum, checked when
+/// given); a whole object's checksum in the headers is checked too.
+async fn complete_upload(
+    state: &State,
+    b: &str,
+    key: Vec<u8>,
+    tenant: u32,
+    id: u128,
+    h: &HeaderMap,
+    body: &[u8],
+) -> Result<Response<Body>, ApiError> {
+    let malformed = |why: &str| ApiError::new(400, "MalformedXML", why.to_string());
+    let text = std::str::from_utf8(body).map_err(|_| malformed("the body isn't UTF-8"))?;
+    let doc = crate::xml::parse(text).map_err(malformed)?;
+    if doc.name != "CompleteMultipartUpload" {
+        return Err(malformed("not a CompleteMultipartUpload"));
+    }
+    let mut named = Vec::new();
+    let mut sums = Vec::new();
+    for p in doc.all("Part") {
+        let n = p
+            .text_of("PartNumber")
+            .and_then(|n| n.trim().parse::<u32>().ok())
+            .ok_or_else(|| malformed("a Part without a PartNumber"))?;
+        let etag = p.text_of("ETag").ok_or_else(|| malformed("a Part without an ETag"))?;
+        named.push((n, etag.to_string()));
+        for a in [
+            Algorithm::Crc32,
+            Algorithm::Crc32c,
+            Algorithm::Sha1,
+            Algorithm::Sha256,
+        ] {
+            if let Some(v) = p.text_of(&format!("Checksum{}", a.name())) {
+                sums.push((n, a, v.trim().to_string()));
+            }
+        }
+    }
+    if named.is_empty() || named.len() > crate::MAX_PARTS as usize {
+        return Err(malformed("a completion names 1 to 10000 parts"));
+    }
+    // The whole object's checksum, if the client gave it.
+    let mut want = None;
+    for (k, v) in h {
+        if let Some(a) = Algorithm::of_header(k.as_str())? {
+            let v = v.to_str().unwrap_or("");
+            let v = v.split_once('-').map_or(v, |(v, _)| v);
+            let v = B64
+                .decode(v)
+                .map_err(|_| ApiError::new(400, "InvalidRequest", "bad checksum"))?;
+            want = Some((a, v));
+        }
+    }
+    let cond = write_condition(h)?;
+    let bucket = state.bucket(b, tenant).await?;
+    let k = key.clone();
+    let e = state
+        .reactors
+        .call(move |s3| async move {
+            if !sums.is_empty() {
+                // Each checksum given must be the part's.
+                let (_, done) = s3.parts(&bucket, &k, id).await?;
+                for (n, a, v) in &sums {
+                    let ok = done.get(n).is_some_and(|(_, _, r)| {
+                        r.checksum
+                            .as_ref()
+                            .is_none_or(|(pa, pv)| pa != a || B64.encode(pv) == *v)
+                    });
+                    if !ok {
+                        return Err(S3Error::InvalidPart(*n));
+                    }
+                }
+            }
+            s3.complete(&bucket, &k, id, &named, &cond, want.as_ref())
+                .await
+        })
+        .await??;
+    let location = match header(h, "host") {
+        Some(host) => format!(
+            "https://{host}/{b}/{}",
+            sigv4::aws_encode(&key, false)
+        ),
+        None => format!("/{b}/{}", sigv4::aws_encode(&key, false)),
+    };
+    let mut x = Xml::new("CompleteMultipartUploadResult");
+    x.elem("Location", &location)
+        .elem("Bucket", b)
+        .elem("Key", &String::from_utf8_lossy(&key))
+        .elem("ETag", &e.etag());
+    checksum_xml(&mut x, &e.checksum, e.composite.then_some(e.parts));
+    if e.checksum.is_some() {
+        x.elem(
+            "ChecksumType",
+            if e.composite { "COMPOSITE" } else { "FULL_OBJECT" },
+        );
+    }
+    Ok(xml_ok(x.finish("CompleteMultipartUploadResult")))
+}
+
+/// ListParts: the parts done, by number, in pages.
+async fn list_parts(
+    state: &State,
+    b: &str,
+    key: Vec<u8>,
+    tenant: u32,
+    q: &Pairs,
+) -> Result<Response<Body>, ApiError> {
+    only(q, &["uploadId", "max-parts", "part-number-marker", "encoding-type"])?;
+    let id = upload_id(q)?;
+    let number = |name: &str| -> Result<Option<u32>, ApiError> {
+        text_param(q, name)?
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| ApiError::new(400, "InvalidArgument", format!("{name} is a number")))
+            })
+            .transpose()
+    };
+    let max = number("max-parts")?.unwrap_or(1000).min(1000) as usize;
+    let marker = number("part-number-marker")?.unwrap_or(0);
+    let bucket = state.bucket(b, tenant).await?;
+    let k = key.clone();
+    let (p, done) = state
+        .reactors
+        .call(move |s3| async move { s3.parts(&bucket, &k, id).await })
+        .await??;
+    let m = p.multipart.unwrap_or_default();
+    let page: Vec<(u32, PartRecord)> = done
+        .into_iter()
+        .filter(|(n, _)| *n > marker)
+        .map(|(n, (_, _, r))| (n, r))
+        .collect();
+    let truncated = page.len() > max;
+    let page = &page[..page.len().min(max)];
+    let mut x = Xml::new("ListPartsResult");
+    x.elem("Bucket", b)
+        .elem("Key", &String::from_utf8_lossy(&key))
+        .elem("UploadId", &show_upload(id))
+        .elem("PartNumberMarker", &marker.to_string());
+    if let Some((n, _)) = page.last() {
+        x.elem("NextPartNumberMarker", &n.to_string());
+    }
+    x.elem("MaxParts", &max.to_string())
+        .elem("IsTruncated", if truncated { "true" } else { "false" })
+        .elem("StorageClass", "STANDARD");
+    if let Some(a) = m.algorithm {
+        x.elem("ChecksumAlgorithm", a.name()).elem(
+            "ChecksumType",
+            if m.full_object { "FULL_OBJECT" } else { "COMPOSITE" },
+        );
+    }
+    for (n, r) in page {
+        x.open("Part")
+            .elem("PartNumber", &n.to_string())
+            .elem("LastModified", &dates::iso(r.written))
+            .elem("ETag", &r.etag())
+            .elem("Size", &r.size.to_string());
+        checksum_xml(&mut x, &r.checksum, None);
+        x.close("Part");
+    }
+    Ok(xml_ok(x.finish("ListPartsResult")))
+}
+
+/// ListMultipartUploads: the uploads under way, by name and id, with a
+/// prefix and delimiter, in pages.
+async fn list_uploads(
+    state: &State,
+    b: &str,
+    tenant: u32,
+    q: &Pairs,
+) -> Result<Response<Body>, ApiError> {
+    only(
+        q,
+        &[
+            "uploads",
+            "prefix",
+            "delimiter",
+            "key-marker",
+            "upload-id-marker",
+            "max-uploads",
+            "encoding-type",
+        ],
+    )?;
+    let url = match text_param(q, "encoding-type")?.as_deref() {
+        None => false,
+        Some("url") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                400,
+                "InvalidArgument",
+                "encoding-type is url or nothing",
+            ));
+        }
+    };
+    let prefix = param(q, "prefix").unwrap_or_default().to_vec();
+    let delimiter = param(q, "delimiter").unwrap_or_default().to_vec();
+    let key_marker = param(q, "key-marker").unwrap_or_default().to_vec();
+    let id_marker = text_param(q, "upload-id-marker")?
+        .and_then(|t| u128::from_str_radix(&t, 16).ok());
+    let max: usize = match text_param(q, "max-uploads")? {
+        None => 1000,
+        Some(m) => m
+            .parse::<usize>()
+            .map_err(|_| ApiError::new(400, "InvalidArgument", "max-uploads is a number"))?
+            .min(1000),
+    };
+    let bucket = state.bucket(b, tenant).await?;
+    let all = state
+        .reactors
+        .call(move |s3| async move { s3.uploads(&bucket).await })
+        .await??;
+    // Past the markers: names after key-marker, or that name's uploads
+    // after upload-id-marker.
+    let past = |k: &[u8], id: u128| {
+        key_marker.is_empty()
+            || k > key_marker.as_slice()
+            || (k == key_marker.as_slice() && id_marker.is_some_and(|m| id > m))
+    };
+    let mut uploads = Vec::new();
+    let mut prefixes: Vec<Vec<u8>> = Vec::new();
+    let mut next = None;
+    for (k, id, at) in all {
+        if !k.starts_with(&prefix) || !past(&k, id) {
+            continue;
+        }
+        let common = (!delimiter.is_empty())
+            .then(|| {
+                let rest = &k[prefix.len()..];
+                rest.windows(delimiter.len())
+                    .position(|w| w == delimiter.as_slice())
+                    .map(|i| k[..prefix.len() + i + delimiter.len()].to_vec())
+            })
+            .flatten();
+        if let Some(c) = &common
+            && prefixes.last() == Some(c)
+        {
+            continue;
+        }
+        if uploads.len() + prefixes.len() == max {
+            next = Some((k, id));
+            break;
+        }
+        match common {
+            Some(c) => prefixes.push(c),
+            None => uploads.push((k, id, at)),
+        }
+    }
+    let mut x = Xml::new("ListMultipartUploadsResult");
+    x.elem("Bucket", b)
+        .elem("KeyMarker", &shown(&key_marker, url))
+        .elem(
+            "UploadIdMarker",
+            &id_marker.map(show_upload).unwrap_or_default(),
+        )
+        .elem("Prefix", &shown(&prefix, url));
+    if !delimiter.is_empty() {
+        x.elem("Delimiter", &shown(&delimiter, url));
+    }
+    if url {
+        x.elem("EncodingType", "url");
+    }
+    if next.is_some()
+        && let Some((k, id, _)) = uploads.last()
+    {
+        x.elem("NextKeyMarker", &shown(k, url))
+            .elem("NextUploadIdMarker", &show_upload(*id));
+    }
+    x.elem("MaxUploads", &max.to_string())
+        .elem("IsTruncated", if next.is_some() { "true" } else { "false" });
+    for (k, id, at) in &uploads {
+        x.open("Upload")
+            .elem("Key", &shown(k, url))
+            .elem("UploadId", &show_upload(*id))
+            .elem("StorageClass", "STANDARD")
+            .elem("Initiated", &dates::iso(*at))
+            .close("Upload");
+    }
+    for p in &prefixes {
+        x.open("CommonPrefixes")
+            .elem("Prefix", &shown(p, url))
+            .close("CommonPrefixes");
+    }
+    Ok(xml_ok(x.finish("ListMultipartUploadsResult")))
 }
 
 /// The placement a CreateBucket body asks for (D232): the one its
@@ -1598,12 +2051,19 @@ async fn put_object(
     signed: sigv4::Signed,
     signing: ring::hmac::Key,
     req: http::Request<Incoming>,
+    part: Option<(u128, u32)>,
 ) -> Result<Response<Body>, ApiError> {
     let h = req.headers();
     if let Some(src) = header(h, "x-amz-copy-source") {
-        return copy_object(state, b, key, tenant, src, h).await;
+        return match part {
+            None => copy_object(state, b, key, tenant, src, h).await,
+            Some((id, n)) => copy_part(state, b, key, tenant, src, h, id, n).await,
+        };
     }
-    let cond = write_condition(h)?;
+    let cond = match part {
+        None => write_condition(h)?,
+        Some(_) => Condition::Any,
+    };
     if key.len() > 1024 {
         return Err(S3Error::InvalidKey.into());
     }
@@ -1642,7 +2102,7 @@ async fn put_object(
     // Sent once the body is found good, with the checksum it matched.
     let (good_tx, good_rx) = oneshot::channel::<Option<(Algorithm, Vec<u8>)>>();
     let job = state.reactors.call(move |s3| {
-        write_object(s3, bucket, key, size, meta, md5, cond, rx, good_rx)
+        write_object(s3, bucket, key, size, meta, md5, cond, part, rx, good_rx)
     });
     let mut body = req.into_body();
     let pump = async move {
@@ -1696,13 +2156,117 @@ async fn put_object(
     };
     let (pumped, written) = tokio::join!(pump, job);
     pumped?;
-    let e = written??;
     let mut r = Response::new(empty());
-    if let Ok(v) = HeaderValue::from_str(&e.etag()) {
-        r.headers_mut().insert(http::header::ETAG, v);
+    match written?? {
+        Written::Object(e) => {
+            if let Ok(v) = HeaderValue::from_str(&e.etag()) {
+                r.headers_mut().insert(http::header::ETAG, v);
+            }
+            checksum_headers(r.headers_mut(), &e);
+        }
+        Written::Part(p) => {
+            if let Ok(v) = HeaderValue::from_str(&p.etag()) {
+                r.headers_mut().insert(http::header::ETAG, v);
+            }
+            if let Some((a, v)) = &p.checksum
+                && let (Ok(k), Ok(v)) = (
+                    http::HeaderName::from_bytes(a.header().as_bytes()),
+                    HeaderValue::from_str(&B64.encode(v)),
+                )
+            {
+                r.headers_mut().insert(k, v);
+            }
+        }
     }
-    checksum_headers(r.headers_mut(), &e);
     Ok(r)
+}
+
+/// What a PUT's body became: an object, or a multipart upload's part.
+enum Written {
+    Object(Entry),
+    Part(PartRecord),
+}
+
+/// UploadPartCopy: a range of an object of the same tenant (all of it,
+/// or `x-amz-copy-source-range`), up to 5 GiB, as part `n` of upload
+/// `id` (D193).
+#[allow(clippy::too_many_arguments)]
+async fn copy_part(
+    state: &State,
+    b: &str,
+    key: Vec<u8>,
+    tenant: u32,
+    src: &str,
+    h: &HeaderMap,
+    id: u128,
+    n: u32,
+) -> Result<Response<Body>, ApiError> {
+    let (sb, sk) = copy_source(src)?;
+    let from = state.bucket(&sb, tenant).await?;
+    let to = if sb == b {
+        from.clone()
+    } else {
+        state.bucket(b, tenant).await?
+    };
+    let (fk, ff) = (sk, from.clone());
+    let e = state
+        .reactors
+        .call(move |s3| async move { s3.head(&ff, &fk).await })
+        .await??
+        .ok_or_else(|| ApiError::new(404, "NoSuchKey", "the source object doesn't exist"))?;
+    copy_source_condition(h, &e)?;
+    let (off, len) = match header(h, "x-amz-copy-source-range") {
+        None => (0, e.size),
+        Some(r) => {
+            let bad = || {
+                ApiError::new(
+                    400,
+                    "InvalidArgument",
+                    "x-amz-copy-source-range is bytes=first-last, within the object",
+                )
+            };
+            let (a, z) = r
+                .trim()
+                .strip_prefix("bytes=")
+                .and_then(|s| s.split_once('-'))
+                .ok_or_else(bad)?;
+            let (a, z) = (
+                a.trim().parse::<u64>().map_err(|_| bad())?,
+                z.trim().parse::<u64>().map_err(|_| bad())?,
+            );
+            if z < a || z >= e.size {
+                return Err(bad());
+            }
+            (a, z - a + 1)
+        }
+    };
+    if len > MAX_PUT {
+        return Err(ApiError::new(
+            400,
+            "InvalidRequest",
+            "a part is 5 GiB at most",
+        ));
+    }
+    let p = state
+        .reactors
+        .call(move |s3| async move {
+            s3.copy_part(&from, &e, off, len, &to, &key, id, n)
+                .await
+                .map_err(|err| match err {
+                    S3Error::Changed => ApiError::new(
+                        503,
+                        "SlowDown",
+                        "the source object changed during the copy; try again",
+                    ),
+                    err => err.into(),
+                })
+        })
+        .await??;
+    let mut x = Xml::new("CopyPartResult");
+    x.elem("LastModified", &dates::iso(p.written))
+        .elem("ETag", &p.etag());
+    checksum_xml(&mut x, &p.checksum, None);
+    Ok(xml_ok(x.finish("CopyPartResult")))
 }
 
 /// The bucket and object an `x-amz-copy-source` names: `bucket/key`,
@@ -1855,15 +2419,23 @@ async fn write_object(
     mut meta: Meta,
     md5: Option<[u8; 16]>,
     cond: Condition,
+    part: Option<(u128, u32)>,
     mut rx: mpsc::Receiver<Bytes>,
     good: oneshot::Receiver<Option<(crate::chunked::Algorithm, Vec<u8>)>>,
-) -> Result<Entry, ApiError> {
-    // Checked before the body is taken, and again as it is made visible.
-    if cond != Condition::Any && !cond.holds(s3.head(&b, &key).await?.as_ref()) {
-        return Err(precondition_failed());
-    }
-    let mut put = s3.put(&b, &key, size).await?;
-    put.require(cond);
+) -> Result<Written, ApiError> {
+    let mut put = match part {
+        Some((id, n)) => s3.upload_part(&b, &key, id, n, size).await?,
+        None => {
+            // Checked before the body is taken, and again as it is made
+            // visible.
+            if cond != Condition::Any && !cond.holds(s3.head(&b, &key).await?.as_ref()) {
+                return Err(precondition_failed());
+            }
+            let mut put = s3.put(&b, &key, size).await?;
+            put.require(cond);
+            put
+        }
+    };
     while let Some(d) = rx.recv().await {
         if let Err(e) = put.write(&d).await {
             let _ = put.abort().await;
@@ -1878,8 +2450,11 @@ async fn write_object(
         put.abort().await?;
         return Err(bad_md5());
     }
+    if part.is_some() {
+        return Ok(Written::Part(put.finish_part(sum).await?));
+    }
     meta.checksum = sum;
-    Ok(put.finish(meta).await?)
+    Ok(Written::Object(put.finish(meta).await?))
 }
 
 #[cfg(test)]
@@ -1949,6 +2524,7 @@ mod tests {
             meta: Vec::new(),
             data: crate::layout::Data::Inline(b"x".to_vec()),
             checksum: None,
+            composite: false,
         }
     }
 

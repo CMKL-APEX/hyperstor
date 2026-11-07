@@ -141,7 +141,7 @@ covered by tests that run on every change.
 | Access keys and placements in the map service, kept with the cluster key, `hyperstorctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part) | Done |
 | The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part) | Done |
 | Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4) | Done |
-| Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4; built: conditional requests, DeleteObjects, checksums kept and given back, copy object) | In progress |
+| Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Done |
 | Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5) | Planned |
 
 ## HS15: Tenancy: quotas and fair share between tenants

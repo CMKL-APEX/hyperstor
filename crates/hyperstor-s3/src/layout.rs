@@ -19,6 +19,9 @@ pub const LATEST: &[u8] = b"l";
 pub const PENDING: u8 = b'p';
 /// An upload row's column: the object's name.
 pub const NAME: &[u8] = b"k";
+/// An upload row's column for a multipart upload: when it began (Unix
+/// milliseconds, big-endian).
+pub const MULTIPART: &[u8] = b"m";
 
 const V1: u8 = 1;
 
@@ -49,6 +52,31 @@ pub fn pending_column(id: u128) -> Vec<u8> {
     let mut c = vec![PENDING];
     c.extend_from_slice(&id.to_be_bytes());
     c
+}
+
+/// A multipart upload's part, as a column of its object's row: the
+/// upload's column, then the part number and the part's own object id,
+/// which names its chunks, so a part uploaded again never writes over
+/// the chunks of the one before (I291).
+pub fn part_column(id: u128, number: u32, object: u128) -> Vec<u8> {
+    let mut c = pending_column(id);
+    c.extend_from_slice(&number.to_be_bytes());
+    c.extend_from_slice(&object.to_be_bytes());
+    c
+}
+
+/// The part number and object id a column of upload `id` names, if it
+/// is one of its parts.
+pub fn part_of(column: &[u8], id: u128) -> Option<(u32, u128)> {
+    let rest = column.strip_prefix(pending_column(id).as_slice())?;
+    if rest.len() != 20 {
+        return None;
+    }
+    let (n, o) = rest.split_at(4);
+    Some((
+        u32::from_be_bytes(n.try_into().ok()?),
+        u128::from_be_bytes(o.try_into().ok()?),
+    ))
 }
 
 /// The first 28 bytes of a chunk's name: its part's chunks are this
@@ -116,6 +144,15 @@ pub struct Part {
     pub size: u64,
 }
 
+/// A multipart object's part: its own object id, which with its number
+/// names its chunks, and its size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartAt {
+    pub object: u128,
+    pub number: u32,
+    pub size: u64,
+}
+
 /// Where an object's bytes are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Data {
@@ -128,6 +165,35 @@ pub enum Data {
         chunk: u64,
         parts: Vec<Part>,
     },
+    /// A multipart upload's parts, in order, each with its own object id
+    /// (stage 4).
+    Parts { chunk: u64, parts: Vec<PartAt> },
+}
+
+impl Data {
+    /// The chunk size and each piece in order: (object id, part number,
+    /// size). None for inline bytes.
+    pub fn pieces(&self) -> Option<(u64, Vec<PartAt>)> {
+        match self {
+            Data::Inline(_) => None,
+            Data::Chunks {
+                object,
+                chunk,
+                parts,
+            } => Some((
+                *chunk,
+                parts
+                    .iter()
+                    .map(|p| PartAt {
+                        object: *object,
+                        number: p.number,
+                        size: p.size,
+                    })
+                    .collect(),
+            )),
+            Data::Parts { chunk, parts } => Some((*chunk, parts.clone())),
+        }
+    }
 }
 
 /// An object's index entry (14-s3.md §14.1).
@@ -147,6 +213,9 @@ pub struct Entry {
     /// The `x-amz-checksum-*` value the object was checked against when
     /// written, to give back (appended to the record in stage 4).
     pub checksum: Option<(Algorithm, Vec<u8>)>,
+    /// The checksum is of the parts' checksums (S3's `COMPOSITE`), shown
+    /// with `-` and the number of parts; else of the whole object.
+    pub composite: bool,
 }
 
 impl Entry {
@@ -162,22 +231,18 @@ impl Entry {
 
     /// Its chunks, as series: (prefix, count) for each part.
     pub fn series(&self, bucket: u64) -> Vec<(Vec<u8>, u32)> {
-        match &self.data {
-            Data::Inline(_) => Vec::new(),
-            Data::Chunks {
-                object,
-                chunk,
-                parts,
-            } => parts
-                .iter()
-                .map(|p| {
-                    (
-                        chunk_prefix(bucket, *object, p.number),
-                        chunks_of(p.size, *chunk),
-                    )
-                })
-                .collect(),
-        }
+        let Some((chunk, pieces)) = self.data.pieces() else {
+            return Vec::new();
+        };
+        pieces
+            .iter()
+            .map(|p| {
+                (
+                    chunk_prefix(bucket, p.object, p.number),
+                    chunks_of(p.size, chunk),
+                )
+            })
+            .collect()
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -205,10 +270,18 @@ impl Entry {
                     e.u32(p.number).u64(p.size);
                 });
             }
+            Data::Parts { chunk, parts } => {
+                e.u8(2).u64(*chunk).seq(parts, |e, p| {
+                    e.u128(p.object).u32(p.number).u64(p.size);
+                });
+            }
         }
+        // The high bit: composite (S3's COMPOSITE checksum type).
         match &self.checksum {
             None => e.u8(0),
-            Some((a, v)) => e.u8(a.code()).bytes(v),
+            Some((a, v)) => e
+                .u8(a.code() | if self.composite { COMPOSITE } else { 0 })
+                .bytes(v),
         };
         e.into_vec()
     }
@@ -235,6 +308,16 @@ impl Entry {
                     })
                 })?,
             },
+            2 => Data::Parts {
+                chunk: d.u64()?,
+                parts: d.seq(28, |d| {
+                    Ok(PartAt {
+                        object: d.u128()?,
+                        number: d.u32()?,
+                        size: d.u64()?,
+                    })
+                })?,
+            },
             t => {
                 return Err(DecodeError::Invalid {
                     field: "data kind",
@@ -243,15 +326,11 @@ impl Entry {
             }
         };
         // Written before stage 4: no checksum.
-        let checksum = match if d.remaining() > 0 { d.u8()? } else { 0 } {
+        let code = if d.remaining() > 0 { d.u8()? } else { 0 };
+        let composite = code & COMPOSITE != 0;
+        let checksum = match code & !COMPOSITE {
             0 => None,
-            c => {
-                let a = Algorithm::of_code(c).ok_or(DecodeError::Invalid {
-                    field: "checksum algorithm",
-                    value: c.into(),
-                })?;
-                Some((a, d.bytes()?.to_vec()))
-            }
+            c => Some((algorithm(c)?, d.bytes()?.to_vec())),
         };
         Ok(Entry {
             written,
@@ -263,6 +342,96 @@ impl Entry {
             meta,
             data,
             checksum,
+            composite,
+        })
+    }
+}
+
+/// An entry's checksum algorithm byte's high bit: a composite checksum.
+const COMPOSITE: u8 = 0x80;
+
+fn algorithm(c: u8) -> Result<Algorithm, DecodeError> {
+    Algorithm::of_code(c).ok_or(DecodeError::Invalid {
+        field: "checksum algorithm",
+        value: c.into(),
+    })
+}
+
+fn checksum_of(d: &mut Dec) -> Result<Option<(Algorithm, Vec<u8>)>, DecodeError> {
+    Ok(match d.u8()? {
+        0 => None,
+        c => Some((algorithm(c)?, d.bytes()?.to_vec())),
+    })
+}
+
+fn put_checksum(e: &mut Enc, c: &Option<(Algorithm, Vec<u8>)>) {
+    match c {
+        None => e.u8(0),
+        Some((a, v)) => e.u8(a.code()).bytes(v),
+    };
+}
+
+/// What a multipart upload was begun with, kept in its pending record
+/// until it is completed (stage 4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Multipart {
+    /// Unix milliseconds.
+    pub initiated: u64,
+    pub content_type: String,
+    pub meta: Vec<(String, String)>,
+    /// The checksum every part comes with, if the upload asked for one.
+    pub algorithm: Option<Algorithm>,
+    /// The completed object's checksum is of the whole object (CRCs
+    /// only), not of the parts' checksums.
+    pub full_object: bool,
+}
+
+/// A part of a multipart upload, as its column has it: being written,
+/// or done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartRecord {
+    pub done: bool,
+    /// Bytes promised, then written.
+    pub size: u64,
+    pub chunk: u64,
+    /// Unix milliseconds, when done.
+    pub written: u64,
+    pub md5: [u8; 16],
+    pub crc32c: u32,
+    pub checksum: Option<(Algorithm, Vec<u8>)>,
+}
+
+impl PartRecord {
+    /// Its ETag, quoted.
+    pub fn etag(&self) -> String {
+        let hex: String = self.md5.iter().map(|b| format!("{b:02x}")).collect();
+        format!("\"{hex}\"")
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::new();
+        e.u8(V1)
+            .bool(self.done)
+            .u64(self.size)
+            .u64(self.chunk)
+            .u64(self.written)
+            .raw(&self.md5)
+            .u32(self.crc32c);
+        put_checksum(&mut e, &self.checksum);
+        e.into_vec()
+    }
+
+    pub fn decode(b: &[u8]) -> Result<PartRecord, DecodeError> {
+        let mut d = Dec::new(b);
+        version(&mut d)?;
+        Ok(PartRecord {
+            done: d.bool()?,
+            size: d.u64()?,
+            chunk: d.u64()?,
+            written: d.u64()?,
+            md5: d.raw(16)?.try_into().expect("16 bytes"),
+            crc32c: d.u32()?,
+            checksum: checksum_of(&mut d)?,
         })
     }
 }
@@ -275,22 +444,50 @@ pub struct Pending {
     /// Bytes promised, for a single PUT.
     pub size: u64,
     pub chunk: u64,
+    /// A multipart upload's settings (appended in stage 4); none for a
+    /// single PUT, whose chunks are part 0 of the upload's id.
+    pub multipart: Option<Multipart>,
 }
 
 impl Pending {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
         e.u8(V1).u64(self.expires).u64(self.size).u64(self.chunk);
+        if let Some(m) = &self.multipart {
+            e.u8(1)
+                .u64(m.initiated)
+                .str(&m.content_type)
+                .seq(&m.meta, |e, (k, v)| {
+                    e.str(k).str(v);
+                })
+                .u8(m.algorithm.map_or(0, Algorithm::code))
+                .bool(m.full_object);
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Pending, DecodeError> {
         let mut d = Dec::new(b);
         version(&mut d)?;
+        let (expires, size, chunk) = (d.u64()?, d.u64()?, d.u64()?);
+        let multipart = match if d.remaining() > 0 { d.u8()? } else { 0 } {
+            0 => None,
+            _ => Some(Multipart {
+                initiated: d.u64()?,
+                content_type: d.str()?.to_string(),
+                meta: d.seq(8, |d| Ok((d.str()?.to_string(), d.str()?.to_string())))?,
+                algorithm: match d.u8()? {
+                    0 => None,
+                    c => Some(algorithm(c)?),
+                },
+                full_object: d.bool()?,
+            }),
+        };
         Ok(Pending {
-            expires: d.u64()?,
-            size: d.u64()?,
-            chunk: d.u64()?,
+            expires,
+            size,
+            chunk,
+            multipart,
         })
     }
 }
@@ -328,6 +525,7 @@ mod tests {
                 }],
             },
             checksum: None,
+            composite: false,
         };
         assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
         // An entry written before checksums were kept reads as none.
@@ -340,12 +538,54 @@ mod tests {
         e.parts = 2;
         assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
         assert_eq!(e.etag(), format!("\"{}-2\"", "07".repeat(16)));
-        let p = Pending {
+        let mut p = Pending {
             expires: 9,
             size: 10,
             chunk: 11,
+            multipart: None,
         };
+        assert_eq!(Pending::decode(&p.encode()), Ok(p.clone()));
+        p.multipart = Some(Multipart {
+            initiated: 12,
+            content_type: "a/b".into(),
+            meta: vec![("k".into(), "v".into())],
+            algorithm: Some(Algorithm::Crc32),
+            full_object: true,
+        });
         assert_eq!(Pending::decode(&p.encode()), Ok(p));
+        let mut part = PartRecord {
+            done: false,
+            size: 5,
+            chunk: 6,
+            written: 7,
+            md5: [8; 16],
+            crc32c: 9,
+            checksum: None,
+        };
+        assert_eq!(PartRecord::decode(&part.encode()), Ok(part.clone()));
+        part.checksum = Some((Algorithm::Crc32c, vec![1, 2, 3, 4]));
+        assert_eq!(PartRecord::decode(&part.encode()), Ok(part));
+        e.data = Data::Parts {
+            chunk: 4,
+            parts: vec![
+                PartAt {
+                    object: 1,
+                    number: 1,
+                    size: 9,
+                },
+                PartAt {
+                    object: 2,
+                    number: 3,
+                    size: 0,
+                },
+            ],
+        };
+        e.composite = true;
+        assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
+        assert_eq!(e.series(5), [(chunk_prefix(5, 1, 1), 3), (chunk_prefix(5, 2, 3), 0)]);
+        assert_eq!(part_of(&part_column(7, 3, 9), 7), Some((3, 9)));
+        assert_eq!(part_of(&part_column(7, 3, 9), 8), None);
+        assert_eq!(part_of(&pending_column(7), 7), None);
         let b = BucketInfo {
             tenant: 3,
             created: 4,
