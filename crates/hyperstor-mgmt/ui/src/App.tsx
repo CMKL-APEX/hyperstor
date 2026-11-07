@@ -14,6 +14,7 @@ import Operations from "./pages/Operations";
 import Members from "./pages/Members";
 import Security from "./pages/Security";
 import Trash from "./pages/Trash";
+import ObjectStorage from "./pages/ObjectStorage";
 import Audit from "./pages/Audit";
 
 const SSO = [{ label: "your identity provider" }];
@@ -51,6 +52,7 @@ const PAGES = [
   ["/nodes", "Nodes"],
   ["/pools", "Pools"],
   ["/volumes", "Volumes"],
+  ["/s3", "Object storage"],
   ["/advisor", "Advisor"],
   ["/trash", "Trash"],
   ["/operations", "Operations"],
@@ -99,6 +101,7 @@ function Shell() {
           <Route path="/volumes" element={<Volumes />} />
           <Route path="/advisor" element={<Advisor />} />
           <Route path="/trash" element={<Trash />} />
+          <Route path="/s3" element={<ObjectStorage />} />
           <Route path="/operations" element={<Operations />} />
           <Route path="/members" element={<Members />} />
           <Route path="/security" element={<Security />} />

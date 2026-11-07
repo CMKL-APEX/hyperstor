@@ -16,6 +16,8 @@ import {
   MemberService,
   NodeService,
   OperationService,
+  RealmService,
+  S3Service,
   TokenService,
 } from "./gen/hyperstor/v1/admin_pb";
 
@@ -85,6 +87,8 @@ export const nodes = client(NodeService);
 export const ops = client(OperationService);
 export const trash = client(TrashService);
 export const audit = client(AuditService);
+export const s3 = client(S3Service);
+export const realms = client(RealmService);
 
 /** mgmt's own JSON routes. */
 async function call<T>(method: string, path: string, body?: unknown, quiet401 = false): Promise<T> {

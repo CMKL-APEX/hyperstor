@@ -25,7 +25,7 @@ covered by tests that run on every change.
 | HS10b: Cache pools and priority classes | Planned |
 | HS11: Key-value ranges | Done |
 | HS11b: Key-value transactions | Planned |
-| HS12: S3 gateway | In progress |
+| HS12: S3 gateway | Done |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
 | HS15: Tenancy: quotas and fair share between tenants | Planned |
@@ -142,7 +142,7 @@ covered by tests that run on every change.
 | The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part) | Done |
 | Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4) | Done |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Done |
-| Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5; built: virtual-hosted addressing, buckets in hyperstorctl and the API) | In progress |
+| Virtual-hosted addressing, buckets and keys in mgmt's UI and hyperstorctl, public docs (stage 5) | Done |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 

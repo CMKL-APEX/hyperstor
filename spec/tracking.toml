@@ -794,12 +794,13 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5; built: virtual-hosted addressing, buckets in hyperstorctl and the API)"
-spec = ["14-s3.md §14.2", "D199", "D245", "D246", "D254", "D255", "I294", "I295"]
-status = "partial"
+what = "Virtual-hosted addressing, buckets and keys in mgmt's UI and hyperstorctl, public docs (stage 5)"
+spec = ["14-s3.md §14.2", "D199", "D245", "D246", "D254", "D255", "I294", "I295", "I296"]
+status = "done"
 tests = [
     "hyperstor_s3::gateway::tests::hosts_name_buckets_under_the_gateways_domains",
     "hyperstor_ctl::tests::buckets_are_named_tenant_slash_bucket",
+    "browser::object_storage_keys_shown_once_placements_buckets_and_realms",
 ]
 
 [[milestone]]

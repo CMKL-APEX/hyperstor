@@ -355,6 +355,34 @@ snapshots first, or copy it instead. Both copy every block that holds
 data through the map service's leader, and take the new pool's space
 for it; a move then deletes the data in the old pool.
 
+## Object storage
+
+The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
+([installing gateways](installation.md#s3-gateways)):
+
+- **Buckets**, every tenant's, named `tenant/bucket`: two tenants may
+  each have a `photos`. Tenants make buckets with their keys (S3's
+  CreateBucket); an administrator may delete an empty one. The map
+  service reads them from the cluster when asked, so the list needs the
+  storage path up.
+
+  ```bash
+  hyperstorctl s3 bucket list                       # or --tenant N
+  hyperstorctl s3 bucket delete --tenant 1 --name photos
+  ```
+
+- **Access keys**, each for one tenant: the secret is shown once, when
+  the key is made; gateways refuse a revoked key within seconds. Keys
+  are for security administrators, and making one needs a login of the
+  last 10 minutes.
+- **Placements**: the pools new buckets go in, `default` unless S3's
+  `LocationConstraint` names another. Buckets keep the pools they were
+  made in.
+- **Realms** are listed; they are made and changed with `hyperstorctl
+  realm` ([Realms](installation.md#realms)).
+
+Objects and bytes per bucket aren't shown yet.
+
 ## VM disks
 
 [`hyperstor-vhost`](../reference/hyperstor-vhost.md) serves volumes to

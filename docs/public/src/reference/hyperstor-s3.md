@@ -5,12 +5,12 @@ Run as many as you like, on any host that reaches the map service and
 the storage nodes; they keep no state of their own, so a load balancer
 may send any request to any of them.
 
-> **Early.** This is stage 4 of 5 (see the [status](../status.md)).
+> **New.** Its five stages are built (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
 > [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
-> --s3`](hyperstor-install.md) installs gateways, and `hyperstorctl s3
-> bucket` lists every tenant's buckets. Buckets, keys and placements in
-> the web UI come next.
+> --s3`](hyperstor-install.md) installs gateways; buckets, keys and
+> placements are in the web UI's Object storage page and `hyperstorctl
+> s3`.
 
 ```text
 usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--domain NAME[,NAME...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]

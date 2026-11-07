@@ -314,6 +314,44 @@ test("an API token is shown once", async ({ page }) => {
   await expect(page.getByRole("cell", { name: "ci", exact: true })).toBeVisible();
 });
 
+test("object storage: keys shown once, placements, buckets and realms", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Object storage" }).click();
+  // Buckets are read from the store by the map service; none made yet.
+  await expect(page.getByText("No buckets.")).toBeVisible();
+  await expect(page.getByText("hyperstorctl s3 bucket list")).toBeVisible();
+  // An access key: its secret shown once, then only its id.
+  await page.getByRole("button", { name: "Make a key" }).click();
+  await page.getByRole("dialog").getByLabel("Tenant").fill("3");
+  await page.getByRole("dialog").getByLabel("Description").fill("ui key");
+  await expect(page.getByRole("dialog")).toContainText("hyperstorctl s3 key create --tenant 3 --description 'ui key'");
+  await page.getByRole("dialog").getByRole("button", { name: "Make" }).click();
+  const secret = page.getByRole("dialog").locator("input[readonly]");
+  await expect(secret).toHaveAttribute("type", "password");
+  await expect(secret).toHaveValue(/^.{40}$/);
+  const id = ((await page.getByTestId("s3key-made").textContent()) ?? "").match(/HS[0-9A-Z]{18}/)![0];
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  const key = page.getByTestId(`s3key-${id}`);
+  await expect(key).toContainText("ui key");
+  await key.getByRole("button", { name: "Revoke" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(key).toHaveCount(0);
+  // A placement set and deleted.
+  await page.getByRole("button", { name: "Set a placement" }).click();
+  await page.getByRole("dialog").getByLabel("Name").fill("ui");
+  await page.getByRole("dialog").getByLabel("Data pool").selectOption("vol");
+  await page.getByRole("dialog").getByLabel(/Index pool/).selectOption("vol");
+  await expect(page.getByRole("dialog")).toContainText("hyperstorctl s3 placement set --name ui --data-pool vol --index-pool vol");
+  await page.getByRole("dialog").getByRole("button", { name: "Set" }).click();
+  const placement = page.getByTestId("placement-default-ui");
+  await expect(placement).toContainText("vol");
+  await placement.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(placement).toHaveCount(0);
+  // Realms: "default" holds every tenant not put in another.
+  await expect(page.getByTestId("realm-default")).toContainText("the others");
+});
+
 test("someone without roles sees nothing to do", async ({ page }) => {
   await logIn(page, "bob");
   await expect(page.getByText("You have no roles yet")).toBeVisible();
