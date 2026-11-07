@@ -78,11 +78,13 @@ pub enum Source {
     },
     /// From the cluster API (`S3Service.GetS3Gateway`) at these addresses,
     /// tried in turn, every `every`, over mutual TLS with `tls` (the
-    /// gateway's `s3` identity).
+    /// gateway's `s3` identity): the keys of `realm`'s tenants and its
+    /// placements, another realm's keys unknown here (D250).
     Api {
         addrs: Vec<String>,
         tls: Arc<rustls::ClientConfig>,
         every: Duration,
+        realm: String,
     },
 }
 
@@ -106,7 +108,11 @@ struct Served {
 const DEFAULT_PLACEMENT: &str = "default";
 
 /// One answer of the cluster API, or why none came.
-async fn fetch(addrs: &[String], tls: &Arc<rustls::ClientConfig>) -> Result<Served, String> {
+async fn fetch(
+    addrs: &[String],
+    tls: &Arc<rustls::ClientConfig>,
+    realm: &str,
+) -> Result<Served, String> {
     use hyperstor_api::proto::hyperstor::v1 as pb;
     let mut why = Vec::new();
     for a in addrs {
@@ -118,7 +124,10 @@ async fn fetch(addrs: &[String], tls: &Arc<rustls::ClientConfig>) -> Result<Serv
         let config =
             connectrpc::client::ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
         match hyperstor_api::S3ServiceClient::new(client, config)
-            .get_s3_gateway(pb::GetS3GatewayRequest::default())
+            .get_s3_gateway(pb::GetS3GatewayRequest {
+                realm: realm.to_string(),
+                ..Default::default()
+            })
             .await
         {
             Ok(r) => {
@@ -156,11 +165,12 @@ async fn refresh(
     addrs: Vec<String>,
     tls: Arc<rustls::ClientConfig>,
     every: Duration,
+    realm: String,
 ) {
     let mut failing = false;
     loop {
         tokio::time::sleep(every).await;
-        match fetch(&addrs, &tls).await {
+        match fetch(&addrs, &tls, &realm).await {
             Ok(s) => {
                 let (k, p) = (s.keys.len(), s.placements.len());
                 let old = state.swap(s);
@@ -448,11 +458,16 @@ pub fn serve(
                 )]);
                 (Served { keys, placements }, None)
             }
-            Source::Api { addrs, tls, every } => {
+            Source::Api {
+                addrs,
+                tls,
+                every,
+                realm,
+            } => {
                 // Nothing to serve with until the first answer.
                 let mut said = false;
                 let served = loop {
-                    match fetch(&addrs, &tls).await {
+                    match fetch(&addrs, &tls, &realm).await {
                         Ok(s) => break s,
                         Err(e) => {
                             if !said {
@@ -470,15 +485,15 @@ pub fn serve(
                     served.keys.len(),
                     served.placements.len()
                 );
-                (served, Some((addrs, tls, every)))
+                (served, Some((addrs, tls, every, realm)))
             }
         };
         let state = Arc::new(State {
             reactors,
             served: std::sync::RwLock::new(Arc::new(served)),
         });
-        if let Some((addrs, tls, every)) = api {
-            tokio::spawn(refresh(state.clone(), addrs, tls, every));
+        if let Some((addrs, tls, every, realm)) = api {
+            tokio::spawn(refresh(state.clone(), addrs, tls, every, realm));
         }
         let mut bound = Vec::new();
         let mut listeners = Vec::new();

@@ -52,6 +52,27 @@ service S3Service {
   rpc GetS3Gateway(GetS3GatewayRequest) returns (GetS3GatewayResponse);
 }
 
+// Realms (20-tenants.md §24.8, 04-decisions.md D248–D253): groups of
+// tenants with their own pools and endpoints. The realm "default" always
+// exists, and holds every tenant not put in another.
+service RealmService {
+  // Makes a realm. Write.
+  rpc CreateRealm(CreateRealmRequest) returns (CreateRealmResponse);
+
+  // The realms, with their tenants and the pools that list them. Read.
+  rpc ListRealms(ListRealmsRequest) returns (ListRealmsResponse);
+
+  // Deletes a realm that no tenant, pool or S3 placement names. Write.
+  rpc DeleteRealm(DeleteRealmRequest) returns (DeleteRealmResponse);
+
+  // Puts a tenant in a realm; "default" takes it back. Write.
+  rpc SetTenantRealm(SetTenantRealmRequest) returns (SetTenantRealmResponse);
+
+  // Sets the realms that may use a pool (D249); none: every realm. Refused
+  // while a placement of a realm taken off the list names the pool. Write.
+  rpc SetPoolRealms(SetPoolRealmsRequest) returns (SetPoolRealmsResponse);
+}
+
 // Certificates (04-decisions.md D53, D56).
 service CaService {
   // A new certificate for the caller's own identity and addresses, for
@@ -531,6 +552,8 @@ message S3Key {
   uint64 created_unix = 4 [json_name = "created_unix"];
   // Who made it, as the audit names callers.
   string created_by = 5 [json_name = "created_by"];
+  // In answers: the realm of the key's tenant (D248).
+  string realm = 6;
 }
 
 message ListS3KeysRequest {}
@@ -556,6 +579,9 @@ message S3Placement {
   // In answers: the pools' ids, which gateways go by.
   uint32 data_pool_id = 4 [json_name = "data_pool_id"];
   uint32 index_pool_id = 5 [json_name = "index_pool_id"];
+  // The realm whose buckets it places (D249); empty: "default". Each realm
+  // has its own placements, in pools it may use.
+  string realm = 6;
 }
 
 message SetS3PlacementRequest {
@@ -566,6 +592,8 @@ message SetS3PlacementResponse {}
 
 message DeleteS3PlacementRequest {
   string name = 1;
+  // Empty: "default".
+  string realm = 2;
 }
 
 message DeleteS3PlacementResponse {}
@@ -576,7 +604,11 @@ message ListS3PlacementsResponse {
   repeated S3Placement placements = 1;
 }
 
-message GetS3GatewayRequest {}
+message GetS3GatewayRequest {
+  // The realm the gateway serves (D250); empty: "default". Only its
+  // tenants' keys and its placements are answered.
+  string realm = 1;
+}
 
 // A key with its secret, for a gateway only.
 message S3GatewayKey {
@@ -589,6 +621,61 @@ message GetS3GatewayResponse {
   repeated S3GatewayKey keys = 1;
   repeated S3Placement placements = 2;
 }
+
+message Realm {
+  // 1 or more; 0 is "default".
+  uint32 id = 1;
+  // 1-63 of a-z, 0-9 and -.
+  string name = 2;
+  string description = 3;
+  uint64 created_unix = 4 [json_name = "created_unix"];
+  string created_by = 5 [json_name = "created_by"];
+  // In answers: the tenants put in it ("default": those put elsewhere
+  // aren't), and the pools whose lists name it.
+  repeated uint32 tenants = 6;
+  repeated string pools = 7;
+}
+
+message CreateRealmRequest {
+  string name = 1;
+  // Up to 200 characters.
+  string description = 2;
+}
+
+message CreateRealmResponse {
+  Realm realm = 1;
+}
+
+message ListRealmsRequest {}
+
+message ListRealmsResponse {
+  // "default" first, then by name.
+  repeated Realm realms = 1;
+  // Pools with no list, which every realm may use.
+  repeated string open_pools = 2 [json_name = "open_pools"];
+}
+
+message DeleteRealmRequest {
+  string name = 1;
+}
+
+message DeleteRealmResponse {}
+
+message SetTenantRealmRequest {
+  uint32 tenant = 1;
+  string realm = 2;
+}
+
+message SetTenantRealmResponse {}
+
+message SetPoolRealmsRequest {
+  // The pool's id.
+  uint32 pool = 1;
+  // Realm names; none: every realm may use the pool.
+  repeated string realms = 2;
+}
+
+message SetPoolRealmsResponse {}
 
 message GetClusterKeyRequest {}
 

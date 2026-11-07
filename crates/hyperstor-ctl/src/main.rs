@@ -132,7 +132,12 @@
 //!   once; gateways refuse a revoked key within seconds. `s3 placement set
 //!   --name N --data-pool NAME --index-pool NAME`, `s3 placement list`, `s3
 //!   placement delete --name N`: the pools new buckets go in (D232), `default`
-//!   unless CreateBucket's LocationConstraint names another;
+//!   unless CreateBucket's LocationConstraint names another; with `--realm
+//!   R`, that realm's placements (D249);
+//! - `realm create --name N [--description TEXT]`, `realm list`, `realm
+//!   delete --name N`, `realm tenant --tenant N --realm R`, `realm pool
+//!   --pool P --realm R[,R...]|any`: realms, the tenants in them and the
+//!   pools they may use (20-tenants.md §24.8, D248–D250);
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -175,14 +180,14 @@ use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
     AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
-    MemberServiceClient, NodeServiceClient, OperationServiceClient, S3ServiceClient,
-    TokenServiceClient, TrashServiceClient,
+    MemberServiceClient, NodeServiceClient, OperationServiceClient, RealmServiceClient,
+    S3ServiceClient, TokenServiceClient, TrashServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|realm create|realm list|realm delete|realm tenant|realm pool [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -351,6 +356,9 @@ struct Args {
     poll: bool,
     /// `s3 key create`.
     tenant: Option<u32>,
+    /// `realm tenant|pool`, `s3 placement set|delete`: a realm, or for
+    /// `realm pool` realms, comma-separated, or `any` (D248, D249).
+    realm: Option<String>,
     description: Option<String>,
     /// `s3 placement set`: pool names.
     data_pool: Option<String>,
@@ -441,6 +449,7 @@ fn main() {
         domain: None,
         poll: false,
         tenant: None,
+        realm: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -470,6 +479,7 @@ fn main() {
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
             "--tenant" => a.tenant = Some(num(it.next())),
+            "--realm" => a.realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--description" => a.description = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--data-pool" => a.data_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--index-pool" => a.index_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -641,7 +651,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool" | "scrub" | "port" | "claim"
+            | "device" | "pool" | "scrub" | "port" | "claim" | "realm"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -660,6 +670,9 @@ fn main() {
                     "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
                     "port" => matches!(sub, Some("list" | "role" | "lending")),
                     "claim" => matches!(sub, Some("list" | "port" | "renew" | "release")),
+                    "realm" => {
+                        matches!(sub, Some("create" | "list" | "delete" | "tenant" | "pool"))
+                    }
                     "pool" => {
                         matches!(
                             sub,
@@ -803,10 +816,20 @@ fn main() {
         usage();
     }
     // S3's own flags, on their commands only; key create needs a tenant,
-    // placement set a name and both pools, placement delete a name.
+    // placement set a name and both pools, placement delete a name. Realms
+    // (D248, D249): create and delete need a name, tenant a tenant and a
+    // realm, pool a pool and its realms; a placement may name its realm.
     let placement_set = cmd == "s3 placement set";
-    if (cmd == "s3 key create") != a.tenant.is_some()
-        || (a.description.is_some() && cmd != "s3 key create")
+    let realm_given = matches!(
+        cmd.as_str(),
+        "realm tenant" | "realm pool" | "s3 placement set" | "s3 placement delete"
+    );
+    if matches!(cmd.as_str(), "s3 key create" | "realm tenant") != a.tenant.is_some()
+        || (a.description.is_some() && !matches!(cmd.as_str(), "s3 key create" | "realm create"))
+        || (matches!(cmd.as_str(), "realm tenant" | "realm pool") && a.realm.is_none())
+        || (!realm_given && a.realm.is_some())
+        || (matches!(cmd.as_str(), "realm create" | "realm delete") && a.name.is_empty())
+        || (cmd == "realm pool" && a.pool.is_none())
         || placement_set != (a.data_pool.is_some() && a.index_pool.is_some())
         || (!placement_set && (a.data_pool.is_some() || a.index_pool.is_some()))
         || (matches!(cmd.as_str(), "s3 placement set" | "s3 placement delete") && a.name.is_empty())
@@ -1137,6 +1160,11 @@ const LEADER_ONLY: &[&str] = &[
     "s3 key revoke",
     "s3 placement set",
     "s3 placement delete",
+    // So are realms (D248).
+    "realm create",
+    "realm delete",
+    "realm tenant",
+    "realm pool",
 ];
 
 /// Where the API calls go.
@@ -1410,6 +1438,7 @@ where
     match cmd.split_once(' ').map_or(cmd, |(g, _)| g) {
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
         "s3" => return s3(S3ServiceClient::new(transport, config), cmd, a).await,
+        "realm" => return realms(RealmServiceClient::new(transport, config), cmd, a).await,
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
@@ -2600,14 +2629,18 @@ where
                         name: a.name.clone(),
                         data_pool: a.data_pool.clone().unwrap_or_default(),
                         index_pool: a.index_pool.clone().unwrap_or_default(),
+                        realm: a.realm.clone().unwrap_or_default(),
                         ..Default::default()
                     }),
                     ..Default::default()
                 })
                 .await?;
             println!(
-                "S3 placement {}: data in {}, index in {}",
+                "S3 placement {}{}: data in {}, index in {}",
                 a.name,
+                a.realm
+                    .as_deref()
+                    .map_or(String::new(), |r| format!(" of realm {r}")),
                 a.data_pool.as_deref().unwrap_or_default(),
                 a.index_pool.as_deref().unwrap_or_default()
             );
@@ -2623,6 +2656,7 @@ where
             client
                 .delete_s3_placement(pb::DeleteS3PlacementRequest {
                     name: a.name.clone(),
+                    realm: a.realm.clone().unwrap_or_default(),
                     ..Default::default()
                 })
                 .await?;
@@ -2630,6 +2664,89 @@ where
                 "S3 placement {} deleted; its buckets keep their pools",
                 a.name
             );
+        }
+    }
+    Ok(Next::Exit(0))
+}
+
+/// `realm create|list|delete|tenant|pool` (20-tenants.md §24.8, D248,
+/// D249).
+async fn realms<T>(
+    client: RealmServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let realm = a.realm.clone().unwrap_or_default();
+    match cmd {
+        "realm create" => {
+            let r = client
+                .create_realm(pb::CreateRealmRequest {
+                    name: a.name.clone(),
+                    description: a.description.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let id = r.realm.as_option().map_or(0, |r| r.id);
+            show(a, &r, || format!("realm {} made (id {id})\n", a.name));
+        }
+        "realm list" => {
+            let r = client
+                .list_realms(pb::ListRealmsRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || realms_text(&r));
+        }
+        "realm delete" => {
+            client
+                .delete_realm(pb::DeleteRealmRequest {
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("realm {} deleted", a.name);
+        }
+        "realm tenant" => {
+            let tenant = a.tenant.expect("checked with the arguments");
+            client
+                .set_tenant_realm(pb::SetTenantRealmRequest {
+                    tenant,
+                    realm: realm.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("tenant {tenant} is in realm {realm}");
+        }
+        _ => {
+            let pool = a.pool.expect("checked with the arguments");
+            let realms: Vec<String> = if realm == "any" {
+                Vec::new()
+            } else {
+                realm
+                    .split(',')
+                    .filter(|r| !r.is_empty())
+                    .map(String::from)
+                    .collect()
+            };
+            client
+                .set_pool_realms(pb::SetPoolRealmsRequest {
+                    pool,
+                    realms: realms.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            if realms.is_empty() {
+                println!("pool {pool}: every realm may use it");
+            } else {
+                println!(
+                    "pool {pool}: only realm(s) {} may use it",
+                    realms.join(", ")
+                );
+            }
         }
     }
     Ok(Next::Exit(0))

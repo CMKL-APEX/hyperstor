@@ -6,19 +6,22 @@
 //!   made, and its secret sealed with the cluster key (D162), bound to the
 //!   id. Revoking deletes the row.
 //! - `s3place/<name>`: a placement's data and index pools, by id, so a
-//!   renamed pool keeps its placements.
+//!   renamed pool keeps its placements; `s3rplace/<realm>/<name>` for a
+//!   realm other than "default" (D249), so members from before realms
+//!   never read one.
 //!
 //! Writes go through the leader; reads come from the member's applied
 //! copy, so any member answers a gateway.
 
 use crate::store::{self, Db, Origin, Table};
 use crate::tokens::TokenError as Error;
-use glidex_raftstore::store::{StoreError, definition};
+use glidex_raftstore::store::{RecTable, StoreError, definition};
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use redb::ReadableTable as _;
 
 const KEY: &str = "s3key/";
 const PLACE: &str = "s3place/";
+const REALM_PLACE: &str = "s3rplace/";
 
 /// The placement CreateBucket uses when its LocationConstraint names none.
 pub const DEFAULT_PLACEMENT: &str = "default";
@@ -74,6 +77,17 @@ pub struct Placement {
     pub name: String,
     pub data_pool: u32,
     pub index_pool: u32,
+    /// The realm whose buckets it places; 0 is "default" (D249).
+    pub realm: u32,
+}
+
+impl Placement {
+    fn row(realm: u32, name: &str) -> String {
+        match realm {
+            0 => format!("{PLACE}{name}"),
+            r => format!("{REALM_PLACE}{r}/{name}"),
+        }
+    }
 }
 
 /// RFC 4648's base32 alphabet: ids that are all capitals and digits, as
@@ -164,46 +178,71 @@ pub fn revoke(db: &Db, id: &str) -> Result<(), Error> {
     })
 }
 
-/// Every placement, from this member's copy: the data and index pools'
-/// ids in each row.
-pub fn placements(db: &Db) -> Result<Vec<Placement>, Error> {
-    rows(db, PLACE)?
-        .into_iter()
-        .map(|(name, v)| {
-            let decode = || -> Result<Placement, DecodeError> {
-                let mut d = Dec::new(&v);
-                let p = Placement {
-                    name: name.clone(),
-                    data_pool: d.u32()?,
-                    index_pool: d.u32()?,
-                };
-                d.finish()?;
-                Ok(p)
-            };
-            decode().map_err(|e| Error::Store(format!("{PLACE}{name}: {e}")))
-        })
-        .collect()
+/// `realm`'s placement `name`, from its row's value.
+fn placement_of(realm: u32, name: &str, v: &[u8]) -> Result<Placement, DecodeError> {
+    let mut d = Dec::new(v);
+    let p = Placement {
+        name: name.to_string(),
+        data_pool: d.u32()?,
+        index_pool: d.u32()?,
+        realm,
+    };
+    d.finish()?;
+    Ok(p)
 }
 
-/// Adds or replaces `p`. Only the leader.
+/// Every realm's placements, from this member's copy: the data and index
+/// pools' ids in each row. "default"'s first, then by realm id.
+pub fn placements(db: &Db) -> Result<Vec<Placement>, Error> {
+    let mut out = Vec::new();
+    for (name, v) in rows(db, PLACE)? {
+        out.push(
+            placement_of(0, &name, &v).map_err(|e| Error::Store(format!("{PLACE}{name}: {e}")))?,
+        );
+    }
+    let mut others = Vec::new();
+    for (rest, v) in rows(db, REALM_PLACE)? {
+        let bad = |e: String| Error::Store(format!("{REALM_PLACE}{rest}: {e}"));
+        let (realm, name) = rest
+            .split_once('/')
+            .and_then(|(r, n)| Some((r.parse::<u32>().ok()?, n)))
+            .ok_or_else(|| bad("not <realm>/<name>".into()))?;
+        others.push(placement_of(realm, name, &v).map_err(|e| bad(e.to_string()))?);
+    }
+    others.sort_by(|a, b| (a.realm, &a.name).cmp(&(b.realm, &b.name)));
+    out.extend(others);
+    Ok(out)
+}
+
+/// Adds or replaces `p`, unchecked. Only the leader; the API sets them
+/// with `crate::realms::set_placement`, which checks its realm's pools.
 pub fn set_placement(db: &Db, p: &Placement) -> Result<(), Error> {
-    let row = format!("{PLACE}{}", p.name);
-    let mut e = Enc::new();
-    e.u32(p.data_pool).u32(p.index_pool);
-    let value = e.into_vec();
     db.write(Origin::Leader, |tx| -> Result<(), Error> {
         let mut t = tx
             .open_table(definition::<store::MapSchema>(Table::Settings))
             .map_err(StoreError::from)?;
-        t.insert(row.as_str(), value.as_slice())
-            .map_err(StoreError::from)?;
-        Ok(())
+        put_placement(&mut t, p)
     })
 }
 
-/// Removes placement `name`. Only the leader.
-pub fn delete_placement(db: &Db, name: &str) -> Result<(), Error> {
-    let row = format!("{PLACE}{name}");
+/// Writes `p`'s row in a write's settings table `t`.
+pub(crate) fn put_placement(
+    t: &mut RecTable<'_, store::MapSchema>,
+    p: &Placement,
+) -> Result<(), Error> {
+    let mut e = Enc::new();
+    e.u32(p.data_pool).u32(p.index_pool);
+    t.insert(
+        Placement::row(p.realm, &p.name).as_str(),
+        e.into_vec().as_slice(),
+    )
+    .map_err(StoreError::from)?;
+    Ok(())
+}
+
+/// Removes `realm`'s placement `name`. Only the leader.
+pub fn delete_placement(db: &Db, realm: u32, name: &str) -> Result<(), Error> {
+    let row = Placement::row(realm, name);
     db.write(Origin::Leader, |tx| -> Result<(), Error> {
         let mut t = tx
             .open_table(definition::<store::MapSchema>(Table::Settings))
@@ -249,21 +288,33 @@ mod tests {
                 name: DEFAULT_PLACEMENT.into(),
                 data_pool: 1,
                 index_pool: 3,
+                realm: 0,
             },
         )
         .unwrap();
+        // A realm's placement of the same name is another (D249).
+        let theirs = Placement {
+            name: DEFAULT_PLACEMENT.into(),
+            data_pool: 4,
+            index_pool: 4,
+            realm: 7,
+        };
+        set_placement(&db, &theirs).unwrap();
         assert_eq!(keys(&db).unwrap(), vec![a.clone(), b.clone()]);
         revoke(&db, &a.id).unwrap();
         assert_eq!(revoke(&db, &a.id), Err(Error::NotFound));
         assert_eq!(keys(&db).unwrap(), vec![b]);
         let p = placements(&db).unwrap();
-        assert_eq!(p.len(), 1);
-        assert_eq!((p[0].data_pool, p[0].index_pool), (1, 3));
-        delete_placement(&db, DEFAULT_PLACEMENT).unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!((p[0].data_pool, p[0].index_pool, p[0].realm), (1, 3, 0));
+        assert_eq!(p[1], theirs);
+        delete_placement(&db, 0, DEFAULT_PLACEMENT).unwrap();
         assert_eq!(
-            delete_placement(&db, DEFAULT_PLACEMENT),
+            delete_placement(&db, 0, DEFAULT_PLACEMENT),
             Err(Error::NotFound)
         );
+        assert_eq!(placements(&db).unwrap(), vec![theirs]);
+        delete_placement(&db, 7, DEFAULT_PLACEMENT).unwrap();
         assert!(placements(&db).unwrap().is_empty());
     }
 

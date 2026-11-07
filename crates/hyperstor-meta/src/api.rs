@@ -40,6 +40,7 @@ mod audit;
 mod metrics;
 mod ops;
 mod perf;
+mod realms;
 mod s3;
 mod trash;
 pub use admin::{Signing, parse_token};
@@ -3536,6 +3537,7 @@ pub fn spawn(
                 let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
                 let router = hyperstor_api::AuditServiceExt::register(api.clone(), router);
                 let router = s3::register(api.clone(), router);
+                let router = realms::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {

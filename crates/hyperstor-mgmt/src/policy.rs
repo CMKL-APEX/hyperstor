@@ -57,6 +57,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("OperationService.WatchOperation", Group::Read, false),
     ("MemberService.ListMembers", Group::Read, false),
     ("S3Service.ListS3Placements", Group::Read, false),
+    ("RealmService.ListRealms", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
@@ -86,6 +87,10 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     // Where new buckets go (D232).
     ("S3Service.SetS3Placement", Group::Store, false),
     ("S3Service.DeleteS3Placement", Group::Store, false),
+    // Realms (D248, D249): which pools a realm's tenants may use.
+    ("RealmService.CreateRealm", Group::Store, false),
+    ("RealmService.SetPoolRealms", Group::Store, false),
+    ("RealmService.DeleteRealm", Group::Store, true),
     // Weakening scrub is a deliberate choice (D226): a fresh login.
     ("ClusterService.SetScrubSettings", Group::Store, false),
     ("ClusterService.WeakenScrubSettings", Group::Store, true),
@@ -113,6 +118,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.CreateS3Key", Group::Secure, true),
     ("S3Service.ListS3Keys", Group::Secure, false),
     ("S3Service.RevokeS3Key", Group::Secure, false),
+    // Which gateway takes a tenant's keys (D250): a fresh login.
+    ("RealmService.SetTenantRealm", Group::Secure, true),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),

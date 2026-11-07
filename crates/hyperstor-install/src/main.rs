@@ -79,7 +79,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -162,6 +162,8 @@ struct Settings {
     /// The site's certificate's directory (`s3.crt`, `s3.key`); empty:
     /// the gateway's own certificate from the cluster CA serves HTTPS.
     s3_tls: String,
+    /// The realm the gateway serves (D250); empty: "default".
+    s3_realm: String,
     /// Block devices added to this host's nodes (D167, D168), as
     /// `ID@ADDR=PATH`, comma-separated; each becomes a `--shard`.
     devices: String,
@@ -201,6 +203,7 @@ impl Settings {
             s3: false,
             s3_port: DEFAULT_S3_PORT,
             s3_tls: String::new(),
+            s3_realm: String::new(),
             devices: String::new(),
             removed_devices: String::new(),
         }
@@ -278,6 +281,7 @@ impl Settings {
                 "s3" => self.s3 = v == "true",
                 "s3_port" => self.s3_port = v.parse().unwrap_or(self.s3_port),
                 "s3_tls" => self.s3_tls = v.to_string(),
+                "s3_realm" => self.s3_realm = v.to_string(),
                 "devices" => self.devices = v.to_string(),
                 "removed_devices" => self.removed_devices = v.to_string(),
                 _ => {}
@@ -330,12 +334,13 @@ impl Settings {
             || self.all_in_one
             || self.s3_port != DEFAULT_S3_PORT
             || !self.s3_tls.is_empty()
+            || !self.s3_realm.is_empty()
         {
             // The all-in-one's choice is kept either way: it runs one
             // unless told not to.
             format!(
-                "s3 = {}\ns3_port = {}\ns3_tls = {}\n",
-                self.s3, self.s3_port, self.s3_tls
+                "s3 = {}\ns3_port = {}\ns3_tls = {}\ns3_realm = {}\n",
+                self.s3, self.s3_port, self.s3_tls, self.s3_realm
             )
         } else {
             String::new()
@@ -510,6 +515,7 @@ fn main() {
             "--web-tls" => "web_tls",
             "--s3-port" => "s3_port",
             "--s3-tls" => "s3_tls",
+            "--s3-realm" => "s3_realm",
             _ => usage(),
         };
         let v = val();
@@ -524,6 +530,12 @@ fn main() {
             "endpoints" => matches!(v.as_str(), "auto" | "off"),
             // Empty: back to the cluster CA's certificate.
             "web_tls" | "s3_tls" => v.is_empty() || v.starts_with('/'),
+            // A realm's name (D248); empty: back to "default".
+            "s3_realm" => {
+                v.len() <= 63
+                    && v.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            }
             "node" => v.parse::<u32>().is_ok(),
             // One address, or a map service's members for `--role vhost`.
             "map" => v
@@ -1301,12 +1313,14 @@ struct Plan {
 }
 
 /// A gateway's options (D233): the cluster API it reads keys from, the
-/// directory of the certificate it serves, and where it listens.
+/// directory of the certificate it serves, where it listens, and the
+/// realm it serves (D250; empty: "default").
 #[derive(Debug, Clone, PartialEq)]
 struct S3Plan {
     api: String,
     tls: String,
     listen: String,
+    realm: String,
 }
 
 /// One map service member: `N=RAFT_ADDR/MAP_ADDR`.
@@ -1413,6 +1427,7 @@ fn s3_plan(s: &Settings, p: &Plan) -> S3Plan {
             s.s3_tls.clone()
         },
         listen: format!("0.0.0.0:{}", s.s3_port),
+        realm: s.s3_realm.clone(),
     }
 }
 
@@ -2356,8 +2371,16 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/s3.env".to_string(),
                 format!(
-                    "HS_ARGS=--meta {} --api {} --identity /etc/hyperstor/pki --tls {} --listen {}\n",
-                    p.map, g.api, g.tls, g.listen
+                    "HS_ARGS=--meta {} --api {} --identity /etc/hyperstor/pki --tls {} --listen {}{}\n",
+                    p.map,
+                    g.api,
+                    g.tls,
+                    g.listen,
+                    if g.realm.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" --realm {}", g.realm)
+                    }
                 ),
                 0o644,
             ),

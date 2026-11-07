@@ -147,7 +147,7 @@ values are left out of answers.
 | `GetTrashSettings` | `{"pool": 1}` | `settings`: `pool`, `grace_seconds` (default 86400), `on_full` (`keep` or `purge`) |
 | `SetTrashSettings` | `{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}` | `settings`. On the leader |
 
-`TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService`, `S3Service` and `OperationService`:
+`TokenService`, `CaService`, `MapService`, `MemberService`, `NodeService`, `S3Service`, `RealmService` and `OperationService`:
 
 | Method | Request | Answer |
 |---|---|---|
@@ -167,10 +167,15 @@ values are left out of answers.
 | `CreateS3Key` (`S3Service`) | `{"tenant": 1}`, optionally `"description"` (up to 200 characters). Needs step-up through hyperstor-mgmt | `key` (`id`, `tenant`, `description`, `created_unix`, `created_by`) and `secret`, shown once: the map service keeps it encrypted with the cluster key. On the leader; `failed_precondition` (`no_cluster_key`) on a member without the cluster key, `invalid_argument` for tenant 0 |
 | `ListS3Keys` | `{}` | `keys`, without secrets |
 | `RevokeS3Key` | `{"id": "HS…"}` | `{}`: gateways refuse the key within seconds. On the leader; `not_found` for an unknown key |
-| `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. Kept by the pools' ids, so a renamed pool keeps its placements. On the leader; `invalid_argument` for a bad name, a pool that doesn't exist, a cache pool or `.meta` |
-| `DeleteS3Placement` | `{"name": "fast"}` | `{}`; `not_found` for an unknown placement |
+| `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. Kept by the pools' ids, so a renamed pool keeps its placements. With `"realm"` in the placement, that realm's (default `default`). On the leader; `invalid_argument` for a bad name, a pool that doesn't exist, a cache pool or `.meta`; `failed_precondition` (`pool_not_in_realm`) for a pool its realm may not use |
+| `DeleteS3Placement` | `{"name": "fast"}`, optionally `"realm"` | `{}`; `not_found` for an unknown placement |
 | `ListS3Placements` | `{}` | `placements`, each with its pools' names now and `data_pool_id`, `index_pool_id` (a pool deleted since has an empty name) |
-| `GetS3Gateway` | `{}` | `keys` with their `secret`s, and `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy |
+| `GetS3Gateway` | `{}`, or `{"realm": "acme"}` | the realm's tenants' `keys` with their `secret`s, and its `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy. Without `realm`, `default`'s; `not_found` for an unknown realm |
+| `CreateRealm` (`RealmService`) | `{"name": "acme"}`, optionally `"description"` | `realm` (`id`, `name`, …). On the leader; `failed_precondition` (`realm_exists`) |
+| `ListRealms` | `{}` | `realms`, `default` first, each with its `tenants` and the `pools` whose lists name it; `open_pools`, which every realm may use |
+| `DeleteRealm` | `{"name": "acme"}` | `{}`; `failed_precondition` (`realm_in_use`) while a tenant, pool or placement names it |
+| `SetTenantRealm` | `{"tenant": 2, "realm": "acme"}` | `{}`; `"default"` takes it back. Needs step-up through hyperstor-mgmt |
+| `SetPoolRealms` | `{"pool": 3, "realms": ["acme"]}` | `{}`; no realms: every realm may use it. `failed_precondition` (`pool_in_use`) while a placement of a realm it leaves names the pool |
 | `GetOperation` | `{"id": "…"}` | the operation: `id`, `kind`, `target`, `state` (`OPERATION_STATE_RUNNING`, `_DONE`, `_FAILED`, `_CANCELLED`), `done` of `total`, `message`, times, `created_by` |
 | `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |

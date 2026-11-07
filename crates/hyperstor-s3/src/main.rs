@@ -1,4 +1,4 @@
-//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
+//! `hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]`
 //!
 //! The S3 gateway (14-s3.md §14.2), until SIGINT or SIGTERM. `--tls DIR`
 //! holds `s3.crt` (the chain) and `s3.key`, served for HTTPS.
@@ -6,9 +6,11 @@
 //! With `--api`, access keys and placements come from the cluster API
 //! (D231, D232), over mutual TLS with the gateway's identity in
 //! `--identity DIR` (`s3.crt`, `s3.key` and `root.crt`: an `s3`
-//! certificate, D233), fetched every 5 seconds. Without it, `--keys FILE`
-//! holds the access keys ([`hyperstor_s3::keys`]) and new buckets go in
-//! the two pools named: for running without the cluster API.
+//! certificate, D233), fetched every 5 seconds: those of `--realm`'s
+//! tenants and its placements (D250; default `default`). Without it,
+//! `--keys FILE` holds the access keys ([`hyperstor_s3::keys`]) and new
+//! buckets go in the two pools named: for running without the cluster
+//! API.
 
 use hyperstor_s3::Config;
 use hyperstor_s3::gateway::{Options, Source, serve};
@@ -18,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
+const USAGE: &str = "usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -82,10 +84,11 @@ fn main() {
                 addrs: api.split(',').map(str::to_string).collect(),
                 tls: std::sync::Arc::new(tls),
                 every: Duration::from_secs(5),
+                realm: get("--realm").unwrap_or_else(|| "default".into()),
             }
         }
         (None, Some(file)) => {
-            if get("--identity").is_some() {
+            if get("--identity").is_some() || get("--realm").is_some() {
                 usage();
             }
             let keys = Keys::load(&PathBuf::from(file)).unwrap_or_else(|e| fail(e));

@@ -129,8 +129,10 @@ queue levels.
 
 ### 24.8 Realms (D248–D253)
 
-Settled 2026-11-06 (05-decision-log.md points 211–216); nothing here is
-built yet. A **realm** groups tenants that should look like a separate
+Settled 2026-11-06 (05-decision-log.md points 211–216). Realms on S3
+(D248–D250: the records, pool lists, placements per realm and a gateway
+per realm) are built (2026-11-07, I288); the rest comes as below. A
+**realm** groups tenants that should look like a separate
 installation: their own pools, endpoints and administrators, on the
 same cluster and, if the operator wants, the same drives. It answers
 strict multi-tenancy without a cluster per customer.
@@ -203,6 +205,6 @@ performance isolation is given its own devices. Whether fair share
 gains a realm level is open for the owner's review, with HS15.
 
 **Order of work:** the realm records, pool lists and `--realm` on the S3
-gateway come with D243–D246, before S3 stage 4; host binding,
+gateway came with D243 and D244, before S3 stage 4 (I288); host binding,
 realm-scoped administrators and the NFS side come with HS15 and the NFS
 work (22-nfs.md, still proposed).
