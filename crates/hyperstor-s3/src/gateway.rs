@@ -21,9 +21,9 @@
 
 use crate::chunked::{Algorithm, BodyError, Checks, Chunked};
 use crate::keys::Keys;
+use crate::layout::{Multipart, PartRecord};
 use crate::sigv4::{self, AuthError, ChunkSigner, Payload};
 use crate::xml::Xml;
-use crate::layout::{Multipart, PartRecord};
 use crate::{Bucket, Condition, Config, Entry, List, Meta, S3, S3Error, dates, past_prefix};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -753,13 +753,7 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
             let n = text_param(&q, "partNumber")?
                 .and_then(|n| n.parse::<u32>().ok())
                 .filter(|n| (1..=crate::MAX_PARTS).contains(n))
-                .ok_or_else(|| {
-                    ApiError::new(
-                        400,
-                        "InvalidArgument",
-                        "partNumber is 1 to 10000",
-                    )
-                })?;
+                .ok_or_else(|| ApiError::new(400, "InvalidArgument", "partNumber is 1 to 10000"))?;
             put_object(state, &b, k, tenant, signed, signing, req, Some((id, n))).await
         }
         (Target::Object(b, k), Method::PUT) => {
@@ -797,7 +791,8 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
             only(&q, &["uploadId"])?;
             let id = upload_id(&q)?;
             let h = req.headers().clone();
-            let body = read_body(signed, signing, None, None, req.into_body(), COMPLETE_BODY).await?;
+            let body =
+                read_body(signed, signing, None, None, req.into_body(), COMPLETE_BODY).await?;
             complete_upload(state, &b, k, tenant, id, &h, &body).await
         }
         (Target::Object(..), Method::POST) => {
@@ -1254,12 +1249,7 @@ async fn create_upload(
             ));
         }
     };
-    if full_object
-        && !matches!(
-            algorithm,
-            Some(Algorithm::Crc32 | Algorithm::Crc32c)
-        )
-    {
+    if full_object && !matches!(algorithm, Some(Algorithm::Crc32 | Algorithm::Crc32c)) {
         return Err(ApiError::new(
             400,
             "InvalidRequest",
@@ -1326,7 +1316,9 @@ async fn complete_upload(
             .text_of("PartNumber")
             .and_then(|n| n.trim().parse::<u32>().ok())
             .ok_or_else(|| malformed("a Part without a PartNumber"))?;
-        let etag = p.text_of("ETag").ok_or_else(|| malformed("a Part without an ETag"))?;
+        let etag = p
+            .text_of("ETag")
+            .ok_or_else(|| malformed("a Part without an ETag"))?;
         named.push((n, etag.to_string()));
         for a in [
             Algorithm::Crc32,
@@ -1379,10 +1371,7 @@ async fn complete_upload(
         })
         .await??;
     let location = match header(h, "host") {
-        Some(host) => format!(
-            "https://{host}/{b}/{}",
-            sigv4::aws_encode(&key, false)
-        ),
+        Some(host) => format!("https://{host}/{b}/{}", sigv4::aws_encode(&key, false)),
         None => format!("/{b}/{}", sigv4::aws_encode(&key, false)),
     };
     let mut x = Xml::new("CompleteMultipartUploadResult");
@@ -1394,7 +1383,11 @@ async fn complete_upload(
     if e.checksum.is_some() {
         x.elem(
             "ChecksumType",
-            if e.composite { "COMPOSITE" } else { "FULL_OBJECT" },
+            if e.composite {
+                "COMPOSITE"
+            } else {
+                "FULL_OBJECT"
+            },
         );
     }
     Ok(xml_ok(x.finish("CompleteMultipartUploadResult")))
@@ -1408,13 +1401,22 @@ async fn list_parts(
     tenant: u32,
     q: &Pairs,
 ) -> Result<Response<Body>, ApiError> {
-    only(q, &["uploadId", "max-parts", "part-number-marker", "encoding-type"])?;
+    only(
+        q,
+        &[
+            "uploadId",
+            "max-parts",
+            "part-number-marker",
+            "encoding-type",
+        ],
+    )?;
     let id = upload_id(q)?;
     let number = |name: &str| -> Result<Option<u32>, ApiError> {
         text_param(q, name)?
             .map(|v| {
-                v.parse::<u32>()
-                    .map_err(|_| ApiError::new(400, "InvalidArgument", format!("{name} is a number")))
+                v.parse::<u32>().map_err(|_| {
+                    ApiError::new(400, "InvalidArgument", format!("{name} is a number"))
+                })
             })
             .transpose()
     };
@@ -1448,7 +1450,11 @@ async fn list_parts(
     if let Some(a) = m.algorithm {
         x.elem("ChecksumAlgorithm", a.name()).elem(
             "ChecksumType",
-            if m.full_object { "FULL_OBJECT" } else { "COMPOSITE" },
+            if m.full_object {
+                "FULL_OBJECT"
+            } else {
+                "COMPOSITE"
+            },
         );
     }
     for (n, r) in page {
@@ -1497,8 +1503,8 @@ async fn list_uploads(
     let prefix = param(q, "prefix").unwrap_or_default().to_vec();
     let delimiter = param(q, "delimiter").unwrap_or_default().to_vec();
     let key_marker = param(q, "key-marker").unwrap_or_default().to_vec();
-    let id_marker = text_param(q, "upload-id-marker")?
-        .and_then(|t| u128::from_str_radix(&t, 16).ok());
+    let id_marker =
+        text_param(q, "upload-id-marker")?.and_then(|t| u128::from_str_radix(&t, 16).ok());
     let max: usize = match text_param(q, "max-uploads")? {
         None => 1000,
         Some(m) => m
@@ -2106,9 +2112,9 @@ async fn put_object(
     let (tx, rx) = mpsc::channel::<Bytes>(4);
     // Sent once the body is found good, with the checksum it matched.
     let (good_tx, good_rx) = oneshot::channel::<Option<(Algorithm, Vec<u8>)>>();
-    let job = state.reactors.call(move |s3| {
-        write_object(s3, bucket, key, size, meta, md5, cond, part, rx, good_rx)
-    });
+    let job = state
+        .reactors
+        .call(move |s3| write_object(s3, bucket, key, size, meta, md5, cond, part, rx, good_rx));
     let mut body = req.into_body();
     let pump = async move {
         let mut piece = Vec::with_capacity(PIECE);

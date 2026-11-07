@@ -7097,9 +7097,9 @@ fn s3_model_list(
 /// and the devices hold no `s3` object but the live objects' chunks.
 #[test]
 fn s3_objects_match_a_model() {
-    use hyperstor_s3::layout::{chunk_name, chunks_of};
     use hyperstor_s3::chunked::Algorithm;
     use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
+    use hyperstor_s3::layout::{chunk_name, chunks_of};
     use hyperstor_s3::{Condition, Config, List, Meta, S3, S3Error};
     use md5::{Digest, Md5};
     use std::collections::{BTreeMap, BTreeSet};
@@ -7419,7 +7419,8 @@ fn s3_objects_match_a_model() {
                         // them, or aborted (D196, I291).
                         let algorithm = [None, Some(Algorithm::Crc32c), Some(Algorithm::Sha256)]
                             [rng.random_range(0..3)];
-                        let full = algorithm == Some(Algorithm::Crc32c) && rng.random_range(0..2) == 0;
+                        let full =
+                            algorithm == Some(Algorithm::Crc32c) && rng.random_range(0..2) == 0;
                         let mp = hyperstor_s3::layout::Multipart {
                             content_type: "x/y".into(),
                             algorithm,
@@ -7456,7 +7457,10 @@ fn s3_objects_match_a_model() {
                             parts.insert(n, data);
                         }
                         let (_, done) = s3.parts(b, &key, id).await.unwrap();
-                        assert_eq!(done.keys().collect::<Vec<_>>(), parts.keys().collect::<Vec<_>>());
+                        assert_eq!(
+                            done.keys().collect::<Vec<_>>(),
+                            parts.keys().collect::<Vec<_>>()
+                        );
                         if parts.is_empty() || rng.random_range(0..4) == 0 {
                             s3.abort_upload(b, &key, id).await.unwrap();
                             let r = s3.abort_upload(b, &key, id).await;
@@ -7474,10 +7478,8 @@ fn s3_objects_match_a_model() {
                         } else {
                             chosen
                         };
-                        let named: Vec<(u32, String)> = chosen
-                            .iter()
-                            .map(|n| (*n, done[n].2.etag()))
-                            .collect();
+                        let named: Vec<(u32, String)> =
+                            chosen.iter().map(|n| (*n, done[n].2.etag())).collect();
                         if named.len() > 1 {
                             let mut back = named.clone();
                             back.reverse();
@@ -7495,11 +7497,16 @@ fn s3_objects_match_a_model() {
                         if full {
                             assert_eq!(
                                 e.checksum,
-                                Some((Algorithm::Crc32c, crc32c::crc32c(&whole).to_be_bytes().to_vec()))
+                                Some((
+                                    Algorithm::Crc32c,
+                                    crc32c::crc32c(&whole).to_be_bytes().to_vec()
+                                ))
                             );
                         }
                         assert_eq!(e.composite, algorithm.is_some() && !full);
-                        let r = s3.complete(b, &key, id, &named, &Condition::Any, None).await;
+                        let r = s3
+                            .complete(b, &key, id, &named, &Condition::Any, None)
+                            .await;
                         assert!(matches!(r, Err(S3Error::NoSuchUpload)), "{r:?}");
                         m.insert(key.clone(), whole);
                     }

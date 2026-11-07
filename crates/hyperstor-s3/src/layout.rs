@@ -582,7 +582,10 @@ mod tests {
         };
         e.composite = true;
         assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
-        assert_eq!(e.series(5), [(chunk_prefix(5, 1, 1), 3), (chunk_prefix(5, 2, 3), 0)]);
+        assert_eq!(
+            e.series(5),
+            [(chunk_prefix(5, 1, 1), 3), (chunk_prefix(5, 2, 3), 0)]
+        );
         assert_eq!(part_of(&part_column(7, 3, 9), 7), Some((3, 9)));
         assert_eq!(part_of(&part_column(7, 3, 9), 8), None);
         assert_eq!(part_of(&pending_column(7), 7), None);

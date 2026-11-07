@@ -151,11 +151,7 @@ fn combine(parts: &[&PartRecord]) -> ([u8; 16], u32) {
 /// The completed object's checksum from its parts' (each of `a`): of the
 /// whole object for a CRC when `full`, else of the parts' checksums, one
 /// after another (S3's COMPOSITE).
-fn combined_checksum(
-    a: chunked::Algorithm,
-    full: bool,
-    parts: &[&PartRecord],
-) -> Result<Vec<u8>> {
+fn combined_checksum(a: chunked::Algorithm, full: bool, parts: &[&PartRecord]) -> Result<Vec<u8>> {
     use chunked::Algorithm::*;
     let mut sums = Vec::with_capacity(parts.len());
     for (i, p) in parts.iter().enumerate() {
@@ -892,7 +888,10 @@ impl S3 {
         b: &Bucket,
         key: &[u8],
         id: u128,
-    ) -> Result<(Pending, std::collections::BTreeMap<u32, (Vec<u8>, Vec<u8>, PartRecord)>)> {
+    ) -> Result<(
+        Pending,
+        std::collections::BTreeMap<u32, (Vec<u8>, Vec<u8>, PartRecord)>,
+    )> {
         let row = object_row(key);
         let cols = self.upload_columns(b, &row, id).await?;
         let mut pending = None;
@@ -905,11 +904,9 @@ impl S3 {
                     if !r.done {
                         continue;
                     }
-                    let newer = parts
-                        .get(&number)
-                        .is_none_or(|(_, _, old): &(Vec<u8>, Vec<u8>, PartRecord)| {
-                            r.written >= old.written
-                        });
+                    let newer = parts.get(&number).is_none_or(
+                        |(_, _, old): &(Vec<u8>, Vec<u8>, PartRecord)| r.written >= old.written,
+                    );
                     if newer {
                         parts.insert(number, (c, v, r));
                     }
@@ -1538,7 +1535,11 @@ impl Put<'_> {
                     &chunk_prefix(b.id(), self.id, self.part),
                     chunks_of(self.size, self.chunk),
                 );
-            let r = self.s3.kv.apply(&b.table, &object_row(&self.key), &batch).await;
+            let r = self
+                .s3
+                .kv
+                .apply(&b.table, &object_row(&self.key), &batch)
+                .await;
             if kv_conflict(&r) {
                 // Given up with the upload already.
                 return Ok(());
@@ -1588,7 +1589,11 @@ mod tests {
             let refs: Vec<&PartRecord> = parts.iter().collect();
             let mut h = Hasher::new(a);
             h.update(&whole);
-            assert_eq!(combined_checksum(a, true, &refs).unwrap(), h.finish(), "{a:?}");
+            assert_eq!(
+                combined_checksum(a, true, &refs).unwrap(),
+                h.finish(),
+                "{a:?}"
+            );
             let (md5, crc) = combine(&refs);
             assert_eq!(crc, crc32c::crc32c(&whole));
             let mut m = Md5::new();
@@ -1604,7 +1609,10 @@ mod tests {
         for p in &parts {
             h.update(&p.checksum.as_ref().unwrap().1);
         }
-        assert_eq!(combined_checksum(Algorithm::Sha256, false, &refs).unwrap(), h.finish());
+        assert_eq!(
+            combined_checksum(Algorithm::Sha256, false, &refs).unwrap(),
+            h.finish()
+        );
         // A part without the upload's algorithm.
         let mixed = [&parts[0], &part(b"x", Algorithm::Crc32)];
         assert!(matches!(
