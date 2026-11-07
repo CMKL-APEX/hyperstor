@@ -245,7 +245,8 @@ fn unescape(out: &mut String, text: &str) -> Result<(), &'static str> {
                 } else {
                     None
                 };
-                code.and_then(char::from_u32).ok_or("an unknown reference")?
+                code.and_then(char::from_u32)
+                    .ok_or("an unknown reference")?
             }
         };
         out.push(c);
@@ -267,11 +268,17 @@ mod tests {
         assert_eq!(d.text_of("Quiet"), Some("true"));
         let keys: Vec<_> = d.all("Object").map(|o| o.text_of("Key").unwrap()).collect();
         assert_eq!(keys, ["a<b&\u{1}A", "<x>", "k"]);
-        assert_eq!(d.all("Object").nth(1).unwrap().text_of("VersionId"), Some(""));
+        assert_eq!(
+            d.all("Object").nth(1).unwrap().text_of("VersionId"),
+            Some("")
+        );
         // What a body written by Xml reads back as.
         let mut x = Xml::new("R");
         x.elem("K", "a<b>&\"'\u{1}\r");
-        assert_eq!(parse(&x.finish("R")).unwrap().text_of("K"), Some("a<b>&\"'\u{1}\r"));
+        assert_eq!(
+            parse(&x.finish("R")).unwrap().text_of("K"),
+            Some("a<b>&\"'\u{1}\r")
+        );
         for bad in [
             "",
             "<a>",
