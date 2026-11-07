@@ -7705,7 +7705,10 @@ fn s3_gateway_serves_an_sdk() {
         role: Role::Host,
         id: "s3".into(),
     };
-    let leaf = hyperstor_pki::issue(&ca, &who, &["127.0.0.1".parse().unwrap()], &[], 1).unwrap();
+    // Also for virtual-hosted requests to `bucket.s3.test` (D245), which
+    // the script resolves to this host.
+    let names = ["s3.test".to_string(), "*.s3.test".to_string()];
+    let leaf = hyperstor_pki::issue(&ca, &who, &["127.0.0.1".parse().unwrap()], &names, 1).unwrap();
     let ca_path = dir.path().join("ca.pem");
     std::fs::write(&ca_path, &root.cert).unwrap();
     // Keys made here, for this run only.
@@ -7744,6 +7747,7 @@ fn s3_gateway_serves_an_sdk() {
             ..Config::default()
         },
         clean_every: std::time::Duration::from_secs(3600),
+        domains: vec!["s3.test".into()],
     };
     let (stop, stopped) = std::sync::mpsc::channel();
     let (at_tx, at_rx) = std::sync::mpsc::channel();
@@ -7756,6 +7760,7 @@ fn s3_gateway_serves_an_sdk() {
         .arg("-I")
         .arg(script)
         .env("HS_S3_ENDPOINT", format!("https://{at}"))
+        .env("HS_S3_DOMAIN", "s3.test")
         .env("HS_S3_CA", &ca_path)
         .env("HS_S3_KEY", &k1)
         .env("HS_S3_SECRET", &s1)

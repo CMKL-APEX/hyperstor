@@ -1,8 +1,10 @@
-"""AWS's Python SDK (boto3) against a gateway (14-s3.md §14.7, stages 2 to 4).
+"""AWS's Python SDK (boto3) against a gateway (14-s3.md §14.7, stages 2 to 5).
 
 Run by hyperstor-daemon's `s3_gateway_serves_an_sdk`, which starts a
 cluster and a gateway and passes, in the environment: HS_S3_ENDPOINT,
-HS_S3_CA (the CA that signed the gateway's certificate), and two keys of
+HS_S3_CA (the CA that signed the gateway's certificate), HS_S3_DOMAIN (the
+gateway's --domain, which this script resolves to the endpoint's host),
+and two keys of
 different tenants, HS_S3_KEY/HS_S3_SECRET and HS_S3_KEY2/HS_S3_SECRET2,
 made for the run. Prints "SDK OK" at the end; any failure raises.
 """
@@ -293,6 +295,46 @@ assert s3.head_object(Bucket="sdk", Key="mp/managed")["ETag"].endswith('-3"')
 out = io.BytesIO()
 s3.download_fileobj("sdk", "mp/managed", out, Config=TransferConfig(multipart_chunksize=4 * MIB))
 assert out.getvalue() == blob
+
+# Virtual-hosted requests (D245): the bucket in the host, under the
+# gateway's domain, resolved here to the endpoint's address; the same
+# buckets as path-style, the tenant the signer's.
+import socket
+import urllib.parse
+
+DOMAIN = os.environ["HS_S3_DOMAIN"]
+ep = urllib.parse.urlsplit(EP)
+real_getaddrinfo = socket.getaddrinfo
+
+
+def getaddrinfo(host, *a, **kw):
+    if host == DOMAIN or host.endswith("." + DOMAIN):
+        host = ep.hostname
+    return real_getaddrinfo(host, *a, **kw)
+
+
+socket.getaddrinfo = getaddrinfo
+vh = boto3.client(
+    "s3",
+    endpoint_url="https://%s:%d" % (DOMAIN, ep.port),
+    aws_access_key_id=os.environ["HS_S3_KEY"],
+    aws_secret_access_key=os.environ["HS_S3_SECRET"],
+    region_name="us-east-1",
+    verify=CA,
+    config=Config(s3={"addressing_style": "virtual"}, signature_version="s3v4", retries={"max_attempts": 1}),
+)
+vh.create_bucket(Bucket="vhost")
+vh.put_object(Bucket="vhost", Key="a b/c", Body=b"virtual")
+assert vh.get_object(Bucket="vhost", Key="a b/c")["Body"].read() == b"virtual"
+assert [o["Key"] for o in vh.list_objects_v2(Bucket="vhost")["Contents"]] == ["a b/c"]
+assert s3.get_object(Bucket="vhost", Key="a b/c")["Body"].read() == b"virtual"
+assert "vhost" in [b["Name"] for b in vh.list_buckets()["Buckets"]]
+url = vh.generate_presigned_url("get_object", Params={"Bucket": "vhost", "Key": "a b/c"}, ExpiresIn=60)
+assert urllib.parse.urlsplit(url).hostname == "vhost." + DOMAIN, url
+assert urllib.request.urlopen(url, context=ctx).read() == b"virtual"
+vh.delete_object(Bucket="vhost", Key="a b/c")
+vh.delete_bucket(Bucket="vhost")
+assert code(lambda: s3.head_bucket(Bucket="vhost")) == "404"
 
 # Keys that don't sign, and what isn't built yet.
 assert code(lambda: client(os.environ["HS_S3_KEY"], "wrong").list_buckets()) == "SignatureDoesNotMatch"

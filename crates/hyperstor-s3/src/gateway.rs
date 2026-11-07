@@ -67,6 +67,10 @@ pub struct Options {
     pub config: Config,
     /// How often expired uploads are cleaned up (14-s3.md §14.6).
     pub clean_every: Duration,
+    /// The gateway's domains: a request to `bucket.DOMAIN` names the
+    /// bucket in its host (virtual-hosted, D199, D245); to `DOMAIN` or any
+    /// other host, in its path.
+    pub domains: Vec<String>,
 }
 
 /// Where the access keys and placements come from (D231, D232).
@@ -425,6 +429,7 @@ impl hyper::body::Body for Streamed {
 
 struct State {
     reactors: Reactors,
+    domains: Vec<String>,
     served: std::sync::RwLock<Arc<Served>>,
 }
 
@@ -503,6 +508,7 @@ pub fn serve(
         };
         let state = Arc::new(State {
             reactors,
+            domains: o.domains.iter().map(|d| d.to_ascii_lowercase()).collect(),
             served: std::sync::RwLock::new(Arc::new(served)),
         });
         if let Some((addrs, tls, every, realm)) = api {
@@ -608,6 +614,43 @@ enum Target {
     Object(String, Vec<u8>),
 }
 
+/// The bucket a virtual-hosted request's host names: `bucket.DOMAIN`
+/// for one of `domains` (D245; the tenant is the signer's, D243). None
+/// for a domain itself or any other host: path-style.
+fn host_bucket(host: Option<&str>, domains: &[String]) -> Option<String> {
+    let host = host?.trim();
+    // Without a port: `name:port`; an IPv6 literal names no bucket.
+    let name = match host.rsplit_once(':') {
+        Some((n, p)) if !n.contains(':') && p.bytes().all(|c| c.is_ascii_digit()) => n,
+        _ => host,
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    domains.iter().find_map(|d| {
+        name.strip_suffix(d.as_str())
+            .and_then(|b| b.strip_suffix('.'))
+            .filter(|b| !b.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// What a request names: the bucket from its host when virtual-hosted,
+/// else from its path.
+fn target_of(host: Option<&str>, path: &str, domains: &[String]) -> Result<Target, ApiError> {
+    let Some(b) = host_bucket(host, domains) else {
+        return target(path);
+    };
+    let bad = || ApiError::new(400, "InvalidURI", "the path couldn't be decoded");
+    let k = path.strip_prefix('/').ok_or_else(bad)?;
+    if k.is_empty() {
+        return Ok(Target::Bucket(b));
+    }
+    let k = sigv4::percent_decode(k.as_bytes()).ok_or_else(bad)?;
+    if std::str::from_utf8(&k).is_err() {
+        return Err(ApiError::new(400, "InvalidURI", "object names are UTF-8"));
+    }
+    Ok(Target::Object(b, k))
+}
+
 fn target(path: &str) -> Result<Target, ApiError> {
     let bad = || ApiError::new(400, "InvalidURI", "the path couldn't be decoded");
     let p = path.strip_prefix('/').ok_or_else(bad)?;
@@ -685,7 +728,8 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
     let tenant = key.tenant;
     drop(served);
     let m = req.method().clone();
-    match (target(&path)?, m) {
+    let host = header(req.headers(), "host").map(str::to_string);
+    match (target_of(host.as_deref(), &path, &state.domains)?, m) {
         (Target::Service, Method::GET) => {
             only(&q, &[])?;
             list_buckets(state, tenant).await
@@ -2608,6 +2652,29 @@ mod tests {
         for bad in ["b", "b/", "/k", "b/%zz", "b/%ff"] {
             assert_eq!(c(bad), Err("InvalidArgument"), "{bad}");
         }
+    }
+
+    #[test]
+    fn hosts_name_buckets_under_the_gateways_domains() {
+        let d = vec!["s3.example.com".to_string(), "s3.local".to_string()];
+        let h = |host| host_bucket(Some(host), &d);
+        assert_eq!(h("photos.s3.example.com"), Some("photos".into()));
+        assert_eq!(h("Photos.S3.Example.com:8848"), Some("photos".into()));
+        assert_eq!(h("my.bucket.s3.local."), Some("my.bucket".into()));
+        assert_eq!(h("s3.example.com"), None);
+        assert_eq!(h("xs3.example.com"), None);
+        assert_eq!(h("10.0.0.1:8848"), None);
+        assert_eq!(h("[::1]:8848"), None);
+        assert_eq!(host_bucket(None, &d), None);
+        assert_eq!(host_bucket(Some("photos.s3.local"), &[]), None);
+        let t = |host, path| target_of(Some(host), path, &d);
+        assert!(matches!(t("b.s3.local", "/"), Ok(Target::Bucket(b)) if b == "b"));
+        assert!(
+            matches!(t("b.s3.local", "/a%20b//c"), Ok(Target::Object(b, k)) if b == "b" && k == b"a b//c")
+        );
+        // A path-style request to the domain itself.
+        assert!(matches!(t("s3.local", "/b/k"), Ok(Target::Object(b, k)) if b == "b" && k == b"k"));
+        assert!(matches!(t("s3.local", "/"), Ok(Target::Service)));
     }
 
     #[test]

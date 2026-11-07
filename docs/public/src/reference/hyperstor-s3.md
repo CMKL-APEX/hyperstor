@@ -8,11 +8,12 @@ may send any request to any of them.
 > **Early.** This is stage 4 of 5 (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
 > [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
-> --s3`](hyperstor-install.md) installs gateways. Virtual-hosted
-> addressing and buckets in the web UI come in stage 5.
+> --s3`](hyperstor-install.md) installs gateways. Stage 5 has begun:
+> virtual-hosted addressing is built; buckets in the administration
+> tools come next.
 
 ```text
-usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
+usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--domain NAME[,NAME...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
 ```
 
 | Option | Default | Meaning |
@@ -22,6 +23,7 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--api ADDR[,ADDR...]` | | The cluster API of the map service's members, tried in turn: the access keys and placements come from there, every 5 seconds |
 | `--identity DIR` | | With `--api`: the gateway's own certificate, `s3.crt` and `s3.key`, of role `s3`, and the cluster's `root.crt`. Only an `s3` certificate may read the keys. It names the gateway's addresses, so `--tls` may be the same directory where clients trust the cluster's root |
 | `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`) |
+| `--domain NAME[,NAME...]` | | The gateway's domains: a request to `bucket.NAME` names its bucket in the host (virtual-hosted), one to `NAME` or any other host in its path. Needs a wildcard DNS name and certificate for `*.NAME`; a wildcard covers one label, so buckets with dots in their names are reached path-style |
 | `--keys FILE` | | Instead of `--api`, for running without the cluster API: the access keys, one per line: `ID SECRET TENANT`; `#` starts a comment. Readable by its owner only (`chmod 600`), or the gateway won't start |
 | `--data-pool NAME` | | With `--keys`: the pool new buckets keep their objects' bytes in |
 | `--index-pool NAME` | | With `--keys`: the pool new buckets keep their index in: flash, ideally |
@@ -55,10 +57,12 @@ placement changes.
 
 ## What it answers
 
-Path-style requests (`https://host/bucket/key`), signed with Signature
-Version 4 in the `Authorization` header or in a presigned URL (up to 7
-days); clients must use version 4 and path-style addressing. Requests
-more than 15 minutes from the gateway's clock are refused.
+Path-style requests (`https://host/bucket/key`) and, with `--domain`,
+virtual-hosted ones (`https://bucket.s3.example.com/key`), signed with
+Signature Version 4 in the `Authorization` header or in a presigned URL
+(up to 7 days); clients must use version 4. Requests more than 15
+minutes from the gateway's clock are refused. Either way the bucket is
+the signing key's tenant's: no host name or path names another tenant's.
 
 | Request | Notes |
 |---|---|
