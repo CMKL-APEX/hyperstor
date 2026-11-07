@@ -222,10 +222,37 @@ if "ETag" in ident:
 assert code(lambda: client(os.environ["HS_S3_KEY"], "wrong").list_buckets()) == "SignatureDoesNotMatch"
 assert code(lambda: client("NOSUCHKEY", "x").list_buckets()) == "InvalidAccessKeyId"
 assert code(lambda: s3.get_bucket_tagging(Bucket="sdk")) == "NotImplemented"
-assert (
-    code(lambda: s3.copy_object(Bucket="sdk", Key="copy", CopySource="sdk/a/small.txt"))
-    == "NotImplemented"
+
+# Copies (D193): the bytes and metadata, or new metadata; conditions on
+# the source; never from another tenant's bucket.
+r = s3.copy_object(Bucket="sdk", Key="copy", CopySource="sdk/a/small.txt")
+assert r["CopyObjectResult"]["ETag"] == '"%s"' % hashlib.md5(small).hexdigest(), r
+o = s3.get_object(Bucket="sdk", Key="copy")
+assert o["Body"].read() == small and o["ContentType"] == "text/plain" and o["Metadata"] == {"k": "v"}
+s3.copy_object(
+    Bucket="sdk", Key="copy", CopySource={"Bucket": "sdk", "Key": "a/b/big"},
+    MetadataDirective="REPLACE", ContentType="x/y", Metadata={"n": "1"},
 )
+o = s3.get_object(Bucket="sdk", Key="copy")
+assert o["Body"].read() == big[::-1] and o["ContentType"] == "x/y" and o["Metadata"] == {"n": "1"}
+s3.copy_object(Bucket="sdk", Key=odd + "2", CopySource={"Bucket": "sdk", "Key": odd})
+assert get(odd + "2") == b"odd"
+c = code(lambda: s3.copy_object(Bucket="sdk", Key="copy", CopySource="sdk/copy"))
+assert c == "InvalidRequest", c
+c = code(lambda: s3.copy_object(Bucket="sdk", Key="x", CopySource="sdk/a/small.txt", CopySourceIfMatch='"0"'))
+assert c == "PreconditionFailed", c
+assert code(lambda: s3.copy_object(Bucket="sdk", Key="x", CopySource="sdk/nope")) == "NoSuchKey"
+theirs.create_bucket(Bucket="theirs")
+c = code(lambda: theirs.copy_object(Bucket="theirs", Key="x", CopySource="sdk/copy"))
+assert c == "NoSuchBucket", c
+theirs.delete_bucket(Bucket="theirs")
+r = s3.copy_object(Bucket="sdk", Key="copy2", CopySource="sdk/c/SHA256", ChecksumAlgorithm="SHA1")
+assert r["CopyObjectResult"]["ChecksumSHA1"] == base64.b64encode(hashlib.sha1(big).digest()).decode(), r
+# A copy is its own: the source deleted, the copy remains.
+s3.delete_object(Bucket="sdk", Key="c/SHA256")
+h = s3.head_object(Bucket="sdk", Key="copy2", ChecksumMode="ENABLED")
+assert h["ChecksumSHA1"] == r["CopyObjectResult"]["ChecksumSHA1"]
+assert get("copy2") == big
 
 # Deletes.
 s3.delete_object(Bucket="sdk", Key="a/small.txt")
