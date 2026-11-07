@@ -124,6 +124,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.RevokeS3Key", Group::Secure, false),
     // Which gateway takes a tenant's keys (D250): a fresh login.
     ("RealmService.SetTenantRealm", Group::Secure, true),
+    // Which volumes a host may attach (D251).
+    ("RealmService.SetHostRealms", Group::Secure, true),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),

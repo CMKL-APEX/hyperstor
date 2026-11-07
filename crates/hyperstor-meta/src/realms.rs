@@ -7,6 +7,8 @@
 //! - `trealm/<tenant>`: the realm a tenant is in, when not "default".
 //! - `prealm/<pool id>`: the realms that may use a pool, when not every
 //!   realm.
+//! - `hrealm/<host>`: the realms a host is bound to (D251, D259), by the
+//!   name it gives (D261); a host without a row is unbound.
 //!
 //! "default" is realm 0 and has no row. What one row needs of the others
 //! (a realm deleted only when nothing names it, a pool taken from a realm
@@ -24,6 +26,7 @@ use std::collections::BTreeMap;
 const REALM: &str = "realm/";
 const TENANT: &str = "trealm/";
 const POOL: &str = "prealm/";
+const HOST: &str = "hrealm/";
 
 /// The realm every tenant is in until put in another.
 pub const DEFAULT_REALM: &str = "default";
@@ -77,6 +80,8 @@ pub struct Realms {
     pub tenants: BTreeMap<u32, u32>,
     /// Pools with a list, and the realms on it.
     pub pools: BTreeMap<u32, Vec<u32>>,
+    /// Hosts bound to realms, and the realms.
+    pub hosts: BTreeMap<String, Vec<u32>>,
 }
 
 impl Realms {
@@ -94,6 +99,17 @@ impl Realms {
             .iter()
             .find(|r| r.id == id)
             .map_or_else(|| DEFAULT_REALM.to_string(), |r| r.name.clone())
+    }
+
+    /// What storage nodes need of realms, for the cluster map (D259): the
+    /// hosts bound, and while any is, the tenants not in "default".
+    pub fn map_view(&self) -> (BTreeMap<String, Vec<u32>>, BTreeMap<u32, u32>) {
+        let tenants = if self.hosts.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.tenants.clone()
+        };
+        (self.hosts.clone(), tenants)
     }
 
     /// The realm `tenant` is in.
@@ -154,6 +170,11 @@ fn read(t: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Realms, E
         out.pools
             .insert(pool, ids(&v).map_err(|e| bad(&row, e.to_string()))?);
     }
+    for (host, v) in scan(t, HOST)? {
+        let row = format!("{HOST}{host}");
+        out.hosts
+            .insert(host, ids(&v).map_err(|e| bad(&row, e.to_string()))?);
+    }
     Ok(out)
 }
 
@@ -202,7 +223,8 @@ pub fn create(db: &Db, r: &Realm) -> Result<u32, Error> {
     })
 }
 
-/// Deletes realm `name`, which no tenant, pool or placement may name.
+/// Deletes realm `name`, which no tenant, pool, placement or host binding
+/// may name.
 pub fn delete(db: &Db, name: &str) -> Result<(), Error> {
     let placements = s3keys::placements(db)?;
     write(db, |t, now| {
@@ -212,16 +234,50 @@ pub fn delete(db: &Db, name: &str) -> Result<(), Error> {
         let tenants = now.tenants.values().filter(|&&x| x == r.id).count();
         let pools = now.pools.values().filter(|l| l.contains(&r.id)).count();
         let places = placements.iter().filter(|p| p.realm == r.id).count();
-        if tenants + pools + places > 0 {
+        let hosts = now.hosts.values().filter(|l| l.contains(&r.id)).count();
+        if tenants + pools + places + hosts > 0 {
             return Err(refused(
                 "realm_in_use",
                 format!(
-                    "realm {name} has {tenants} tenant(s), is on {pools} pool(s)' lists and has {places} S3 placement(s)"
+                    "realm {name} has {tenants} tenant(s), is on {pools} pool(s)' lists, has {places} S3 placement(s) and {hosts} host(s) bound to it"
                 ),
             ));
         }
         t.remove(format!("{REALM}{name}").as_str())
             .map_err(StoreError::from)?;
+        Ok(())
+    })
+}
+
+/// Whether `host` may name a host (D261): 1 to 64 letters, digits, `.`,
+/// `-` and `_`, as hostnames and the installer's names are.
+pub fn valid_host(host: &str) -> bool {
+    (1..=64).contains(&host.len())
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+}
+
+/// Binds `host` to `realms` (D251), which must exist ("default" is 0);
+/// none unbinds it.
+pub fn set_host(db: &Db, host: &str, realms: &[u32]) -> Result<(), Error> {
+    write(db, |t, now| {
+        for &r in realms {
+            if r != 0 && !now.realms.iter().any(|x| x.id == r) {
+                return Err(Error::NotFound);
+            }
+        }
+        let row = format!("{HOST}{host}");
+        if realms.is_empty() {
+            t.remove(row.as_str()).map_err(StoreError::from)?;
+        } else {
+            let mut e = Enc::new();
+            e.seq(realms, |e, r| {
+                e.u32(*r);
+            });
+            t.insert(row.as_str(), e.into_vec().as_slice())
+                .map_err(StoreError::from)?;
+        }
         Ok(())
     })
 }
@@ -444,6 +500,22 @@ mod tests {
         set_pool(&db, 3, &[a, b], &[]).unwrap();
         set_pool(&db, 3, &[], &[]).unwrap();
         assert!(load(&db).unwrap().may_use(0, 3));
+        // Hosts: unbound until bound, to realms that exist; the map sees
+        // tenants' realms only while a host is bound (D259).
+        assert_eq!(load(&db).unwrap().map_view(), Default::default());
+        assert_eq!(set_host(&db, "hv1", &[9]), Err(Error::NotFound));
+        set_host(&db, "hv1", &[b, 0]).unwrap();
+        let (hosts, tenants) = load(&db).unwrap().map_view();
+        assert_eq!(hosts.get("hv1"), Some(&vec![b, 0]));
+        assert_eq!(tenants.get(&5), Some(&a));
+        assert!(matches!(
+            delete(&db, "blue"),
+            Err(Error::Refused { why, .. }) if why.contains("1 host(s)")
+        ));
+        set_host(&db, "hv1", &[]).unwrap();
+        assert_eq!(load(&db).unwrap().map_view(), Default::default());
+        assert!(valid_host("hv-1.example_2") && !valid_host("") && !valid_host("a b"));
+        assert!(!valid_host(&"h".repeat(65)) && !valid_host("a/b"));
         // Deleted only when nothing names it.
         assert!(matches!(
             delete(&db, "acme"),

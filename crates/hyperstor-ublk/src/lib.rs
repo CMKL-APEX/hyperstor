@@ -41,6 +41,9 @@ pub struct Options {
     pub take: Take,
     /// Requests in flight at once.
     pub depth: u16,
+    /// The host it names to storage nodes, for realm bindings (`--host`,
+    /// D259, D261); empty: none.
+    pub host: String,
 }
 
 /// A device being served.
@@ -170,6 +173,7 @@ fn queue_thread(
             .await
             .map_err(|e| format!("map service: {e}"))?;
         client.set_lease_label("ublk");
+        client.set_host(&opts.host);
         let vol = match opts.take {
             Take::Attach => client.attach(opts.volume).await,
             Take::TakeOver => client.take_over(opts.volume).await,

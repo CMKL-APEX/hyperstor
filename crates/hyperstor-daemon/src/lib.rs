@@ -37,7 +37,7 @@ use shard_cell::ReadKind;
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, counter_of, read_frame_counted, writer};
 use hyperstor_client::volume::{
     DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
-    encode_holder, header_deleting, header_version,
+    encode_holder, header_deleting, header_tenant, header_version,
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
@@ -1936,6 +1936,8 @@ impl ShardState {
         // The client instance named at `Hello`; 0 for peers, which don't
         // send one and are never blocklisted.
         let mut instance = 0;
+        // The host the client named after `Hello` (D261); empty: none.
+        let mut host = String::new();
         let counter = counter_of(&s);
         loop {
             let Ok((h, msg, payload)) = read_frame_counted(&s, counter.as_deref()).await else {
@@ -1956,6 +1958,9 @@ impl ShardState {
             if let Msg::Hello { instance: i, .. } = msg {
                 instance = i;
             }
+            if let Msg::Host { name } = &msg {
+                host = name.clone();
+            }
             // A blocklisted instance gets nothing more (06-metadata.md §4.1),
             // nor does a request under a blocklisted lease identity (D150).
             if !matches!(msg, Msg::Ping)
@@ -1974,6 +1979,12 @@ impl ShardState {
                     &[],
                 ),
                 Msg::Ping => reply(&Msg::Pong, &[]),
+                Msg::Host { .. } => reply(
+                    &Msg::Noted {
+                        map_epoch: self.map().epoch,
+                    },
+                    &[],
+                ),
                 Msg::Write { to, key, off, crcs } => {
                     metrics::ShardMetrics::add(&self.metrics.writes, 1);
                     metrics::ShardMetrics::add(&self.metrics.write_bytes, payload.len() as u64);
@@ -2010,7 +2021,8 @@ impl ShardState {
                     takeover,
                     label,
                 } => {
-                    self.lease(h.req, instance, to, key, mode, takeover, label, tx.clone())
+                    let who = (instance, host.clone());
+                    self.lease(h.req, who, to, key, mode, takeover, label, tx.clone())
                         .await
                 }
                 Msg::LeaseRelease { to, key } => {
@@ -3260,10 +3272,11 @@ impl ShardState {
     /// has expired, `takeover` breaks it, but only if its identity and
     /// every delegate's are blocklisted in this device's map.
     #[allow(clippy::too_many_arguments)]
+    /// `who`: the connection's client instance and the host it named.
     async fn lease(
         self: &Rc<Self>,
         req: u64,
-        instance: u64,
+        who: (u64, String),
         to: Target,
         key: WireKey,
         mode: u8,
@@ -3271,6 +3284,7 @@ impl ShardState {
         label: String,
         tx: Sender<Vec<u8>>,
     ) {
+        let (instance, host) = who;
         let send = move |m: Msg| {
             let _ = tx.send(encode_frame(req, &m, &[]));
         };
@@ -3300,6 +3314,18 @@ impl ShardState {
             v2.set(header_version(attrs));
             if header_deleting(attrs) {
                 return Err(err(Code::Invalid, &me.map(), "the volume is being deleted"));
+            }
+            // A host bound to realms attaches only their volumes (D251,
+            // D259), on the name it gave (D261).
+            let map = me.map();
+            let tenant = header_tenant(attrs);
+            if !map.host_may_attach(&host, tenant) {
+                let realm = map.tenant_realms.get(&tenant).copied().unwrap_or(0);
+                return Err(err(
+                    Code::Invalid,
+                    &map,
+                    &format!("host {host} isn't bound to realm {realm} of tenant {tenant}"),
+                ));
             }
             let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
             let delegates = attrs

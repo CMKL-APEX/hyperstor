@@ -190,7 +190,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -359,9 +359,12 @@ struct Args {
     poll: bool,
     /// `s3 key create`.
     tenant: Option<u32>,
-    /// `realm tenant|pool`, `s3 placement set|delete`: a realm, or for
-    /// `realm pool` realms, comma-separated, or `any` (D248, D249).
+    /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
+    /// for `realm pool` and `realm host` realms, comma-separated, or `any`
+    /// (D248, D249, D251).
     realm: Option<String>,
+    /// `realm host`: the host, as it names itself (D261).
+    host: Option<String>,
     description: Option<String>,
     /// `s3 placement set`: pool names.
     data_pool: Option<String>,
@@ -412,6 +415,7 @@ fn main() {
         id: None,
         force: false,
         holder: None,
+        host: None,
         exclusive: false,
         lending: None,
         epoch: None,
@@ -588,6 +592,7 @@ fn main() {
             "--id" => a.id = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--force" => a.force = true,
             "--holder" => a.holder = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--host" => a.host = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--exclusive" => a.exclusive = true,
             "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--epoch" => {
@@ -675,7 +680,10 @@ fn main() {
                     "port" => matches!(sub, Some("list" | "role" | "lending")),
                     "claim" => matches!(sub, Some("list" | "port" | "renew" | "release")),
                     "realm" => {
-                        matches!(sub, Some("create" | "list" | "delete" | "tenant" | "pool"))
+                        matches!(
+                            sub,
+                            Some("create" | "list" | "delete" | "tenant" | "pool" | "host")
+                        )
                     }
                     "pool" => {
                         matches!(
@@ -826,7 +834,7 @@ fn main() {
     let placement_set = cmd == "s3 placement set";
     let realm_given = matches!(
         cmd.as_str(),
-        "realm tenant" | "realm pool" | "s3 placement set" | "s3 placement delete"
+        "realm tenant" | "realm pool" | "realm host" | "s3 placement set" | "s3 placement delete"
     );
     // Buckets (D246): show and delete name one by --tenant and --name; list
     // may keep to one tenant.
@@ -840,7 +848,9 @@ fn main() {
     if !tenant_ok
         || (bucket_one && a.name.is_empty())
         || (a.description.is_some() && !matches!(cmd.as_str(), "s3 key create" | "realm create"))
-        || (matches!(cmd.as_str(), "realm tenant" | "realm pool") && a.realm.is_none())
+        || (matches!(cmd.as_str(), "realm tenant" | "realm pool" | "realm host")
+            && a.realm.is_none())
+        || ((cmd == "realm host") != a.host.is_some())
         || (!realm_given && a.realm.is_some())
         || (matches!(cmd.as_str(), "realm create" | "realm delete") && a.name.is_empty())
         || (cmd == "realm pool" && a.pool.is_none())
@@ -1179,6 +1189,7 @@ const LEADER_ONLY: &[&str] = &[
     "realm delete",
     "realm tenant",
     "realm pool",
+    "realm host",
 ];
 
 /// Where the API calls go.
@@ -2774,6 +2785,33 @@ where
                 })
                 .await?;
             println!("tenant {tenant} is in realm {realm}");
+        }
+        "realm host" => {
+            let host = a.host.clone().expect("checked with the arguments");
+            let realms: Vec<String> = if realm == "any" {
+                Vec::new()
+            } else {
+                realm
+                    .split(',')
+                    .filter(|r| !r.is_empty())
+                    .map(String::from)
+                    .collect()
+            };
+            client
+                .set_host_realms(pb::SetHostRealmsRequest {
+                    host: host.clone(),
+                    realms: realms.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            if realms.is_empty() {
+                println!("host {host}: unbound, it attaches volumes of any realm");
+            } else {
+                println!(
+                    "host {host}: attaches only volumes of realm(s) {}",
+                    realms.join(", ")
+                );
+            }
         }
         _ => {
             let pool = a.pool.expect("checked with the arguments");

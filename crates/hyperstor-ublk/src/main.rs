@@ -1,4 +1,4 @@
-//! `hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N]`
+//! `hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME]`
 //! `hyperstor-ublk delete --dev N`
 //!
 //! `attach` takes volume ID's `rw` lease (refused while another client
@@ -11,7 +11,7 @@
 use hyperstor_ublk::{Options, Take, ctrl::Control, parse_id, serve};
 use std::io::Write;
 
-const USAGE: &str = "usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] | delete --dev N";
+const USAGE: &str = "usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] | delete --dev N";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -58,6 +58,7 @@ fn main() {
                     volume,
                     take,
                     depth,
+                    host: get("--host").unwrap_or_else(hyperstor_client::Client::this_host),
                 },
                 |s| {
                     println!(
