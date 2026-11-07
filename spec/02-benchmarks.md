@@ -1676,7 +1676,10 @@ I257. Eight 64 MiB volumes in pool 1 (ids 0–7, purged after). From node
 `hyperstorctl out --device 2000`, which moves about 125 of pool 1's
 PGs to device 2001 by backfill. `in` after each run. A device that comes
 back in still holds its data, so it is brought up to date by recovery,
-not backfill, and shows no backfill.
+not backfill, and shows no backfill. *Correction (2026-11-07):* only
+within `STRAY_GRACE` (60 s, D177) of the move; device 2000's log shows
+it deleted its copies a minute after each `out` here, so each `in` was a
+backfill too (see 2026-11-07, finding 3).
 
 | Run | Backfill | 4 KiB writes (ops/s) | p50 | p99 |
 |---|---|---|---|---|
@@ -1752,9 +1755,13 @@ ran one `-j2` test build of another session. Same commands as
    nothing. Backfill under QD32 took about as long as with no load on
    2026-11-06 (38 s against 35 s) and cost 27% of the writes.
 3. **The QD1 run had no backfill to measure:** pool 1 was clean at the
-   first check, 4 s after `out`. Device 2001 most likely still held the
-   PGs' copies from the QD32 run, so they only needed catching up. A
-   QD1 backfill needs its own run, well after the QD32 one.
+   first check, 4 s after `out`. Device 2001 still held the PGs' copies
+   from the QD32 run: a device deletes a copy only once the PG has been
+   served elsewhere for `STRAY_GRACE` (60 s, D177), and `out` came 35 s
+   after `in`. Its log shows the deletions at 06:35–06:36 UTC, after the
+   last `in`; device 2000 deleted its own about a minute after each
+   `out`, so each `in` was a backfill (21–24 s, no load). A QD1
+   backfill needs its own run, more than a minute after the last move.
 4. **I/O pressure on these hosts is Hyperstor's own waiting.** On
    nodes 0 and 1, `io.pressure` "full" was 55–80% for the whole host
    and at the same level in the cgroups of `hyperstord`, the map
