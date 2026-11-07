@@ -3324,7 +3324,7 @@ impl ShardState {
                 return Err(err(
                     Code::Invalid,
                     &map,
-                    &format!("host {host} isn't bound to realm {realm} of tenant {tenant}"),
+                    format!("host {host} isn't bound to realm {realm} of tenant {tenant}"),
                 ));
             }
             let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
