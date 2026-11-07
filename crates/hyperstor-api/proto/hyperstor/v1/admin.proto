@@ -623,6 +623,12 @@ message S3Bucket {
   uint32 index_pool_id = 7 [json_name = "index_pool_id"];
   // Its tenant's realm (D248).
   string realm = 8;
+  // Whether its objects and bytes are known: not for a bucket made before
+  // buckets were counted, nor when counting failed (D256).
+  bool counted = 9;
+  // Its objects, and their bytes (each object's latest version).
+  uint64 objects = 10;
+  uint64 bytes = 11;
 }
 
 message ListS3BucketsRequest {

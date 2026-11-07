@@ -1321,3 +1321,16 @@ recommendations; the owner took both:
 |---|---|---|---|
 | 217 | How the tools see buckets: the map service reads them from the store when asked (recommended); gateways report them into the map service; the map service asks a gateway | The map service reads them | D254 |
 | 218 | What administrators may do: list, show, delete an empty bucket, usage later with counters (recommended); also usage by scanning; list only | List, show, delete empty | D255 |
+
+## HS15's design (2026-11-07)
+
+Before HS15's per-bucket counters, host bindings and realm roles, the
+owner was asked four questions, each with options and a
+recommendation; the owner took every recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 219 | Per-bucket counters: exact, a delta per write in each range, folded by its primary, recounted on a split (recommended); a periodic scan; each gateway's sums flushed every few seconds | Exact, per range | D256 |
+| 220 | A volume's tenant: optional at creation, inherited by clones, 0 for none (recommended); required; also settable later | Optional at creation | D257 |
+| 221 | Where a host's realm binding is checked: the header's primary, on the identity named at `Hello` (recommended); tickets signed by the map service; only once the data path has mutual TLS | The header's primary | D258 |
+| 222 | Where roles on a realm are enforced: in mgmt (recommended); in mgmt and in the cluster API by certificate | In mgmt | D259 |
