@@ -5,6 +5,6 @@ started = 2026-10-31
 updated = 2026-11-07
 milestone = "HS0"
 branch = "bench/backfill-client-off-node"
-prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209]
+prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209, 228]
 now = "Backfill test rerun with the client off node 2 and I283 installed: no reactor held on any node, 15,688 4 KiB writes/s at QD32 (11,412 while about 140 PGs backfilled)"
 next = "A QD1 backfill in its own run; whether node 2's routed path (TCP retransmits, Raft heartbeat timeouts under load) is why 1 MiB reads lose throughput above QD1"
