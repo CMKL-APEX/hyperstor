@@ -656,9 +656,12 @@ status = "done"
 tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
 
 [[milestone.item]]
-what = "Payloads not copied into each outgoing frame, once per replica: vectored and zero-copy sends (`SendMsg`, `SEND_ZC`)"
-spec = ["D41", "I23", "I283"]
-status = "planned"
+what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`)"
+spec = ["D41", "I23", "I283", "I300"]
+status = "partial"
+tests = [
+    "hyperstor_rpc::pool_tests::a_shared_payload_reaches_the_peer_from_both_frames",
+]
 
 [[milestone.item]]
 what = "Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer"
@@ -667,7 +670,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after"
-spec = ["02-benchmarks.md", "D41"]
+spec = ["02-benchmarks.md", "D41", "I300"]
 status = "planned"
 
 [[milestone]]

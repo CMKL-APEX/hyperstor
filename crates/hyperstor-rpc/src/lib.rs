@@ -10,7 +10,7 @@
 //! as broken: it is shut down, its other calls fail, and the next caller
 //! connects afresh (01-implementation-notes.md I184).
 
-use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame};
+use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};
 use hyperstor_reactor::chan::{OneSender, Receiver, Sender, channel, oneshot};
 use hyperstor_reactor::net::TcpStream;
 use hyperstor_reactor::spawn;
@@ -50,9 +50,66 @@ impl From<FrameError> for RpcError {
 /// A response: the message and its payload.
 pub type Reply = (Msg, Vec<u8>);
 
+/// A frame queued for [`writer`]: its bytes, and perhaps a payload sent
+/// after them without being copied in, owned or shared with the frames
+/// to other replicas.
+#[derive(Debug)]
+pub struct Frame {
+    head: Vec<u8>,
+    tail: Option<Rc<Vec<u8>>>,
+}
+
+impl From<Vec<u8>> for Frame {
+    fn from(head: Vec<u8>) -> Self {
+        Frame { head, tail: None }
+    }
+}
+
+impl Frame {
+    /// A frame with `payload` copied in.
+    pub fn new(req: u64, msg: &Msg, payload: &[u8]) -> Frame {
+        encode_frame(req, msg, payload).into()
+    }
+
+    /// A frame that sends `payload` as it is, unless it is small enough
+    /// to copy and join other small frames.
+    pub fn owned(req: u64, msg: &Msg, payload: Vec<u8>) -> Frame {
+        if payload.len() < OWN_READ {
+            return Frame::new(req, msg, &payload);
+        }
+        Frame::shared(req, msg, &Rc::new(payload))
+    }
+
+    /// A frame that sends `payload` as it is, shared with others.
+    pub fn shared(req: u64, msg: &Msg, payload: &Rc<Vec<u8>>) -> Frame {
+        if payload.len() < OWN_READ {
+            return Frame::new(req, msg, payload);
+        }
+        Frame {
+            head: encode_head(req, msg, payload.len(), 0),
+            tail: Some(payload.clone()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.head.len() + self.tail.as_ref().map_or(0, |t| t.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A queued request's number and the receiver of its answer, or `None`
+/// on a dead connection.
+type Queued = Option<(
+    u64,
+    hyperstor_reactor::chan::OneReceiver<Result<Reply, RpcError>>,
+)>;
+
 struct Inner {
     sock: Rc<TcpStream>,
-    out: Sender<Vec<u8>>,
+    out: Sender<Frame>,
     pending: RefCell<HashMap<u64, OneSender<Result<Reply, RpcError>>>>,
     next: Cell<u64>,
     dead: Cell<bool>,
@@ -132,18 +189,34 @@ pub async fn read_frame_counted(
     let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     let h = Header::decode(hb[..].try_into().unwrap())?;
-    let mut rest = vec![0; (h.body_len + h.payload_len) as usize];
-    if !rest.is_empty() {
-        let (r, b) = s.read_exact(rest).await;
-        r.map_err(|e| RpcError::Io(e.to_string()))?;
-        rest = b;
-    }
+    let (body, payload) = if h.payload_len as usize >= OWN_READ {
+        (
+            read_n(s, h.body_len as usize).await?,
+            read_n(s, h.payload_len as usize).await?,
+        )
+    } else {
+        let mut rest = read_n(s, (h.body_len + h.payload_len) as usize).await?;
+        let payload = rest.split_off(h.body_len as usize);
+        (rest, payload)
+    };
     if let Some(c) = counter {
-        c.received(HEADER_LEN + rest.len());
+        c.received(HEADER_LEN + body.len() + payload.len());
     }
-    let payload = rest.split_off(h.body_len as usize);
-    let msg = Msg::decode(h.kind, &rest)?;
+    let msg = Msg::decode(h.kind, &body)?;
     Ok((h, msg, payload))
+}
+
+/// Payloads from this size up are read into a buffer of their own rather
+/// than split off the body, which would copy them.
+const OWN_READ: usize = 16 << 10;
+
+async fn read_n(s: &TcpStream, n: usize) -> Result<Vec<u8>, RpcError> {
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let (r, b) = s.read_exact(vec![0; n]).await;
+    r.map_err(|e| RpcError::Io(e.to_string()))?;
+    Ok(b)
 }
 
 /// How many bytes of queued frames [`writer`] joins into one send.
@@ -153,23 +226,26 @@ pub const BATCH_BYTES: usize = 256 << 10;
 /// the whole fits in [`BATCH_BYTES`]. A frame that doesn't fit is left in
 /// `next` and sent on its own, uncopied: joining every queued push into
 /// one buffer copied hundreds of MB and held the reactor 100–125 ms
-/// (I283).
-fn next_send(first: Vec<u8>, rx: &mut Receiver<Vec<u8>>, next: &mut Option<Vec<u8>>) -> Vec<u8> {
-    let mut buf = first;
+/// (I283). A frame with a payload of its own is never joined.
+fn next_send(first: Frame, rx: &mut Receiver<Frame>, next: &mut Option<Frame>) -> Frame {
+    if first.tail.is_some() {
+        return first;
+    }
+    let mut buf = first.head;
     while buf.len() < BATCH_BYTES {
         let Some(more) = rx.try_recv() else { break };
-        if buf.len() + more.len() > BATCH_BYTES {
+        if more.tail.is_some() || buf.len() + more.len() > BATCH_BYTES {
             *next = Some(more);
             break;
         }
-        buf.extend_from_slice(&more);
+        buf.extend_from_slice(&more.head);
     }
-    buf
+    buf.into()
 }
 
 /// Sends frames from `rx` on `s`, batching small frames that have queued
 /// up ([`next_send`]), and counts them as its local address's traffic.
-pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Vec<u8>>) {
+pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Frame>) {
     let counter = counter_of(&s);
     let mut next = None;
     loop {
@@ -180,11 +256,14 @@ pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Vec<u8>>) {
                 None => return,
             },
         };
-        let buf = next_send(first, &mut rx, &mut next);
+        let f = next_send(first, &mut rx, &mut next);
         if let Some(c) = &counter {
-            c.sent(buf.len());
+            c.sent(f.len());
         }
-        let (r, _) = s.write_all(buf).await;
+        let r = match f.tail {
+            Some(tail) => s.write_all2(f.head, tail).await,
+            None => s.write_all(f.head).await.0,
+        };
         if r.is_err() {
             let _ = s.shutdown();
             return;
@@ -251,14 +330,7 @@ impl Conn {
 
     /// Queues a request; its number and the receiver of its answer, or
     /// `None` on a dead connection.
-    fn queue(
-        &self,
-        msg: &Msg,
-        payload: &[u8],
-    ) -> Option<(
-        u64,
-        hyperstor_reactor::chan::OneReceiver<Result<Reply, RpcError>>,
-    )> {
+    fn queue(&self, frame: impl FnOnce(u64) -> Frame) -> Queued {
         if self.inner.dead.get() {
             return None;
         }
@@ -266,12 +338,7 @@ impl Conn {
         let req = self.inner.next.get();
         self.inner.next.set(req + 1);
         self.inner.pending.borrow_mut().insert(req, tx);
-        if self
-            .inner
-            .out
-            .send(encode_frame(req, msg, payload))
-            .is_err()
-        {
+        if self.inner.out.send(frame(req)).is_err() {
             self.inner.pending.borrow_mut().remove(&req);
             return None;
         }
@@ -286,13 +353,24 @@ impl Conn {
         msg: &Msg,
         payload: &[u8],
     ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
-        let queued = self.queue(msg, payload);
-        async move {
-            let Some((_, rx)) = queued else {
-                return Err(RpcError::Closed);
-            };
-            rx.recv().await.unwrap_or(Err(RpcError::Closed))
-        }
+        Self::answer(self.queue(|req| Frame::new(req, msg, payload)))
+    }
+
+    /// [`Conn::start`] with a payload shared with other calls (one write
+    /// to every replica), sent without a copy when it is large.
+    pub fn start_shared(
+        &self,
+        msg: &Msg,
+        payload: &Rc<Vec<u8>>,
+    ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
+        Self::answer(self.queue(|req| Frame::shared(req, msg, payload)))
+    }
+
+    async fn answer(queued: Queued) -> Result<Reply, RpcError> {
+        let Some((_, rx)) = queued else {
+            return Err(RpcError::Closed);
+        };
+        rx.recv().await.unwrap_or(Err(RpcError::Closed))
     }
 
     /// [`Conn::start`] with a deadline: past it the call fails with
@@ -314,7 +392,7 @@ impl Conn {
         within: Duration,
         kill: bool,
     ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
-        let queued = self.queue(msg, payload);
+        let queued = self.queue(|req| Frame::new(req, msg, payload));
         let conn = self.clone();
         async move {
             let Some((req, rx)) = queued else {
@@ -583,28 +661,77 @@ mod pool_tests {
     /// uncopied, and the order holds.
     #[test]
     fn the_writer_joins_small_frames_and_sends_large_ones_alone() {
-        let (tx, mut rx) = channel::<Vec<u8>>();
+        let (tx, mut rx) = channel::<Frame>();
         let push = vec![7u8; 4 << 20];
         let push_at = push.as_ptr();
-        for f in [vec![1u8; 100], vec![2; 200], push, vec![3; 300]] {
+        let big = vec![8u8; BATCH_BYTES];
+        let big_at = big.as_ptr();
+        let small = |n, b| Frame::from(vec![b; n]);
+        for f in [small(100, 1), small(200, 2), push.into(), small(300, 3)] {
             tx.send(f).unwrap();
         }
         for _ in 0..2 * BATCH_BYTES / 1000 {
-            tx.send(vec![4; 1000]).unwrap();
+            tx.send(small(1000, 4)).unwrap();
         }
+        // A payload of its own, after a small frame: not joined to it.
+        tx.send(Frame::owned(9, &Msg::Ping, big)).unwrap();
+        tx.send(small(10, 5)).unwrap();
         let mut next = None;
         let mut sends = Vec::new();
         while let Some(first) = next.take().or_else(|| rx.try_recv()) {
             sends.push(next_send(first, &mut rx, &mut next));
         }
-        assert_eq!(sends[0], [vec![1u8; 100], vec![2; 200]].concat());
-        assert_eq!(sends[1].as_ptr(), push_at, "the push is sent as queued");
+        assert_eq!(sends[0].head, [vec![1u8; 100], vec![2; 200]].concat());
+        assert_eq!(
+            sends[1].head.as_ptr(),
+            push_at,
+            "the push is sent as queued"
+        );
         assert_eq!(sends[1].len(), 4 << 20);
-        assert!(sends[2].starts_with(&[3; 300]));
-        assert!(sends[2..].iter().all(|b| b.len() <= BATCH_BYTES));
-        assert_eq!(sends.len(), 5, "small frames fill sends of the batch size");
-        let tail: Vec<u8> = sends[2..].concat();
+        assert!(sends[2].head.starts_with(&[3; 300]));
+        assert!(sends[2..5].iter().all(|b| b.len() <= BATCH_BYTES));
+        assert_eq!(sends.len(), 7, "small frames fill sends of the batch size");
+        let tail: Vec<u8> = sends[2..5].iter().flat_map(|f| f.head.clone()).collect();
         assert_eq!(tail.len(), 300 + 2 * BATCH_BYTES / 1000 * 1000);
+        let own = sends[5].tail.as_ref().expect("a payload of its own");
+        assert_eq!(own.as_ptr(), big_at, "the payload is sent as given");
+        assert_eq!(sends[6].head, vec![5u8; 10]);
+    }
+
+    /// HS5b: one payload shared by two frames, sent from where it is, and
+    /// read back into a buffer of its own; small ones the usual way.
+    #[test]
+    fn a_shared_payload_reaches_the_peer_from_both_frames() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let reader = spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let mut got = Vec::new();
+                for _ in 0..4 {
+                    let (h, m, p) = read_frame(&s).await.unwrap();
+                    got.push((h.req, m, p));
+                }
+                got
+            });
+            let s = Rc::new(TcpStream::connect(addr).await.unwrap());
+            let (tx, rx) = channel();
+            let big: Vec<u8> = (0..3 << 20).map(|i| (i % 251) as u8).collect();
+            let shared = Rc::new(big.clone());
+            tx.send(Frame::shared(1, &Msg::Ping, &shared)).unwrap();
+            tx.send(Frame::new(2, &Msg::Ping, b"small")).unwrap();
+            tx.send(Frame::shared(3, &Msg::Ping, &shared)).unwrap();
+            tx.send(Frame::owned(4, &Msg::Ping, vec![9; OWN_READ - 1]))
+                .unwrap();
+            drop((tx, shared));
+            writer(s, rx).await;
+            let got = reader.await;
+            assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), [1, 2, 3, 4]);
+            assert!(got.iter().all(|g| g.1 == Msg::Ping));
+            assert!(got[0].2 == big && got[2].2 == big);
+            assert_eq!(got[1].2, b"small");
+            assert_eq!(got[3].2, vec![9; OWN_READ - 1]);
+        });
     }
 
     /// I283: frames of every size reach the peer whole and in order.
@@ -636,6 +763,16 @@ mod pool_tests {
             let s = Rc::new(TcpStream::connect(addr).await.unwrap());
             let (tx, rx) = channel();
             for f in frames {
+                // The large ones as a header and a shared payload, sent by
+                // `write_all2`.
+                let f = if f.len() > BATCH_BYTES {
+                    Frame {
+                        head: f[..100].to_vec(),
+                        tail: Some(Rc::new(f[100..].to_vec())),
+                    }
+                } else {
+                    f.into()
+                };
                 tx.send(f).unwrap();
             }
             drop(tx);

@@ -228,11 +228,16 @@ impl TcpStream {
 
     /// Reads into `buf[..buf.len()]`; returns how many bytes arrived (0 at
     /// end of stream).
-    pub async fn read(&self, mut buf: Vec<u8>) -> (io::Result<usize>, Vec<u8>) {
+    pub async fn read(&self, buf: Vec<u8>) -> (io::Result<usize>, Vec<u8>) {
+        self.read_at(buf, 0).await
+    }
+
+    /// Reads into `buf[off..]`, in place.
+    async fn read_at(&self, mut buf: Vec<u8>, off: usize) -> (io::Result<usize>, Vec<u8>) {
         let sqe = opcode::Recv::new(
             types::Fd(self.inner.as_raw_fd()),
-            buf.as_mut_ptr(),
-            buf.len() as u32,
+            buf[off..].as_mut_ptr(),
+            (buf.len() - off) as u32,
         )
         .build();
         let (r, res) = current().submit(sqe, Resource::Buf(buf)).await;
@@ -243,23 +248,63 @@ impl TcpStream {
     }
 
     /// Fills `buf` completely, or fails (with `UnexpectedEof` if the peer
-    /// closes first).
+    /// closes first). A short read continues in place: splitting off the
+    /// rest and joining it back copied the unread part of the buffer at
+    /// every short read.
     pub async fn read_exact(&self, mut buf: Vec<u8>) -> (io::Result<()>, Vec<u8>) {
-        let want = buf.len();
         let mut got = 0;
-        while got < want {
-            let rest = buf.split_off(got);
-            let (r, rest) = self.read(rest).await;
-            buf.extend_from_slice(&rest[..r.as_ref().map_or(0, |n| *n)]);
+        while got < buf.len() {
+            let (r, b) = self.read_at(buf, got).await;
+            buf = b;
             match r {
                 Ok(0) => return (Err(io::ErrorKind::UnexpectedEof.into()), buf),
                 Ok(n) => got += n,
                 Err(e) => return (Err(e), buf),
             }
-            buf.resize(want.max(buf.len()), 0);
-            buf.truncate(want);
         }
         (Ok(()), buf)
+    }
+
+    /// Writes all of `head`, then all of `tail`, in one `sendmsg` each time
+    /// (two pieces of one buffer, so `tail` is never copied after `head`).
+    /// `tail` may be shared, with other connections sending it too.
+    pub async fn write_all2(&self, head: Vec<u8>, tail: std::rc::Rc<Vec<u8>>) -> io::Result<()> {
+        let bufs = std::rc::Rc::new((head, tail));
+        let total = bufs.0.len() + bufs.1.len();
+        let mut off = 0;
+        while off < total {
+            let (head, tail) = (&bufs.0[..], &bufs.1[..]);
+            let piece = |b: &[u8]| libc::iovec {
+                iov_base: b.as_ptr() as *mut libc::c_void,
+                iov_len: b.len(),
+            };
+            let iov = if off < head.len() {
+                [piece(&head[off..]), piece(tail)]
+            } else {
+                [piece(&tail[off - head.len()..]), piece(&[])]
+            };
+            let mut msg = Box::new((
+                // SAFETY: an all-zero msghdr is valid: no address, no
+                // control data, no iovecs (set below).
+                unsafe { std::mem::zeroed::<libc::msghdr>() },
+                iov,
+            ));
+            msg.0.msg_iov = msg.1.as_mut_ptr();
+            msg.0.msg_iovlen = if iov[1].iov_len > 0 { 2 } else { 1 };
+            let sqe = opcode::SendMsg::new(types::Fd(self.inner.as_raw_fd()), &msg.0)
+                .flags(libc::MSG_NOSIGNAL as u32)
+                .build();
+            // The kernel reads the header, the iovecs and both buffers:
+            // all kept alive by the operation until it completes.
+            let keep = std::rc::Rc::new((bufs.clone(), msg));
+            let (r, _) = current().submit(sqe, Resource::Keep(keep)).await;
+            match check(r) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => off += n as usize,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// Writes all of `buf`.

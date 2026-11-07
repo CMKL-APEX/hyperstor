@@ -2275,6 +2275,14 @@ impl PortSample {
 }
 
 pub fn encode_frame(req: u64, msg: &Msg, payload: &[u8]) -> Vec<u8> {
+    let mut out = encode_head(req, msg, payload.len(), payload.len());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A frame's header and body, for a payload of `payload_len` bytes sent
+/// after them; `room` more bytes are reserved.
+pub fn encode_head(req: u64, msg: &Msg, payload_len: usize, room: usize) -> Vec<u8> {
     let mut body = Enc::with_capacity(64);
     msg.encode_body(&mut body);
     let h = Header {
@@ -2282,12 +2290,11 @@ pub fn encode_frame(req: u64, msg: &Msg, payload: &[u8]) -> Vec<u8> {
         flags: if msg.is_response() { FLAG_RESPONSE } else { 0 },
         req,
         body_len: body.len() as u32,
-        payload_len: payload.len() as u32,
+        payload_len: payload_len as u32,
     };
-    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + payload.len());
+    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + room);
     out.extend_from_slice(&h.encode());
     out.extend_from_slice(body.as_slice());
-    out.extend_from_slice(payload);
     out
 }
 
