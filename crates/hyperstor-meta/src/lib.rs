@@ -4014,7 +4014,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
         let meta = meta.clone();
         spawn(async move {
             let s = Rc::new(s);
-            let (tx, rx) = hyperstor_reactor::chan::channel::<Vec<u8>>();
+            let (tx, rx) = hyperstor_reactor::chan::channel::<hyperstor_rpc::Frame>();
             spawn(hyperstor_rpc::writer(s.clone(), rx));
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
@@ -4037,12 +4037,12 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                     let (meta, tx) = (meta.clone(), tx.clone());
                     spawn(async move {
                         let reply = meta.blocklist(ids).await;
-                        let _ = tx.send(encode_frame(h.req, &reply, &[]));
+                        let _ = tx.send(encode_frame(h.req, &reply, &[]).into());
                     });
                     continue;
                 }
                 let reply = meta.handle_with(msg, &body[h.body_len as usize..]);
-                if tx.send(encode_frame(h.req, &reply, &[])).is_err() {
+                if tx.send(encode_frame(h.req, &reply, &[]).into()).is_err() {
                     return;
                 }
             }
