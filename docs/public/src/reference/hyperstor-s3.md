@@ -5,12 +5,11 @@ Run as many as you like, on any host that reaches the map service and
 the storage nodes; they keep no state of their own, so a load balancer
 may send any request to any of them.
 
-> **Early.** This is stage 3 of 5 (see the [status](../status.md)).
+> **Early.** This is stage 4 of 5 (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
 > [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
-> --s3`](hyperstor-install.md) installs gateways. Stage 4 has begun:
-> conditional requests, multi-object deletes, copies and checksums given
-> back are built; multipart uploads come next.
+> --s3`](hyperstor-install.md) installs gateways. Virtual-hosted
+> addressing and buckets in the web UI come in stage 5.
 
 ```text
 usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
@@ -67,10 +66,12 @@ more than 15 minutes from the gateway's clock are refused.
 | PutObject | Up to 5 GiB. `Content-MD5`, and the `x-amz-checksum-` CRC32, CRC32C, SHA1 and SHA256 values, in headers or after the body, are checked before the object appears; a body signed chunk by chunk is checked chunk by chunk. `If-None-Match: *` writes only a new object and `If-Match` replaces only the version named; otherwise `412 PreconditionFailed` |
 | GetObject, HeadObject | With a `Range` of one span, the `response-` parameters that set headers, and `If-Match`, `If-None-Match`, `If-Modified-Since` and `If-Unmodified-Since` (`304` or `412`). With `x-amz-checksum-mode: ENABLED`, a whole object's checksum: the one it was written with, else its CRC32C |
 | CopyObject | From a bucket of the same tenant, up to 5 GiB. The bytes are copied, so the copy shares nothing with its source. Metadata is the source's, or the request's with `x-amz-metadata-directive: REPLACE`; the `x-amz-copy-source-if-` conditions; `x-amz-checksum-algorithm` computes a new checksum, else the source's is kept |
+| CreateMultipartUpload, UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload, ListParts, ListMultipartUploads | Up to 10,000 parts of up to 5 GiB, each but the last at least 5 MiB. Nothing is copied at completion: the object names its parts. A part uploaded again replaces the one before. `x-amz-checksum-algorithm` with `COMPOSITE` (any algorithm) or `FULL_OBJECT` (CRC32, CRC32C) checksums. Uploads not completed are cleaned up 7 days after they began |
 | DeleteObject | `If-Match` deletes only the version named |
 | DeleteObjects | Up to 1000 names, with `Content-MD5` or a checksum, as S3 requires; an `ETag` per name deletes only that version |
 | ListObjects, ListObjectsV2 | Prefix, delimiter, pages, `start-after`, `encoding-type=url` |
 
 Anything else is answered `501 NotImplemented`. ETags are MD5s, as S3's.
-Uploads that a gateway didn't finish (it stopped, or the client went)
-are cleaned up a day later.
+ETags of multipart objects are the MD5 of their parts' MD5s, a dash and
+the number of parts, as S3's. Uploads that a gateway didn't finish (it
+stopped, or the client went) are cleaned up a day later.

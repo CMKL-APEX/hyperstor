@@ -46,6 +46,22 @@ pub enum S3Error {
     InvalidRange,
     #[error("the upload expired or was given up")]
     UploadGone,
+    #[error("no such multipart upload")]
+    NoSuchUpload,
+    /// A part a completion names wasn't uploaded, or its ETag differs.
+    #[error("part {0} wasn't uploaded as named")]
+    InvalidPart(u32),
+    #[error("the parts aren't in ascending order")]
+    InvalidPartOrder,
+    /// A part but the last is smaller than the least a part may be.
+    #[error("part {0} is smaller than the least a part may be")]
+    EntityTooSmall(u32),
+    /// The upload asked for a checksum that a part didn't come with.
+    #[error("part {0} has no checksum of the upload's algorithm")]
+    MissingPartChecksum(u32),
+    /// The checksum a completion gave for the whole object differs.
+    #[error("the checksum given doesn't match the parts'")]
+    BadDigest,
     #[error("the object was replaced while it was read")]
     Changed,
     /// A condition on the object a write or delete replaces doesn't hold
@@ -85,6 +101,11 @@ pub struct Config {
     pub linger: u64,
     /// Chunk writes a PUT keeps in flight.
     pub in_flight: usize,
+    /// Seconds a multipart upload has before it expires (§14.6).
+    pub multipart_expiry: u64,
+    /// The least a multipart upload's part may be, but its last (S3's
+    /// 5 MiB).
+    pub min_part: u64,
 }
 
 impl Default for Config {
@@ -96,6 +117,8 @@ impl Default for Config {
             margin: 3600,
             linger: 900,
             in_flight: 4,
+            multipart_expiry: 7 * 24 * 3600,
+            min_part: 5 << 20,
         }
     }
 }
@@ -108,6 +131,63 @@ pub fn now_ms() -> u64 {
 
 pub fn now_secs() -> u64 {
     now_ms() / 1000
+}
+
+/// S3's most parts in a multipart upload, numbered from 1.
+pub const MAX_PARTS: u32 = 10_000;
+
+/// A multipart upload's completed object: the MD5 of its parts' MD5s,
+/// and its whole CRC32C, combined from its parts' (D196).
+fn combine(parts: &[&PartRecord]) -> ([u8; 16], u32) {
+    let mut md5 = Md5::new();
+    let mut crc = 0u32;
+    for p in parts {
+        md5.update(p.md5);
+        crc = crc32c::crc32c_combine(crc, p.crc32c, p.size as usize);
+    }
+    (md5.finalize().into(), crc)
+}
+
+/// The completed object's checksum from its parts' (each of `a`): of the
+/// whole object for a CRC when `full`, else of the parts' checksums, one
+/// after another (S3's COMPOSITE).
+fn combined_checksum(a: chunked::Algorithm, full: bool, parts: &[&PartRecord]) -> Result<Vec<u8>> {
+    use chunked::Algorithm::*;
+    let mut sums = Vec::with_capacity(parts.len());
+    for (i, p) in parts.iter().enumerate() {
+        match &p.checksum {
+            Some((pa, v)) if *pa == a => sums.push((v.clone(), p.size)),
+            _ => return Err(S3Error::MissingPartChecksum(i as u32 + 1)),
+        }
+    }
+    let be = |v: &[u8]| -> Result<u32> {
+        v.try_into()
+            .map(u32::from_be_bytes)
+            .map_err(|_| S3Error::Corrupt("a part's CRC".into()))
+    };
+    Ok(match (a, full) {
+        (Crc32c, true) => {
+            let mut crc = 0;
+            for (v, size) in &sums {
+                crc = crc32c::crc32c_combine(crc, be(v)?, *size as usize);
+            }
+            crc.to_be_bytes().to_vec()
+        }
+        (Crc32, true) => {
+            let mut h = crc32fast::Hasher::new();
+            for (v, size) in &sums {
+                h.combine(&crc32fast::Hasher::new_with_initial_len(be(v)?, *size));
+            }
+            h.finalize().to_be_bytes().to_vec()
+        }
+        _ => {
+            let mut h = chunked::Hasher::new(a);
+            for (v, _) in &sums {
+                h.update(v);
+            }
+            h.finish()
+        }
+    })
 }
 
 fn random_u128() -> u128 {
@@ -388,26 +468,22 @@ impl S3 {
         if off.checked_add(len).is_none_or(|end| end > e.size) {
             return Err(S3Error::InvalidRange);
         }
-        let (object, chunk, parts) = match &e.data {
+        let (chunk, parts) = match &e.data {
             Data::Inline(d) => return Ok(d[off as usize..(off + len) as usize].to_vec()),
-            Data::Chunks {
-                object,
-                chunk,
-                parts,
-            } => (*object, *chunk, parts),
+            data => data.pieces().expect("chunks"),
         };
         // (chunk name, offset in it, bytes) for each piece of the range.
         let mut pieces = Vec::new();
         let (mut at, end) = (off, off + len);
         let mut part_start = 0;
-        for p in parts {
+        for p in &parts {
             let part_end = part_start + p.size;
             while at < end && at < part_end {
                 let in_part = at - part_start;
                 let index = in_part / chunk;
                 let in_chunk = in_part % chunk;
                 let n = (chunk - in_chunk).min(end - at).min(part_end - at);
-                let name = chunk_name(b.id(), object, p.number, index as u32);
+                let name = chunk_name(b.id(), p.object, p.number, index as u32);
                 pieces.push((name, in_chunk, n));
                 at += n;
             }
@@ -479,6 +555,7 @@ impl S3 {
                 expires: now_secs() + self.cfg.put_expiry,
                 size,
                 chunk: self.cfg.chunk,
+                multipart: None,
             };
             let mut up = Batch::new();
             up.put(NAME, key);
@@ -498,6 +575,9 @@ impl S3 {
             key: key.to_vec(),
             size,
             id,
+            part: 0,
+            chunk: self.cfg.chunk,
+            upload: None,
             pending,
             buf: Vec::new(),
             sent: 0,
@@ -529,33 +609,76 @@ impl S3 {
     ) -> Result<Entry> {
         let mut put = self.put(to, key, e.size).await?;
         put.require(cond);
-        let mut hasher = hash.map(chunked::Hasher::new);
-        // A few chunks at a time, which `read` fetches at once.
-        let step = self.cfg.chunk.max(4096) * self.cfg.in_flight.max(1) as u64;
-        let mut at = 0;
-        while at < e.size {
-            let n = step.min(e.size - at);
-            let d = match self.read(from, e, at, n).await {
-                Ok(d) => d,
-                Err(err) => {
-                    let _ = put.abort().await;
-                    return Err(err);
-                }
-            };
-            if let Some(h) = &mut hasher {
-                h.update(&d);
-            }
-            if let Err(err) = put.write(&d).await {
+        let sum = match self.pump(&mut put, from, e, 0, e.size, hash).await {
+            Ok(s) => s,
+            Err(err) => {
                 let _ = put.abort().await;
                 return Err(err);
             }
-            at += n;
-        }
-        meta.checksum = match (hash, hasher) {
-            (Some(a), Some(h)) => Some((a, h.finish())),
+        };
+        meta.checksum = match (hash, sum) {
+            (Some(a), Some(v)) => Some((a, v)),
+            _ if e.composite => None,
             _ => e.checksum.clone(),
         };
         put.finish(meta).await
+    }
+
+    /// Copies `len` bytes of object `e` from `off` into part `number` of
+    /// upload `id` (UploadPartCopy, D193): read and written again, with
+    /// the upload's checksum computed as they go by.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn copy_part(
+        &self,
+        from: &Bucket,
+        e: &Entry,
+        off: u64,
+        len: u64,
+        to: &Bucket,
+        key: &[u8],
+        id: u128,
+        number: u32,
+    ) -> Result<PartRecord> {
+        let mut put = self.upload_part(to, key, id, number, len).await?;
+        let hash = put
+            .pending
+            .as_ref()
+            .and_then(|p| p.multipart.as_ref())
+            .and_then(|m| m.algorithm);
+        match self.pump(&mut put, from, e, off, len, hash).await {
+            Ok(sum) => put.finish_part(hash.zip(sum)).await,
+            Err(err) => {
+                let _ = put.abort().await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Reads `len` bytes of `e` from `off` into `put`, a few chunks at a
+    /// time (which `read` fetches at once); returns `hash`'s value of
+    /// them.
+    async fn pump(
+        &self,
+        put: &mut Put<'_>,
+        from: &Bucket,
+        e: &Entry,
+        off: u64,
+        len: u64,
+        hash: Option<chunked::Algorithm>,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut hasher = hash.map(chunked::Hasher::new);
+        let step = self.cfg.chunk.max(4096) * self.cfg.in_flight.max(1) as u64;
+        let (mut at, end) = (off, off + len);
+        while at < end {
+            let n = step.min(end - at);
+            let d = self.read(from, e, at, n).await?;
+            if let Some(h) = &mut hasher {
+                h.update(&d);
+            }
+            put.write(&d).await?;
+            at += n;
+        }
+        Ok(hasher.map(chunked::Hasher::finish))
     }
 
     /// Gives up the uploads of bucket `b` that expired by `now` (Unix
@@ -581,7 +704,7 @@ impl S3 {
                     self.give_up(b, key, id).await?;
                 }
                 let mut gone = Batch::new();
-                gone.delete(NAME);
+                gone.delete(NAME).delete(MULTIPART);
                 self.kv.apply(&b.table, &r.row, &gone).await?;
                 n += 1;
             }
@@ -592,29 +715,454 @@ impl S3 {
         }
     }
 
-    /// Removes upload `id` of `key`, if it is still under way, and queues
-    /// its chunks for deletion; one batch on the object's row, so it and
-    /// the upload's completion can't both happen.
+    /// Removes upload `id` of `key` and every part it still has, written
+    /// or being written, and queues their chunks for deletion; one batch
+    /// on the object's row, so it and the upload's completion can't both
+    /// happen. Only once the upload has expired (or its writers have
+    /// stopped): a part still being written would write chunks after.
     async fn give_up(&self, b: &Bucket, key: &[u8], id: u128) -> Result<()> {
         let row = object_row(key);
-        let col = pending_column(id);
-        let Some(v) = self.kv.get(&b.table, &row, &col).await? else {
-            return Ok(());
+        for _ in 0..ATTEMPTS {
+            let cols = self.upload_columns(b, &row, id).await?;
+            if cols.is_empty() {
+                return Ok(());
+            }
+            let mut batch = Batch::new();
+            for (c, v) in &cols {
+                batch.assert(c, Some(v)).delete(c);
+                let (prefix, count) = match part_of(c, id) {
+                    Some((number, object)) => {
+                        let p = PartRecord::decode(v)?;
+                        (
+                            chunk_prefix(b.id(), object, number),
+                            chunks_of(p.size, p.chunk),
+                        )
+                    }
+                    None => {
+                        let p = Pending::decode(v)?;
+                        let count = match p.multipart {
+                            Some(_) => 0,
+                            None => chunks_of(p.size, p.chunk),
+                        };
+                        (chunk_prefix(b.id(), id, 0), count)
+                    }
+                };
+                batch.collect_series(b.table.data_pool, NS_S3, &prefix, count);
+            }
+            let r = self.kv.apply(&b.table, &row, &batch).await;
+            if !kv_conflict(&r) {
+                return Ok(r?);
+            }
+            // A part finished or the upload completed meanwhile: again.
+        }
+        Err(KvError::Exhausted(ATTEMPTS, "the upload kept changing".into()).into())
+    }
+
+    /// Upload `id`'s columns of `row`: its pending record and its parts.
+    async fn upload_columns(
+        &self,
+        b: &Bucket,
+        row: &[u8],
+        id: u128,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let prefix = pending_column(id);
+        Ok(self
+            .kv
+            .row(&b.table, row)
+            .await?
+            .into_iter()
+            .filter(|(c, _)| c.starts_with(&prefix))
+            .collect())
+    }
+
+    /// Begins a multipart upload of `key` (CreateMultipartUpload): its
+    /// `u` row, then its pending record, as a PUT's (§14.6). Returns its
+    /// id.
+    pub async fn create_upload(&self, b: &Bucket, key: &[u8], mut m: Multipart) -> Result<u128> {
+        if key.is_empty() || key.len() > 1024 {
+            return Err(S3Error::InvalidKey);
+        }
+        let id = random_u128();
+        m.initiated = now_ms();
+        let p = Pending {
+            expires: now_secs() + self.cfg.multipart_expiry,
+            size: 0,
+            chunk: self.cfg.chunk,
+            multipart: Some(m.clone()),
         };
+        let mut up = Batch::new();
+        up.put(NAME, key).put(MULTIPART, &m.initiated.to_be_bytes());
+        self.kv
+            .apply(&b.table, &upload_row(p.expires, id), &up)
+            .await?;
+        let mut mark = Batch::new();
+        mark.put(&pending_column(id), &p.encode());
+        self.kv.apply(&b.table, &object_row(key), &mark).await?;
+        Ok(id)
+    }
+
+    /// Multipart upload `id` of `key`: its pending record as stored, and
+    /// read.
+    async fn upload(&self, b: &Bucket, key: &[u8], id: u128) -> Result<(Vec<u8>, Pending)> {
+        let v = self
+            .kv
+            .get(&b.table, &object_row(key), &pending_column(id))
+            .await?
+            .ok_or(S3Error::NoSuchUpload)?;
         let p = Pending::decode(&v)?;
+        if p.multipart.is_none() {
+            return Err(S3Error::NoSuchUpload);
+        }
+        Ok((v, p))
+    }
+
+    /// Begins part `number` of upload `id`, `size` bytes (UploadPart): its
+    /// column is put, as being written, before its chunks are, in a batch
+    /// that asserts the upload is still under way.
+    pub async fn upload_part(
+        &self,
+        b: &Bucket,
+        key: &[u8],
+        id: u128,
+        number: u32,
+        size: u64,
+    ) -> Result<Put<'_>> {
+        if !(1..=MAX_PARTS).contains(&number) {
+            return Err(S3Error::InvalidPart(number));
+        }
+        let (v, p) = self.upload(b, key, id).await?;
+        if now_secs() + self.cfg.margin >= p.expires {
+            return Err(S3Error::NoSuchUpload);
+        }
+        let object = random_u128();
+        let col = part_column(id, number, object);
+        let record = PartRecord {
+            done: false,
+            size,
+            chunk: p.chunk,
+            written: 0,
+            md5: [0; 16],
+            crc32c: 0,
+            checksum: None,
+        }
+        .encode();
         let mut batch = Batch::new();
-        batch.assert(&col, Some(&v)).delete(&col).collect_series(
-            b.table.data_pool,
-            NS_S3,
-            &chunk_prefix(b.id(), id, 0),
-            chunks_of(p.size, p.chunk),
-        );
-        let r = self.kv.apply(&b.table, &row, &batch).await;
-        if kv_conflict(&r) {
-            // Completed or given up meanwhile.
+        batch
+            .assert(&pending_column(id), Some(&v))
+            .put(&col, &record);
+        match self.kv.apply(&b.table, &object_row(key), &batch).await {
+            Err(KvError::Conflict) => return Err(S3Error::NoSuchUpload),
+            r => r?,
+        }
+        // The upload's chunk size, whatever this gateway's.
+        let chunk = p.chunk;
+        Ok(Put {
+            s3: self,
+            bucket: b.clone(),
+            key: key.to_vec(),
+            size,
+            id: object,
+            part: number,
+            chunk,
+            upload: Some(PartOf {
+                id,
+                pending: v,
+                column: col,
+                record,
+            }),
+            pending: Some(p),
+            buf: Vec::new(),
+            sent: 0,
+            chunks: 0,
+            writing: Default::default(),
+            md5: Md5::new(),
+            crc: 0,
+            cond: Condition::Any,
+        })
+    }
+
+    /// Upload `id`'s parts that are done, the latest of each number, and
+    /// its record (ListParts).
+    pub async fn parts(
+        &self,
+        b: &Bucket,
+        key: &[u8],
+        id: u128,
+    ) -> Result<(
+        Pending,
+        std::collections::BTreeMap<u32, (Vec<u8>, Vec<u8>, PartRecord)>,
+    )> {
+        let row = object_row(key);
+        let cols = self.upload_columns(b, &row, id).await?;
+        let mut pending = None;
+        let mut parts = std::collections::BTreeMap::new();
+        for (c, v) in cols {
+            match part_of(&c, id) {
+                None => pending = Some(Pending::decode(&v)?),
+                Some((number, _)) => {
+                    let r = PartRecord::decode(&v)?;
+                    if !r.done {
+                        continue;
+                    }
+                    let newer = parts.get(&number).is_none_or(
+                        |(_, _, old): &(Vec<u8>, Vec<u8>, PartRecord)| r.written >= old.written,
+                    );
+                    if newer {
+                        parts.insert(number, (c, v, r));
+                    }
+                }
+            }
+        }
+        match pending {
+            Some(p) if p.multipart.is_some() => Ok((p, parts)),
+            _ => Err(S3Error::NoSuchUpload),
+        }
+    }
+
+    /// Completes upload `id` (CompleteMultipartUpload) with the parts
+    /// named, in order, each by number and ETag, if `cond` holds of the
+    /// object it replaces: one batch on the object's row asserts the
+    /// upload and each part, puts the entry naming the parts (nothing is
+    /// copied, §14.1) and removes the upload's columns, queuing the
+    /// chunks of the object replaced and of parts not named. Parts still
+    /// being written are left to the upload's expiry.
+    pub async fn complete(
+        &self,
+        b: &Bucket,
+        key: &[u8],
+        id: u128,
+        named: &[(u32, String)],
+        cond: &Condition,
+        want: Option<&(chunked::Algorithm, Vec<u8>)>,
+    ) -> Result<Entry> {
+        let row = object_row(key);
+        for _ in 0..ATTEMPTS {
+            let cols = self.upload_columns(b, &row, id).await?;
+            let pcol = pending_column(id);
+            let Some((_, pv)) = cols.iter().find(|(c, _)| *c == pcol) else {
+                return Err(S3Error::NoSuchUpload);
+            };
+            let p = Pending::decode(pv)?;
+            let Some(m) = p.multipart.clone() else {
+                return Err(S3Error::NoSuchUpload);
+            };
+            // The order first, as S3 checks it.
+            if named.windows(2).any(|w| w[1].0 <= w[0].0) {
+                return Err(S3Error::InvalidPartOrder);
+            }
+            let (_, done) = self.parts(b, key, id).await?;
+            let mut used = Vec::with_capacity(named.len());
+            for (i, (number, etag)) in named.iter().enumerate() {
+                let Some((c, v, r)) = done.get(number) else {
+                    return Err(S3Error::InvalidPart(*number));
+                };
+                if r.etag().trim_matches('"') != etag.trim().trim_matches('"') {
+                    return Err(S3Error::InvalidPart(*number));
+                }
+                if i + 1 < named.len() && r.size < self.cfg.min_part {
+                    return Err(S3Error::EntityTooSmall(*number));
+                }
+                used.push((c, v, r));
+            }
+            if used.is_empty() {
+                return Err(S3Error::InvalidPart(0));
+            }
+            let records: Vec<&PartRecord> = used.iter().map(|(_, _, r)| *r).collect();
+            let (md5, crc32c) = combine(&records);
+            let checksum = match m.algorithm {
+                Some(a) => Some((a, combined_checksum(a, m.full_object, &records)?)),
+                None => None,
+            };
+            if want.is_some_and(|w| Some(w) != checksum.as_ref()) {
+                return Err(S3Error::BadDigest);
+            }
+            let entry = Entry {
+                written: now_ms(),
+                size: records.iter().map(|r| r.size).sum(),
+                md5,
+                parts: records.len() as u32,
+                crc32c,
+                content_type: m.content_type,
+                meta: m.meta,
+                data: Data::Parts {
+                    chunk: p.chunk,
+                    parts: used
+                        .iter()
+                        .map(|(c, _, r)| {
+                            let (number, object) = part_of(c, id).expect("a part's column");
+                            PartAt {
+                                object,
+                                number,
+                                size: r.size,
+                            }
+                        })
+                        .collect(),
+                },
+                checksum,
+                composite: m.algorithm.is_some() && !m.full_object,
+            };
+            let old = self.latest(b, key).await?;
+            if !cond.holds(old.as_ref().map(|(_, e)| e)) {
+                return Err(S3Error::PreconditionFailed);
+            }
+            let new = entry.encode();
+            let mut batch = Batch::new();
+            batch
+                .assert(LATEST, old.as_ref().map(|(v, _)| v.as_slice()))
+                .put(LATEST, &new)
+                .linger(self.cfg.linger);
+            if let Some((_, e)) = &old {
+                collect(&mut batch, b, e);
+            }
+            let mut writing = false;
+            for (c, v) in &cols {
+                let named = used.iter().any(|(uc, _, _)| *uc == c);
+                batch.assert(c, Some(v));
+                match part_of(c, id) {
+                    None => {
+                        batch.delete(c);
+                    }
+                    Some((number, object)) => {
+                        let r = PartRecord::decode(v)?;
+                        if !r.done {
+                            writing = true;
+                            continue;
+                        }
+                        batch.delete(c);
+                        if !named {
+                            batch.collect_series(
+                                b.table.data_pool,
+                                NS_S3,
+                                &chunk_prefix(b.id(), object, number),
+                                chunks_of(r.size, r.chunk),
+                            );
+                        }
+                    }
+                }
+            }
+            match self.kv.apply(&b.table, &row, &batch).await {
+                Ok(()) => {}
+                Err(KvError::Conflict) => continue,
+                Err(e) => {
+                    // Applied or not, unknown: the row says.
+                    if self.kv.get(&b.table, &row, LATEST).await? != Some(new) {
+                        return Err(e.into());
+                    }
+                }
+            }
+            if !writing {
+                // Left to the clean-up if this fails.
+                let mut gone = Batch::new();
+                gone.delete(NAME).delete(MULTIPART);
+                let _ = self
+                    .kv
+                    .apply(&b.table, &upload_row(p.expires, id), &gone)
+                    .await;
+            }
+            return Ok(entry);
+        }
+        Err(KvError::Exhausted(ATTEMPTS, "the object kept changing".into()).into())
+    }
+
+    /// Gives upload `id` up (AbortMultipartUpload): its record and the
+    /// parts done go in one batch, their chunks queued; parts still being
+    /// written are left to the upload's expiry, or to their writers, who
+    /// find the upload gone.
+    pub async fn abort_upload(&self, b: &Bucket, key: &[u8], id: u128) -> Result<()> {
+        let row = object_row(key);
+        for _ in 0..ATTEMPTS {
+            let cols = self.upload_columns(b, &row, id).await?;
+            let pcol = pending_column(id);
+            let Some((_, pv)) = cols.iter().find(|(c, _)| *c == pcol) else {
+                return Err(S3Error::NoSuchUpload);
+            };
+            let p = Pending::decode(pv)?;
+            if p.multipart.is_none() {
+                return Err(S3Error::NoSuchUpload);
+            }
+            let mut batch = Batch::new();
+            let mut writing = false;
+            for (c, v) in &cols {
+                match part_of(c, id) {
+                    None => {
+                        batch.assert(c, Some(v)).delete(c);
+                    }
+                    Some((number, object)) => {
+                        let r = PartRecord::decode(v)?;
+                        if !r.done {
+                            writing = true;
+                            continue;
+                        }
+                        batch.assert(c, Some(v)).delete(c).collect_series(
+                            b.table.data_pool,
+                            NS_S3,
+                            &chunk_prefix(b.id(), object, number),
+                            chunks_of(r.size, r.chunk),
+                        );
+                    }
+                }
+            }
+            match self.kv.apply(&b.table, &row, &batch).await {
+                Err(KvError::Conflict) => continue,
+                r => r?,
+            }
+            if !writing {
+                let mut gone = Batch::new();
+                gone.delete(NAME).delete(MULTIPART);
+                let _ = self
+                    .kv
+                    .apply(&b.table, &upload_row(p.expires, id), &gone)
+                    .await;
+            }
             return Ok(());
         }
-        Ok(r?)
+        Err(KvError::Exhausted(ATTEMPTS, "the upload kept changing".into()).into())
+    }
+
+    /// The multipart uploads of bucket `b` under way, by name and then
+    /// id: (name, id, when begun in Unix ms) (ListMultipartUploads).
+    /// Every upload row is read, so this costs as many as are under way.
+    pub async fn uploads(&self, b: &Bucket) -> Result<Vec<(Vec<u8>, u128, u64)>> {
+        let mut from = vec![UPLOAD];
+        let mut out = Vec::new();
+        loop {
+            let scan = Scan {
+                from: &from,
+                to: None,
+                prefix: &[UPLOAD],
+                limit: 1000,
+            };
+            let page = self.kv.scan(&b.table, &scan).await?;
+            for r in &page.rows {
+                let Some((_, id)) = upload_of(&r.row) else {
+                    continue;
+                };
+                let get = |c: &[u8]| r.columns.iter().find(|(k, _)| k == c).map(|(_, v)| v);
+                let (Some(key), Some(at)) = (get(NAME), get(MULTIPART)) else {
+                    continue;
+                };
+                let at = at
+                    .as_slice()
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .unwrap_or(0);
+                // Completed or given up, with parts left to the expiry.
+                let live = self
+                    .kv
+                    .get(&b.table, &object_row(key), &pending_column(id))
+                    .await?
+                    .is_some();
+                if live {
+                    out.push((key.clone(), id, at));
+                }
+            }
+            match page.more {
+                Some(m) => from = m,
+                None => break,
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 
     /// A page of bucket `b`'s objects (ListObjectsV2), in name order.
@@ -686,7 +1234,14 @@ pub struct Put<'a> {
     bucket: Bucket,
     key: Vec<u8>,
     size: u64,
+    /// The object id its chunks are named by: the upload's, or a part's.
     id: u128,
+    /// The part number its chunks are named by: 0 for a single PUT.
+    part: u32,
+    /// Bytes per chunk.
+    chunk: u64,
+    /// Set for a multipart upload's part.
+    upload: Option<PartOf>,
     /// None: the object is kept inline.
     pending: Option<Pending>,
     buf: Vec<u8>,
@@ -697,6 +1252,16 @@ pub struct Put<'a> {
     md5: Md5,
     crc: u32,
     cond: Condition,
+}
+
+/// The upload a part belongs to, and the part's column as put when it
+/// began.
+struct PartOf {
+    id: u128,
+    /// The upload's pending record, as read.
+    pending: Vec<u8>,
+    column: Vec<u8>,
+    record: Vec<u8>,
 }
 
 impl Put<'_> {
@@ -734,7 +1299,7 @@ impl Put<'_> {
         self.md5.update(data);
         self.crc = hyperstor_codec::crc32c_append(self.crc, data);
         self.buf.extend_from_slice(data);
-        let chunk = self.s3.cfg.chunk as usize;
+        let chunk = self.chunk as usize;
         while self.pending.is_some() && self.buf.len() >= chunk {
             let rest = self.buf.split_off(chunk);
             let full = std::mem::replace(&mut self.buf, rest);
@@ -759,7 +1324,7 @@ impl Put<'_> {
             self.wait_one().await?;
         }
         data.resize(data.len().div_ceil(4096) * 4096, 0);
-        let name = chunk_name(self.bucket.id(), self.id, 0, self.chunks);
+        let name = chunk_name(self.bucket.id(), self.id, self.part, self.chunks);
         let (cl, pool) = (self.s3.client().clone(), self.bucket.table.data_pool);
         self.writing.push_back(hyperstor_reactor::spawn(async move {
             cl.exec(pool, NS_S3, &name, &[WireOp::Write { off: 0, data }])
@@ -795,7 +1360,7 @@ impl Put<'_> {
             }
             Data::Chunks {
                 object: self.id,
-                chunk: self.s3.cfg.chunk,
+                chunk: self.chunk,
                 parts: vec![Part {
                     number: 0,
                     size: self.size,
@@ -814,6 +1379,7 @@ impl Put<'_> {
             meta: meta.meta,
             data,
             checksum: meta.checksum,
+            composite: false,
         };
         let new = entry.encode();
         let (s3, b) = (self.s3, &self.bucket);
@@ -867,12 +1433,117 @@ impl Put<'_> {
         Ok(entry)
     }
 
+    /// Writes what is left of a part and records it done, with the
+    /// checksum its body was checked against, in a batch that asserts
+    /// the upload is still under way and drops the parts of its number
+    /// done before, queuing their chunks. [`S3Error::NoSuchUpload`] if the
+    /// upload was completed or given up meanwhile: the part is given up.
+    pub async fn finish_part(
+        mut self,
+        checksum: Option<(chunked::Algorithm, Vec<u8>)>,
+    ) -> Result<PartRecord> {
+        if self.sent != self.size {
+            let (got, want) = (self.sent, self.size);
+            self.abort().await?;
+            return Err(S3Error::BadSize { want, got });
+        }
+        if !self.buf.is_empty() {
+            let last = std::mem::take(&mut self.buf);
+            self.write_chunk(last).await?;
+        }
+        while !self.writing.is_empty() {
+            self.wait_one().await?;
+        }
+        let Some(up) = &self.upload else {
+            return Err(S3Error::NoSuchUpload);
+        };
+        let record = PartRecord {
+            done: true,
+            size: self.size,
+            chunk: self.chunk,
+            written: now_ms(),
+            md5: self.md5.clone().finalize().into(),
+            crc32c: self.crc,
+            checksum,
+        };
+        let done = record.encode();
+        let (s3, b) = (self.s3, &self.bucket);
+        let row = object_row(&self.key);
+        let same = part_column(up.id, self.part, 0);
+        let same = &same[..same.len() - 16];
+        for _ in 0..ATTEMPTS {
+            self.live()?;
+            let cols = s3.upload_columns(b, &row, up.id).await?;
+            let mut batch = Batch::new();
+            batch
+                .assert(&pending_column(up.id), Some(&up.pending))
+                .assert(&up.column, Some(&up.record))
+                .put(&up.column, &done);
+            for (c, v) in &cols {
+                if !c.starts_with(same) || *c == up.column {
+                    continue;
+                }
+                let r = PartRecord::decode(v)?;
+                if r.done {
+                    let (number, object) = part_of(c, up.id).expect("a part's column");
+                    batch.assert(c, Some(v)).delete(c).collect_series(
+                        b.table.data_pool,
+                        NS_S3,
+                        &chunk_prefix(b.id(), object, number),
+                        chunks_of(r.size, r.chunk),
+                    );
+                }
+            }
+            match s3.kv.apply(&b.table, &row, &batch).await {
+                Ok(()) => return Ok(record),
+                Err(KvError::Conflict) => {
+                    let pending = s3.kv.get(&b.table, &row, &pending_column(up.id)).await?;
+                    if pending.as_deref() != Some(up.pending.as_slice()) {
+                        self.abort().await?;
+                        return Err(S3Error::NoSuchUpload);
+                    }
+                }
+                Err(e) => {
+                    if s3.kv.get(&b.table, &row, &up.column).await? == Some(done.clone()) {
+                        return Ok(record);
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+        Err(KvError::Exhausted(ATTEMPTS, "the upload kept changing".into()).into())
+    }
+
     /// Gives the upload up: its chunks are queued for deletion and its
     /// records removed.
     pub async fn abort(mut self) -> Result<()> {
         // Before the chunks are queued, so none is written after.
         while !self.writing.is_empty() {
             let _ = self.wait_one().await;
+        }
+        if let Some(up) = &self.upload {
+            // A part: only its own column and chunks.
+            let b = &self.bucket;
+            let mut batch = Batch::new();
+            batch
+                .assert(&up.column, Some(&up.record))
+                .delete(&up.column)
+                .collect_series(
+                    b.table.data_pool,
+                    NS_S3,
+                    &chunk_prefix(b.id(), self.id, self.part),
+                    chunks_of(self.size, self.chunk),
+                );
+            let r = self
+                .s3
+                .kv
+                .apply(&b.table, &object_row(&self.key), &batch)
+                .await;
+            if kv_conflict(&r) {
+                // Given up with the upload already.
+                return Ok(());
+            }
+            return Ok(r?);
         }
         let Some(p) = &self.pending else {
             return Ok(());
@@ -886,5 +1557,66 @@ impl Put<'_> {
             .apply(&b.table, &upload_row(p.expires, self.id), &gone)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chunked::{Algorithm, Hasher};
+
+    fn part(data: &[u8], a: Algorithm) -> PartRecord {
+        let mut h = Hasher::new(a);
+        h.update(data);
+        PartRecord {
+            done: true,
+            size: data.len() as u64,
+            chunk: 4096,
+            written: 1,
+            md5: Md5::digest(data).into(),
+            crc32c: crc32c::crc32c(data),
+            checksum: Some((a, h.finish())),
+        }
+    }
+
+    #[test]
+    fn parts_combine_into_the_whole_objects_sums() {
+        let pieces: [&[u8]; 3] = [b"hello, ", b"", b"multipart world"];
+        let whole: Vec<u8> = pieces.concat();
+        for a in [Algorithm::Crc32, Algorithm::Crc32c] {
+            let parts: Vec<_> = pieces.iter().map(|p| part(p, a)).collect();
+            let refs: Vec<&PartRecord> = parts.iter().collect();
+            let mut h = Hasher::new(a);
+            h.update(&whole);
+            assert_eq!(
+                combined_checksum(a, true, &refs).unwrap(),
+                h.finish(),
+                "{a:?}"
+            );
+            let (md5, crc) = combine(&refs);
+            assert_eq!(crc, crc32c::crc32c(&whole));
+            let mut m = Md5::new();
+            for p in pieces {
+                m.update(Md5::digest(p));
+            }
+            assert_eq!(md5, <[u8; 16]>::from(m.finalize()));
+        }
+        // Composite: the algorithm over the parts' checksums in order.
+        let parts: Vec<_> = pieces.iter().map(|p| part(p, Algorithm::Sha256)).collect();
+        let refs: Vec<&PartRecord> = parts.iter().collect();
+        let mut h = Hasher::new(Algorithm::Sha256);
+        for p in &parts {
+            h.update(&p.checksum.as_ref().unwrap().1);
+        }
+        assert_eq!(
+            combined_checksum(Algorithm::Sha256, false, &refs).unwrap(),
+            h.finish()
+        );
+        // A part without the upload's algorithm.
+        let mixed = [&parts[0], &part(b"x", Algorithm::Crc32)];
+        assert!(matches!(
+            combined_checksum(Algorithm::Sha256, false, &mixed),
+            Err(S3Error::MissingPartChecksum(2))
+        ));
     }
 }
