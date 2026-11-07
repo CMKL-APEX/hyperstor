@@ -1303,7 +1303,7 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=70da7640dd05438a1f82ff613951088cec4ac354#70da7640dd05438a1f82ff613951088cec4ac354"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1323,7 +1323,7 @@ dependencies = [
 [[package]]
 name = "glidex-authd"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=70da7640dd05438a1f82ff613951088cec4ac354#70da7640dd05438a1f82ff613951088cec4ac354"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
 dependencies = [
  "libc",
  "libloading",
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "glidex-raftstore"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=70da7640dd05438a1f82ff613951088cec4ac354#70da7640dd05438a1f82ff613951088cec4ac354"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1359,7 +1359,7 @@ dependencies = [
 [[package]]
 name = "glidex-tls"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=70da7640dd05438a1f82ff613951088cec4ac354#70da7640dd05438a1f82ff613951088cec4ac354"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
 dependencies = [
  "arc-swap",
  "http",
@@ -1384,7 +1384,7 @@ dependencies = [
 [[package]]
 name = "glidex-topology"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=70da7640dd05438a1f82ff613951088cec4ac354#70da7640dd05438a1f82ff613951088cec4ac354"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
 dependencies = [
  "nix",
  "serde",
