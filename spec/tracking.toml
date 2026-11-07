@@ -1155,14 +1155,16 @@ status = "done"
 tests = ["install::check_reports_every_item"]
 
 [[milestone.item]]
-what = "One-command trial cluster on one host, with system services, updated in place on later runs"
-spec = ["19-administration.md §23.4"]
+what = "One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I293)"
+spec = ["19-administration.md §23.4", "I293"]
 status = "done"
 tests = [
     "hyperstor_install::tests::settings_round_trip_and_flags_override",
     "hyperstor_install::tests::all_in_one_files_match_the_settings",
     "install::install_is_convergent_and_uninstall_keeps_configuration",
     "install::bad_flags_are_refused",
+    "install::a_missing_binary_installs_nothing",
+    "hyperstor_install::tests::services_on_replaced_binaries_are_stale",
 ]
 
 [[milestone.item]]
