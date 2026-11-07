@@ -451,6 +451,8 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
             ("4 KiB random reads", false, 4096, 1),
             ("4 KiB random reads", false, 4096, 32),
             ("1 MiB writes", true, 1 << 20, 4),
+            ("1 MiB reads", false, 1 << 20, 1),
+            ("1 MiB reads", false, 1 << 20, 2),
             ("1 MiB reads", false, 1 << 20, 4),
         ] {
             // HS_BENCH_ONLY="1 MiB reads, QD4" runs only the tests named.
