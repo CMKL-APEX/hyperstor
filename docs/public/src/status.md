@@ -28,7 +28,7 @@ covered by tests that run on every change.
 | HS12: S3 gateway | Done |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
-| HS15: Tenancy: quotas and fair share between tenants | Planned |
+| HS15: Tenancy: quotas and fair share between tenants | In progress |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
@@ -149,7 +149,9 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Realms beyond S3: hosts bound to realms, roles granted on a realm, `--realm` in hyperstorctl and the UI | Planned |
+| Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
+| A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant refused while its buckets or volumes are in pools the new realm may not use | Planned |
+| Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
 
 ## HS18: Pools and devices at run time
 

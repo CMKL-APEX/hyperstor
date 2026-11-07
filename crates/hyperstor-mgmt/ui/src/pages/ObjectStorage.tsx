@@ -1,12 +1,12 @@
 // Object storage (14-s3.md): every tenant's buckets as tenant/bucket
-// (D246), read from the store by the map service (D254), and deleted only
-// empty (D255); access keys, whose secrets are shown once (D231);
+// (D246), read from the store by the map service (D254), with their objects
+// and bytes (D257), and deleted only empty (D255); access keys, whose secrets are shown once (D231);
 // placements, the pools new buckets go in (D232); and realms (D248).
 import { useState } from "react";
 import { Modal, TokenReveal } from "@glidex/ui-kit";
 import { cluster, realms, s3 } from "../api";
 import type { S3Bucket } from "../gen/hyperstor/v1/admin_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtTime, input, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtBytes, fmtTime, input, td, useCan, usePoll } from "../ui";
 
 const named = (b: S3Bucket) => `${b.tenant}/${b.name}`;
 /** A pool by name, or by id when it was deleted since. */
@@ -32,13 +32,15 @@ function Buckets() {
       }
     >
       <ErrorText error={list.error} />
-      <Table head={["Bucket", "Realm", "Data pool", "Index pool", "Created", ""]} empty="No buckets.">
+      <Table head={["Bucket", "Realm", "Data pool", "Index pool", "Objects", "Size", "Created", ""]} empty="No buckets.">
         {(list.data ?? []).map((b) => (
           <tr key={named(b)} data-testid={`bucket-${b.tenant}-${b.name}`}>
             <td className={`${td} font-mono`}>{named(b)}</td>
             <td className={td}>{b.realm}</td>
             <td className={td}>{pool(b.dataPool, b.dataPoolId)}</td>
             <td className={td}>{pool(b.indexPool, b.indexPoolId)}</td>
+            <td className={td}>{b.counted ? b.objects.toString() : "–"}</td>
+            <td className={td}>{b.counted ? fmtBytes(b.bytes) : "–"}</td>
             <td className={td}>{fmtTime(b.createdUnix)}</td>
             <td className={td}>
               {can("store") && (
@@ -51,7 +53,8 @@ function Buckets() {
         ))}
       </Table>
       <p className="text-xs text-slate-500 mt-2">
-        Buckets are made by tenants' keys (S3's CreateBucket). Objects and bytes per bucket come later.
+        Buckets are made by tenants' keys (S3's CreateBucket). Objects and size count each object's latest version; “–”
+        for a bucket made before buckets were counted.
       </p>
       <Cli cmd={`s3 bucket list${tenant ? ` --tenant ${tenant}` : ""}`} />
       {doomed && (

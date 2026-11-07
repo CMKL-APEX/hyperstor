@@ -488,7 +488,9 @@ pub enum BucketOp {
 }
 
 /// A bucket as the store has it: its tenant and name, when it was made
-/// (Unix ms), and its pools' ids (index, data).
+/// (Unix ms), its pools' ids (index, data), and its objects and their
+/// bytes (none if not known: made before buckets were counted, or the
+/// count failed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketRow {
     pub tenant: u32,
@@ -496,6 +498,7 @@ pub struct BucketRow {
     pub created_ms: u64,
     pub index_pool: u32,
     pub data_pool: u32,
+    pub counts: Option<(u64, u64)>,
 }
 
 #[derive(Debug)]
@@ -520,7 +523,8 @@ async fn run_bucket_op(
         };
         (kind, e.to_string())
     };
-    let row = |b: hyperstor_s3::Bucket| BucketRow {
+    let row = async |b: hyperstor_s3::Bucket| BucketRow {
+        counts: s3.counts(&b).await.ok().flatten(),
         tenant: b.info.tenant,
         name: b.name,
         created_ms: b.info.created,
@@ -534,10 +538,15 @@ async fn run_bucket_op(
                 None => s3.all_buckets().await,
             }
             .map_err(fault)?;
-            BucketDone::List(all.into_iter().map(row).collect())
+            let mut rows = Vec::with_capacity(all.len());
+            for b in all {
+                rows.push(row(b).await);
+            }
+            BucketDone::List(rows)
         }
         BucketOp::Get { tenant, name } => {
-            BucketDone::List(vec![row(s3.bucket(tenant, &name).await.map_err(fault)?)])
+            let b = s3.bucket(tenant, &name).await.map_err(fault)?;
+            BucketDone::List(vec![row(b).await])
         }
         BucketOp::Delete { tenant, name } => {
             s3.delete_bucket(tenant, &name).await.map_err(fault)?;

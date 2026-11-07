@@ -11,6 +11,22 @@
 /// The first byte of every user key.
 pub const USER: u8 = b'r';
 
+/// The first byte of a range's counts (§28.9): each key a delta, `c` +
+/// a random id, summed to the counts of the rows the range holds. Before
+/// every user key, so a split leaves them in the lower range.
+pub const COUNTS: u8 = b'c';
+
+/// A count delta's key.
+pub fn count_key(id: u128) -> Vec<u8> {
+    let mut out = vec![COUNTS];
+    out.extend_from_slice(&id.to_be_bytes());
+    out
+}
+
+/// The column that holds a row's own counts (§28.9). Columns that begin
+/// with 0xFF are the store's.
+pub const TALLY: &[u8] = &[0xFF];
+
 /// The first byte of the deletion queue's keys (§28.6): before every
 /// user key, so a split, which moves user keys only, leaves the queue in
 /// the lower range.

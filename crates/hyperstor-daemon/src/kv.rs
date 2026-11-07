@@ -1,15 +1,15 @@
 //! Key–value range jobs on each range's primary (25-kv-ranges.md §28.5–
 //! §28.7): a range is looked at after it is written, at most once a
-//! second, for its deletion queue and its size; a sweep of every range
-//! held as primary looks at sizes, takes up jobs that stopped, and now and
-//! then finds ranges nothing names. The jobs themselves
+//! second, for its deletion queue, its count deltas (§28.9) and its size;
+//! a sweep of every range held as primary looks at sizes, takes up jobs
+//! that stopped, and now and then finds ranges nothing names. The jobs themselves
 //! ([`hyperstor_kv::jobs`]) go through this reactor's client, as any
 //! client's writes would.
 
 use super::*;
 use hyperstor_kv::jobs::{self, Done};
-use hyperstor_kv::keys::{QUEUE, now_secs, queue_due_end};
-use hyperstor_kv::{NS_KV, Range};
+use hyperstor_kv::keys::{COUNTS, QUEUE, now_secs, queue_due_end};
+use hyperstor_kv::{NS_KV, Range, State};
 
 /// How often the sweep runs.
 pub(crate) const SWEEP: Duration = Duration::from_secs(10);
@@ -24,6 +24,7 @@ enum Job {
     Check(jobs::Limits),
     Resume(Range),
     Drain(Range),
+    Fold(Range),
 }
 
 /// A range object as a device's copy has it.
@@ -33,6 +34,8 @@ struct Local {
     bytes: u64,
     /// Whether its deletion queue has entries due.
     queued: bool,
+    /// Its count deltas (§28.9), up to [`jobs::FOLD_AT`].
+    deltas: usize,
 }
 
 impl ShardState {
@@ -58,10 +61,14 @@ impl ShardState {
             .collect();
         let due = queue_due_end(now_secs());
         let queued = !sh.kv_scan(k, &[QUEUE], Some(&due), 1).is_empty();
+        let deltas = sh
+            .kv_scan(k, &[COUNTS], Some(&[COUNTS + 1]), jobs::FOLD_AT)
+            .len();
         Some(Local {
             range: Range::from_attrs(id, &attrs).ok()?,
             bytes,
             queued,
+            deltas,
         })
     }
 
@@ -80,7 +87,7 @@ impl ShardState {
             sleep(cfg.sweep.min(Duration::from_secs(1))).await;
             let written: Vec<ObjKey> = self.kv_written.borrow_mut().drain().collect();
             for k in written {
-                self.kv_look(&k, &cfg.limits).await;
+                self.kv_look(&k, &cfg.limits, false).await;
             }
             if swept.elapsed() < cfg.sweep {
                 continue;
@@ -107,7 +114,7 @@ impl ShardState {
                 };
                 let r = l.range;
                 if !jobs::unfinished(&r) {
-                    self.kv_look(k, &cfg.limits).await;
+                    self.kv_look(k, &cfg.limits, true).await;
                     continue;
                 }
                 // Left so since the last sweep: no job is under way, or it
@@ -172,9 +179,11 @@ impl ShardState {
         *unnamed = still;
     }
 
-    /// Starts a drain of range `k`'s deletion queue if it has entries due, or
-    /// else a check if its size calls for a split or a merge (D202).
-    async fn kv_look(self: &Rc<Self>, k: &ObjKey, limits: &jobs::Limits) {
+    /// Starts a drain of range `k`'s deletion queue if it has entries due, a
+    /// fold of its count deltas if it has [`jobs::FOLD_AT`] (any two, on a
+    /// `sweep`, so that a range written no more doesn't keep them), or else
+    /// a check if its size calls for a split or a merge (D202).
+    async fn kv_look(self: &Rc<Self>, k: &ObjKey, limits: &jobs::Limits, sweep: bool) {
         if !self.primary_of(k) {
             return;
         }
@@ -183,6 +192,10 @@ impl ShardState {
         };
         if l.queued {
             return self.kv_job(k, Job::Drain(l.range));
+        }
+        let fold = if sweep { 2 } else { jobs::FOLD_AT };
+        if l.deltas >= fold && l.range.state == State::Serving {
+            return self.kv_job(k, Job::Fold(l.range));
         }
         let small = l.bytes < limits.merge_bytes && l.range.end.is_some();
         if !jobs::unfinished(&l.range) && (l.bytes > limits.split_bytes || small) {
@@ -217,6 +230,10 @@ impl ShardState {
                     // More, or a size to look at: once more.
                     me.kv_written.borrow_mut().insert(k.clone());
                     (n > 0).then(|| format!("deleted the objects of {n} queue entries"))
+                }),
+                Job::Fold(r) => jobs::fold(&cl, pool, &r).await.map(|_| {
+                    me.kv_written.borrow_mut().insert(k.clone());
+                    None
                 }),
             };
             match what {

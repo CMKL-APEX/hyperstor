@@ -118,12 +118,18 @@ pub struct BucketInfo {
     pub tenant: u32,
     /// Unix milliseconds.
     pub created: u64,
+    /// Whether every write since it was made kept its counts (§14.6):
+    /// buckets made by an earlier build have none.
+    pub counted: bool,
 }
 
 impl BucketInfo {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        e.u8(V1).u32(self.tenant).u64(self.created);
+        e.u8(V1)
+            .u32(self.tenant)
+            .u64(self.created)
+            .bool(self.counted);
         e.into_vec()
     }
 
@@ -133,6 +139,7 @@ impl BucketInfo {
         Ok(BucketInfo {
             tenant: d.u32()?,
             created: d.u64()?,
+            counted: d.remaining() > 0 && d.bool()?,
         })
     }
 }
@@ -592,8 +599,16 @@ mod tests {
         let b = BucketInfo {
             tenant: 3,
             created: 4,
+            counted: true,
         };
-        assert_eq!(BucketInfo::decode(&b.encode()), Ok(b));
+        assert_eq!(BucketInfo::decode(&b.encode()), Ok(b.clone()));
+        // A record from before counts: not counted.
+        let old = &b.encode()[..13];
+        let uncounted = BucketInfo {
+            counted: false,
+            ..b
+        };
+        assert_eq!(BucketInfo::decode(old), Ok(uncounted));
         assert_eq!(upload_of(&upload_row(5, 6)), Some((5, 6)));
         assert_eq!(upload_of(&object_row(b"x")), None);
         assert_eq!(bucket_of(&bucket_table(258, "ab")), Some((258, &b"ab"[..])));
