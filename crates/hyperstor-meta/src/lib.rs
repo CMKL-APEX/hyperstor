@@ -210,6 +210,11 @@ pub enum Admin {
         query: audit_log::Query,
         reply: VolumeReply<(Vec<String>, Option<String>)>,
     },
+    /// Buckets, read from the key-value store as a client (D254).
+    Buckets {
+        op: BucketOp,
+        reply: VolumeReply<BucketDone>,
+    },
     /// The trash: what's in it, restore, purge (19-administration.md §23.9.3).
     Trash {
         op: TrashOp,
@@ -462,6 +467,83 @@ pub enum SnapOp {
     DeleteGroup {
         group: u128,
     },
+}
+
+/// What administrators do with buckets (D246, D255).
+#[derive(Debug)]
+pub enum BucketOp {
+    /// Every tenant's, or one tenant's.
+    List {
+        tenant: Option<u32>,
+    },
+    Get {
+        tenant: u32,
+        name: String,
+    },
+    /// Only one with no object and no upload under way.
+    Delete {
+        tenant: u32,
+        name: String,
+    },
+}
+
+/// A bucket as the store has it: its tenant and name, when it was made
+/// (Unix ms), and its pools' ids (index, data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketRow {
+    pub tenant: u32,
+    pub name: String,
+    pub created_ms: u64,
+    pub index_pool: u32,
+    pub data_pool: u32,
+}
+
+#[derive(Debug)]
+pub enum BucketDone {
+    List(Vec<BucketRow>),
+    Deleted,
+}
+
+/// Runs a bucket operation as a client of the cluster (D254).
+async fn run_bucket_op(
+    c: std::rc::Rc<hyperstor_client::Client>,
+    op: BucketOp,
+) -> Result<BucketDone, (VolumeFault, String)> {
+    use hyperstor_s3::{S3, S3Error};
+    let s3 = S3::open(c, hyperstor_s3::Config::default());
+    let fault = |e: S3Error| {
+        let kind = match &e {
+            S3Error::NoSuchBucket(_) => VolumeFault::NotFound,
+            S3Error::BucketNotEmpty(_) => VolumeFault::InUse,
+            S3Error::InvalidBucketName(_) => VolumeFault::Invalid,
+            _ => VolumeFault::Unavailable,
+        };
+        (kind, e.to_string())
+    };
+    let row = |b: hyperstor_s3::Bucket| BucketRow {
+        tenant: b.info.tenant,
+        name: b.name,
+        created_ms: b.info.created,
+        index_pool: b.table.index_pool,
+        data_pool: b.table.data_pool,
+    };
+    Ok(match op {
+        BucketOp::List { tenant } => {
+            let all = match tenant {
+                Some(t) => s3.buckets(t).await,
+                None => s3.all_buckets().await,
+            }
+            .map_err(fault)?;
+            BucketDone::List(all.into_iter().map(row).collect())
+        }
+        BucketOp::Get { tenant, name } => {
+            BucketDone::List(vec![row(s3.bucket(tenant, &name).await.map_err(fault)?)])
+        }
+        BucketOp::Delete { tenant, name } => {
+            s3.delete_bucket(tenant, &name).await.map_err(fault)?;
+            BucketDone::Deleted
+        }
+    })
 }
 
 /// A trash operation of the cluster API ([`Admin::Trash`]); `epoch`
@@ -2802,6 +2884,17 @@ impl Meta {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
                             audit_log::read(&c, &query).await.map_err(volume_fault)
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
+                Admin::Buckets { op, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            run_bucket_op(c, op).await
                         };
                         let _ = reply.send(r.await);
                     });

@@ -62,7 +62,7 @@ member's `hyperstor_meta_leader`, and each scrubbed pool's
 of role `metrics`, or any role that may read; 401 without one, 403 for
 `host`. See [Managing a cluster](../admin-guide/managing.md#the-map-services-metrics).
 
-**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `SetPortRole`, `SetLending`, `ClaimPort`, `ReleaseClaim`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
+**Audit.** Every change (`SetDeviceIn`, `SetDeviceWeight`, `SetFullRatios`, `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `SetPortRole`, `SetLending`, `ClaimPort`, `ReleaseClaim`, `CreatePool`, `SetPool`, `SetScrubSettings`, `WeakenScrubSettings`, `StartScrub`, `SetPoolDevice`, `DeletePool`, `CreateVolume`, `ExpandVolume`, `DeleteVolume`, `CopyVolume`, `MoveVolume`, the snapshot calls but `ListSnapshots`, `CreateToken`, `RevokeToken`, `CreateS3Key`, `RevokeS3Key`, `SetS3Placement`, `DeleteS3Placement`, `DeleteS3Bucket`, `Join`, `RenewCertificate`, `RevokeCertificate`, `DrainNode`, `CancelOperation`) and every refused call is
 written as one JSON line on the map service's standard error, which
 systemd keeps in the journal:
 
@@ -170,6 +170,9 @@ values are left out of answers.
 | `SetS3Placement` | `{"placement": {"name": "default", "data_pool": "bulk", "index_pool": "flash"}}` | `{}`. Kept by the pools' ids, so a renamed pool keeps its placements. With `"realm"` in the placement, that realm's (default `default`). On the leader; `invalid_argument` for a bad name, a pool that doesn't exist, a cache pool or `.meta`; `failed_precondition` (`pool_not_in_realm`) for a pool its realm may not use |
 | `DeleteS3Placement` | `{"name": "fast"}`, optionally `"realm"` | `{}`; `not_found` for an unknown placement |
 | `ListS3Placements` | `{}` | `placements`, each with its pools' names now and `data_pool_id`, `index_pool_id` (a pool deleted since has an empty name) |
+| `ListS3Buckets` | `{}`, or `{"tenant": 1}` | `buckets` by tenant and name, each `tenant`, `name`, `created_unix`, its pools' names and ids, and its tenant's `realm`; read from the key-value store when asked (D254), `unavailable` while it can't be read |
+| `GetS3Bucket` | `{"tenant": 1, "name": "photos"}` | `bucket`; `not_found` for a bucket the tenant hasn't |
+| `DeleteS3Bucket` | `{"tenant": 1, "name": "photos"}` | `{}`; `in_use` while it holds objects or uploads under way (D255), `not_found` for none |
 | `GetS3Gateway` | `{}`, or `{"realm": "acme"}` | the realm's tenants' `keys` with their `secret`s, and its `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy. Without `realm`, `default`'s; `not_found` for an unknown realm |
 | `CreateRealm` (`RealmService`) | `{"name": "acme"}`, optionally `"description"` | `realm` (`id`, `name`, …). On the leader; `failed_precondition` (`realm_exists`) |
 | `ListRealms` | `{}` | `realms`, `default` first, each with its `tenants` and the `pools` whose lists name it; `open_pools`, which every realm may use |

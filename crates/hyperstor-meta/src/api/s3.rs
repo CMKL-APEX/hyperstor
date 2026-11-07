@@ -15,14 +15,16 @@
 //!   its tenants' keys and its placements.
 
 use super::admin::random_bytes;
-use super::{Api, Need, audit, with_reason};
+use super::{Api, Need, audit, volume_result, with_reason};
 use crate::PoolKind;
 use crate::realms::{self, Realms};
 use crate::s3keys::{self, Placement, S3Key};
 use crate::tokens::TokenError;
+use crate::{Admin, BucketDone, BucketOp, BucketRow};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{S3Service, S3ServiceExt};
+use hyperstor_reactor::chan::oneshot;
 use std::sync::Arc;
 
 pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc::Router {
@@ -125,8 +127,109 @@ impl Api {
     }
 }
 
+impl Api {
+    /// Runs a bucket operation as a client of the cluster (D254).
+    async fn bucket_op(&self, op: BucketOp) -> Result<BucketDone, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Buckets { op, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        volume_result(rx.recv().await)
+    }
+
+    /// Buckets as administrators see them: pools and realm named now.
+    async fn buckets_pb(&self, rows: Vec<BucketRow>) -> Result<Vec<pb::S3Bucket>, ConnectError> {
+        let (map, ..) = self.published().await?;
+        let realms = self.realms().await?;
+        let name = |id: u32| {
+            map.pools
+                .get(&id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default()
+        };
+        Ok(rows
+            .into_iter()
+            .map(|b| pb::S3Bucket {
+                tenant: b.tenant,
+                created_unix: b.created_ms / 1000,
+                data_pool: name(b.data_pool),
+                index_pool: name(b.index_pool),
+                data_pool_id: b.data_pool,
+                index_pool_id: b.index_pool,
+                realm: realms.name(realms.realm_of(b.tenant)),
+                name: b.name,
+                ..Default::default()
+            })
+            .collect())
+    }
+}
+
+/// A tenant and bucket name as a request gives them.
+fn bucket_of(tenant: u32, name: &str) -> Result<(u32, String), ConnectError> {
+    if tenant == 0 {
+        return Err(invalid("a bucket's tenant is 1 or more"));
+    }
+    if !hyperstor_s3::valid_bucket_name(name) {
+        return Err(invalid(format!("{name:?} isn't a bucket name")));
+    }
+    Ok((tenant, name.to_string()))
+}
+
 #[allow(refining_impl_trait)]
 impl S3Service for Api {
+    async fn list_s3_buckets(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ListS3BucketsRequest>,
+    ) -> ServiceResult<pb::ListS3BucketsResponse> {
+        self.authorize(&ctx, "ListS3Buckets", "s3 buckets", false)?;
+        let tenant = (req.tenant != 0).then_some(req.tenant);
+        let BucketDone::List(rows) = self.bucket_op(BucketOp::List { tenant }).await? else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        Ok(pb::ListS3BucketsResponse {
+            buckets: self.buckets_pb(rows).await?,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn get_s3_bucket(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetS3BucketRequest>,
+    ) -> ServiceResult<pb::GetS3BucketResponse> {
+        let target = format!("bucket {}/{}", req.tenant, req.name);
+        self.authorize(&ctx, "GetS3Bucket", &target, false)?;
+        let (tenant, name) = bucket_of(req.tenant, req.name)?;
+        let BucketDone::List(rows) = self.bucket_op(BucketOp::Get { tenant, name }).await? else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        Ok(pb::GetS3BucketResponse {
+            bucket: self.buckets_pb(rows).await?.into_iter().next().into(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn delete_s3_bucket(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DeleteS3BucketRequest>,
+    ) -> ServiceResult<pb::DeleteS3BucketResponse> {
+        let target = format!("bucket {}/{}", req.tenant, req.name);
+        let who = self.authorize(&ctx, "DeleteS3Bucket", &target, true)?;
+        let r = match bucket_of(req.tenant, req.name) {
+            Ok((tenant, name)) => self
+                .bucket_op(BucketOp::Delete { tenant, name })
+                .await
+                .map(|_| ()),
+            Err(e) => Err(e),
+        };
+        Self::audited(&who, "DeleteS3Bucket", &target, r)?;
+        Ok(pb::DeleteS3BucketResponse::default().into())
+    }
+
     async fn create_s3_key(
         &self,
         ctx: RequestContext,

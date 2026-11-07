@@ -46,6 +46,17 @@ service S3Service {
   // The placements. Read.
   rpc ListS3Placements(ListS3PlacementsRequest) returns (ListS3PlacementsResponse);
 
+  // Buckets, every tenant's or one tenant's, as `tenant/bucket` (D246),
+  // read from the key-value store by the map service when asked (D254).
+  // Read.
+  rpc ListS3Buckets(ListS3BucketsRequest) returns (ListS3BucketsResponse);
+
+  // One bucket. Read.
+  rpc GetS3Bucket(GetS3BucketRequest) returns (GetS3BucketResponse);
+
+  // Deletes a bucket with no object and no upload under way (D255). Store.
+  rpc DeleteS3Bucket(DeleteS3BucketRequest) returns (DeleteS3BucketResponse);
+
   // Every key with its secret, and every placement: what a gateway
   // serves with, fetched every few seconds. S3 gateways ("s3"
   // certificates, D233) only.
@@ -597,6 +608,48 @@ message DeleteS3PlacementRequest {
 }
 
 message DeleteS3PlacementResponse {}
+
+// A bucket as administrators see it (D246): its tenant and name, which
+// together name it.
+message S3Bucket {
+  uint32 tenant = 1;
+  string name = 2;
+  // Unix seconds.
+  uint64 created_unix = 3 [json_name = "created_unix"];
+  // Its pools' names now (empty for a pool deleted since) and ids.
+  string data_pool = 4 [json_name = "data_pool"];
+  string index_pool = 5 [json_name = "index_pool"];
+  uint32 data_pool_id = 6 [json_name = "data_pool_id"];
+  uint32 index_pool_id = 7 [json_name = "index_pool_id"];
+  // Its tenant's realm (D248).
+  string realm = 8;
+}
+
+message ListS3BucketsRequest {
+  // 0: every tenant's.
+  uint32 tenant = 1;
+}
+
+message ListS3BucketsResponse {
+  // By tenant, then name.
+  repeated S3Bucket buckets = 1;
+}
+
+message GetS3BucketRequest {
+  uint32 tenant = 1;
+  string name = 2;
+}
+
+message GetS3BucketResponse {
+  S3Bucket bucket = 1;
+}
+
+message DeleteS3BucketRequest {
+  uint32 tenant = 1;
+  string name = 2;
+}
+
+message DeleteS3BucketResponse {}
 
 message ListS3PlacementsRequest {}
 
