@@ -251,6 +251,53 @@ enum Running {
     Digest(Box<digest::Context>),
 }
 
+impl Running {
+    fn new(a: Algorithm) -> Running {
+        match a {
+            Algorithm::Crc32 => Running::Crc32(crc32fast::Hasher::new()),
+            Algorithm::Crc32c => Running::Crc32c(0),
+            Algorithm::Sha1 => Running::Digest(Box::new(digest::Context::new(
+                &digest::SHA1_FOR_LEGACY_USE_ONLY,
+            ))),
+            Algorithm::Sha256 => Running::Digest(Box::new(digest::Context::new(&digest::SHA256))),
+        }
+    }
+
+    fn update(&mut self, b: &[u8]) {
+        match self {
+            Running::Crc32(h) => h.update(b),
+            Running::Crc32c(c) => *c = crc32c::crc32c_append(*c, b),
+            Running::Digest(c) => c.update(b),
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        match self {
+            Running::Crc32(h) => h.finalize().to_be_bytes().to_vec(),
+            Running::Crc32c(c) => c.to_be_bytes().to_vec(),
+            Running::Digest(c) => c.finish().as_ref().to_vec(),
+        }
+    }
+}
+
+/// One `x-amz-checksum-*` algorithm's value of bytes as they go by: a
+/// copy's, when the client asks for an algorithm (14-s3.md §14.2).
+pub struct Hasher(Running);
+
+impl Hasher {
+    pub fn new(a: Algorithm) -> Hasher {
+        Hasher(Running::new(a))
+    }
+
+    pub fn update(&mut self, b: &[u8]) {
+        self.0.update(b);
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.0.finish()
+    }
+}
+
 /// The hashes a body is checked against, kept as it streams.
 pub struct Checks {
     sha256: Option<([u8; 32], digest::Context)>,
@@ -274,17 +321,7 @@ impl Checks {
                     ),
                     None => None,
                 };
-                let r = match a {
-                    Algorithm::Crc32 => Running::Crc32(crc32fast::Hasher::new()),
-                    Algorithm::Crc32c => Running::Crc32c(0),
-                    Algorithm::Sha1 => Running::Digest(Box::new(digest::Context::new(
-                        &digest::SHA1_FOR_LEGACY_USE_ONLY,
-                    ))),
-                    Algorithm::Sha256 => {
-                        Running::Digest(Box::new(digest::Context::new(&digest::SHA256)))
-                    }
-                };
-                Some((a, want, r))
+                Some((a, want, Running::new(a)))
             }
         };
         Ok(Checks {
@@ -297,11 +334,8 @@ impl Checks {
         if let Some((_, c)) = &mut self.sha256 {
             c.update(b);
         }
-        match &mut self.checksum {
-            Some((_, _, Running::Crc32(h))) => h.update(b),
-            Some((_, _, Running::Crc32c(c))) => *c = crc32c::crc32c_append(*c, b),
-            Some((_, _, Running::Digest(c))) => c.update(b),
-            None => {}
+        if let Some((_, _, r)) = &mut self.checksum {
+            r.update(b);
         }
     }
 
@@ -331,11 +365,7 @@ impl Checks {
                     .map_err(|_| BodyError::Malformed("checksum"))?
             }
         };
-        let got = match r {
-            Running::Crc32(h) => h.finalize().to_be_bytes().to_vec(),
-            Running::Crc32c(c) => c.to_be_bytes().to_vec(),
-            Running::Digest(c) => c.finish().as_ref().to_vec(),
-        };
+        let got = r.finish();
         if got != want {
             return Err(BodyError::Checksum(a.name()));
         }

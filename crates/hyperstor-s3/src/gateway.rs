@@ -1608,8 +1608,8 @@ async fn put_object(
     req: http::Request<Incoming>,
 ) -> Result<Response<Body>, ApiError> {
     let h = req.headers();
-    if h.contains_key("x-amz-copy-source") {
-        return Err(ApiError::not_implemented("copy object"));
+    if let Some(src) = header(h, "x-amz-copy-source") {
+        return copy_object(state, b, key, tenant, src, h).await;
     }
     let cond = write_condition(h)?;
     if key.len() > 1024 {
@@ -1711,6 +1711,144 @@ async fn put_object(
     }
     checksum_headers(r.headers_mut(), &e);
     Ok(r)
+}
+
+/// The bucket and object an `x-amz-copy-source` names: `bucket/key`,
+/// URL-encoded, perhaps with a leading `/` and a `?versionId=`.
+fn copy_source(v: &str) -> Result<(String, Vec<u8>), ApiError> {
+    let bad = || ApiError::new(400, "InvalidArgument", "bad x-amz-copy-source");
+    let (path, query) = v.split_once('?').unwrap_or((v, ""));
+    if let Some(version) = query.strip_prefix("versionId=")
+        && version != "null"
+    {
+        // No versioning: only the null version exists.
+        return Err(ApiError::new(
+            404,
+            "NoSuchVersion",
+            "the version doesn't exist",
+        ));
+    }
+    let path = path.strip_prefix('/').unwrap_or(path);
+    let (b, k) = path.split_once('/').ok_or_else(bad)?;
+    let b = String::from_utf8(sigv4::percent_decode(b.as_bytes()).ok_or_else(bad)?)
+        .map_err(|_| bad())?;
+    let k = sigv4::percent_decode(k.as_bytes()).ok_or_else(bad)?;
+    if b.is_empty() || k.is_empty() || std::str::from_utf8(&k).is_err() {
+        return Err(bad());
+    }
+    Ok((b, k))
+}
+
+/// What `x-amz-copy-source-if-*` say of the source: as a GET's
+/// conditions, except that S3 answers every failure with 412.
+fn copy_source_condition(h: &HeaderMap, e: &Entry) -> Result<(), ApiError> {
+    let mut as_get = HeaderMap::new();
+    for name in [
+        "if-match",
+        "if-none-match",
+        "if-modified-since",
+        "if-unmodified-since",
+    ] {
+        if let Some(v) = h.get(format!("x-amz-copy-source-{name}")) {
+            as_get.insert(name, v.clone());
+        }
+    }
+    match read_condition(&as_get, e) {
+        None => Ok(()),
+        Some(_) => Err(precondition_failed()),
+    }
+}
+
+/// CopyObject (D193): the source, of the same tenant, read and written
+/// again as `key`, with its metadata or the request's
+/// (`x-amz-metadata-directive: REPLACE`).
+async fn copy_object(
+    state: &State,
+    b: &str,
+    key: Vec<u8>,
+    tenant: u32,
+    src: &str,
+    h: &HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    if key.len() > 1024 {
+        return Err(S3Error::InvalidKey.into());
+    }
+    let (sb, sk) = copy_source(src)?;
+    let replace = match header(h, "x-amz-metadata-directive") {
+        None | Some("COPY") => false,
+        Some("REPLACE") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                400,
+                "InvalidArgument",
+                "x-amz-metadata-directive is COPY or REPLACE",
+            ));
+        }
+    };
+    if sb == b && sk == key && !replace {
+        return Err(ApiError::new(
+            400,
+            "InvalidRequest",
+            "this copy request is illegal because it is trying to copy an object to itself without changing the object's metadata",
+        ));
+    }
+    let hash = match header(h, "x-amz-checksum-algorithm") {
+        None => None,
+        Some(a) => Some(
+            Algorithm::of_header(&format!("x-amz-checksum-{}", a.to_ascii_lowercase()))?
+                .ok_or_else(|| ApiError::new(400, "InvalidRequest", "bad checksum algorithm"))?,
+        ),
+    };
+    let cond = write_condition(h)?;
+    let meta = if replace { Some(meta_of(h)?) } else { None };
+    let from = state.bucket(&sb, tenant).await?;
+    let to = if sb == b {
+        from.clone()
+    } else {
+        state.bucket(b, tenant).await?
+    };
+    let (fk, ff) = (sk, from.clone());
+    let e = state
+        .reactors
+        .call(move |s3| async move { s3.head(&ff, &fk).await })
+        .await??
+        .ok_or_else(|| ApiError::new(404, "NoSuchKey", "the source object doesn't exist"))?;
+    copy_source_condition(h, &e)?;
+    if e.size > MAX_PUT {
+        return Err(ApiError::new(
+            400,
+            "InvalidRequest",
+            "a copy source is 5 GiB at most; copy larger objects in parts",
+        ));
+    }
+    let meta = meta.unwrap_or_else(|| Meta {
+        content_type: e.content_type.clone(),
+        meta: e.meta.clone(),
+        checksum: None,
+    });
+    let made = state
+        .reactors
+        .call(move |s3| async move {
+            s3.copy(&from, &e, &to, &key, meta, cond, hash)
+                .await
+                .map_err(|err| match err {
+                    // The source was replaced and its chunks are gone.
+                    S3Error::Changed => ApiError::new(
+                        503,
+                        "SlowDown",
+                        "the source object changed during the copy; try again",
+                    ),
+                    err => err.into(),
+                })
+        })
+        .await??;
+    let mut x = Xml::new("CopyObjectResult");
+    x.elem("LastModified", &dates::iso(made.written))
+        .elem("ETag", &made.etag());
+    if let Some((a, v)) = &made.checksum {
+        x.elem(&format!("Checksum{}", a.name()), &B64.encode(v));
+    }
+    Ok(xml_ok(x.finish("CopyObjectResult")))
 }
 
 /// A PUT's reactor side: writes what `rx` brings, then, once tokio's
@@ -1878,6 +2016,18 @@ mod tests {
         assert!(Condition::Matches(vec![tag.clone()]).holds(Some(&e)));
         assert!(!Condition::Matches(vec![tag]).holds(None));
         assert!(Condition::Absent.holds(None) && !Condition::Absent.holds(Some(&e)));
+    }
+
+    #[test]
+    fn copy_sources_name_a_bucket_and_object() {
+        let c = |v: &str| copy_source(v).map_err(|e| e.code);
+        assert_eq!(c("b/k"), Ok(("b".into(), b"k".to_vec())));
+        assert_eq!(c("/b/a%20b/c%3Fd"), Ok(("b".into(), b"a b/c?d".to_vec())));
+        assert_eq!(c("b/k?versionId=null"), Ok(("b".into(), b"k".to_vec())));
+        assert_eq!(c("b/k?versionId=x1"), Err("NoSuchVersion"));
+        for bad in ["b", "b/", "/k", "b/%zz", "b/%ff"] {
+            assert_eq!(c(bad), Err("InvalidArgument"), "{bad}");
+        }
     }
 
     #[test]

@@ -782,12 +782,13 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4; built: conditional requests, DeleteObjects, checksums kept and given back)"
-spec = ["14-s3.md §14.2", "D193", "D194", "D196", "I289"]
+what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4; built: conditional requests, DeleteObjects, checksums kept and given back, copy object)"
+spec = ["14-s3.md §14.2", "D193", "D194", "D196", "I289", "I290"]
 status = "partial"
 tests = [
     "hyperstor_s3::gateway::tests::conditions_are_read_as_s3_reads_them",
     "hyperstor_s3::xml::tests::bodies_are_read_as_written",
+    "hyperstor_s3::gateway::tests::copy_sources_name_a_bucket_and_object",
 ]
 
 [[milestone.item]]

@@ -509,6 +509,55 @@ impl S3 {
         })
     }
 
+    /// Copies object `e` of bucket `from` to `key` of bucket `to`, if
+    /// `cond` holds of the object there (D193, D194): its bytes are read
+    /// and written again, as a PUT of them, so the copy shares nothing
+    /// with the source. The checksum is `hash`'s, computed as the bytes
+    /// go by, else the source's (the bytes are the same). A source
+    /// replaced during the copy is still read whole while its chunks
+    /// linger (§14.6); after that, [`S3Error::Changed`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn copy(
+        &self,
+        from: &Bucket,
+        e: &Entry,
+        to: &Bucket,
+        key: &[u8],
+        mut meta: Meta,
+        cond: Condition,
+        hash: Option<chunked::Algorithm>,
+    ) -> Result<Entry> {
+        let mut put = self.put(to, key, e.size).await?;
+        put.require(cond);
+        let mut hasher = hash.map(chunked::Hasher::new);
+        // A few chunks at a time, which `read` fetches at once.
+        let step = self.cfg.chunk.max(4096) * self.cfg.in_flight.max(1) as u64;
+        let mut at = 0;
+        while at < e.size {
+            let n = step.min(e.size - at);
+            let d = match self.read(from, e, at, n).await {
+                Ok(d) => d,
+                Err(err) => {
+                    let _ = put.abort().await;
+                    return Err(err);
+                }
+            };
+            if let Some(h) = &mut hasher {
+                h.update(&d);
+            }
+            if let Err(err) = put.write(&d).await {
+                let _ = put.abort().await;
+                return Err(err);
+            }
+            at += n;
+        }
+        meta.checksum = match (hash, hasher) {
+            (Some(a), Some(h)) => Some((a, h.finish())),
+            _ => e.checksum.clone(),
+        };
+        put.finish(meta).await
+    }
+
     /// Gives up the uploads of bucket `b` that expired by `now` (Unix
     /// seconds) and weren't completed: their chunks are queued for deletion
     /// and their records removed. Returns how many it looked at.

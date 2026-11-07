@@ -7219,7 +7219,7 @@ fn s3_objects_match_a_model() {
                 let key: Vec<u8> = (0..n)
                     .flat_map(|_| pieces[rng.random_range(0..pieces.len())].to_vec())
                     .collect();
-                match rng.random_range(0..11) {
+                match rng.random_range(0..12) {
                     0..4 => {
                         let size = size_of(&mut rng);
                         let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
@@ -7371,6 +7371,43 @@ fn s3_objects_match_a_model() {
                         } else {
                             assert!(matches!(r, Err(S3Error::PreconditionFailed)), "{r:?}");
                         }
+                    }
+                    11 => {
+                        // Copies (D193), within the bucket or from the
+                        // other; the copy's chunks are its own.
+                        let si = rng.random_range(0..2);
+                        let n = model[si].len();
+                        let Some((sk, want)) = model[si]
+                            .iter()
+                            .nth(rng.random_range(0..n.max(1)))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                        else {
+                            continue;
+                        };
+                        let from = &buckets[si];
+                        let e = s3.head(from, &sk).await.unwrap().unwrap();
+                        let hash = [None, Some(Algorithm::Crc32c)][rng.random_range(0..2)];
+                        let meta = Meta {
+                            content_type: "x/y".into(),
+                            ..Default::default()
+                        };
+                        let made = s3
+                            .copy(from, &e, b, &key, meta, Condition::Any, hash)
+                            .await
+                            .unwrap();
+                        assert_eq!(made.md5, <[u8; 16]>::from(Md5::digest(&want)));
+                        assert_eq!(made.size, want.len() as u64);
+                        match hash {
+                            Some(_) => assert_eq!(
+                                made.checksum,
+                                Some((
+                                    Algorithm::Crc32c,
+                                    crc32c::crc32c(&want).to_be_bytes().to_vec()
+                                ))
+                            ),
+                            None => assert_eq!(made.checksum, e.checksum),
+                        }
+                        model[bi].insert(key.clone(), want);
                     }
                     _ => check_list(s3, b, m, &mut rng).await,
                 }
