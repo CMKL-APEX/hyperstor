@@ -1,0 +1,9 @@
+title = "RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH"
+started = 2026-11-07
+updated = 2026-11-07
+milestone = "HS6"
+branch = "plan/hs6-rdma"
+now = "HS5b and HS6 items in tracking; HS5b's state checked (polling and the writer done, payload copies and registered buffers left); a perftest baseline between two HDR hosts"
+next = "HS5b's copies (vectored and zero-copy sends, registered buffers), measured end to end; then HS6's transport trait and verbs module"
