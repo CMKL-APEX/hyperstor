@@ -5,6 +5,6 @@ started = 2026-11-01
 updated = 2026-11-07
 milestone = "HS12"
 branch = "feat/s3-conditional"
-prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212, 213, 217, 218, 219]
+prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212, 213, 217, 218, 219, 220]
 now = "Stage 4a: conditional requests, DeleteObjects, checksums kept and given back (D194, I289). Bucket names per tenant and realms deployed to the pilot (2026-11-07)"
 next = "Stage 4b: copy object (D193); 4c: multipart uploads (D196), UploadPartCopy"
