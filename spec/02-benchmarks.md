@@ -1701,7 +1701,9 @@ not backfill, and shows no backfill.
    root RAID holds node 0's device files: I/O pressure stayed about 41%
    "full". This and finding 4, not the code, are why the baselines are
    a tenth of 2026-11-02's and p99 is in the hundreds of ms; not
-   comparable.
+   comparable. *Correction (2026-11-07):* that pressure figure
+   doesn't show the builds contended for the disks; Hyperstor's own
+   services account for it (see 2026-11-07, finding 4).
 4. **Node 2 was reported silent, and reported its peers silent, many
    times** (43 reports in the hour), and was marked down and flapping
    after the runs. Its own reactor never held. During the runs, node
@@ -1717,3 +1719,57 @@ not backfill, and shows no backfill.
    silences involving node 2 were logged every day since 2026-11-02
    (8–40). The next run should drive the load from a host that isn't a
    node.
+
+## 2026-11-07: the backfill test with the client off node 2 (pilot)
+
+The test of 2026-11-06 rerun with the client on node 1's host, which is
+on the same subnet as node 0's; node 2's host is behind a router. No
+spare host could reach the nodes' network, so the client still shared
+node 1's 1 GbE link. Every host ran the build from `main` installed that
+morning, which has I283; node 0's host built nothing, and node 1's host
+ran one `-j2` test build of another session. Same commands as
+2026-11-06: `HS_BENCH_SECS=150 hyperstor-bench remote` with
+`HS_BENCH_ONLY="4 KiB random writes, QD32"` (then `QD1`), and 25 s in,
+`hyperstorctl out --device 2000`; `in` after each run.
+
+| Run | Backfill | 4 KiB writes (ops/s) | p50 | p99 |
+|---|---|---|---|---|
+| Baseline, QD32 | – | 15,688 | 1.78 ms | 5.3 ms |
+| During backfill, QD32 | 38 s (about 140 PGs) | 11,412 | 1.83 ms | 5.7 ms |
+| Baseline, QD1 | – | 1,129 | 0.85 ms | 2.2 ms |
+| QD1, after `out` | none seen | 1,116 | 0.81 ms | 3.2 ms |
+
+### Findings
+
+1. **No reactor held on any node,** in the baselines or the runs with
+   `out` and `in`, and no re-read, stall or read timeout. On 2026-11-06
+   the connection writer held reactors 100–125 ms seven times while the
+   same number of PGs moved; I283 is the likely reason, though the load
+   differed.
+2. **The baselines are 11 times (QD32) and 4 times (QD1) those of
+   2026-11-06, with p99 about 5 ms instead of 250 ms.** The client
+   moved off node 2's host and its routed path, and node 0's host built
+   nothing. Backfill under QD32 took about as long as with no load on
+   2026-11-06 (38 s against 35 s) and cost 27% of the writes.
+3. **The QD1 run had no backfill to measure:** pool 1 was clean at the
+   first check, 4 s after `out`. Device 2001 most likely still held the
+   PGs' copies from the QD32 run, so they only needed catching up. A
+   QD1 backfill needs its own run, well after the QD32 one.
+4. **I/O pressure on these hosts is Hyperstor's own waiting.** On
+   nodes 0 and 1, `io.pressure` "full" was 55–80% for the whole host
+   and at the same level in the cgroups of `hyperstord`, the map
+   service and `hyperstor-vhost`, with no task in uninterruptible
+   sleep and node 0's root RAID nearly idle. Tasks waiting in
+   `io_uring_enter` with requests in flight count as I/O wait, so the
+   figure doesn't show disk contention, here or on 2026-11-06.
+5. **Node 2's routed path still shows under load.** Node 2 reported a
+   peer silent twice (300 ms), and the map service leader on node 0's
+   host logged 19 Raft heartbeat timeouts (50 ms) to node 2's member and
+   3 to node 1's during the 15 minutes; none in the two quiet hours
+   before. Before and after the runs, 500 pings at 10 ms between every
+   pair of nodes lost none, but a 10 s TCP stream (about 0.6–0.9
+   Gb/s) to or from node 2's host had 1,100–2,800 retransmits on the
+   sending host, against 6–15 between nodes 0 and 1 (host-wide
+   counters, so other traffic counts too). That makes the routed path
+   the first suspect for the long tail of 1 MiB reads from node 2's
+   host (2026-11-01, finding 4), not yet shown.
