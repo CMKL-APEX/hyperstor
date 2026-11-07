@@ -337,6 +337,282 @@ fn people_log_in_and_do_what_their_roles_allow() {
     assert!(!c.mgmt_log().contains("claim code"));
 }
 
+/// Roles granted on a realm (D252, D260, D262–D265): a storage
+/// administrator of acme sees and changes only acme's tenants' volumes and
+/// the realm's own things, and nothing of the cluster as a whole; a
+/// security administrator of acme manages acme's keys and acme's grants
+/// only; `--in-realm` narrows anyone to one realm; and the realms mgmt
+/// names can't be forged by a browser.
+#[test]
+fn roles_on_a_realm_reach_only_it() {
+    let c = Cluster::all_in_one("realmroles", 3);
+    let ann = c.login("ann", Some(&c.claim_code())).unwrap();
+    let both = r#"{"roles":["security-admin","storage-admin"]}"#;
+    assert_eq!(
+        c.as_session(&ann, "PUT", "/auth/users/ann/roles", both).0,
+        200
+    );
+    // Tenant 7 is acme's; tenant 8 and volumes with no tenant are
+    // default's.
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    c.ctl(&["realm", "tenant", "--tenant", "7", "--realm", "acme"])
+        .ok();
+    let vol = |tenant: &str, name: &str| {
+        let made = c
+            .ctl(&[
+                "create-volume",
+                "--size",
+                "1M",
+                "--name",
+                name,
+                "--tenant",
+                tenant,
+            ])
+            .ok();
+        made.out.split_whitespace().nth(1).unwrap().to_string()
+    };
+    let acme_vol = vol("7", "acme-vol");
+    let other_vol = vol("8", "other-vol");
+    c.ctl(&["s3", "key", "create", "--tenant", "7"]).ok();
+    c.ctl(&["s3", "key", "create", "--tenant", "8"]).ok();
+
+    // Grants name a realm that exists.
+    let bob = c.login("bob", None).unwrap();
+    let cy = c.login("cy", None).unwrap();
+    let nope = r#"{"roles":["viewer@nope"]}"#;
+    assert_eq!(
+        c.as_session(&ann, "PUT", "/auth/users/bob/roles", nope).0,
+        404
+    );
+    let r = r#"{"roles":["storage-admin@acme"]}"#;
+    assert_eq!(c.as_session(&ann, "PUT", "/auth/users/bob/roles", r).0, 200);
+    let r = r#"{"roles":["security-admin@acme"]}"#;
+    assert_eq!(c.as_session(&ann, "PUT", "/auth/users/cy/roles", r).0, 200);
+
+    // bob: acme's volumes only, and nothing of the cluster.
+    let call = |s: &Session, rpc: &str, body: &str| {
+        c.as_session(s, "POST", &format!("/api/hyperstor.v1.{rpc}"), body)
+    };
+    let (code, _, b) = call(&bob, "ClusterService/ListVolumes", r#"{"pool":1}"#);
+    assert_eq!(code, 200, "{b}");
+    assert!(b.contains("acme-vol") && !b.contains("other-vol"), "{b}");
+    for (rpc, body) in [
+        ("ClusterService/GetStatus", "{}"),
+        ("ClusterService/CreatePool", r#"{"name":"x"}"#),
+        ("RealmService/SetHostRealms", r#"{"host":"h"}"#),
+        ("OperationService/ListOperations", "{}"),
+    ] {
+        let (code, _, b) = call(&bob, rpc, body);
+        assert_eq!(code, 403, "{rpc}: {b}");
+    }
+    assert_eq!(c.as_session(&bob, "GET", "/api/status", "").0, 403);
+    let create = |tenant: u32, name: &str| {
+        call(
+            &bob,
+            "ClusterService/CreateVolume",
+            &format!(r#"{{"pool":1,"size":"1048576","name":"{name}","tenant":{tenant}}}"#),
+        )
+    };
+    let (code, _, b) = create(7, "by-bob");
+    assert_eq!(code, 200, "{b}");
+    let (code, _, b) = create(8, "not-bob");
+    assert!(code == 403 && b.contains("outside the realms"), "{b}");
+    let (code, _, b) = create(0, "not-bob");
+    assert_eq!(code, 403, "{b}");
+    // Another realm's volume answers as one that doesn't exist.
+    let expand = |id: &str| {
+        call(
+            &bob,
+            "ClusterService/ExpandVolume",
+            &format!(r#"{{"id":"{id}","size":"2097152"}}"#),
+        )
+    };
+    let (code, _, b) = expand(&other_vol);
+    assert_eq!(code, 404, "{b}");
+    let (code, _, b) = expand(&acme_vol);
+    assert_eq!(code, 200, "{b}");
+    let (code, _, b) = call(
+        &bob,
+        "ClusterService/CreateSnapshot",
+        &format!(r#"{{"id":"{other_vol}","name":"s"}}"#),
+    );
+    assert_eq!(code, 404, "{b}");
+    let (code, _, b) = call(
+        &bob,
+        "ClusterService/DeleteVolume",
+        &format!(r#"{{"id":"{acme_vol}"}}"#),
+    );
+    assert_eq!(code, 200, "{b}");
+    c.ctl(&["delete-volume", "--id", &other_vol]).ok();
+    let (code, _, b) = call(&bob, "TrashService/ListTrash", "{}");
+    assert_eq!(code, 200, "{b}");
+    assert!(b.contains(&acme_vol) && !b.contains(&other_vol), "{b}");
+    let (code, _, b) = call(&bob, "RealmService/ListRealms", "{}");
+    assert_eq!(code, 200, "{b}");
+    assert!(b.contains("\"acme\"") && !b.contains("\"default\""), "{b}");
+    assert!(b.contains("\"open_pool_ids\":[1,"), "{b}");
+    // A browser's own realms header doesn't pass mgmt.
+    let (code, _, b) = c.web(
+        "POST",
+        "/api/hyperstor.v1.ClusterService/ListVolumes",
+        &c.dashboard_host(),
+        &[
+            ("Cookie", &bob.cookie),
+            ("X-Hyperstor-CSRF", &bob.csrf),
+            ("Content-Type", "application/json"),
+            ("X-Hyperstor-Realms", "default"),
+        ],
+        r#"{"pool":1}"#,
+    );
+    assert!(code == 200 && !b.contains("other-vol"), "{b}");
+    // The map service audits whom for, and mgmt in which realms.
+    let line = c
+        .audit()
+        .into_iter()
+        .find(|l| l.contains("\"op\":\"CreateVolume\"") && l.contains("by-bob"));
+    assert!(
+        line.as_deref().is_some_and(|l| l.contains("for user:bob")),
+        "{line:?}"
+    );
+    assert!(
+        c.mgmt_log().lines().any(|l| l.contains("user:bob")
+            && l.contains("ClusterService.CreateVolume")
+            && l.contains("realms acme")),
+        "{}",
+        c.mgmt_log()
+    );
+
+    // cy: acme's keys and acme's grants.
+    let (code, _, b) = call(&cy, "S3Service/ListS3Keys", "{}");
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(b.matches("\"tenant\":7").count(), 1, "{b}");
+    assert!(!b.contains("\"tenant\":8"), "{b}");
+    let (code, _, b) = call(&cy, "S3Service/CreateS3Key", r#"{"tenant":8}"#);
+    assert_eq!(code, 403, "{b}");
+    let (code, _, b) = call(&cy, "S3Service/CreateS3Key", r#"{"tenant":7}"#);
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(
+        call(&cy, "ClusterService/ListVolumes", r#"{"pool":1}"#).0,
+        403
+    );
+    let (code, _, u) = c.as_session(&cy, "GET", "/auth/users", "");
+    assert_eq!(code, 200, "{u}");
+    let users = json(&u);
+    let roles_of = |name: &str| {
+        users["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["name"] == name)
+            .map(|u| u["roles"].clone())
+            .unwrap()
+    };
+    assert_eq!(roles_of("ann"), serde_json::json!([]), "{u}");
+    assert_eq!(
+        roles_of("bob"),
+        serde_json::json!(["storage-admin@acme"]),
+        "{u}"
+    );
+    let (code, _, b) = c.as_session(
+        &cy,
+        "PUT",
+        "/auth/users/ann/roles",
+        r#"{"roles":["viewer"]}"#,
+    );
+    assert!(code == 403 && b.contains("outside_realm"), "{b}");
+    assert_eq!(
+        c.as_session(
+            &cy,
+            "PUT",
+            "/auth/users/ann/roles",
+            r#"{"roles":["viewer@default"]}"#
+        )
+        .0,
+        403
+    );
+    // cy's grants in acme replace bob's there; ann's stay.
+    let (code, _, b) = c.as_session(
+        &cy,
+        "PUT",
+        "/auth/users/ann/roles",
+        r#"{"roles":["viewer@acme"]}"#,
+    );
+    assert_eq!(code, 200, "{b}");
+    let (_, _, u) = c.as_session(&ann, "GET", "/auth/users", "");
+    let all = json(&u);
+    let ann_roles = all["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "ann")
+        .map(|u| u["roles"].clone())
+        .unwrap();
+    assert_eq!(
+        ann_roles,
+        serde_json::json!(["security-admin", "storage-admin", "viewer@acme"])
+    );
+    assert_eq!(c.as_session(&cy, "DELETE", "/auth/users/bob", "").0, 403);
+
+    // hyperstorctl through mgmt, with bob's token, and ann's narrowed to
+    // a realm with --in-realm.
+    let token_of = |s: &Session| {
+        let (code, _, b) = c.as_session(s, "POST", "/auth/tokens", r#"{"name":"t","days":1}"#);
+        assert_eq!(code, 200, "{b}");
+        json(&b)["token"].as_str().unwrap().to_string()
+    };
+    let ctl = |args: &[&str], token: &str| {
+        let o = std::process::Command::new(c.bin.join("hyperstorctl"))
+            .args(["--mgmt", &c.mgmt_url()])
+            .arg("--mgmt-ca")
+            .arg(c.pki().join("root.crt"))
+            .args(args)
+            .env("HYPERSTOR_TOKEN", token)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.code().unwrap_or(-1), text)
+    };
+    let (bob_t, ann_t) = (token_of(&bob), token_of(&ann));
+    // With no --pool, the first pool bob's realm may use.
+    let (code, out) = ctl(
+        &[
+            "create-volume",
+            "--size",
+            "1M",
+            "--name",
+            "ctl-bob",
+            "--tenant",
+            "7",
+        ],
+        &bob_t,
+    );
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = ctl(&["volumes"], &bob_t);
+    assert!(
+        code == 0
+            && out.contains("by-bob")
+            && out.contains("ctl-bob")
+            && !out.contains("other-vol"),
+        "{out}"
+    );
+    let (code, out) = ctl(&["status"], &bob_t);
+    assert_eq!(code, 4, "{out}");
+    let (code, out) = ctl(&["--in-realm", "default", "volumes", "--pool", "1"], &bob_t);
+    assert_eq!(code, 4, "{out}");
+    let (code, out) = ctl(&["volumes", "--pool", "1"], &ann_t);
+    assert!(code == 0 && out.contains("by-bob"), "{out}");
+    let (code, out) = ctl(&["--in-realm", "default", "volumes", "--pool", "1"], &ann_t);
+    assert!(code == 0 && !out.contains("by-bob"), "{out}");
+    let (code, out) = ctl(&["--in-realm", "acme", "status"], &ann_t);
+    assert_eq!(code, 4, "{out}");
+    let (code, out) = ctl(&["--in-realm", "Acme", "status"], &ann_t);
+    assert_eq!(code, 2, "{out}");
+}
+
 /// Beyond loopback, mgmt needs logins and HTTPS.
 #[test]
 fn dashboard_refuses_to_listen_beyond_loopback() {

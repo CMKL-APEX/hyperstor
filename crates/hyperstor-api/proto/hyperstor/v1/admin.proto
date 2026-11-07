@@ -700,6 +700,8 @@ message Realm {
   repeated string pools = 7;
   // In answers: the hosts bound to it (D251).
   repeated string hosts = 8;
+  // In answers: the ids of `pools`, in the same order.
+  repeated uint32 pool_ids = 9 [json_name = "pool_ids"];
 }
 
 message CreateRealmRequest {
@@ -719,6 +721,9 @@ message ListRealmsResponse {
   repeated Realm realms = 1;
   // Pools with no list, which every realm may use.
   repeated string open_pools = 2 [json_name = "open_pools"];
+  // Their ids, in the same order: with each realm's `pool_ids`, the pools
+  // someone with roles only in realms may put volumes in (D262).
+  repeated uint32 open_pool_ids = 3 [json_name = "open_pool_ids"];
 }
 
 message DeleteRealmRequest {

@@ -84,6 +84,15 @@ role adds to the one before, except the last:
 | `storage-admin` | Also create, change and delete pools, volumes, snapshots and clones, roll volumes back, purge the trash and set its grace, add and remove members |
 | `security-admin` | People and their roles, join tokens, certificates, map backups and the audit log; nothing else |
 
+**Roles in a realm.** With [realms](installation.md#realms), give a
+realm's administrators their roles in it alone: `storage-admin@acme`,
+`security-admin@acme` (on the Security page, "Roles in realms"). They
+then see and manage only acme's tenants' volumes, buckets and keys,
+its placements and its people's grants, and nothing of the cluster as a
+whole; the UI starts them in their realm. Pools, devices, nodes and
+hosts stay yours. To see what they see, pick the realm in the UI's
+realm picker, or use `hyperstorctl --mgmt URL --in-realm acme`.
+
 The exact list is in [hyperstor-mgmt](../reference/hyperstor-mgmt.md#logins).
 Deleting, rolling back, purging, removing a device, making tokens,
 revoking certificates, fetching a backup and changing roles need a

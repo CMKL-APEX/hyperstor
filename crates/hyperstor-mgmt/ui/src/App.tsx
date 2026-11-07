@@ -1,10 +1,20 @@
 // The shell: the session (from @glidex/ui-kit), the login page, the
 // navigation, and the pages.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { PamForm, ReauthDialog, SessionProvider, SsoButtons, useSession } from "@glidex/ui-kit";
-import { auth, setClaimCode, type Me, type Methods } from "./api";
-import { input } from "./ui";
+import {
+  auth,
+  grantRealms,
+  allRealms,
+  rolesIn,
+  savedRealm,
+  setActingRealm,
+  setClaimCode,
+  type Me,
+  type Methods,
+} from "./api";
+import { input, usePoll, useRealm } from "./ui";
 import Overview from "./pages/Overview";
 import Nodes from "./pages/Nodes";
 import Pools from "./pages/Pools";
@@ -61,14 +71,56 @@ const PAGES = [
   ["/audit", "Audit"],
 ] as const;
 
+/** What someone acting in a realm sees (D265): its volumes, buckets,
+ * keys and placements, its trash, and its people's grants. */
+const REALM_PAGES = new Set(["/volumes", "/s3", "/trash", "/security"]);
+
+/** The realm the person acts in: someone with roles only in realms picks
+ * one of theirs (the first, at first); someone with cluster-wide roles
+ * may also pick any realm, or the whole cluster. */
+function RealmPicker() {
+  const { me } = useSession<Me, Methods>();
+  const realm = useRealm();
+  const cluster = rolesIn(me.roles, null);
+  const reads = cluster.some((r) => ["viewer", "operator", "storage-admin"].includes(r));
+  const all = usePoll(async () => (reads ? (await allRealms.listRealms({})).realms.map((r) => r.name) : []), 0);
+  const choices = [...new Set([...grantRealms(me.roles), ...(all.data ?? [])])].sort();
+  useEffect(() => {
+    // The realms there are first, for a choice saved earlier.
+    if (reads && all.data === undefined && !all.error) return;
+    const ok = (r: string | null) => (r == null ? cluster.length > 0 : choices.includes(r));
+    if (ok(realm)) return;
+    const saved = savedRealm();
+    setActingRealm(ok(saved) ? saved : cluster.length ? null : (choices[0] ?? null));
+  });
+  if (choices.length === 0) return null;
+  return (
+    <select
+      className={`${input} w-auto`}
+      aria-label="Realm"
+      value={realm ?? ""}
+      onChange={(e) => setActingRealm(e.target.value || null)}
+    >
+      {cluster.length > 0 && <option value="">Whole cluster</option>}
+      {choices.map((r) => (
+        <option key={r} value={r}>
+          realm {r}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function Shell() {
   const { me, logout } = useSession<Me, Methods>();
+  const realm = useRealm();
+  const pages = realm ? PAGES.filter(([to]) => REALM_PAGES.has(to)) : PAGES;
   return (
     <div className="min-h-screen">
       <header className="flex flex-wrap items-center gap-4 px-5 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
         <span className="font-semibold">Hyperstor</span>
         <nav className="flex flex-wrap gap-1 text-sm">
-          {PAGES.map(([to, label]) => (
+          {pages.map(([to, label]) => (
             <NavLink
               key={to}
               to={to}
@@ -81,7 +133,9 @@ function Shell() {
             </NavLink>
           ))}
         </nav>
-        <span className="ml-auto text-sm text-slate-500" data-testid="whoami">
+        <span className="ml-auto" />
+        <RealmPicker />
+        <span className="text-sm text-slate-500" data-testid="whoami">
           {me.name} ({me.roles.join(", ") || "no roles yet"})
         </span>
         <button className="text-sm text-sky-700 dark:text-sky-300 hover:underline" onClick={logout}>
@@ -94,6 +148,15 @@ function Shell() {
             You have no roles yet: a security administrator gives them (Security, People).
           </p>
         )}
+        {realm ? (
+          <Routes key={realm}>
+            <Route path="/volumes" element={<Volumes />} />
+            <Route path="/trash" element={<Trash />} />
+            <Route path="/s3" element={<ObjectStorage />} />
+            <Route path="/security" element={<Security />} />
+            <Route path="*" element={<Navigate to="/volumes" replace />} />
+          </Routes>
+        ) : (
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route path="/nodes" element={<Nodes />} />
@@ -108,6 +171,7 @@ function Shell() {
           <Route path="/audit" element={<Audit />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        )}
       </main>
     </div>
   );

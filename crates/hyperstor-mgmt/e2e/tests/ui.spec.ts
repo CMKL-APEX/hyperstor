@@ -352,6 +352,68 @@ test("object storage: keys shown once, placements, buckets and realms", async ({
   await expect(page.getByTestId("realm-default")).toContainText("the others");
 });
 
+test("someone with roles in a realm acts only there", async ({ page }) => {
+  // cy appears once logged in, with no roles.
+  await logIn(page, "cy");
+  await expect(page.getByText("You have no roles yet")).toBeVisible();
+  await page.getByRole("button", { name: "Log out" }).click();
+  // ann makes a volume of acme's tenant 7 and one of no tenant, and gives
+  // cy storage-admin in acme.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Volumes" }).click();
+  for (const [name, tenant] of [
+    ["acme-ui", "7"],
+    ["plain-ui", ""],
+  ]) {
+    await page.getByRole("button", { name: "Create volume" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Name").fill(name);
+    await dialog.getByLabel(/Size/).fill("4M");
+    await dialog.getByLabel(/Tenant/).fill(tenant);
+    await dialog.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByTestId(`volume-${name}`)).toBeVisible();
+  }
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-cy").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByLabel("Roles in realms").fill("storage-admin@acme");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-cy")).toContainText("storage-admin@acme");
+  await page.getByRole("button", { name: "Log out" }).click();
+  // cy acts in acme: its pages alone, its tenants' volumes alone.
+  await logIn(page, "cy");
+  await expect(page.getByLabel("Realm")).toHaveValue("acme");
+  await expect(page.getByRole("option", { name: "Whole cluster" })).toHaveCount(0);
+  for (const hidden of ["Overview", "Nodes", "Pools", "Operations", "Members", "Audit"]) {
+    await expect(page.getByRole("link", { name: hidden })).toHaveCount(0);
+  }
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-acme-ui")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
+  await expect(page.getByText("Busiest volumes now")).toHaveCount(0);
+  // Its volumes go only to its tenants.
+  await page.getByRole("button", { name: "Create volume" }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name").fill("cy-vol");
+  await dialog.getByLabel(/Size/).fill("4M");
+  await dialog.getByLabel(/Tenant/).fill("8");
+  await expect(dialog.getByText("hyperstorctl --in-realm acme create-volume")).toBeVisible();
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("outside_realm");
+  await dialog.getByLabel(/Tenant/).fill("7");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByTestId("volume-cy-vol")).toBeVisible();
+  await page.getByRole("button", { name: "Log out" }).click();
+  // ann may act in acme too, or in the whole cluster again.
+  await logIn(page, "ann");
+  await page.getByLabel("Realm").selectOption("acme");
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-cy-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
+  await page.getByLabel("Realm").selectOption("");
+  await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Nodes" })).toBeVisible();
+});
+
 test("someone without roles sees nothing to do", async ({ page }) => {
   await logIn(page, "bob");
   await expect(page.getByText("You have no roles yet")).toBeVisible();
