@@ -2553,6 +2553,72 @@ fn valid_domain(d: &str) -> bool {
         })
 }
 
+/// Every binary of [`BINARIES`] in `dir`, read whole; the first that
+/// can't be read is the error.
+fn read_binaries(dir: &Path) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
+    BINARIES
+        .iter()
+        .map(|b| {
+            let src = dir.join(b);
+            fs::read(&src).map(|bytes| (*b, bytes)).map_err(|e| {
+                format!(
+                    "{}: {e} (build the workspace first: cargo build --release); nothing was installed",
+                    src.display()
+                )
+            })
+        })
+        .collect()
+}
+
+/// The binary a unit runs.
+fn unit_binary(unit: &str) -> Option<&'static str> {
+    Some(match unit {
+        u if u.starts_with("hyperstord@") => "hyperstord",
+        "hyperstor-meta.service" => "hyperstor-meta",
+        "hyperstor-mgmt.service" => "hyperstor-mgmt",
+        "hyperstor-authd.socket" | "hyperstor-authd.service" => "hyperstor-authd",
+        "hyperstor-s3.service" => "hyperstor-s3",
+        "hyperstor-vhost.service" => "hyperstor-vhost",
+        _ => return None,
+    })
+}
+
+/// Whether a process's executable, as `/proc/PID/exe` names it, is
+/// `/usr/local/bin/<binary>` as installed now: a replaced file reads
+/// "… (deleted)".
+fn runs_installed(exe: &Path, binary: &str) -> bool {
+    exe == Path::new(&format!("/usr/local/bin/{binary}"))
+}
+
+/// The running services among `units` whose process runs another binary
+/// than the one installed. A socket stands for its service; one not
+/// running isn't stale.
+fn stale_units(units: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for u in units {
+        let Some(binary) = unit_binary(u) else {
+            continue;
+        };
+        let service = u.replace(".socket", ".service");
+        let pid = Command::new("systemctl")
+            .args(["show", "-p", "MainPID", "--value", &service])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if pid == 0 {
+            continue;
+        }
+        if let Ok(exe) = fs::read_link(format!("/proc/{pid}/exe"))
+            && !runs_installed(&exe, binary)
+        {
+            out.push(service);
+        }
+    }
+    out
+}
+
 fn units(p: &Plan) -> Vec<String> {
     p.meta
         .iter()
@@ -2730,6 +2796,13 @@ fn install(
     if real && unsafe { libc::geteuid() } != 0 {
         fail("installing to / needs root: run it with sudo (or use --root DIR)");
     }
+    // Every binary read before any is written: one missing changes
+    // nothing, rather than leaving some new and some old.
+    let here = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| fail("can't find my own directory"));
+    let binaries: Vec<(&str, Vec<u8>)> = read_binaries(&here).unwrap_or_else(|e| fail(&e));
     keep_endpoints(root, s, &mut p);
     if real {
         println!("Checking the host:");
@@ -2740,26 +2813,16 @@ fn install(
     }
     let mut changed: Vec<String> = Vec::new();
 
-    // 1. Binaries, from beside this executable.
-    let here = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| fail("can't find my own directory"));
+    // 1. Binaries, from beside this executable, read above.
     let mut binaries_changed: Vec<&str> = Vec::new();
-    for b in BINARIES {
-        let src = here.join(b);
-        let bytes = fs::read(&src).unwrap_or_else(|e| {
-            fail(&format!(
-                "{}: {e} (build the workspace first: cargo build --release)",
-                src.display()
-            ))
-        });
+    for (b, bytes) in &binaries {
         let dst = format!("/usr/local/bin/{b}");
-        if converge(&under(root, &dst), &bytes, 0o755) {
-            binaries_changed.push(b);
+        if converge(&under(root, &dst), bytes, 0o755) {
+            binaries_changed.push(*b);
             changed.push(dst);
         }
     }
+    drop(binaries);
 
     // The web UI (D100), where mgmt runs: from --ui, else from beside
     // this executable (a release's `hyperstor-ui`). Kept as it is when
@@ -3002,6 +3065,12 @@ fn install(
         if *what == "hyperstor-authd" && p.meta.is_some() {
             restart.push("hyperstor-authd.service".into());
         }
+    }
+    // Services running another binary than the one installed: a run that
+    // stopped after writing binaries, or a binary replaced by hand. Their
+    // binaries are unchanged now, so nothing above restarts them.
+    if real {
+        restart.extend(stale_units(&units(&p)));
     }
     restart.sort();
     restart.dedup();
@@ -3971,6 +4040,35 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn services_on_replaced_binaries_are_stale() {
+        assert!(runs_installed(
+            Path::new("/usr/local/bin/hyperstord"),
+            "hyperstord"
+        ));
+        assert!(!runs_installed(
+            Path::new("/usr/local/bin/hyperstord (deleted)"),
+            "hyperstord"
+        ));
+        assert!(!runs_installed(
+            Path::new("/home/x/hyperstord"),
+            "hyperstord"
+        ));
+        assert_eq!(unit_binary("hyperstord@3.service"), Some("hyperstord"));
+        assert_eq!(
+            unit_binary("hyperstor-authd.socket"),
+            Some("hyperstor-authd")
+        );
+        // Socket-activated, a process per request: nothing kept running.
+        assert_eq!(unit_binary("hyperstor-smart.socket"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let e = read_binaries(dir.path()).unwrap_err();
+        assert!(
+            e.contains("hyperstor-meta") && e.contains("nothing was installed"),
+            "{e}"
+        );
+    }
 
     /// D247: the gateway's default port is none of the ports the
     /// installer gives anything else by default, for an all-in-one of up
