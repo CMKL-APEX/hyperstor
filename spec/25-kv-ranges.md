@@ -68,7 +68,8 @@ allocator to coordinate, as volume ids.
   row is encoded so that its end can be found and order is kept: each
   0x00 byte becomes 0x00 0xFF, and the row ends with 0x00 0x01 (as
   FoundationDB's tuple layer encodes byte strings). Keys under `q` hold
-  the range's deletion queue (§28.6). Why: a split point found by
+  the range's deletion queue (§28.6), and keys under `c` its counts
+  (§28.9). Why: a split point found by
   decoding keys is always a row boundary.
 - **Writes carry the epoch.** Every batch a client sends to a range
   asserts its `epoch` (`AssertAttr`, which exists). A batch prepared
@@ -277,3 +278,51 @@ merge's entries can't collide (I261).
    after their batch commits, again after a primary that died between
    objects and entry, through primary failover, by a range a split made,
    and carried by a merge; leftover ranges deleted, live ones kept.
+5. Counts (built, I298). Tests: the jobs stopped after every step, and
+   the table that splits and merges on its own, keep its counts equal
+   to its rows'; S3's randomized test keeps each bucket's equal to its
+   objects and bytes.
+
+### 28.9 Counts (D257)
+
+A table keeps counts of its rows, as many as its user wants (S3: a
+bucket's objects and their bytes), exact and current, with no row that
+every write must change.
+
+- **A batch carries a row's counts** (`Batch::count(old, new)`): the
+  caller knows the row's old counts from what the batch asserts (S3's
+  latest entry). The batch puts `new` in the row's `0xFF` column, which
+  is the store's (scans and row reads leave it out; the user's columns
+  never begin with 0xFF), and the difference as a *delta*: a key `c` +
+  random id (u128) in the same range, each count a big-endian i64. One
+  operation on one object, so the delta and the change are atomic. Why
+  a delta under its own key: no key every write must read and rewrite,
+  and the same batch sent again after an unknown outcome puts the same
+  key.
+- **A range's counts are the sum of its deltas.** Its primary folds them
+  into one when it has 64 or more, and on its sweep (every 10 s) when it
+  has two or more, so a range no longer written doesn't keep them: one operation that asserts each delta
+  it read, deletes them and puts their sum, while the range serves at
+  the epoch read. Why: reads stay small; asserting each delta keeps two
+  folds from adding one twice; and no fold runs while a merge may undo.
+  Deltas count in the range's bytes (§28.2), so folding also keeps them
+  from holding a range above its merge size: 64 deltas are about 3 KiB.
+- **A split** counts the rows it moves, from their `0xFF` columns, as it
+  copies them (the rows are frozen, so the count is final): the new
+  range opens with that sum as its first delta (step 3), and the lower
+  range takes its negative in the operation that shrinks it (step 4).
+  A split taken up after step 3 counts the rows again from the lower
+  range, which still has them. **A merge** puts the right range's sum in
+  the left one as a delta named by the right range's id; an undone merge
+  deletes it.
+- **A table's counts** are read by walking its ranges by their own
+  bounds, from the first row, each range's deltas read with its
+  attributes. A range in the middle of a split or merge, or not starting
+  where the walk expected, starts the walk again after 50 ms. Why: a
+  split's two halves hold the moved rows' counts at once until the lower
+  one shrinks, and walking by the ranges' own bounds never reaches the
+  upper half before then. Writes made during a walk may or may not be in
+  its sum; it is not a snapshot (HS11b).
+- **Old builds:** a writer that doesn't count leaves its rows' counts
+  stale. S3 marks each bucket counted from its creation (14-s3.md §14.6),
+  and every gateway of a cluster runs one build.

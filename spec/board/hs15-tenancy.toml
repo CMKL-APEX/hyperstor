@@ -1,0 +1,10 @@
+title = "HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D260)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
+started = 2026-11-07
+updated = 2026-11-07
+milestone = "HS15"
+prs = [231]
+branch = "feat/hs15-counters"
+now = "Stage a: per-bucket objects and bytes, counted per key-value range by the writes themselves (D257, I298)"
+next = "Stage b: a tenant on volumes and the realm-move check (D258, D248); then host bindings (D259) and roles on a realm in mgmt (D260)"

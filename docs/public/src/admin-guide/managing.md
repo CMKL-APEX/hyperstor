@@ -362,9 +362,11 @@ The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
 
 - **Buckets**, every tenant's, named `tenant/bucket`: two tenants may
   each have a `photos`. Tenants make buckets with their keys (S3's
-  CreateBucket); an administrator may delete an empty one. The map
-  service reads them from the cluster when asked, so the list needs the
-  storage path up.
+  CreateBucket); an administrator may delete an empty one. Each shows
+  its objects and their bytes (each object's latest version), counted
+  exactly as objects are written and deleted; a bucket made by a version
+  before 2026-11-07 shows `-` instead. The map service reads them from
+  the cluster when asked, so the list needs the storage path up.
 
   ```bash
   hyperstorctl s3 bucket list                       # or --tenant N
@@ -380,8 +382,6 @@ The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
   made in.
 - **Realms** are listed; they are made and changed with `hyperstorctl
   realm` ([Realms](installation.md#realms)).
-
-Objects and bytes per bucket aren't shown yet.
 
 ## VM disks
 

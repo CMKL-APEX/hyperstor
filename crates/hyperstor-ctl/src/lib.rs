@@ -1279,8 +1279,8 @@ pub fn s3_buckets_text(buckets: &[pb::S3Bucket]) -> String {
         return "no S3 buckets\n".into();
     }
     let mut o = format!(
-        "{:<40}  {:<12}  {:<16}  {:<16}  {}\n",
-        "BUCKET", "REALM", "DATA POOL", "INDEX POOL", "CREATED (UTC)"
+        "{:<40}  {:<12}  {:<16}  {:<16}  {:>10}  {:>14}  {}\n",
+        "BUCKET", "REALM", "DATA POOL", "INDEX POOL", "OBJECTS", "BYTES", "CREATED (UTC)"
     );
     let pool = |name: &str, id: u32| {
         if name.is_empty() {
@@ -1290,13 +1290,21 @@ pub fn s3_buckets_text(buckets: &[pb::S3Bucket]) -> String {
         }
     };
     for b in buckets {
+        // Not known: made before buckets were counted, or the count failed.
+        let (objects, bytes) = if b.counted {
+            (b.objects.to_string(), b.bytes.to_string())
+        } else {
+            ("-".into(), "-".into())
+        };
         let _ = writeln!(
             o,
-            "{:<40}  {:<12}  {:<16}  {:<16}  {}",
+            "{:<40}  {:<12}  {:<16}  {:<16}  {:>10}  {:>14}  {}",
             format!("{}/{}", b.tenant, b.name),
             b.realm,
             pool(&b.data_pool, b.data_pool_id),
             pool(&b.index_pool, b.index_pool_id),
+            objects,
+            bytes,
             utc(b.created_unix)
         );
     }
@@ -1519,13 +1527,24 @@ mod tests {
             realm: "acme".into(),
             ..Default::default()
         };
-        let t = s3_buckets_text(&[b]);
+        let counted = pb::S3Bucket {
+            name: "logs".into(),
+            counted: true,
+            objects: 12,
+            bytes: 3456,
+            ..b.clone()
+        };
+        let t = s3_buckets_text(&[b, counted]);
         let row = t.lines().nth(1).unwrap();
         assert!(row.starts_with("7/photos "), "{t}");
         assert!(
             row.contains("acme") && row.contains("#3 (deleted)") && row.contains("flash"),
             "{t}"
         );
+        // Not counted: dashes, not zeros.
+        assert!(row.contains(" - ") && !row.contains(" 0 "), "{t}");
+        let row = t.lines().nth(2).unwrap();
+        assert!(row.contains(" 12 ") && row.contains(" 3456 "), "{t}");
     }
 
     #[test]

@@ -157,6 +157,9 @@ impl Api {
                 data_pool_id: b.data_pool,
                 index_pool_id: b.index_pool,
                 realm: realms.name(realms.realm_of(b.tenant)),
+                counted: b.counts.is_some(),
+                objects: b.counts.map_or(0, |c| c.0),
+                bytes: b.counts.map_or(0, |c| c.1),
                 name: b.name,
                 ..Default::default()
             })
