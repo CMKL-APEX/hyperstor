@@ -6,4 +6,4 @@ updated = 2026-11-07
 milestone = "HS2"
 branch = "fix/refill-flapping"
 prs = [93]
-now = "Fixed (I198, #93): the map service ignores peer reports about a node that hasn't heartbeated yet; #90 and #91 merged. The test's later failure on 2026-11-07 was a device failed by slow reads on the runner, not flapping (I300, manage-flakes)"
+now = "Fixed (I198, #93): the map service ignores peer reports about a node that hasn't heartbeated yet; #90 and #91 merged. The test's later failure on 2026-11-07 was a device failed by slow reads on the runner, not flapping (I301, manage-flakes)"

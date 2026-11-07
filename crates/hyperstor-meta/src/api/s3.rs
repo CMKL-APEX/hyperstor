@@ -129,7 +129,7 @@ impl Api {
 
 impl Api {
     /// Runs a bucket operation as a client of the cluster (D254).
-    async fn bucket_op(&self, op: BucketOp) -> Result<BucketDone, ConnectError> {
+    pub(super) async fn bucket_op(&self, op: BucketOp) -> Result<BucketDone, ConnectError> {
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::Buckets { op, reply })
