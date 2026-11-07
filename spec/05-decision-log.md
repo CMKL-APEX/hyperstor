@@ -1322,6 +1322,17 @@ recommendations; the owner took both:
 | 217 | How the tools see buckets: the map service reads them from the store when asked (recommended); gateways report them into the map service; the map service asks a gateway | The map service reads them | D254 |
 | 218 | What administrators may do: list, show, delete an empty bucket, usage later with counters (recommended); also usage by scanning; list only | List, show, delete empty | D255 |
 
+## Detaching a disk in use (2026-11-07)
+
+A glidex control-plane restart released the `hyperstor-vhost` holds of
+its node's running VMs (glidex#322): the disks' sockets went, and the
+guests hung on I/O until restarted. Asked whether `hyperstor-vhost`
+should refuse such a detach, with the pros and cons; the owner took it:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 219 | Refuse a detach while a hypervisor is connected (`busy`), with `force` for operators and uninstall (recommended); leave detach as it is and rely on glidex's fix | Refuse unless forced | D256 |
+
 ## HS15's design (2026-11-07)
 
 Before HS15's per-bucket counters, host bindings and realm roles, the
