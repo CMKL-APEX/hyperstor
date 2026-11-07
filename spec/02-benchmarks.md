@@ -1869,29 +1869,33 @@ ib_send_lat  -d mlx5_0 -D 3 -F [SERVER]
 benchmark of 2026-10-20: a map service, three storage nodes of one
 reactor each and a client in one process, loopback TCP, size 3) on one
 of the pilot's HGX A100 hosts (Linux 6.8.0, other sessions' load about
-2.3). Main's code (before) and I300's (after), run alternately, three
-rounds each; medians, with the range of ops/s.
+2.3). Main at 48c8ed09 (before) and the same with I300 (after), run
+alternately, three rounds each; medians, with the range of ops/s.
 
 | Test | ops/s before | ops/s after | Change | p50 µs before → after |
 |---|---|---|---|---|
-| 4 KiB random writes, QD1 | 6770 (6657–6783) | 6636 (6628–6667) | −2.0% | 146 → 149 |
-| 4 KiB random writes, QD32 | 23123 (22277–23309) | 23484 (23421–23579) | +1.6% | 1039 → 1031 |
-| 4 KiB random reads, QD1 | 16751 (16472–16824) | 16477 (16433–16593) | −1.6% | 59 → 61 |
-| 4 KiB random reads, QD32 | 50938 (50924–51359) | 51105 (51030–51657) | +0.3% | 415 → 406 |
-| 1 MiB writes, QD4 | 509 (508–509) | 591 (590–591) | +16.1% | 7672 → 6613 |
-| 1 MiB reads, QD1 | 764 (757–768) | 834 (833–836) | +9.2% | 1295 → 1187 |
-| 1 MiB reads, QD2 | 1089 (1084–1094) | 1257 (1251–1262) | +15.4% | 1817 → 1515 |
-| 1 MiB reads, QD4 | 1492 (1481–1492) | 1927 (1923–1931) | +29.2% | 2583 → 1910 |
+| 4 KiB random writes, QD1 | 6758 (6699–6833) | 6719 (6641–6819) | −0.6% | 146 → 146 |
+| 4 KiB random writes, QD32 | 23584 (22881–23589) | 23523 (23435–23679) | −0.3% | 1048 → 1021 |
+| 4 KiB random reads, QD1 | 16854 (16473–16998) | 16683 (16437–16909) | −1.0% | 58 → 59 |
+| 4 KiB random reads, QD32 | 50802 (50648–51179) | 51324 (51031–51325) | +1.0% | 415 → 407 |
+| 1 MiB writes, QD4 | 504 (503–504) | 580 (579–585) | +15.1% | 7774 → 6719 |
+| 1 MiB reads, QD1 | 756 (755–765) | 798 (789–802) | +5.6% | 1295 → 1223 |
+| 1 MiB reads, QD2 | 1082 (1069–1086) | 1231 (1231–1237) | +13.8% | 1824 → 1550 |
+| 1 MiB reads, QD4 | 1509 (1501–1516) | 1878 (1870–1881) | +24.5% | 2557 → 1960 |
+
+Five more rounds of the two 4 KiB QD1 tests alone, 5 s each: writes
+6745 → 6776 ops/s (+0.5%), reads 16685 → 16590 (−0.6%), the ranges
+overlapping.
 
 ### Findings
 
-1. **Large I/O gains 9–29%** from removing the copies of I300; the
+1. **Large I/O gains 6–25%** from removing the copies of I300; the
    gain grows with queue depth, as more of each reactor's time went to
    copying.
-2. **4 KiB QD1 lost about 2%** (3 µs at p50 for writes, 2 µs for reads),
-   outside the run-to-run range for writes. Small payloads were copied
-   before and still are; the extra work is an `Rc` per replicated write
-   and the `Frame` queued for the writer. Not yet traced.
+2. **4 KiB is unchanged**, within the run-to-run range. A first
+   comparison showed QD1 about 2% slower, but its two builds were on
+   different commits of main (the change on an older one); built on the
+   same commit, the difference went.
 3. **1 MiB still takes 1.2 ms at QD1** over loopback: what is left is
    the client's copy into its frame, the engine's copy into an aligned
    buffer (I12), zeroed receive buffers, and the CRCs computed again by
