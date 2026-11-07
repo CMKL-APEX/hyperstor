@@ -1827,3 +1827,38 @@ to node 1's member, 10 to node 2's.
    alone is not known. Fewer drops would need pacing or a
    shared window across a client's connections, or a faster network
    (G48), not changes on the data path.
+
+## 2026-11-07: an RDMA baseline between two hosts (HS6)
+
+What the fabric gives before any hyperstor code runs on it: the target
+for HS6's transport. Two of the pilot's HGX A100 hosts (Linux 6.8.0,
+ConnectX-6 HDR at 200 Gb/s, one InfiniBand fabric with one subnet
+manager), one port on each, perftest from the distribution's packages:
+
+```sh
+ib_write_bw  -d mlx5_0 -D 3 -F --report_gbits [SERVER]
+ib_write_lat -d mlx5_0 -D 3 -F [SERVER]
+ib_send_lat  -d mlx5_0 -D 3 -F [SERVER]
+```
+
+| Test | Result |
+|---|---|
+| RDMA write, 64 KiB, one queue pair | 175.3 Gb/s (21.9 GB/s) |
+| RDMA write latency, 2 bytes | 1.65 µs average |
+| SEND latency, 2 bytes | 1.72 µs average |
+
+### Findings
+
+1. **The fabric's round trip is about 50 times shorter than hyperstor's
+   software path.** A QD1 read costs about 40 µs end to end on loopback
+   TCP and a replicated write about 90 µs (2026-10-20, end to end); one
+   port answers in under 2 µs. HS5b's copies and HS6's transport both
+   come out of those 40–90 µs.
+2. **One port carries 22 GB/s**, about 20 times what one client reactor
+   read over IPoIB in G47 (about 1 GB/s). Using it needs RDMA reads and
+   writes started by the server (13-protocol.md §13.2), not more TCP
+   streams.
+3. **Both hosts have the verbs libraries, headers and perftest**, the
+   ports are active, and the locked-memory limit is unlimited, so HS6 can
+   be built and tested on them. Each also has a 100 GbE bond that offers
+   RoCE v2 GIDs, for the RoCE side.
