@@ -664,6 +664,17 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "CRC32C at hardware speed (`crc32c` 0.6.9): 41 µs per MiB, from 184"
+spec = ["D41", "I301"]
+status = "done"
+tests = ["hyperstor_codec::tests::crc32c_agrees_with_a_bitwise_crc_at_every_length"]
+
+[[milestone.item]]
+what = "The engine takes the CRCs that came with write data instead of computing them again"
+spec = ["D41", "I301"]
+status = "planned"
+
+[[milestone.item]]
 what = "Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer"
 spec = ["08-engine.md §6.2", "D41", "I12"]
 status = "planned"

@@ -296,4 +296,32 @@ mod tests {
         let a = crc32c(b"hello ");
         assert_eq!(crc32c_append(a, b"world"), crc32c(b"hello world"));
     }
+
+    /// The hardware path (crc32c 0.6.9, I301) agrees with a bitwise CRC at
+    /// lengths that reach each of its parts: unaligned heads and tails,
+    /// 8-byte words, and the short and long three-way loops.
+    #[test]
+    fn crc32c_agrees_with_a_bitwise_crc_at_every_length() {
+        fn bitwise(data: &[u8]) -> u32 {
+            let mut crc = !0u32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0x82f6_3b78 & (crc & 1).wrapping_neg());
+                }
+            }
+            !crc
+        }
+        let data: Vec<u8> = (0..70_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        for len in [
+            0, 1, 7, 8, 9, 63, 255, 767, 768, 769, 4095, 4096, 24_575, 24_576, 70_000,
+        ] {
+            for start in [0, 1, 3] {
+                let d = &data[start..(start + len).min(data.len())];
+                assert_eq!(crc32c(d), bitwise(d), "length {len} from {start}");
+            }
+        }
+    }
 }
