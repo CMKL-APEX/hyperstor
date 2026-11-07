@@ -7099,6 +7099,7 @@ fn s3_model_list(
 fn s3_objects_match_a_model() {
     use hyperstor_s3::layout::{chunk_name, chunks_of};
     use hyperstor_s3::chunked::Algorithm;
+    use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
     use hyperstor_s3::{Condition, Config, List, Meta, S3, S3Error};
     use md5::{Digest, Md5};
     use std::collections::{BTreeMap, BTreeSet};
@@ -7401,7 +7402,10 @@ fn s3_objects_match_a_model() {
                         match hash {
                             Some(_) => assert_eq!(
                                 made.checksum,
-                                Some((Algorithm::Crc32c, crc32c::crc32c(&want).to_be_bytes().to_vec()))
+                                Some((
+                                    Algorithm::Crc32c,
+                                    crc32c::crc32c(&want).to_be_bytes().to_vec()
+                                ))
                             ),
                             // A composite checksum isn't the copy's.
                             None if e.composite => assert_eq!(made.checksum, None),
