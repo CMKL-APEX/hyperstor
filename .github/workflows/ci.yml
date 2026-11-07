@@ -27,11 +27,16 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job runs on the project's self-hosted runner, except for pull
+# requests from forks, which run on GitHub's: the repository is public, and a
+# fork's code (build scripts, tests, this file) would otherwise run on the
+# runner's host. Branches of this repository, main, the nightly run and
+# manual runs use the self-hosted runner.
 jobs:
   # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
   fmt:
 
-    runs-on: ubuntu-26.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     timeout-minutes: 5
 
     steps:
@@ -41,7 +46,7 @@ jobs:
 
   clippy:
 
-    runs-on: ubuntu-26.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     timeout-minutes: 20
 
     steps:
@@ -54,7 +59,7 @@ jobs:
   # pinned release, checked against its published SHA-256.
   buf:
 
-    runs-on: ubuntu-26.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     timeout-minutes: 5
 
     env:
@@ -101,7 +106,7 @@ jobs:
   # The spec hangs together and code cites it correctly; no build needed.
   spec:
 
-    runs-on: ubuntu-26.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     timeout-minutes: 5
 
     steps:
@@ -113,7 +118,7 @@ jobs:
 
   test:
 
-    runs-on: ubuntu-26.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     # A run takes a few minutes; a test that hangs (a cluster test waiting
     # on a node) fails the job instead of holding the runner for 6 hours.
     timeout-minutes: 30
@@ -156,9 +161,11 @@ jobs:
       id: browser
       if: (success() || failure()) && steps.ui.outcome == 'success'
       working-directory: crates/hyperstor-mgmt/e2e
+      # Chromium's system libraries: installed with apt on GitHub's runners,
+      # once by hand on the self-hosted one, so its jobs need no sudo.
       run: |
         bun install --frozen-lockfile
-        bunx playwright install --with-deps chromium
+        bunx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
         bunx playwright test
     - uses: actions/upload-artifact@v4
       if: failure() && steps.browser.outcome == 'failure'
