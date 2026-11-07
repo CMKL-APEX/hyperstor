@@ -978,7 +978,9 @@ async fn delete_objects(
     let quiet = doc.text_of("Quiet").is_some_and(|q| q.trim() == "true");
     let mut asked = Vec::new();
     for o in doc.all("Object") {
-        let key = o.text_of("Key").ok_or_else(|| malformed("an Object without a Key"))?;
+        let key = o
+            .text_of("Key")
+            .ok_or_else(|| malformed("an Object without a Key"))?;
         let version = o.text_of("VersionId").map(str::trim).unwrap_or("");
         let cond = match o.text_of("ETag") {
             Some(t) => if_match(t),
@@ -1053,7 +1055,10 @@ fn etags(v: &str) -> Vec<String> {
     v.split(',')
         .map(|t| {
             let t = t.trim();
-            t.strip_prefix("W/").unwrap_or(t).trim_matches('"').to_string()
+            t.strip_prefix("W/")
+                .unwrap_or(t)
+                .trim_matches('"')
+                .to_string()
         })
         .filter(|t| !t.is_empty())
         .collect()
@@ -1123,7 +1128,10 @@ fn checksum_headers(h: &mut HeaderMap, e: &Entry) {
         HeaderValue::from_str(&value),
     ) {
         h.insert(k, v);
-        h.insert("x-amz-checksum-type", HeaderValue::from_static("FULL_OBJECT"));
+        h.insert(
+            "x-amz-checksum-type",
+            HeaderValue::from_static("FULL_OBJECT"),
+        );
     }
 }
 
@@ -1641,9 +1649,9 @@ async fn put_object(
     let (tx, rx) = mpsc::channel::<Bytes>(4);
     // Sent once the body is found good, with the checksum it matched.
     let (good_tx, good_rx) = oneshot::channel::<Option<(Algorithm, Vec<u8>)>>();
-    let job = state.reactors.call(move |s3| {
-        write_object(s3, bucket, key, size, meta, md5, cond, rx, good_rx)
-    });
+    let job = state
+        .reactors
+        .call(move |s3| write_object(s3, bucket, key, size, meta, md5, cond, rx, good_rx));
     let mut body = req.into_body();
     let pump = async move {
         let mut piece = Vec::with_capacity(PIECE);
@@ -2001,7 +2009,10 @@ mod tests {
             w(&[("if-match", "\"a\",\"b\"".into())]),
             Ok(Condition::Matches(vec!["a".into(), "b".into()]))
         );
-        assert_eq!(w(&[("if-none-match", "\"a\"".into())]), Err("NotImplemented"));
+        assert_eq!(
+            w(&[("if-none-match", "\"a\"".into())]),
+            Err("NotImplemented")
+        );
         assert!(Condition::Matches(vec![tag.clone()]).holds(Some(&e)));
         assert!(!Condition::Matches(vec![tag]).holds(None));
         assert!(Condition::Absent.holds(None) && !Condition::Absent.holds(Some(&e)));
