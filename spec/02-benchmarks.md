@@ -1783,3 +1783,47 @@ ran one `-j2` test build of another session. Same commands as
    counters, so other traffic counts too). That makes the routed path
    the first suspect for the long tail of 1 MiB reads from node 2's
    host (2026-11-01, finding 4), not yet shown.
+
+### 1 MiB reads from a node on each side of the router
+
+Why 1 MiB reads lose throughput above QD1 (2026-11-01, finding 3).
+Pool 1 as above (its NVMe devices out since 2026-11-01). `HS_BENCH_SECS=30
+hyperstor-bench remote` with `HS_BENCH_ONLY="1 MiB reads, QD1;…QD2;…QD4"`
+(QD1 and QD2 added to the bench by this change), twice from
+each client host, alternating; each host's `nstat` counters around every
+run. From node 1's host, reads of node 0 cross the switch and reads of
+node 2 the router; from node 2's host, all remote reads cross the router.
+
+| Client | QD1 | QD2 | QD4 |
+|---|---|---|---|
+| Node 1's host | 109 ops/s (114 MB/s), p99 15 ms | 94–97, p99 166–204 ms | 88–98, p99 250–261 ms |
+| Node 2's host | 110–111 (115–117 MB/s), p99 14 ms | 105–108, p99 47–48 ms | 106–110, p99 112–174 ms |
+
+| Client | Sender | Retransmits | Lost again | RTOs |
+|---|---|---|---|---|
+| Node 1's host | node 0 (switch) | 14,000–14,400 | 630–750 | 1–6 |
+| | node 2 (router) | 26,300–26,900 | 1,710–1,760 | 51–53 |
+| Node 2's host | node 0 (router) | 18,000–19,400 | 740–970 | 4–11 |
+| | node 1 (router) | 17,100–17,600 | 960–1,020 | 13–15 |
+
+Per run of all three tests, host-wide. No reactor held. While node 1's
+host was the client, its device 1002 reported nodes 0 and 2 silent once
+(300 ms), and the map service leader logged 16 Raft heartbeat timeouts
+to node 1's member, 10 to node 2's.
+
+6. **QD1 already fills the client's 1 GbE port** (114–117 MB/s), so
+   more depth can't add throughput, only queue: QD2 and QD4 are
+   1 GbE's line rate less what drops cost. Hyperstor doesn't lose
+   throughput above QD1 in itself; from node 2's host it now holds
+   106–110 ops/s at QD4, as the synthetic test of 2026-11-01 did.
+7. **The tail is drops where several senders meet one 1 GbE port,
+   and the routed path into node 1's host is the worst of them.** Every
+   sender retransmits thousands of segments per run, on both kinds of
+   path; but node 2's sends into node 1's host lose about twice as many
+   and cost 50 retransmission timeouts (at least 200 ms each) a run,
+   which is the p99 of 250 ms at QD4 with the client there. That path is node 2's host's
+   router hop, the same that showed 1,100–2,800 retransmits in 10 s of
+   one TCP stream (finding 5); why it drops more than the switch
+   alone is not known. Fewer drops would need pacing or a
+   shared window across a client's connections, or a faster network
+   (G48), not changes on the data path.
