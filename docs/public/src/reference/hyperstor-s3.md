@@ -8,9 +8,9 @@ may send any request to any of them.
 > **Early.** This is stage 4 of 5 (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
 > [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
-> --s3`](hyperstor-install.md) installs gateways. Stage 5 has begun:
-> virtual-hosted addressing is built; buckets in the administration
-> tools come next.
+> --s3`](hyperstor-install.md) installs gateways, and `hyperstorctl s3
+> bucket` lists every tenant's buckets. Buckets, keys and placements in
+> the web UI come next.
 
 ```text
 usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--domain NAME[,NAME...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]

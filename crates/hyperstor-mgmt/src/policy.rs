@@ -57,6 +57,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("OperationService.WatchOperation", Group::Read, false),
     ("MemberService.ListMembers", Group::Read, false),
     ("S3Service.ListS3Placements", Group::Read, false),
+    ("S3Service.ListS3Buckets", Group::Read, false),
+    ("S3Service.GetS3Bucket", Group::Read, false),
     ("RealmService.ListRealms", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
@@ -87,6 +89,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     // Where new buckets go (D232).
     ("S3Service.SetS3Placement", Group::Store, false),
     ("S3Service.DeleteS3Placement", Group::Store, false),
+    // Only an empty bucket (D255).
+    ("S3Service.DeleteS3Bucket", Group::Store, false),
     // Realms (D248, D249): which pools a realm's tenants may use.
     ("RealmService.CreateRealm", Group::Store, false),
     ("RealmService.SetPoolRealms", Group::Store, false),

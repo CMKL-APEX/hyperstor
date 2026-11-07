@@ -282,6 +282,43 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     assert!(!list.has("vol"), "{}", list.out);
     assert_eq!(step(&["create", "third"]), "created");
     assert_eq!(step(&["roundtrip", "third"]), "roundtrip ok");
+    // Administrators see every tenant's buckets as tenant/bucket, read
+    // from the store by the map service (D246, D254), and delete only an
+    // empty one (D255).
+    let list = c.ctl(&["s3", "bucket", "list"]).ok();
+    for b in ["1/first", "1/second", "1/third"] {
+        assert!(list.has(b), "{}", list.out);
+    }
+    assert!(list.has("renamed") && list.has("default"), "{}", list.out);
+    let none = c.ctl(&["s3", "bucket", "list", "--tenant", "2"]).ok();
+    assert!(none.has("no S3 buckets"), "{}", none.out);
+    let one = c
+        .ctl(&["s3", "bucket", "show", "--tenant", "1", "--name", "second"])
+        .ok();
+    assert!(one.has("1/second") && !one.has("1/first"), "{}", one.out);
+    let json = c
+        .ctl(&[
+            "s3", "bucket", "show", "--tenant", "1", "--name", "second", "--json",
+        ])
+        .ok();
+    assert!(json.has("\"name\":\"second\""), "{}", json.out);
+    c.ctl(&["s3", "bucket", "show", "--tenant", "2", "--name", "second"])
+        .expect(1);
+    c.ctl(&["s3", "bucket", "show", "--name", "second"])
+        .expect(2);
+    let full = c
+        .ctl(&["s3", "bucket", "delete", "--tenant", "1", "--name", "first"])
+        .expect(1);
+    assert!(full.has("isn't empty"), "{}", full.out);
+    assert_eq!(step(&["create", "empty"]), "created");
+    c.ctl(&["s3", "bucket", "delete", "--tenant", "1", "--name", "empty"])
+        .ok();
+    assert!(!c.ctl(&["s3", "bucket", "list"]).ok().has("1/empty"));
+    let audit = wait_for("the delete's audit record", 30, || {
+        let r = c.ctl(&["audit", "list"]);
+        r.has("DeleteS3Bucket").then_some(r)
+    });
+    assert!(audit.has("bucket 1/empty"), "{}", audit.out);
     // A wrong secret is refused; a revoked key within seconds.
     let wrong = sdk(&python, port, &ca, &id, &"x".repeat(40), &["denied"]);
     assert_eq!(wrong, "SignatureDoesNotMatch");

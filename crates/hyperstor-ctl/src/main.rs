@@ -133,7 +133,10 @@
 //!   --name N --data-pool NAME --index-pool NAME`, `s3 placement list`, `s3
 //!   placement delete --name N`: the pools new buckets go in (D232), `default`
 //!   unless CreateBucket's LocationConstraint names another; with `--realm
-//!   R`, that realm's placements (D249);
+//!   R`, that realm's placements (D249). `s3 bucket list [--tenant N]`, `s3
+//!   bucket show --tenant N --name B`, `s3 bucket delete --tenant N --name
+//!   B`: every tenant's buckets as `tenant/bucket`, read from the store by
+//!   the map service (D246, D254, D255); `delete` only an empty one;
 //! - `realm create --name N [--description TEXT]`, `realm list`, `realm
 //!   delete --name N`, `realm tenant --tenant N --realm R`, `realm pool
 //!   --pool P --realm R[,R...]|any`: realms, the tenants in them and the
@@ -187,7 +190,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|realm create|realm list|realm delete|realm tenant|realm pool [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -490,6 +493,7 @@ fn main() {
                 let ok = match what {
                     Some("key") => matches!(sub, Some("create" | "list" | "revoke")),
                     Some("placement") => matches!(sub, Some("set" | "list" | "delete")),
+                    Some("bucket") => matches!(sub, Some("list" | "show" | "delete")),
                     _ => false,
                 };
                 if !ok {
@@ -824,7 +828,16 @@ fn main() {
         cmd.as_str(),
         "realm tenant" | "realm pool" | "s3 placement set" | "s3 placement delete"
     );
-    if matches!(cmd.as_str(), "s3 key create" | "realm tenant") != a.tenant.is_some()
+    // Buckets (D246): show and delete name one by --tenant and --name; list
+    // may keep to one tenant.
+    let bucket_one = matches!(cmd.as_str(), "s3 bucket show" | "s3 bucket delete");
+    let tenant_needed = bucket_one || matches!(cmd.as_str(), "s3 key create" | "realm tenant");
+    let tenant_ok = match a.tenant {
+        Some(_) => tenant_needed || cmd == "s3 bucket list",
+        None => !tenant_needed,
+    };
+    if !tenant_ok
+        || (bucket_one && a.name.is_empty())
         || (a.description.is_some() && !matches!(cmd.as_str(), "s3 key create" | "realm create"))
         || (matches!(cmd.as_str(), "realm tenant" | "realm pool") && a.realm.is_none())
         || (!realm_given && a.realm.is_some())
@@ -2651,6 +2664,45 @@ where
                 .await?
                 .into_owned();
             show(a, &r, || s3_placements_text(&r));
+        }
+        "s3 bucket list" => {
+            let r = client
+                .list_s3_buckets(pb::ListS3BucketsRequest {
+                    tenant: a.tenant.unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || s3_buckets_text(&r.buckets));
+        }
+        "s3 bucket show" => {
+            let r = client
+                .get_s3_bucket(pb::GetS3BucketRequest {
+                    tenant: a.tenant.expect("checked with the arguments"),
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || {
+                s3_buckets_text(
+                    r.bucket
+                        .as_option()
+                        .map(std::slice::from_ref)
+                        .unwrap_or(&[]),
+                )
+            });
+        }
+        "s3 bucket delete" => {
+            let tenant = a.tenant.expect("checked with the arguments");
+            client
+                .delete_s3_bucket(pb::DeleteS3BucketRequest {
+                    tenant,
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("S3 bucket {tenant}/{} deleted", a.name);
         }
         _ => {
             client

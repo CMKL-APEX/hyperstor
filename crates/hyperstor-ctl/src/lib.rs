@@ -981,6 +981,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("S3Service.SetS3Placement", "s3 placement set"),
     ("S3Service.DeleteS3Placement", "s3 placement delete"),
     ("S3Service.ListS3Placements", "s3 placement list"),
+    ("S3Service.ListS3Buckets", "s3 bucket list"),
+    ("S3Service.GetS3Bucket", "s3 bucket show"),
+    ("S3Service.DeleteS3Bucket", "s3 bucket delete"),
     // The gateways' own call (D231): secrets, for s3 certificates only.
     ("S3Service.GetS3Gateway", "hyperstor-s3"),
     ("RealmService.CreateRealm", "realm create"),
@@ -1270,6 +1273,36 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
     o
 }
 
+/// Buckets as administrators see them, `tenant/bucket` (D246).
+pub fn s3_buckets_text(buckets: &[pb::S3Bucket]) -> String {
+    if buckets.is_empty() {
+        return "no S3 buckets\n".into();
+    }
+    let mut o = format!(
+        "{:<40}  {:<12}  {:<16}  {:<16}  {}\n",
+        "BUCKET", "REALM", "DATA POOL", "INDEX POOL", "CREATED (UTC)"
+    );
+    let pool = |name: &str, id: u32| {
+        if name.is_empty() {
+            format!("#{id} (deleted)")
+        } else {
+            name.to_string()
+        }
+    };
+    for b in buckets {
+        let _ = writeln!(
+            o,
+            "{:<40}  {:<12}  {:<16}  {:<16}  {}",
+            format!("{}/{}", b.tenant, b.name),
+            b.realm,
+            pool(&b.data_pool, b.data_pool_id),
+            pool(&b.index_pool, b.index_pool_id),
+            utc(b.created_unix)
+        );
+    }
+    o
+}
+
 /// Where new buckets go (D232).
 pub fn s3_placements_text(r: &pb::ListS3PlacementsResponse) -> String {
     if r.placements.is_empty() {
@@ -1471,6 +1504,30 @@ pub fn to_yaml(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn buckets_are_named_tenant_slash_bucket() {
+        use super::{pb, s3_buckets_text};
+        assert_eq!(s3_buckets_text(&[]), "no S3 buckets\n");
+        let b = pb::S3Bucket {
+            tenant: 7,
+            name: "photos".into(),
+            created_unix: 0,
+            data_pool: String::new(),
+            data_pool_id: 3,
+            index_pool: "flash".into(),
+            index_pool_id: 1,
+            realm: "acme".into(),
+            ..Default::default()
+        };
+        let t = s3_buckets_text(&[b]);
+        let row = t.lines().nth(1).unwrap();
+        assert!(row.starts_with("7/photos "), "{t}");
+        assert!(
+            row.contains("acme") && row.contains("#3 (deleted)") && row.contains("flash"),
+            "{t}"
+        );
+    }
+
     #[test]
     fn leader_only_calls_find_the_leaders_api() {
         let m = |id, leader, api: &str| pb::Member {

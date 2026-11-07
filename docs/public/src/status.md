@@ -142,7 +142,7 @@ covered by tests that run on every change.
 | The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part) | Done |
 | Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4) | Done |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Done |
-| Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5; built: virtual-hosted addressing) | In progress |
+| Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5; built: virtual-hosted addressing, buckets in hyperstorctl and the API) | In progress |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 

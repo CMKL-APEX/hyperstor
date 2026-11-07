@@ -1796,6 +1796,7 @@ dependencies = [
  "hyperstor-proto",
  "hyperstor-reactor",
  "hyperstor-rpc",
+ "hyperstor-s3",
  "libc",
  "openraft",
  "redb",
