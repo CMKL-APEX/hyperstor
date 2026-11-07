@@ -7,7 +7,7 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]
 ```
 
 | Command | Does |
@@ -16,7 +16,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `ctl hello` | Checks the service answers, and its protocol version |
 | `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, and whether the volume was taken elsewhere (`lost`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
-| `ctl detach ID` | Disconnects the hypervisor, removes the socket and gives the lease up |
+| `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor is connected, unless `--force` |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -30,12 +30,19 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
 | `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
+| `--force` | off | `detach`: detach even while a hypervisor is connected; the VM loses its disk |
 
 Without `--take-over` or `--preempt`, `attach` is refused (`held`) while
 another client has the volume attached. Attaching a volume that is
 attached here already answers with its socket; one that was taken
 elsewhere (`lost` in `list`, its I/O failing) is let go and attached
 afresh.
+
+`detach` is refused (`busy`) while a hypervisor is connected to the
+volume's socket, so a running VM keeps its disk whoever asks: stop the
+VM first, or pass `--force` (`"force": true`) to cut it off. A volume
+taken elsewhere detaches without `--force`. `hyperstor-install
+--no-vhost` and `uninstall` force.
 
 ```sh
 sudo hyperstor-vhost serve --meta 192.0.2.10:8849 --group kvm &
@@ -60,8 +67,8 @@ one line:
 ```
 
 Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
-`invalid`, `denied`, `held`, `not_found`, `not_attached`, `unavailable`
-and `internal`. An `attach` may name who asks, `"holder": "<name>"` (up
+`invalid`, `denied`, `held`, `not_found`, `not_attached`, `busy`,
+`unavailable` and `internal`. An `attach` may name who asks, `"holder": "<name>"` (up
 to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for

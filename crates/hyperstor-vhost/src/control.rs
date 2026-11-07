@@ -6,14 +6,16 @@
 //! ```text
 //! {"id": 1, "op": "hello"}
 //! {"id": 2, "op": "attach", "args": {"volume": "<32 hex digits>", "serial": "…", "take": "attach"|"take_over"|"preempt"}}
-//! {"id": 3, "op": "detach", "args": {"volume": "…"}}
+//! {"id": 3, "op": "detach", "args": {"volume": "…", "force": false}}
 //! {"id": 4, "op": "list"}
 //! ```
 //!
 //! Each gets `{"id": N, "ok": {…}}` or `{"id": N, "error": {"code": "…",
 //! "message": "…"}}`. Codes: `invalid`, `denied`, `held` (another client
-//! holds the lease: preempt, or wait), `not_found`, `not_attached`,
-//! `unavailable` (the cluster can't be reached), `internal`.
+//! holds the lease: preempt, or wait), `not_found`, `not_attached`, `busy`
+//! (a hypervisor is connected to the disk: stop it, or detach with
+//! `force`, D256), `unavailable` (the cluster can't be reached),
+//! `internal`.
 
 use hyperstor_client::ClientError;
 use serde_json::json;
@@ -21,8 +23,9 @@ use std::path::{Path, PathBuf};
 
 pub use serde_json::Value;
 
-/// The protocol's version, which `hello` returns.
-pub const PROTOCOL: u64 = 1;
+/// The protocol's version, which `hello` returns: 2 refuses a detach
+/// while a hypervisor is connected (D256).
+pub const PROTOCOL: u64 = 2;
 
 /// How to take a volume's lease (06-metadata.md §9; D79 for glidex's use of
 /// `preempt`).
@@ -49,6 +52,8 @@ pub enum Request {
     },
     Detach {
         volume: u128,
+        /// Detach even while a hypervisor is connected (D256).
+        force: bool,
     },
     List,
 }
@@ -79,7 +84,14 @@ pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
     let req = match op {
         "hello" => Request::Hello,
         "list" => Request::List,
-        "detach" => Request::Detach { volume: volume()? },
+        "detach" => Request::Detach {
+            volume: volume()?,
+            force: match args.get("force") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(b)) => *b,
+                Some(f) => return Err(format!("force {f}: true or false")),
+            },
+        },
         "attach" => {
             let serial = args
                 .get("serial")
@@ -227,7 +239,19 @@ mod tests {
             parse(br#"{"op": "detach", "args": {"volume": "ff"}}"#)
                 .unwrap()
                 .1,
-            Request::Detach { volume: 0xff }
+            Request::Detach {
+                volume: 0xff,
+                force: false
+            }
+        );
+        assert_eq!(
+            parse(br#"{"op": "detach", "args": {"volume": "ff", "force": true}}"#)
+                .unwrap()
+                .1,
+            Request::Detach {
+                volume: 0xff,
+                force: true
+            }
         );
         for bad in [
             &b"not json"[..],
@@ -236,6 +260,7 @@ mod tests {
             br#"{"op": "attach", "args": {"volume": "xyz"}}"#,
             br#"{"op": "attach", "args": {"volume": "1", "take": "steal"}}"#,
             br#"{"op": "attach", "args": {"volume": "1", "serial": "this serial is far too long"}}"#,
+            br#"{"op": "detach", "args": {"volume": "1", "force": "yes"}}"#,
         ] {
             assert!(parse(bad).is_err(), "{}", String::from_utf8_lossy(bad));
         }

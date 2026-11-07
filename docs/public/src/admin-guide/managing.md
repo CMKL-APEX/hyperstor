@@ -395,7 +395,7 @@ volumes through its control socket; by hand:
 ```sh
 sudo hyperstor-vhost ctl attach ID --serial vm-disk   # prints the socket's path
 sudo hyperstor-vhost ctl list                          # what is attached here
-sudo hyperstor-vhost ctl detach ID
+sudo hyperstor-vhost ctl detach ID                     # refused while a VM uses it; --force cuts the VM off
 ```
 
 - **Disks.** The guest sees a virtio disk with 512-byte sectors on

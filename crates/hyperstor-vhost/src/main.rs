@@ -1,5 +1,5 @@
 //! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS]`
-//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID`
+//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -100,7 +100,10 @@ fn main() {
             let req = match rest.as_slice() {
                 ["hello"] => json!({"id": 1, "op": "hello"}),
                 ["list"] => json!({"id": 1, "op": "list"}),
-                ["detach", id] => json!({"id": 1, "op": "detach", "args": {"volume": id}}),
+                ["detach", id] => json!({"id": 1, "op": "detach", "args": {
+                    "volume": id,
+                    "force": has("--force"),
+                }}),
                 ["attach", id] => {
                     let take = match (has("--take-over"), has("--preempt")) {
                         (false, false) => "attach",

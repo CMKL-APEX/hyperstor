@@ -33,7 +33,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let svc = Service::start(&c, "vhost-a", &[]);
     assert_eq!(
         svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
-        1
+        2
     );
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
@@ -243,6 +243,43 @@ fn a_restarted_service_takes_its_volumes_back() {
     // The other keeps b, and serves it.
     assert_eq!(other.listed(), vec![b.clone()]);
     other.stop();
+    svc.stop();
+}
+
+/// A detach is refused while a hypervisor is connected (04-decisions.md
+/// D256): the guest keeps its disk. Once the hypervisor hangs up, or with
+/// `force`, it goes.
+#[test]
+fn a_detach_leaves_a_connected_disk_alone() {
+    let c = Cluster::all_in_one("vhost-busy", 3);
+    let (a, b) = (volume(&c, "16M"), volume(&c, "16M"));
+    let svc = Service::start(&c, "vhost-busy", &[]);
+    let detach = |v: &str, force: bool| {
+        svc.ctl(serde_json::json!({"id": 2, "op": "detach", "args": {"volume": v, "force": force}}))
+    };
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    let data = pattern(7, 64 << 10);
+    let mut g = Guest::connect(&sa, true);
+    g.write(0, &data);
+    let d = detach(&a, false);
+    assert_eq!(d["error"]["code"], "busy", "{d}");
+    assert!(sa.exists(), "the socket stays");
+    assert!(g.read(0, data.len() as u32) == data, "the guest goes on");
+    // A hypervisor that has gone: detached at once, though the service may
+    // not have read the hang-up yet.
+    drop(g);
+    let d = detach(&a, false);
+    assert!(d.get("ok").is_some(), "{d}");
+    assert!(!sa.exists());
+    // Forced: the hypervisor is cut off.
+    let sb = PathBuf::from(svc.attach(&b, "attach")["ok"]["socket"].as_str().unwrap());
+    let mut g = Guest::connect(&sb, true);
+    g.write(0, &data[..4096]);
+    let d = detach(&b, true);
+    assert!(d.get("ok").is_some(), "{d}");
+    assert!(!sb.exists());
+    drop(g);
+    assert!(svc.listed().is_empty());
     svc.stop();
 }
 
