@@ -42,6 +42,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   sockets: QEMU with `reconnect`, Cloud Hypervisor on its own (G6). The
   requests in flight run again from the frontend's in-flight buffer
   (D143, D145).
+- **Detach.** A detach is refused (`busy`) while a hypervisor is
+  connected to the disk, unless forced, so a client's mistake can't pull
+  a running VM's disk (D256, I297).
 - **As built** (HS3, D116, D117; 01-implementation-notes.md I158–I161):
   one reactor, the control socket, write-through 512e disks (512-byte
   sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
