@@ -567,7 +567,7 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
     };
     // Every member running before any restarts: a leader among the first
     // two doesn't mean the third has finished its first start, and a kill
-    // while it creates its store leaves one redb can't open (I289,
+    // while it creates its store leaves one redb can't open (I292,
     // glidex#317).
     for i in 0..3 {
         let formed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.formed(i)));

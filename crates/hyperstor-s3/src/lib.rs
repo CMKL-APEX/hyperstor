@@ -48,6 +48,10 @@ pub enum S3Error {
     UploadGone,
     #[error("the object was replaced while it was read")]
     Changed,
+    /// A condition on the object a write or delete replaces doesn't hold
+    /// (D194).
+    #[error("the object isn't as the request's condition says")]
+    PreconditionFailed,
     #[error("bad record: {0}")]
     Corrupt(String),
     #[error(transparent)]
@@ -158,6 +162,38 @@ impl Bucket {
 pub struct Meta {
     pub content_type: String,
     pub meta: Vec<(String, String)>,
+    /// The `x-amz-checksum-*` value the body was checked against.
+    pub checksum: Option<(chunked::Algorithm, Vec<u8>)>,
+}
+
+/// What a write or delete requires of the object it replaces (D194):
+/// checked against the entry read, which the batch then asserts, so the
+/// object can't change between the check and the write.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Condition {
+    #[default]
+    Any,
+    /// No object of that name (`If-None-Match: *`).
+    Absent,
+    /// An object of that name (`If-Match: *`).
+    Exists,
+    /// An object with one of these ETags, unquoted (`If-Match`).
+    Matches(Vec<String>),
+}
+
+impl Condition {
+    pub fn holds(&self, e: Option<&Entry>) -> bool {
+        match (self, e) {
+            (Condition::Any, _) => true,
+            (Condition::Absent, e) => e.is_none(),
+            (Condition::Exists, e) => e.is_some(),
+            (Condition::Matches(tags), Some(e)) => {
+                let tag = e.etag();
+                tags.iter().any(|t| t == tag.trim_matches('"'))
+            }
+            (Condition::Matches(_), None) => false,
+        }
+    }
 }
 
 /// Which objects a [`S3::list`] returns (ListObjectsV2).
@@ -405,9 +441,18 @@ impl S3 {
     /// Deletes object `key`, if it exists; its chunks are queued for
     /// deletion in the same batch (D192).
     pub async fn delete(&self, b: &Bucket, key: &[u8]) -> Result<()> {
+        self.delete_if(b, key, &Condition::Any).await
+    }
+
+    /// Deletes object `key` if `cond` holds of it (D194).
+    pub async fn delete_if(&self, b: &Bucket, key: &[u8], cond: &Condition) -> Result<()> {
         let row = object_row(key);
         for _ in 0..ATTEMPTS {
-            let Some((v, e)) = self.latest(b, key).await? else {
+            let old = self.latest(b, key).await?;
+            if !cond.holds(old.as_ref().map(|(_, e)| e)) {
+                return Err(S3Error::PreconditionFailed);
+            }
+            let Some((v, e)) = old else {
                 return Ok(());
             };
             let mut batch = Batch::new();
@@ -460,7 +505,57 @@ impl S3 {
             writing: Default::default(),
             md5: Md5::new(),
             crc: 0,
+            cond: Condition::Any,
         })
+    }
+
+    /// Copies object `e` of bucket `from` to `key` of bucket `to`, if
+    /// `cond` holds of the object there (D193, D194): its bytes are read
+    /// and written again, as a PUT of them, so the copy shares nothing
+    /// with the source. The checksum is `hash`'s, computed as the bytes
+    /// go by, else the source's (the bytes are the same). A source
+    /// replaced during the copy is still read whole while its chunks
+    /// linger (§14.6); after that, [`S3Error::Changed`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn copy(
+        &self,
+        from: &Bucket,
+        e: &Entry,
+        to: &Bucket,
+        key: &[u8],
+        mut meta: Meta,
+        cond: Condition,
+        hash: Option<chunked::Algorithm>,
+    ) -> Result<Entry> {
+        let mut put = self.put(to, key, e.size).await?;
+        put.require(cond);
+        let mut hasher = hash.map(chunked::Hasher::new);
+        // A few chunks at a time, which `read` fetches at once.
+        let step = self.cfg.chunk.max(4096) * self.cfg.in_flight.max(1) as u64;
+        let mut at = 0;
+        while at < e.size {
+            let n = step.min(e.size - at);
+            let d = match self.read(from, e, at, n).await {
+                Ok(d) => d,
+                Err(err) => {
+                    let _ = put.abort().await;
+                    return Err(err);
+                }
+            };
+            if let Some(h) = &mut hasher {
+                h.update(&d);
+            }
+            if let Err(err) = put.write(&d).await {
+                let _ = put.abort().await;
+                return Err(err);
+            }
+            at += n;
+        }
+        meta.checksum = match (hash, hasher) {
+            (Some(a), Some(h)) => Some((a, h.finish())),
+            _ => e.checksum.clone(),
+        };
+        put.finish(meta).await
     }
 
     /// Gives up the uploads of bucket `b` that expired by `now` (Unix
@@ -601,9 +696,16 @@ pub struct Put<'a> {
     writing: std::collections::VecDeque<JoinHandle<std::result::Result<(), ClientError>>>,
     md5: Md5,
     crc: u32,
+    cond: Condition,
 }
 
 impl Put<'_> {
+    /// Makes the object visible only if `cond` holds of the one it
+    /// replaces; else [`Put::finish`] gives the upload up (D194).
+    pub fn require(&mut self, cond: Condition) {
+        self.cond = cond;
+    }
+
     /// The upload's id, which names its chunks.
     pub fn id(&self) -> u128 {
         self.id
@@ -711,6 +813,7 @@ impl Put<'_> {
             content_type: meta.content_type,
             meta: meta.meta,
             data,
+            checksum: meta.checksum,
         };
         let new = entry.encode();
         let (s3, b) = (self.s3, &self.bucket);
@@ -720,6 +823,10 @@ impl Put<'_> {
         for _ in 0..ATTEMPTS {
             self.live()?;
             let old = s3.latest(b, &self.key).await?;
+            if !self.cond.holds(old.as_ref().map(|(_, e)| e)) {
+                self.abort().await?;
+                return Err(S3Error::PreconditionFailed);
+            }
             let mut batch = Batch::new();
             batch
                 .assert(LATEST, old.as_ref().map(|(v, _)| v.as_slice()))
