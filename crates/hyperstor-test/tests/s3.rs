@@ -567,6 +567,40 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     // Not deleted while it has a tenant, a pool and a placement.
     let r = c.ctl(&["realm", "delete", "--name", "acme"]).expect(1);
     assert!(r.has("1 tenant(s)"), "{}", r.out);
+    // A volume's tenant (D258): only in pools its realm may use (D249).
+    let vol = |tenant: &str, name: &str| {
+        c.ctl(&[
+            "create-volume",
+            "--pool",
+            "3",
+            "--size",
+            "4096",
+            "--name",
+            name,
+            "--tenant",
+            tenant,
+        ])
+    };
+    let r = vol("1", "theirs").expect(1);
+    assert!(r.has("may not use pool"), "{}", r.out);
+    let made = vol("2", "acmes").ok();
+    let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    // Its clone takes its tenant.
+    c.ctl(&["snapshot", "create", "--id", &id, "--name", "s"])
+        .ok();
+    c.ctl(&["clone-volume", "--id", &id, "--epoch", "1", "--name", "kid"])
+        .ok();
+    let vols = c.ctl(&["volumes", "--pool", "3"]).ok();
+    for name in ["acmes", "kid"] {
+        let row = vols.out.lines().find(|l| l.contains(name));
+        assert!(row.unwrap_or_default().contains(" 2 "), "{}", vols.out);
+    }
+    // Tenant 2 doesn't move to a realm that may not use its volume's pool
+    // (D248).
+    let r = c
+        .ctl(&["realm", "tenant", "--tenant", "2", "--realm", "default"])
+        .expect(1);
+    assert!(r.has("volume") && r.has("acmedata"), "{}", r.out);
 
     // default's gateway, as installed, and acme's, started by hand: each
     // has its own realm's key and placement.
@@ -624,5 +658,30 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     assert_eq!(
         at(acme_port, &id1, &secret1, &["denied"]),
         "InvalidAccessKeyId"
+    );
+    // Nor while its bucket is in acme's pool (buckets are named first);
+    // and the pool isn't taken from acme while tenant 2's bucket and
+    // volumes are in it, even with no placement naming it (D249).
+    let r = c
+        .ctl(&["realm", "tenant", "--tenant", "2", "--realm", "default"])
+        .expect(1);
+    assert!(r.has("bucket 2/photos"), "{}", r.out);
+    c.ctl(&[
+        "s3",
+        "placement",
+        "delete",
+        "--realm",
+        "acme",
+        "--name",
+        "default",
+    ])
+    .ok();
+    let r = c
+        .ctl(&["realm", "pool", "--pool", "3", "--realm", "default"])
+        .expect(1);
+    assert!(
+        r.has("bucket 2/photos") && r.has("of realm acme"),
+        "{}",
+        r.out
     );
 }

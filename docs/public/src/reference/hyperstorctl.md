@@ -17,8 +17,8 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `perf` | Each device over the last minute: requests per second its PGs served as primary, MiB/s, the device's own read and commit (write and flush) p99, the most I/Os it had in flight, its drive's temperature and wear. With `--device D`, that device's drive (model, firmware, PCIe link, NUMA node, write cache, SMART) and its last two minutes, 5 s a line. Asks the map service's leader, which keeps 15 minutes; exit 1 for a device that hasn't reported |
 | `top-volumes` | The volumes sending most requests now, summed over their PGs (at most `--limit`, default 20): requests and MiB per second |
 | `advise` | The Advisor's findings: a slow device, a device carrying a hot spot, a hot volume (with the `move-volume` that would move it to an NVMe pool), and what drives say of themselves (critical warnings, media errors, wear, heat, a PCIe link below its width or speed, a drive on another NUMA node than its reactor), each with the numbers behind it and what to do. It changes nothing |
-| `volumes` | One pool's volumes: id, name, size, state, and the client instance that has it attached |
-| `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id`; prints its id |
+| `volumes` | One pool's volumes: id, name, size, state, tenant (`-` for none), and the client instance that has it attached |
+| `create-volume` | Creates a volume of `--size` in `--pool`, with `--name` and, optionally, `--id` and `--tenant`; prints its id. A tenant's volume is refused in a pool its realm may not use |
 | `delete-volume` | Moves volume `--id` (with its snapshots) to the trash, where it stays for its pool's grace period (a day by default); refused while it is attached, unless `--force`. Prints when it will be purged |
 | `snapshot list` | Volume `--id`'s snapshots: epoch, name, group and state |
 | `snapshot create` | Takes a snapshot of volume `--id`, named `--name`; an attached volume's client is paused for it (at most 2 s, else the snapshot is abandoned) |
@@ -81,7 +81,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `realm create` | Makes realm `--name N` (1–63 of a–z, 0–9 and -; not `default`), with an optional `--description TEXT`: a group of tenants with its own S3 gateway, keys and pools on the same cluster ([realms](../admin-guide/installation.md#realms)) |
 | `realm list` | The realms, `default` first: id, tenants, the pools whose lists name it, and its description; then the pools every realm may use |
 | `realm delete` | Deletes realm `--name N`. Refused (exit 1) while a tenant is in it, a pool's list names it or it has an S3 placement |
-| `realm tenant` | Puts tenant `--tenant N` in realm `--realm R` (`default` takes it back): its keys then work only at that realm's gateways. Move a tenant before it has buckets |
+| `realm tenant` | Puts tenant `--tenant N` in realm `--realm R` (`default` takes it back): its keys then work only at that realm's gateways. Refused while any of its buckets or volumes is in a pool the realm may not use |
 | `realm pool` | Sets the realms that may use pool `--pool P`: `--realm R[,R...]`, or `any` for every realm (the default). Refused while a placement of a realm it leaves names the pool |
 | `op list` | Running and recent operations (drains, flattens, copies, moves, purges), newest first; finished ones are kept a week |
 | `op get` | Operation `--id` |
@@ -155,7 +155,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--retention-days N` | 365 | `audit settings`: keep records `N` days; 0 keeps them forever |
 | `--force` | off | `delete-volume`: delete it even if a client has it attached; that client is blocklisted first, so its writes are refused. `member remove`: even below three voters. `pool create`, `pool set`, `pool add-device`: allow hard disks with flash. `pool delete`: delete the pool's volumes, snapshots and trash first. `device remove`: let pools keep fewer copies than their size, never fewer than their `min`. `cert renew`: renew now, not only in its last third. `claim release`: whoever holds the claim |
 | `--role R` | | `port role`: the port's role, or `default`. `token create`: `node`, `meta`, `mgmt` (for a management service, such as glidex's, enrolling with `enroll`), `s3` (an S3 gateway), `orchestrator` (a scheduler that claims ports, such as glidex's, enrolling with `enroll`) or `metrics` (a scraper, enrolling with `enroll` too) |
-| `--tenant N` | | `s3 key create`: the tenant whose buckets the key reaches. `realm tenant`: the tenant to put in a realm. `s3 bucket show`, `s3 bucket delete`: the bucket's tenant; `s3 bucket list`: only this tenant's |
+| `--tenant N` | | `s3 key create`: the tenant whose buckets the key reaches. `realm tenant`: the tenant to put in a realm. `s3 bucket show`, `s3 bucket delete`: the bucket's tenant; `s3 bucket list`: only this tenant's. `create-volume`: the volume's tenant (default none) |
 | `--realm R[,R...]\|any` | `default` | `s3 placement set`, `s3 placement delete`: the realm whose placement it is. `realm tenant`: the realm. `realm pool`: the realms that may use the pool, or `any` |
 | `--description TEXT` | | `s3 key create`: what the key is for, shown by `s3 key list`. `realm create`: what the realm is for |
 | `--data-pool NAME` | | `s3 placement set`: the pool for new buckets' objects |

@@ -3,11 +3,13 @@
 //! `crate::realms`. Pools are named here and kept by id, as placements are.
 
 use super::{Api, with_reason};
-use crate::realms::{self, DEFAULT_REALM, Realm, Realms};
+use crate::realms::{self, DEFAULT_REALM, InPool, Realm, Realms};
 use crate::tokens::TokenError;
+use crate::{Admin, BucketDone, BucketOp};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{RealmService, RealmServiceExt};
+use hyperstor_reactor::chan::oneshot;
 use std::sync::Arc;
 
 pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc::Router {
@@ -44,6 +46,53 @@ impl Api {
                 .await),
             Err(e) => Err(ConnectError::internal(e.to_string())),
         }
+    }
+
+    /// Every container of `tenant` (every tenant's, with none) and the
+    /// pools it is in, read from the cluster when asked (D254): buckets'
+    /// index and data pools, and volumes', those in the trash too, which
+    /// still hold their pool's space. A tenant's volumes of tenant 0 are
+    /// "default"'s.
+    pub(super) async fn held(&self, tenant: Option<u32>) -> Result<Vec<InPool>, ConnectError> {
+        let mut out = Vec::new();
+        let (map, ..) = self.published().await?;
+        let name = |id: u32| {
+            map.pools
+                .get(&id)
+                .map_or(format!("#{id}"), |p| p.name.clone())
+        };
+        let BucketDone::List(buckets) = self.bucket_op(BucketOp::List { tenant }).await? else {
+            return Err(ConnectError::internal("a bucket list answered otherwise"));
+        };
+        for b in buckets {
+            for pool in [b.index_pool, b.data_pool] {
+                out.push(InPool {
+                    tenant: b.tenant,
+                    pool,
+                    what: format!("bucket {}/{} (pool {})", b.tenant, b.name, name(pool)),
+                });
+            }
+        }
+        for pool in map.pools.keys().filter(|&&p| p != hyperstor_map::META_POOL) {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ListVolumes {
+                    pool: *pool,
+                    trash: true,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            for v in super::volume_result(rx.recv().await)? {
+                if tenant.is_none_or(|t| t == v.tenant) {
+                    out.push(InPool {
+                        tenant: v.tenant,
+                        pool: v.pool,
+                        what: format!("volume {:032x} (pool {})", v.id, name(v.pool)),
+                    });
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The realms, from this member's copy.
@@ -199,8 +248,11 @@ impl RealmService for Api {
             }
             let realm = self.realm_id(req.realm).await?;
             let tenant = req.tenant;
+            // Checked again in the write, against the realms as they are
+            // then (D248).
+            let held = self.held(Some(tenant)).await?;
             self.realm_rows("such realm", move |db| {
-                realms::set_tenant(db, tenant, realm)
+                realms::set_tenant(db, tenant, realm, &held)
             })
             .await
         }
@@ -236,8 +288,11 @@ impl RealmService for Api {
                     ids.push(id);
                 }
             }
-            self.realm_rows("such realm", move |db| realms::set_pool(db, pool, &ids))
-                .await
+            let held = self.held(None).await?;
+            self.realm_rows("such realm", move |db| {
+                realms::set_pool(db, pool, &ids, &held)
+            })
+            .await
         }
         .await;
         Self::audited(&who, "SetPoolRealms", &target, r)?;
