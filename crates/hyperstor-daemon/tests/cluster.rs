@@ -7098,7 +7098,6 @@ fn s3_model_list(
 #[test]
 fn s3_objects_match_a_model() {
     use hyperstor_s3::chunked::Algorithm;
-    use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
     use hyperstor_s3::layout::{chunk_name, chunks_of};
     use hyperstor_s3::{Condition, Config, List, Meta, S3, S3Error};
     use md5::{Digest, Md5};

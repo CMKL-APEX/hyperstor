@@ -946,14 +946,13 @@ impl S3 {
             let Some(m) = p.multipart.clone() else {
                 return Err(S3Error::NoSuchUpload);
             };
+            // The order first, as S3 checks it.
+            if named.windows(2).any(|w| w[1].0 <= w[0].0) {
+                return Err(S3Error::InvalidPartOrder);
+            }
             let (_, done) = self.parts(b, key, id).await?;
             let mut used = Vec::with_capacity(named.len());
-            let mut last = 0;
             for (i, (number, etag)) in named.iter().enumerate() {
-                if *number <= last {
-                    return Err(S3Error::InvalidPartOrder);
-                }
-                last = *number;
                 let Some((c, v, r)) = done.get(number) else {
                     return Err(S3Error::InvalidPart(*number));
                 };
