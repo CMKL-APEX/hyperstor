@@ -1,10 +1,9 @@
 title = "Device waits off the reactor (D165, D166)"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB"
 started = 2026-10-31
 updated = 2026-11-07
 milestone = "HS0"
-branch = "bench/backfill-client-off-node"
+branch = "board/async-commit-done"
 prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209, 228]
-now = "Backfill and 1 MiB read tests rerun with the client off node 2: no reactor held; QD1 1 MiB reads fill a client's 1 GbE port, so deeper queues only add drops (the routed path the worst)"
-next = "Why the routed path into node 1's host drops twice as much as the switch under 1 MiB reads; whether pacing or a shared window across a client's connections cuts the tail at QD2 and above"
+now = "Commits and reads wait for the device off the reactor (D165, D166, D190), backfill reads too (I257; stage 3, checkpoints and deferred writes, is I281 in reactor-upkeep); the connection writer sends large frames uncopied (I283). On the pilot, backfill under load held no reactor and cost 27% of 4 KiB writes at QD32, 16% at QD1. The 1 MiB read tail is 1 GbE drops, not the data path; faster networks are G48"
