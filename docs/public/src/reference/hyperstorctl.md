@@ -75,7 +75,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `s3 placement set` | Sets placement `--name N` to keep new buckets' objects in pool `--data-pool NAME` and their index in `--index-pool NAME`. CreateBucket uses `default` unless its `LocationConstraint` names another placement; until `default` is set, buckets can't be created. Refused (exit 1) for a pool that doesn't exist, a cache pool, or `.meta`. Kept by pool id: a renamed pool keeps its placements. Buckets made before keep their pools |
 | `s3 placement list` | Every realm's placements and their pools, by name and id; a pool deleted since shows as `#ID (deleted)` |
 | `s3 placement delete` | Removes placement `--name N`; buckets in its pools stay |
-| `s3 bucket list` | Every tenant's buckets as `tenant/bucket` (or one tenant's, with `--tenant N`), with their realm, pools and creation time; read from the store by the map service, so the storage path must be up |
+| `s3 bucket list` | Every tenant's buckets as `tenant/bucket` (or one tenant's, with `--tenant N`), with their realm, pools, objects, bytes (`-` for a bucket made before buckets were counted) and creation time; read from the store by the map service, so the storage path must be up |
 | `s3 bucket show` | Bucket `--name B` of tenant `--tenant N` |
 | `s3 bucket delete` | Deletes bucket `--name B` of tenant `--tenant N`, only if it holds no object and no upload under way; audited |
 | `realm create` | Makes realm `--name N` (1–63 of a–z, 0–9 and -; not `default`), with an optional `--description TEXT`: a group of tenants with its own S3 gateway, keys and pools on the same cluster ([realms](../admin-guide/installation.md#realms)) |

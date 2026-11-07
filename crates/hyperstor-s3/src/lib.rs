@@ -365,6 +365,7 @@ impl S3 {
         let info = BucketInfo {
             tenant,
             created: now_ms(),
+            counted: true,
         };
         let made = self
             .kv
@@ -425,6 +426,17 @@ impl S3 {
                 out.push(Bucket::of(t)?);
             }
         }
+    }
+
+    /// Bucket `b`'s objects and their bytes (§14.6), summed over its
+    /// ranges; none for a bucket made before buckets were counted.
+    pub async fn counts(&self, b: &Bucket) -> Result<Option<(u64, u64)>> {
+        if !b.info.counted {
+            return Ok(None);
+        }
+        let c = self.kv.counts(&b.table).await?;
+        let at = |i: usize| c.get(i).copied().unwrap_or(0).max(0) as u64;
+        Ok(Some((at(0), at(1))))
     }
 
     /// Deletes bucket `name`, which must hold no object and no upload under
@@ -533,6 +545,7 @@ impl S3 {
             };
             let mut batch = Batch::new();
             batch.assert(LATEST, Some(&v)).delete(LATEST);
+            batch.count(&counts(Some(&e)), &counts(None));
             batch.linger(self.cfg.linger);
             collect(&mut batch, b, &e);
             let r = self.kv.apply(&b.table, &row, &batch).await;
@@ -1010,6 +1023,7 @@ impl S3 {
             batch
                 .assert(LATEST, old.as_ref().map(|(v, _)| v.as_slice()))
                 .put(LATEST, &new)
+                .count(&counts(old.as_ref().map(|(_, e)| e)), &counts(Some(&entry)))
                 .linger(self.cfg.linger);
             if let Some((_, e)) = &old {
                 collect(&mut batch, b, e);
@@ -1219,6 +1233,12 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// What an object row adds to its bucket's counts (§14.6): an object and
+/// its bytes, if it has a latest version.
+fn counts(e: Option<&Entry>) -> [i64; 2] {
+    e.map_or([0, 0], |e| [1, e.size as i64])
+}
+
 /// Queues `e`'s chunks for deletion in `batch`.
 fn collect(batch: &mut Batch, b: &Bucket, e: &Entry) {
     for (prefix, count) in e.series(b.id()) {
@@ -1396,7 +1416,8 @@ impl Put<'_> {
             let mut batch = Batch::new();
             batch
                 .assert(LATEST, old.as_ref().map(|(v, _)| v.as_slice()))
-                .put(LATEST, &new);
+                .put(LATEST, &new)
+                .count(&counts(old.as_ref().map(|(_, e)| e)), &counts(Some(&entry)));
             if let Some(m) = &mark {
                 batch.assert(&col, Some(m)).delete(&col);
             }

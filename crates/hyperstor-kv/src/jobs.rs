@@ -12,8 +12,8 @@
 
 use crate::keys::*;
 use crate::{
-    KvError, NS_KV, Range, State, Table, attr, conflict, decode_queue, map_entry, map_value,
-    random_u128, range_name,
+    KvError, NS_KV, Range, State, Table, add_counts, attr, conflict, decode_counts, decode_queue,
+    encode_counts, map_entry, map_value, random_u128, range_name,
 };
 use hyperstor_client::{Client, ClientError};
 use hyperstor_map::META_POOL;
@@ -238,8 +238,8 @@ async fn middle(cl: &Client, pool: u32, r: &Range) -> Result<Option<Vec<u8>>, Kv
 }
 
 /// Copies range `from`'s keys in `[lo, hi)` into range `into`, each list
-/// asserting `into` is still `state`: false if it isn't, or `from` is
-/// gone.
+/// asserting `into` is still `state`: the counts of the rows copied
+/// (§28.9), none if `into` isn't `state` any more or `from` is gone.
 async fn copy(
     cl: &Client,
     pool: u32,
@@ -247,13 +247,14 @@ async fn copy(
     (lo, hi): (&[u8], &[u8]),
     into: u128,
     state: &State,
-) -> Result<bool, KvError> {
+) -> Result<Option<Vec<i64>>, KvError> {
     let mut at = lo.to_vec();
+    let mut counts = Vec::new();
     let name = range_name(from);
     loop {
         let l = cl.lookup(pool, NS_KV, &name, &at, Some(hi), COPY_PAGE);
         let Some(l) = l.await? else {
-            return Ok(false);
+            return Ok(None);
         };
         let full = l.kv.len() == COPY_PAGE as usize;
         if let Some((k, _)) = l.kv.last() {
@@ -263,21 +264,150 @@ async fn copy(
         let (mut ops, mut bytes) = (vec![state_is(state)], 0);
         for (k, v) in l.kv {
             bytes += k.len() + v.len();
+            add_tally(&mut counts, &k, &v)?;
             ops.push(WireOp::KvPut(k, v));
             if bytes >= COPY_BYTES {
                 if !went(exec(cl, pool, into, &ops).await)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 (ops, bytes) = (vec![state_is(state)], 0);
             }
         }
         if ops.len() > 1 && !went(exec(cl, pool, into, &ops).await)? {
-            return Ok(false);
+            return Ok(None);
         }
         if !full {
-            return Ok(true);
+            return Ok(Some(counts));
         }
     }
+}
+
+/// Adds the counts `k` holds to `counts`, if it is a row's [`TALLY`].
+fn add_tally(counts: &mut Vec<i64>, k: &[u8], v: &[u8]) -> Result<(), KvError> {
+    if split_key(k).is_some_and(|(_, column)| column == TALLY) {
+        add_counts(counts, &decode_counts(v)?, 1);
+    }
+    Ok(())
+}
+
+/// The counts of range `r`'s rows in `[lo, hi)`, from their [`TALLY`]
+/// columns, read at `r`'s epoch: none if it changed.
+async fn tallies(
+    cl: &Client,
+    pool: u32,
+    r: &Range,
+    (lo, hi): (&[u8], &[u8]),
+) -> Result<Option<Vec<i64>>, KvError> {
+    let (mut at, mut counts, name) = (lo.to_vec(), Vec::new(), range_name(r.id));
+    loop {
+        let l = cl.lookup(pool, NS_KV, &name, &at, Some(hi), COPY_PAGE);
+        let Some(l) = l.await? else {
+            return Ok(None);
+        };
+        if Range::from_attrs(r.id, &l.attrs)?.epoch != r.epoch {
+            return Ok(None);
+        }
+        for (k, v) in &l.kv {
+            add_tally(&mut counts, k, v)?;
+        }
+        match l.kv.last() {
+            Some((k, _)) if l.kv.len() == COPY_PAGE as usize => {
+                at = k.clone();
+                at.push(0);
+            }
+            _ => return Ok(Some(counts)),
+        }
+    }
+}
+
+/// A put of a count delta, if it isn't all zeros.
+fn count_put(id: u128, c: &[i64]) -> Option<WireOp> {
+    c.iter()
+        .any(|&v| v != 0)
+        .then(|| WireOp::KvPut(count_key(id), encode_counts(c)))
+}
+
+/// Range `r`'s count deltas, every page, and its attributes as they were
+/// read with the first: none if it is gone, or changed between pages.
+async fn deltas(
+    cl: &Client,
+    pool: u32,
+    r: &Range,
+) -> Result<Option<(Range, Vec<(Vec<u8>, Vec<u8>)>)>, KvError> {
+    let (mut at, end, mut out) = (vec![COUNTS], [COUNTS + 1], Vec::new());
+    let (mut first, name): (Option<Range>, _) = (None, range_name(r.id));
+    loop {
+        let l = cl.lookup(pool, NS_KV, &name, &at, Some(&end), COPY_PAGE);
+        let Some(l) = l.await? else {
+            return Ok(None);
+        };
+        let now = Range::from_attrs(r.id, &l.attrs)?;
+        if first.as_ref().is_some_and(|f| f.epoch != now.epoch) {
+            return Ok(None);
+        }
+        first.get_or_insert(now);
+        let full = l.kv.len() == COPY_PAGE as usize;
+        if let Some((k, _)) = l.kv.last() {
+            at = k.clone();
+            at.push(0);
+        }
+        out.extend(l.kv);
+        if !full {
+            return Ok(first.map(|f| (f, out)));
+        }
+    }
+}
+
+/// Range `r`'s attributes and its counts (§28.9), read together: none if
+/// it is gone or changed while being read.
+pub async fn counts_of(
+    cl: &Client,
+    pool: u32,
+    r: &Range,
+) -> Result<Option<(Range, Vec<i64>)>, KvError> {
+    let Some((now, kv)) = deltas(cl, pool, r).await? else {
+        return Ok(None);
+    };
+    let mut sum = Vec::new();
+    for (_, v) in &kv {
+        add_counts(&mut sum, &decode_counts(v)?, 1);
+    }
+    Ok(Some((now, sum)))
+}
+
+/// Count deltas a range keeps before its primary folds them.
+pub const FOLD_AT: usize = 64;
+
+/// Folds range `r`'s count deltas into one (§28.9): how many it folded.
+/// Only while `r` serves and is at its epoch, so never during a merge,
+/// whose undo removes the delta it copied; each delta folded is asserted,
+/// so two folds don't both add the same.
+pub async fn fold(cl: &Client, pool: u32, r: &Range) -> Result<usize, KvError> {
+    if r.state != State::Serving {
+        return Ok(0);
+    }
+    let Some((now, kv)) = deltas(cl, pool, r).await? else {
+        return Ok(0);
+    };
+    if now.epoch != r.epoch || kv.len() < 2 {
+        return Ok(0);
+    }
+    let mut sum = Vec::new();
+    let mut ops = vec![r.epoch_assertion(), state_is(&State::Serving)];
+    for (k, v) in &kv {
+        add_counts(&mut sum, &decode_counts(v)?, 1);
+        ops.push(WireOp::AssertKv {
+            key: k.clone(),
+            value: Some(v.clone()),
+        });
+        ops.push(WireOp::KvDel(k.clone()));
+    }
+    ops.extend(count_put(random_u128(), &sum));
+    Ok(if went(exec(cl, pool, r.id, &ops).await)? {
+        kv.len()
+    } else {
+        0
+    })
 }
 
 /// Splits `r` at its middle row (§28.4), within `steps`: the new range's
@@ -335,32 +465,47 @@ pub async fn split_at(
     }
     // 3. Copy the frozen rows.
     let keys = (row_start(at), frozen.end_key());
-    if !steps.take() || !copy(cl, pool, r.id, (&keys.0, &keys.1), into, &State::Pending).await? {
+    if !steps.take() {
         return Ok(Some(into));
     }
-    // 4. Open it.
-    let ops = [
+    let copied = copy(cl, pool, r.id, (&keys.0, &keys.1), into, &State::Pending);
+    let Some(counts) = copied.await? else {
+        return Ok(Some(into));
+    };
+    // 4. Open it, with the counts of the rows it took (§28.9).
+    let mut ops = vec![
         state_is(&State::Pending),
         WireOp::SetAttr(attr::STATE.into(), State::Serving.encode()),
         WireOp::SetAttr(attr::EPOCH.into(), 2u64.to_be_bytes().into()),
     ];
+    ops.extend(count_put(random_u128(), &counts));
     if !steps.take() || !went(exec(cl, pool, into, &ops).await)? {
         return Ok(Some(into));
     }
-    finish_split(cl, pool, &frozen, steps).await?;
+    finish_split(cl, pool, &frozen, steps, Some(counts)).await?;
     Ok(Some(into))
 }
 
 /// Steps 5 and 6 of a split whose new range is open: shrink, then the
-/// root.
+/// root. `moved` is the counts of the rows the new range took, counted
+/// again here if not known (the rows are frozen, so the same).
 async fn finish_split(
     cl: &Client,
     pool: u32,
     frozen: &Range,
     steps: &Steps,
+    moved: Option<Vec<i64>>,
 ) -> Result<(), KvError> {
     let State::Splitting { at, into } = &frozen.state else {
         unreachable!("only a splitting range is finished");
+    };
+    let moved = match moved {
+        Some(m) => m,
+        None => match tallies(cl, pool, frozen, (&row_start(at), &frozen.end_key())).await? {
+            Some(m) => m,
+            // Shrunk meanwhile by another job.
+            None => return Ok(()),
+        },
     };
     // 5. Shrink.
     let lower = Range {
@@ -373,6 +518,10 @@ async fn finish_split(
     let mut ops = vec![frozen.epoch_assertion()];
     ops.extend(lower.set_ops());
     ops.push(WireOp::KvDelRange(row_start(at), frozen.end_key()));
+    // The rows' counts leave with them (§28.9).
+    let mut minus = Vec::new();
+    add_counts(&mut minus, &moved, -1);
+    ops.extend(count_put(random_u128(), &minus));
     if !steps.take() {
         return Ok(());
     }
@@ -463,7 +612,7 @@ pub async fn merge(
     }
     // 3. Copy its rows; the left range's bounds still exclude them.
     if !steps.take()
-        || !copy(
+        || copy(
             cl,
             pool,
             n.id,
@@ -474,8 +623,21 @@ pub async fn merge(
             &absorbing.state,
         )
         .await?
+        .is_none()
     {
         return Ok(false);
+    }
+    // Its counts, as one delta named by its id, which an undo removes
+    // (§28.9). Frozen, it neither changes them nor folds them.
+    let c = match counts_of(cl, pool, &merging).await? {
+        Some((now, c)) if now.epoch == merging.epoch => c,
+        _ => return Ok(false),
+    };
+    if let Some(put) = count_put(n.id, &c) {
+        let ops = [state_is(&absorbing.state), put];
+        if !went(exec(cl, pool, l.id, &ops).await)? {
+            return Ok(false);
+        }
     }
     // 4. Extend the left range over them.
     let extended = Range {
@@ -550,10 +712,10 @@ async fn undo_absorbing(cl: &Client, pool: u32, l: &Range) -> Result<(), KvError
     {
         serve_again(cl, pool, &n, Vec::new()).await?;
     }
-    let past = match &l.end {
-        Some(e) => vec![WireOp::KvDelRange(row_start(e), vec![USER + 1])],
-        None => Vec::new(),
-    };
+    let mut past = vec![WireOp::KvDel(count_key(from))];
+    if let Some(e) = &l.end {
+        past.push(WireOp::KvDelRange(row_start(e), vec![USER + 1]));
+    }
     serve_again(cl, pool, l, past).await
 }
 
@@ -578,7 +740,7 @@ pub async fn resume(cl: &Client, pool: u32, r: &Range) -> Result<(), KvError> {
     match &r.state {
         State::Splitting { into, .. } => match read(cl, pool, *into).await? {
             Some((n, _)) if n.state == State::Serving => {
-                finish_split(cl, pool, r, &Steps::all()).await
+                finish_split(cl, pool, r, &Steps::all(), None).await
             }
             n => {
                 // Not opened: undone, the new range deleted first.

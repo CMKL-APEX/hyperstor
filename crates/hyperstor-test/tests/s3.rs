@@ -283,8 +283,8 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     assert_eq!(step(&["create", "third"]), "created");
     assert_eq!(step(&["roundtrip", "third"]), "roundtrip ok");
     // Administrators see every tenant's buckets as tenant/bucket, read
-    // from the store by the map service (D246, D254), and delete only an
-    // empty one (D255).
+    // from the store by the map service (D246, D254), with their objects
+    // and bytes (D257), and delete only an empty one (D255).
     let list = c.ctl(&["s3", "bucket", "list"]).ok();
     for b in ["1/first", "1/second", "1/third"] {
         assert!(list.has(b), "{}", list.out);
@@ -296,6 +296,9 @@ fn s3_keys_and_placements_come_from_the_map_service() {
         .ctl(&["s3", "bucket", "show", "--tenant", "1", "--name", "second"])
         .ok();
     assert!(one.has("1/second") && !one.has("1/first"), "{}", one.out);
+    // Its one object and its bytes, counted as it was written (D257).
+    let row = one.out.lines().nth(1).unwrap_or_default();
+    assert!(row.contains(" 1 ") && row.contains(" 2600 "), "{}", one.out);
     let json = c
         .ctl(&[
             "s3", "bucket", "show", "--tenant", "1", "--name", "second", "--json",
@@ -314,11 +317,11 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     c.ctl(&["s3", "bucket", "delete", "--tenant", "1", "--name", "empty"])
         .ok();
     assert!(!c.ctl(&["s3", "bucket", "list"]).ok().has("1/empty"));
-    let audit = wait_for("the delete's audit record", 30, || {
+    // The refused delete of 1/first is audited too: wait for this one's.
+    wait_for("the delete's audit record", 30, || {
         let r = c.ctl(&["audit", "list"]);
-        r.has("DeleteS3Bucket").then_some(r)
+        (r.has("DeleteS3Bucket") && r.has("bucket 1/empty")).then_some(r)
     });
-    assert!(audit.has("bucket 1/empty"), "{}", audit.out);
     // A wrong secret is refused; a revoked key within seconds.
     let wrong = sdk(&python, port, &ca, &id, &"x".repeat(40), &["denied"]);
     assert_eq!(wrong, "SignatureDoesNotMatch");

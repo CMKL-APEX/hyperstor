@@ -1948,6 +1948,21 @@ async fn kv_queue(cl: &Client, id: u128) -> Vec<(Vec<u8>, Vec<u8>)> {
     l.await.unwrap().map(|l| l.kv).unwrap_or_default()
 }
 
+/// Range `id`'s count deltas (25-kv-ranges.md §28.9), in `POOL`.
+async fn kv_deltas(cl: &Client, id: u128) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use hyperstor_kv::keys::COUNTS;
+    let name = hyperstor_kv::range_name(id);
+    let l = cl.lookup(
+        POOL,
+        hyperstor_kv::NS_KV,
+        &name,
+        &[COUNTS],
+        Some(&[COUNTS + 1]),
+        100_000,
+    );
+    l.await.unwrap().map(|l| l.kv).unwrap_or_default()
+}
+
 /// Waits up to 30 s for `done`, then panics with `what`.
 async fn kv_until(what: &str, done: impl AsyncFn() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -2336,7 +2351,8 @@ fn kv_store_matches_a_sorted_map() {
 /// with every row in one serving range, nothing left over, the rows as
 /// written, and a store whose cache saw the old ranges reads and writes
 /// on. Deleting a table deletes what its ranges' queues name, a series
-/// of objects among them, before the ranges.
+/// of objects among them, before the ranges. The table's counts (§28.9)
+/// stay its rows' through every split and merge, finished or undone.
 #[test]
 fn kv_jobs_finish_or_undo_from_every_step() {
     use hyperstor_kv::jobs::{self, Steps};
@@ -2354,9 +2370,19 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                 let row = format!("row{i:02}").into_bytes();
                 model.entry(row).or_default().insert(b"c".to_vec(), v);
             }
+            // Each row counts one, and its value's bytes.
+            let counted = |v: &[u8]| [1, v.len() as i64];
+            let counts = |m: &KvModel| {
+                let mut sum = vec![0, 0];
+                for cols in m.values() {
+                    hyperstor_kv::add_counts(&mut sum, &counted(&cols[b"c".as_slice()]), 1);
+                }
+                sum
+            };
             let fill = async |t: &hyperstor_kv::Table| {
                 for (row, cols) in &model {
-                    a.apply(t, row, Batch::new().put(b"c", &cols[b"c".as_slice()]))
+                    let v = &cols[b"c".as_slice()];
+                    a.apply(t, row, Batch::new().put(b"c", v).count(&[], &counted(v)))
                         .await
                         .unwrap();
                 }
@@ -2398,6 +2424,7 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                 let n = kv_settled(&cl, STORE, &t, &ids).await;
                 // Finished once the new range was open (step 4).
                 assert_eq!(n, Ok(if stop >= 4 { 2 } else { 1 }), "{why}");
+                assert_eq!(a.counts(&t).await.unwrap(), counts(&model), "{why}");
                 writes_go_on(&t, &why).await;
             }
             for stop in 0..=7 {
@@ -2432,14 +2459,15 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                 let settled = kv_settled(&cl, STORE, &t, &[l.id, n.id]).await;
                 // Finished once the left range was extended (step 4).
                 assert_eq!(settled, Ok(if stop >= 4 { 1 } else { 2 }), "{why}");
+                assert_eq!(a.counts(&t).await.unwrap(), counts(&model), "{why}");
                 writes_go_on(&t, &why).await;
                 if stop < 4 {
                     // An undone merge leaves nothing of the right range's
                     // rows in the left one: a row deleted now stays
                     // deleted when the two merge after all.
-                    a.apply(&t, b"row30", Batch::new().delete(b"c"))
-                        .await
-                        .unwrap();
+                    let v = &model[b"row30".as_slice()][b"c".as_slice()];
+                    let gone = Batch::new().delete(b"c").count(&counted(v), &[]).clone();
+                    a.apply(&t, b"row30", &gone).await.unwrap();
                     let (l, _) = jobs::read(&cl, POOL, l.id).await.unwrap().unwrap();
                     let (n, _) = jobs::read(&cl, POOL, n.id).await.unwrap().unwrap();
                     let all = jobs::merge(&cl, POOL, &l, &n, &Steps::all()).await;
@@ -2448,6 +2476,9 @@ fn kv_jobs_finish_or_undo_from_every_step() {
                     let mut want = after.clone();
                     want.remove(b"row30".as_slice());
                     assert_eq!(kv_all(&a, &t).await, kv_rows(&want), "{why}");
+                    let mut less = model.clone();
+                    less.remove(b"row30".as_slice());
+                    assert_eq!(a.counts(&t).await.unwrap(), counts(&less), "{why}");
                 }
             }
             // Deleting a table first drains each range's queue (§28.6), a
@@ -2496,7 +2527,8 @@ fn kv_jobs_finish_or_undo_from_every_step() {
 /// HS11 stage 3 (25-kv-ranges.md §28.7): with small limits, primaries
 /// split a growing table and merge it back as its rows are deleted, on
 /// their own, while a node is killed and comes back. The rows read as
-/// written throughout, and the table settles each time.
+/// written throughout, and the table settles each time. The table's
+/// counts (§28.9), folded by the primaries as they go, are its rows'.
 #[test]
 fn kv_ranges_split_and_merge_on_their_own() {
     use hyperstor_kv::jobs::{self, Steps};
@@ -2533,17 +2565,41 @@ fn kv_ranges_split_and_merge_on_their_own() {
             let cl = Client::connect(meta, 7).await.unwrap();
             let t = a.create_table(b"load", POOL, POOL).await.unwrap();
             let wait = std::time::Duration::from_millis(100);
-            // A write cut off by the node's death is sent again: puts and
-            // deletes are the same done twice.
-            let apply = async |row: &[u8], b: &Batch| {
+            // Each row counts one, and its value's bytes.
+            let counted = |v: Option<&[u8]>| v.map_or(vec![], |v| vec![1, v.len() as i64]);
+            // A write cut off by the node's death is sent again. Each
+            // asserts the value it replaces, as S3's do, so one that
+            // applied the first time conflicts, and its counts aren't
+            // added twice.
+            let apply = async |row: &[u8], old: Option<&[u8]>, new: Option<&[u8]>| {
+                let mut b = Batch::new();
+                b.assert(b"c", old).count(&counted(old), &counted(new));
+                match new {
+                    Some(v) => b.put(b"c", v),
+                    None => b.delete(b"c"),
+                };
                 for _ in 0..300 {
-                    match a.apply(&t, row, b).await {
+                    match a.apply(&t, row, &b).await {
                         Ok(()) => return,
-                        Err(KvError::Conflict) => panic!("no batch asserts"),
+                        Err(KvError::Conflict) => loop {
+                            if let Ok(v) = a.get(&t, row, b"c").await {
+                                assert_eq!(v.as_deref(), new, "a conflict");
+                                return;
+                            }
+                            hyperstor_reactor::time::sleep(wait).await;
+                        },
                         Err(_) => hyperstor_reactor::time::sleep(wait).await,
                     }
                 }
                 panic!("a write failed for 30 s");
+            };
+            let counts = |m: &KvModel| {
+                let mut sum = vec![0, 0];
+                for cols in m.values() {
+                    let v = cols[b"c".as_slice()].as_slice();
+                    hyperstor_kv::add_counts(&mut sum, &counted(Some(v)), 1);
+                }
+                sum
             };
             let settled = async |at_least: usize, at_most: usize, ids: &[u128]| {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -2568,12 +2624,15 @@ fn kv_ranges_split_and_merge_on_their_own() {
                     }
                 }
                 let row = format!("row{:04}", rng.random_range(0..400)).into_bytes();
-                let v = format!("{i:0100}").into_bytes();
-                apply(&row, Batch::new().put(b"c", &v)).await;
+                // Of lengths that differ, so bytes are counted, not rows.
+                let v = format!("{i:0width$}", width = 100 + i as usize % 7).into_bytes();
+                let old = model.get(&row).map(|c| c[b"c".as_slice()].clone());
+                apply(&row, old.as_deref(), Some(&v)).await;
                 model.entry(row).or_default().insert(b"c".to_vec(), v);
             }
             let grown = settled(4, usize::MAX, &[]).await;
             assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            assert_eq!(a.counts(&t).await.unwrap(), counts(&model));
             // Jobs left half done, as by a primary that died, are taken up
             // by the ranges' primaries: a split before its new range
             // opened is undone, a merge that extended its range finished.
@@ -2589,14 +2648,24 @@ fn kv_ranges_split_and_merge_on_their_own() {
             settled(1, usize::MAX, &[n.id]).await;
             assert_eq!(jobs::read(&cl, POOL, n.id).await.unwrap(), None);
             assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            assert_eq!(a.counts(&t).await.unwrap(), counts(&model));
             // Deleting all but five rows merges the ranges back into one.
             let gone: Vec<Vec<u8>> = model.keys().skip(5).cloned().collect();
             for row in &gone {
-                apply(row, Batch::new().delete(b"c")).await;
-                model.remove(row);
+                let old = model.remove(row).map(|c| c[b"c".as_slice()].clone());
+                apply(row, old.as_deref(), None).await;
             }
             settled(1, 1, &[]).await;
             assert_eq!(kv_all(&a, &t).await, kv_rows(&model));
+            assert_eq!(a.counts(&t).await.unwrap(), counts(&model));
+            // Folded as they went: the one range keeps few deltas.
+            let (only, _) = jobs::read(&cl, POOL, kv_routes(&cl, STORE, &t).await[0].1)
+                .await
+                .unwrap()
+                .unwrap();
+            // Unfolded, they would be one a write, about a thousand.
+            let kv = kv_deltas(&cl, only.id).await;
+            assert!(kv.len() < 2 * jobs::FOLD_AT, "{} deltas", kv.len());
             grown
         })
     });
@@ -7092,7 +7161,8 @@ fn s3_model_list(
 /// back. PUTs given up half-way (a gateway dying), aborted or short leave
 /// the object as it was; an upload the clean-up gave up can't be
 /// completed after, and one completed isn't touched by it. Buckets: names
-/// checked, one namespace, listed by tenant, deleted only empty. In the
+/// checked, one namespace, listed by tenant, deleted only empty, their
+/// objects and bytes counted. In the
 /// end every chunk of a replaced, deleted or given-up object is deleted,
 /// and the devices hold no `s3` object but the live objects' chunks.
 #[test]
@@ -7562,6 +7632,11 @@ fn s3_objects_match_a_model() {
                     let got = g[1].read(b, &e, 0, e.size).await.unwrap();
                     assert!(got == *want, "an object's bytes");
                 }
+                // Its objects and their bytes, counted by each write
+                // (§14.6, D257), whatever was given up or retried.
+                let bytes = model[bi].values().map(|v| v.len() as u64).sum();
+                let want = Some((model[bi].len() as u64, bytes));
+                assert_eq!(g[1].counts(b).await.unwrap(), want, "bucket {bi}'s counts");
             }
             // The chunks of live objects, and nothing else, once drained.
             let mut live = BTreeSet::new();
@@ -7600,6 +7675,7 @@ fn s3_objects_match_a_model() {
             for k in model[0].keys() {
                 g[1].delete(b, k).await.unwrap();
             }
+            assert_eq!(g[0].counts(b).await.unwrap(), Some((0, 0)));
             g[0].delete_bucket(1, "one").await.unwrap();
             let r = g[0].bucket(1, "one").await;
             assert!(matches!(r, Err(S3Error::NoSuchBucket(_))), "{r:?}");

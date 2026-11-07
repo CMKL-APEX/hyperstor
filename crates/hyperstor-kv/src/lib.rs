@@ -363,6 +363,8 @@ pub enum Change {
     /// Object `name` of namespace `ns` in `pool` is deleted once the
     /// batch is applied, by the range's primary (D192, §28.6).
     Collect(Doomed),
+    /// The row's counts go from `.0` to `.1` (§28.9).
+    Count(Vec<i64>, Vec<i64>),
 }
 
 /// Changes to one row, applied together if every assertion holds (D200).
@@ -422,6 +424,14 @@ impl Batch {
         self
     }
 
+    /// The row's counts go from `old`, which the caller knows from what
+    /// the batch asserts, to `new` (§28.9): the row's [`TALLY`] column
+    /// becomes `new`, and the range keeps the difference.
+    pub fn count(&mut self, old: &[i64], new: &[i64]) -> &mut Self {
+        self.changes.push(Change::Count(old.into(), new.into()));
+        self
+    }
+
     /// Keeps what the batch collects for `secs` seconds before it is
     /// deleted: a reader that found the old version may still read it
     /// (14-s3.md §14.6).
@@ -435,7 +445,7 @@ impl Batch {
     /// batch sent again (after an error that leaves it unknown whether it
     /// applied) puts the same entry.
     fn ops(&self, row: &[u8]) -> Vec<WireOp> {
-        let mut collect = Vec::new();
+        let (mut collect, mut deltas) = (Vec::new(), Vec::new());
         let mut ops: Vec<WireOp> = Vec::new();
         for c in &self.changes {
             ops.push(match c {
@@ -449,7 +459,23 @@ impl Batch {
                     collect.push(d.clone());
                     continue;
                 }
+                Change::Count(old, new) => {
+                    let mut delta = new.clone();
+                    add_counts(&mut delta, old, -1);
+                    if delta.iter().any(|&d| d != 0) {
+                        deltas.push(delta);
+                    }
+                    let k = user_key(row, TALLY);
+                    if new.iter().all(|&v| v == 0) {
+                        WireOp::KvDel(k)
+                    } else {
+                        WireOp::KvPut(k, encode_counts(new))
+                    }
+                }
             });
+        }
+        for d in deltas {
+            ops.push(WireOp::KvPut(count_key(random_u128()), encode_counts(&d)));
         }
         if !collect.is_empty() {
             ops.push(WireOp::KvPut(
@@ -458,6 +484,30 @@ impl Batch {
             ));
         }
         ops
+    }
+}
+
+/// Counts as kept (§28.9): each a big-endian i64. A user that keeps more
+/// counts later appends them; a shorter list reads as zeros past its end.
+pub fn encode_counts(c: &[i64]) -> Vec<u8> {
+    c.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+pub fn decode_counts(b: &[u8]) -> Result<Vec<i64>, KvError> {
+    let (counts, rest) = b.as_chunks::<8>();
+    if !rest.is_empty() {
+        return Err(KvError::Corrupt("counts".into()));
+    }
+    Ok(counts.iter().map(|c| i64::from_be_bytes(*c)).collect())
+}
+
+/// Adds `c` times `sign` to `into`, which grows to `c`'s length.
+pub fn add_counts(into: &mut Vec<i64>, c: &[i64], sign: i64) {
+    if into.len() < c.len() {
+        into.resize(c.len(), 0);
+    }
+    for (i, v) in c.iter().enumerate() {
+        into[i] += sign * v;
     }
 }
 
@@ -945,7 +995,7 @@ impl Store {
         Ok(kv.into_iter().next().map(|(_, v)| v))
     }
 
-    /// Every column of `row`, in order.
+    /// Every column of `row`, in order, but the store's [`TALLY`].
     pub async fn row(&self, t: &Table, row: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
         let start = row_start(row);
         let end = row_end(row);
@@ -958,11 +1008,50 @@ impl Store {
                 from = k.clone();
                 from.push(0);
             }
-            out.extend(kv.into_iter().map(|(k, v)| (k[start.len()..].to_vec(), v)));
+            out.extend(
+                kv.into_iter()
+                    .map(|(k, v)| (k[start.len()..].to_vec(), v))
+                    .filter(|(c, _)| c != TALLY),
+            );
             if !full {
                 return Ok(out);
             }
         }
+    }
+
+    /// Table `t`'s counts (§28.9): the sum of its ranges' deltas. Ranges
+    /// are walked by their own bounds, each read with its attributes; one
+    /// in the middle of a split or merge, or not where the walk expected
+    /// it, starts the walk again, so that no row is counted twice or
+    /// missed. Changes made while it walks may or may not be in the sum.
+    pub async fn counts(&self, t: &Table) -> Result<Vec<i64>, KvError> {
+        'walk: for attempt in 0..ATTEMPTS {
+            if attempt > 0 {
+                sleep(HELD_WAIT).await;
+            }
+            let mut total = Vec::new();
+            let mut row = Vec::new();
+            loop {
+                let r = self.range_for(t, &row, Use::Read).await?;
+                match jobs::counts_of(&self.client, t.index_pool, &r).await? {
+                    Some((now, c)) if now.start == row && !jobs::unfinished(&now) => {
+                        add_counts(&mut total, &c, 1);
+                        match now.end {
+                            Some(e) => row = e,
+                            None => return Ok(total),
+                        }
+                    }
+                    _ => {
+                        self.ranges.borrow_mut().remove(&r.id);
+                        continue 'walk;
+                    }
+                }
+            }
+        }
+        Err(KvError::Exhausted(
+            ATTEMPTS,
+            "the ranges kept changing".into(),
+        ))
     }
 
     /// The rows of table `t` that `scan` selects, in order, each whole.
@@ -984,6 +1073,12 @@ impl Store {
                 let (kr, column) =
                     split_key(&k).ok_or_else(|| KvError::Corrupt("a user key".into()))?;
                 let column = column.to_vec();
+                if column == TALLY {
+                    // The store's, not the user's (§28.9).
+                    from = k;
+                    from.push(0);
+                    continue;
+                }
                 match rows.last_mut() {
                     Some(last) if last.row == kr => last.columns.push((column, v)),
                     _ => rows.push(Row {
@@ -1011,5 +1106,45 @@ impl Store {
         let more = (rows.len() > limit).then(|| rows[limit].row.clone());
         rows.truncate(limit);
         Ok(Page { rows, more })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A batch's counts (§28.9): the row's own in its `0xFF` column, gone
+    /// at zero, and the difference as one delta in the range, none if
+    /// nothing changed.
+    #[test]
+    fn a_batch_counts_its_row() {
+        let ops = |b: &Batch| b.ops(b"row");
+        let deltas = |ops: &[WireOp]| -> Vec<Vec<i64>> {
+            ops.iter()
+                .filter_map(|o| match o {
+                    WireOp::KvPut(k, v) if k[0] == COUNTS => Some(decode_counts(v).unwrap()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let tally = user_key(b"row", TALLY);
+        let grown = ops(Batch::new().put(b"l", b"v").count(&[1, 5], &[1, 7]));
+        assert!(grown.contains(&WireOp::KvPut(tally.clone(), encode_counts(&[1, 7]))));
+        assert_eq!(deltas(&grown), [vec![0, 2]]);
+        let gone = ops(Batch::new().delete(b"l").count(&[1, 5], &[]));
+        assert!(gone.contains(&WireOp::KvDel(tally.clone())));
+        assert_eq!(deltas(&gone), [vec![-1, -5]]);
+        let same = ops(Batch::new().count(&[1, 5], &[1, 5]));
+        assert_eq!(deltas(&same), Vec::<Vec<i64>>::new());
+        // Each apply makes its delta's key once, which its attempts
+        // reuse; a second apply is a second change.
+        let b = Batch::new().count(&[], &[1]).clone();
+        assert_ne!(ops(&b), ops(&b));
+        // Counts kept by a later build are longer; shorter ones read as zeros.
+        let mut sum = vec![1];
+        add_counts(&mut sum, &[2, 3], 1);
+        assert_eq!(sum, [3, 3]);
+        assert_eq!(decode_counts(&encode_counts(&[-4, 9])).unwrap(), [-4, 9]);
+        assert!(decode_counts(&[0; 7]).is_err());
     }
 }
