@@ -725,8 +725,8 @@ id = "HS12"
 title = "S3 gateway"
 
 [[milestone.item]]
-what = "The object layer: buckets, PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up"
-spec = ["14-s3.md §14.6", "14-s3.md §14.7", "D192", "D197", "D198", "I262"]
+what = "The object layer: buckets (named per tenant, D243), PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up"
+spec = ["14-s3.md §14.6", "14-s3.md §14.7", "14-s3.md §14.9", "D192", "D197", "D198", "D243", "I262", "I287"]
 status = "done"
 tests = [
     "cluster::s3_objects_match_a_model",
@@ -735,8 +735,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors, replaced chunks kept 15 minutes (stage 2)"
-spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "I264"]
+what = "The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors (another tenant's buckets unknown, D244), replaced chunks kept 15 minutes (stage 2)"
+spec = ["14-s3.md §14.2", "14-s3.md §14.6", "14-s3.md §14.7", "D195", "D244", "I264"]
 status = "done"
 tests = [
     "cluster::s3_gateway_serves_an_sdk",
@@ -772,8 +772,8 @@ status = "done"
 tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_default_s3_port_is_no_other_default_port"]
 
 [[milestone.item]]
-what = "Bucket names per tenant, and realms on S3: pools listed per realm, a gateway per realm (before stage 4)"
-spec = ["14-s3.md §14.9", "20-tenants.md §24.8", "D243", "D244", "D245", "D246", "D248", "D249", "D250"]
+what = "Realms on S3: pools listed per realm, a gateway per realm (before stage 4)"
+spec = ["20-tenants.md §24.8", "D248", "D249", "D250"]
 status = "planned"
 
 [[milestone.item]]
@@ -783,7 +783,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "Virtual-hosted addressing, buckets and keys in mgmt's UI, public docs (stage 5)"
-spec = ["14-s3.md §14.2", "D199"]
+spec = ["14-s3.md §14.2", "D199", "D245", "D246"]
 status = "planned"
 
 [[milestone]]

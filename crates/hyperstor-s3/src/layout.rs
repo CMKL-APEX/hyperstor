@@ -66,6 +66,18 @@ pub fn chunk_name(bucket: u64, object: u128, part: u32, chunk: u32) -> Vec<u8> {
     n
 }
 
+/// A bucket's table: its tenant, big-endian, then its name (D243), so
+/// each tenant has its own names and its buckets sort together.
+pub fn bucket_table(tenant: u32, name: &str) -> Vec<u8> {
+    [&tenant.to_be_bytes()[..], name.as_bytes()].concat()
+}
+
+/// The tenant and name of a bucket's table.
+pub fn bucket_of(table: &[u8]) -> Option<(u32, &[u8])> {
+    let (t, name) = table.split_at_checked(4)?;
+    Some((u32::from_be_bytes(t.try_into().ok()?), name))
+}
+
 /// Chunks of `chunk` bytes that `size` bytes take.
 pub fn chunks_of(size: u64, chunk: u64) -> u32 {
     size.div_ceil(chunk) as u32
@@ -315,12 +327,16 @@ mod tests {
         assert_eq!(BucketInfo::decode(&b.encode()), Ok(b));
         assert_eq!(upload_of(&upload_row(5, 6)), Some((5, 6)));
         assert_eq!(upload_of(&object_row(b"x")), None);
+        assert_eq!(bucket_of(&bucket_table(258, "ab")), Some((258, &b"ab"[..])));
+        assert_eq!(bucket_of(b"abc"), None);
     }
 
     #[test]
     fn uploads_sort_by_expiry_and_chunks_by_index() {
         assert!(upload_row(1, u128::MAX) < upload_row(2, 0));
         assert!(chunk_name(1, 2, 3, 255) < chunk_name(1, 2, 3, 256));
+        // A tenant's buckets sort together, before the next tenant's.
+        assert!(bucket_table(1, "zz") < bucket_table(2, "aa"));
         assert_eq!(chunks_of(0, 4), 0);
         assert_eq!(chunks_of(4, 4), 1);
         assert_eq!(chunks_of(5, 4), 2);

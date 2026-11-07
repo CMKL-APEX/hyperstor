@@ -30,7 +30,9 @@ use std::rc::Rc;
 pub enum S3Error {
     #[error("no bucket {0:?}")]
     NoSuchBucket(String),
-    #[error("bucket {0:?} exists")]
+    /// The tenant has a bucket of that name already; another tenant's
+    /// never clash (D243, D244).
+    #[error("you own bucket {0:?} already")]
     BucketExists(String),
     #[error("bucket {0:?} isn't empty")]
     BucketNotEmpty(String),
@@ -125,6 +127,7 @@ pub fn valid_bucket_name(name: &str) -> bool {
 /// A bucket: its table and its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bucket {
+    /// Its name within its tenant's (D243).
     pub name: String,
     pub table: Table,
     pub info: BucketInfo,
@@ -132,10 +135,15 @@ pub struct Bucket {
 
 impl Bucket {
     fn of(table: Table) -> Result<Bucket> {
+        let corrupt = || S3Error::Corrupt("a bucket's table name".into());
+        let (tenant, name) = bucket_of(&table.name).ok_or_else(corrupt)?;
+        let info = BucketInfo::decode(&table.info)?;
+        if info.tenant != tenant {
+            return Err(corrupt());
+        }
         Ok(Bucket {
-            name: String::from_utf8(table.name.clone())
-                .map_err(|_| S3Error::Corrupt("a bucket name".into()))?,
-            info: BucketInfo::decode(&table.info)?,
+            name: String::from_utf8(name.to_vec()).map_err(|_| corrupt())?,
+            info,
             table,
         })
     }
@@ -227,7 +235,7 @@ impl S3 {
     }
 
     /// Makes bucket `name` for `tenant`, its index in `index_pool` and its
-    /// data in `data_pool` (D197, D198).
+    /// data in `data_pool` (D197, D198). Names are per tenant (D243).
     pub async fn create_bucket(
         &self,
         name: &str,
@@ -244,7 +252,12 @@ impl S3 {
         };
         let made = self
             .kv
-            .create_table_with(name.as_bytes(), index_pool, data_pool, &info.encode())
+            .create_table_with(
+                &bucket_table(tenant, name),
+                index_pool,
+                data_pool,
+                &info.encode(),
+            )
             .await;
         match made {
             Ok(t) => Bucket::of(t),
@@ -253,21 +266,36 @@ impl S3 {
         }
     }
 
-    pub async fn bucket(&self, name: &str) -> Result<Bucket> {
-        match self.kv.table(name.as_bytes()).await? {
+    /// `tenant`'s bucket `name`: another tenant's of the same name is
+    /// none of its business (D244).
+    pub async fn bucket(&self, tenant: u32, name: &str) -> Result<Bucket> {
+        match self.kv.table(&bucket_table(tenant, name)).await? {
             Some(t) => Bucket::of(t),
             None => Err(S3Error::NoSuchBucket(name.into())),
         }
     }
 
-    /// Every bucket of `tenant`, by name.
+    /// Every bucket of `tenant`, by name: its tables, which sort together.
     pub async fn buckets(&self, tenant: u32) -> Result<Vec<Bucket>> {
-        let mut all = self.all_buckets().await?;
-        all.retain(|b| b.info.tenant == tenant);
-        Ok(all)
+        let prefix = tenant.to_be_bytes();
+        let mut out = Vec::new();
+        let mut from = prefix.to_vec();
+        loop {
+            let page = self.kv.tables(&from, 1000).await?;
+            let Some(last) = page.last() else {
+                return Ok(out);
+            };
+            from = [&last.name[..], &[0]].concat();
+            for t in page {
+                if !t.name.starts_with(&prefix) {
+                    return Ok(out);
+                }
+                out.push(Bucket::of(t)?);
+            }
+        }
     }
 
-    /// Every tenant's buckets, by name.
+    /// Every tenant's buckets, by tenant and name.
     pub async fn all_buckets(&self) -> Result<Vec<Bucket>> {
         let mut out = Vec::new();
         let mut from = Vec::new();
@@ -285,8 +313,8 @@ impl S3 {
 
     /// Deletes bucket `name`, which must hold no object and no upload under
     /// way. Uploads that expired are cleaned up first.
-    pub async fn delete_bucket(&self, name: &str) -> Result<()> {
-        let b = self.bucket(name).await?;
+    pub async fn delete_bucket(&self, tenant: u32, name: &str) -> Result<()> {
+        let b = self.bucket(tenant, name).await?;
         self.clean(&b, now_secs()).await?;
         let any = Scan {
             limit: 1,
@@ -295,7 +323,7 @@ impl S3 {
         if !self.kv.scan(&b.table, &any).await?.rows.is_empty() {
             return Err(S3Error::BucketNotEmpty(name.into()));
         }
-        match self.kv.delete_table(name.as_bytes()).await {
+        match self.kv.delete_table(&b.table.name).await {
             Err(KvError::NoTable(_)) => Err(S3Error::NoSuchBucket(name.into())),
             r => Ok(r?),
         }
