@@ -858,7 +858,7 @@ pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
             v.name,
             v.size,
             v.state,
-            // None (D257).
+            // None (D258).
             if v.tenant == 0 {
                 "-".to_string()
             } else {

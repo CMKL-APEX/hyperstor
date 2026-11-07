@@ -172,7 +172,7 @@ pub struct Volume {
     pub incarnation: u64,
     /// When it went to the trash (Unix seconds), while [`VolumeState::Trashed`].
     pub trashed_unix: u64,
-    /// Its lineage's tenant (D61, D257), which clones and copies take: 0
+    /// Its lineage's tenant (D61, D258), which clones and copies take: 0
     /// for none, in realm `default`.
     pub tenant: u32,
 }
@@ -283,7 +283,7 @@ fn encode(v: &Volume) -> Vec<u8> {
     e.seq(&trashed, |e, (ep, t)| {
         e.u64(*ep).u64(*t);
     });
-    // Its tenant (D257). Older readers stop before it.
+    // Its tenant (D258). Older readers stop before it.
     e.u32(v.tenant);
     e.into_vec()
 }
@@ -404,7 +404,7 @@ impl Client {
         self.create_volume_for(pool, size, id, name, 0).await
     }
 
-    /// [`Self::create_volume`], for `tenant` (D257; 0: none).
+    /// [`Self::create_volume`], for `tenant` (D258; 0: none).
     pub async fn create_volume_for(
         &self,
         pool: u32,
@@ -1602,7 +1602,7 @@ mod tests {
             tenant: 0,
             ..v.clone()
         };
-        // A header from before tenants reads as tenant 0 (D257)...
+        // A header from before tenants reads as tenant 0 (D258)...
         let mut old = l.clone();
         old.attrs[1].1 = h[..h.len() - tenant_len].to_vec();
         assert_eq!(decode(7, &old).unwrap(), v0);

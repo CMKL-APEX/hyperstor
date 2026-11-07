@@ -1330,7 +1330,7 @@ recommendation; the owner took every recommendation:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 219 | Per-bucket counters: exact, a delta per write in each range, folded by its primary, recounted on a split (recommended); a periodic scan; each gateway's sums flushed every few seconds | Exact, per range | D256 |
-| 220 | A volume's tenant: optional at creation, inherited by clones, 0 for none (recommended); required; also settable later | Optional at creation | D257 |
-| 221 | Where a host's realm binding is checked: the header's primary, on the identity named at `Hello` (recommended); tickets signed by the map service; only once the data path has mutual TLS | The header's primary | D258 |
-| 222 | Where roles on a realm are enforced: in mgmt (recommended); in mgmt and in the cluster API by certificate | In mgmt | D259 |
+| 220 | Per-bucket counters: exact, a delta per write in each range, folded by its primary, recounted on a split (recommended); a periodic scan; each gateway's sums flushed every few seconds | Exact, per range | D257 |
+| 221 | A volume's tenant: optional at creation, inherited by clones, 0 for none (recommended); required; also settable later | Optional at creation | D258 |
+| 222 | Where a host's realm binding is checked: the header's primary, on the identity named at `Hello` (recommended); tickets signed by the map service; only once the data path has mutual TLS | The header's primary | D259 |
+| 223 | Where roles on a realm are enforced: in mgmt (recommended); in mgmt and in the cluster API by certificate | In mgmt | D260 |

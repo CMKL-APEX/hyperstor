@@ -4,7 +4,7 @@ How tenants are represented, isolated, accounted and scheduled. Part of the hype
 
 Status: **draft.** D61 and D62 were settled with the owner on 2026-10-21,
 realms (§24.8, D248–D253) on 2026-11-06, and HS15's counts, volume
-tenants, host binding checks and realm roles (D256–D259) on 2026-11-07
+tenants, host binding checks and realm roles (D257–D260) on 2026-11-07
 ([05-decision-log.md](05-decision-log.md)); the details below follow from them
 and are open to review.
 
@@ -31,7 +31,7 @@ of every object:
 
 | Container | Where the tenant id is stored | Set when |
 |---|---|---|
-| Volume lineage | the lineage object in `.meta` (06-metadata.md §4.2); every volume and clone of the lineage inherits it | the first volume of the lineage is created; optional, 0 (none, realm `default`) by default (D257) |
+| Volume lineage | the lineage object in `.meta` (06-metadata.md §4.2); every volume and clone of the lineage inherits it | the first volume of the lineage is created; optional, 0 (none, realm `default`) by default (D258) |
 | S3 bucket | the bucket record in `hyperstor-kv` (14-s3.md §14.1) | bucket creation |
 | Filesystem | the filesystem record in `hyperstor-kv` (00-filesystem.md F12) | filesystem creation |
 | KV range | the range's owning filesystem or bucket; ranges used directly by an application carry their own | range creation |
@@ -74,7 +74,7 @@ the writer (D42), so it is the right unit of trust.
   snapshot-only bytes, and bytes in the trash (19-administration.md
   §23.9.3). Buckets and filesystems add their own counters in
   `hyperstor-kv`: a bucket's objects and bytes are counted exactly, per
-  range, by the writes themselves (D256, 25-kv-ranges.md §28.9).
+  range, by the writes themselves (D257, 25-kv-ranges.md §28.9).
 - **Quotas** are per `(pool, tenant)`: a soft limit that warns and a
   hard limit that refuses new allocations the way D27's `full` does,
   while overwrites, deletes and snapshot deletes keep working. A tenant
@@ -154,7 +154,7 @@ strict multi-tenancy without a cluster per customer.
   refused while any of the tenant's containers is in a pool the new
   realm may not use (D249); likewise, a pool isn't taken from a realm
   while one of its tenants' containers is in it. Built for buckets and
-  volumes (I298).
+  volumes (I299).
 
 **What a realm limits**, the same way for every interface:
 
@@ -184,7 +184,7 @@ strict multi-tenancy without a cluster per customer.
   attach volumes and mount exports only of those realms, even with a
   valid capability. The storage node holding the volume's header checks
   the binding when it grants the lease, on the identity the host named
-  at `Hello` (D258), so the I/O path gains nothing; until the data
+  at `Hello` (D259), so the I/O path gains nothing; until the data
   path's mutual TLS (D25) authenticates `Hello`, it stops mistakes, not
   a host that lies. Why: shared compute stays the default,
   and strict separation is one setting per host for those who need it.
@@ -194,7 +194,7 @@ strict multi-tenancy without a cluster per customer.
   realms. Cluster administrators see everything; `hyperstorctl` and
   mgmt's UI take `--realm` and show the realm in lists. Enforced in
   mgmt, where people's roles live; cluster API certificates stay
-  cluster-wide (D259). Pools, devices
+  cluster-wide (D260). Pools, devices
   and hosts stay the cluster administrator's. Why: the operator of one
   realm can't make keys or attach volumes in another.
 - **The name (D253).** "Realm", as in Kerberos: an administrative domain

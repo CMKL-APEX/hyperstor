@@ -2754,7 +2754,7 @@ impl ClusterService for Api {
         } else {
             Some(parse_volume_id(req.id)?)
         };
-        // Only in a pool the tenant's realm may use (D249, D257).
+        // Only in a pool the tenant's realm may use (D249, D258).
         let realms = self.realms().await?;
         let realm = realms.realm_of(req.tenant);
         if !realms.may_use(realm, req.pool) {

@@ -284,7 +284,7 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     assert_eq!(step(&["roundtrip", "third"]), "roundtrip ok");
     // Administrators see every tenant's buckets as tenant/bucket, read
     // from the store by the map service (D246, D254), with their objects
-    // and bytes (D256), and delete only an empty one (D255).
+    // and bytes (D257), and delete only an empty one (D255).
     let list = c.ctl(&["s3", "bucket", "list"]).ok();
     for b in ["1/first", "1/second", "1/third"] {
         assert!(list.has(b), "{}", list.out);
@@ -296,7 +296,7 @@ fn s3_keys_and_placements_come_from_the_map_service() {
         .ctl(&["s3", "bucket", "show", "--tenant", "1", "--name", "second"])
         .ok();
     assert!(one.has("1/second") && !one.has("1/first"), "{}", one.out);
-    // Its one object and its bytes, counted as it was written (D256).
+    // Its one object and its bytes, counted as it was written (D257).
     let row = one.out.lines().nth(1).unwrap_or_default();
     assert!(row.contains(" 1 ") && row.contains(" 2600 "), "{}", one.out);
     let json = c
@@ -567,7 +567,7 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     // Not deleted while it has a tenant, a pool and a placement.
     let r = c.ctl(&["realm", "delete", "--name", "acme"]).expect(1);
     assert!(r.has("1 tenant(s)"), "{}", r.out);
-    // A volume's tenant (D257): only in pools its realm may use (D249).
+    // A volume's tenant (D258): only in pools its realm may use (D249).
     let vol = |tenant: &str, name: &str| {
         c.ctl(&[
             "create-volume",

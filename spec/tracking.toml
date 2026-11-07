@@ -817,7 +817,7 @@ title = "Tenancy: quotas and fair share between tenants"
 
 [[milestone.item]]
 what = "Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI"
-spec = ["25-kv-ranges.md §28.9", "14-s3.md §14.6", "D256", "I297"]
+spec = ["25-kv-ranges.md §28.9", "14-s3.md §14.6", "D257", "I298"]
 status = "done"
 # Also shown by cluster::kv_jobs_finish_or_undo_from_every_step,
 # cluster::kv_ranges_split_and_merge_on_their_own, cluster::s3_objects_match_a_model,
@@ -829,7 +829,7 @@ tests = [
 
 [[milestone.item]]
 what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use"
-spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D257", "I298"]
+spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258", "I299"]
 status = "done"
 # Also shown by s3::a_realm_has_its_own_gateway_keys_and_pools and
 # hyperstor_client::volume::tests::headers_round_trip, tracked above.
@@ -838,8 +838,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Realms beyond S3: hosts bound to realms (checked by the header's primary, D258), roles granted on a realm (in mgmt, D259), `--realm` in hyperstorctl and the UI"
-spec = ["20-tenants.md §24.8", "D251", "D252", "D253", "D258", "D259"]
+what = "Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"
+spec = ["20-tenants.md §24.8", "D251", "D252", "D253", "D259", "D260"]
 status = "planned"
 
 [[milestone]]

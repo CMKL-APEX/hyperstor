@@ -191,7 +191,7 @@ pub enum Admin {
         size: u64,
         name: String,
         id: Option<u128>,
-        /// D257; 0: none.
+        /// D258; 0: none.
         tenant: u32,
         reply: VolumeReply<Volume>,
     },

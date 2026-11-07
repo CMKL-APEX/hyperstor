@@ -624,7 +624,7 @@ message S3Bucket {
   // Its tenant's realm (D248).
   string realm = 8;
   // Whether its objects and bytes are known: not for a bucket made before
-  // buckets were counted, nor when counting failed (D256).
+  // buckets were counted, nor when counting failed (D257).
   bool counted = 9;
   // Its objects, and their bytes (each object's latest version).
   uint64 objects = 10;

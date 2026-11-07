@@ -5375,7 +5375,7 @@ export type Volume = Message<"hyperstor.v1.Volume"> & {
   attachedBy: string;
 
   /**
-   * Its lineage's tenant (D257); 0: none, in realm "default".
+   * Its lineage's tenant (D258); 0: none, in realm "default".
    *
    * @generated from field: uint32 tenant = 8;
    */
@@ -5435,7 +5435,7 @@ export type VolumeJson = {
   attached_by?: string;
 
   /**
-   * Its lineage's tenant (D257); 0: none, in realm "default".
+   * Its lineage's tenant (D258); 0: none, in realm "default".
    *
    * @generated from field: uint32 tenant = 8;
    */
@@ -5534,7 +5534,7 @@ export type CreateVolumeRequest = Message<"hyperstor.v1.CreateVolumeRequest"> & 
   id: string;
 
   /**
-   * Its tenant (D257); 0: none. Refused in a pool the tenant's realm may
+   * Its tenant (D258); 0: none. Refused in a pool the tenant's realm may
    * not use (D249).
    *
    * @generated from field: uint32 tenant = 5;
@@ -5573,7 +5573,7 @@ export type CreateVolumeRequestJson = {
   id?: string;
 
   /**
-   * Its tenant (D257); 0: none. Refused in a pool the tenant's realm may
+   * Its tenant (D258); 0: none. Refused in a pool the tenant's realm may
    * not use (D249).
    *
    * @generated from field: uint32 tenant = 5;

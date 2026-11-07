@@ -833,7 +833,7 @@ fn main() {
     let bucket_one = matches!(cmd.as_str(), "s3 bucket show" | "s3 bucket delete");
     let tenant_needed = bucket_one || matches!(cmd.as_str(), "s3 key create" | "realm tenant");
     let tenant_ok = match a.tenant {
-        // A volume's tenant is optional (D257).
+        // A volume's tenant is optional (D258).
         Some(_) => tenant_needed || cmd == "s3 bucket list" || cmd == "create-volume",
         None => !tenant_needed,
     };
