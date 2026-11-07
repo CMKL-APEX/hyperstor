@@ -1406,7 +1406,7 @@ title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
 what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI"
-spec = ["19-administration.md §23.9.3", "D54", "D114", "D115"]
+spec = ["19-administration.md §23.9.3", "D54", "D114", "D115", "I301"]
 status = "done"
 tests = [
     "cluster::the_trash_keeps_what_it_holds_until_purged",
