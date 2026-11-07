@@ -1066,6 +1066,8 @@ message Volume {
   // The client instance that has it attached (16 hexadecimal digits);
   // empty if none.
   string attached_by = 7 [json_name = "attached_by"];
+  // Its lineage's tenant (D258); 0: none, in realm "default".
+  uint32 tenant = 8;
 }
 
 message ListVolumesRequest {
@@ -1084,6 +1086,9 @@ message CreateVolumeRequest {
   string name = 3;
   // 32 hexadecimal digits; empty: drawn at random.
   string id = 4;
+  // Its tenant (D258); 0: none. Refused in a pool the tenant's realm may
+  // not use (D249).
+  uint32 tenant = 5;
 }
 
 message CreateVolumeResponse {

@@ -1863,13 +1863,13 @@ ib_send_lat  -d mlx5_0 -D 3 -F [SERVER]
    be built and tested on them. Each also has a 100 GbE bond that offers
    RoCE v2 GIDs, for the RoCE side.
 
-## 2026-11-07: payloads not copied into or out of frames (HS5b, I299)
+## 2026-11-07: payloads not copied into or out of frames (HS5b, I300)
 
 `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` (the end-to-end
 benchmark of 2026-10-20: a map service, three storage nodes of one
 reactor each and a client in one process, loopback TCP, size 3) on one
 of the pilot's HGX A100 hosts (Linux 6.8.0, other sessions' load about
-2.3). Main's code (before) and I299's (after), run alternately, three
+2.3). Main's code (before) and I300's (after), run alternately, three
 rounds each; medians, with the range of ops/s.
 
 | Test | ops/s before | ops/s after | Change | p50 µs before → after |
@@ -1885,7 +1885,7 @@ rounds each; medians, with the range of ops/s.
 
 ### Findings
 
-1. **Large I/O gains 9–29%** from removing the copies of I299; the
+1. **Large I/O gains 9–29%** from removing the copies of I300; the
    gain grows with queue depth, as more of each reactor's time went to
    copying.
 2. **4 KiB QD1 lost about 2%** (3 µs at p50 for writes, 2 µs for reads),

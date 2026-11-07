@@ -657,7 +657,7 @@ tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
 
 [[milestone.item]]
 what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`)"
-spec = ["D41", "I23", "I283", "I299"]
+spec = ["D41", "I23", "I283", "I300"]
 status = "partial"
 tests = [
     "hyperstor_rpc::pool_tests::a_shared_payload_reaches_the_peer_from_both_frames",
@@ -670,7 +670,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after"
-spec = ["02-benchmarks.md", "D41", "I299"]
+spec = ["02-benchmarks.md", "D41", "I300"]
 status = "planned"
 
 [[milestone]]
@@ -903,9 +903,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant refused while its buckets or volumes are in pools the new realm may not use"
-spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258"]
-status = "planned"
+what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use"
+spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258", "I299"]
+status = "done"
+# Also shown by s3::a_realm_has_its_own_gateway_keys_and_pools and
+# hyperstor_client::volume::tests::headers_round_trip, tracked above.
+tests = [
+    "hyperstor_meta::realms::tests::containers_stay_in_their_realms_pools",
+]
 
 [[milestone.item]]
 what = "Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"

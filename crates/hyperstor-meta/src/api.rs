@@ -2744,13 +2744,32 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::CreateVolumeRequest>,
     ) -> ServiceResult<pb::CreateVolumeResponse> {
-        let target = format!("pool {} size {} name {:?}", req.pool, req.size, req.name);
+        let mut target = format!("pool {} size {} name {:?}", req.pool, req.size, req.name);
+        if req.tenant != 0 {
+            target.push_str(&format!(" tenant {}", req.tenant));
+        }
         let who = self.authorize(&ctx, "CreateVolume", &target, true)?;
         let id = if req.id.is_empty() {
             None
         } else {
             Some(parse_volume_id(req.id)?)
         };
+        // Only in a pool the tenant's realm may use (D249, D258).
+        let realms = self.realms().await?;
+        let realm = realms.realm_of(req.tenant);
+        if !realms.may_use(realm, req.pool) {
+            let why = format!(
+                "realm {} of tenant {} may not use pool {}",
+                realms.name(realm),
+                req.tenant,
+                req.pool
+            );
+            audit(&who, "CreateVolume", &target, &format!("failed: {why}"));
+            return Err(with_reason(
+                ConnectError::failed_precondition(why),
+                "pool_not_in_realm",
+            ));
+        }
         let r = match self.full_pools().await.remove(&req.pool) {
             Some(why) => Some(Err((crate::VolumeFault::Full, why))),
             None => {
@@ -2761,6 +2780,7 @@ impl ClusterService for Api {
                         size: req.size,
                         name: req.name.to_string(),
                         id,
+                        tenant: req.tenant,
                         reply,
                     })
                     .map_err(|_| ConnectError::unavailable("map service stopped"))?;
@@ -3410,6 +3430,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         .into(),
         version: v.version,
         attached_by: v.holder.map(|h| format!("{h:016x}")).unwrap_or_default(),
+        tenant: v.tenant,
         ..Default::default()
     }
 }
