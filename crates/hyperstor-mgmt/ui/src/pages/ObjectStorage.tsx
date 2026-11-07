@@ -1,6 +1,6 @@
 // Object storage (14-s3.md): every tenant's buckets as tenant/bucket
 // (D246), read from the store by the map service (D254), with their objects
-// and bytes (D256), and deleted only empty (D255); access keys, whose secrets are shown once (D231);
+// and bytes (D257), and deleted only empty (D255); access keys, whose secrets are shown once (D231);
 // placements, the pools new buckets go in (D232); and realms (D248).
 import { useState } from "react";
 import { Modal, TokenReveal } from "@glidex/ui-kit";

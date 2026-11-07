@@ -150,7 +150,7 @@ covered by tests that run on every change.
 |---|---|
 | Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant refused while its buckets or volumes are in pools the new realm may not use | Planned |
-| Realms beyond S3: hosts bound to realms (checked by the header's primary, D258), roles granted on a realm (in mgmt, D259), `--realm` in hyperstorctl and the UI | Planned |
+| Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
 
 ## HS18: Pools and devices at run time
 

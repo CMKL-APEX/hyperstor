@@ -7633,7 +7633,7 @@ fn s3_objects_match_a_model() {
                     assert!(got == *want, "an object's bytes");
                 }
                 // Its objects and their bytes, counted by each write
-                // (§14.6, D256), whatever was given up or retried.
+                // (§14.6, D257), whatever was given up or retried.
                 let bytes = model[bi].values().map(|v| v.len() as u64).sum();
                 let want = Some((model[bi].len() as u64, bytes));
                 assert_eq!(g[1].counts(b).await.unwrap(), want, "bucket {bi}'s counts");

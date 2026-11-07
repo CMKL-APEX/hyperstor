@@ -278,12 +278,12 @@ merge's entries can't collide (I261).
    after their batch commits, again after a primary that died between
    objects and entry, through primary failover, by a range a split made,
    and carried by a merge; leftover ranges deleted, live ones kept.
-5. Counts (built, I297). Tests: the jobs stopped after every step, and
+5. Counts (built, I298). Tests: the jobs stopped after every step, and
    the table that splits and merges on its own, keep its counts equal
    to its rows'; S3's randomized test keeps each bucket's equal to its
    objects and bytes.
 
-### 28.9 Counts (D256)
+### 28.9 Counts (D257)
 
 A table keeps counts of its rows, as many as its user wants (S3: a
 bucket's objects and their bytes), exact and current, with no row that

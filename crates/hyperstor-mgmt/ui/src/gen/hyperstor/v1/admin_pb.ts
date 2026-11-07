@@ -3001,7 +3001,7 @@ export type S3Bucket = Message<"hyperstor.v1.S3Bucket"> & {
 
   /**
    * Whether its objects and bytes are known: not for a bucket made before
-   * buckets were counted, nor when counting failed (D256).
+   * buckets were counted, nor when counting failed (D257).
    *
    * @generated from field: bool counted = 9;
    */
@@ -3075,7 +3075,7 @@ export type S3BucketJson = {
 
   /**
    * Whether its objects and bytes are known: not for a bucket made before
-   * buckets were counted, nor when counting failed (D256).
+   * buckets were counted, nor when counting failed (D257).
    *
    * @generated from field: bool counted = 9;
    */
