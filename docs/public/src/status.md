@@ -128,7 +128,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Adaptive polling: a storage reactor polls for a window after activity before it sleeps (`hyperstord --spin-us`, default 200 µs) | Done |
-| Payloads not copied into each outgoing frame, once per replica: vectored and zero-copy sends (`SendMsg`, `SEND_ZC`) | Planned |
+| Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`) | In progress |
 | Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer | Planned |
 | Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
 

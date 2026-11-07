@@ -1862,3 +1862,41 @@ ib_send_lat  -d mlx5_0 -D 3 -F [SERVER]
    ports are active, and the locked-memory limit is unlimited, so HS6 can
    be built and tested on them. Each also has a 100 GbE bond that offers
    RoCE v2 GIDs, for the RoCE side.
+
+## 2026-11-07: payloads not copied into or out of frames (HS5b, I300)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` (the end-to-end
+benchmark of 2026-10-20: a map service, three storage nodes of one
+reactor each and a client in one process, loopback TCP, size 3) on one
+of the pilot's HGX A100 hosts (Linux 6.8.0, other sessions' load about
+2.3). Main at 48c8ed09 (before) and the same with I300 (after), run
+alternately, three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6758 (6699–6833) | 6719 (6641–6819) | −0.6% | 146 → 146 |
+| 4 KiB random writes, QD32 | 23584 (22881–23589) | 23523 (23435–23679) | −0.3% | 1048 → 1021 |
+| 4 KiB random reads, QD1 | 16854 (16473–16998) | 16683 (16437–16909) | −1.0% | 58 → 59 |
+| 4 KiB random reads, QD32 | 50802 (50648–51179) | 51324 (51031–51325) | +1.0% | 415 → 407 |
+| 1 MiB writes, QD4 | 504 (503–504) | 580 (579–585) | +15.1% | 7774 → 6719 |
+| 1 MiB reads, QD1 | 756 (755–765) | 798 (789–802) | +5.6% | 1295 → 1223 |
+| 1 MiB reads, QD2 | 1082 (1069–1086) | 1231 (1231–1237) | +13.8% | 1824 → 1550 |
+| 1 MiB reads, QD4 | 1509 (1501–1516) | 1878 (1870–1881) | +24.5% | 2557 → 1960 |
+
+Five more rounds of the two 4 KiB QD1 tests alone, 5 s each: writes
+6745 → 6776 ops/s (+0.5%), reads 16685 → 16590 (−0.6%), the ranges
+overlapping.
+
+### Findings
+
+1. **Large I/O gains 6–25%** from removing the copies of I300; the
+   gain grows with queue depth, as more of each reactor's time went to
+   copying.
+2. **4 KiB is unchanged**, within the run-to-run range. A first
+   comparison showed QD1 about 2% slower, but its two builds were on
+   different commits of main (the change on an older one); built on the
+   same commit, the difference went.
+3. **1 MiB still takes 1.2 ms at QD1** over loopback: what is left is
+   the client's copy into its frame, the engine's copy into an aligned
+   buffer (I12), zeroed receive buffers, and the CRCs computed again by
+   the engine. Those are the next HS5b items, with registered buffers.
