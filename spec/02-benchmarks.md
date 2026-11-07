@@ -1741,6 +1741,7 @@ ran one `-j2` test build of another session. Same commands as
 | During backfill, QD32 | 38 s (about 140 PGs) | 11,412 | 1.83 ms | 5.7 ms |
 | Baseline, QD1 | – | 1,129 | 0.85 ms | 2.2 ms |
 | QD1, after `out` | none seen | 1,116 | 0.81 ms | 3.2 ms |
+| During backfill, QD1 (own run) | 38 s (about 130 PGs) | 943 | 0.79 ms | 1.8 ms |
 
 ### Findings
 
@@ -1760,8 +1761,10 @@ ran one `-j2` test build of another session. Same commands as
    served elsewhere for `STRAY_GRACE` (60 s, D177), and `out` came 35 s
    after `in`. Its log shows the deletions at 06:35–06:36 UTC, after the
    last `in`; device 2000 deleted its own about a minute after each
-   `out`, so each `in` was a backfill (21–24 s, no load). A QD1
-   backfill needs its own run, more than a minute after the last move.
+   `out`, so each `in` was a backfill (21–24 s, no load). A run of its
+   own four hours later backfilled about 130 PGs in 38 s, costing 16%
+   of the QD1 writes; again no reactor held, and 9 Raft heartbeat
+   timeouts to node 2's member.
 4. **I/O pressure on these hosts is Hyperstor's own waiting.** On
    nodes 0 and 1, `io.pressure` "full" was 55–80% for the whole host
    and at the same level in the cgroups of `hyperstord`, the map
