@@ -7400,7 +7400,10 @@ fn s3_objects_match_a_model() {
                         match hash {
                             Some(_) => assert_eq!(
                                 made.checksum,
-                                Some((Algorithm::Crc32c, crc32c::crc32c(&want).to_be_bytes().to_vec()))
+                                Some((
+                                    Algorithm::Crc32c,
+                                    crc32c::crc32c(&want).to_be_bytes().to_vec()
+                                ))
                             ),
                             None => assert_eq!(made.checksum, e.checksum),
                         }
