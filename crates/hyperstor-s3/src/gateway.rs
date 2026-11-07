@@ -23,7 +23,7 @@ use crate::chunked::{Algorithm, BodyError, Checks, Chunked};
 use crate::keys::Keys;
 use crate::sigv4::{self, AuthError, ChunkSigner, Payload};
 use crate::xml::Xml;
-use crate::{Bucket, Config, Entry, List, Meta, S3, S3Error, dates, past_prefix};
+use crate::{Bucket, Condition, Config, Entry, List, Meta, S3, S3Error, dates, past_prefix};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
@@ -31,6 +31,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Frame, Incoming};
 use hyperstor_client::Client;
 use hyperstor_kv::KvError;
+use md5::Digest as _;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
@@ -316,6 +317,7 @@ impl From<S3Error> for ApiError {
             S3Error::BadSize { .. } => ApiError::new(400, "IncompleteBody", m),
             S3Error::InvalidRange => ApiError::new(416, "InvalidRange", m),
             S3Error::UploadGone | S3Error::Changed => ApiError::new(500, "InternalError", m),
+            S3Error::PreconditionFailed => precondition_failed(),
             S3Error::Kv(KvError::Conflict | KvError::Exhausted(..)) => {
                 ApiError::new(503, "SlowDown", "the object kept changing; try again")
             }
@@ -704,6 +706,12 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
                 .await??;
             Ok(status(204))
         }
+        (Target::Bucket(b), Method::POST) if param(&q, "delete").is_some() => {
+            only(&q, &["delete"])?;
+            let h = req.headers().clone();
+            let body = checked_body(signed, signing, &h, req.into_body(), DELETE_BODY).await?;
+            delete_objects(state, &b, tenant, &body).await
+        }
         (Target::Bucket(_), Method::POST) => {
             only(&q, &[])?;
             Err(method_not_allowed())
@@ -728,10 +736,14 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         }
         (Target::Object(b, k), Method::DELETE) => {
             only(&q, &[])?;
+            let cond = match header(req.headers(), "if-match") {
+                None => Condition::Any,
+                Some(v) => if_match(v),
+            };
             let bucket = state.bucket(&b, tenant).await?;
             state
                 .reactors
-                .call(move |s3| async move { s3.delete(&bucket, &k).await })
+                .call(move |s3| async move { s3.delete_if(&bucket, &k, &cond).await })
                 .await??;
             Ok(status(204))
         }
@@ -741,6 +753,14 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         }
         (Target::Object(..), _) => Err(method_not_allowed()),
     }
+}
+
+fn precondition_failed() -> ApiError {
+    ApiError::new(
+        412,
+        "PreconditionFailed",
+        "at least one of the preconditions you specified did not hold",
+    )
 }
 
 fn method_not_allowed() -> ApiError {
@@ -800,18 +820,100 @@ async fn list_buckets(state: &State, tenant: u32) -> Result<Response<Body>, ApiE
 
 /// The most a request's body may hold when it isn't an object.
 const SMALL_BODY: usize = 64 << 10;
+/// The most a DeleteObjects body may hold: 1000 keys of up to 1024
+/// bytes, escaped.
+const DELETE_BODY: usize = 8 << 20;
 
 /// A small body (CreateBucket's), whole, checked as a PUT's is.
 async fn small_body(
     signed: sigv4::Signed,
     signing: ring::hmac::Key,
+    body: Incoming,
+) -> Result<Vec<u8>, ApiError> {
+    read_body(signed, signing, None, None, body, SMALL_BODY).await
+}
+
+/// A body of at most `max` bytes that must come with a `Content-MD5` or
+/// a checksum, as S3 requires of DeleteObjects; checked against it.
+async fn checked_body(
+    signed: sigv4::Signed,
+    signing: ring::hmac::Key,
+    h: &HeaderMap,
+    body: Incoming,
+    max: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let md5 = content_md5(h)?;
+    let checksum = checksum_of(h, &signed)?;
+    if md5.is_none() && checksum.is_none() {
+        return Err(ApiError::new(
+            400,
+            "InvalidRequest",
+            "Content-MD5 or an x-amz-checksum header is required",
+        ));
+    }
+    let out = read_body(signed, signing, checksum, md5, body, max).await?;
+    Ok(out)
+}
+
+/// The `Content-MD5` header, decoded.
+fn content_md5(h: &HeaderMap) -> Result<Option<[u8; 16]>, ApiError> {
+    match header(h, "content-md5") {
+        None => Ok(None),
+        Some(v) => Ok(Some(
+            B64.decode(v)
+                .ok()
+                .and_then(|d| d.try_into().ok())
+                .ok_or_else(|| ApiError::new(400, "InvalidDigest", "bad Content-MD5"))?,
+        )),
+    }
+}
+
+/// The checksum a body is to be checked against: its algorithm, and its
+/// value if a header gives it (else a trailer will).
+fn checksum_of(
+    h: &HeaderMap,
+    signed: &sigv4::Signed,
+) -> Result<Option<(Algorithm, Option<String>)>, ApiError> {
+    let mut checksum = None;
+    for (k, v) in h {
+        if let Some(a) = Algorithm::of_header(k.as_str())? {
+            let v = v
+                .to_str()
+                .map_err(|_| ApiError::new(400, "InvalidArgument", "bad checksum"))?;
+            checksum = Some((a, Some(v.to_string())));
+        }
+    }
+    if checksum.is_none()
+        && let Some(t) = header(h, "x-amz-trailer")
+    {
+        if signed.payload != Payload::ChunkedTrailer {
+            return Err(ApiError::new(
+                400,
+                "InvalidRequest",
+                "a trailer needs an aws-chunked body",
+            ));
+        }
+        let a = Algorithm::of_header(t.trim())?
+            .ok_or_else(|| ApiError::new(400, "InvalidRequest", "the trailer isn't a checksum"))?;
+        checksum = Some((a, None));
+    }
+    Ok(checksum)
+}
+
+/// A body, whole, of at most `max` bytes, checked as a PUT's is.
+async fn read_body(
+    signed: sigv4::Signed,
+    signing: ring::hmac::Key,
+    checksum: Option<(Algorithm, Option<String>)>,
+    md5: Option<[u8; 16]>,
     mut body: Incoming,
+    max: usize,
 ) -> Result<Vec<u8>, ApiError> {
     let sha = match signed.payload {
         Payload::Sha256(s) => Some(s),
         _ => None,
     };
-    let mut checks = Checks::new(sha, None)?;
+    let mut checks = Checks::new(sha, checksum.as_ref().map(|(a, v)| (*a, v.as_deref())))?;
     let mut decoder = match signed.payload {
         Payload::Chunked => Some(Chunked::new(Some(ChunkSigner::new(signing, &signed)))),
         Payload::ChunkedTrailer => Some(Chunked::new(None)),
@@ -829,7 +931,7 @@ async fn small_body(
             None => out.extend_from_slice(&data),
         }
         checks.update(&out[start..]);
-        if out.len() > SMALL_BODY {
+        if out.len() > max {
             return Err(ApiError::new(
                 400,
                 "MaxMessageLengthExceeded",
@@ -842,7 +944,195 @@ async fn small_body(
         None => Vec::new(),
     };
     checks.finish(&trailers)?;
+    if md5.is_some_and(|m| m != <[u8; 16]>::from(md5::Md5::digest(&out))) {
+        return Err(bad_md5());
+    }
     Ok(out)
+}
+
+fn bad_md5() -> ApiError {
+    ApiError::new(
+        400,
+        "BadDigest",
+        "the Content-MD5 you specified did not match what we received",
+    )
+}
+
+/// The most keys a DeleteObjects request names.
+const MAX_DELETE: usize = 1000;
+
+/// DeleteObjects: the keys a `<Delete>` body names, each deleted (if its
+/// `<ETag>`, when given, matches), and what happened to each.
+async fn delete_objects(
+    state: &State,
+    b: &str,
+    tenant: u32,
+    body: &[u8],
+) -> Result<Response<Body>, ApiError> {
+    let malformed = |why: &str| ApiError::new(400, "MalformedXML", why.to_string());
+    let text = std::str::from_utf8(body).map_err(|_| malformed("the body isn't UTF-8"))?;
+    let doc = crate::xml::parse(text).map_err(malformed)?;
+    if doc.name != "Delete" {
+        return Err(malformed("not a Delete"));
+    }
+    let quiet = doc.text_of("Quiet").is_some_and(|q| q.trim() == "true");
+    let mut asked = Vec::new();
+    for o in doc.all("Object") {
+        let key = o
+            .text_of("Key")
+            .ok_or_else(|| malformed("an Object without a Key"))?;
+        let version = o.text_of("VersionId").map(str::trim).unwrap_or("");
+        let cond = match o.text_of("ETag") {
+            Some(t) => if_match(t),
+            None => Condition::Any,
+        };
+        asked.push((key.as_bytes().to_vec(), version.to_string(), cond));
+    }
+    if asked.is_empty() || asked.len() > MAX_DELETE {
+        return Err(malformed("a Delete names 1 to 1000 objects"));
+    }
+    let bucket = state.bucket(b, tenant).await?;
+    let results = state
+        .reactors
+        .call(move |s3| async move {
+            // A few at once, in the order asked.
+            let mut out = Vec::with_capacity(asked.len());
+            let mut asked = asked.into_iter().peekable();
+            while asked.peek().is_some() {
+                let batch: Vec<_> = asked
+                    .by_ref()
+                    .take(16)
+                    .map(|(key, version, cond)| {
+                        let (s3, bucket) = (s3.clone(), bucket.clone());
+                        hyperstor_reactor::spawn(async move {
+                            let r = if key.is_empty() || key.len() > 1024 {
+                                Err(S3Error::InvalidKey.into())
+                            } else if !version.is_empty() && version != "null" {
+                                // No versioning: only the null version exists.
+                                Err(ApiError::new(
+                                    404,
+                                    "NoSuchVersion",
+                                    "the version doesn't exist",
+                                ))
+                            } else {
+                                s3.delete_if(&bucket, &key, &cond)
+                                    .await
+                                    .map_err(ApiError::from)
+                            };
+                            (key, r)
+                        })
+                    })
+                    .collect();
+                for j in batch {
+                    out.push(j.await);
+                }
+            }
+            out
+        })
+        .await?;
+    let mut x = Xml::new("DeleteResult");
+    for (key, r) in &results {
+        let key = String::from_utf8_lossy(key);
+        match r {
+            Ok(()) if quiet => {}
+            Ok(()) => {
+                x.open("Deleted").elem("Key", &key).close("Deleted");
+            }
+            Err(e) => {
+                x.open("Error")
+                    .elem("Key", &key)
+                    .elem("Code", e.code)
+                    .elem("Message", &e.message)
+                    .close("Error");
+            }
+        }
+    }
+    Ok(xml_ok(x.finish("DeleteResult")))
+}
+
+/// The ETags an `If-Match` or `If-None-Match` lists, unquoted.
+fn etags(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|t| {
+            let t = t.trim();
+            t.strip_prefix("W/")
+                .unwrap_or(t)
+                .trim_matches('"')
+                .to_string()
+        })
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// An `If-Match` as a condition on a write or delete.
+fn if_match(v: &str) -> Condition {
+    if v.trim() == "*" {
+        Condition::Exists
+    } else {
+        Condition::Matches(etags(v))
+    }
+}
+
+/// A PUT's condition (D194): `If-None-Match: *` (no object of that
+/// name) or `If-Match` (the object it replaces).
+fn write_condition(h: &HeaderMap) -> Result<Condition, ApiError> {
+    match (header(h, "if-match"), header(h, "if-none-match")) {
+        (None, None) => Ok(Condition::Any),
+        (Some(_), Some(_)) => Err(ApiError::not_implemented(
+            "If-Match and If-None-Match together",
+        )),
+        (Some(m), None) => Ok(if_match(m)),
+        (None, Some(n)) if n.trim() == "*" => Ok(Condition::Absent),
+        (None, Some(_)) => Err(ApiError::not_implemented("If-None-Match other than *")),
+    }
+}
+
+/// What a GET or HEAD's conditions say of `e` (RFC 9110, section 13.2.2): `None`
+/// to answer it, else 304 or 412.
+fn read_condition(h: &HeaderMap, e: &Entry) -> Option<u16> {
+    let tag = e.etag();
+    let tag = tag.trim_matches('"');
+    let modified = e.written / 1000;
+    let any = |v: &str| v.trim() == "*" || etags(v).iter().any(|t| t == tag);
+    let date = |name| header(h, name).and_then(dates::parse_http);
+    match header(h, "if-match") {
+        Some(v) if !any(v) => return Some(412),
+        Some(_) => {}
+        None => {
+            if date("if-unmodified-since").is_some_and(|d| modified > d) {
+                return Some(412);
+            }
+        }
+    }
+    match header(h, "if-none-match") {
+        Some(v) if any(v) => Some(304),
+        Some(_) => None,
+        None => date("if-modified-since")
+            .is_some_and(|d| modified <= d)
+            .then_some(304),
+    }
+}
+
+/// The object's checksum headers: the one it was written with, else the
+/// CRC32C kept for every object.
+fn checksum_headers(h: &mut HeaderMap, e: &Entry) {
+    let (name, value) = match &e.checksum {
+        Some((a, v)) => (a.header(), B64.encode(v)),
+        None => (
+            Algorithm::Crc32c.header(),
+            B64.encode(e.crc32c.to_be_bytes()),
+        ),
+    };
+    if let (Ok(k), Ok(v)) = (
+        http::HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        h.insert(k, v);
+        h.insert(
+            "x-amz-checksum-type",
+            HeaderValue::from_static("FULL_OBJECT"),
+        );
+    }
 }
 
 /// The placement a CreateBucket body asks for (D232): the one its
@@ -1187,6 +1477,16 @@ async fn get_object(
         .ok_or_else(|| ApiError::new(404, "NoSuchKey", "the object doesn't exist"))?;
     let mut r = Response::builder();
     object_headers(&mut r, &e);
+    match read_condition(h, &e) {
+        None => {}
+        Some(304) => {
+            return r
+                .status(304)
+                .body(empty())
+                .map_err(|_| ApiError::new(500, "InternalError", "a header couldn't be written"));
+        }
+        Some(_) => return Err(precondition_failed()),
+    }
     for o in RESPONSE_OVERRIDES {
         if let Some(v) = text_param(q, o)? {
             let name = o.trim_start_matches("response-");
@@ -1214,6 +1514,11 @@ async fn get_object(
                 return Ok(err);
             }
         };
+    if len == e.size
+        && header(h, "x-amz-checksum-mode").is_some_and(|m| m.eq_ignore_ascii_case("enabled"))
+    {
+        checksum_headers(r.headers_mut().expect("a builder without errors"), &e);
+    }
     r = r.header("content-length", len);
     let body = if head || len == 0 {
         empty()
@@ -1289,6 +1594,7 @@ fn meta_of(h: &HeaderMap) -> Result<Meta, ApiError> {
             .unwrap_or("binary/octet-stream")
             .to_string(),
         meta,
+        checksum: None,
     })
 }
 
@@ -1302,15 +1608,10 @@ async fn put_object(
     req: http::Request<Incoming>,
 ) -> Result<Response<Body>, ApiError> {
     let h = req.headers();
-    for (name, stage) in [
-        ("x-amz-copy-source", "copy object"),
-        ("if-match", "a conditional PUT"),
-        ("if-none-match", "a conditional PUT"),
-    ] {
-        if h.contains_key(name) {
-            return Err(ApiError::not_implemented(stage));
-        }
+    if h.contains_key("x-amz-copy-source") {
+        return Err(ApiError::not_implemented("copy object"));
     }
+    let cond = write_condition(h)?;
     if key.len() > 1024 {
         return Err(S3Error::InvalidKey.into());
     }
@@ -1331,38 +1632,8 @@ async fn put_object(
             "a PUT is 5 GiB at most",
         ));
     }
-    let md5: Option<[u8; 16]> = match header(h, "content-md5") {
-        None => None,
-        Some(v) => Some(
-            B64.decode(v)
-                .ok()
-                .and_then(|d| d.try_into().ok())
-                .ok_or_else(|| ApiError::new(400, "InvalidDigest", "bad Content-MD5"))?,
-        ),
-    };
-    let mut checksum = None;
-    for (k, v) in h {
-        if let Some(a) = Algorithm::of_header(k.as_str())? {
-            let v = v
-                .to_str()
-                .map_err(|_| ApiError::new(400, "InvalidArgument", "bad checksum"))?;
-            checksum = Some((a, Some(v.to_string())));
-        }
-    }
-    if checksum.is_none()
-        && let Some(t) = header(h, "x-amz-trailer")
-    {
-        if signed.payload != Payload::ChunkedTrailer {
-            return Err(ApiError::new(
-                400,
-                "InvalidRequest",
-                "a trailer needs an aws-chunked body",
-            ));
-        }
-        let a = Algorithm::of_header(t.trim())?
-            .ok_or_else(|| ApiError::new(400, "InvalidRequest", "the trailer isn't a checksum"))?;
-        checksum = Some((a, None));
-    }
+    let md5 = content_md5(h)?;
+    let checksum = checksum_of(h, &signed)?;
     let meta = meta_of(h)?;
     let sha = match signed.payload {
         Payload::Sha256(s) => Some(s),
@@ -1376,10 +1647,11 @@ async fn put_object(
     };
     let bucket = state.bucket(b, tenant).await?;
     let (tx, rx) = mpsc::channel::<Bytes>(4);
-    let (good_tx, good_rx) = oneshot::channel::<bool>();
+    // Sent once the body is found good, with the checksum it matched.
+    let (good_tx, good_rx) = oneshot::channel::<Option<(Algorithm, Vec<u8>)>>();
     let job = state
         .reactors
-        .call(move |s3| write_object(s3, bucket, key, size, meta, md5, rx, good_rx));
+        .call(move |s3| write_object(s3, bucket, key, size, meta, md5, cond, rx, good_rx));
     let mut body = req.into_body();
     let pump = async move {
         let mut piece = Vec::with_capacity(PIECE);
@@ -1422,12 +1694,12 @@ async fn put_object(
             Some(d) => d.finish()?,
             None => Vec::new(),
         };
-        checks.finish(&trailers)?;
+        let sum = checks.finish(&trailers)?;
         if !piece.is_empty() {
             let _ = tx.send(piece.into()).await;
         }
         drop(tx);
-        let _ = good_tx.send(true);
+        let _ = good_tx.send(sum);
         Ok(())
     };
     let (pumped, written) = tokio::join!(pump, job);
@@ -1437,6 +1709,7 @@ async fn put_object(
     if let Ok(v) = HeaderValue::from_str(&e.etag()) {
         r.headers_mut().insert(http::header::ETAG, v);
     }
+    checksum_headers(r.headers_mut(), &e);
     Ok(r)
 }
 
@@ -1449,30 +1722,33 @@ async fn write_object(
     b: Bucket,
     key: Vec<u8>,
     size: u64,
-    meta: Meta,
+    mut meta: Meta,
     md5: Option<[u8; 16]>,
+    cond: Condition,
     mut rx: mpsc::Receiver<Bytes>,
-    good: oneshot::Receiver<bool>,
+    good: oneshot::Receiver<Option<(crate::chunked::Algorithm, Vec<u8>)>>,
 ) -> Result<Entry, ApiError> {
+    // Checked before the body is taken, and again as it is made visible.
+    if cond != Condition::Any && !cond.holds(s3.head(&b, &key).await?.as_ref()) {
+        return Err(precondition_failed());
+    }
     let mut put = s3.put(&b, &key, size).await?;
+    put.require(cond);
     while let Some(d) = rx.recv().await {
         if let Err(e) = put.write(&d).await {
             let _ = put.abort().await;
             return Err(e.into());
         }
     }
-    if good.await != Ok(true) {
+    let Ok(sum) = good.await else {
         let _ = put.abort().await;
         return Err(ApiError::new(400, "IncompleteBody", "the body was refused"));
-    }
+    };
     if md5.is_some_and(|m| m != put.md5()) {
         put.abort().await?;
-        return Err(ApiError::new(
-            400,
-            "BadDigest",
-            "the Content-MD5 you specified did not match what we received",
-        ));
+        return Err(bad_md5());
     }
+    meta.checksum = sum;
     Ok(put.finish(meta).await?)
 }
 
@@ -1530,6 +1806,78 @@ mod tests {
         assert_eq!(after(b"a/", b"", b"/"), b"a0");
         assert_eq!(after(b"p/a/", b"p/", b"/"), b"p/a0");
         assert_eq!(after(b"a/", b"", b""), b"a/\0");
+    }
+
+    fn entry(written_secs: u64) -> Entry {
+        Entry {
+            written: written_secs * 1000 + 500,
+            size: 1,
+            md5: [0xab; 16],
+            parts: 0,
+            crc32c: 7,
+            content_type: String::new(),
+            meta: Vec::new(),
+            data: crate::layout::Data::Inline(b"x".to_vec()),
+            checksum: None,
+        }
+    }
+
+    #[test]
+    fn conditions_are_read_as_s3_reads_them() {
+        let e = entry(1_000_000);
+        let tag = "ab".repeat(16);
+        let h = |pairs: &[(&'static str, String)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, HeaderValue::from_str(v).unwrap());
+            }
+            h
+        };
+        let at = |secs| dates::http(secs);
+        let q = |pairs: &[(&'static str, String)]| read_condition(&h(pairs), &e);
+        assert_eq!(q(&[]), None);
+        assert_eq!(q(&[("if-match", format!("\"{tag}\""))]), None);
+        assert_eq!(q(&[("if-match", format!("\"x\", W/\"{tag}\""))]), None);
+        assert_eq!(q(&[("if-match", "*".into())]), None);
+        assert_eq!(q(&[("if-match", "\"x\"".into())]), Some(412));
+        assert_eq!(q(&[("if-none-match", format!("\"{tag}\""))]), Some(304));
+        assert_eq!(q(&[("if-none-match", "\"x\"".into())]), None);
+        assert_eq!(q(&[("if-modified-since", at(1_000_000))]), Some(304));
+        assert_eq!(q(&[("if-modified-since", at(999_999))]), None);
+        assert_eq!(q(&[("if-unmodified-since", at(999_999))]), Some(412));
+        assert_eq!(q(&[("if-unmodified-since", at(1_000_000))]), None);
+        // If-Match holding overrides If-Unmodified-Since; If-None-Match
+        // not matching overrides If-Modified-Since (as S3 documents).
+        assert_eq!(
+            q(&[
+                ("if-match", format!("\"{tag}\"")),
+                ("if-unmodified-since", at(999_999))
+            ]),
+            None
+        );
+        assert_eq!(
+            q(&[
+                ("if-none-match", "\"x\"".into()),
+                ("if-modified-since", at(1_000_000))
+            ]),
+            None
+        );
+        // Writes: If-None-Match is * or nothing.
+        let w = |pairs: &[(&'static str, String)]| write_condition(&h(pairs)).map_err(|e| e.code);
+        assert_eq!(w(&[]), Ok(Condition::Any));
+        assert_eq!(w(&[("if-none-match", "*".into())]), Ok(Condition::Absent));
+        assert_eq!(w(&[("if-match", "*".into())]), Ok(Condition::Exists));
+        assert_eq!(
+            w(&[("if-match", "\"a\",\"b\"".into())]),
+            Ok(Condition::Matches(vec!["a".into(), "b".into()]))
+        );
+        assert_eq!(
+            w(&[("if-none-match", "\"a\"".into())]),
+            Err("NotImplemented")
+        );
+        assert!(Condition::Matches(vec![tag.clone()]).holds(Some(&e)));
+        assert!(!Condition::Matches(vec![tag]).holds(None));
+        assert!(Condition::Absent.holds(None) && !Condition::Absent.holds(Some(&e)));
     }
 
     #[test]

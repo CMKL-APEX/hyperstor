@@ -218,6 +218,31 @@ impl Algorithm {
             Algorithm::Sha256 => "SHA256",
         }
     }
+
+    /// Its header: `x-amz-checksum-crc32` and so on.
+    pub fn header(self) -> String {
+        format!("x-amz-checksum-{}", self.name().to_ascii_lowercase())
+    }
+
+    /// Its number in an index entry (14-s3.md §14.6).
+    pub fn code(self) -> u8 {
+        match self {
+            Algorithm::Crc32 => 1,
+            Algorithm::Crc32c => 2,
+            Algorithm::Sha1 => 3,
+            Algorithm::Sha256 => 4,
+        }
+    }
+
+    pub fn of_code(c: u8) -> Option<Algorithm> {
+        Some(match c {
+            1 => Algorithm::Crc32,
+            2 => Algorithm::Crc32c,
+            3 => Algorithm::Sha1,
+            4 => Algorithm::Sha256,
+            _ => return None,
+        })
+    }
 }
 
 enum Running {
@@ -280,20 +305,24 @@ impl Checks {
         }
     }
 
-    /// Checks the body, all of it seen, given its trailers.
-    pub fn finish(self, trailers: &[(String, String)]) -> Result<(), BodyError> {
+    /// Checks the body, all of it seen, given its trailers. Returns the
+    /// checksum it was checked against, if any, to keep with the object.
+    pub fn finish(
+        self,
+        trailers: &[(String, String)],
+    ) -> Result<Option<(Algorithm, Vec<u8>)>, BodyError> {
         if let Some((want, c)) = self.sha256
             && c.finish().as_ref() != want
         {
             return Err(BodyError::Sha256);
         }
         let Some((a, want, r)) = self.checksum else {
-            return Ok(());
+            return Ok(None);
         };
         let want = match want {
             Some(w) => w,
             None => {
-                let name = format!("x-amz-checksum-{}", a.name().to_ascii_lowercase());
+                let name = a.header();
                 let v = trailers
                     .iter()
                     .find(|(k, _)| *k == name)
@@ -310,7 +339,7 @@ impl Checks {
         if got != want {
             return Err(BodyError::Checksum(a.name()));
         }
-        Ok(())
+        Ok(Some((a, got)))
     }
 }
 

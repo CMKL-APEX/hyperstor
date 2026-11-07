@@ -7097,8 +7097,9 @@ fn s3_model_list(
 /// and the devices hold no `s3` object but the live objects' chunks.
 #[test]
 fn s3_objects_match_a_model() {
+    use hyperstor_s3::chunked::Algorithm;
     use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
-    use hyperstor_s3::{Config, List, Meta, S3, S3Error};
+    use hyperstor_s3::{Condition, Config, List, Meta, S3, S3Error};
     use md5::{Digest, Md5};
     use std::collections::{BTreeMap, BTreeSet};
     const CHUNK: u64 = 16 << 10;
@@ -7218,7 +7219,7 @@ fn s3_objects_match_a_model() {
                 let key: Vec<u8> = (0..n)
                     .flat_map(|_| pieces[rng.random_range(0..pieces.len())].to_vec())
                     .collect();
-                match rng.random_range(0..10) {
+                match rng.random_range(0..11) {
                     0..4 => {
                         let size = size_of(&mut rng);
                         let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
@@ -7256,6 +7257,7 @@ fn s3_objects_match_a_model() {
                         let meta = Meta {
                             content_type: "x/y".into(),
                             meta: vec![("k".into(), format!("{op}"))],
+                            ..Default::default()
                         };
                         match how {
                             0 => drop(put),
@@ -7320,6 +7322,55 @@ fn s3_objects_match_a_model() {
                         );
                         let past = s3.read(b, &e, off, size - off + 1).await;
                         assert!(matches!(past, Err(S3Error::InvalidRange)));
+                    }
+                    10 => {
+                        // Conditional writes and deletes (D194), against
+                        // the model.
+                        let cur = s3.head(b, &key).await.unwrap();
+                        assert_eq!(cur.is_some(), m.contains_key(&key), "op {op}");
+                        let right = cur.as_ref().map(|e| e.etag().trim_matches('"').to_string());
+                        let cond = match rng.random_range(0..4) {
+                            0 => Condition::Absent,
+                            1 => Condition::Exists,
+                            2 => Condition::Matches(right.into_iter().collect()),
+                            _ => Condition::Matches(vec!["0".repeat(32)]),
+                        };
+                        let holds = cond.holds(cur.as_ref());
+                        if rng.random_range(0..2) == 0 {
+                            let r = s3.delete_if(b, &key, &cond).await;
+                            if holds {
+                                r.unwrap();
+                                m.remove(&key);
+                            } else {
+                                assert!(matches!(r, Err(S3Error::PreconditionFailed)), "{r:?}");
+                            }
+                            continue;
+                        }
+                        let size = size_of(&mut rng);
+                        let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
+                        let mut put = s3.put(b, &key, size).await.unwrap();
+                        if size > INLINE {
+                            for i in 0..chunks_of(size, CHUNK) {
+                                written.insert(chunk_name(b.id(), put.id(), 0, i));
+                            }
+                        }
+                        put.require(cond);
+                        put.write(&data).await.unwrap();
+                        let sum = (Algorithm::Sha1, vec![op as u8; 20]);
+                        let meta = Meta {
+                            content_type: "x/y".into(),
+                            checksum: Some(sum.clone()),
+                            ..Default::default()
+                        };
+                        let r = put.finish(meta).await;
+                        if holds {
+                            assert_eq!(r.unwrap().checksum, Some(sum.clone()));
+                            let e = s3.head(b, &key).await.unwrap().unwrap();
+                            assert_eq!(e.checksum, Some(sum), "the checksum is kept");
+                            m.insert(key.clone(), data);
+                        } else {
+                            assert!(matches!(r, Err(S3Error::PreconditionFailed)), "{r:?}");
+                        }
                     }
                     _ => check_list(s3, b, m, &mut rng).await,
                 }
@@ -7628,10 +7679,7 @@ fn s3_put_throughput() {
                     for piece in data.chunks(1 << 20) {
                         put.write(piece).await.unwrap();
                     }
-                    put.finish(Meta {
-                        content_type: String::new(),
-                        meta: Vec::new(),
-                    })
+                    put.finish(Meta::default())
                     .await
                     .unwrap();
                 }
