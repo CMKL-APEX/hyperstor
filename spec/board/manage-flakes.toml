@@ -1,0 +1,10 @@
+title = "Flaky end-to-end tests in manage"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB"
+started = 2026-11-07
+updated = 2026-11-07
+milestone = "HS2"
+branch = "fix/manage-flakes"
+prs = []
+now = "I300: the full pool's purger kept no pool busy once its purge's item left the trash, and purged the next too soon; the weights test took a fenced map's health error for a failed status; the refill test's device was failed by 2 s reads on a slow runner (tests now wait 10 s)"
+next = "Pull request; then the other manage flakes seen on CI (a_cache_pool_keeps_its_data_across_splits_and_restarts, a_returning_node_goes_down_once, a_device_is_added_to_a_running_node, snapshots_through_hyperstorctl)"
