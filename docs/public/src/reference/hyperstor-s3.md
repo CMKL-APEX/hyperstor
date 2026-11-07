@@ -8,8 +8,9 @@ may send any request to any of them.
 > **Early.** This is stage 3 of 5 (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
 > [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
-> --s3`](hyperstor-install.md) installs gateways. Multipart uploads,
-> copies, conditional requests and multi-object deletes come in stage 4.
+> --s3`](hyperstor-install.md) installs gateways. Stage 4 has begun:
+> conditional requests, multi-object deletes and checksums given back are
+> built; multipart uploads and copies come next.
 
 ```text
 usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --identity DIR [--realm NAME] | --keys FILE --data-pool NAME --index-pool NAME) [--listen ADDR[,ADDR...]] [--reactors N] [--threads N] [--networks NAME[,NAME...]]
@@ -63,9 +64,10 @@ more than 15 minutes from the gateway's clock are refused.
 | Request | Notes |
 |---|---|
 | ListBuckets, CreateBucket, HeadBucket, DeleteBucket, GetBucketLocation | Any key may create a bucket, for its tenant, in a placement. A bucket is deleted only when empty |
-| PutObject | Up to 5 GiB. `Content-MD5`, and the `x-amz-checksum-` CRC32, CRC32C, SHA1 and SHA256 values, in headers or after the body, are checked before the object appears; a body signed chunk by chunk is checked chunk by chunk |
-| GetObject, HeadObject | With a `Range` of one span, and the `response-` parameters that set headers |
-| DeleteObject | |
+| PutObject | Up to 5 GiB. `Content-MD5`, and the `x-amz-checksum-` CRC32, CRC32C, SHA1 and SHA256 values, in headers or after the body, are checked before the object appears; a body signed chunk by chunk is checked chunk by chunk. `If-None-Match: *` writes only a new object and `If-Match` replaces only the version named; otherwise `412 PreconditionFailed` |
+| GetObject, HeadObject | With a `Range` of one span, the `response-` parameters that set headers, and `If-Match`, `If-None-Match`, `If-Modified-Since` and `If-Unmodified-Since` (`304` or `412`). With `x-amz-checksum-mode: ENABLED`, a whole object's checksum: the one it was written with, else its CRC32C |
+| DeleteObject | `If-Match` deletes only the version named |
+| DeleteObjects | Up to 1000 names, with `Content-MD5` or a checksum, as S3 requires; an `ETag` per name deletes only that version |
 | ListObjects, ListObjectsV2 | Prefix, delimiter, pages, `start-after`, `encoding-type=url` |
 
 Anything else is answered `501 NotImplemented`. ETags are MD5s, as S3's.

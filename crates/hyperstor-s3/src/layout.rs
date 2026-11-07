@@ -3,6 +3,7 @@
 //! objects. Each record begins with a format byte; later fields are
 //! appended, and a reader ignores those it doesn't know.
 
+use crate::chunked::Algorithm;
 use hyperstor_codec::{Dec, DecodeError, Enc};
 
 /// The object namespace of chunks (08-engine.md §7.2).
@@ -143,6 +144,9 @@ pub struct Entry {
     pub content_type: String,
     pub meta: Vec<(String, String)>,
     pub data: Data,
+    /// The `x-amz-checksum-*` value the object was checked against when
+    /// written, to give back (appended to the record in stage 4).
+    pub checksum: Option<(Algorithm, Vec<u8>)>,
 }
 
 impl Entry {
@@ -202,6 +206,10 @@ impl Entry {
                 });
             }
         }
+        match &self.checksum {
+            None => e.u8(0),
+            Some((a, v)) => e.u8(a.code()).bytes(v),
+        };
         e.into_vec()
     }
 
@@ -234,6 +242,17 @@ impl Entry {
                 });
             }
         };
+        // Written before stage 4: no checksum.
+        let checksum = match if d.remaining() > 0 { d.u8()? } else { 0 } {
+            0 => None,
+            c => {
+                let a = Algorithm::of_code(c).ok_or(DecodeError::Invalid {
+                    field: "checksum algorithm",
+                    value: c.into(),
+                })?;
+                Some((a, d.bytes()?.to_vec()))
+            }
+        };
         Ok(Entry {
             written,
             size,
@@ -243,6 +262,7 @@ impl Entry {
             content_type,
             meta,
             data,
+            checksum,
         })
     }
 }
@@ -307,7 +327,13 @@ mod tests {
                     size: 9 << 20,
                 }],
             },
+            checksum: None,
         };
+        assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
+        // An entry written before checksums were kept reads as none.
+        let old = e.encode();
+        assert_eq!(Entry::decode(&old[..old.len() - 1]), Ok(e.clone()));
+        e.checksum = Some((Algorithm::Sha256, vec![9; 32]));
         assert_eq!(Entry::decode(&e.encode()), Ok(e.clone()));
         assert_eq!(e.series(5), [(chunk_prefix(5, u128::MAX - 3, 0), 3)]);
         e.data = Data::Inline(b"x".to_vec());
