@@ -5,6 +5,6 @@ started = 2026-11-07
 updated = 2026-11-07
 milestone = "HS3"
 branch = "feat/vhost-detach-guard"
-prs = []
+prs = [229]
 now = "Built: detach answers busy while a hypervisor is connected, --force cuts it off (I297); glidex#322 is the cause it guards against"
 next = "Pull request; then deploy to the pilot's VM hosts"
