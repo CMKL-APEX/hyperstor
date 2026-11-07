@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 6 | 0 | 0 | 37 |
+| 7 | 0 | 0 | 37 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `plan/hs6-rdma` | HS5b and HS6 items in tracking; HS5b's state checked (polling and the writer done, payload copies and registered buffers left); a perftest baseline between two HDR hosts | HS5b's copies (vectored and zero-copy sends, registered buffers), measured end to end; then HS6's transport trait and verbs module | 2026-11-07 |
 | **HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D260)** (`hs15-tenancy`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS15 | `feat/hs15-volume-tenants`, [#231](https://github.com/CMKL-APEX/hyperstor/pull/231), [#233](https://github.com/CMKL-APEX/hyperstor/pull/233) | Stage b: tenants on volumes (D258), and moving a tenant or taking a pool from a realm refused while its buckets or volumes are in pools the realm may not use (D248, D249, I299). Stage a (counts, D257, I298) in #231 | Stage c: host bindings checked by the header's primary (D259); then roles on a realm in mgmt (D260) | 2026-11-07 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-claims`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161), [#181](https://github.com/CMKL-APEX/hyperstor/pull/181), [#197](https://github.com/CMKL-APEX/hyperstor/pull/197), [#199](https://github.com/CMKL-APEX/hyperstor/pull/199), [#203](https://github.com/CMKL-APEX/hyperstor/pull/203), [#205](https://github.com/CMKL-APEX/hyperstor/pull/205) | Stage 3 merged (#203; D237, D238, I277). On feat/fabric-claims: stage 4, claims on ports by the orchestrator role and lending settings (D239–D241, I278) | Merge; the glidex issue for its scheduler; deploy to the pilot when asked; then stage 5 with HS6, and G52 | 2026-11-06 |
 | **A flatten reads its parents on the ring (I286)** (`flatten-off-reactor`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS0 | `fix/layered-read-off-reactor`, [#216](https://github.com/CMKL-APEX/hyperstor/pull/216) | PR #216: a flatten gathers the clone's missing blocks into runs and reads each on the ring, holding the chunk | Pull request; deploy to the pilot when asked | 2026-11-06 |
@@ -87,8 +88,8 @@ against the tests.
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |
 | HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
-| HS5b | Lower CPU cost per operation | 0 | 0 | 0 |
-| HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 0 |
+| HS5b | Lower CPU cost per operation | 1 | 0 | 3 |
+| HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 9 |
 | HS6b | NVMe over RDMA | 0 | 0 | 0 |
 | HS7 | Erasure-coded pools | 0 | 0 | 0 |
 | HS8 | GPU-direct storage on bare metal | 0 | 0 | 0 |

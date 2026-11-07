@@ -649,9 +649,75 @@ title = "NVMe over TCP"
 id = "HS5b"
 title = "Lower CPU cost per operation"
 
+[[milestone.item]]
+what = "Adaptive polling: a storage reactor polls for a window after activity before it sleeps (`hyperstord --spin-us`, default 200 µs)"
+spec = ["D41", "I24", "I38"]
+status = "done"
+tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
+
+[[milestone.item]]
+what = "Payloads not copied into each outgoing frame, once per replica: vectored and zero-copy sends (`SendMsg`, `SEND_ZC`)"
+spec = ["D41", "I23", "I283"]
+status = "planned"
+
+[[milestone.item]]
+what = "Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer"
+spec = ["08-engine.md §6.2", "D41", "I12"]
+status = "planned"
+
+[[milestone.item]]
+what = "Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after"
+spec = ["02-benchmarks.md", "D41"]
+status = "planned"
+
 [[milestone]]
 id = "HS6"
 title = "RDMA over RoCEv2 and InfiniBand"
+
+[[milestone.item]]
+what = "One transport layer: a `Transport` trait in the reactor, with TCP (io_uring sockets) behind it first"
+spec = ["13-protocol.md §13.2", "D30"]
+status = "planned"
+
+[[milestone.item]]
+what = "A verbs module on rdma-core (devices, protection domains, completion queues polled by the reactor, RC queue pairs), in a small FFI module"
+spec = ["13-protocol.md §13.2", "D30"]
+status = "planned"
+
+[[milestone.item]]
+what = "Connection setup over the authenticated TCP session: queue pair numbers, GIDs and credits exchanged, the session kept for a clean close and a dead peer"
+spec = ["13-protocol.md §13.2", "D25"]
+status = "planned"
+
+[[milestone.item]]
+what = "A shared receive queue per reactor, and flow control by credits returned in every reply"
+spec = ["13-protocol.md §13.2"]
+status = "planned"
+
+[[milestone.item]]
+what = "Payloads: inline SENDs for small messages, headers from registered buffers, data by RDMA reads and writes that only the server starts; no server rkey leaves the server"
+spec = ["13-protocol.md §13.2", "D13"]
+status = "planned"
+
+[[milestone.item]]
+what = "Transports per network in the map (`tcp`, `roce`, `ib`), RDMA to a peer when both have it on a common network, TCP otherwise"
+spec = ["13-protocol.md §13.2", "26-networks.md §29.5", "26-networks.md §29.6"]
+status = "planned"
+
+[[milestone.item]]
+what = "A traffic class per network set on every queue pair: DSCP and PFC priority on RoCE, a service level on InfiniBand"
+spec = ["13-protocol.md §13.2", "D31"]
+status = "planned"
+
+[[milestone.item]]
+what = "Fabric readiness checks: no separate traffic class on a converged or compute port, a PFC priority that isn't lossless, a service level equal to NCCL's or SHARP's"
+spec = ["13-protocol.md §13.2", "D31"]
+status = "planned"
+
+[[milestone.item]]
+what = "Measured on InfiniBand between two hosts against the perftest baseline: QD1 latency, and throughput per port"
+spec = ["02-benchmarks.md"]
+status = "planned"
 
 [[milestone]]
 id = "HS6b"
