@@ -5,5 +5,5 @@ started = 2026-10-31
 updated = 2026-11-07
 milestone = "HS0"
 branch = "board/async-commit-done"
-prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209, 228]
+prs = [94, 97, 100, 129, 134, 145, 152, 155, 165, 178, 209, 228, 230]
 now = "Commits and reads wait for the device off the reactor (D165, D166, D190), backfill reads too (I257; stage 3, checkpoints and deferred writes, is I281 in reactor-upkeep); the connection writer sends large frames uncopied (I283). On the pilot, backfill under load held no reactor and cost 27% of 4 KiB writes at QD32, 16% at QD1. The 1 MiB read tail is 1 GbE drops, not the data path; faster networks are G48"
