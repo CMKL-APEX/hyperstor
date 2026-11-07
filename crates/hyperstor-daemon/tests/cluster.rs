@@ -7098,7 +7098,7 @@ fn s3_model_list(
 #[test]
 fn s3_objects_match_a_model() {
     use hyperstor_s3::chunked::Algorithm;
-    use hyperstor_s3::layout::{Data, chunk_name, chunks_of};
+    use hyperstor_s3::layout::{chunk_name, chunks_of};
     use hyperstor_s3::{Condition, Config, List, Meta, S3, S3Error};
     use md5::{Digest, Md5};
     use std::collections::{BTreeMap, BTreeSet};
@@ -7122,6 +7122,7 @@ fn s3_objects_match_a_model() {
                 inline: INLINE,
                 chunk: CHUNK,
                 linger: 5,
+                min_part: CHUNK,
                 ..Config::default()
             };
             let g = [
@@ -7219,7 +7220,7 @@ fn s3_objects_match_a_model() {
                 let key: Vec<u8> = (0..n)
                     .flat_map(|_| pieces[rng.random_range(0..pieces.len())].to_vec())
                     .collect();
-                match rng.random_range(0..12) {
+                match rng.random_range(0..13) {
                     0..4 => {
                         let size = size_of(&mut rng);
                         let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
@@ -7405,9 +7406,108 @@ fn s3_objects_match_a_model() {
                                     crc32c::crc32c(&want).to_be_bytes().to_vec()
                                 ))
                             ),
+                            // A composite checksum isn't the copy's.
+                            None if e.composite => assert_eq!(made.checksum, None),
                             None => assert_eq!(made.checksum, e.checksum),
                         }
                         model[bi].insert(key.clone(), want);
+                    }
+                    12 => {
+                        // A multipart upload: parts uploaded, some again,
+                        // some given up half-way; completed with some of
+                        // them, or aborted (D196, I291).
+                        let algorithm = [None, Some(Algorithm::Crc32c), Some(Algorithm::Sha256)]
+                            [rng.random_range(0..3)];
+                        let full =
+                            algorithm == Some(Algorithm::Crc32c) && rng.random_range(0..2) == 0;
+                        let mp = hyperstor_s3::layout::Multipart {
+                            content_type: "x/y".into(),
+                            algorithm,
+                            full_object: full,
+                            ..Default::default()
+                        };
+                        let id = s3.create_upload(b, &key, mp).await.unwrap();
+                        // Part number -> its bytes, as last uploaded whole.
+                        let mut parts: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+                        for _ in 0..rng.random_range(1..6) {
+                            let n = rng.random_range(1..5);
+                            let size = rng.random_range(CHUNK..3 * CHUNK + 5);
+                            let data: Vec<u8> = (0..size).map(|_| rng.random()).collect();
+                            let mut put = g[rng.random_range(0..2)]
+                                .upload_part(b, &key, id, n, size)
+                                .await
+                                .unwrap();
+                            for i in 0..chunks_of(size, CHUNK) {
+                                written.insert(chunk_name(b.id(), put.id(), n, i));
+                            }
+                            if rng.random_range(0..5) == 0 {
+                                put.write(&data[..size as usize / 2]).await.unwrap();
+                                put.abort().await.unwrap();
+                                continue;
+                            }
+                            put.write(&data).await.unwrap();
+                            let sum = algorithm.map(|a| {
+                                let mut h = hyperstor_s3::chunked::Hasher::new(a);
+                                h.update(&data);
+                                (a, h.finish())
+                            });
+                            let r = put.finish_part(sum).await.unwrap();
+                            assert_eq!(r.md5, <[u8; 16]>::from(Md5::digest(&data)));
+                            parts.insert(n, data);
+                        }
+                        let (_, done) = s3.parts(b, &key, id).await.unwrap();
+                        assert_eq!(
+                            done.keys().collect::<Vec<_>>(),
+                            parts.keys().collect::<Vec<_>>()
+                        );
+                        if parts.is_empty() || rng.random_range(0..4) == 0 {
+                            s3.abort_upload(b, &key, id).await.unwrap();
+                            let r = s3.abort_upload(b, &key, id).await;
+                            assert!(matches!(r, Err(S3Error::NoSuchUpload)), "{r:?}");
+                            continue;
+                        }
+                        // Some of the parts, in order; out of order refused.
+                        let chosen: Vec<u32> = parts
+                            .keys()
+                            .copied()
+                            .filter(|_| rng.random_range(0..4) > 0)
+                            .collect();
+                        let chosen = if chosen.is_empty() {
+                            vec![*parts.keys().next().unwrap()]
+                        } else {
+                            chosen
+                        };
+                        let named: Vec<(u32, String)> =
+                            chosen.iter().map(|n| (*n, done[n].2.etag())).collect();
+                        if named.len() > 1 {
+                            let mut back = named.clone();
+                            back.reverse();
+                            let r = s3.complete(b, &key, id, &back, &Condition::Any, None).await;
+                            assert!(matches!(r, Err(S3Error::InvalidPartOrder)), "{r:?}");
+                        }
+                        let e = s3
+                            .complete(b, &key, id, &named, &Condition::Any, None)
+                            .await
+                            .unwrap();
+                        let whole: Vec<u8> = chosen.iter().flat_map(|n| parts[n].clone()).collect();
+                        assert_eq!(e.size, whole.len() as u64);
+                        assert_eq!(e.crc32c, crc32c::crc32c(&whole), "the CRC32C combined");
+                        assert!(e.etag().ends_with(&format!("-{}\"", chosen.len())));
+                        if full {
+                            assert_eq!(
+                                e.checksum,
+                                Some((
+                                    Algorithm::Crc32c,
+                                    crc32c::crc32c(&whole).to_be_bytes().to_vec()
+                                ))
+                            );
+                        }
+                        assert_eq!(e.composite, algorithm.is_some() && !full);
+                        let r = s3
+                            .complete(b, &key, id, &named, &Condition::Any, None)
+                            .await;
+                        assert!(matches!(r, Err(S3Error::NoSuchUpload)), "{r:?}");
+                        m.insert(key.clone(), whole);
                     }
                     _ => check_list(s3, b, m, &mut rng).await,
                 }
@@ -7468,9 +7568,11 @@ fn s3_objects_match_a_model() {
             for (bi, b) in buckets.iter().enumerate() {
                 for k in model[bi].keys() {
                     let e = g[0].head(b, k).await.unwrap().unwrap();
-                    if let Data::Chunks { object, .. } = e.data {
-                        for i in 0..chunks_of(e.size, CHUNK) {
-                            live.insert(chunk_name(b.id(), object, 0, i));
+                    if let Some((chunk, pieces)) = e.data.pieces() {
+                        for p in pieces {
+                            for i in 0..chunks_of(p.size, chunk) {
+                                live.insert(chunk_name(b.id(), p.object, p.number, i));
+                            }
                         }
                     }
                 }
@@ -7510,9 +7612,11 @@ fn s3_objects_match_a_model() {
             live.clear();
             for k in model[1].keys() {
                 let e = g[0].head(&buckets[1], k).await.unwrap().unwrap();
-                if let Data::Chunks { object, .. } = e.data {
-                    for i in 0..chunks_of(e.size, CHUNK) {
-                        live.insert(chunk_name(buckets[1].id(), object, 0, i));
+                if let Some((chunk, pieces)) = e.data.pieces() {
+                    for p in pieces {
+                        for i in 0..chunks_of(p.size, chunk) {
+                            live.insert(chunk_name(buckets[1].id(), p.object, p.number, i));
+                        }
                     }
                 }
             }

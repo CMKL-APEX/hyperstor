@@ -218,6 +218,82 @@ if "ETag" in ident:
     assert [e["Code"] for e in r["Errors"]] == ["PreconditionFailed"], r
     s3.delete_object(Bucket="sdk", Key="m/4")
 
+# Multipart uploads (D196): parts as uploaded, listed, completed with
+# some of them; an upload aborted; a part copied from an object.
+MIB = 1 << 20
+p1, p2, p3 = os.urandom(5 * MIB), os.urandom(5 * MIB + 3), os.urandom(1000)
+up = s3.create_multipart_upload(Bucket="sdk", Key="mp/obj", ContentType="x/mp", Metadata={"m": "1"})
+uid = up["UploadId"]
+t1 = s3.upload_part(Bucket="sdk", Key="mp/obj", UploadId=uid, PartNumber=1, Body=os.urandom(MIB))["ETag"]
+t1 = s3.upload_part(Bucket="sdk", Key="mp/obj", UploadId=uid, PartNumber=1, Body=p1)["ETag"]
+t2 = s3.upload_part(Bucket="sdk", Key="mp/obj", UploadId=uid, PartNumber=2, Body=p2)["ETag"]
+t3 = s3.upload_part(Bucket="sdk", Key="mp/obj", UploadId=uid, PartNumber=3, Body=p3)["ETag"]
+assert t1 == '"%s"' % hashlib.md5(p1).hexdigest()
+listed = s3.list_parts(Bucket="sdk", Key="mp/obj", UploadId=uid)["Parts"]
+assert [(p["PartNumber"], p["Size"]) for p in listed] == [(1, len(p1)), (2, len(p2)), (3, 1000)], listed
+page = s3.list_parts(Bucket="sdk", Key="mp/obj", UploadId=uid, MaxParts=2)
+assert page["IsTruncated"] and page["NextPartNumberMarker"] == 2
+ups = s3.list_multipart_uploads(Bucket="sdk")["Uploads"]
+assert [(u["Key"], u["UploadId"]) for u in ups] == [("mp/obj", uid)], ups
+assert "Contents" not in s3.list_objects_v2(Bucket="sdk", Prefix="mp/")
+# A part but the last smaller than 5 MiB, out of order, or not as named.
+c = code(lambda: s3.complete_multipart_upload(
+    Bucket="sdk", Key="mp/obj", UploadId=uid,
+    MultipartUpload={"Parts": [{"PartNumber": 3, "ETag": t3}, {"PartNumber": 2, "ETag": t2}]}))
+assert c == "InvalidPartOrder", c
+c = code(lambda: s3.complete_multipart_upload(
+    Bucket="sdk", Key="mp/obj", UploadId=uid,
+    MultipartUpload={"Parts": [{"PartNumber": 3, "ETag": t3}, {"PartNumber": 4, "ETag": t3}]}))
+assert c in ("EntityTooSmall", "InvalidPart"), c
+c = code(lambda: s3.complete_multipart_upload(
+    Bucket="sdk", Key="mp/obj", UploadId=uid, MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": t2}]}))
+assert c == "InvalidPart", c
+r = s3.complete_multipart_upload(
+    Bucket="sdk", Key="mp/obj", UploadId=uid,
+    MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": t1}, {"PartNumber": 3, "ETag": t3}]})
+want = hashlib.md5(hashlib.md5(p1).digest() + hashlib.md5(p3).digest()).hexdigest() + "-2"
+assert r["ETag"] == '"%s"' % want, r
+o = s3.get_object(Bucket="sdk", Key="mp/obj")
+assert o["Body"].read() == p1 + p3 and o["ContentType"] == "x/mp" and o["Metadata"] == {"m": "1"}
+assert get("mp/obj", Range="bytes=%d-%d" % (len(p1) - 5, len(p1) + 4)) == (p1 + p3)[len(p1) - 5 : len(p1) + 5]
+assert s3.list_multipart_uploads(Bucket="sdk").get("Uploads", []) == []
+assert code(lambda: s3.list_parts(Bucket="sdk", Key="mp/obj", UploadId=uid)) == "NoSuchUpload"
+# Aborted: its parts go, and it's gone.
+gone = s3.create_multipart_upload(Bucket="sdk", Key="mp/gone")["UploadId"]
+s3.upload_part(Bucket="sdk", Key="mp/gone", UploadId=gone, PartNumber=1, Body=b"x")
+s3.abort_multipart_upload(Bucket="sdk", Key="mp/gone", UploadId=gone)
+c = code(lambda: s3.upload_part(Bucket="sdk", Key="mp/gone", UploadId=gone, PartNumber=2, Body=b"y"))
+assert c == "NoSuchUpload", c
+assert code(lambda: s3.abort_multipart_upload(Bucket="sdk", Key="mp/gone", UploadId="0" * 32)) == "NoSuchUpload"
+# A part copied from a range of an object, with a composite SHA256.
+cp = s3.create_multipart_upload(Bucket="sdk", Key="mp/copied", ChecksumAlgorithm="SHA256")["UploadId"]
+r1 = s3.upload_part_copy(
+    Bucket="sdk", Key="mp/copied", UploadId=cp, PartNumber=1,
+    CopySource={"Bucket": "sdk", "Key": "mp/obj"}, CopySourceRange="bytes=0-%d" % (5 * MIB - 1))
+r2 = s3.upload_part(Bucket="sdk", Key="mp/copied", UploadId=cp, PartNumber=2, Body=b"tail", ChecksumAlgorithm="SHA256")
+s1 = base64.b64encode(hashlib.sha256(p1[: 5 * MIB]).digest()).decode()
+assert r1["CopyPartResult"]["ChecksumSHA256"] == s1, r1
+r = s3.complete_multipart_upload(
+    Bucket="sdk", Key="mp/copied", UploadId=cp,
+    MultipartUpload={"Parts": [
+        {"PartNumber": 1, "ETag": r1["CopyPartResult"]["ETag"], "ChecksumSHA256": s1},
+        {"PartNumber": 2, "ETag": r2["ETag"], "ChecksumSHA256": r2["ChecksumSHA256"]},
+    ]})
+assert get("mp/copied") == p1[: 5 * MIB] + b"tail"
+composite = hashlib.sha256(hashlib.sha256(p1[: 5 * MIB]).digest() + hashlib.sha256(b"tail").digest()).digest()
+h = s3.head_object(Bucket="sdk", Key="mp/copied", ChecksumMode="ENABLED")
+assert h["ChecksumSHA256"] == base64.b64encode(composite).decode() + "-2", h
+# boto3's own managed transfer, in parts of 5 MiB.
+from boto3.s3.transfer import TransferConfig
+import io
+blob = os.urandom(12 * MIB + 7)
+s3.upload_fileobj(io.BytesIO(blob), "sdk", "mp/managed",
+                  Config=TransferConfig(multipart_threshold=5 * MIB, multipart_chunksize=5 * MIB))
+assert s3.head_object(Bucket="sdk", Key="mp/managed")["ETag"].endswith('-3"')
+out = io.BytesIO()
+s3.download_fileobj("sdk", "mp/managed", out, Config=TransferConfig(multipart_chunksize=4 * MIB))
+assert out.getvalue() == blob
+
 # Keys that don't sign, and what isn't built yet.
 assert code(lambda: client(os.environ["HS_S3_KEY"], "wrong").list_buckets()) == "SignatureDoesNotMatch"
 assert code(lambda: client("NOSUCHKEY", "x").list_buckets()) == "InvalidAccessKeyId"
