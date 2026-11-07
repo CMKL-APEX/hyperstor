@@ -2666,7 +2666,8 @@ fn remove_vhost(root: &Path, real: bool) -> Vec<String> {
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
         for v in listed_volumes(&listed) {
-            if !run(ctl, &["ctl", "--dir", VHOST_DIR, "detach", &v]) {
+            // Stopping for good cuts the VMs off anyway: forced (D256).
+            if !run(ctl, &["ctl", "--dir", VHOST_DIR, "detach", &v, "--force"]) {
                 eprintln!("hyperstor-install: detaching volume {v} failed; it stays held");
             }
         }

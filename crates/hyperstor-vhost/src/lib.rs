@@ -331,7 +331,7 @@ impl Service {
                     Err(Refused::Other(code, msg)) => Reply::error(id, code, &msg),
                 }
             }
-            Request::Detach { volume } => match self.detach(volume).await {
+            Request::Detach { volume, force } => match self.detach(volume, force).await {
                 Ok(()) => Reply::ok(id, control::detached()),
                 Err((code, msg)) => Reply::error(id, code, &msg),
             },
@@ -422,7 +422,7 @@ impl Service {
             d => d.is_some(),
         };
         if lost {
-            self.detach(volume).await.map_err(Refused::from)?;
+            self.detach(volume, true).await.map_err(Refused::from)?;
         }
         let how = match take {
             Take::Attach => hyperstor_client::volume::Take::Attach,
@@ -510,7 +510,22 @@ impl Service {
     }
 
     /// Closes the volume's socket, cuts off its frontend, and detaches it.
-    async fn detach(&self, volume: u128) -> Result<(), (&'static str, String)> {
+    /// Refused (`busy`) while a hypervisor is connected, unless `force` or
+    /// the volume was taken elsewhere (D256): a client's mistake must not
+    /// pull a running VM's disk.
+    async fn detach(&self, volume: u128, force: bool) -> Result<(), (&'static str, String)> {
+        if let Some(d) = self.disks.borrow().get(&volume)
+            && !force
+            && !d.disk.volume.lost()
+            && d.conn.borrow().as_ref().is_some_and(peer_open)
+        {
+            return Err((
+                "busy",
+                format!(
+                    "volume {volume:032x}: a hypervisor is connected; stop it first, or detach with force"
+                ),
+            ));
+        }
         let Some(d) = self.disks.borrow_mut().remove(&volume) else {
             return Err((
                 "not_attached",
@@ -535,6 +550,19 @@ impl Service {
             .await
             .map_err(|e| ("internal", e.to_string()))
     }
+}
+
+/// Whether the frontend on `s` is still there: a hypervisor that exited
+/// has hung up, though the disk's task may not have read the end yet.
+fn peer_open(s: &UnixStream) -> bool {
+    let mut p = libc::pollfd {
+        fd: s.as_raw_fd(),
+        events: libc::POLLRDHUP,
+        revents: 0,
+    };
+    // SAFETY: one pollfd on a socket this service owns, no wait.
+    let n = unsafe { libc::poll(&mut p, 1, 0) };
+    n == 0 || p.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) == 0
 }
 
 /// Accepts one frontend at a time on a disk's socket, until detached.
