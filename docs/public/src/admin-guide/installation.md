@@ -307,7 +307,7 @@ hyperstorctl realm create --name acme --description "a customer"
 hyperstorctl pool create --name acme-data --classes hdd    # or share a pool
 hyperstorctl realm pool --pool 3 --realm acme              # only acme may use pool 3
 hyperstorctl s3 placement set --realm acme --name default --data-pool acme-data --index-pool flash
-hyperstorctl realm tenant --tenant 42 --realm acme         # before it has buckets
+hyperstorctl realm tenant --tenant 42 --realm acme
 sudo hyperstor-install install --s3 --s3-realm acme        # on acme's gateway hosts
 ```
 
@@ -319,8 +319,11 @@ sudo hyperstor-install install --s3 --s3-realm acme        # on acme's gateway h
   another tenant's bucket is never found.
 - Realms share the drives' time: a realm that must not feel another's
   load needs pools on devices of its own.
-- Move a tenant to another realm before it has buckets: the check that
-  its buckets' pools suit the new realm comes later.
+- A tenant moves to another realm only if the new realm may use every
+  pool its buckets and volumes are in, and a pool is taken from a realm
+  only if none of its tenants' buckets or volumes is in it. Volumes
+  belong to a tenant when made with `create-volume --tenant N`, and only
+  in pools its realm may use; clones take their volume's tenant.
 
 ## Running as services by hand
 

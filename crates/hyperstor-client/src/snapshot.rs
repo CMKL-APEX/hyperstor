@@ -738,6 +738,7 @@ impl Client {
             skip: Vec::new(),
             incarnation: v.incarnation,
             trashed_unix: 0,
+            tenant: v.tenant,
         };
         if let Err(e) = self.put_new(&c).await {
             self.forget_branch(v.lineage, b).await?;

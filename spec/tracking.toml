@@ -900,9 +900,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant refused while its buckets or volumes are in pools the new realm may not use"
-spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258"]
-status = "planned"
+what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use"
+spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258", "I299"]
+status = "done"
+# Also shown by s3::a_realm_has_its_own_gateway_keys_and_pools and
+# hyperstor_client::volume::tests::headers_round_trip, tracked above.
+tests = [
+    "hyperstor_meta::realms::tests::containers_stay_in_their_realms_pools",
+]
 
 [[milestone.item]]
 what = "Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"

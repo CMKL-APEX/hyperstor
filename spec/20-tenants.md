@@ -152,7 +152,9 @@ strict multi-tenancy without a cluster per customer.
   keep realms apart.
 - Moving a tenant to another realm is an administrator's operation,
   refused while any of the tenant's containers is in a pool the new
-  realm may not use (D249).
+  realm may not use (D249); likewise, a pool isn't taken from a realm
+  while one of its tenants' containers is in it. Built for buckets and
+  volumes (I299).
 
 **What a realm limits**, the same way for every interface:
 

@@ -173,7 +173,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
-| A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant refused while its buckets or volumes are in pools the new realm may not use | Planned |
+| A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
 
 ## HS18: Pools and devices at run time
