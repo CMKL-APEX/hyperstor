@@ -145,7 +145,7 @@ fn bad_flags_are_refused() {
 
 /// An installer beside an incomplete set of binaries refuses before
 /// writing any: a host is never left with some binaries new and its
-/// services still running the old ones (I292).
+/// services still running the old ones (I293).
 #[test]
 fn a_missing_binary_installs_nothing() {
     let _one = one_at_a_time();

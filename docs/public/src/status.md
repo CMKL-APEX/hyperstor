@@ -197,7 +197,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Host checks before installing | Done |
-| One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I292) | Done |
+| One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I293) | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates | Done |
 | Backing up the root CA's key, encrypted, and restoring it | Done |

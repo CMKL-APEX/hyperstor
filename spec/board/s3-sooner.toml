@@ -6,5 +6,5 @@ updated = 2026-11-07
 milestone = "HS12"
 branch = "fix/install-binaries-first"
 prs = [151, 175, 176, 179, 182, 183, 186, 191, 195, 198, 200, 212, 213, 217, 218, 219, 220, 221, 223, 224]
-now = "Stage 4 built and deployed to the pilot (2026-11-07). hyperstor-install reads every binary before writing any and restarts services left on replaced binaries (I292, found in the rollout)"
+now = "Stage 4 built and deployed to the pilot (2026-11-07). hyperstor-install reads every binary before writing any and restarts services left on replaced binaries (I293, found in the rollout)"
 next = "Stage 5: virtual-hosted addressing (D245), buckets and keys in mgmt's UI (D246)"
