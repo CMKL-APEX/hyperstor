@@ -614,6 +614,57 @@ fn a_rolling_restart_of_the_members_keeps_committing() {
     }
 }
 
+/// A member killed during its first start, while it creates its store,
+/// starts again and catches up (I292, glidex#317): glidex-raftstore builds
+/// each store file beside it and renames it into place, so a kill leaves
+/// no file or a whole one, and a half-made `.new` beside it is removed.
+#[test]
+fn a_member_killed_in_its_first_start_starts_again() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut g, list, file) = unstarted("firststart", 3, 3);
+    g.add_host(0, &list, Some(&file));
+    g.add_host(1, &list, None);
+    g.leader(&[0, 1]);
+    let mut third = g.install_host(2, &list, None);
+    // What a kill leaves while redb creates a file: sized, with its header
+    // written but not its magic number.
+    let meta = g.s.path("data-3").join("meta");
+    let half_made = [meta.join("map.redb.new"), meta.join("raft/log.redb.new")];
+    std::fs::create_dir_all(meta.join("raft")).unwrap();
+    for f in &half_made {
+        let mut bytes = vec![0u8; 1_056_768];
+        bytes[8..16].copy_from_slice(&[0, 4, 0, 0, 0, 0x10, 0, 0]);
+        std::fs::write(f, bytes).unwrap();
+    }
+    // Killed at points through its first start, the early ones while it
+    // creates its store.
+    for ms in [0, 1, 2, 4, 8, 16, 32, 64] {
+        third.start(&g.s, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        third.stop();
+    }
+    third.start(&g.s, &[]);
+    g.m.push(third);
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.formed(2);
+        let l = g.leader(&[0, 1, 2]);
+        g.ctl(l, &["token", "create", "--role", "meta"]).ok();
+        let want = g.ctl(l, &["token", "list"]).ok().out;
+        wait_for("the third member to catch up", 15, || {
+            (g.ctl(2, &["token", "list"]).out == want).then_some(())
+        });
+    }));
+    if let Err(e) = started {
+        for (j, m) in g.m.iter().enumerate() {
+            eprintln!("--- member {}:\n{}", j + 1, m.log());
+        }
+        std::panic::resume_unwind(e);
+    }
+    for f in &half_made {
+        assert!(!f.exists(), "{} is still there", f.display());
+    }
+}
+
 /// A token asked for before the group has committed its first map waits
 /// for it (I275), rather than failing with `not_formed` at once: the first
 /// of three members, alone, can't elect, so it answers `not_formed` only

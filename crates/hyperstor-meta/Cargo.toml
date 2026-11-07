@@ -34,7 +34,7 @@ tower = "0.5"
 libc.workspace = true
 # The replicated map (04-decisions.md D20, D71): glidex's store and Raft stack,
 # pinned to a revision of glidex (PRs #141, #143).
-glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex", rev = "70da7640dd05438a1f82ff613951088cec4ac354" }
+glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex", rev = "bc1fa833fab0d36bc7ba341569a64dd9d7489a8a" }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }
 redb = "3"
 serde = { version = "1", features = ["derive"] }
