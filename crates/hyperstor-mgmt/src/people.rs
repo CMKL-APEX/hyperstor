@@ -14,7 +14,7 @@
 //! is cached for [`CACHE`] at most, so a logout or a revocation reaches
 //! every mgmt within that.
 
-use connectrpc::client::{ClientConfig, HttpClient};
+use connectrpc::client::HttpClient;
 use glidex_auth::secrets::{constant_eq, random_token, sha256_hex};
 use glidex_auth::session::{self as rules, NEVER_FRESH, SessionRules};
 use glidex_auth::token::{TokenRules, mint_token, token_hash};
@@ -110,26 +110,15 @@ fn now() -> u64 {
 
 /// Where rows live: the map service, or memory (tests).
 pub enum Rows {
-    /// Every member's API; writes go to whichever answers as the leader.
-    Api(Vec<MgmtStoreServiceClient<HttpClient>>),
+    /// The map service's members; writes go to the leader first (D276).
+    Api(std::sync::Arc<crate::members::Members>),
     #[cfg_attr(not(test), allow(dead_code))] // the tests keep rows in memory
     Memory(Mutex<BTreeMap<String, Vec<u8>>>),
 }
 
 impl Rows {
-    pub fn api(addrs: &[String], tls: std::sync::Arc<connectrpc::rustls::ClientConfig>) -> Rows {
-        Rows::Api(
-            addrs
-                .iter()
-                .map(|a| {
-                    let uri: http::Uri = format!("https://{a}").parse().expect("address");
-                    MgmtStoreServiceClient::new(
-                        HttpClient::with_tls(tls.clone()),
-                        ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
-                    )
-                })
-                .collect(),
-        )
+    pub fn api(members: std::sync::Arc<crate::members::Members>) -> Rows {
+        Rows::Api(members)
     }
 
     #[cfg_attr(not(test), allow(dead_code))] // the tests keep rows in memory
@@ -137,30 +126,22 @@ impl Rows {
         Rows::Memory(Mutex::new(BTreeMap::new()))
     }
 
-    /// Calls `f` on each member in turn until one answers other than
-    /// "unavailable" (down, or not the leader for a write).
+    /// Calls `f` on each member in turn, the leader first, until one
+    /// answers other than "unavailable" (down, or not the leader for a
+    /// write).
     async fn each<T, F, Fut>(&self, f: F) -> Result<T, Error>
     where
         F: Fn(MgmtStoreServiceClient<HttpClient>) -> Fut,
         Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
     {
-        let Rows::Api(clients) = self else {
+        let Rows::Api(members) = self else {
             unreachable!("memory rows are handled by the caller")
         };
-        let mut last = String::from("no map service member configured");
-        for c in clients {
-            match f(c.clone()).await {
-                Ok(v) => return Ok(v),
-                Err(e) if e.code == connectrpc::ErrorCode::Unavailable => {
-                    last = e.message.unwrap_or_default();
-                }
-                Err(e) if e.code == connectrpc::ErrorCode::AlreadyExists => {
-                    return Err(Error::Exists);
-                }
-                Err(e) => return Err(Error::Unavailable(e.message.unwrap_or_default())),
-            }
+        match members.each(MgmtStoreServiceClient::new, f).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.code == connectrpc::ErrorCode::AlreadyExists => Err(Error::Exists),
+            Err(e) => Err(Error::Unavailable(e.message.unwrap_or_default())),
         }
-        Err(Error::Unavailable(last))
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
