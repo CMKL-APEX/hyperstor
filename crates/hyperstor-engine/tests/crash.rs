@@ -7,6 +7,12 @@
 //! acknowledged list and some prefix of the lists in flight. Revisions are
 //! compared only for acknowledged state, since the model doesn't know the
 //! revisions of lists whose commit never returned.
+//!
+//! The `damaged_*` tests (#241) then make the device lie: a block of the
+//! log, a superblock or the data region damaged on the media, a write lost
+//! or stored at the wrong block. The shard must refuse to open, or open
+//! with every acknowledged change, a damaged block reading as a checksum
+//! error and never as other data.
 
 use hyperstor_engine::*;
 use rand::rngs::SmallRng;
@@ -483,4 +489,281 @@ fn random_crashes_with_dense_block_maps() {
     let seen = DENSE_SEEN.load(std::sync::atomic::Ordering::Relaxed);
     eprintln!("commits with dense block maps present: {seen}");
     assert!(seen > 100, "dense maps were exercised");
+}
+
+/// What a device fault did to the reopened shard.
+#[derive(Debug, Default)]
+struct Outcomes {
+    /// Opened with every acknowledged change, every block read back.
+    intact: usize,
+    /// Opened with every acknowledged change; some block read as a
+    /// checksum error.
+    detected: usize,
+    /// Refused to open.
+    refused: usize,
+    /// Opened without some acknowledged change: the seeds, and the first
+    /// one's differences.
+    silent: Vec<u64>,
+    first: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Damage {
+    /// A block of the log ring, damaged on the media.
+    LogBlock,
+    /// One of the shard's two superblocks.
+    ShardSuper,
+    /// One of the device's two superblocks.
+    DeviceSuper,
+    /// A block of the data region: data, or a checkpoint page or directory.
+    DataBlock,
+    /// A write the device acknowledged and never stored.
+    LostWrite,
+    /// A write the device stored at another block.
+    MisdirectedWrite,
+}
+
+/// The model's lists applied as the engine answered them.
+fn apply_results(
+    seed: u64,
+    model: &mut Model,
+    batch: &[OpList],
+    results: Vec<Result<Committed, OpError>>,
+) {
+    for (l, r) in batch.iter().zip(results) {
+        match r {
+            Ok(c) => assert!(
+                model_apply(model, l, Some(c.revision)),
+                "seed {seed}: engine accepted a list the model refuses: {l:?}"
+            ),
+            Err(OpError::AssertFailed { .. }) => {
+                let mut probe = model.clone();
+                assert!(
+                    !model_apply(&mut probe, l, None),
+                    "seed {seed}: engine refused a list the model accepts: {l:?}"
+                );
+            }
+            Err(OpError::TooLarge) => {}
+            Err(e) => panic!("seed {seed}: unexpected {e:?}"),
+        }
+    }
+}
+
+/// Whether `sh` holds `m`, reading block by block: a block may read as a
+/// checksum error (counted), never as other data. Revisions aren't
+/// compared: a damaged device's are not the question.
+fn holds(sh: &Shard, m: &Model) -> Result<usize, String> {
+    let engine_keys: Vec<ObjKey> = sh.index().objects.keys().cloned().collect();
+    let model_keys: Vec<ObjKey> = m.keys().cloned().collect();
+    if engine_keys != model_keys {
+        return Err(format!(
+            "keys differ: engine {engine_keys:?} model {model_keys:?}"
+        ));
+    }
+    let mut bad = 0;
+    for (k, o) in m {
+        let st = sh.stat(k).unwrap();
+        if st.size != o.size {
+            return Err(format!("{k:?}: size {} vs model {}", st.size, o.size));
+        }
+        for b in 0..MAX_BLOCK {
+            let want = o.data.get(&b).copied().unwrap_or(0);
+            match sh.read(k, b * BLOCK as u64, BLOCK as u64) {
+                Ok(d) if d.iter().all(|&x| x == want) => {}
+                Ok(d) => return Err(format!("{k:?}: block {b} is {} not {want}", d[0])),
+                Err(EngineError::Checksum { .. }) => bad += 1,
+                Err(e) => return Err(format!("{k:?}: block {b}: {e}")),
+            }
+        }
+        if sh.attrs(k).unwrap() != &o.attrs {
+            return Err(format!("{k:?}: attrs differ"));
+        }
+        let kv = sh.kv_scan(k, b"", None, usize::MAX);
+        let mkv: Vec<(Vec<u8>, Vec<u8>)> =
+            o.kv.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+        if kv != mkv {
+            return Err(format!("{k:?}: kv differs"));
+        }
+    }
+    Ok(bad)
+}
+
+/// One run: random batches on a device that may lose or misdirect one
+/// write, a last list (the fence), then a block damaged on the media, and
+/// a reopen. The fence is the one list whose loss is allowed: damage to
+/// the last record looks like a write torn by a crash, and nothing after
+/// it says otherwise. Any other acknowledged list lost is a failure.
+fn damaged_run(seed: u64, damage: Damage, out: &mut Outcomes) {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    PAGE.with(|p| p.set([None, Some(256), Some(2048)][seed as usize % 3]));
+    let keys = keys();
+    let blocks = 1024u64;
+    let fd = Arc::new(FaultDev::new(blocks * BLOCK as u64));
+    let d: Arc<dyn BlockDev> = fd.clone();
+    format(
+        &d,
+        &DeviceConfig {
+            device_id: 1,
+            cluster_id: 2,
+            shards: 1,
+            log_blocks: Some(64),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut sh = open_shard(&d).unwrap();
+    let region = sh.region();
+    match damage {
+        Damage::LostWrite => fd.misstep(rng.random_range(0..200), WriteFault::Lost),
+        Damage::MisdirectedWrite => fd.misstep(
+            rng.random_range(0..200),
+            WriteFault::Misdirected(rng.random_range(0..blocks)),
+        ),
+        _ => {}
+    }
+    let mut model: Model = BTreeMap::new();
+    for _ in 0..rng.random_range(4..30) {
+        let batch: Vec<OpList> = (0..rng.random_range(1..6))
+            .map(|_| random_list(&mut rng, &keys))
+            .collect();
+        let results = sh
+            .commit(batch.clone())
+            .unwrap_or_else(|e| panic!("seed {seed}: commit failed: {e}"));
+        apply_results(seed, &mut model, &batch, results);
+    }
+    let before_fence = model.clone();
+    let fence = OpList {
+        key: ObjKey::new(1, 7, Namespace::Meta, b"fence".to_vec(), 0),
+        ops: vec![Op::KvPut(b"f".to_vec(), seed.to_le_bytes().to_vec())],
+    };
+    let results = sh.commit(vec![fence.clone()]).unwrap();
+    apply_results(seed, &mut model, &[fence], results);
+    let mut img = fd.image();
+    let struck = fd.struck();
+    drop(sh);
+    let hit = match damage {
+        Damage::LogBlock => Some(region.start + 2 + rng.random_range(0..region.log_blocks)),
+        Damage::ShardSuper => Some(region.start + rng.random_range(0..2)),
+        Damage::DeviceSuper => Some(rng.random_range(0..2)),
+        Damage::DataBlock => Some(
+            region.start
+                + 2
+                + region.log_blocks
+                + rng.random_range(0..region.blocks - 2 - region.log_blocks),
+        ),
+        Damage::LostWrite | Damage::MisdirectedWrite => None,
+    };
+    if let Some(b) = hit {
+        let at = b as usize * BLOCK + rng.random_range(0..BLOCK);
+        img[at] ^= rng.random_range(1..=255u8);
+    }
+    let fd = Arc::new(FaultDev::from_image(img));
+    let d: Arc<dyn BlockDev> = fd.clone();
+    let sh = match open_shard(&d) {
+        Ok(sh) => sh,
+        Err(_) => {
+            out.refused += 1;
+            return;
+        }
+    };
+    let mut errors = Vec::new();
+    for c in [&model, &before_fence] {
+        match holds(&sh, c) {
+            Ok(0) => {
+                out.intact += 1;
+                return;
+            }
+            Ok(_) => {
+                out.detected += 1;
+                return;
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    if std::env::var("HS_CRASH_DEBUG").is_ok() {
+        eprintln!(
+            "silent: seed {seed} {damage:?} hit {hit:?} struck {struck:?} log {}..{}",
+            region.start + 2,
+            region.start + 2 + region.log_blocks
+        );
+    }
+    out.silent.push(seed);
+    out.first.get_or_insert_with(|| {
+        format!(
+            "seed {seed}: {damage:?} at block {hit:?}, writes {struck:?}: opened without acknowledged changes: {errors:#?}"
+        )
+    });
+}
+
+fn damaged_seeds(damage: Damage) -> Outcomes {
+    let seeds: u64 = std::env::var("HS_CRASH_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    let only: Option<u64> = std::env::var("HS_CRASH_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let mut out = Outcomes::default();
+    for seed in only.map_or(0..seeds, |s| s..s + 1) {
+        damaged_run(seed, damage, &mut out);
+    }
+    eprintln!(
+        "{damage:?}: intact {}, detected {}, refused {}, silent {}",
+        out.intact,
+        out.detected,
+        out.refused,
+        out.silent.len()
+    );
+    if let Some(f) = &out.first {
+        panic!(
+            "{} of {damage:?} lost acknowledged changes silently ({:?}); {f}",
+            out.silent.len(),
+            out.silent
+        );
+    }
+    out
+}
+
+#[test]
+#[ignore = "#242: a damaged record drops those after it"]
+fn damaged_log_blocks_never_lose_acknowledged_changes() {
+    damaged_seeds(Damage::LogBlock);
+}
+
+#[test]
+#[ignore = "#253: the older superblock opens the shard empty"]
+fn a_damaged_shard_superblock_never_loses_acknowledged_changes() {
+    damaged_seeds(Damage::ShardSuper);
+}
+
+#[test]
+fn a_damaged_device_superblock_copy_is_read_past() {
+    let out = damaged_seeds(Damage::DeviceSuper);
+    assert_eq!(out.refused, 0, "the other copy serves");
+}
+
+#[test]
+fn damaged_data_and_checkpoint_blocks_never_read_as_other_data() {
+    damaged_seeds(Damage::DataBlock);
+}
+
+#[test]
+#[ignore = "#242: a lost log write drops the records after it"]
+fn a_lost_write_never_loses_acknowledged_changes_silently() {
+    damaged_seeds(Damage::LostWrite);
+}
+
+#[test]
+#[ignore = "#242: a misdirected log write drops the records after it"]
+fn a_misdirected_write_never_loses_acknowledged_changes_silently() {
+    damaged_seeds(Damage::MisdirectedWrite);
+}
+
+/// A damaged checkpoint page or directory refuses the whole shard today;
+/// #243 recovers only the PGs in the page's key range instead.
+#[test]
+#[ignore = "#243: a damaged checkpoint page refuses the whole shard"]
+fn a_damaged_checkpoint_page_never_refuses_the_shard() {
+    let out = damaged_seeds(Damage::DataBlock);
+    assert_eq!(out.refused, 0);
 }

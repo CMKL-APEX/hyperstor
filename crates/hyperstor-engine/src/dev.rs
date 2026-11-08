@@ -321,15 +321,33 @@ impl BlockDev for UringDev {
 /// each cached write kept or lost independently, so writes are reordered
 /// and multi-block writes torn). After [`FaultDev::fail_after`] operations
 /// the device fails every call, as if power went out in the middle.
+/// [`FaultDev::misstep`] makes one block's write go wrong on its way to the
+/// media, as a device that lies does (#241).
 pub struct FaultDev {
     inner: Mutex<FaultState>,
 }
 
+/// How one block's write goes wrong on its way to the media, though the
+/// device acknowledged it: reads see it until the flush, then not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteFault {
+    /// Never stored.
+    Lost,
+    /// Stored at this block instead.
+    Misdirected(u64),
+}
+
 struct FaultState {
     durable: Vec<u8>,
-    /// Cached writes since the last flush, in order: (offset, data).
-    cache: Vec<(u64, Vec<u8>)>,
+    /// Cached writes since the last flush, in order: (offset, data, fault).
+    cache: Vec<(u64, Vec<u8>, Option<WriteFault>)>,
     ops_left: Option<u64>,
+    /// Blocks written so far, and the faults armed by the index of the
+    /// block written.
+    written: u64,
+    faults: std::collections::BTreeMap<u64, WriteFault>,
+    /// The faults that struck: the block each write was meant for.
+    struck: Vec<(u64, WriteFault)>,
 }
 
 impl FaultDev {
@@ -344,6 +362,9 @@ impl FaultDev {
                 durable: img,
                 cache: Vec::new(),
                 ops_left: None,
+                written: 0,
+                faults: Default::default(),
+                struck: Vec::new(),
             }),
         }
     }
@@ -353,17 +374,36 @@ impl FaultDev {
         self.inner.lock().unwrap().ops_left = Some(n);
     }
 
+    /// Makes the write of the `at`-th block from now (0: the next one) go
+    /// wrong as `fault` says.
+    pub fn misstep(&self, at: u64, fault: WriteFault) {
+        let mut s = self.inner.lock().unwrap();
+        let i = s.written + at;
+        s.faults.insert(i, fault);
+    }
+
+    /// The faults that struck so far: the block each write was meant for,
+    /// and what happened to it.
+    pub fn struck(&self) -> Vec<(u64, WriteFault)> {
+        self.inner.lock().unwrap().struck.clone()
+    }
+
+    /// The image the media holds now: what was flushed (an unflushed cache
+    /// is lost).
+    pub fn image(&self) -> Vec<u8> {
+        self.inner.lock().unwrap().durable.clone()
+    }
+
     /// The image a power loss would leave. `keep(i)` decides, for the i-th
     /// cached block in write order, whether it reached the media.
     pub fn crash_image(&self, mut keep: impl FnMut(usize) -> bool) -> Vec<u8> {
         let s = self.inner.lock().unwrap();
         let mut img = s.durable.clone();
         let mut i = 0;
-        for (off, data) in &s.cache {
+        for (off, data, fault) in &s.cache {
             for (b, block) in data.chunks(BLOCK).enumerate() {
                 if keep(i) {
-                    let o = *off as usize + b * BLOCK;
-                    img[o..o + BLOCK].copy_from_slice(block);
+                    store(&mut img, *off as usize + b * BLOCK, block, *fault);
                 }
                 i += 1;
             }
@@ -374,7 +414,7 @@ impl FaultDev {
     /// Number of blocks written since the last flush.
     pub fn cached_blocks(&self) -> usize {
         let s = self.inner.lock().unwrap();
-        s.cache.iter().map(|(_, d)| d.len() / BLOCK).sum()
+        s.cache.iter().map(|(_, d, _)| d.len() / BLOCK).sum()
     }
 
     fn tick(s: &mut FaultState) -> io::Result<()> {
@@ -391,7 +431,7 @@ impl FaultDev {
     fn view(s: &FaultState, off: u64, buf: &mut [u8]) {
         buf.copy_from_slice(&s.durable[off as usize..off as usize + buf.len()]);
         let end = off + buf.len() as u64;
-        for (woff, data) in &s.cache {
+        for (woff, data, _) in &s.cache {
             let wend = woff + data.len() as u64;
             let lo = off.max(*woff);
             let hi = end.min(wend);
@@ -418,18 +458,51 @@ impl BlockDev for FaultDev {
         let mut s = self.inner.lock().unwrap();
         check_aligned(off, buf.len(), s.durable.len() as u64)?;
         Self::tick(&mut s)?;
-        s.cache.push((off, buf.to_vec()));
+        let first = s.written;
+        let n = (buf.len() / BLOCK) as u64;
+        s.written += n;
+        let armed: Vec<(u64, WriteFault)> = s
+            .faults
+            .range(first..first + n)
+            .map(|(i, f)| (*i, *f))
+            .collect();
+        if armed.is_empty() {
+            s.cache.push((off, buf.to_vec(), None));
+        } else {
+            // Block by block, so the fault is on its block alone.
+            for (b, block) in buf.chunks(BLOCK).enumerate() {
+                let i = first + b as u64;
+                let fault = s.faults.remove(&i);
+                if let Some(f) = fault {
+                    s.struck.push((off / BLOCK as u64 + b as u64, f));
+                }
+                s.cache
+                    .push((off + (b * BLOCK) as u64, block.to_vec(), fault));
+            }
+        }
         Ok(())
     }
     fn flush(&self) -> io::Result<()> {
         let mut s = self.inner.lock().unwrap();
         Self::tick(&mut s)?;
         let cache = std::mem::take(&mut s.cache);
-        for (off, data) in cache {
-            s.durable[off as usize..off as usize + data.len()].copy_from_slice(&data);
+        for (off, data, fault) in cache {
+            for (b, block) in data.chunks(BLOCK).enumerate() {
+                store(&mut s.durable, off as usize + b * BLOCK, block, fault);
+            }
         }
         Ok(())
     }
+}
+
+/// Stores one block's write at `at` in `img`, or where `fault` sends it.
+fn store(img: &mut [u8], at: usize, block: &[u8], fault: Option<WriteFault>) {
+    let at = match fault {
+        None => at,
+        Some(WriteFault::Lost) => return,
+        Some(WriteFault::Misdirected(b)) => b as usize * BLOCK,
+    };
+    img[at..at + BLOCK].copy_from_slice(block);
 }
 
 #[cfg(test)]
@@ -489,5 +562,27 @@ mod tests {
         assert_eq!(img[2 * BLOCK], 2, "second cached block kept: a torn write");
         d.fail_after(0);
         assert!(d.write(0, &one).is_err());
+    }
+
+    #[test]
+    fn fault_dev_loses_and_misdirects_single_blocks() {
+        let d = FaultDev::new(8 * BLOCK as u64);
+        let data: Vec<u8> = (1..=3u8).flat_map(|v| vec![v; BLOCK]).collect();
+        d.misstep(1, WriteFault::Lost);
+        d.misstep(2, WriteFault::Misdirected(6));
+        d.write(0, &data).unwrap();
+        let mut r = vec![0u8; 3 * BLOCK];
+        d.read(0, &mut r).unwrap();
+        assert_eq!(
+            (r[0], r[BLOCK], r[2 * BLOCK]),
+            (1, 2, 3),
+            "acknowledged as written"
+        );
+        d.flush().unwrap();
+        let img = d.image();
+        assert_eq!(img[0], 1);
+        assert_eq!(img[BLOCK], 0, "lost");
+        assert_eq!(img[2 * BLOCK], 0, "not where it was meant to go");
+        assert_eq!(img[6 * BLOCK], 3, "but at block 6");
     }
 }

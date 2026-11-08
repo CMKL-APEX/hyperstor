@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 7 | 0 | 0 | 37 |
+| 8 | 0 | 0 | 37 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Engine durability against a device that lies (#241, #242, #243, #253)** (`engine-corruption-faults`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `test/engine-corruption-faults` | #241: crash tests with damaged blocks and lost or misdirected writes (I305); they show #242 (17 silent losses in 300 seeds), #253 (a damaged shard superblock opens the shard empty) and #243 | Pull request for #241 and D266–D273; then #242 (look-ahead refusal and the hash chain, D266) and #253 (mirrored superblocks, D267) | 2026-11-08 |
 | **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-copies`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238) | HS5b: large payloads neither copied into frames nor out of them (I300, #238): 1 MiB I/O 6–25% faster, 4 KiB unchanged | The client's copy, the engine's aligned copy (I12), zeroed receive buffers and registered buffers; then HS6's transport trait and verbs module | 2026-11-07 |
 | **HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D260)** (`hs15-tenancy`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS15 | `feat/hs15-host-realms`, [#231](https://github.com/CMKL-APEX/hyperstor/pull/231), [#233](https://github.com/CMKL-APEX/hyperstor/pull/233), [#235](https://github.com/CMKL-APEX/hyperstor/pull/235) | Stage c: hosts bound to realms by the name each gives (--host), checked by the header's primary from the cluster map (D259, D261, I302). Stage a (counts) merged in #231; stage b (volume tenants, D258) in #233 | Stage d: roles granted on a realm, in mgmt (D260); then deploy HS15 to the pilot | 2026-11-07 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-claims`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161), [#181](https://github.com/CMKL-APEX/hyperstor/pull/181), [#197](https://github.com/CMKL-APEX/hyperstor/pull/197), [#199](https://github.com/CMKL-APEX/hyperstor/pull/199), [#203](https://github.com/CMKL-APEX/hyperstor/pull/203), [#205](https://github.com/CMKL-APEX/hyperstor/pull/205) | Stage 3 merged (#203; D237, D238, I277). On feat/fabric-claims: stage 4, claims on ports by the orchestrator role and lending settings (D239–D241, I278) | Merge; the glidex issue for its scheduler; deploy to the pilot when asked; then stage 5 with HS6, and G52 | 2026-11-06 |
@@ -82,7 +83,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 12 | 3 | 1 |
+| HS0 | Local storage engine and reactor | 12 | 4 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |
