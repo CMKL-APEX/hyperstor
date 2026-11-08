@@ -107,14 +107,14 @@ a crash before that leaves the first format (as built, I309). The
 operator runs `hyperstorctl device upgrade --device D|--all`, refused
 while any device asked hasn't reported its format (nodes before v0.0.8
 don't); the map lists the devices asked (map format 20), and each node
-converts its own when it next starts (as built, I310). A build formats a device only
+converts its own when it next starts (as built, I311). A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
 over. When both copies fail, the backup in the last block is read, unless
 a copy is of a newer version; and blank copies over a shard's superblocks
 (blocks 2 and 3) are a damaged device, never a blank one, so neither
 `hyperstord` nor `hyperstor-install format-device` formats over it
-(D271; as built, I311).
+(D271; as built, I312).
 
 **Block numbers** in runs, extents and log records are absolute 64-bit
 device blocks. In dense block maps (D43), whose slots hold 32 bits, they
@@ -204,7 +204,7 @@ device is formatted with the cluster's id; a superblock without one
   data and records are written, then the device flushed with
   `fdatasync`; FUA and NVMe passthrough are to be measured (#248, G57).
 - **G57. Commit durability by FUA and NVMe passthrough** (05-decision-log.md
-  point 240; #248). On an NVMe drive the engine may own (not a file on a
+  point 242; #248). On an NVMe drive the engine may own (not a file on a
   filesystem): the commit rate and p50/p99 of one-block rounds with
   write plus `fdatasync`, with `RWF_DSYNC` (FUA where the drive has a
   volatile cache), and with NVMe passthrough over io_uring

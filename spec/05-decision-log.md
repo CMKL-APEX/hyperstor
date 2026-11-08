@@ -1406,4 +1406,17 @@ recommendations; the owner took them:
 |---|---|---|---|
 | 238 | When a device converts to the v0.0.8 format: an explicit `hyperstorctl device upgrade` once every node runs v0.0.8 (recommended); automatically at open; automatically once the cluster records every node on v0.0.8 | The explicit command | D274 |
 | 239 | Discard of freed blocks (#245): batched after each checkpoint, on by default, a per-device setting to turn it off (recommended); off by default; an `fstrim`-like command only | Batched after each checkpoint | D275 |
-| 240 | A device for #248's measurement: none at hand; skip until a host exists, as a host check (G57), and move #248 out of v0.0.8 if none turns up (recommended); name one | Skip until a host exists | G57 |
+| 242 | A device for #248's measurement: none at hand; skip until a host exists, as a host check (G57), and move #248 out of v0.0.8 if none turns up (recommended); name one | Skip until a host exists | G57 |
+
+## mgmt and the leader; mgmt behind a proxy (2026-11-08)
+
+A follower host's web UI failed people's changes and logins: its mgmt
+knew only its own member, which refuses writes as not the leader. The
+owner asked for a redirect to the leader's UI; given the options and
+their costs, they took the recommendation, and asked that mgmt be ready
+for a proxy with Cloudflare's Origin CA or an organization's CA:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 240 | A follower's UI: mgmt follows the leader for its calls, no redirect (recommended); a browser redirect to the leader's UI; both | mgmt follows the leader | D276 |
+| 241 | Behind a proxy: the operator's certificate from any CA, its names allowed; proxies known by a client certificate or by address; only theirs say who calls | Yes, compatible with Cloudflare's Origin CA or the organization's CA; the details open for review | D277 |

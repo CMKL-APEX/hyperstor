@@ -550,6 +550,83 @@ fn a_scrub_started_on_a_follower_goes_to_the_leader() {
     assert!(r.has("vol (#1)"), "{}", r.out);
 }
 
+/// A follower host's mgmt, given only that member's API as the installer
+/// writes it, sends its calls to the leader (D276): the first
+/// administrator's claim, their account and their session, all rows the
+/// leader writes, go through it.
+#[test]
+fn a_followers_mgmt_reaches_the_leader() {
+    use std::io::{Read, Write};
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = group("mgmtleader", 3, 3);
+    let l = g.leader(&[0, 1, 2]);
+    let f = (l + 1) % 3;
+    wait_for("the leader's API in the member list", 30, || {
+        let r = g.ctl(f, &["member", "list"]);
+        (r.code == 0
+            && r.out
+                .lines()
+                .any(|x| x.contains(" leader ") && x.ends_with(&g.m[l].api)))
+        .then_some(())
+    });
+    start_authd(&g.s.run().join("auth.sock"));
+    let port = free_ports(1);
+    let args: Vec<String> = env_args(&g.m[f].root, g.s.run(), "mgmt.env")
+        .into_iter()
+        .map(|a| a.replace("/run/hyperstor-authd", g.s.run().to_str().unwrap()))
+        .map(|a| {
+            if a.starts_with("0.0.0.0:") {
+                format!("127.0.0.1:{port}")
+            } else {
+                a
+            }
+        })
+        .collect();
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--api" && w[1] == g.m[f].api),
+        "{args:?}"
+    );
+    let log = g.s.path("mgmt.log");
+    let p = Command::new(g.m[f].root.join("usr/local/bin/hyperstor-mgmt"))
+        .args(&args)
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    g.others.push(p);
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let claim = wait_for("the claim code", 30, || {
+        let t = text();
+        let rest = t.split("claim code ").nth(1)?;
+        Some(rest.split_whitespace().next()?.to_string())
+    });
+    assert!(
+        text().contains(&format!("go to {} first", g.m[l].api)),
+        "{}",
+        text()
+    );
+    let root = std::fs::read_to_string(g.m[f].pki().join("root.crt")).unwrap();
+    let body =
+        serde_json::json!({ "user": "ann", "password": PASSWORD, "claim": claim }).to_string();
+    let req = format!(
+        "POST /auth/login HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n\
+         Connection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let config = hyperstor_pki::web_client_config(Some(&root)).unwrap();
+    let name =
+        rustls::pki_types::ServerName::IpAddress(std::net::IpAddr::from([127, 0, 0, 1]).into());
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+    let tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+    tls.write_all(req.as_bytes()).unwrap();
+    let mut raw = Vec::new();
+    let _ = tls.read_to_end(&mut raw);
+    let answer = String::from_utf8_lossy(&raw).into_owned();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}\n{}", text());
+    assert!(answer.contains("security-admin"), "{answer}");
+}
+
 /// Members restarted one at a time, in the installer's order (3, 2, 1),
 /// keep committing: after each restart the leader takes a write within
 /// seconds, and the restarted member catches up (issue #177, I279).

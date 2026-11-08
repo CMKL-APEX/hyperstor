@@ -5,20 +5,23 @@ cluster API on their behalf. See
 [Managing a cluster](../admin-guide/managing.md#dashboard).
 
 ```text
-usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]
+usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--listen ADDR[,ADDR...]` | required | `IP:PORT`s to serve on (`0.0.0.0:8852,[::]:8852`: every address). Beyond loopback it needs `--web-tls`, and `--authd` or `--oidc`; the host's own names and addresses are then allowed in `Host` |
-| `--api ADDR[,ADDR...]` | required | The [cluster API](cluster-api.md), `IP:PORT`: every map service member, separated by commas. A call a member can't serve (it isn't the leader) goes to the next |
+| `--api ADDR[,ADDR...]` | required | The [cluster API](cluster-api.md), `IP:PORT`: one map service member or more, separated by commas. mgmt asks them for the member list every 5 seconds and sends every call to the leader first, then to the others, so one address is enough and every host's mgmt serves changes |
 | `--tls DIR` | required | Its identity: `DIR/mgmt.crt`, `DIR/mgmt.key` and `DIR/root.crt` |
 | `--metrics ADDR,ADDR...` | none | The storage nodes' metrics addresses (`hyperstord --admin`) |
 | `--authd SOCKET` | none | People log in with their password, checked by [`hyperstor-authd`](hyperstor-authd.md) on `SOCKET`. Without it, the dashboard is read-only and on loopback only |
 | `--oidc FILE` | none | People log in with an identity provider (OIDC), configured in `FILE`; see [Identity providers](#identity-providers) |
 | `--web-tls DIR` | none | Serve HTTPS with `DIR/web.crt` (the chain) and `DIR/web.key`, re-read within a minute when they change |
 | `--tailscale SOCKET` | none | Also serve the node's Tailscale certificate to clients naming its `ts.net` names, fetched from `tailscaled`'s local API at `SOCKET` (`/run/tailscale/tailscaled.sock`); needs `--web-tls` |
-| `--hosts NAME,...` | none | Names people reach it by, allowed in the `Host` header besides `localhost`, `127.0.0.1` and `[::1]` |
+| `--hosts NAME,...` | none | Names people reach it by, allowed in the `Host` header besides `localhost`, `127.0.0.1` and `[::1]`, the host's own (beyond loopback) and the DNS names on `--web-tls`'s certificate |
+| `--proxy-ca FILE` | none | A client certificate from a CA in `FILE` (PEM) marks a proxy's connection; see [Behind a proxy](#behind-a-proxy). Needs `--web-tls` |
+| `--trusted-proxies CIDR,...` | none | Proxies by address, `ADDR` or `ADDR/BITS` |
+| `--proxy-only` | off | Serve only proxies, and loopback; needs `--proxy-ca` or `--trusted-proxies` |
 | `--ui DIR` | the built-in dashboard | Serve the web UI's files from `DIR` |
 
 The installer runs it on every address over HTTPS, with logins
@@ -48,6 +51,43 @@ install -m 0640 -g hyperstor "$RENEWED_LINEAGE/privkey.pem" /etc/hyperstor/web/w
 ```
 
 with `hyperstor-install install --web-tls /etc/hyperstor/web`.
+
+## Behind a proxy
+
+mgmt can sit behind a reverse proxy, a load balancer or a CDN such as
+Cloudflare, on one host or several: every host's mgmt sends its calls to
+the map service's leader, and sessions and tokens are kept in the map
+service, so any host's mgmt serves any request.
+
+| What | How |
+|---|---|
+| The public name | A certificate whose DNS names include it (`--web-tls`), or `hyperstor-install install --mgmt-hosts NAME`. Other names are refused (`421`) |
+| The certificate | Any CA's: Cloudflare's Origin CA, or your organization's. `web.crt` holds the chain, leaf first; `web.key` the key (PKCS#8, RSA or EC) |
+| Which connections are the proxy's | A client certificate from `--mgmt-proxy-ca FILE` (Cloudflare's Authenticated Origin Pulls CA, or your proxies' CA), or an address in `--mgmt-trusted-proxies` (`127.0.0.1,::1` for a tunnel on the host) |
+| The person's address | From a proxy's connection only: `CF-Connecting-IP`, else the last `X-Forwarded-For` entry. Others' such headers are ignored. It is the address in mgmt's log and the audit |
+| Only through the proxy | `--mgmt-proxy-only on`: other connections get `403`, except from loopback |
+
+With a Cloudflare Tunnel on the host, one tunnel can serve several
+names: add a public hostname whose service is
+`https://localhost:8852`, with **Origin Server Name** a name on mgmt's
+certificate and **CA Pool** the CA that issued it (Cloudflare's Origin
+CA root for an Origin CA certificate, `/etc/hyperstor/pki/root.crt` for
+the cluster's own). Then:
+
+```sh
+hyperstor-install install --web-tls /etc/hyperstor/web-origin \
+    --mgmt-trusted-proxies 127.0.0.1,::1
+```
+
+where `/etc/hyperstor/web-origin` holds the Origin CA certificate and
+key as `web.crt` and `web.key` (key mode 0640, group `hyperstor`). With
+the cluster's own certificate instead, leave `--web-tls` as it is and
+add `--mgmt-hosts` with the public name.
+
+Logins with an identity provider keep the login's state in the mgmt
+that began it until the provider sends the browser back: behind a load
+balancer over several hosts, send `/auth/oidc/` to the same host
+(session affinity). Password logins and API tokens need nothing.
 
 ## Logins
 

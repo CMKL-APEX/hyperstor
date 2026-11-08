@@ -245,6 +245,7 @@ covered by tests that run on every change.
 | People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf) | Done |
 | Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit | Done |
 | People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate | Done |
+| Every host's mgmt sends its calls to the map service's leader, found from the member list; mgmt behind a proxy or a CDN: any CA's certificate and its names, proxies known by a client certificate or address, the person's address from them only, proxy-only | Done |
 | The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui | Done |
 | Pools, devices and volumes managed in the web UI: pools created, changed, their devices chosen and deleted; devices added, weighted, classed and removed after their plan; volumes expanded | Done |
 
