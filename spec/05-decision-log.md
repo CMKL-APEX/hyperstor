@@ -1393,3 +1393,4 @@ log hash chain, which ships in v0.0.8 with the block-number change:
 | 234 | Device superblock backup (#246): at the device's end, compatible flag (recommended); only the format-device scan; not now | Yes | D271 |
 | 235 | On-device index: designed after v0.0.8 (recommended); start in v0.0.8; only when RAM calls for it | After v0.0.8 | D272 |
 | 236 | #249 placement and #250 experiments: both later (recommended); keep #249's design; keep both | Both later | D273 |
+| 237 | Where the superblock mirrors go, since a compatible flag at the region's end lets older builds put data there: the last two blocks of the log ring, in the v0.0.8 incompatible step (recommended); the region's end with a read-only-compatible flag, new devices only; no mirrors, the refusal only | The log ring's end | D267 revised |

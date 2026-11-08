@@ -244,6 +244,14 @@ struct LogRecord {
     lists: Vec<RList>,
 }
 
+/// A log record's header, past its magic, version, LSN and checksum.
+struct Header {
+    group: u64,
+    nblocks: u64,
+    plen: usize,
+    pcrc: u32,
+}
+
 /// Counters, for tests and status.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShardStats {
@@ -438,6 +446,34 @@ impl ReadPlan {
     }
 }
 
+/// The seed `crc` was computed from over `data`. CRC32C is affine in its
+/// seed, so the seed solves 32 equations over GF(2); `None` if none does.
+fn crc_seed(data: &[u8], crc: u32) -> Option<u32> {
+    let base = crc32c_append(0, data);
+    // By leading bit: what a combination of seed bits changes, and the
+    // combination.
+    let mut basis: [Option<(u32, u32)>; 32] = [None; 32];
+    let reduce = |basis: &[Option<(u32, u32)>; 32], mut v: u32, mut c: u32| {
+        for bit in (0..32).rev() {
+            if v >> bit & 1 == 1
+                && let Some((bv, bc)) = basis[bit]
+            {
+                v ^= bv;
+                c ^= bc;
+            }
+        }
+        (v, c)
+    };
+    for i in 0..32 {
+        let (v, c) = reduce(&basis, crc32c_append(1 << i, data) ^ base, 1 << i);
+        if v != 0 {
+            basis[31 - v.leading_zeros() as usize] = Some((v, c));
+        }
+    }
+    let (v, c) = reduce(&basis, crc ^ base, 0);
+    (v == 0).then_some(c)
+}
+
 fn random_u32() -> u32 {
     let mut v = 0u32;
     // SAFETY: getrandom writes at most 4 bytes into `v`, which outlives the call.
@@ -499,10 +535,14 @@ impl Shard {
             (region.start * BLOCK as u64, &mut a),
             ((region.start + 1) * BLOCK as u64, &mut b),
         ])?;
-        let sup = [Super::decode(&a), Super::decode(&b)]
+        let supers: Vec<Super> = [Super::decode(&a), Super::decode(&b)]
             .into_iter()
             .flatten()
             .filter(|s| s.device_id == device_id && s.shard == shard)
+            .collect();
+        let unreadable = supers.len() < 2;
+        let sup = supers
+            .into_iter()
             .max_by_key(|s| s.seq)
             // Formatting writes every shard before the device superblock,
             // so a shard without one is damaged, not blank.
@@ -556,6 +596,16 @@ impl Shard {
             sh.load_checkpoint(c)?;
         }
         let mut records = sh.scan_log()?;
+        // Records are written only under a salt a durable superblock names,
+        // so a whole record under another salt where the log stops means the
+        // newer superblock was lost, not torn (D267).
+        let stop = records.last().map_or(sh.head_lsn, |r| r.lsn + r.nblocks);
+        if unreadable && sh.head_lsn + sh.region.log_blocks > stop && sh.foreign_record(stop)? {
+            return Err(EngineError::Corrupt(format!(
+                "shard {shard}: a superblock is unreadable and the log at LSN {stop} \
+                 holds a record its salt doesn't name"
+            )));
+        }
         let (mut base_index, base_rev, base_group) = (
             std::mem::take(&mut sh.index),
             sh.next_revision,
@@ -566,6 +616,7 @@ impl Shard {
         // again from the checkpoint. The checkpoint's index is copied only
         // for a replay, which may need it again: a copy of a large index
         // takes seconds (I188).
+        let mut dropped = Vec::new();
         let mut fx = loop {
             sh.index = if records.is_empty() {
                 std::mem::take(&mut base_index)
@@ -590,13 +641,24 @@ impl Shard {
             }
             match sh.first_unwritten(&records, &fx)? {
                 None => break fx,
-                Some(i) => records.truncate(i),
+                Some(i) => dropped.extend(records.drain(i..).map(|r| r.lsn)),
             }
         };
         sh.index.settle_tentative(&mut fx);
         sh.pending = fx.pending;
         sh.rebuild_allocator()?;
         sh.apply_deferred()?;
+        // Records dropped above would replay under the old salt if the
+        // shard keeps it, and look like damage (D266, D267) otherwise.
+        if !dropped.is_empty() {
+            let zero = AlignedBuf::zeroed(BLOCK);
+            let io: Vec<(u64, &[u8])> = dropped
+                .iter()
+                .map(|l| (sh.log_pos(*l), &zero[..]))
+                .collect();
+            sh.dev.write_batch(&io)?;
+            sh.dev.flush()?;
+        }
         let salt = sh.salt;
         sh.salt = random_u32();
         if let Err(e) = sh.checkpoint() {
@@ -776,6 +838,13 @@ impl Shard {
     /// Reads `n` log blocks starting at `lsn`, following the ring's wrap.
     fn read_log(&self, lsn: u64, n: u64) -> Result<AlignedBuf, EngineError> {
         let mut buf = AlignedBuf::zeroed(n as usize * BLOCK);
+        self.read_log_into(lsn, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Fills `buf` with log blocks starting at `lsn`.
+    fn read_log_into(&self, lsn: u64, buf: &mut [u8]) -> Result<(), EngineError> {
+        let n = (buf.len() / BLOCK) as u64;
         let first = (self.region.log_blocks - lsn % self.region.log_blocks).min(n);
         let (a, b) = buf.split_at_mut(first as usize * BLOCK);
         let mut reads = vec![(self.log_pos(lsn), a)];
@@ -783,39 +852,60 @@ impl Shard {
             reads.push((self.log_pos(lsn + first), b));
         }
         self.dev.read_batch(&mut reads)?;
-        Ok(buf)
+        Ok(())
+    }
+
+    /// Parses the header in `blk` if it is a record header written at
+    /// `lsn` under the current salt.
+    fn header(&self, blk: &[u8], lsn: u64) -> Option<Header> {
+        let mut d = Dec::new(blk);
+        let h = (|| -> Result<_, DecodeError> {
+            let magic = d.u32()?;
+            let version = d.u16()?;
+            let _flags = d.u16()?;
+            let rlsn = d.u64()?;
+            let group = d.u64()?;
+            let nblocks = d.u32()? as u64;
+            let plen = d.u32()? as usize;
+            let pcrc = d.u32()?;
+            let hcrc = d.u32()?;
+            Ok((
+                magic,
+                version,
+                rlsn,
+                hcrc,
+                Header {
+                    group,
+                    nblocks,
+                    plen,
+                    pcrc,
+                },
+            ))
+        })();
+        let (magic, version, rlsn, hcrc, h) = h.ok()?;
+        (magic == LOG_MAGIC
+            && version == LOG_VERSION
+            && rlsn == lsn
+            && crc32c_append(self.salt, &blk[..HEADER_LEN - 4]) == hcrc)
+            .then_some(h)
     }
 
     /// Reads records from `head_lsn` until the first block that isn't the
-    /// next valid record.
+    /// next valid record. A valid record header after that block means the
+    /// block was damaged, not torn (D266): only the last round can be torn,
+    /// and its record is the last one written.
     fn scan_log(&self) -> Result<Vec<LogRecord>, EngineError> {
         let mut out = Vec::new();
         let mut lsn = self.head_lsn;
         while lsn - self.head_lsn < self.region.log_blocks {
             let hdr = self.read_log(lsn, 1)?;
-            let mut d = Dec::new(&hdr);
-            let parsed = (|| -> Result<_, DecodeError> {
-                let magic = d.u32()?;
-                let version = d.u16()?;
-                let _flags = d.u16()?;
-                let rlsn = d.u64()?;
-                let group = d.u64()?;
-                let nblocks = d.u32()? as u64;
-                let plen = d.u32()? as usize;
-                let pcrc = d.u32()?;
-                let hcrc = d.u32()?;
-                Ok((magic, version, rlsn, group, nblocks, plen, pcrc, hcrc))
-            })();
-            let Ok((magic, version, rlsn, group, nblocks, plen, pcrc, hcrc)) = parsed else {
+            let Some(h) = self.header(&hdr, lsn) else {
                 break;
             };
-            if magic != LOG_MAGIC
-                || version != LOG_VERSION
-                || rlsn != lsn
-                || crc32c_append(self.salt, &hdr[..HEADER_LEN - 4]) != hcrc
-                || nblocks == 0
+            let nblocks = h.nblocks;
+            if nblocks == 0
                 || nblocks > self.region.log_blocks / 2
-                || HEADER_LEN + plen > nblocks as usize * BLOCK
+                || HEADER_LEN + h.plen > nblocks as usize * BLOCK
                 || lsn + nblocks - self.head_lsn > self.region.log_blocks
             {
                 break;
@@ -825,8 +915,8 @@ impl Shard {
             } else {
                 self.read_log(lsn, nblocks)?
             };
-            let payload = &full[HEADER_LEN..HEADER_LEN + plen];
-            if crc32c_append(self.salt, payload) != pcrc {
+            let payload = &full[HEADER_LEN..HEADER_LEN + h.plen];
+            if crc32c_append(self.salt, payload) != h.pcrc {
                 break;
             }
             let mut d = Dec::new(payload);
@@ -840,13 +930,89 @@ impl Shard {
             };
             out.push(LogRecord {
                 lsn,
-                group,
+                group: h.group,
                 nblocks,
                 lists,
             });
             lsn += nblocks;
         }
+        if let Some(later) = self.header_after(lsn)? {
+            return Err(EngineError::Corrupt(format!(
+                "shard {}: the log record at LSN {lsn} is damaged and the one at LSN {later} \
+                 after it is valid",
+                self.shard
+            )));
+        }
         Ok(out)
+    }
+
+    /// Whether the log at `lsn` holds a whole record written there under
+    /// another salt: its header names `lsn`, and its payload checksum holds
+    /// under the salt its header checksum was seeded with.
+    fn foreign_record(&self, lsn: u64) -> Result<bool, EngineError> {
+        let hdr = self.read_log(lsn, 1)?;
+        let mut d = Dec::new(&hdr);
+        let fields = (|| -> Result<_, DecodeError> {
+            let magic = d.u32()?;
+            let version = d.u16()?;
+            let _flags = d.u16()?;
+            let rlsn = d.u64()?;
+            let _group = d.u64()?;
+            let nblocks = d.u32()? as u64;
+            let plen = d.u32()? as usize;
+            let pcrc = d.u32()?;
+            let hcrc = d.u32()?;
+            Ok((magic, version, rlsn, nblocks, plen, pcrc, hcrc))
+        })();
+        let Ok((magic, version, rlsn, nblocks, plen, pcrc, hcrc)) = fields else {
+            return Ok(false);
+        };
+        if magic != LOG_MAGIC
+            || version != LOG_VERSION
+            || rlsn != lsn
+            || nblocks == 0
+            || nblocks > self.region.log_blocks / 2
+            || HEADER_LEN + plen > nblocks as usize * BLOCK
+        {
+            return Ok(false);
+        }
+        let Some(salt) = crc_seed(&hdr[..HEADER_LEN - 4], hcrc) else {
+            return Ok(false);
+        };
+        if salt == self.salt {
+            return Ok(false);
+        }
+        let full = if nblocks == 1 {
+            hdr
+        } else {
+            self.read_log(lsn, nblocks)?
+        };
+        Ok(crc32c_append(salt, &full[HEADER_LEN..HEADER_LEN + plen]) == pcrc)
+    }
+
+    /// Looks through the rest of the ring after the block at `lsn` for a
+    /// record header written there under the current salt. Blocks from an
+    /// earlier pass of the ring carry an older LSN, and blocks from earlier
+    /// opens another salt, so neither passes.
+    fn header_after(&self, lsn: u64) -> Result<Option<u64>, EngineError> {
+        // 16 MiB a read, into one buffer: 1 MiB reads, or a fresh buffer
+        // for each, make a 1 GiB ring several times slower (02-benchmarks.md).
+        const CHUNK: u64 = 4096;
+        let end = self.head_lsn + self.region.log_blocks;
+        let mut at = lsn + 1;
+        let mut buf = AlignedBuf::zeroed(((end - at.min(end)).min(CHUNK) as usize) * BLOCK);
+        while at < end {
+            let n = (end - at).min(CHUNK);
+            let buf = &mut buf[..n as usize * BLOCK];
+            self.read_log_into(at, buf)?;
+            for (i, blk) in buf.chunks(BLOCK).enumerate() {
+                if self.header(blk, at + i as u64).is_some() {
+                    return Ok(Some(at + i as u64));
+                }
+            }
+            at += n;
+        }
+        Ok(None)
     }
 
     /// Finds the first record of the last commit group whose new data
@@ -901,6 +1067,16 @@ impl Shard {
             let mut buf = AlignedBuf::zeroed(BLOCK);
             self.dev.read(pb * BLOCK as u64, &mut buf)?;
             if crc32c(&buf) != crc {
+                // A log record lands in the data region only by a
+                // misdirected write, which also lost a record after this
+                // one: the group was acknowledged, not torn.
+                let rlsn = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+                if self.header(&buf, rlsn).is_some() {
+                    return Err(EngineError::Corrupt(format!(
+                        "shard {}: block {pb} holds the log record for LSN {rlsn}",
+                        self.shard
+                    )));
+                }
                 return Ok(Some(i));
             }
         }
@@ -2641,6 +2817,17 @@ mod tests {
 
     fn key(i: u64) -> ObjKey {
         ObjKey::new(1, 1, Namespace::Vol, format!("o{i:03}").into_bytes(), 0)
+    }
+
+    /// D267: the salt a record header was written under is found from its
+    /// checksum alone.
+    #[test]
+    fn a_checksum_seed_is_solved() {
+        for (i, salt) in [0u32, 1, 0xdead_beef, u32::MAX].into_iter().enumerate() {
+            let data: Vec<u8> = (0..36).map(|b| (b * 7 + i) as u8).collect();
+            let crc = crc32c_append(salt, &data);
+            assert_eq!(crc_seed(&data, crc), Some(salt));
+        }
     }
 
     /// D155: a PG's blocks, summed a slice at a time, without its

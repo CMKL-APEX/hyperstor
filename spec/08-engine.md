@@ -82,7 +82,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 | Region | Contents |
 |---|---|
 | Superblock (two copies at blocks 0 and 1; decided: a backup at the last block, D271) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
-| Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt; decided: each mirrored at the end of the shard's region (D267) |
+| Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt; decided: each mirrored in the last two blocks of the shard's log ring (D267) |
 | Per shard: log | circular. Operation records (§7.3), deferred small writes |
 | Per shard: data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks); checkpoint pages and their directory live here too |
 | Index | as built, in memory, saved as paged checkpoints (§7.3; I33, D105); the long-term home is an on-device copy-on-write B+tree (D43, D44), designed after v0.0.8 (D272) |
@@ -193,13 +193,23 @@ device is formatted with the cluster's id; a superblock without one
 - **Recovery** loads the checkpoint, replays the log from `L`, and checks
   the data of the last commit group, dropping that group if its data
   didn't reach the media (none of it was acknowledged). Only the last
-  round can be torn (one round in flight, I199), so decided (D266, D267,
-  D268): a bad record followed by a valid record of the current salt, or
-  log records under a salt the chosen superblock doesn't name, is damage
-  to acknowledged data: the shard refuses to open and its PGs are
-  recovered from peers. Recovering only the affected PGs comes later
+  round can be torn (one round in flight, I199), so (D266, D267, D268)
+  each of these is damage to acknowledged data, and the shard refuses to
+  open (`Corrupt`) for its PGs to be recovered from peers:
+  - a bad record followed, anywhere in the rest of the ring, by a valid
+    record header of the current salt for its own position;
+  - a block of the last group's data that holds a log record of the
+    current salt, which only a misdirected write puts there;
+  - a superblock copy unreadable and the log where the scan stops
+    holding a whole record under another salt: its header checksum gives
+    the salt (CRC32C is affine in its seed) and its payload checksum
+    confirms it.
+
+  Records of a last group dropped because its data didn't reach the
+  media are erased before the shard writes on, so they never pass for
+  either. As built (I308); recovering only the affected PGs comes later
   (D268). #241's crash tests with a device that lies show each case
-  (I305).
+  (I305, I308).
 - **Checkpoint** (as built, I33). A *fuzzy* checkpoint: it starts when a
   quarter of the log is used, records the log position `L`, and writes
   the index as a stream of objects, a slice per commit round, while

@@ -179,13 +179,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A device that lies: damaged blocks, lost and misdirected writes never read back as other data (some cases fail until #242, #243, #253)"
-spec = ["08-engine.md §7.3", "I305"]
+what = "A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log or a shard superblock refuses the shard (a damaged checkpoint page still refuses it whole until #243)"
+spec = ["08-engine.md §7.3", "I305", "I308", "D266", "D267"]
 status = "partial"
 tests = [
     "crash::a_damaged_device_superblock_copy_is_read_past",
     "crash::damaged_data_and_checkpoint_blocks_never_read_as_other_data",
+    "crash::damaged_log_blocks_never_lose_acknowledged_changes",
+    "crash::a_damaged_shard_superblock_never_loses_acknowledged_changes",
+    "crash::a_lost_write_never_loses_acknowledged_changes_silently",
+    "crash::a_misdirected_write_never_loses_acknowledged_changes_silently",
     "hyperstor_engine::dev::tests::fault_dev_loses_and_misdirects_single_blocks",
+    "hyperstor_engine::shard::tests::a_checksum_seed_is_solved",
 ]
 
 [[milestone.item]]
