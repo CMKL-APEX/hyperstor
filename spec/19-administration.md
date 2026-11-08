@@ -215,6 +215,21 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   cookies, CSP without inline scripts, HSTS with a configured
   certificate, self-signed certificate by default with first-use
   pinning in `hyperstorctl`.
+- **Reaches the leader itself** (D276): mgmt asks the member list
+  every 5 s, and as soon as a call meets a member that doesn't lead,
+  and sends every call to the leader first, then to the others. Every
+  host's mgmt serves changes, logins and audit lines, with no browser
+  redirect; `--api` needs one member.
+- **Behind a proxy or a CDN** (D277): the operator's certificate from
+  any CA (Cloudflare's Origin CA, the organization's) with its chain;
+  its DNS names are allowed `Host` names, and `--hosts` adds others.
+  A proxy is known by a client certificate from `--proxy-ca`
+  (Cloudflare's Authenticated Origin Pulls, the organization's) or by
+  address (`--trusted-proxies`); only a proxy's `CF-Connecting-IP` or
+  last `X-Forwarded-For` entry names the person's address.
+  `--proxy-only` serves proxies and loopback alone. Any host's mgmt
+  serves any request, except an OIDC login's return, which goes to the
+  mgmt that began it (I310).
 - **First boot:** no default password. `cluster init` prints a claim
   URL with a one-time code (valid 1 h); opening it creates the first
   `security-admin` (a PAM user or an OIDC subject).

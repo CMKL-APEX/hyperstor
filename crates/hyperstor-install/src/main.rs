@@ -79,7 +79,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -150,6 +150,16 @@ struct Settings {
     web_tls: String,
     /// Serve the node's Tailscale certificate too (D109), opt-in.
     tailscale_cert: bool,
+    /// More names people reach mgmt by (a proxy's public name, D277),
+    /// comma-separated; the names on `web_tls`'s certificate need none.
+    mgmt_hosts: String,
+    /// A CA whose client certificates mark a proxy's connections
+    /// (Cloudflare's Authenticated Origin Pulls, the organization's, D277).
+    mgmt_proxy_ca: String,
+    /// Proxies by address, comma-separated `ADDR[/BITS]` (D277).
+    mgmt_trusted_proxies: String,
+    /// `on`: mgmt serves only proxies and loopback (D277).
+    mgmt_proxy_only: String,
     /// Run `hyperstor-vhost` here (D142), besides the role.
     vhost: bool,
     /// The users who may use it (D144), comma-separated.
@@ -201,6 +211,10 @@ impl Settings {
             endpoints: "auto".into(),
             web_tls: String::new(),
             tailscale_cert: false,
+            mgmt_hosts: String::new(),
+            mgmt_proxy_ca: String::new(),
+            mgmt_trusted_proxies: String::new(),
+            mgmt_proxy_only: "off".into(),
             vhost: false,
             vhost_users: String::new(),
             s3: false,
@@ -280,6 +294,10 @@ impl Settings {
                 "endpoints" => self.endpoints = v.to_string(),
                 "web_tls" => self.web_tls = v.to_string(),
                 "tailscale_cert" => self.tailscale_cert = v == "true",
+                "mgmt_hosts" => self.mgmt_hosts = v.to_string(),
+                "mgmt_proxy_ca" => self.mgmt_proxy_ca = v.to_string(),
+                "mgmt_trusted_proxies" => self.mgmt_trusted_proxies = v.to_string(),
+                "mgmt_proxy_only" => self.mgmt_proxy_only = v.to_string(),
                 "vhost" => self.vhost = v == "true",
                 "vhost_users" => self.vhost_users = v.to_string(),
                 "s3" => self.s3 = v == "true",
@@ -331,6 +349,21 @@ impl Settings {
             String::new()
         } else {
             format!("removed_devices = {}\n", self.removed_devices)
+        } + &if self.mgmt_hosts.is_empty()
+            && self.mgmt_proxy_ca.is_empty()
+            && self.mgmt_trusted_proxies.is_empty()
+            && self.mgmt_proxy_only == "off"
+        {
+            // Written only once one is set, as `devices`.
+            String::new()
+        } else {
+            format!(
+                "mgmt_hosts = {}\nmgmt_proxy_ca = {}\nmgmt_trusted_proxies = {}\nmgmt_proxy_only = {}\n",
+                self.mgmt_hosts,
+                self.mgmt_proxy_ca,
+                self.mgmt_trusted_proxies,
+                self.mgmt_proxy_only
+            )
         } + &if self.endpoints == "auto" {
             String::new()
         } else {
@@ -519,6 +552,10 @@ fn main() {
             "--mgmt-listen" => "mgmt_listen",
             "--endpoints" => "endpoints",
             "--web-tls" => "web_tls",
+            "--mgmt-hosts" => "mgmt_hosts",
+            "--mgmt-proxy-ca" => "mgmt_proxy_ca",
+            "--mgmt-trusted-proxies" => "mgmt_trusted_proxies",
+            "--mgmt-proxy-only" => "mgmt_proxy_only",
             "--s3-port" => "s3_port",
             "--s3-tls" => "s3_tls",
             "--s3-realm" => "s3_realm",
@@ -534,9 +571,14 @@ fn main() {
             }
             "role" => matches!(v.as_str(), "meta" | "storage" | "both" | "vhost" | "s3"),
             "mgmt_listen" => matches!(v.as_str(), "all" | "loopback"),
+            "mgmt_proxy_only" => matches!(v.as_str(), "on" | "off"),
+            // Names, comma-separated (D277); empty: none beyond the host's.
+            "mgmt_hosts" => v.is_empty() || v.split(',').all(valid_domain),
+            // Empty: no proxies by address.
+            "mgmt_trusted_proxies" => v.is_empty() || v.split(',').all(valid_cidr),
             "endpoints" => matches!(v.as_str(), "auto" | "off"),
             // Empty: back to the cluster CA's certificate.
-            "web_tls" | "s3_tls" => v.is_empty() || v.starts_with('/'),
+            "web_tls" | "s3_tls" | "mgmt_proxy_ca" => v.is_empty() || v.starts_with('/'),
             // A realm's name (D248); empty: back to "default".
             "s3_realm" => {
                 v.len() <= 63
@@ -2734,7 +2776,34 @@ fn mgmt_listen_args(s: &Settings, p: &Plan) -> String {
     if p.tailscale {
         a.push_str(&format!(" --tailscale {}", tailscale::SOCKET));
     }
+    // Behind a proxy (D277).
+    if !s.mgmt_hosts.is_empty() {
+        a.push_str(&format!(" --hosts {}", s.mgmt_hosts));
+    }
+    if !s.mgmt_proxy_ca.is_empty() {
+        a.push_str(&format!(" --proxy-ca {}", s.mgmt_proxy_ca));
+    }
+    if !s.mgmt_trusted_proxies.is_empty() {
+        a.push_str(&format!(" --trusted-proxies {}", s.mgmt_trusted_proxies));
+    }
+    if s.mgmt_proxy_only == "on" {
+        a.push_str(" --proxy-only");
+    }
     a
+}
+
+/// `ADDR` or `ADDR/BITS`, as `--mgmt-trusted-proxies` takes them.
+fn valid_cidr(v: &str) -> bool {
+    let (a, bits) = v.split_once('/').unwrap_or((v, ""));
+    match a.parse::<std::net::IpAddr>() {
+        Ok(ip) => {
+            bits.is_empty()
+                || bits
+                    .parse::<u8>()
+                    .is_ok_and(|b| b <= if ip.is_ipv4() { 32 } else { 128 })
+        }
+        Err(_) => false,
+    }
 }
 
 /// Where the web UI's files go (D100).
@@ -4358,6 +4427,38 @@ mod tests {
             mgmt.contains("--metrics 10.0.0.1:8853,10.0.0.2:8853"),
             "{mgmt}"
         );
+        assert!(
+            !mgmt.contains("proxy") && !mgmt.contains("--hosts"),
+            "{mgmt}"
+        );
+        // Behind a proxy (D277): its options in mgmt.env, kept in
+        // install.conf, which says nothing of them until one is set.
+        assert!(!s.save().contains("mgmt_hosts"));
+        s.mgmt_hosts = "mgmt.example.test".into();
+        s.mgmt_proxy_ca = "/etc/hyperstor/proxies.pem".into();
+        s.mgmt_trusted_proxies = "127.0.0.1,::1".into();
+        s.mgmt_proxy_only = "on".into();
+        let f = files(&s, &p);
+        let mgmt = &f
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/mgmt.env")
+            .unwrap()
+            .1;
+        assert!(
+            mgmt.contains(
+                " --hosts mgmt.example.test --proxy-ca /etc/hyperstor/proxies.pem \
+                 --trusted-proxies 127.0.0.1,::1 --proxy-only"
+            ),
+            "{mgmt}"
+        );
+        let mut back = Settings::defaults();
+        back.apply(&s.save());
+        assert_eq!(back.mgmt_hosts, s.mgmt_hosts);
+        assert_eq!(back.mgmt_proxy_ca, s.mgmt_proxy_ca);
+        assert_eq!(back.mgmt_trusted_proxies, s.mgmt_trusted_proxies);
+        assert_eq!(back.mgmt_proxy_only, "on");
+        assert!(valid_cidr("10.0.0.0/8") && valid_cidr("::1") && valid_cidr("2001:db8::/32"));
+        assert!(!valid_cidr("10.0.0.0/33") && !valid_cidr("proxy.example") && !valid_cidr(""));
     }
 
     /// A map service of several members (D72–D74): each meta host runs
