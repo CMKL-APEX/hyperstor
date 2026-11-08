@@ -665,13 +665,13 @@ tests = [
 
 [[milestone.item]]
 what = "CRC32C at hardware speed (`crc32c` 0.6.9): 41 µs per MiB, from 184"
-spec = ["D41", "I301"]
+spec = ["D41", "I304"]
 status = "done"
 tests = ["hyperstor_codec::tests::crc32c_agrees_with_a_bitwise_crc_at_every_length"]
 
 [[milestone.item]]
 what = "The engine takes the CRCs that came with write data instead of computing them again"
-spec = ["D41", "I301"]
+spec = ["D41", "I304"]
 status = "planned"
 
 [[milestone.item]]
@@ -924,8 +924,17 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"
-spec = ["20-tenants.md §24.8", "D251", "D252", "D253", "D259", "D260"]
+what = "Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host`"
+spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302"]
+status = "done"
+tests = [
+    "hyperstor_map::port_tests::hosts_bound_to_realms_attach_only_theirs",
+    "vhost::a_host_bound_to_a_realm_attaches_only_its_volumes",
+]
+
+[[milestone.item]]
+what = "Roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"
+spec = ["20-tenants.md §24.8", "D252", "D253", "D260"]
 status = "planned"
 
 [[milestone]]

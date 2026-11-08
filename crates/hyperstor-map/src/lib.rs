@@ -370,6 +370,14 @@ pub struct ClusterMap {
     /// setting, `None` for the default (`idle`, D238), and ports' own.
     pub lending: Option<Lending>,
     pub port_lending: BTreeMap<String, Lending>,
+    /// Hosts bound to realms (20-tenants.md §24.8, D251, D259), by the
+    /// name each gives at `Hello` (D261): a bound host attaches only
+    /// volumes of its realms. The map service mirrors them from its
+    /// realm rows.
+    pub host_realms: BTreeMap<String, Vec<u32>>,
+    /// Tenants not in the realm `default` (D248), while any host is
+    /// bound: what storage nodes need to find a volume's realm.
+    pub tenant_realms: BTreeMap<u32, u32>,
 }
 
 /// An orchestrator's claim on a port (D205).
@@ -564,6 +572,34 @@ pub const BLOCKLIST_FOR: std::time::Duration = std::time::Duration::from_secs(36
 pub const NO_DEVICE: u32 = u32::MAX;
 
 impl ClusterMap {
+    /// Sets the hosts bound to realms and the tenants' realms storage nodes
+    /// check them against (D259), as the map service's realm rows have
+    /// them: true, and a new epoch, if that changes the map.
+    pub fn set_realm_view(
+        &mut self,
+        hosts: BTreeMap<String, Vec<u32>>,
+        tenants: BTreeMap<u32, u32>,
+    ) -> bool {
+        if self.host_realms == hosts && self.tenant_realms == tenants {
+            return false;
+        }
+        self.host_realms = hosts;
+        self.tenant_realms = tenants;
+        self.epoch += 1;
+        true
+    }
+
+    /// Whether host `host` may attach a volume of `tenant` (D251, D259):
+    /// an unbound host may attach any; a bound one only those of its
+    /// realms, a tenant's realm being `default` (0) unless the map names
+    /// another.
+    pub fn host_may_attach(&self, host: &str, tenant: u32) -> bool {
+        self.host_realms.get(host).is_none_or(|realms| {
+            let realm = self.tenant_realms.get(&tenant).copied().unwrap_or(0);
+            realms.contains(&realm)
+        })
+    }
+
     pub fn new(cluster_id: u128) -> Self {
         Self {
             epoch: 1,
@@ -1723,63 +1759,66 @@ impl ClusterMap {
         // 14: networks and endpoints; 15: endpoints down (D210); 16:
         // pools' scrub settings other than the defaults (D224); 17: ports'
         // roles, leases and weights (D209, D237); 18: claims and lending
-        // settings (D205, D209, D239).
-        let format =
-            if !self.claims.is_empty() || self.lending.is_some() || !self.port_lending.is_empty() {
-                18
-            } else if !self.ports.is_empty() {
-                17
-            } else if self
+        // settings (D205, D209, D239); 19: hosts bound to realms and
+        // tenants' realms (D259).
+        let format = if !self.host_realms.is_empty() || !self.tenant_realms.is_empty() {
+            19
+        } else if !self.claims.is_empty() || self.lending.is_some() || !self.port_lending.is_empty()
+        {
+            18
+        } else if !self.ports.is_empty() {
+            17
+        } else if self
+            .pools
+            .values()
+            .any(|p| p.scrub != ScrubSettings::default())
+        {
+            16
+        } else if !self.endpoints_down.is_empty() {
+            15
+        } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
+            14
+        } else if !self.cache_held.is_empty()
+            || !self.cache_released.is_empty()
+            || self
                 .pools
                 .values()
-                .any(|p| p.scrub != ScrubSettings::default())
-            {
-                16
-            } else if !self.endpoints_down.is_empty() {
-                15
-            } else if !self.networks.is_empty() || !self.endpoints.is_empty() {
-                14
-            } else if !self.cache_held.is_empty()
-                || !self.cache_released.is_empty()
-                || self
-                    .pools
-                    .values()
-                    .any(|p| p.cache_grace != CACHE_GRACE_SECS)
-            {
-                13
-            } else if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
-                12
-            } else if !self.cache_gens.is_empty() {
-                11
-            } else if self
-                .pools
-                .values()
-                .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
-            {
-                10
-            } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
-                9
-            } else if !self.deleted_pools.is_empty() {
-                8
-            } else if self
-                .pools
-                .values()
-                .any(|p| !p.added.is_empty() || !p.removed.is_empty())
-            {
-                7
-            } else if self.pools.values().any(|p| p.classes.len() > 1) {
-                6
-            } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
-                5
-            } else if !self.fixed_weights.is_empty() {
-                4
-            } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
-                3
-            } else if !self.blocklist.is_empty() {
-                2
-            } else {
-                1
-            };
+                .any(|p| p.cache_grace != CACHE_GRACE_SECS)
+        {
+            13
+        } else if self.full_ratios != FullRatios::default() || !self.backfillfull.is_empty() {
+            12
+        } else if !self.cache_gens.is_empty() {
+            11
+        } else if self
+            .pools
+            .values()
+            .any(|p| p.split.is_some() || p.placement != p.pg_count || !p.autoscale)
+        {
+            10
+        } else if !self.removed_devices.is_empty() || !self.removed_nodes.is_empty() {
+            9
+        } else if !self.deleted_pools.is_empty() {
+            8
+        } else if self
+            .pools
+            .values()
+            .any(|p| !p.added.is_empty() || !p.removed.is_empty())
+        {
+            7
+        } else if self.pools.values().any(|p| p.classes.len() > 1) {
+            6
+        } else if !self.kinds.is_empty() || !self.fixed_classes.is_empty() {
+            5
+        } else if !self.fixed_weights.is_empty() {
+            4
+        } else if !self.auto_out.is_empty() || !self.failed.is_empty() {
+            3
+        } else if !self.blocklist.is_empty() {
+            2
+        } else {
+            1
+        };
         e.u32(format).u64(self.epoch).u128(self.cluster_id);
         e.u32(self.nodes.len() as u32);
         for n in self.nodes.values() {
@@ -1997,13 +2036,25 @@ impl ClusterMap {
                 e.str(id).u8(Self::lending_code(**l));
             });
         }
+        if format >= 19 {
+            let hosts: Vec<(&String, &Vec<u32>)> = self.host_realms.iter().collect();
+            e.seq(&hosts, |e, (host, realms)| {
+                e.str(host).seq(realms, |e, r| {
+                    e.u32(*r);
+                });
+            });
+            let tenants: Vec<(&u32, &u32)> = self.tenant_realms.iter().collect();
+            e.seq(&tenants, |e, (t, r)| {
+                e.u32(**t).u32(**r);
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=18).contains(&v) {
+        if !(1..=19).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2299,6 +2350,16 @@ impl ClusterMap {
             };
             m.port_lending = d
                 .seq(2, |d| Ok((d.str()?.to_string(), lending(d.u8()?)?)))?
+                .into_iter()
+                .collect();
+        }
+        if v >= 19 {
+            m.host_realms = d
+                .seq(8, |d| Ok((d.str()?.to_string(), d.seq(4, |d| d.u32())?)))?
+                .into_iter()
+                .collect();
+            m.tenant_realms = d
+                .seq(8, |d| Ok((d.u32()?, d.u32()?)))?
                 .into_iter()
                 .collect();
         }
@@ -3757,5 +3818,29 @@ pool 1 v replicated size 2 min 1 pgs 8
         m.claim_port("1/ibp12s0", "y", true, 10, 0).unwrap();
         m.remove_device(1000);
         assert!(m.claims.is_empty() && m.port_lending.is_empty());
+    }
+
+    /// Hosts bound to realms (D259) travel in format 19, used only while
+    /// a host is bound; an unbound host attaches any volume, a bound one
+    /// only its realms' (tenants in `default` unless the map says).
+    #[test]
+    fn hosts_bound_to_realms_attach_only_theirs() {
+        let mut m = ClusterMap::new(7);
+        let plain = m.encode();
+        assert_eq!(u32::from_le_bytes(plain[..4].try_into().unwrap()), 1);
+        assert!(m.host_may_attach("h1", 5));
+        m.host_realms.insert("h1".into(), vec![1]);
+        m.host_realms.insert("h2".into(), vec![0, 2]);
+        m.tenant_realms.insert(5, 1);
+        m.tenant_realms.insert(6, 2);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 19);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+        assert!(m.host_may_attach("h1", 5) && !m.host_may_attach("h1", 6));
+        assert!(!m.host_may_attach("h1", 7) && !m.host_may_attach("h1", 0));
+        assert!(m.host_may_attach("h2", 6) && m.host_may_attach("h2", 0));
+        assert!(!m.host_may_attach("h2", 5));
+        // Unbound hosts, and hosts that give no name, attach any.
+        assert!(m.host_may_attach("h3", 5) && m.host_may_attach("", 6));
     }
 }

@@ -117,6 +117,18 @@ pub fn header_deleting(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> 
     h.len() > 1 + 4 + 8 + 16 && (h[0] == 1 || h[0] == 2) && h[1 + 4 + 8 + 16] != 0
 }
 
+/// The tenant a header names (D258); 0 for none, or one that doesn't
+/// decode. Storage nodes read it to check a host's realms (D259).
+pub fn header_tenant(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> u32 {
+    let l = Looked {
+        size: 0,
+        attrs: attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        kv: Vec::new(),
+        kv_bytes: None,
+    };
+    decode(0, &l).map_or(0, |v| v.tenant)
+}
+
 /// The name of volume `id`'s header object.
 pub fn header_key(id: u128) -> Vec<u8> {
     format!("h/{id:032x}").into_bytes()

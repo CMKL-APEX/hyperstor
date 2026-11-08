@@ -1901,7 +1901,7 @@ overlapping.
    buffer (I12), zeroed receive buffers, and the CRCs computed again by
    the engine. Those are the next HS5b items, with registered buffers.
 
-## 2026-11-07: CRC32C at hardware speed (HS5b, I301)
+## 2026-11-07: CRC32C at hardware speed (HS5b, I304)
 
 What each step of a 1 MiB write or read costs on one of the pilot's HGX
 A100 hosts (AMD EPYC 7742, Linux 6.8.0), from a small program built

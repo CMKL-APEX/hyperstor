@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(crc32c_append(a, b"world"), crc32c(b"hello world"));
     }
 
-    /// The hardware path (crc32c 0.6.9, I301) agrees with a bitwise CRC at
+    /// The hardware path (crc32c 0.6.9, I304) agrees with a bitwise CRC at
     /// lengths that reach each of its parts: unaligned heads and tails,
     /// 8-byte words, and the short and long three-way loops.
     #[test]
