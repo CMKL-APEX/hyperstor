@@ -1127,18 +1127,18 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=f891a028aa21b2a885b71c68fbf641531a2a19ba#f891a028aa21b2a885b71c68fbf641531a2a19ba"
 dependencies = [
  "arc-swap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cedar-policy",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "zeroize",
@@ -1623,6 +1623,7 @@ dependencies = [
  "hyper-util",
  "hyperstor-api",
  "hyperstor-pki",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

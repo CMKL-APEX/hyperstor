@@ -9,12 +9,18 @@
 //! | `sess/<sha-256 of the id>` | user, created, last seen, logged in at, CSRF value |
 //! | `tok/<sha-256 of the token>` | id, name, user, created, expires |
 //! | `claim` | the first-boot claim code's SHA-256 and expiry |
+//! | `login/<sha-256 of the state>` | an identity provider's login begun and not finished, sealed |
 //!
-//! Secrets are never kept, only their SHA-256. A checked session or token
+//! Secrets are never kept, only their SHA-256, but for a login begun with
+//! an identity provider: its state ([`Pending`]) is kept where every mgmt
+//! finds it, whichever the provider sends the browser back to, sealed
+//! with a key only the browser that began it holds (its `hs_oidc`
+//! cookie), for [`STATE_SECS`] at most, and used once. A checked session or token
 //! is cached for [`CACHE`] at most, so a logout or a revocation reaches
 //! every mgmt within that.
 
 use connectrpc::client::HttpClient;
+use glidex_auth::oidc::{Pending, STATE_SECS};
 use glidex_auth::secrets::{constant_eq, random_token, sha256_hex};
 use glidex_auth::session::{self as rules, NEVER_FRESH, SessionRules};
 use glidex_auth::token::{TokenRules, mint_token, token_hash};
@@ -31,6 +37,8 @@ pub const CACHE: Duration = Duration::from_secs(10);
 pub const TOKEN_PREFIX: &str = "hst_";
 /// The first-boot claim code is valid an hour (§23.7).
 pub const CLAIM_SECS: u64 = 3600;
+/// Logins begun with an identity provider, by their state's SHA-256.
+const LOGIN: &str = "login/";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct User {
@@ -247,6 +255,24 @@ impl Rows {
             }
         }
     }
+}
+
+/// When a kept login began, if its row is whole (time, nonce, sealed).
+fn begun(v: &[u8]) -> Option<u64> {
+    let t = v.get(..8)?.try_into().ok()?;
+    (v.len() > 8 + 12).then(|| u64::from_be_bytes(t))
+}
+
+/// The key a login is sealed with: from the browser-binding cookie, which
+/// only the browser that began the login holds.
+fn sealer(browser: &str) -> ring::aead::LessSafeKey {
+    let k = ring::digest::digest(
+        &ring::digest::SHA256,
+        format!("hyperstor-mgmt oidc login\n{browser}").as_bytes(),
+    );
+    ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, k.as_ref()).expect("key"),
+    )
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -606,6 +632,64 @@ impl People {
         Ok(p)
     }
 
+    /// Keeps a login begun with an identity provider for whichever mgmt
+    /// the browser comes back to, and forgets those begun too long ago.
+    pub async fn keep_login<A: Serialize>(&self, p: &Pending<A>) -> Result<(), Error> {
+        let t = now();
+        for (k, v) in self.rows.list(LOGIN).await? {
+            if begun(&v).is_none_or(|b| b + STATE_SECS <= t) {
+                self.rows.delete(&k).await?;
+            }
+        }
+        let key = format!("{LOGIN}{}", sha256_hex(p.state.as_bytes()));
+        let mut nonce = [0u8; 12];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+            .map_err(|_| Error::Unavailable("no random numbers".into()))?;
+        let mut sealed = encode(p);
+        sealer(&p.browser)
+            .seal_in_place_append_tag(
+                ring::aead::Nonce::assume_unique_for_key(nonce),
+                ring::aead::Aad::from(key.as_bytes()),
+                &mut sealed,
+            )
+            .map_err(|_| Error::Unavailable("sealing a login".into()))?;
+        let mut v = p.created.to_be_bytes().to_vec();
+        v.extend(nonce);
+        v.extend(sealed);
+        self.rows.put(&key, v, true).await
+    }
+
+    /// Takes the login begun with `state`, once, if `browser` began it;
+    /// [`glidex_auth::oidc::OidcState::finish`] checks the rest.
+    pub async fn take_login<A: for<'de> Deserialize<'de>>(
+        &self,
+        state: &str,
+        browser: Option<&str>,
+    ) -> Result<Pending<A>, Error> {
+        let unknown = || Error::Invalid("unknown or expired login state".into());
+        let other = || Error::Invalid("login state belongs to another browser".into());
+        let key = format!("{LOGIN}{}", sha256_hex(state.as_bytes()));
+        let v = self.rows.get(&key).await?.ok_or_else(unknown)?;
+        // Whoever deletes it has it: a second callback with the same
+        // state finds none.
+        if !self.rows.delete(&key).await? {
+            return Err(unknown());
+        }
+        let (Some(browser), Some(_)) = (browser, begun(&v)) else {
+            return Err(other());
+        };
+        let (nonce, sealed) = v[8..].split_at(12);
+        let mut sealed = sealed.to_vec();
+        let plain = sealer(browser)
+            .open_in_place(
+                ring::aead::Nonce::try_assume_unique_for_key(nonce).map_err(|_| other())?,
+                ring::aead::Aad::from(key.as_bytes()),
+                &mut sealed,
+            )
+            .map_err(|_| other())?;
+        decode(plain)
+    }
+
     /// Whether anyone is a security administrator yet.
     pub async fn claimed(&self) -> Result<bool, Error> {
         Ok(self
@@ -653,6 +737,64 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    fn pending(state: &str, browser: &str, created: u64) -> Pending<String> {
+        Pending {
+            state: state.into(),
+            nonce: "n".into(),
+            verifier: "the-verifier".into(),
+            return_to: "/volumes".into(),
+            browser: browser.into(),
+            created,
+            after: "claim".into(),
+        }
+    }
+
+    #[test]
+    fn logins_begun_are_kept_sealed_and_taken_once() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            p.keep_login(&pending("s1", "b1", now())).await.unwrap();
+            // Kept under the state's digest, and sealed: no secret shows.
+            let rows = p.rows.list(LOGIN).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, format!("{LOGIN}{}", sha256_hex(b"s1")));
+            let raw = String::from_utf8_lossy(&rows[0].1);
+            assert!(
+                !raw.contains("the-verifier") && !raw.contains("claim"),
+                "{raw}"
+            );
+            let got: Pending<String> = p.take_login("s1", Some("b1")).await.unwrap();
+            assert_eq!(
+                (got.verifier.as_str(), got.after.as_str()),
+                ("the-verifier", "claim")
+            );
+            // Once.
+            let again = p.take_login::<String>("s1", Some("b1")).await;
+            assert!(matches!(again, Err(Error::Invalid(m)) if m.contains("unknown")));
+            // Another browser can't open it, and has used it up.
+            p.keep_login(&pending("s2", "b2", now())).await.unwrap();
+            let other = p.take_login::<String>("s2", Some("b3")).await;
+            assert!(matches!(other, Err(Error::Invalid(m)) if m.contains("another browser")));
+            assert!(p.take_login::<String>("s2", Some("b2")).await.is_err());
+            p.keep_login(&pending("s3", "b3", now())).await.unwrap();
+            assert!(p.take_login::<String>("s3", None).await.is_err());
+            // A new login forgets those begun too long ago.
+            p.keep_login(&pending("old", "b", now() - STATE_SECS))
+                .await
+                .unwrap();
+            p.keep_login(&pending("s4", "b4", now())).await.unwrap();
+            let left: Vec<String> = p
+                .rows
+                .list(LOGIN)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.0)
+                .collect();
+            assert_eq!(left, [format!("{LOGIN}{}", sha256_hex(b"s4"))]);
+        });
     }
 
     #[test]
