@@ -15,7 +15,7 @@ covered by tests that run on every change.
 | HS3: Virtual machine disks (vhost-user-blk) and the glidex driver | In progress |
 | HS4: Snapshots, clones and the host read cache | In progress |
 | HS5: NVMe over TCP | Planned |
-| HS5b: Lower CPU cost per operation | Planned |
+| HS5b: Lower CPU cost per operation | In progress |
 | HS6: RDMA over RoCEv2 and InfiniBand | Planned |
 | HS6b: NVMe over RDMA | Planned |
 | HS7: Erasure-coded pools | Planned |
@@ -123,6 +123,29 @@ covered by tests that run on every change.
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
 
+## HS5b: Lower CPU cost per operation
+
+| Feature | Status |
+|---|---|
+| Adaptive polling: a storage reactor polls for a window after activity before it sleeps (`hyperstord --spin-us`, default 200 µs) | Done |
+| Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`) | In progress |
+| Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer | Planned |
+| Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
+
+## HS6: RDMA over RoCEv2 and InfiniBand
+
+| Feature | Status |
+|---|---|
+| One transport layer: a `Transport` trait in the reactor, with TCP (io_uring sockets) behind it first | Planned |
+| A verbs module on rdma-core (devices, protection domains, completion queues polled by the reactor, RC queue pairs), in a small FFI module | Planned |
+| Connection setup over the authenticated TCP session: queue pair numbers, GIDs and credits exchanged, the session kept for a clean close and a dead peer | Planned |
+| A shared receive queue per reactor, and flow control by credits returned in every reply | Planned |
+| Payloads: inline SENDs for small messages, headers from registered buffers, data by RDMA reads and writes that only the server starts; no server rkey leaves the server | Planned |
+| Transports per network in the map (`tcp`, `roce`, `ib`), RDMA to a peer when both have it on a common network, TCP otherwise | Planned |
+| A traffic class per network set on every queue pair: DSCP and PFC priority on RoCE, a service level on InfiniBand | Planned |
+| Fabric readiness checks: no separate traffic class on a converged or compute port, a PFC priority that isn't lossless, a service level equal to NCCL's or SHARP's | Planned |
+| Measured on InfiniBand between two hosts against the perftest baseline: QD1 latency, and throughput per port | Planned |
+
 ## HS11: Key-value ranges
 
 | Feature | Status |
@@ -151,7 +174,8 @@ covered by tests that run on every change.
 |---|---|
 | Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
-| Realms beyond S3: hosts bound to realms (checked by the header's primary, D259), roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
+| Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
+| Roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI | Planned |
 
 ## HS18: Pools and devices at run time
 

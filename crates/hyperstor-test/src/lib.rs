@@ -108,8 +108,18 @@ fn ephemeral_low() -> u16 {
 /// at 300 ms that marked every node down at once, and the map service's
 /// damping (D149) then held them down past a client's retries. Still under
 /// the map service's 800 ms heartbeat timeout, so peers notice a dead node
-/// first, as in a deployment.
-pub const NODE_ARGS: [&str; 4] = ["--spin-us", "0", "--peer-timeout-ms", "600"];
+/// first, as in a deployment. Reads wait 10 s for the device, not 2 (D190):
+/// a runner's shared disk took over 2 s for three backfill reads in a row
+/// and so failed a healthy device. The rule itself is tested in process
+/// (`hyperstor-daemon`'s cluster tests).
+pub const NODE_ARGS: [&str; 6] = [
+    "--spin-us",
+    "0",
+    "--peer-timeout-ms",
+    "600",
+    "--read-timeout-ms",
+    "10000",
+];
 
 /// `n` consecutive free ports on 127.0.0.1, from 10000 up to the
 /// ephemeral range: a block of 500 per process (by pid) and 12 more on

@@ -177,6 +177,9 @@ pub struct Client {
     /// volume held (D153): `hyperstor-vhost` names its node, tools
     /// themselves.
     lease_label: RefCell<String>,
+    /// The host it runs on, as it names itself (`--host`, D261), told to
+    /// each peer that knows [`Msg::Host`]; empty: none.
+    host: RefCell<String>,
     /// The data networks this client is on, in order (26-networks.md
     /// §29.5, D207): a device is reached at its endpoint on the first it
     /// has one on, else at its address.
@@ -229,6 +232,7 @@ impl Client {
             // blocklisted.
             instance: random_u64().max(1),
             lease_label: RefCell::new(String::new()),
+            host: RefCell::new(String::new()),
             networks: RefCell::new(Vec::new()),
             rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
@@ -275,6 +279,21 @@ impl Client {
 
     pub fn lease_label(&self) -> String {
         self.lease_label.borrow().clone()
+    }
+
+    /// This machine's hostname, the default host name of `hyperstor-vhost`
+    /// and `hyperstor-ublk` (D261); empty if it can't be read.
+    pub fn this_host() -> String {
+        std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .map(|h| h.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// The host this client names at each connection from now on (D261),
+    /// for realm bindings (D259), cut to [`hyperstor_proto::LABEL_MAX`]
+    /// bytes. Connections already open keep the name they gave.
+    pub fn set_host(&self, host: &str) {
+        *self.host.borrow_mut() = cut_label(host);
     }
 
     /// Installs `m` if it is newer than the map held (a pushed map).
@@ -418,11 +437,21 @@ impl Client {
             id: self.id,
             instance: self.instance,
         };
+        let host = self.host.borrow().clone();
         let c = self
             .conns
             .get_with(addr, |addr| async move {
                 let c = Conn::connect(addr).await?;
-                c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
+                let (ok, _) = c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
+                // Only a peer that knows it: older ones refuse what they
+                // can't decode (D261).
+                if let Msg::HelloOk { version, .. } = ok
+                    && version >= 3
+                    && !host.is_empty()
+                {
+                    let name = Msg::Host { name: host };
+                    c.call_within(&name, &[], rpc::CALL_TIMEOUT).await?;
+                }
                 Ok(c)
             })
             .await?;

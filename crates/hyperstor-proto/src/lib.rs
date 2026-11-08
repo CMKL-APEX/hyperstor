@@ -19,7 +19,9 @@ use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// 2: [`Target::lease`], delegates and per-volume fencing (D150, D152).
-pub const VERSION: u16 = 2;
+/// 3: [`Msg::Host`], sent only to a peer whose `HelloOk` answers 3 or more
+/// (D261).
+pub const VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 32;
 /// Limits that a receiver enforces before allocating.
 pub const MAX_BODY: usize = 1 << 20;
@@ -350,6 +352,13 @@ pub enum Msg {
     PortReport {
         node: u32,
         ports: Vec<PortSample>,
+    },
+    /// Client to storage node or map service, after `Hello`, when the
+    /// peer's `HelloOk` answered version 3 or more: the host the client
+    /// runs on, as it names itself (`--host`, D261), for realm bindings
+    /// (D259). Answered `Noted`.
+    Host {
+        name: String,
     },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (09-replication.md §8.5).
@@ -825,6 +834,7 @@ mod kind {
     pub const STUCK_STATE: u16 = 90;
     pub const STUCK_STATE_OK: u16 = 91;
     pub const PORT_REPORT: u16 = 92;
+    pub const HOST: u16 = 93;
     pub const ERROR: u16 = 99;
 }
 
@@ -902,6 +912,7 @@ impl Msg {
             Msg::PeerDownOk => PEER_DOWN_OK,
             Msg::EndpointDown { .. } => ENDPOINT_DOWN,
             Msg::PortReport { .. } => PORT_REPORT,
+            Msg::Host { .. } => HOST,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
             Msg::LeaseHeld { .. } => LEASE_HELD,
@@ -1069,6 +1080,9 @@ impl Msg {
             }
             Msg::EndpointDown { reporter, addr } => {
                 e.u32(*reporter).str(&addr.to_string());
+            }
+            Msg::Host { name } => {
+                e.str(name);
             }
             Msg::PortReport { node, ports } => {
                 e.u32(*node).seq(ports, |e, p| p.encode(e));
@@ -1533,6 +1547,9 @@ impl Msg {
             ENDPOINT_DOWN => Msg::EndpointDown {
                 reporter: d.u32()?,
                 addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
+            },
+            HOST => Msg::Host {
+                name: d.str()?.to_string(),
             },
             PORT_REPORT => Msg::PortReport {
                 node: d.u32()?,
@@ -2275,6 +2292,14 @@ impl PortSample {
 }
 
 pub fn encode_frame(req: u64, msg: &Msg, payload: &[u8]) -> Vec<u8> {
+    let mut out = encode_head(req, msg, payload.len(), payload.len());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A frame's header and body, for a payload of `payload_len` bytes sent
+/// after them; `room` more bytes are reserved.
+pub fn encode_head(req: u64, msg: &Msg, payload_len: usize, room: usize) -> Vec<u8> {
     let mut body = Enc::with_capacity(64);
     msg.encode_body(&mut body);
     let h = Header {
@@ -2282,12 +2307,11 @@ pub fn encode_frame(req: u64, msg: &Msg, payload: &[u8]) -> Vec<u8> {
         flags: if msg.is_response() { FLAG_RESPONSE } else { 0 },
         req,
         body_len: body.len() as u32,
-        payload_len: payload.len() as u32,
+        payload_len: payload_len as u32,
     };
-    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + payload.len());
+    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + room);
     out.extend_from_slice(&h.encode());
     out.extend_from_slice(body.as_slice());
-    out.extend_from_slice(payload);
     out
 }
 
@@ -2332,6 +2356,9 @@ mod tests {
                 max_version: 1,
                 id: 5,
                 instance: 6,
+            },
+            Msg::Host {
+                name: "hv-7".into(),
             },
             Msg::HelloOk {
                 version: 1,

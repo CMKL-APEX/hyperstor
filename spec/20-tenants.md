@@ -4,7 +4,8 @@ How tenants are represented, isolated, accounted and scheduled. Part of the hype
 
 Status: **draft.** D61 and D62 were settled with the owner on 2026-10-21,
 realms (§24.8, D248–D253) on 2026-11-06, and HS15's counts, volume
-tenants, host binding checks and realm roles (D257–D260) on 2026-11-07
+tenants, host binding checks, realm roles and hosts' names (D257–D261)
+on 2026-11-07
 ([05-decision-log.md](05-decision-log.md)); the details below follow from them
 and are open to review.
 
@@ -186,7 +187,8 @@ strict multi-tenancy without a cluster per customer.
   the binding when it grants the lease, on the identity the host named
   at `Hello` (D259), so the I/O path gains nothing; until the data
   path's mutual TLS (D25) authenticates `Hello`, it stops mistakes, not
-  a host that lies. Why: shared compute stays the default,
+  a host that lies. A host names itself with `--host`, its hostname by
+  default (D261). Built (I302). Why: shared compute stays the default,
   and strict separation is one setting per host for those who need it.
 - **Administration (D252).** Roles (19-administration.md §23.9.2) can be
   granted on a realm; a realm's administrators manage only its tenants,

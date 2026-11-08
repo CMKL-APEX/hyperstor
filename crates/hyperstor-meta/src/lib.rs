@@ -309,6 +309,13 @@ pub enum Admin {
         lending: Option<hyperstor_map::Lending>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Mirrors the realm rows' host bindings and tenants' realms into the
+    /// map (D259), answered once published. Replies with the working
+    /// map's epoch.
+    SyncRealms {
+        realms: realms::Realms,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Claims or renews a port for `holder` (D205); `renew` only an
     /// existing claim of its holder's. Replies with the claim's expiry
     /// (Unix ms) and the working map's epoch.
@@ -1573,6 +1580,19 @@ impl Meta {
                         // Hosts added to the cluster file since: published
                         // like any change, once the wait is over.
                         self.map.borrow_mut().merge_new(seed);
+                    }
+                    // The realm rows' view (D259), in case the last leader
+                    // wrote them and stopped before publishing it.
+                    if self.persisted.get()
+                        && let Some(s) = &*self.scrub_store.borrow()
+                    {
+                        match realms::load(&s.db) {
+                            Ok(r) => {
+                                let (hosts, tenants) = r.map_view();
+                                self.map.borrow_mut().set_realm_view(hosts, tenants);
+                            }
+                            Err(e) => eprintln!("hyperstor-meta: realms not read: {e:?}"),
+                        }
                     }
                 }
                 ToReactor::Leader(l) => {
@@ -2845,6 +2865,17 @@ impl Meta {
                 } => {
                     self.reply_published(reply, self.set_lending(port.as_deref(), lending), |e| e);
                 }
+                Admin::SyncRealms { realms, reply } => {
+                    let r = if self.leads() {
+                        let (hosts, tenants) = realms.map_view();
+                        let mut map = self.map.borrow_mut();
+                        map.set_realm_view(hosts, tenants);
+                        Ok(map.epoch)
+                    } else {
+                        Err(self.not_leader())
+                    };
+                    self.reply_published(reply, r, |e| e);
+                }
                 Admin::ClaimPort {
                     port,
                     holder,
@@ -3702,6 +3733,10 @@ impl Meta {
                 node: 0,
                 map_epoch: self.published.borrow().epoch,
             },
+            // Its host (D261): the map service grants no leases.
+            Ok(Msg::Host { .. }) => Msg::Noted {
+                map_epoch: self.published.borrow().epoch,
+            },
             Ok(Msg::GetMap { have_epoch }) => {
                 let m = self.published.borrow();
                 Msg::Map {
@@ -4017,7 +4052,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
         let meta = meta.clone();
         spawn(async move {
             let s = Rc::new(s);
-            let (tx, rx) = hyperstor_reactor::chan::channel::<Vec<u8>>();
+            let (tx, rx) = hyperstor_reactor::chan::channel::<hyperstor_rpc::Frame>();
             spawn(hyperstor_rpc::writer(s.clone(), rx));
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
@@ -4040,12 +4075,12 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                     let (meta, tx) = (meta.clone(), tx.clone());
                     spawn(async move {
                         let reply = meta.blocklist(ids).await;
-                        let _ = tx.send(encode_frame(h.req, &reply, &[]));
+                        let _ = tx.send(encode_frame(h.req, &reply, &[]).into());
                     });
                     continue;
                 }
                 let reply = meta.handle_with(msg, &body[h.body_len as usize..]);
-                if tx.send(encode_frame(h.req, &reply, &[])).is_err() {
+                if tx.send(encode_frame(h.req, &reply, &[]).into()).is_err() {
                     return;
                 }
             }
