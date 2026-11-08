@@ -1,10 +1,10 @@
 title = "Flaky end-to-end tests in manage"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB"
 started = 2026-11-07
 updated = 2026-11-08
 milestone = "HS2"
-branch = "fix/manage-flakes-2"
+branch = "fix/members-token-flake"
 prs = [236, 256]
-now = "I301 merged (#236). I307: of the other four, three were fixed by I282 and I284; the cache pool test wrote its pool while a node was still down from the start, and now waits for health ok first"
-next = "Merge on green CI; then mark this workstream done unless CI shows another manage flake"
+now = "Merged (I301 in #236, I307 in #256); no manage test has failed on main since. members' a_token_waits_for_the_first_map, found meanwhile, asks again after a full wait (I318)"
+next = "Nothing; remove after two weeks"

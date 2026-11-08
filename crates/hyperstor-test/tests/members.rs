@@ -762,12 +762,26 @@ fn a_token_waits_for_the_first_map() {
     );
     let mut second = g.install_host(1, &list, None);
     let (bin, api, pki) = (g.bin.clone(), g.m[0].api.clone(), g.m[0].pki());
+    // Electing and committing the first map can outlast the server's wait
+    // on a slow runner, so a call that waited it out and was refused is
+    // asked again (each one must have waited, not refused at once).
     let asked = std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        (
-            ctl(&bin, &api, &pki, &["token", "create", "--role", "node"]),
-            t.elapsed(),
-        )
+        loop {
+            let one = std::time::Instant::now();
+            let r = ctl(&bin, &api, &pki, &["token", "create", "--role", "node"]);
+            if r.code == 0
+                || !r.has("(not_formed)")
+                || t.elapsed() > std::time::Duration::from_secs(60)
+            {
+                return (r, t.elapsed());
+            }
+            assert!(
+                one.elapsed() >= std::time::Duration::from_secs(3),
+                "refused after {:?}, without waiting",
+                one.elapsed()
+            );
+        }
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
     second.start(&g.s, &[]);
