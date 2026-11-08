@@ -7924,7 +7924,7 @@ fn s3_put_throughput() {
 /// A node refuses data whose CRCs don't match it, at each way data comes
 /// in (a client's write to the primary, the primary's copy to a replica,
 /// a recovery push), and stores none of it. The engine keeps the CRCs a
-/// write came with rather than computing them again (I305), so this check
+/// write came with rather than computing them again (I306), so this check
 /// is what keeps the stored CRCs true to the data.
 #[test]
 fn data_whose_crcs_disagree_is_refused_at_every_way_in() {

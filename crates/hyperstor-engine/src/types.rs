@@ -103,7 +103,7 @@ pub enum Op {
         data: Vec<u8>,
         /// The CRC32C of each block of `data`, when the caller has them
         /// already checked against it (the CRCs a write arrived with,
-        /// I305); `None` has the engine compute them.
+        /// I306); `None` has the engine compute them.
         crcs: Option<Vec<u32>>,
     },
     /// Drops the blocks of a range; they read as zeros.

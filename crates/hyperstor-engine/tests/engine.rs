@@ -1299,7 +1299,7 @@ fn crcs_of(data: &[u8]) -> Option<Vec<u32>> {
 }
 
 /// A write that comes with its blocks' CRCs, already checked against the
-/// data (I305), keeps each one with its block: across every run a
+/// data (I306), keeps each one with its block: across every run a
 /// fragmented shard splits it into, through a deferred overwrite, and
 /// after reopening, where reads check every block against its CRC.
 #[test]

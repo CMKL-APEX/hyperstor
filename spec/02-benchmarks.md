@@ -1946,7 +1946,7 @@ range of ops/s.
    warm**, so they matter less than the CRC the engine computes again
    (41 µs per node).
 
-## 2026-11-08: The engine keeps the CRCs a write came with (HS5b, I305)
+## 2026-11-08: The engine keeps the CRCs a write came with (HS5b, I306)
 
 `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
 HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the section before:

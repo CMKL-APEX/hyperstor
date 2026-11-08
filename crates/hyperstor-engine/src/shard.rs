@@ -1308,7 +1308,7 @@ impl Shard {
                     let n = (data.len() / BLOCK) as u64;
                     // CRCs that came with the data were checked against it
                     // when it arrived; computing them again here would
-                    // also bless data damaged since (I305).
+                    // also bless data damaged since (I306).
                     let crcs = crcs.unwrap_or_else(|| data.chunks(BLOCK).map(crc32c).collect());
                     // Never under a read in flight, which may have
                     // planned the old data from the device (D190).

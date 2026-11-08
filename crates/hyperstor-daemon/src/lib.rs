@@ -2399,7 +2399,7 @@ impl ShardState {
             ops: vec![Op::Write {
                 off,
                 data: Rc::unwrap_or_clone(data),
-                // Checked against the data above (I305).
+                // Checked against the data above (I306).
                 crcs: Some(crcs),
             }],
         });

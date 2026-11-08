@@ -158,7 +158,7 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
                 let fill = rng.random_range(1..=255u8);
                 // A byte of its own in each block, so a CRC filed under
                 // the wrong block doesn't match it; about half the writes
-                // come with their CRCs, as writes from the network do (I305).
+                // come with their CRCs, as writes from the network do (I306).
                 let data: Vec<u8> = (0..blocks as usize)
                     .flat_map(|i| [((fill as usize + i) % 255 + 1) as u8; BLOCK])
                     .collect();
