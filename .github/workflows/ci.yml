@@ -27,16 +27,18 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Every job runs on the project's self-hosted runner, except for pull
-# requests from forks, which run on GitHub's: the repository is public, and a
+# The tests run on the project's self-hosted runner, the other jobs on
+# GitHub's: the runner takes one job at a time, so the quick checks would
+# wait behind the tests; on GitHub's they run beside them. Pull requests from
+# forks run their tests on GitHub's too: the repository is public, and a
 # fork's code (build scripts, tests, this file) would otherwise run on the
 # runner's host. Branches of this repository, main, the nightly run and
-# manual runs use the self-hosted runner.
+# manual runs test on the self-hosted runner.
 jobs:
   # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
   fmt:
 
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
@@ -46,7 +48,7 @@ jobs:
 
   clippy:
 
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
 
     steps:
@@ -59,7 +61,7 @@ jobs:
   # pinned release, checked against its published SHA-256.
   buf:
 
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     env:
@@ -106,7 +108,7 @@ jobs:
   # The spec hangs together and code cites it correctly; no build needed.
   spec:
 
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
