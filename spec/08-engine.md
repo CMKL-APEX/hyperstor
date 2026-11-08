@@ -81,10 +81,11 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 | Region | Contents |
 |---|---|
-| Superblock (two copies) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
-| Log | circular. Operation records (§7.3), deferred small writes, checkpoint markers |
-| Index | an on-device copy-on-write B+tree of objects and their extents |
-| Data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks) |
+| Superblock (two copies at blocks 0 and 1; decided: a backup at the last block, D271) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
+| Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt; decided: each mirrored at the end of the shard's region (D267) |
+| Per shard: log | circular. Operation records (§7.3), deferred small writes |
+| Per shard: data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks); checkpoint pages and their directory live here too |
+| Index | as built, in memory, saved as paged checkpoints (§7.3; I33, D105); the long-term home is an on-device copy-on-write B+tree (D43, D44), designed after v0.0.8 (D272) |
 
 On a hard disk, the log and index regions are on its partition of the
 log device, which has its own superblock naming the data device (§6.2).
@@ -99,6 +100,11 @@ before D157; with any set, as version 2. A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
 over.
+
+**Block numbers** in block maps and extents are absolute device blocks
+as built, which keeps dense maps (D43) to the first 16 TiB of a device;
+decided: relative to the shard's data start (D270), an incompatible flag,
+shipped in the same format step as the log's hash chain (D266).
 
 **Whose device it is** (I203). The superblock names the device (its id
 in the map, `node × 1000 + shard`) and the cluster. Before opening a
@@ -177,7 +183,23 @@ device is formatted with the cluster's id; a superblock without one
   written blocks. Nothing is copied (D10).
 - A write is durable when its log record is: one write with FUA, or a
   flush on devices without power-loss protection. The engine batches the
-  records of concurrent writes into one log write.
+  records of concurrent writes into one log write. As built, a round's
+  data and records are written, then the device flushed with
+  `fdatasync`; FUA and NVMe passthrough are to be measured (#248).
+- **Log records** are whole blocks: a header with the record's LSN, its
+  commit group and checksums seeded with the shard's salt, then the
+  payload. Decided: each header also carries the payload checksum of the
+  record before it, a hash chain (D266, incompatible flag).
+- **Recovery** loads the checkpoint, replays the log from `L`, and checks
+  the data of the last commit group, dropping that group if its data
+  didn't reach the media (none of it was acknowledged). Only the last
+  round can be torn (one round in flight, I199), so decided (D266, D267,
+  D268): a bad record followed by a valid record of the current salt, or
+  log records under a salt the chosen superblock doesn't name, is damage
+  to acknowledged data: the shard refuses to open and its PGs are
+  recovered from peers. Recovering only the affected PGs comes later
+  (D268). #241's crash tests with a device that lies show each case
+  (I305).
 - **Checkpoint** (as built, I33). A *fuzzy* checkpoint: it starts when a
   quarter of the log is used, records the log position `L`, and writes
   the index as a stream of objects, a slice per commit round, while
@@ -192,7 +214,10 @@ device is formatted with the cluster's id; a superblock without one
   writes only the pages marked since the last one began, cutting full
   pages and dropping empty ones, then a directory of every page. A page
   nothing changed still holds what replay from `L` needs, so checkpoint
-  traffic follows the share of the index that changes.
+  traffic follows the share of the index that changes. Decided (D269):
+  the directory is written twice, the second copy read when the first
+  fails, and deep scrub checks the pages (28-scrub.md §31.2), marking a
+  damaged one for the next checkpoint to rewrite.
 - **Deferred writes in replay** (I149). A deferred write's record names
   its physical blocks. Replayed over a page written after it, a write
   whose object no longer maps the block (a later trim, or an absorb that
@@ -201,11 +226,12 @@ device is formatted with the cluster's id; a superblock without one
 
 ### 7.4 Allocation and space
 
-- Free space is a bitmap of 4 KiB blocks on disk, with an in-memory tree
-  of free extents built from it at start.
+- Free space is an in-memory tree of free extents, rebuilt at start from
+  the extents the index and the checkpoint use (as built; no bitmap on
+  disk).
 - Discard and write-zeroes from a client drop blocks from the head
-  version. Blocks no version holds any more are freed, and the device is
-  sent a deallocate.
+  version. Blocks no version holds any more are freed. Sending the
+  device a deallocate for freed blocks is not built yet (#245).
 - The engine reports used, free and allocated-per-lineage bytes to the
   daemon, which reports them to the metadata service with its heartbeat.
 - **A full shard stays up** (as built, I162). Room for a whole checkpoint
