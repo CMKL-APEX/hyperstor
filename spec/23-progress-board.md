@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 9 | 0 | 0 | 41 |
+| 10 | 0 | 0 | 41 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **The web UI's footer names the installed build (I317)** (`ui-build-footer`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/ui-build-footer`, [#272](https://github.com/CMKL-APEX/hyperstor/pull/272) | PR #272: mgmt reads git at build time and returns it in /auth/whoami; the UI shows version, branch and commit linked to GitHub | Pull request; deploy to the pilot when asked | 2026-11-08 |
 | **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-wire-crcs`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255) | HS5b: the engine keeps the CRCs a write came with, checked on arrival (I306), on top of #240 (crc32c 0.6.9, I304) | The client's copy; the check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6 | 2026-11-08 |
 | **OIDC logins finish on any mgmt (D278, I316)** (`oidc-shared-login`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/oidc-shared-login`, [#271](https://github.com/CMKL-APEX/hyperstor/pull/271) | PR #271: glidex #381 (OidcState::begin/finish); mgmt keeps the login's state as a sealed map service row, taken once | glidex #381 merged, then repin glidex-auth to its merge commit; deploy to the pilot when asked | 2026-11-08 |
 | **Flaky end-to-end tests in manage** (`manage-flakes`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS2 | `fix/manage-flakes-2`, [#236](https://github.com/CMKL-APEX/hyperstor/pull/236), [#256](https://github.com/CMKL-APEX/hyperstor/pull/256) | I301 merged (#236). I307: of the other four, three were fixed by I282 and I284; the cache pool test wrote its pool while a node was still down from the start, and now waits for health ok first | Merge on green CI; then mark this workstream done unless CI shows another manage flake | 2026-11-08 |
@@ -114,6 +115,6 @@ against the tests.
 | HS19 | Networks | 2 | 2 | 1 |
 | AD0 | Administration API, identities and CLI | 2 | 4 | 0 |
 | AD1 | Installer and cluster join | 5 | 0 | 1 |
-| AD2 | Management service and read-only web UI | 8 | 1 | 0 |
+| AD2 | Management service and read-only web UI | 9 | 1 | 0 |
 | AD3 | Administration from the UI and CLI, with roles, trash and audit | 17 | 0 | 0 |
 | AD4 | Storage administration in glidex | 0 | 0 | 0 |

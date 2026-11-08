@@ -1418,6 +1418,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The web UI's footer names the installed build: release, branch and commit, linked to GitHub"
+spec = ["19-administration.md §23.7", "I317"]
+status = "done"
+tests = [
+    "hyperstor_mgmt::tests::the_build_names_its_commit_and_release",
+]
+
+[[milestone.item]]
 what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
 spec = ["19-administration.md §23.9", "D96", "D107", "D278"]
 status = "done"
