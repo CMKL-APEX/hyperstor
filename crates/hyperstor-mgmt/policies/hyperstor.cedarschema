@@ -247,6 +247,10 @@ namespace Hyperstor {
   action "RealmService.SetTenantRealm" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  // Which volumes a host may attach (D251).
+  action "RealmService.SetHostRealms" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "CaService.ListCertificates" in [Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

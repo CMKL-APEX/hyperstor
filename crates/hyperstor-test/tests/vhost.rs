@@ -408,3 +408,66 @@ fn a_write_refused_for_space_is_held() {
     a.stop();
     b.stop();
 }
+
+/// A host bound to a realm (D251, D259) attaches only volumes of its
+/// realm's tenants, on the name it gives (`--host`, D261); unbound, or
+/// bound to "default" too, it attaches the others. A realm with a host
+/// bound to it isn't deleted.
+#[test]
+fn a_host_bound_to_a_realm_attaches_only_its_volumes() {
+    let c = Cluster::all_in_one("vhostrealm", 3);
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    c.ctl(&["realm", "tenant", "--tenant", "2", "--realm", "acme"])
+        .ok();
+    let vol = |name: &str, tenant: &str| {
+        let mut args = vec!["create-volume", "--size", "16M", "--name", name];
+        if !tenant.is_empty() {
+            args.extend(["--tenant", tenant]);
+        }
+        let made = c.ctl(&args).ok();
+        made.out.split_whitespace().nth(1).unwrap().to_string()
+    };
+    let (acmes, plain, before, other) = (
+        vol("acmes", "2"),
+        vol("plain", ""),
+        vol("before", ""),
+        vol("other", "3"),
+    );
+    let svc = Service::start(&c, "vhost-realm", &["--host", "hv-acme"]);
+    // Unbound: any realm's.
+    let r = svc.attach(&before, "attach");
+    assert!(r.get("ok").is_some(), "{r}");
+    let bound = c
+        .ctl(&["realm", "host", "--host", "hv-acme", "--realm", "acme"])
+        .ok();
+    assert!(bound.has("only volumes of realm(s) acme"), "{}", bound.out);
+    let list = c.ctl(&["realm", "list"]).ok();
+    let row = list.out.lines().find(|l| l.starts_with("acme"));
+    assert!(row.unwrap_or_default().contains("hv-acme"), "{}", list.out);
+    // Bound to acme: acme's, and not default's.
+    let r = svc.attach(&plain, "attach");
+    assert!(r.to_string().contains("isn't bound to realm 0"), "{r}");
+    let r = svc.attach(&acmes, "attach");
+    assert!(r.get("ok").is_some(), "{r}");
+    // ...until bound to default too.
+    c.ctl(&[
+        "realm",
+        "host",
+        "--host",
+        "hv-acme",
+        "--realm",
+        "acme,default",
+    ])
+    .ok();
+    let r = svc.attach(&other, "attach");
+    assert!(r.get("ok").is_some(), "{r}");
+    let r = c.ctl(&["realm", "delete", "--name", "acme"]).expect(1);
+    assert!(r.has("1 host(s)"), "{}", r.out);
+    c.ctl(&["realm", "host", "--host", "hv-acme", "--realm", "any"])
+        .ok();
+    let r = svc.attach(&plain, "attach");
+    assert!(r.get("ok").is_some(), "{r}");
+    c.ctl(&["realm", "host", "--host", "bad host", "--realm", "acme"])
+        .expect(1);
+    svc.stop();
+}
