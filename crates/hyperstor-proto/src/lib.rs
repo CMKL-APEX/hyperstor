@@ -18,10 +18,22 @@ pub mod perf;
 use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
-/// 2: [`Target::lease`], delegates and per-volume fencing (D150, D152).
-/// 3: [`Msg::Host`], sent only to a peer whose `HelloOk` answers 3 or more
-/// (D261).
+/// The protocol's version, which `Hello` and `HelloOk` exchange; what a
+/// peer may be sent depends on what it answered. 2: [`Target::lease`],
+/// delegates and per-volume fencing (D150, D152). 3: [`Msg::Host`], sent
+/// only to a peer whose `HelloOk` answers 3 or more (D261).
 pub const VERSION: u16 = 3;
+/// The oldest version this build still talks to: what it sends in
+/// `Hello` as `min_version`.
+pub const OLDEST_VERSION: u16 = 2;
+/// The frame header's own version, written in every header: its layout,
+/// not the protocol's, so a newer protocol never stops an older peer from
+/// reading frames (I311). Unchanged since version 2; a peer refuses
+/// another, so changing it needs every host installed at once.
+pub const FRAME_VERSION: u16 = 2;
+/// Header versions read besides [`FRAME_VERSION`]: builds between D261
+/// and I311 wrote the protocol's version, 3, in their headers.
+const FRAME_VERSIONS_READ: [u16; 2] = [FRAME_VERSION, 3];
 pub const HEADER_LEN: usize = 32;
 /// Limits that a receiver enforces before allocating.
 pub const MAX_BODY: usize = 1 << 20;
@@ -58,7 +70,7 @@ impl Header {
     pub fn encode(&self) -> [u8; HEADER_LEN] {
         let mut e = Enc::with_capacity(HEADER_LEN);
         e.u32(MAGIC)
-            .u16(VERSION)
+            .u16(FRAME_VERSION)
             .u16(self.kind)
             .u32(self.flags)
             .u64(self.req)
@@ -86,7 +98,7 @@ impl Header {
         if crc32c(&b[..HEADER_LEN - 4]) != c {
             return Err(FrameError::BadHeader);
         }
-        if v != VERSION {
+        if !FRAME_VERSIONS_READ.contains(&v) {
             return Err(FrameError::Version(v));
         }
         if h.body_len as usize > MAX_BODY || h.payload_len as usize > MAX_PAYLOAD {
@@ -2354,6 +2366,47 @@ pub fn verify_crcs(data: &[u8], crcs: &[u32]) -> Result<(), FrameError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `h` encoded with `version` in the header's version field, as a
+    /// build that wrote it would (checksum and all).
+    fn header_with_version(h: &Header, version: u16) -> [u8; HEADER_LEN] {
+        let mut b = h.encode();
+        let mut e = Enc::with_capacity(2);
+        e.u16(version);
+        b[4..6].copy_from_slice(e.as_slice());
+        let c = crc32c(&b[..HEADER_LEN - 4]);
+        let mut e = Enc::with_capacity(4);
+        e.u32(c);
+        b[HEADER_LEN - 4..].copy_from_slice(e.as_slice());
+        b
+    }
+
+    /// Frames stay readable across a rolling install (I311): a header
+    /// says version 2, the layout every build since D150 reads, whatever
+    /// the protocol's version, and one that says 2 or 3 is read.
+    #[test]
+    fn frame_headers_stay_readable_by_older_builds() {
+        let h = Header {
+            kind: kind::HELLO,
+            flags: 0,
+            req: 7,
+            body_len: 12,
+            payload_len: 0,
+        };
+        let ours = h.encode();
+        // What a version-2 build writes and reads: the same bytes.
+        assert_eq!(ours, header_with_version(&h, 2));
+        for v in [2, 3] {
+            let back = Header::decode(&header_with_version(&h, v)).unwrap();
+            assert_eq!((back.kind, back.req, back.body_len), (h.kind, 7, 12));
+        }
+        for v in [1, 4] {
+            assert!(matches!(
+                Header::decode(&header_with_version(&h, v)),
+                Err(FrameError::Version(x)) if x == v
+            ));
+        }
+    }
 
     fn all() -> Vec<Msg> {
         let to = Target {
