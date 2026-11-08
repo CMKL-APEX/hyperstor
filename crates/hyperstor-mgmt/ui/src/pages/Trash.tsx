@@ -1,10 +1,11 @@
 // The trash (D54): deleted volumes and snapshots, kept for their pool's
 // grace period. Operators restore (D114); storage administrators purge at
-// once and set each pool's grace period.
+// once and set each pool's grace period. Acting in a realm (D265), its
+// tenants' volumes alone, and no pool's settings.
 import { useState } from "react";
 import { cluster, trash } from "../api";
 import type { TrashItem } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useRealm } from "../ui";
 
 type Dialog = { kind: "restore" | "purge"; item: TrashItem } | { kind: "settings"; pool: number };
 
@@ -67,7 +68,8 @@ function Settings({ pool }: { pool: number }) {
 export default function Trash() {
   const can = useCan();
   const items = usePoll(async () => (await trash.listTrash({ pool: 0 })).items, 5000);
-  const status = usePoll(() => cluster.getStatus({}), 0);
+  const realm = useRealm();
+  const status = usePoll(async () => (realm ? null : await cluster.getStatus({})), 0);
   const pools = (status.data?.pools ?? []).filter((p) => p.id !== 0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [name, setName] = useState("");

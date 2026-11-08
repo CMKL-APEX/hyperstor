@@ -76,13 +76,20 @@ impl TrashService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::ListTrashRequest>,
     ) -> ServiceResult<pb::ListTrashResponse> {
-        self.authorize(&ctx, "ListTrash", "trash", false)?;
+        let (_, reach) = self.authorize_in(&ctx, "ListTrash", "trash", false)?;
+        let scope = self.scope(reach).await?;
         let pool = (req.pool != 0).then_some(req.pool);
         let TrashDone::Items(items) = self.trash_op(TrashOp::List { pool }).await? else {
             return Err(ConnectError::internal("unexpected result"));
         };
         Ok(pb::ListTrashResponse {
-            items: items.iter().map(|t| item_pb(self, t)).collect(),
+            items: items
+                .iter()
+                .filter(|t| match t {
+                    Trashed::Volume(v) | Trashed::Snapshot(v, _) => scope.tenant(v.tenant),
+                })
+                .map(|t| item_pb(self, t))
+                .collect(),
             ..Default::default()
         }
         .into())
@@ -99,7 +106,10 @@ impl TrashService for Api {
             Some(e) => format!("volume {id:032x} snapshot {e}"),
             None => format!("volume {id:032x}"),
         };
-        let who = self.authorize(&ctx, "RestoreFromTrash", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "RestoreFromTrash", &target, true)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "RestoreFromTrash", &target)
+            .await?;
         let name = (!req.name.is_empty()).then(|| req.name.to_string());
         let r = self.trash_op(TrashOp::Restore { id, epoch, name }).await;
         audit(
@@ -131,7 +141,10 @@ impl TrashService for Api {
         let id = parse_volume_id(req.id)?;
         let epoch = req.epoch;
         let target = super::ops::purge_target(id, epoch);
-        let who = self.authorize(&ctx, "PurgeFromTrash", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "PurgeFromTrash", &target, true)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "PurgeFromTrash", &target)
+            .await?;
         // Checked now, run as an operation (D121): it deletes every chunk.
         let v = self.volume_any(id).await?;
         let refused = |e: String| with_reason(ConnectError::failed_precondition(e), "in_use");

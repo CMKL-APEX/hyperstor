@@ -1,4 +1,4 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]]
+//! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]]
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R|default] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
@@ -170,6 +170,10 @@
 //! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s, or
 //! without it the cluster's root where `hyperstorctl.conf` names one
 //! (mgmt's certificate is the cluster CA's by default, D108).
+//! `--in-realm R` acts in realm R alone, with the person's cluster-wide
+//! roles and their roles in R (D265): lists show only R's volumes,
+//! buckets, keys and placements, and what isn't done in a realm is
+//! refused. Someone with roles only in realms needs it only to pick one.
 //!
 //! Each call gives up after `--timeout-secs N` (or `$HYPERSTOR_TIMEOUT`),
 //! 5 s by default; the change it asked for may still be made.
@@ -190,7 +194,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -390,6 +394,7 @@ fn main() {
     let mut socket = None;
     let mut mgmt = None;
     let mut token_file = None;
+    let mut in_realm = None;
     let mut mgmt_ca = None;
     let mut timeout = None;
     let mut a = Args {
@@ -475,6 +480,7 @@ fn main() {
                 a.poll = true;
             }
             "--token-file" => token_file = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--in-realm" => in_realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--mgmt-ca" => mgmt_ca = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--timeout-secs" => timeout = Some(num(it.next())),
             "--json" => a.json = true,
@@ -996,11 +1002,18 @@ fn main() {
     // neither the API's address nor certificates nor the socket apply.
     let mgmt = mgmt.or_else(|| std::env::var("HYPERSTOR_MGMT").ok());
     if mgmt.is_some() && (api.is_some() || tls.is_some() || socket.is_some())
-        || mgmt.is_none() && (token_file.is_some() || mgmt_ca.is_some())
+        || mgmt.is_none() && (token_file.is_some() || mgmt_ca.is_some() || in_realm.is_some())
     {
         usage();
     }
-    let mgmt = mgmt.map(|url| mgmt_target(&url, token_file.as_deref(), mgmt_ca.as_deref()));
+    let mgmt = mgmt.map(|url| {
+        mgmt_target(
+            &url,
+            token_file.as_deref(),
+            mgmt_ca.as_deref(),
+            in_realm.as_deref(),
+        )
+    });
     // The local socket (break-glass, §23.6): given, or named in the
     // configuration and present, unless an address or certificates were
     // given on the command line.
@@ -1100,12 +1113,14 @@ struct Mgmt {
     base: http::Uri,
     bearer: http::HeaderValue,
     tls: Option<std::sync::Arc<connectrpc::rustls::ClientConfig>>,
+    /// `--in-realm` (D265).
+    realm: Option<http::HeaderValue>,
 }
 
 /// `url` (`http://` on loopback, or `https://`), the token from `file`
 /// or `$HYPERSTOR_TOKEN` (never an argument: others could read it in the
 /// process list), and over HTTPS the host's CAs and `ca`'s.
-fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>) -> Mgmt {
+fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&str>) -> Mgmt {
     let fail = |m: String| -> ! {
         eprintln!("hyperstorctl: {m}");
         std::process::exit(2)
@@ -1149,11 +1164,18 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>) -> Mgmt {
             hyperstor_pki::web_client_config(ca.as_deref()).unwrap_or_else(|e| fail(e)),
         )
     });
+    let realm = realm.map(|r| match hyperstor_api::parse_realms(r) {
+        Some(v) if v.len() == 1 => http::HeaderValue::from_str(r).expect("checked"),
+        _ => fail(format!(
+            "--in-realm {r:?}: a realm is 1-63 of a-z, 0-9 and -"
+        )),
+    });
     Mgmt {
         url,
         base,
         bearer,
         tls,
+        realm,
     }
 }
 
@@ -1215,8 +1237,14 @@ async fn run(target: &Target<'_>, call: Call<'_>) -> Result<Next, connectrpc::Co
     let config = |uri: http::Uri| ClientConfig::new(uri).with_default_timeout(call_timeout());
     match target {
         Target::Mgmt(m) => {
-            let config = config(m.base.clone())
+            let mut config = config(m.base.clone())
                 .with_default_header(http::header::AUTHORIZATION, m.bearer.clone());
+            if let Some(r) = &m.realm {
+                config = config.with_default_header(
+                    http::HeaderName::from_static(hyperstor_api::ACT_IN_REALM_HEADER),
+                    r.clone(),
+                );
+            }
             let http = match &m.tls {
                 Some(c) => HttpClient::with_tls(c.clone()),
                 None => HttpClient::plaintext(),
@@ -1501,6 +1529,7 @@ where
     }
     // pool delete --force --wait follows its operation.
     let ops = OperationServiceClient::new(transport.clone(), config.clone());
+    let realm_client = RealmServiceClient::new(transport.clone(), config.clone());
     let client = ClusterServiceClient::new(transport, config);
     let status = || async {
         client
@@ -1512,6 +1541,30 @@ where
     let first_pool = |s: &pb::GetStatusResponse| {
         a.pool
             .or_else(|| s.pools.iter().find(|p| p.id != 0).map(|p| p.id))
+    };
+    // For volumes: `--pool`, or the first data pool; for someone with
+    // roles only in realms, who doesn't read the cluster's status, the
+    // first their realms may use (D262).
+    let volume_pool = || async {
+        if a.pool.is_some() {
+            return Ok(a.pool);
+        }
+        match status().await {
+            Ok(s) => Ok(first_pool(&s)),
+            Err(e) if e.code == connectrpc::ErrorCode::PermissionDenied => {
+                let r = realm_client
+                    .list_realms(pb::ListRealmsRequest::default())
+                    .await?
+                    .into_owned();
+                Ok(r.realms
+                    .iter()
+                    .flat_map(|r| r.pool_ids.iter())
+                    .chain(r.open_pool_ids.iter())
+                    .copied()
+                    .next())
+            }
+            Err(e) => Err(e),
+        }
     };
     Ok(match cmd {
         "status" => {
@@ -1637,8 +1690,7 @@ where
             Next::Exit(0)
         }
         "volumes" => {
-            let s = status().await?;
-            let Some(pool) = first_pool(&s) else {
+            let Some(pool) = volume_pool().await? else {
                 eprintln!("hyperstorctl: the cluster has no data pools");
                 return Ok(Next::Exit(1));
             };
@@ -1653,8 +1705,7 @@ where
             Next::Exit(0)
         }
         "create-volume" => {
-            let s = status().await?;
-            let Some(pool) = first_pool(&s) else {
+            let Some(pool) = volume_pool().await? else {
                 eprintln!("hyperstorctl: the cluster has no data pools");
                 return Ok(Next::Exit(1));
             };

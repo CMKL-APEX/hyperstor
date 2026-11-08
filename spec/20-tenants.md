@@ -4,8 +4,8 @@ How tenants are represented, isolated, accounted and scheduled. Part of the hype
 
 Status: **draft.** D61 and D62 were settled with the owner on 2026-10-21,
 realms (§24.8, D248–D253) on 2026-11-06, and HS15's counts, volume
-tenants, host binding checks, realm roles and hosts' names (D257–D261)
-on 2026-11-07
+tenants, host binding checks, realm roles and hosts' names (D257–D261),
+and how roles on a realm work (D262–D265) on 2026-11-07
 ([05-decision-log.md](05-decision-log.md)); the details below follow from them
 and are open to review.
 
@@ -191,14 +191,18 @@ strict multi-tenancy without a cluster per customer.
   default (D261). Built (I302). Why: shared compute stays the default,
   and strict separation is one setting per host for those who need it.
 - **Administration (D252).** Roles (19-administration.md §23.9.2) can be
-  granted on a realm; a realm's administrators manage only its tenants,
-  keys, placements, volumes and exports, and see nothing of other
-  realms. Cluster administrators see everything; `hyperstorctl` and
-  mgmt's UI take `--realm` and show the realm in lists. Enforced in
-  mgmt, where people's roles live; cluster API certificates stay
-  cluster-wide (D260). Pools, devices
-  and hosts stay the cluster administrator's. Why: the operator of one
-  realm can't make keys or attach volumes in another.
+  granted on a realm, as `role@realm` beside cluster-wide roles (D263);
+  a realm's administrators manage only its tenants' volumes, buckets
+  and keys, its placements and exports, and its people's grants (D264),
+  and see nothing of other realms nor of the cluster as a whole (D265).
+  Cluster administrators see everything, and may act in one realm to
+  see what its administrators see: `hyperstorctl --in-realm R` and the
+  UI's realm picker. People's grants live in mgmt, which names the
+  realms a call reaches; the map service, which knows each container's
+  realm, applies them (D260, D262); cluster API certificates stay
+  cluster-wide. Pools, devices and hosts stay the cluster
+  administrator's. Built (I303). Why: the operator of one realm can't
+  make keys or attach volumes in another.
 - **The name (D253).** "Realm", as in Kerberos: an administrative domain
   with its own keys. Rejected: *partition* (network partitions),
   *site* (21-federation.md §25), *zone* and *domain* (failure domains,

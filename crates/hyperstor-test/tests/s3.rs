@@ -585,6 +585,23 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
     assert!(r.has("may not use pool"), "{}", r.out);
     let made = vol("2", "acmes").ok();
     let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+    // Nor copied or moved there (D249).
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--size",
+            "4096",
+            "--name",
+            "theirs",
+            "--tenant",
+            "1",
+        ])
+        .ok();
+    let theirs = made.out.split_whitespace().nth(1).unwrap().to_string();
+    for how in ["copy-volume", "move-volume"] {
+        let r = c.ctl(&[how, "--id", &theirs, "--pool", "3"]).expect(1);
+        assert!(r.has("may not use pool"), "{how}: {}", r.out);
+    }
     // Its clone takes its tenant.
     c.ctl(&["snapshot", "create", "--id", &id, "--name", "s"])
         .ok();

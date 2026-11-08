@@ -2,9 +2,9 @@
 // CLI hint (every action shows its hyperstorctl command, §23.7), and who
 // may do what (the server decides; the UI only hides what would be
 // refused).
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Modal, useSession } from "@glidex/ui-kit";
-import type { Me, Methods } from "./api";
+import { getActingRealm, onActingRealm, rolesIn, type Me, type Methods } from "./api";
 
 export function Card({ title, actions, children }: { title?: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -203,10 +203,17 @@ const GROUPS: Record<string, string[]> = {
   secure: ["security-admin"],
 };
 
-/** Whether the person's roles allow a group of actions (policy.rs's). */
+/** The realm the person acts in, or null for the cluster as a whole. */
+export function useRealm(): string | null {
+  return useSyncExternalStore(onActingRealm, getActingRealm);
+}
+
+/** Whether the person's roles allow a group of actions (policy.rs's), in
+ * the realm they act in: their cluster-wide roles and that realm's. */
 export function useCan() {
   const { me } = useSession<Me, Methods>();
-  return (group: keyof typeof GROUPS) => me.roles.some((r) => GROUPS[group].includes(r));
+  const roles = rolesIn(me.roles, useRealm());
+  return (group: keyof typeof GROUPS) => roles.some((r) => GROUPS[group].includes(r));
 }
 
 export function fmtBytes(n: number | bigint): string {
