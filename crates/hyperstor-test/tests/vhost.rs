@@ -157,7 +157,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     );
     drop(g2);
     // Detach: the socket goes, and the volume can be attached elsewhere.
-    let d = other.ctl(serde_json::json!({"id": 3, "op": "detach", "args": {"volume": id}}));
+    let d = other.detach_gone(&id);
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!socket2.exists());
     // Only that volume's lease was fenced, not the service (D150): its
@@ -265,10 +265,10 @@ fn a_detach_leaves_a_connected_disk_alone() {
     assert_eq!(d["error"]["code"], "busy", "{d}");
     assert!(sa.exists(), "the socket stays");
     assert!(g.read(0, data.len() as u32) == data, "the guest goes on");
-    // A hypervisor that has gone: detached at once, though the service may
-    // not have read the hang-up yet.
+    // A hypervisor that has gone: detached, though the service may not have
+    // read the hang-up yet (retried briefly, `detach_gone`).
     drop(g);
-    let d = detach(&a, false);
+    let d = svc.detach_gone(&a);
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!sa.exists());
     // Forced: the hypervisor is cut off.
