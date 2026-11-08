@@ -1127,7 +1127,7 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=f891a028aa21b2a885b71c68fbf641531a2a19ba#f891a028aa21b2a885b71c68fbf641531a2a19ba"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4d1f5b13f71b134d2bee07c96120438aaf044ef2#4d1f5b13f71b134d2bee07c96120438aaf044ef2"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1147,14 +1147,14 @@ dependencies = [
 [[package]]
 name = "glidex-authd"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4d1f5b13f71b134d2bee07c96120438aaf044ef2#4d1f5b13f71b134d2bee07c96120438aaf044ef2"
 dependencies = [
  "libc",
  "libloading",
- "nix",
+ "nix 0.31.3",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "zeroize",
@@ -1163,18 +1163,18 @@ dependencies = [
 [[package]]
 name = "glidex-raftstore"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4d1f5b13f71b134d2bee07c96120438aaf044ef2#4d1f5b13f71b134d2bee07c96120438aaf044ef2"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
- "getrandom 0.3.4",
+ "base64 0.23.1",
+ "getrandom 0.4.3",
  "openraft",
  "redb",
  "serde",
  "serde_json",
  "smallvec",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1183,7 +1183,7 @@ dependencies = [
 [[package]]
 name = "glidex-tls"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4d1f5b13f71b134d2bee07c96120438aaf044ef2#4d1f5b13f71b134d2bee07c96120438aaf044ef2"
 dependencies = [
  "arc-swap",
  "http",
@@ -1191,7 +1191,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "nix",
+ "nix 0.31.3",
  "rcgen",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -1208,9 +1208,9 @@ dependencies = [
 [[package]]
 name = "glidex-topology"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4d1f5b13f71b134d2bee07c96120438aaf044ef2#4d1f5b13f71b134d2bee07c96120438aaf044ef2"
 dependencies = [
- "nix",
+ "nix 0.31.3",
  "serde",
 ]
 
@@ -1418,7 +1418,7 @@ name = "hyperstor-authd"
 version = "0.1.0"
 dependencies = [
  "glidex-authd",
- "nix",
+ "nix 0.29.0",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -2322,6 +2322,18 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
  "memoffset",
 ]
 
@@ -2880,9 +2892,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "3.1.3"
+version = "4.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba239c1c1693315d3cc0e601db3b3965543afbf48c41730fdca2f069f510f4a"
+checksum = "8b317ef681e18f6091efbfab532eaf924a135c492d9d0299d0fbfae07e92a39b"
 dependencies = [
  "libc",
 ]
