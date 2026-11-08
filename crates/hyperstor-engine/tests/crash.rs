@@ -263,7 +263,17 @@ static MID_CHECKPOINT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// Commits after which some object's block map was dense.
 static DENSE_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Devices converted to the second shard format during a run, and
+/// conversions power loss interrupted (D274).
+static UPGRADED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static UPGRADE_CRASHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 thread_local! {
+    /// Runs format devices of the first shard format, as before v0.0.8.
+    static FIRST_FORMAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Recovery sometimes converts the device to the second format, and
+    /// power may go out while it does.
+    static UPGRADE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The block-map policy each open applies (the dense-map test forces
     /// dense maps for every object with more than one run).
     static POLICY: std::cell::Cell<Option<DensePolicy>> = const { std::cell::Cell::new(None) };
@@ -305,7 +315,11 @@ fn run(seed: u64) -> usize {
             cluster_id: 2,
             shards: 1,
             log_blocks: Some(64),
-            ..Default::default()
+            features: if FIRST_FORMAT.with(|f| f.get()) {
+                Features::default()
+            } else {
+                Features::current()
+            },
         },
     )
     .unwrap();
@@ -374,6 +388,9 @@ fn run(seed: u64) -> usize {
         if sh.checkpoint_in_progress() {
             MID_CHECKPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        // Lists the engine took whole before the crash: a conversion during
+        // recovery takes two blocks from the ring (D267).
+        let max = sh.max_list_bytes();
         // Power loss: keep a random subset of unflushed blocks.
         let p = rng.random_range(0.0..1.0);
         let img = fd.crash_image(|_| rng.random_bool(p));
@@ -392,6 +409,30 @@ fn run(seed: u64) -> usize {
                 fd.fail_after(u64::MAX);
             }
         }
+        // Sometimes convert the device (D274), losing power during it at
+        // times: it holds the same changes either way.
+        if UPGRADE.with(|u| u.get())
+            && !device_info(&d).unwrap().features.shard_v2()
+            && rng.random_bool(0.5)
+        {
+            if rng.random_bool(0.6) {
+                fd.fail_after(rng.random_range(0..60));
+            }
+            let r = upgrade(&d);
+            match r {
+                Ok((info, _)) => {
+                    assert!(info.features.shard_v2());
+                    UPGRADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(_) => {
+                    UPGRADE_CRASHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let p = rng.random_range(0.0..1.0);
+                    let img = fd.crash_image(|_| rng.random_bool(p));
+                    fd = Arc::new(FaultDev::from_image(img));
+                    d = fd.clone();
+                }
+            }
+        }
         fd.fail_after(u64::MAX);
         sh = open_shard(&d).unwrap_or_else(|e| panic!("seed {seed}: recovery failed: {e}"));
         crashes += 1;
@@ -399,7 +440,6 @@ fn run(seed: u64) -> usize {
         // in flight.
         let mut candidates = vec![(model.clone(), true)];
         let mut m = model.clone();
-        let max = sh.max_list_bytes();
         for l in &in_flight {
             if hyperstor_engine::shard::estimate(l) > max {
                 continue; // refused whole by the engine
@@ -497,6 +537,34 @@ fn random_crashes_with_dense_block_maps() {
     assert!(seen > 100, "dense maps were exercised");
 }
 
+/// Devices of the first shard format, as every device was before v0.0.8,
+/// stay in service until converted (D274).
+#[test]
+fn random_crashes_on_a_device_of_the_first_format() {
+    FIRST_FORMAT.with(|f| f.set(true));
+    run_seeds("first format");
+}
+
+/// D274: devices of the first format converted during recovery, power lost
+/// at random points of the conversion, with dense block maps so that
+/// converting repacks them (D270).
+#[test]
+fn a_device_converted_while_power_fails_keeps_every_change() {
+    FIRST_FORMAT.with(|f| f.set(true));
+    UPGRADE.with(|u| u.set(true));
+    POLICY.with(|p| {
+        p.set(Some(DensePolicy {
+            disabled: false,
+            run_overhead: 1 << 20,
+        }))
+    });
+    run_seeds("converted");
+    let done = UPGRADED.load(std::sync::atomic::Ordering::Relaxed);
+    let crashed = UPGRADE_CRASHED.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!("conversions: {done} done, {crashed} interrupted by power loss");
+    assert!(done > 50 && crashed > 50, "conversions were exercised");
+}
+
 /// What a device fault did to the reopened shard.
 #[derive(Debug, Default)]
 struct Outcomes {
@@ -517,7 +585,7 @@ struct Outcomes {
 enum Damage {
     /// A block of the log ring, damaged on the media.
     LogBlock,
-    /// One of the shard's two superblocks.
+    /// One of the shard's superblock slots or their mirrors.
     ShardSuper,
     /// One of the device's two superblocks.
     DeviceSuper,
@@ -649,7 +717,10 @@ fn damaged_run(seed: u64, damage: Damage, out: &mut Outcomes) {
     drop(sh);
     let hit = match damage {
         Damage::LogBlock => Some(region.start + 2 + rng.random_range(0..region.log_blocks)),
-        Damage::ShardSuper => Some(region.start + rng.random_range(0..2)),
+        // A slot or its mirror at the end of the log ring (D267).
+        Damage::ShardSuper => Some(
+            [0, 1, region.log_blocks, region.log_blocks + 1][rng.random_range(0..4)] + region.start,
+        ),
         Damage::DeviceSuper => Some(rng.random_range(0..2)),
         Damage::DataBlock => Some(
             region.start

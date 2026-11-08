@@ -551,10 +551,22 @@ fn only_a_blank_device_reads_as_not_formatted() {
 
     // A shard without a superblock is damaged too: formatting writes the
     // shards before the device superblock.
+    // Both slots gone, the mirrors at the end of the log ring serve
+    // (D267); with them gone too, the shard is damaged.
     let no_shard = dev(4096);
     let info = format(&no_shard, &cfg(1, None)).unwrap();
+    let r = info.regions[0];
     for b in 0..2 {
-        patch(&no_shard, info.regions[0].start + b, |buf| buf.fill(0));
+        patch(&no_shard, r.start + b, |buf| buf.fill(0));
+    }
+    assert!(open(&no_shard).is_ok(), "the mirrors serve");
+    for b in [
+        r.start,
+        r.start + 1,
+        r.start + r.log_blocks,
+        r.start + r.log_blocks + 1,
+    ] {
+        patch(&no_shard, b, |buf| buf.fill(0));
     }
     assert!(matches!(open(&no_shard), Err(EngineError::Corrupt(_))));
 }
@@ -1258,8 +1270,10 @@ fn commit_rounds_leave_every_write_to_their_writer() {
         let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
         mem.write_batch(&io).unwrap();
         mem.flush().unwrap();
-        if let Some((at, sup)) = r.take_seal() {
-            mem.write(at, &sup).unwrap();
+        if let Some(sup) = r.take_seal() {
+            for (at, b) in sup {
+                mem.write(at, &b).unwrap();
+            }
             mem.flush().unwrap();
         }
         deferred += sh.stats().pending_blocks;

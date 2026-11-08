@@ -109,7 +109,7 @@ repeats, so compare-and-set has no ABA problem.
 
 ```text
 device:  [superblock A][superblock B][shard 0][shard 1] ... [shard n]
-shard:   [super A][super B][log ring][data area]
+shard:   [super A][super B][log ring ... mirror A][mirror B][data area]
 ```
 
 - The **device superblock**, in two copies, names the device (its id in
@@ -120,11 +120,29 @@ shard:   [super A][super B][log ring][data area]
   *incompatible* ones, which it refuses. Every format change from now on
   takes a flag, as in ext4 and XFS.
 - The two shard superblocks alternate by sequence number, so a torn
-  superblock write leaves the other one valid.
+  superblock write leaves the other one valid. Each is also written to a
+  **mirror** in the last two blocks of the log ring, so one damaged block
+  never leaves a shard without its newest superblock.
 - The **log ring** is a sixteenth of the shard, between 1 MiB and 1 GiB.
   It holds whole-block records, each with a CRC32C seeded by a salt that
   changes on every open, so an old record left in the ring is never
-  mistaken for a new one.
+  mistaken for a new one. Each record also carries the checksum of the
+  record before it, a hash chain: a record missing or replaced in the
+  middle of the log is proven, not guessed.
+- **Damage refuses the shard** rather than losing what was acknowledged.
+  Only the last commit round can be torn by a crash, so a damaged record
+  followed by a valid one, a log record found in the data area, or a
+  newest superblock lost with the log written under it means damage: the
+  shard refuses to open, and its data is recovered from the other
+  replicas.
+- Block numbers in dense block maps count from the shard's data area, so
+  a shard's maps reach 16 TiB past its start rather than the device's.
+- **Formats.** The hash chain, the mirrors and the block numbers are the
+  second shard format, an incompatible feature flag: builds before
+  v0.0.8 refuse a device that has it. New devices get it. A device
+  formatted before keeps the first format, and works as before, until an
+  operator converts it once every node runs v0.0.8; until then, rolling
+  back is possible.
 - The **data area** holds extents. Every 4 KiB block in an extent has its
   own CRC32C, kept in the index and carried on the wire unchanged from
   the client to the device and back.

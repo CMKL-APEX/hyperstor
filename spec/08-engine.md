@@ -82,7 +82,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 | Region | Contents |
 |---|---|
 | Superblock (two copies at blocks 0 and 1; decided: a backup at the last block, D271) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
-| Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt; decided: each mirrored in the last two blocks of the shard's log ring (D267) |
+| Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt (in the second format also the checksum the record there chains to); each mirrored in the last two blocks of the shard's log ring (D267; second format) |
 | Per shard: log | circular. Operation records (§7.3), deferred small writes |
 | Per shard: data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks); checkpoint pages and their directory live here too |
 | Index | as built, in memory, saved as paged checkpoints (§7.3; I33, D105); the long-term home is an on-device copy-on-write B+tree (D43, D44), designed after v0.0.8 (D272) |
@@ -96,15 +96,24 @@ log device, which has its own superblock naming the data device (§6.2).
 and refuses while no build opens a device read-only; and *incompatible*
 ones, which it refuses. Each change to the format from now on takes a
 flag. With every flag clear the superblock is written as version 1, as
-before D157; with any set, as version 2. A build formats a device only
+before D157; with any set, as version 2. The first flag is
+`INCOMPAT_SHARD_V2` (incompatible, bit 0; v0.0.8): the second shard
+format, with chained log records (D266), superblock mirrors (D267) and
+relative block numbers (D270). New devices are formatted with it; a
+device of the first format is opened as it is, and converted only when an
+operator asks (D274): each shard is checkpointed in the new format, all
+its pages under a new salt, then the device superblock gets the flag, so
+a crash before that leaves the first format (as built, I309). A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
 over.
 
-**Block numbers** in block maps and extents are absolute device blocks
-as built, which keeps dense maps (D43) to the first 16 TiB of a device;
-decided: relative to the shard's data start (D270), an incompatible flag,
-shipped in the same format step as the log's hash chain (D266).
+**Block numbers** in runs, extents and log records are absolute 64-bit
+device blocks. In dense block maps (D43), whose slots hold 32 bits, they
+are absolute in the first format, which keeps dense maps to the first
+16 TiB of a device, and relative to the shard's data start in the second
+(D270), which gives each shard 16 TiB; a map whose blocks don't fit
+stays in runs.
 
 **Whose device it is** (I203). The superblock names the device (its id
 in the map, `node × 1000 + shard`) and the cluster. Before opening a
@@ -185,11 +194,21 @@ device is formatted with the cluster's id; a superblock without one
   flush on devices without power-loss protection. The engine batches the
   records of concurrent writes into one log write. As built, a round's
   data and records are written, then the device flushed with
-  `fdatasync`; FUA and NVMe passthrough are to be measured (#248).
+  `fdatasync`; FUA and NVMe passthrough are to be measured (#248, G57).
+- **G57. Commit durability by FUA and NVMe passthrough** (05-decision-log.md
+  point 242; #248). On an NVMe drive the engine may own (not a file on a
+  filesystem): the commit rate and p50/p99 of one-block rounds with
+  write plus `fdatasync`, with `RWF_DSYNC` (FUA where the drive has a
+  volatile cache), and with NVMe passthrough over io_uring
+  (`IORING_OP_URING_CMD`) with FUA, at queue depths 1 to 32; and on a
+  drive with power-loss protection, whether the flush costs anything.
 - **Log records** are whole blocks: a header with the record's LSN, its
   commit group and checksums seeded with the shard's salt, then the
-  payload. Decided: each header also carries the payload checksum of the
-  record before it, a hash chain (D266, incompatible flag).
+  payload. In the second format (48-byte header, version 2) it also
+  carries the payload checksum of the record before it, a hash chain
+  (D266): a record that passes its checksums but names another is
+  refused, and the superblock names the checksum the record at its head
+  chains to. The ring's last two blocks hold the superblock mirrors.
 - **Recovery** loads the checkpoint, replays the log from `L`, and checks
   the data of the last commit group, dropping that group if its data
   didn't reach the media (none of it was acknowledged). Only the last
@@ -240,8 +259,11 @@ device is formatted with the cluster's id; a superblock without one
   the extents the index and the checkpoint use (as built; no bitmap on
   disk).
 - Discard and write-zeroes from a client drop blocks from the head
-  version. Blocks no version holds any more are freed. Sending the
-  device a deallocate for freed blocks is not built yet (#245).
+  version. Blocks no version holds any more are freed. Decided (D275,
+  #245, not built yet): extents freed since a checkpoint are deallocated
+  on the device in large runs once it is sealed, off the commit path; on
+  files, by punching holes; on by default, a per-device setting turns it
+  off.
 - The engine reports used, free and allocated-per-lineage bytes to the
   daemon, which reports them to the metadata service with its heartbeat.
 - **A full shard stays up** (as built, I162). Room for a whole checkpoint

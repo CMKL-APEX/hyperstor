@@ -19,11 +19,16 @@ const DEV_MAGIC: u64 = 0x4853_4445_5643_3031; // "HSDEVC01"
 const FORMAT_V1: u32 = 1;
 /// With feature flags (D157).
 const FORMAT_V2: u32 = 2;
-/// The features this build knows, by kind. None yet: each format change
-/// from now on adds its flag here.
+/// The features this build knows, by kind: each format change adds its
+/// flag here.
 const KNOWN_COMPAT: u64 = 0;
 const KNOWN_RO_COMPAT: u64 = 0;
-const KNOWN_INCOMPAT: u64 = 0;
+const KNOWN_INCOMPAT: u64 = INCOMPAT_SHARD_V2;
+/// The second shard format (v0.0.8): chained log records (D266), superblock
+/// mirrors at the end of each log ring (D267) and dense block maps relative
+/// to each shard's data start (D270). New devices are formatted with it; an
+/// operator converts older ones (D274, [`upgrade`]).
+pub const INCOMPAT_SHARD_V2: u64 = 1 << 0;
 /// Smallest and largest default log ring, in blocks (1 MiB and 1 GiB,
 /// 04-decisions.md D47).
 const MIN_LOG: u64 = 256;
@@ -42,6 +47,19 @@ pub struct Features {
 }
 
 impl Features {
+    /// The features a device is formatted with.
+    pub fn current() -> Self {
+        Features {
+            incompat: INCOMPAT_SHARD_V2,
+            ..Default::default()
+        }
+    }
+
+    /// Whether the device's shards are in the second format.
+    pub fn shard_v2(&self) -> bool {
+        self.incompat & INCOMPAT_SHARD_V2 != 0
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == Features::default()
     }
@@ -63,7 +81,7 @@ impl Features {
 }
 
 /// How to format a device.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DeviceConfig {
     pub device_id: u128,
     pub cluster_id: u128,
@@ -72,7 +90,20 @@ pub struct DeviceConfig {
     /// Log ring per shard, in blocks; by default a sixteenth of the shard,
     /// between 1 MiB and 1 GiB.
     pub log_blocks: Option<u64>,
+    /// [`Features::current`] by default; tests of older devices clear them.
     pub features: Features,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            device_id: 0,
+            cluster_id: 0,
+            shards: 0,
+            log_blocks: None,
+            features: Features::current(),
+        }
+    }
 }
 
 /// What a device's superblock says.
@@ -202,7 +233,13 @@ pub fn format(dev: &Arc<dyn BlockDev>, cfg: &DeviceConfig) -> Result<DeviceInfo,
         features: cfg.features,
     };
     for (i, r) in info.regions.iter().enumerate() {
-        Shard::format(dev.clone(), *r, cfg.device_id, i as u32)?;
+        Shard::format_as(
+            dev.clone(),
+            *r,
+            cfg.device_id,
+            i as u32,
+            info.features.shard_v2(),
+        )?;
     }
     let sb = info.encode();
     dev.write_batch(&[(0, &sb), (BLOCK as u64, &sb)])?;
@@ -246,12 +283,40 @@ pub fn record_cluster(dev: &Arc<dyn BlockDev>, cluster: u128) -> Result<DeviceIn
         return Ok(sb);
     }
     sb.cluster_id = cluster;
+    rewrite(dev, &sb)?;
+    Ok(sb)
+}
+
+/// Writes `sb` over both copies: copy 1 first, then copy 0, each flushed,
+/// so a crash at any point leaves a valid copy that reads as before or as
+/// after.
+fn rewrite(dev: &Arc<dyn BlockDev>, sb: &DeviceInfo) -> Result<(), EngineError> {
     let buf = sb.encode();
     for at in [BLOCK as u64, 0] {
         dev.write_batch(&[(at, &buf)])?;
         dev.flush()?;
     }
-    Ok(sb)
+    Ok(())
+}
+
+/// Opens a device and converts its shards to the second format if they
+/// aren't (D274): each shard is converted ([`Shard::upgrade`]), then the
+/// superblock gets [`INCOMPAT_SHARD_V2`]. A crash before the superblock is
+/// written leaves a device of the first format, which `upgrade` converts
+/// again; after it, builds before v0.0.8 refuse the device. A shard that
+/// can't be converted (no room for its checkpoint) fails it all, with the
+/// superblock untouched.
+pub fn upgrade(dev: &Arc<dyn BlockDev>) -> Result<(DeviceInfo, Vec<Shard>), EngineError> {
+    let (mut info, mut shards) = open(dev)?;
+    if info.features.shard_v2() {
+        return Ok((info, shards));
+    }
+    for sh in &mut shards {
+        sh.upgrade()?;
+    }
+    info.features.incompat |= INCOMPAT_SHARD_V2;
+    rewrite(dev, &info)?;
+    Ok((info, shards))
 }
 
 /// Opens every shard of a formatted device, recovering each. A device with
@@ -270,7 +335,10 @@ pub fn open(dev: &Arc<dyn BlockDev>) -> Result<(DeviceInfo, Vec<Shard>), EngineE
         .regions
         .iter()
         .enumerate()
-        .map(|(i, r)| Shard::open(dev.clone(), *r, info.device_id, i as u32))
+        .map(|(i, r)| {
+            let v2 = info.features.shard_v2();
+            Shard::open_as(dev.clone(), *r, info.device_id, i as u32, v2)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok((info, shards))
 }
@@ -362,6 +430,43 @@ mod tests {
         let mut b = AlignedBuf::zeroed(BLOCK);
         dev.read_batch(&mut [(BLOCK as u64, &mut b)]).unwrap();
         assert_eq!(DeviceInfo::decode(&b), Ok(read));
+    }
+
+    /// D274: new devices get the second shard format; a device of the first
+    /// opens as it is, and only `upgrade` converts it, once.
+    #[test]
+    fn only_upgrade_converts_a_device_of_the_first_format() {
+        let fresh: Arc<dyn BlockDev> = Arc::new(crate::MemDev::new(64 << 20));
+        let cfg = DeviceConfig {
+            device_id: 7,
+            shards: 2,
+            ..Default::default()
+        };
+        assert!(format(&fresh, &cfg).unwrap().features.shard_v2());
+        let (_, shards) = open(&fresh).unwrap();
+        assert!(shards.iter().all(Shard::is_v2));
+        assert!(
+            Features::current().refused().is_empty(),
+            "this build knows it"
+        );
+
+        let old: Arc<dyn BlockDev> = Arc::new(crate::MemDev::new(64 << 20));
+        let cfg = DeviceConfig {
+            features: Features::default(),
+            ..cfg
+        };
+        assert!(!format(&old, &cfg).unwrap().features.shard_v2());
+        let (read, shards) = open(&old).unwrap();
+        assert_eq!(read.features, Features::default(), "written as version 1");
+        assert!(!shards.iter().any(Shard::is_v2), "open converts nothing");
+        drop(shards);
+        let (up, shards) = upgrade(&old).unwrap();
+        assert!(up.features.shard_v2() && shards.iter().all(Shard::is_v2));
+        drop(shards);
+        assert_eq!(super::info(&old).unwrap(), up);
+        let (again, shards) = upgrade(&old).unwrap();
+        assert_eq!(again, up);
+        assert!(shards.iter().all(Shard::is_v2));
     }
 
     #[test]
