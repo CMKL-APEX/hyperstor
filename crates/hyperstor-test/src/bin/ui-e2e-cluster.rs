@@ -6,6 +6,7 @@
 //! hyperstor-mgmt serving the UI in `DIR` (`bun run build`'s `dist`), with
 //! the made-up PAM helper ([`hyperstor_test::start_authd`]) and a made-up
 //! identity provider that logs any browser in as `dee@example.com`. It
+//! realm `acme` holding tenant 7. It
 //! prints one JSON line: `url`, the claim code, the people's password,
 //! and the provider's person; then runs until its standard input closes,
 //! and removes everything.
@@ -55,6 +56,10 @@ fn main() {
         "--oidc",
         conf.to_str().unwrap(),
     ]);
+    // Realm acme, with tenant 7, for roles granted on a realm (D262).
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    c.ctl(&["realm", "tenant", "--tenant", "7", "--realm", "acme"])
+        .ok();
     let claim = c.claim_code();
     println!(
         "{}",
