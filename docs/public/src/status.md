@@ -57,7 +57,7 @@ covered by tests that run on every change.
 | The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied | Done |
 | Crash safety: randomized crash tests against a model | Done |
 | A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log or a shard superblock refuses the shard (a damaged checkpoint page still refuses it whole until #243) | In progress |
-| The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted by the engine (the operator's command comes next) | In progress |
+| The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
 | Performance gate against SPDK on a storage test host | In progress |

@@ -628,6 +628,9 @@ struct ShardState {
     read_timeouts: Cell<u32>,
     /// What the device is, reported with its space (D178).
     kind: Cell<hyperstor_meta::DeviceKind>,
+    /// The device's shard format, 1 or 2 (v0.0.8's, D274), reported with
+    /// its space.
+    format: u8,
     /// The test hook of `NodeConfig::commit_delays`.
     commit_delays: RefCell<Option<Arc<faults::CommitDelays>>>,
     /// The test hook of `NodeConfig::pings`.
@@ -1202,11 +1205,35 @@ impl ShardState {
             Err(EngineError::NotFormatted) => format_blank(&dev, me, cluster, may_format)?,
             Err(e) => return Err(refused(e)),
         }
-        let mut shard = hyperstor_engine::open(&dev)
-            .map_err(refused)?
-            .1
-            .pop()
-            .ok_or("device has no shard")?;
+        // D274: a device an operator asked to convert is converted as it
+        // opens; the map service stops asking once it reports the format.
+        // One without room for the checkpoint that converts it is left in
+        // the first format, as it was, and opened so.
+        let opened = match client
+            .map()
+            .upgrades
+            .contains(&me)
+            .then(|| (std::time::Instant::now(), hyperstor_engine::upgrade(&dev)))
+        {
+            Some((t, Ok(r))) => {
+                eprintln!(
+                    "hyperstord: device {me}: converted to v0.0.8's shard format in {:?}",
+                    t.elapsed()
+                );
+                r
+            }
+            Some((_, Err(EngineError::NoSpace))) => {
+                eprintln!(
+                    "hyperstord: device {me}: not converted to v0.0.8's shard format: no room to \
+                     rewrite its index; free space and restart the node"
+                );
+                hyperstor_engine::open(&dev).map_err(refused)?
+            }
+            Some((_, Err(e))) => return Err(refused(e)),
+            None => hyperstor_engine::open(&dev).map_err(refused)?,
+        };
+        let mut shard = opened.1.into_iter().next().ok_or("device has no shard")?;
+        let format = if shard.is_v2() { 2 } else { 1 };
         shard.set_defer_max(defer.unwrap_or(0));
         shard.set_pending_limit(PENDING_BLOCKS);
         Ok(Rc::new(ShardState {
@@ -1221,6 +1248,7 @@ impl ShardState {
             read_timeout: Cell::new(READ_TIMEOUT),
             read_timeouts: Cell::new(0),
             kind: Cell::new(hyperstor_meta::DeviceKind::File),
+            format,
             commit_delays: RefCell::new(None),
             ping_faults: RefCell::new(None),
             client,
@@ -4478,6 +4506,14 @@ impl ShardState {
                     .call_meta(&Msg::DeviceKind {
                         device: self.me,
                         kind: self.kind.get().code(),
+                    })
+                    .await;
+                // And its format (D274), likewise.
+                let _ = self
+                    .client
+                    .call_meta(&Msg::DeviceFormat {
+                        device: self.me,
+                        format: self.format,
                     })
                     .await;
                 let r = self

@@ -227,6 +227,32 @@ give more if many devices are to come. Volumes go to it with
 has a build that reports them; a node from before that starts after
 that can't read the map, so upgrade it first.
 
+## Converting devices to v0.0.8's format
+
+Devices formatted by v0.0.8 or later use its shard format: log records
+chained to the record before, superblock copies mirrored in the log, and
+block maps that reach past 16 TiB of device. Devices formatted before
+keep the first format and work as before. Convert them once every node
+runs v0.0.8:
+
+```sh
+hyperstorctl nodes                       # FORMAT: 1 or 2 for each device
+hyperstorctl device upgrade --all        # or --device 2001
+```
+
+Each node converts its devices the next time it starts, so restart the
+storage service on each node in turn, letting the cluster recover
+between nodes as for any upgrade. `nodes` shows `1>2` for a device asked
+and not yet converted, and `2` once it is. Converting rewrites the
+device's whole index once; a device without room for that stays in the
+first format, its data untouched, and its node says so in its log: free
+space and restart the node.
+
+**It is one-way.** Builds before v0.0.8 refuse a converted device, so
+roll back, if you need to, before converting. The map service refuses
+the command while any device asked hasn't reported its format, which
+nodes before v0.0.8 never do.
+
 ## Splitting a pool's PGs
 
 A pool's PG count doubles in place: each PG splits into itself and

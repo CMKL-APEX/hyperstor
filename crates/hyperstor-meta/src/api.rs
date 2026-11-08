@@ -987,6 +987,7 @@ pub fn status(
                         weight_fixed: map.fixed_weights.contains(&d.id),
                         kind: map.kinds.get(&d.id).map_or("", |k| k.name()).into(),
                         class_fixed: map.fixed_classes.contains(&d.id),
+                        upgrade_asked: map.upgrades.contains(&d.id),
                         endpoints: map
                             .endpoints
                             .get(&d.id)
@@ -1267,6 +1268,7 @@ impl ClusterService for Api {
             .send(Admin::Uncommitted(reply))
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let uncommitted = rx.recv().await.flatten();
+        let leading = leads.is_ok();
         let (map, ..) = self.published().await?;
         // What only the leader knows, asked of it by a follower (I197).
         let (reply, rx) = oneshot();
@@ -1297,6 +1299,17 @@ impl ClusterService for Api {
                 leads,
             ),
         };
+        // Devices' shard formats (D274): only the leader has them.
+        if leading {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::DeviceFormats(reply))
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            let formats = rx.recv().await.unwrap_or_default();
+            for d in s.nodes.iter_mut().flat_map(|n| n.devices.iter_mut()) {
+                d.format = formats.get(&d.id).map(|&f| f as u32);
+            }
+        }
         let records = self.scrub_records().await?;
         scrub_health(&mut s, &map, &records, crate::unix_now());
         if let Some(d) = uncommitted {
@@ -2212,6 +2225,64 @@ impl ClusterService for Api {
                 e,
                 ConnectError::failed_precondition,
                 "class_conflict",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn upgrade_devices(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::UpgradeDevicesRequest>,
+    ) -> ServiceResult<pb::UpgradeDevicesResponse> {
+        let devices: Vec<u32> = req.devices.iter().copied().collect();
+        let target = if req.all {
+            "every device".to_string()
+        } else {
+            format!("devices {devices:?}")
+        };
+        let who = self.authorize(&ctx, "UpgradeDevices", &target, true)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::UpgradeDevices {
+                devices,
+                all: req.all,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "UpgradeDevices",
+            &target,
+            &match &r {
+                Some(Ok((epoch, asked, done))) => {
+                    format!("ok, asked {asked:?}, already {done:?}, map epoch {epoch}")
+                }
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, asked, done))) => Ok(pb::UpgradeDevicesResponse {
+                map_epoch,
+                asked,
+                done,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no device") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) if e == "no devices" => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "format_unknown",
             )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }

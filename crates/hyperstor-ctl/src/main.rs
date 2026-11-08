@@ -54,6 +54,9 @@
 //! - `device endpoints --device D --endpoints NET=ADDR,...|none`: set a
 //!   device's endpoints on the cluster's data networks, replacing them
 //!   (26-networks.md §29.5, D215); the installer keeps its own node's;
+//! - `device upgrade --device D | --all`: convert devices to v0.0.8's
+//!   shard format (D274) at their node's next start; one-way, and only
+//!   devices whose node runs v0.0.8 or later;
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -194,7 +197,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -280,6 +283,8 @@ struct Args {
     holder: Option<String>,
     /// `claim port`: storage leaves the port.
     exclusive: bool,
+    /// `device upgrade`: every device.
+    all: bool,
     /// `port lending`: off, idle, always or default (D209).
     lending: Option<String>,
     json: bool,
@@ -422,6 +427,7 @@ fn main() {
         holder: None,
         host: None,
         exclusive: false,
+        all: false,
         lending: None,
         epoch: None,
         ids: Vec::new(),
@@ -600,6 +606,7 @@ fn main() {
             "--holder" => a.holder = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--host" => a.host = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--exclusive" => a.exclusive = true,
+            "--all" => a.all = true,
             "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--epoch" => {
                 a.epoch = Some(
@@ -682,7 +689,12 @@ fn main() {
                     "trash" => matches!(sub, Some("list" | "restore" | "purge" | "settings")),
                     "audit" => matches!(sub, Some("list" | "settings")),
                     "scrub" => matches!(sub, Some("set" | "status" | "pgs" | "start")),
-                    "device" => matches!(sub, Some("add" | "remove" | "class" | "endpoints")),
+                    "device" => {
+                        matches!(
+                            sub,
+                            Some("add" | "remove" | "class" | "endpoints" | "upgrade")
+                        )
+                    }
                     "port" => matches!(sub, Some("list" | "role" | "lending")),
                     "claim" => matches!(sub, Some("list" | "port" | "renew" | "release")),
                     "realm" => {
@@ -793,6 +805,8 @@ fn main() {
         || (cmd == "claim list" && (a.node.is_some() || !a.name.is_empty()))
         || (!cmd.starts_with("claim ") && a.holder.is_some())
         || (cmd != "claim port" && a.exclusive)
+        || (cmd == "device upgrade" && (a.all == a.device.is_some() || a.node.is_some()))
+        || (cmd != "device upgrade" && a.all)
         || (matches!(cmd.as_str(), "claim port" | "claim renew") && a.ttl == 0)
     {
         usage();
@@ -800,6 +814,7 @@ fn main() {
     if !device_add
         && !device_class
         && !device_endpoints
+        && cmd != "device upgrade"
         && !pool_device
         && !port
         && (cmd == "out"
@@ -2339,6 +2354,35 @@ where
                 }
                 Err(e) => return Err(e),
             }
+        }
+        "device upgrade" => {
+            let r = client
+                .upgrade_devices(pb::UpgradeDevicesRequest {
+                    devices: a.device.into_iter().collect(),
+                    all: a.all,
+                    ..Default::default()
+                })
+                .await;
+            refused_or(r, |r| {
+                let r = r.into_owned();
+                let list = |v: &[u32]| {
+                    v.iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                if !r.asked.is_empty() {
+                    println!(
+                        "devices {} convert to v0.0.8's format at their node's next start (map epoch {}); \
+                         builds before v0.0.8 can't open them after",
+                        list(&r.asked),
+                        r.map_epoch
+                    );
+                }
+                if !r.done.is_empty() {
+                    println!("devices {} are already in v0.0.8's format", list(&r.done));
+                }
+            })?
         }
         "device add" => {
             let (Some(node), Some(address)) = (a.node, a.address.clone()) else {

@@ -72,6 +72,13 @@ service ClusterService {
   // Pools limited to classes move PGs as it changes. Write.
   rpc SetDeviceClass(SetDeviceClassRequest) returns (SetDeviceClassResponse);
 
+  // Asks for devices to be converted to v0.0.8's shard format
+  // (08-engine.md §7.1, 04-decisions.md D274): each node converts its own
+  // the next time it starts. One-way: builds before v0.0.8 can't open a
+  // converted device. Every device asked must have reported its format,
+  // which only nodes of v0.0.8 or later do. Write.
+  rpc UpgradeDevices(UpgradeDevicesRequest) returns (UpgradeDevicesResponse);
+
   // Sets a device's endpoints (26-networks.md §29.5, D215), replacing
   // them; none: its address alone. Each is on a data network of the map.
   // The installer sets its node's on every run. A node's own certificate
@@ -410,6 +417,13 @@ message Device {
   string fullness = 11;
   // Its endpoints on other networks (D207).
   repeated Endpoint endpoints = 12;
+  // Its shard format (1, or 2 for v0.0.8's), from its last report to the
+  // leader; absent on another member, before a report, or from a node
+  // before v0.0.8 (04-decisions.md D274).
+  optional uint32 format = 13;
+  // An operator asked for it to be converted (UpgradeDevices); its node
+  // converts it at its next start.
+  bool upgrade_asked = 14 [json_name = "upgrade_asked"];
 }
 
 message Pool {
@@ -834,6 +848,21 @@ message SetPoolDeviceResponse {
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   // The pool's devices mix hard disks and flash (only when forced).
   bool mixed_kinds = 2 [json_name = "mixed_kinds"];
+}
+
+message UpgradeDevicesRequest {
+  // The devices to convert; with all, every device.
+  repeated uint32 devices = 1;
+  bool all = 2;
+}
+
+message UpgradeDevicesResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // Devices now asked to convert at their node's next start.
+  repeated uint32 asked = 2;
+  // Devices already in the new format.
+  repeated uint32 done = 3;
 }
 
 message SetDeviceClassRequest {

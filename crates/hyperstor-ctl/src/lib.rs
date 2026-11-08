@@ -202,11 +202,12 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} STATE",
-        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "CLASS", "FREE", "TOTAL"
+        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} STATE",
+        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "CLASS", "FREE", "TOTAL", "FORMAT"
     );
     let mut fixed = false;
     let mut class_set = false;
+    let mut asked = false;
     for n in &s.nodes {
         for d in &n.devices {
             // In TiB from the device's capacity, unless set (D158).
@@ -215,9 +216,17 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
             // The device's kind, unless set (D178).
             class_set |= d.class_fixed;
             let class = format!("{}{}", d.class, if d.class_fixed { "+" } else { "" });
+            // Its shard format, as reported to the leader (blank on
+            // another member), and whether it is to convert (D274).
+            asked |= d.upgrade_asked;
+            let format = format!(
+                "{}{}",
+                d.format.map(|f| f.to_string()).unwrap_or_default(),
+                if d.upgrade_asked { ">2" } else { "" }
+            );
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {}",
+                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} {}",
                 n.id,
                 n.rack,
                 if n.up { "yes" } else { "no" },
@@ -227,6 +236,7 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
                 class,
                 gib(d.free_bytes),
                 gib(d.total_bytes),
+                format,
                 // And how full, past a threshold (D27, D182).
                 match d.fullness.as_str() {
                     "" | "ok" => (if d.up_in { "in" } else { "out" }).to_string(),
@@ -245,6 +255,12 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
         let _ = writeln!(
             o,
             "+ class set with hyperstorctl device class; the others are their kind"
+        );
+    }
+    if asked {
+        let _ = writeln!(
+            o,
+            ">2 converts to format 2 (v0.0.8) at its node's next start (hyperstorctl device upgrade)"
         );
     }
     o
@@ -908,6 +924,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.AddDevice", "device add"),
     ("ClusterService.RemoveDevice", "device remove"),
     ("ClusterService.SetDeviceClass", "device class"),
+    ("ClusterService.UpgradeDevices", "device upgrade"),
     ("ClusterService.SetEndpoints", "device endpoints"),
     ("ClusterService.ListPorts", "port list"),
     ("ClusterService.SetPortRole", "port role"),
@@ -1938,7 +1955,8 @@ mod tests {
         with.nodes[0].devices[0].total_bytes = Some(4 << 30);
         with.nodes[0].devices[0].free_bytes = Some(1 << 29);
         let n = nodes_text(&with);
-        assert!(n.contains("0.5G       4.0G in"), "{n}");
+        // No format reported: a blank column (D274).
+        assert!(n.contains("0.5G       4.0G        in"), "{n}");
         // A weight an operator set is marked (D158).
         with.nodes[0].devices[0].weight = 0.25;
         with.nodes[0].devices[0].weight_fixed = true;
@@ -1959,7 +1977,15 @@ mod tests {
         edited.pools[0].fullest_device = Some(2);
         assert!(pools_text(&edited).contains(" nvme+7-2-3!  full (device 2)\n"));
         with.nodes[0].devices[0].fullness = "backfillfull".into();
-        assert!(nodes_text(&with).contains("4.0G in backfillfull"));
+        assert!(nodes_text(&with).contains("4.0G        in backfillfull"));
+        // Its format, and that it is asked to convert (D274).
+        with.nodes[0].devices[0].format = Some(1);
+        with.nodes[0].devices[0].upgrade_asked = true;
+        let n = nodes_text(&with);
+        assert!(
+            n.contains("4.0G 1>2    in") && n.contains(">2 converts to format 2"),
+            "{n}"
+        );
         let pgs = pgs_text(&pb::ListPgsResponse {
             pgs: vec![pb::Pg {
                 pool: 1,
