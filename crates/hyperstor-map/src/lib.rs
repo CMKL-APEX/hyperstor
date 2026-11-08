@@ -378,6 +378,11 @@ pub struct ClusterMap {
     /// Tenants not in the realm `default` (D248), while any host is
     /// bound: what storage nodes need to find a volume's realm.
     pub tenant_realms: BTreeMap<u32, u32>,
+    /// Devices an operator asked to convert to v0.0.8's shard format
+    /// (D274, `hyperstorctl device upgrade`): each node converts its own
+    /// the next time it opens them, and the map service drops a device
+    /// once it reports the new format.
+    pub upgrades: BTreeSet<u32>,
 }
 
 /// An orchestrator's claim on a port (D205).
@@ -886,6 +891,7 @@ impl ClusterMap {
             &mut self.failed,
             &mut self.fixed_weights,
             &mut self.fixed_classes,
+            &mut self.upgrades,
         ] {
             set.remove(&id);
         }
@@ -1760,8 +1766,11 @@ impl ClusterMap {
         // pools' scrub settings other than the defaults (D224); 17: ports'
         // roles, leases and weights (D209, D237); 18: claims and lending
         // settings (D205, D209, D239); 19: hosts bound to realms and
-        // tenants' realms (D259).
-        let format = if !self.host_realms.is_empty() || !self.tenant_realms.is_empty() {
+        // tenants' realms (D259); 20: devices to convert to v0.0.8's shard
+        // format (D274), asked only once every node reads it.
+        let format = if !self.upgrades.is_empty() {
+            20
+        } else if !self.host_realms.is_empty() || !self.tenant_realms.is_empty() {
             19
         } else if !self.claims.is_empty() || self.lending.is_some() || !self.port_lending.is_empty()
         {
@@ -2048,13 +2057,19 @@ impl ClusterMap {
                 e.u32(**t).u32(**r);
             });
         }
+        if format >= 20 {
+            let up: Vec<u32> = self.upgrades.iter().copied().collect();
+            e.seq(&up, |e, d| {
+                e.u32(*d);
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=19).contains(&v) {
+        if !(1..=20).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2362,6 +2377,9 @@ impl ClusterMap {
                 .seq(8, |d| Ok((d.u32()?, d.u32()?)))?
                 .into_iter()
                 .collect();
+        }
+        if v >= 20 {
+            m.upgrades = d.seq(4, |d| d.u32())?.into_iter().collect();
         }
         d.finish()?;
         Ok(m)
@@ -3842,5 +3860,21 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert!(!m.host_may_attach("h2", 5));
         // Unbound hosts, and hosts that give no name, attach any.
         assert!(m.host_may_attach("h3", 5) && m.host_may_attach("", 6));
+    }
+
+    /// D274: devices to convert travel in format 20, only while one is
+    /// asked; a removed device's request goes with it.
+    #[test]
+    fn devices_to_convert_travel_only_while_asked() {
+        let mut m = ClusterMap::new(7);
+        m.add_node(1, &["127.0.0.1:7001".parse().unwrap()], 0);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 1);
+        m.upgrades.insert(1000);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 20);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+        m.remove_device(1000);
+        assert!(m.upgrades.is_empty());
     }
 }

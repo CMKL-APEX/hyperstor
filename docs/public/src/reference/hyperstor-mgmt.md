@@ -119,7 +119,8 @@ what a realm's administrators see. A grant names a realm that exists.
 Everyone may make API tokens for themselves. Deleting a volume, a
 snapshot or a member, rolling a volume back, purging the trash or
 changing its grace period, changing how long the audit log is kept, making a join token or an API token, revoking
-a certificate, fetching a map backup, and changing people's roles need a
+a certificate, fetching a map backup, removing or converting a device
+(`hyperstorctl device upgrade`), and changing people's roles need a
 login of the last 10 minutes; an API token is never fresh enough for
 these.
 

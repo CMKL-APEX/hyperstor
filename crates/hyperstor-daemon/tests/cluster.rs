@@ -47,8 +47,20 @@ enum MetaCmd {
     RecoveryScrubs(std::time::Duration),
     /// The PGs devices report stuck (I276).
     Stuck(std::sync::mpsc::Sender<hyperstor_meta::Stuck>),
+    /// Asks for every device to be converted to v0.0.8's shard format
+    /// (D274); answers the devices asked.
+    UpgradeAll(std::sync::mpsc::Sender<Result<Vec<u32>, String>>),
+    /// Each device's reported shard format, and the devices the published
+    /// map still asks to convert.
+    Formats(std::sync::mpsc::Sender<(std::collections::BTreeMap<u32, u8>, Vec<u32>)>),
     /// The map the map service has published.
     Published(std::sync::mpsc::Sender<ClusterMap>),
+}
+
+thread_local! {
+    /// [`Cluster::start`] formats its devices in the first shard format,
+    /// as before v0.0.8 (D274).
+    static FIRST_FORMAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Each stopped device, by device id.
@@ -400,6 +412,13 @@ impl Cluster {
                         MetaCmd::Stuck(tx) => {
                             let _ = tx.send(meta.stuck_now(std::time::Instant::now()));
                         }
+                        MetaCmd::UpgradeAll(tx) => {
+                            let _ = tx.send(meta.upgrade_devices(&[], true).map(|r| r.1));
+                        }
+                        MetaCmd::Formats(tx) => {
+                            let asked = meta.published.borrow().upgrades.iter().copied().collect();
+                            let _ = tx.send((meta.device_formats(), asked));
+                        }
                         MetaCmd::Published(tx) => {
                             let _ = tx.send(meta.published.borrow().clone());
                         }
@@ -439,9 +458,20 @@ impl Cluster {
                         .enumerate()
                         .map(|(i, l)| {
                             let id = n as u32 * 1000 + i as u32;
-                            let dev = hyperstor_daemon::faults::FaultyDev::new(Arc::new(
-                                MemDev::new(256 << 20),
-                            ));
+                            let mem: Arc<dyn BlockDev> = Arc::new(MemDev::new(256 << 20));
+                            if FIRST_FORMAT.with(|f| f.get()) {
+                                hyperstor_engine::format(
+                                    &mem,
+                                    &hyperstor_engine::DeviceConfig {
+                                        device_id: id as u128,
+                                        shards: 1,
+                                        features: hyperstor_engine::Features::default(),
+                                        ..Default::default()
+                                    },
+                                )
+                                .unwrap();
+                            }
+                            let dev = hyperstor_daemon::faults::FaultyDev::new(mem);
                             faulty.insert(id, dev.clone());
                             ShardSpec {
                                 device_id: id,
@@ -632,6 +662,89 @@ impl Cluster {
         let _ = self.meta_tx.send(MetaCmd::Stop);
         let map = self.meta_thread.take().unwrap().join().unwrap();
         (map, devs)
+    }
+}
+
+/// D274: devices of the first shard format, as every device was before
+/// v0.0.8, convert only when asked, each at its node's next start, in a
+/// rolling restart that keeps serving; what they held reads back the same.
+#[test]
+fn devices_convert_at_their_nodes_next_start() {
+    FIRST_FORMAT.with(|f| f.set(true));
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let data = pattern(41, 8 * CHUNK as usize);
+    let d = data.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, d).await.unwrap();
+        })
+    })
+    .join()
+    .unwrap();
+    let formats = |c: &Cluster| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(c.meta_tx.send(MetaCmd::Formats(tx)).is_ok());
+        rx.recv().unwrap()
+    };
+    // Every device reports format 1 (nodes report every 5 s).
+    let t = std::time::Instant::now();
+    while formats(&c).0.len() < 4 {
+        assert!(t.elapsed().as_secs() < 30, "formats reported");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        formats(&c).0.values().all(|&f| f == 1),
+        "nothing converts unasked"
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    assert!(c.meta_tx.send(MetaCmd::UpgradeAll(tx)).is_ok());
+    assert_eq!(rx.recv().unwrap().unwrap().len(), 4);
+    // Nodes see the request once it is published, as the API answers.
+    let t = std::time::Instant::now();
+    while formats(&c).1.len() < 4 {
+        assert!(t.elapsed().as_secs() < 10, "the request published");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    for n in 0..4 {
+        c.kill(n);
+        c.restart(n);
+        std::thread::spawn(move || {
+            block_on(async move {
+                let cl = Client::connect(meta, 6 + n as u64).await.unwrap();
+                wait_all_up(&cl).await;
+                wait_backfilled(&cl).await;
+            })
+        })
+        .join()
+        .unwrap();
+    }
+    let t = std::time::Instant::now();
+    loop {
+        let (f, asked) = formats(&c);
+        if f.values().all(|&f| f == 2) && asked.is_empty() {
+            break;
+        }
+        assert!(
+            t.elapsed().as_secs() < 30,
+            "converted: {f:?}, still asked {asked:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let d = data.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 20).await.unwrap();
+            assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
+        })
+    })
+    .join()
+    .unwrap();
+    let (_, devs) = c.stop();
+    for (id, d) in devs {
+        let info = hyperstor_engine::device_info(&d).unwrap();
+        assert!(info.features.shard_v2(), "device {id}");
     }
 }
 

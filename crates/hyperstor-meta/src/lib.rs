@@ -115,6 +115,10 @@ fn check_cache_grace(kind: PoolKind, grace: Option<u32>) -> Result<(), String> {
     }
 }
 
+/// What `UpgradeDevices` did (D274): the working map's epoch, the devices
+/// now asked to convert, and those already converted.
+pub type Upgraded = (u64, Vec<u32>, Vec<u32>);
+
 pub enum Admin {
     /// The published map, what clients and storage nodes see, how long
     /// ago each node was last heard from (absent: not since start), the
@@ -281,6 +285,14 @@ pub enum Admin {
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
+    /// Asks for devices (`all`, or those listed) to be converted to v0.0.8's
+    /// shard format (D274). Replies with the working map's epoch, the
+    /// devices now asked and those already converted.
+    UpgradeDevices {
+        devices: Vec<u32>,
+        all: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Upgraded, String>>,
+    },
     /// Sets a device's class, or lets it follow its kind (D178). Replies
     /// with the working map's epoch and the class now.
     SetDeviceClass {
@@ -354,6 +366,9 @@ pub enum Admin {
     /// Whether this member leads: `Ok`, or why not (with the leader's
     /// map service address when known).
     Leads(hyperstor_reactor::chan::OneSender<Result<(), String>>),
+    /// The shard format each device reported to this member, if it leads
+    /// (D274).
+    DeviceFormats(hyperstor_reactor::chan::OneSender<BTreeMap<u32, u8>>),
     /// The bytes on each of the pool's PGs' primaries (D155), unless the
     /// reports are still at version `since` (`None`); only the leader has
     /// them.
@@ -801,6 +816,10 @@ pub struct Meta {
     /// node that is up has reported one: a map with kinds is format 5,
     /// which nodes from before can't read.
     kind_reports: RefCell<BTreeMap<u32, hyperstor_map::DeviceKind>>,
+    /// The shard format each device reported (D274), kept out of the map:
+    /// a device that reports one has a node of v0.0.8 or later, and a map
+    /// that carried them would be a format older nodes can't read.
+    formats: RefCell<BTreeMap<u32, u8>>,
     /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
@@ -1043,6 +1062,7 @@ impl Meta {
             space: RefCell::new(BTreeMap::new()),
             fullness: RefCell::new(BTreeMap::new()),
             kind_reports: RefCell::new(BTreeMap::new()),
+            formats: RefCell::new(BTreeMap::new()),
             split_reports: RefCell::new(HashMap::new()),
             leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
@@ -1548,6 +1568,7 @@ impl Meta {
                     self.beats.borrow_mut().clear();
                     self.space.borrow_mut().clear();
                     self.kind_reports.borrow_mut().clear();
+                    self.formats.borrow_mut().clear();
                     self.granted.borrow_mut().clear();
                     self.reports.borrow_mut().clear();
                     self.suspect.borrow_mut().clear();
@@ -2039,6 +2060,56 @@ impl Meta {
         }
         let now = map.devices[&device].class.clone();
         Ok((map.epoch, now))
+    }
+
+    /// Asks for devices to be converted to v0.0.8's shard format (D274):
+    /// every device with `all`. Each must have reported its format, which
+    /// only nodes of v0.0.8 or later do: a map that asks is format 20,
+    /// which older nodes can't read. Returns the working map's epoch, the
+    /// devices now asked (each node converts its own at its next start)
+    /// and those already in the new format.
+    pub fn upgrade_devices(&self, devices: &[u32], all: bool) -> Result<Upgraded, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        let which: Vec<u32> = if all {
+            map.devices.keys().copied().collect()
+        } else {
+            devices.to_vec()
+        };
+        if which.is_empty() {
+            return Err("no devices".into());
+        }
+        let formats = self.formats.borrow();
+        let mut asked = Vec::new();
+        let mut done = Vec::new();
+        for &d in &which {
+            if !map.devices.contains_key(&d) {
+                return Err(format!("no device {d}"));
+            }
+            match formats.get(&d) {
+                None => {
+                    return Err(format!(
+                        "device {d} hasn't reported its format: its node runs a build before \
+                         v0.0.8, is down, or hasn't reported yet (every 5 s)"
+                    ));
+                }
+                Some(&f) if f >= 2 => done.push(d),
+                Some(_) => asked.push(d),
+            }
+        }
+        let before = map.upgrades.len();
+        map.upgrades.extend(asked.iter().copied());
+        if map.upgrades.len() != before {
+            map.epoch += 1;
+        }
+        Ok((map.epoch, asked, done))
+    }
+
+    /// The shard format each device last reported to this leader (D274).
+    pub fn device_formats(&self) -> BTreeMap<u32, u8> {
+        self.formats.borrow().clone()
     }
 
     /// Replaces a device's endpoints (D215). Returns the working map's
@@ -2570,6 +2641,7 @@ impl Meta {
         let gone = map.remove_device(device).unwrap_or(false);
         self.space.borrow_mut().remove(&device);
         self.kind_reports.borrow_mut().remove(&device);
+        self.formats.borrow_mut().remove(&device);
         Ok(Some((gone, map.epoch)))
     }
 
@@ -2773,6 +2845,9 @@ impl Meta {
                 } => {
                     let _ = reply.send(self.clone().scrub_now(pool, pgs, deep, since, cancel));
                 }
+                Admin::DeviceFormats(reply) => {
+                    let _ = reply.send(self.device_formats());
+                }
                 Admin::Leads(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok(())
@@ -2842,6 +2917,14 @@ impl Meta {
                         self.set_scrub(pool, change, weaken),
                         ScrubRefused::Invalid,
                     );
+                }
+                Admin::UpgradeDevices {
+                    devices,
+                    all,
+                    reply,
+                } => {
+                    let r = self.upgrade_devices(&devices, all);
+                    self.reply_published(reply, r, |e| e);
                 }
                 Admin::SetDeviceClass {
                     device,
@@ -3708,6 +3791,7 @@ impl Meta {
                     | Msg::DeviceFailed { .. }
                     | Msg::DeviceSpace { .. }
                     | Msg::DeviceKind { .. }
+                    | Msg::DeviceFormat { .. }
                     | Msg::PgSplit { .. }
                     | Msg::CacheRelease { .. }
                     | Msg::LeaderState
@@ -3943,6 +4027,19 @@ impl Meta {
                     if !known {
                         self.kind_reports.borrow_mut().insert(device, k);
                         self.apply_kinds();
+                    }
+                }
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
+            // D274: a device converted is no longer asked to convert.
+            Ok(Msg::DeviceFormat { device, format }) => {
+                if self.map.borrow().devices.contains_key(&device) {
+                    self.formats.borrow_mut().insert(device, format);
+                    let mut map = self.map.borrow_mut();
+                    if format >= 2 && map.upgrades.remove(&device) {
+                        map.epoch += 1;
                     }
                 }
                 Msg::Noted {
@@ -5483,6 +5580,39 @@ mod tests {
         }
         assert_eq!(m.space.borrow().get(&7), Some(&(1000, 500)));
         assert_eq!(m.map.borrow().epoch, epoch);
+    }
+
+    /// D274: devices convert only once each has reported its format,
+    /// which nodes before v0.0.8 never do (the map would be a format they
+    /// can't read); a device that reports the new format is asked no more.
+    #[test]
+    fn only_devices_that_report_a_format_are_converted() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let devices: Vec<u32> = m.map.borrow().devices.keys().copied().collect();
+        let report = |device: u32, format: u8| m.handle(Ok(Msg::DeviceFormat { device, format }));
+        let (first, rest) = devices.split_first().unwrap();
+        report(*first, 2);
+        let err = m.upgrade_devices(&[], true).unwrap_err();
+        assert!(err.contains("hasn't reported its format"), "{err}");
+        assert!(m.map.borrow().upgrades.is_empty());
+        for d in rest {
+            report(*d, 1);
+        }
+        let epoch = m.map.borrow().epoch;
+        let (e, asked, done) = m.upgrade_devices(&[], true).unwrap();
+        assert_eq!((asked.as_slice(), done.as_slice()), (rest, &[*first][..]));
+        assert_eq!(e, epoch + 1);
+        assert_eq!(m.map.borrow().upgrades.len(), rest.len());
+        assert!(
+            m.upgrade_devices(&[99_999], false)
+                .unwrap_err()
+                .starts_with("no device")
+        );
+        // Formats stay out of the map; a converted device leaves the list.
+        report(rest[0], 2);
+        assert!(!m.map.borrow().upgrades.contains(&rest[0]));
+        assert_eq!(m.device_formats().get(&rest[0]), Some(&2));
     }
 
     /// D158: weights follow each device's capacity in TiB, all at once
