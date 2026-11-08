@@ -83,14 +83,16 @@ async fn once(
 /// Sends the call `path` (`/hyperstor.v1.<Service>/<Method>`) to each of
 /// `addrs` in turn until one answers other than `503`.
 /// The map service is told the call is for `person` (`user:NAME`,
-/// [`hyperstor_api::ON_BEHALF_HEADER`]); a caller's own such header never
-/// passes ([`passes`]).
+/// [`hyperstor_api::ON_BEHALF_HEADER`]), limited to `realms` if given
+/// ([`hyperstor_api::REALMS_HEADER`], D262); a caller's own such headers
+/// never pass ([`passes`]).
 pub async fn forward(
     tls: &Arc<connectrpc::rustls::ClientConfig>,
     addrs: &[String],
     path: &str,
     headers: &http::HeaderMap,
     person: &str,
+    realms: Option<&[String]>,
     body: Bytes,
 ) -> Result<Answer, String> {
     let mut headers: http::HeaderMap = headers
@@ -102,6 +104,12 @@ pub async fn forward(
         http::HeaderName::from_static(hyperstor_api::ON_BEHALF_HEADER),
         http::HeaderValue::from_str(person).map_err(|e| e.to_string())?,
     );
+    if let Some(r) = realms {
+        headers.insert(
+            http::HeaderName::from_static(hyperstor_api::REALMS_HEADER),
+            http::HeaderValue::from_str(&r.join(",")).map_err(|e| e.to_string())?,
+        );
+    }
     let mut last = Err("no map service member configured".to_string());
     for a in addrs {
         last = once(tls, a, path, &headers, body.clone()).await;
