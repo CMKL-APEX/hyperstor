@@ -5,6 +5,6 @@ started = 2026-11-09
 updated = 2026-11-09
 milestone = "HS2"
 branch = "fix/checkpoint-dir-copy"
-prs = []
+prs = [278]
 now = "Built (I321): the directory written twice, the copy named after the superblock's checksum; each device reads its pages once per deep scrub period and rewrites a damaged one"
 next = "Then #245 (D275), #244 (needs a decision), #251"
