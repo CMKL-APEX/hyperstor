@@ -1170,6 +1170,11 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
         let s = c.ctl(&["status", "--json"]);
         (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
     });
+    // On a slow host a node may be marked down at the start while its
+    // device opens (I284); a cache PG written then moves and starts empty,
+    // and its data is gone when the node comes up (CI). Every node is up
+    // once health is ok.
+    c.ctl(&["status", "--wait", "60"]).ok();
     c.ctl(&[
         "pool",
         "create",
