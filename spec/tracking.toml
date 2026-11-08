@@ -179,6 +179,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A device that lies: damaged blocks, lost and misdirected writes never read back as other data (some cases fail until #242, #243, #253)"
+spec = ["08-engine.md §7.3", "I305"]
+status = "partial"
+tests = [
+    "crash::a_damaged_device_superblock_copy_is_read_past",
+    "crash::damaged_data_and_checkpoint_blocks_never_read_as_other_data",
+    "hyperstor_engine::dev::tests::fault_dev_loses_and_misdirects_single_blocks",
+]
+
+[[milestone.item]]
 what = "Device back ends: memory, files and block devices through io_uring with O_DIRECT"
 spec = ["08-engine.md §6.2"]
 status = "done"

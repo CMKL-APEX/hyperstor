@@ -1375,3 +1375,21 @@ the third (D262–D265):
 | 226 | How a grant names a realm: per grant, `role@realm` (recommended); one realm per person | `role@realm` | D263 |
 | 227 | A realm's security administrators: S3 keys only (recommended); keys and their realm's people's grants | keys and their realm's people | D264 |
 | 228 | What someone with roles only in realms sees of the cluster: nothing (recommended); read-only health | nothing | D265 |
+
+## Engine durability after the format review (2026-11-08)
+
+The review of the engine's on-disk format (issues #241–#253) and #241's
+crash tests with a device that lies found silent loss of acknowledged
+changes. Asked with recommendations; the owner took them, except the
+log hash chain, which ships in v0.0.8 with the block-number change:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 229 | Log records (#242): look-ahead refusal now and the hash chain later (recommended); both in v0.0.8; look-ahead only | Both in v0.0.8 | D266 |
+| 230 | Shard superblocks (#253): mirror each slot at the region's end (recommended); three slots; the refusal check only | Mirror each slot | D267 |
+| 231 | Recovery after damage: the whole device now, per PG later (recommended); per PG in v0.0.8 | Whole device now | D268 |
+| 232 | Checkpoint directory (#243): a second copy and deep scrub of pages (recommended); scrub only; neither | Both | D269 |
+| 233 | Block numbers (#247): relative to the shard, with the hash chain (recommended); later | With the hash chain | D270 |
+| 234 | Device superblock backup (#246): at the device's end, compatible flag (recommended); only the format-device scan; not now | Yes | D271 |
+| 235 | On-device index: designed after v0.0.8 (recommended); start in v0.0.8; only when RAM calls for it | After v0.0.8 | D272 |
+| 236 | #249 placement and #250 experiments: both later (recommended); keep #249's design; keep both | Both later | D273 |

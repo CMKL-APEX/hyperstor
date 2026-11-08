@@ -17,7 +17,7 @@ pub mod types;
 
 pub use align::{AlignedBuf, BLOCK};
 pub use blockmap::DensePolicy;
-pub use dev::{BlockDev, FaultDev, FileDev, MemDev, UringDev};
+pub use dev::{BlockDev, FaultDev, FileDev, MemDev, UringDev, WriteFault};
 pub use device::{
     DeviceConfig, DeviceInfo, Features, format, info as device_info, open, record_cluster,
 };

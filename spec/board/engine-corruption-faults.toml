@@ -1,0 +1,10 @@
+title = "Engine durability against a device that lies (#241, #242, #243, #253)"
+status = "active"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-08
+updated = 2026-11-08
+milestone = "HS2"
+branch = "test/engine-corruption-faults"
+prs = [254]
+now = "#241: crash tests with damaged blocks and lost or misdirected writes (I305); they show #242 (17 silent losses in 300 seeds), #253 (a damaged shard superblock opens the shard empty) and #243"
+next = "Pull request for #241 and D266–D273; then #242 (look-ahead refusal and the hash chain, D266) and #253 (mirrored superblocks, D267)"
