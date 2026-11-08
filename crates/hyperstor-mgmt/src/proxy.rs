@@ -81,14 +81,15 @@ async fn once(
 }
 
 /// Sends the call `path` (`/hyperstor.v1.<Service>/<Method>`) to each of
-/// `addrs` in turn until one answers other than `503`.
+/// the map service's members in turn, the leader first (D276), until one
+/// answers other than `503`.
 /// The map service is told the call is for `person` (`user:NAME`,
 /// [`hyperstor_api::ON_BEHALF_HEADER`]), limited to `realms` if given
 /// ([`hyperstor_api::REALMS_HEADER`], D262); a caller's own such headers
 /// never pass ([`passes`]).
 pub async fn forward(
     tls: &Arc<connectrpc::rustls::ClientConfig>,
-    addrs: &[String],
+    members: &crate::members::Members,
     path: &str,
     headers: &http::HeaderMap,
     person: &str,
@@ -111,12 +112,19 @@ pub async fn forward(
         );
     }
     let mut last = Err("no map service member configured".to_string());
-    for a in addrs {
+    for (i, a) in members.addrs().iter().enumerate() {
         last = once(tls, a, path, &headers, body.clone()).await;
         match &last {
-            Ok(r) if r.status != 503 => return last,
+            Ok(r) if r.status != 503 => {
+                if i > 0 {
+                    // The first didn't serve it: the order is old.
+                    members.stale();
+                }
+                return last;
+            }
             _ => {}
         }
     }
+    members.stale();
     last
 }

@@ -196,7 +196,7 @@ device is formatted with the cluster's id; a superblock without one
   data and records are written, then the device flushed with
   `fdatasync`; FUA and NVMe passthrough are to be measured (#248, G57).
 - **G57. Commit durability by FUA and NVMe passthrough** (05-decision-log.md
-  point 240; #248). On an NVMe drive the engine may own (not a file on a
+  point 242; #248). On an NVMe drive the engine may own (not a file on a
   filesystem): the commit rate and p50/p99 of one-block rounds with
   write plus `fdatasync`, with `RWF_DSYNC` (FUA where the drive has a
   volatile cache), and with NVMe passthrough over io_uring

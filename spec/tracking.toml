@@ -1444,6 +1444,20 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Every host's mgmt sends its calls to the map service's leader, found from the member list; mgmt behind a proxy or a CDN: any CA's certificate and its names, proxies known by a client certificate or address, the person's address from them only, proxy-only"
+spec = ["19-administration.md §23.7", "D276", "D277", "I310"]
+status = "done"
+tests = [
+    "members::a_followers_mgmt_reaches_the_leader",
+    "proxy::mgmt_serves_a_proxy_with_an_organizations_certificates",
+    "hyperstor_mgmt::members::tests::the_leader_comes_first_then_the_others_then_the_seeds",
+    "hyperstor_mgmt::front::tests::ranges_hold_what_they_should",
+    "hyperstor_mgmt::front::tests::only_a_proxy_says_who_is_calling",
+    "hyperstor_mgmt::front::tests::proxy_only_still_lets_the_host_in",
+    "hyperstor_mgmt::front::tests::names_on_the_certificate",
+]
+
+[[milestone.item]]
 what = "The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui"
 spec = ["19-administration.md §23.7", "D97", "D100"]
 status = "done"
