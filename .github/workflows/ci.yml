@@ -27,13 +27,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# The tests run on the project's self-hosted runner, the other jobs on
-# GitHub's: the runner takes one job at a time, so the quick checks would
-# wait behind the tests; on GitHub's they run beside them. Pull requests from
-# forks run their tests on GitHub's too: the repository is public, and a
-# fork's code (build scripts, tests, this file) would otherwise run on the
-# runner's host. Branches of this repository, main, the nightly run and
-# manual runs test on the self-hosted runner.
+# Every job runs on GitHub's runners. The tests can run on the project's
+# self-hosted runner instead (#237, #262): set the test job's runs-on to the
+# expression in its comment. Pull requests from forks then still test on
+# GitHub's: the repository is public, and a fork's code (build scripts,
+# tests, this file) would otherwise run on the runner's host. The steps for
+# the self-hosted runner (tmpfs scratch, 8 tests at once, Chromium's
+# libraries installed by hand) check runner.environment and stay in place.
 jobs:
   # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
   fmt:
@@ -73,8 +73,9 @@ jobs:
       with:
         fetch-depth: 0
     - name: Install buf
+      # Retried: GitHub's release downloads sometimes answer 504.
       run: |
-        curl -fsSL -o "$RUNNER_TEMP/buf" \
+        curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/buf" \
           "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
         echo "${BUF_SHA256}  $RUNNER_TEMP/buf" | sha256sum -c
         chmod +x "$RUNNER_TEMP/buf"
@@ -120,7 +121,9 @@ jobs:
 
   test:
 
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    # On the self-hosted runner, except for forks' pull requests:
+    # runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
+    runs-on: ubuntu-26.04
     # A run takes a few minutes; a test that hangs (a cluster test waiting
     # on a node) fails the job instead of holding the runner for 6 hours.
     timeout-minutes: 30
