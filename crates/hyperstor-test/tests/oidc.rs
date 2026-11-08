@@ -1,7 +1,8 @@
 //! Logins to `hyperstor-mgmt` with an identity provider (OIDC,
 //! 19-administration.md §23.9.1, D96), against a made-up provider: the
 //! first administrator's claim, accounts named by verified email, the
-//! login bound to its browser and used once, and step-up.
+//! login bound to its browser and used once, finished by another mgmt
+//! than the one that began it, and step-up.
 
 use hyperstor_test::*;
 
@@ -227,4 +228,25 @@ fn people_log_in_with_an_identity_provider() {
         1,
         "the claim code only at start"
     );
+
+    // A login begun on one mgmt finishes on another (here the same one
+    // restarted, its memory gone): its state is in the map service (D278).
+    let (redirect, browser) = begin(&c, r#"{"return_to":"/pools"}"#);
+    c.restart_mgmt_with(&["--oidc", conf.to_str().unwrap()]);
+    idp.next_id_token(
+        "hyperstor",
+        serde_json::json!({
+            "sub": "s-bob", "email": "bob@example.com", "email_verified": true,
+            "nonce": query_param(&redirect, "nonce").unwrap(),
+        }),
+    );
+    let state = query_param(&redirect, "state").unwrap();
+    let (code, head, body) = come_back(&c, &state, Some(&browser));
+    assert_eq!(code, 303, "{head}\n{body}");
+    assert!(
+        head.to_ascii_lowercase().contains("location: /pools"),
+        "{head}"
+    );
+    assert_eq!(session_of(&c, &head).roles, ["viewer"]);
+    assert_eq!(come_back(&c, &state, Some(&browser)).0, 403, "replayed");
 }

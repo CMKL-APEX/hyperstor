@@ -234,8 +234,8 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   address (`--trusted-proxies`); only a proxy's `CF-Connecting-IP` or
   last `X-Forwarded-For` entry names the person's address.
   `--proxy-only` serves proxies and loopback alone. Any host's mgmt
-  serves any request, except an OIDC login's return, which goes to the
-  mgmt that began it (I310).
+  serves any request, an OIDC login's return included: the login's
+  state is in the map service (D278).
 - **First boot:** no default password. `cluster init` prints a claim
   URL with a one-time code (valid 1 h); opening it creates the first
   `security-admin` (a PAM user or an OIDC subject).
@@ -324,7 +324,8 @@ repository (`glidex-auth`) and taken as a pinned git dependency, as
 - **PAM** through `glidex-authd`, the small root helper (glidex
   security.md §5.3); users created on first login when they pass the
   allowed groups.
-- **OIDC** with an external IdP.
+- **OIDC** with an external IdP; a login's state until the IdP sends the
+  browser back is in the map service, so any mgmt finishes it (D278).
 - **Sessions** (browser): 256-bit ids, only hashes stored, idle 30 min,
   absolute 12 h, `HttpOnly; Secure; SameSite=Strict` (glidex
   security.md §5.5).

@@ -84,10 +84,10 @@ key as `web.crt` and `web.key` (key mode 0640, group `hyperstor`). With
 the cluster's own certificate instead, leave `--web-tls` as it is and
 add `--mgmt-hosts` with the public name.
 
-Logins with an identity provider keep the login's state in the mgmt
-that began it until the provider sends the browser back: behind a load
-balancer over several hosts, send `/auth/oidc/` to the same host
-(session affinity). Password logins and API tokens need nothing.
+Any host's mgmt serves any request, so a load balancer or tunnel over
+several hosts needs no session affinity: sessions, and the state of a
+login with an identity provider until the provider sends the browser
+back, are kept in the map service.
 
 ## Logins
 

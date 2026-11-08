@@ -1427,10 +1427,11 @@ tests = [
 
 [[milestone.item]]
 what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
-spec = ["19-administration.md §23.9", "D96", "D107"]
+spec = ["19-administration.md §23.9", "D96", "D107", "D278"]
 status = "done"
 tests = [
     "oidc::people_log_in_with_an_identity_provider",
+    "hyperstor_mgmt::people::tests::logins_begun_are_kept_sealed_and_taken_once",
     "security::only_mgmt_names_a_person",
     "hyperstor_mgmt::people::tests::oidc_people_are_their_subject",
     "hyperstor_mgmt::oidc::tests::configuration_is_checked",
