@@ -536,9 +536,10 @@ fn only_a_blank_device_reads_as_not_formatted() {
     }
     assert!(matches!(open(&newer), Err(EngineError::NewerFormat(3))));
 
+    // Both copies and the backup (D271) damaged.
     let damaged = dev(4096);
-    format(&damaged, &cfg(1, None)).unwrap();
-    for b in 0..2 {
+    let blocks = format(&damaged, &cfg(1, None)).unwrap().blocks;
+    for b in [0, 1, blocks - 1] {
         patch(&damaged, b, |buf| buf[30] ^= 0xff);
     }
     assert!(matches!(open(&damaged), Err(EngineError::Corrupt(_))));
@@ -569,6 +570,34 @@ fn only_a_blank_device_reads_as_not_formatted() {
         patch(&no_shard, b, |buf| buf.fill(0));
     }
     assert!(matches!(open(&no_shard), Err(EngineError::Corrupt(_))));
+}
+
+/// D271: both copies at the start damaged, the backup in the last block
+/// serves; all three wiped (a partition table, a `dd`), the shards'
+/// superblocks are still there, so the device is damaged, never blank:
+/// nothing formats over it.
+#[test]
+fn a_backup_superblock_serves_and_shards_are_never_formatted_over() {
+    let damaged = dev(4096);
+    let blocks = format(&damaged, &cfg(1, None)).unwrap().blocks;
+    for b in 0..2 {
+        patch(&damaged, b, |buf| buf[30] ^= 0xff);
+    }
+    assert!(open(&damaged).is_ok(), "the backup serves");
+    patch(&damaged, blocks - 1, |buf| buf[30] ^= 0xff);
+    assert!(matches!(open(&damaged), Err(EngineError::Corrupt(_))));
+
+    let wiped = dev(4096);
+    let blocks = format(&wiped, &cfg(1, None)).unwrap().blocks;
+    for b in [0, 1, blocks - 1] {
+        patch(&wiped, b, |buf| buf.fill(0));
+    }
+    assert!(matches!(open(&wiped), Err(EngineError::Corrupt(_))));
+    let sig = hyperstor_engine::probe::signature(&wiped).unwrap();
+    assert!(
+        sig.is_some_and(|s| s.contains("hyperstor")),
+        "format-device refuses it"
+    );
 }
 
 #[test]

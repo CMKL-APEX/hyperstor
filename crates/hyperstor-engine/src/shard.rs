@@ -487,6 +487,14 @@ impl ReadPlan {
     }
 }
 
+/// Whether `blk` starts like a shard superblock of either format: a device
+/// whose own superblock copies are gone still has its shards (D271).
+pub(crate) fn holds_super(blk: &[u8]) -> bool {
+    blk.get(..8)
+        .map(|m| u64::from_le_bytes(m.try_into().unwrap()))
+        .is_some_and(|m| m == SUPER_MAGIC || m == SUPER_MAGIC2)
+}
+
 /// Parses a record header of the second format (`v2`) or the first: its
 /// LSN, header checksum and the rest. Neither checksum is checked.
 fn parse_header(blk: &[u8], v2: bool) -> Option<(u64, u32, Header)> {
@@ -844,6 +852,19 @@ impl Shard {
             self.poisoned = true;
         }
         r
+    }
+
+    /// Gives the region's last block up to the device, for its backup
+    /// superblock (D271), if nothing uses it: the shard's region is then one
+    /// block shorter, which the device superblock records. Whether it was
+    /// free.
+    pub fn give_up_last_block(&mut self) -> bool {
+        let last = self.region.start + self.region.blocks - 1;
+        if self.region.data_blocks() < 2 || !self.alloc.reserve(last, 1) {
+            return false;
+        }
+        self.region.blocks -= 1;
+        true
     }
 
     /// Whether the shard is in the second format (D266, D267, D270).
