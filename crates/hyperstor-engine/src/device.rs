@@ -21,7 +21,7 @@ const FORMAT_V1: u32 = 1;
 const FORMAT_V2: u32 = 2;
 /// The features this build knows, by kind: each format change adds its
 /// flag here.
-const KNOWN_COMPAT: u64 = 0;
+const KNOWN_COMPAT: u64 = COMPAT_BACKUP_SUPER;
 const KNOWN_RO_COMPAT: u64 = 0;
 const KNOWN_INCOMPAT: u64 = INCOMPAT_SHARD_V2;
 /// The second shard format (v0.0.8): chained log records (D266), superblock
@@ -29,6 +29,11 @@ const KNOWN_INCOMPAT: u64 = INCOMPAT_SHARD_V2;
 /// to each shard's data start (D270). New devices are formatted with it; an
 /// operator converts older ones (D274, [`upgrade`]).
 pub const INCOMPAT_SHARD_V2: u64 = 1 << 0;
+/// A third copy of the superblock in the device's last block (D271), read
+/// when both at its start fail: they sit in its first 8 KiB, which a
+/// partition table or a mistaken `dd` overwrites. Older builds ignore it,
+/// and never write that block: the regions end before it.
+pub const COMPAT_BACKUP_SUPER: u64 = 1 << 0;
 /// Smallest and largest default log ring, in blocks (1 MiB and 1 GiB,
 /// 04-decisions.md D47).
 const MIN_LOG: u64 = 256;
@@ -50,9 +55,15 @@ impl Features {
     /// The features a device is formatted with.
     pub fn current() -> Self {
         Features {
+            compat: COMPAT_BACKUP_SUPER,
             incompat: INCOMPAT_SHARD_V2,
             ..Default::default()
         }
+    }
+
+    /// Whether the device keeps a backup superblock in its last block.
+    pub fn backup(&self) -> bool {
+        self.compat & COMPAT_BACKUP_SUPER != 0
     }
 
     /// Whether the device's shards are in the second format.
@@ -211,7 +222,10 @@ impl DeviceInfo {
 pub fn format(dev: &Arc<dyn BlockDev>, cfg: &DeviceConfig) -> Result<DeviceInfo, EngineError> {
     let blocks = dev.len() / BLOCK as u64;
     let shards = cfg.shards.max(1) as u64;
-    let per = blocks.saturating_sub(2) / shards;
+    // The last block holds the backup superblock (D271), outside every
+    // region.
+    let spare = if cfg.features.backup() { 3 } else { 2 };
+    let per = blocks.saturating_sub(spare) / shards;
     let log = cfg
         .log_blocks
         .unwrap_or_else(|| (per / 16).clamp(MIN_LOG, MAX_LOG));
@@ -242,9 +256,18 @@ pub fn format(dev: &Arc<dyn BlockDev>, cfg: &DeviceConfig) -> Result<DeviceInfo,
         )?;
     }
     let sb = info.encode();
-    dev.write_batch(&[(0, &sb), (BLOCK as u64, &sb)])?;
+    let mut io = vec![(0, &sb[..]), (BLOCK as u64, &sb[..])];
+    if info.features.backup() {
+        io.push((backup_at(dev), &sb[..]));
+    }
+    dev.write_batch(&io)?;
     dev.flush()?;
     Ok(info)
+}
+
+/// Where the backup superblock is: the device's last block (D271).
+fn backup_at(dev: &Arc<dyn BlockDev>) -> u64 {
+    (dev.len() / BLOCK as u64 - 1) * BLOCK as u64
 }
 
 /// Reads a device's superblock. Only a device with no hyperstor superblock
@@ -262,9 +285,37 @@ pub fn info(dev: &Arc<dyn BlockDev>) -> Result<DeviceInfo, EngineError> {
             Err(eb) => (ea, eb),
         },
     };
+    // Both copies gone: the backup in the last block, if it is one (D271).
+    // Not past a copy of a newer format: that build wrote it, and the
+    // backup may be older.
+    let newer = matches!(a, Unread::Version(_)) || matches!(b, Unread::Version(_));
+    if !newer && dev.len() >= 3 * BLOCK as u64 {
+        let mut c = AlignedBuf::zeroed(BLOCK);
+        dev.read(backup_at(dev), &mut c)?;
+        if let Ok(info) = DeviceInfo::decode(&c)
+            && info.features.backup()
+            && info.blocks == dev.len() / BLOCK as u64
+        {
+            return Ok(info);
+        }
+    }
     match (a, b) {
         (Unread::Version(v), _) | (_, Unread::Version(v)) => Err(EngineError::NewerFormat(v)),
-        (Unread::Blank, Unread::Blank) => Err(EngineError::NotFormatted),
+        (Unread::Blank, Unread::Blank) => {
+            // Blank copies over a shard's superblocks are a device that
+            // lost its own, never a blank one to format (D271).
+            let mut s = AlignedBuf::zeroed(2 * BLOCK);
+            if dev.len() >= 4 * BLOCK as u64 {
+                dev.read(2 * BLOCK as u64, &mut s)?;
+            }
+            if s.chunks(BLOCK).any(crate::shard::holds_super) {
+                return Err(EngineError::Corrupt(
+                    "device superblock: both copies are blank, but its shards' superblocks are there"
+                        .into(),
+                ));
+            }
+            Err(EngineError::NotFormatted)
+        }
         _ => Err(EngineError::Corrupt(
             "device superblock: no copy passes its checksum".into(),
         )),
@@ -287,12 +338,13 @@ pub fn record_cluster(dev: &Arc<dyn BlockDev>, cluster: u128) -> Result<DeviceIn
     Ok(sb)
 }
 
-/// Writes `sb` over both copies: copy 1 first, then copy 0, each flushed,
-/// so a crash at any point leaves a valid copy that reads as before or as
-/// after.
+/// Writes `sb` over both copies: copy 1 first, then copy 0, then the
+/// backup if it has one (D271), each flushed, so a crash at any point
+/// leaves a valid copy that reads as before or as after.
 fn rewrite(dev: &Arc<dyn BlockDev>, sb: &DeviceInfo) -> Result<(), EngineError> {
     let buf = sb.encode();
-    for at in [BLOCK as u64, 0] {
+    let backup = sb.features.backup().then(|| backup_at(dev));
+    for at in [BLOCK as u64, 0].into_iter().chain(backup) {
         dev.write_batch(&[(at, &buf)])?;
         dev.flush()?;
     }
@@ -315,6 +367,21 @@ pub fn upgrade(dev: &Arc<dyn BlockDev>) -> Result<(DeviceInfo, Vec<Shard>), Engi
         sh.upgrade()?;
     }
     info.features.incompat |= INCOMPAT_SHARD_V2;
+    // A backup superblock too, where the last block is free (D271): past
+    // every region, or the last region's last block if nothing uses it.
+    let last = dev.len() / BLOCK as u64 - 1;
+    let end = info.regions.last().map_or(0, |r| r.start + r.blocks);
+    if !info.features.backup()
+        && (last >= end
+            || shards
+                .last_mut()
+                .is_some_and(|sh| end == last + 1 && sh.give_up_last_block()))
+    {
+        if let (Some(r), Some(sh)) = (info.regions.last_mut(), shards.last()) {
+            *r = sh.region();
+        }
+        info.features.compat |= COMPAT_BACKUP_SUPER;
+    }
     rewrite(dev, &info)?;
     Ok((info, shards))
 }
@@ -467,6 +534,33 @@ mod tests {
         let (again, shards) = upgrade(&old).unwrap();
         assert_eq!(again, up);
         assert!(shards.iter().all(Shard::is_v2));
+    }
+
+    /// D271: converting a device whose last region runs to its end gives
+    /// that region's free last block to a backup superblock, which serves
+    /// once both copies are gone.
+    #[test]
+    fn a_conversion_adds_a_backup_where_the_last_block_is_free() {
+        let old: Arc<dyn BlockDev> = Arc::new(crate::MemDev::new(64 << 20));
+        let cfg = DeviceConfig {
+            device_id: 7,
+            shards: 2,
+            features: Features::default(),
+            ..Default::default()
+        };
+        let read = format(&old, &cfg).unwrap();
+        assert!(!read.features.backup());
+        let (up, shards) = upgrade(&old).unwrap();
+        drop(shards);
+        assert!(up.features.backup());
+        let (r0, r1) = (read.regions[1], up.regions[1]);
+        assert_eq!(r0.start + r0.blocks, up.blocks, "the region ran to the end");
+        assert_eq!(r1.blocks, r0.blocks - 1);
+        let zero = AlignedBuf::zeroed(BLOCK);
+        old.write_batch(&[(0, &zero), (BLOCK as u64, &zero)])
+            .unwrap();
+        assert_eq!(super::info(&old).unwrap(), up);
+        assert!(open(&old).is_ok());
     }
 
     #[test]

@@ -81,7 +81,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 | Region | Contents |
 |---|---|
-| Superblock (two copies at blocks 0 and 1; decided: a backup at the last block, D271) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
+| Superblock (two copies at blocks 0 and 1, and a backup in the last block, D271: `COMPAT_BACKUP_SUPER`, on new devices and on those converted whose last block was free) | device id (which names its node), cluster id, format version, feature flags (D157), region offsets; for a hard disk, the log device's id and partition |
 | Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt (in the second format also the checksum the record there chains to); each mirrored in the last two blocks of the shard's log ring (D267; second format) |
 | Per shard: log | circular. Operation records (§7.3), deferred small writes |
 | Per shard: data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks); checkpoint pages and their directory live here too |
@@ -110,7 +110,11 @@ don't); the map lists the devices asked (map format 20), and each node
 converts its own when it next starts (as built, I310). A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
-over.
+over. When both copies fail, the backup in the last block is read, unless
+a copy is of a newer version; and blank copies over a shard's superblocks
+(blocks 2 and 3) are a damaged device, never a blank one, so neither
+`hyperstord` nor `hyperstor-install format-device` formats over it
+(D271; as built, I311).
 
 **Block numbers** in runs, extents and log records are absolute 64-bit
 device blocks. In dense block maps (D43), whose slots hold 32 bits, they
