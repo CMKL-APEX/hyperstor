@@ -210,6 +210,12 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 - **Stack** as glidex web-ui.md: React, Vite, TypeScript, Tailwind,
   bun, Connect-ES over gRPC-Web. Shared components come from a package
   extracted with the auth code (D52).
+- **Footer** as glidex web-ui.md's: under every signed-in page, the
+  build of the mgmt serving it (its release tag, or the release before
+  it and the commits since, its branch and commit), linked to the code
+  on GitHub. mgmt takes it from git when it is built and returns it in
+  `/auth/whoami`, so the footer names the installed binaries, not where
+  the UI's files were built.
 - **Browser protections** as glidex security.md §5.6: `Host`
   allowlist, Origin check, CSRF on cookie calls, `SameSite=Strict`
   cookies, CSP without inline scripts, HSTS with a configured
