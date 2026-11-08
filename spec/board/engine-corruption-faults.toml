@@ -6,5 +6,5 @@ updated = 2026-11-08
 milestone = "HS2"
 branch = "fix/engine-log-lookahead"
 prs = [254, 257]
-now = "#242 and #253, first part (I308): a damaged log record, a misdirected log write or an unreadable newest superblock refuses the shard; 0 silent losses in 60,000 damaged runs"
+now = "#241 merged (#254); #242 and #253, first part (I308, #257): a damaged log record, a misdirected log write or an unreadable newest superblock refuses the shard; 0 silent losses in 60,000 damaged runs"
 next = "The v0.0.8 incompatible format step: the log hash chain (D266), relative block numbers (D270) and superblock mirrors at the log ring's end (D267, revised); then #243 and #246"
