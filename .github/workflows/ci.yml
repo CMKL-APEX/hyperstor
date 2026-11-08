@@ -158,7 +158,7 @@ jobs:
         HS_S3_SDK_REQUIRED: "1"
       run: |
         set -o pipefail
-        cargo test --workspace --release --no-fail-fast ${{ runner.environment == 'self-hosted' && '-- --test-threads 8' || '' }} 2>&1 | tee target/test.log
+        cargo test --workspace --release --no-fail-fast ${{ runner.environment == 'self-hosted' && '-- --test-threads 32' || '' }} 2>&1 | tee target/test.log
     # The web UI (crates/hyperstor-mgmt/ui): built, then driven in a
     # browser against a cluster installed from the binaries just built
     # (crates/hyperstor-mgmt/e2e). Its results join the tracking check.
