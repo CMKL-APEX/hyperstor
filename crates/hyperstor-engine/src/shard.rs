@@ -33,6 +33,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 const SUPER_MAGIC: u64 = 0x4853_5348_5244_3031; // "HSSHRD01"
+/// A superblock of the second shard format (D266, D267, D270): it also
+/// names the checksum the record at its head chains to.
+const SUPER_MAGIC2: u64 = 0x4853_5348_5244_3032; // "HSSHRD02"
 const LOG_MAGIC: u32 = 0x4853_4c47; // "HSLG"
 /// A checkpoint of one blob of objects (I33), read from devices written
 /// before paged checkpoints.
@@ -51,6 +54,13 @@ const PAGE_BYTES: usize = 128 * 1024;
 const SLICE_BYTES: usize = 64 * 1024;
 const LOG_VERSION: u16 = 1;
 const HEADER_LEN: usize = 40;
+/// Records of the second shard format carry the payload checksum of the
+/// record before them (D266), and a word kept zero.
+const LOG_VERSION2: u16 = 2;
+const HEADER_LEN2: usize = 48;
+/// Blocks the second format takes from the end of the log ring for the
+/// superblock mirrors (D267).
+const MIRRORS: u64 = 2;
 /// Writes smaller than this to blocks the object already holds go through
 /// the log and are applied in place later (spec/04-decisions.md D22).
 pub const DEFER_MAX: usize = 64 * 1024;
@@ -93,6 +103,10 @@ struct Super {
     salt: u32,
     head_lsn: u64,
     ckpt: Option<Ckpt>,
+    /// The second shard format: `chain` is the payload checksum of the
+    /// record before `head_lsn`, which the record there names (D266).
+    v2: bool,
+    chain: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,12 +119,15 @@ struct Ckpt {
 impl Super {
     fn encode(&self) -> AlignedBuf {
         let mut e = Enc::with_capacity(BLOCK);
-        e.u64(SUPER_MAGIC)
+        e.u64(if self.v2 { SUPER_MAGIC2 } else { SUPER_MAGIC })
             .u64(self.seq)
             .u128(self.device_id)
             .u32(self.shard)
             .u32(self.salt)
             .u64(self.head_lsn);
+        if self.v2 {
+            e.u32(self.chain);
+        }
         match &self.ckpt {
             None => {
                 e.bool(false);
@@ -133,14 +150,17 @@ impl Super {
     fn decode(buf: &[u8]) -> Option<Self> {
         let mut d = Dec::new(buf);
         let parse = |d: &mut Dec<'_>| -> Result<Super, DecodeError> {
-            if d.u64()? != SUPER_MAGIC {
-                return Err(DecodeError::Magic(0));
-            }
+            let v2 = match d.u64()? {
+                SUPER_MAGIC => false,
+                SUPER_MAGIC2 => true,
+                _ => return Err(DecodeError::Magic(0)),
+            };
             let seq = d.u64()?;
             let device_id = d.u128()?;
             let shard = d.u32()?;
             let salt = d.u32()?;
             let head_lsn = d.u64()?;
+            let chain = if v2 { d.u32()? } else { 0 };
             let ckpt = if d.bool()? {
                 let len = d.u64()?;
                 let crc = d.u32()?;
@@ -156,6 +176,8 @@ impl Super {
                 salt,
                 head_lsn,
                 ckpt,
+                v2,
+                chain,
             })
         };
         let s = parse(&mut d).ok()?;
@@ -176,8 +198,10 @@ struct PageLoc {
 /// A fuzzy checkpoint being written (01-implementation-notes.md I33): only
 /// the pages changed since the last one began (D105).
 struct Fuzzy {
-    /// Log position replay will start from once this checkpoint is named.
+    /// Log position replay will start from once this checkpoint is named,
+    /// and the checksum the record there chains to (D266).
     start_lsn: u64,
+    start_chain: u32,
     next_revision: u64,
     next_group: u64,
     /// Changed pages still to write, by bound, in key order.
@@ -195,8 +219,9 @@ struct Fuzzy {
 /// the round's writes are durable, and [`Shard::seal_done`] then moves the
 /// log's head and frees what it replaced.
 struct Seal {
-    /// The superblock and its byte offset.
-    sup: (u64, AlignedBuf),
+    /// The superblock, by byte offset: its slot, then in the second format
+    /// its mirror (D267).
+    sup: Vec<(u64, AlignedBuf)>,
     seq: u64,
     head_lsn: u64,
     ckpt: Ckpt,
@@ -242,6 +267,8 @@ struct LogRecord {
     group: u64,
     nblocks: u64,
     lists: Vec<RList>,
+    /// The payload checksum, which the next record chains to (D266).
+    pcrc: u32,
 }
 
 /// A log record's header, past its magic, version, LSN and checksum.
@@ -250,6 +277,9 @@ struct Header {
     nblocks: u64,
     plen: usize,
     pcrc: u32,
+    /// The payload checksum of the record before (D266); 0 in the first
+    /// format.
+    prev: u32,
 }
 
 /// Counters, for tests and status.
@@ -320,17 +350,28 @@ impl Round {
     }
 
     /// The superblock of a checkpoint the round completes, by byte
-    /// offset: written and flushed only once the writes above are
-    /// durable, before [`Shard::commit_end`].
-    pub fn take_seal(&mut self) -> Option<(u64, AlignedBuf)> {
+    /// offset (its slot, then its mirror in the second format, D267):
+    /// written and flushed only once the writes above are durable, before
+    /// [`Shard::commit_end`].
+    pub fn take_seal(&mut self) -> Option<Vec<(u64, AlignedBuf)>> {
         let s = self.seal.as_mut()?;
-        Some(std::mem::replace(&mut s.sup, (0, AlignedBuf::zeroed(0))))
+        Some(std::mem::take(&mut s.sup))
     }
 }
 
 pub struct Shard {
     dev: Arc<dyn BlockDev>,
     region: Region,
+    /// The second shard format (D266, D267, D270): chained log records,
+    /// superblock mirrors at the end of the log ring, dense block maps
+    /// relative to the data start.
+    v2: bool,
+    /// Blocks of the log ring that hold records: the region's, less the
+    /// mirrors in the second format.
+    ring: u64,
+    /// The payload checksum of the last record written, which the next one
+    /// names (D266).
+    chain: u32,
     device_id: u128,
     shard: u32,
     index: Index,
@@ -446,6 +487,56 @@ impl ReadPlan {
     }
 }
 
+/// Parses a record header of the second format (`v2`) or the first: its
+/// LSN, header checksum and the rest. Neither checksum is checked.
+fn parse_header(blk: &[u8], v2: bool) -> Option<(u64, u32, Header)> {
+    let mut d = Dec::new(blk);
+    let r = (|| -> Result<_, DecodeError> {
+        let magic = d.u32()?;
+        let version = d.u16()?;
+        let _flags = d.u16()?;
+        let rlsn = d.u64()?;
+        let group = d.u64()?;
+        let nblocks = d.u32()? as u64;
+        let plen = d.u32()? as usize;
+        let pcrc = d.u32()?;
+        let prev = if v2 {
+            let prev = d.u32()?;
+            let _zero = d.u32()?;
+            prev
+        } else {
+            0
+        };
+        let hcrc = d.u32()?;
+        let h = Header {
+            group,
+            nblocks,
+            plen,
+            pcrc,
+            prev,
+        };
+        Ok((magic, version, rlsn, hcrc, h))
+    })();
+    let (magic, version, rlsn, hcrc, h) = r.ok()?;
+    let want = if v2 { LOG_VERSION2 } else { LOG_VERSION };
+    (magic == LOG_MAGIC && version == want).then_some((rlsn, hcrc, h))
+}
+
+/// Blocks of a region's log ring that hold records (D267).
+fn ring_blocks(region: &Region, v2: bool) -> u64 {
+    region.log_blocks - if v2 { MIRRORS } else { 0 }
+}
+
+/// Byte offsets of superblock `seq`: its slot, and in the second format its
+/// mirror at the end of the log ring (D267).
+fn super_slots(region: &Region, v2: bool, seq: u64) -> Vec<u64> {
+    let mut at = vec![(region.start + seq % 2) * BLOCK as u64];
+    if v2 {
+        at.push((region.log_start() + ring_blocks(region, true) + seq % 2) * BLOCK as u64);
+    }
+    at
+}
+
 /// The seed `crc` was computed from over `data`. CRC32C is affine in its
 /// seed, so the seed solves 32 equations over GF(2); `None` if none does.
 fn crc_seed(data: &[u8], crc: u32) -> Option<u32> {
@@ -491,12 +582,24 @@ fn random_u32() -> u32 {
 }
 
 impl Shard {
-    /// Formats an empty shard in `region`.
+    /// Formats an empty shard in `region`, in the second format.
     pub fn format(
         dev: Arc<dyn BlockDev>,
         region: Region,
         device_id: u128,
         shard: u32,
+    ) -> Result<(), EngineError> {
+        Self::format_as(dev, region, device_id, shard, true)
+    }
+
+    /// Formats an empty shard in `region`, in the second format (`v2`) or
+    /// the first.
+    pub fn format_as(
+        dev: Arc<dyn BlockDev>,
+        region: Region,
+        device_id: u128,
+        shard: u32,
+        v2: bool,
     ) -> Result<(), EngineError> {
         let s = Super {
             seq: 1,
@@ -505,42 +608,66 @@ impl Shard {
             salt: random_u32(),
             head_lsn: 0,
             ckpt: None,
+            v2,
+            chain: 0,
         };
         let buf = s.encode();
         let zero = AlignedBuf::zeroed(BLOCK);
         // In the slot its number names, as every later superblock is, so
         // the first checkpoint's goes beside it instead of over it.
-        let slot = region.start + s.seq % 2;
-        let other = region.start + (s.seq + 1) % 2;
-        dev.write_batch(&[
-            (slot * BLOCK as u64, &buf),
-            (other * BLOCK as u64, &zero),
-            (region.log_start() * BLOCK as u64, &zero),
-        ])?;
+        let mut io = vec![];
+        for (at, b) in super_slots(&region, v2, s.seq)
+            .into_iter()
+            .zip([&buf, &buf])
+        {
+            io.push((at, &b[..]));
+        }
+        for at in super_slots(&region, v2, s.seq + 1) {
+            io.push((at, &zero[..]));
+        }
+        io.push((region.log_start() * BLOCK as u64, &zero[..]));
+        dev.write_batch(&io)?;
         dev.flush()?;
         Ok(())
     }
 
-    /// Opens a shard: recovers it from its checkpoint and log, then writes
-    /// a fresh checkpoint under a new salt.
+    /// Opens a shard of the second format: recovers it from its checkpoint
+    /// and log, then writes a fresh checkpoint under a new salt.
     pub fn open(
         dev: Arc<dyn BlockDev>,
         region: Region,
         device_id: u128,
         shard: u32,
     ) -> Result<Self, EngineError> {
-        let mut a = AlignedBuf::zeroed(BLOCK);
-        let mut b = AlignedBuf::zeroed(BLOCK);
-        dev.read_batch(&mut [
-            (region.start * BLOCK as u64, &mut a),
-            ((region.start + 1) * BLOCK as u64, &mut b),
-        ])?;
-        let supers: Vec<Super> = [Super::decode(&a), Super::decode(&b)]
+        Self::open_as(dev, region, device_id, shard, true)
+    }
+
+    /// Opens a shard of the second format (`v2`) or the first.
+    pub fn open_as(
+        dev: Arc<dyn BlockDev>,
+        region: Region,
+        device_id: u128,
+        shard: u32,
+        v2: bool,
+    ) -> Result<Self, EngineError> {
+        // Both slots, and in the second format their mirrors (D267).
+        let at: Vec<u64> = [1, 2]
             .into_iter()
-            .flatten()
-            .filter(|s| s.device_id == device_id && s.shard == shard)
+            .flat_map(|seq| super_slots(&region, v2, seq))
             .collect();
-        let unreadable = supers.len() < 2;
+        let mut bufs: Vec<AlignedBuf> = at.iter().map(|_| AlignedBuf::zeroed(BLOCK)).collect();
+        let mut reads: Vec<(u64, &mut [u8])> = at
+            .iter()
+            .copied()
+            .zip(bufs.iter_mut().map(|b| &mut b[..]))
+            .collect();
+        dev.read_batch(&mut reads)?;
+        let supers: Vec<Super> = bufs
+            .iter()
+            .filter_map(|b| Super::decode(b))
+            .filter(|s| s.device_id == device_id && s.shard == shard && s.v2 == v2)
+            .collect();
+        let unreadable = supers.len() < at.len();
         let sup = supers
             .into_iter()
             .max_by_key(|s| s.seq)
@@ -551,6 +678,9 @@ impl Shard {
         let mut sh = Shard {
             dev,
             region,
+            v2,
+            ring: ring_blocks(&region, v2),
+            chain: sup.chain,
             device_id,
             shard,
             index: Index::default(),
@@ -595,12 +725,13 @@ impl Shard {
         if let Some(c) = &sup.ckpt {
             sh.load_checkpoint(c)?;
         }
+        sh.index.base = sh.dense_base();
         let mut records = sh.scan_log()?;
         // Records are written only under a salt a durable superblock names,
         // so a whole record under another salt where the log stops means the
         // newer superblock was lost, not torn (D267).
         let stop = records.last().map_or(sh.head_lsn, |r| r.lsn + r.nblocks);
-        if unreadable && sh.head_lsn + sh.region.log_blocks > stop && sh.foreign_record(stop)? {
+        if unreadable && sh.head_lsn + sh.ring > stop && sh.foreign_record(stop)? {
             return Err(EngineError::Corrupt(format!(
                 "shard {shard}: a superblock is unreadable and the log at LSN {stop} \
                  holds a record its salt doesn't name"
@@ -644,6 +775,8 @@ impl Shard {
                 Some(i) => dropped.extend(records.drain(i..).map(|r| r.lsn)),
             }
         };
+        // The next record names the last one kept (D266).
+        sh.chain = records.last().map_or(sup.chain, |r| r.pcrc);
         sh.index.settle_tentative(&mut fx);
         sh.pending = fx.pending;
         sh.rebuild_allocator()?;
@@ -675,6 +808,47 @@ impl Shard {
         sh.ckpt_written = 0;
         sh.ckpt_pages_written = 0;
         Ok(sh)
+    }
+
+    /// Converts a shard of the first format to the second (D266, D267,
+    /// D270; D274): its log emptied by a checkpoint, the ring gives its last
+    /// two blocks to the superblock mirrors, dense block maps count from the
+    /// data start, and a checkpoint of every page under a new salt names it
+    /// all. Until the device's superblock carries the flag (see
+    /// [`crate::upgrade`]), a crash leaves the shard as it was: the first
+    /// format's open reads neither the new superblock nor the new records,
+    /// and the pages the old checkpoint names are untouched. On an error the
+    /// shard is poisoned; opened again, it is in the first format.
+    pub fn upgrade(&mut self) -> Result<(), EngineError> {
+        self.check()?;
+        if self.v2 {
+            return Ok(());
+        }
+        if self.head_lsn != self.tail_lsn || self.fuzzy.is_some() {
+            self.checkpoint()?;
+        }
+        if self.head_lsn != self.tail_lsn {
+            return Err(EngineError::NoSpace);
+        }
+        self.v2 = true;
+        self.ring = ring_blocks(&self.region, true);
+        self.index.rebase(self.region.data_start());
+        self.index.mark(None);
+        for b in self.index.bounds.clone() {
+            self.index.mark(Some(b));
+        }
+        self.salt = random_u32();
+        self.chain = 0;
+        let r = self.checkpoint();
+        if r.is_err() {
+            self.poisoned = true;
+        }
+        r
+    }
+
+    /// Whether the shard is in the second format (D266, D267, D270).
+    pub fn is_v2(&self) -> bool {
+        self.v2
     }
 
     fn rebuild_allocator(&mut self) -> Result<(), EngineError> {
@@ -756,7 +930,7 @@ impl Shard {
         }
         let mut index = Index::default();
         while next_object(&mut d)? {
-            let (k, o) = crate::index::decode_object(&mut d)?;
+            let (k, o) = crate::index::decode_object(&mut d, 0)?;
             index.objects.insert(k, o);
         }
         d.finish()?;
@@ -815,7 +989,7 @@ impl Shard {
             }
             let end = bounds.get(i + 1).and_then(|b| b.as_ref());
             while next_object(&mut d)? {
-                let (k, o) = crate::index::decode_object(&mut d)?;
+                let (k, o) = crate::index::decode_object(&mut d, self.dense_base())?;
                 if bound.as_ref().is_some_and(|b| k < *b) || end.is_some_and(|e| k >= *e) {
                     return Err(EngineError::Corrupt(
                         "checkpoint object outside its page".into(),
@@ -832,7 +1006,7 @@ impl Shard {
     }
 
     fn log_pos(&self, lsn: u64) -> u64 {
-        (self.region.log_start() + lsn % self.region.log_blocks) * BLOCK as u64
+        (self.region.log_start() + lsn % self.ring) * BLOCK as u64
     }
 
     /// Reads `n` log blocks starting at `lsn`, following the ring's wrap.
@@ -845,7 +1019,7 @@ impl Shard {
     /// Fills `buf` with log blocks starting at `lsn`.
     fn read_log_into(&self, lsn: u64, buf: &mut [u8]) -> Result<(), EngineError> {
         let n = (buf.len() / BLOCK) as u64;
-        let first = (self.region.log_blocks - lsn % self.region.log_blocks).min(n);
+        let first = (self.ring - lsn % self.ring).min(n);
         let (a, b) = buf.split_at_mut(first as usize * BLOCK);
         let mut reads = vec![(self.log_pos(lsn), a)];
         if n > first {
@@ -855,39 +1029,21 @@ impl Shard {
         Ok(())
     }
 
-    /// Parses the header in `blk` if it is a record header written at
-    /// `lsn` under the current salt.
+    /// Parses the header in `blk` if it is a record header of the shard's
+    /// format written at `lsn` under the current salt.
     fn header(&self, blk: &[u8], lsn: u64) -> Option<Header> {
-        let mut d = Dec::new(blk);
-        let h = (|| -> Result<_, DecodeError> {
-            let magic = d.u32()?;
-            let version = d.u16()?;
-            let _flags = d.u16()?;
-            let rlsn = d.u64()?;
-            let group = d.u64()?;
-            let nblocks = d.u32()? as u64;
-            let plen = d.u32()? as usize;
-            let pcrc = d.u32()?;
-            let hcrc = d.u32()?;
-            Ok((
-                magic,
-                version,
-                rlsn,
-                hcrc,
-                Header {
-                    group,
-                    nblocks,
-                    plen,
-                    pcrc,
-                },
-            ))
-        })();
-        let (magic, version, rlsn, hcrc, h) = h.ok()?;
-        (magic == LOG_MAGIC
-            && version == LOG_VERSION
-            && rlsn == lsn
-            && crc32c_append(self.salt, &blk[..HEADER_LEN - 4]) == hcrc)
-            .then_some(h)
+        let (rlsn, hcrc, h) = parse_header(blk, self.v2)?;
+        (rlsn == lsn && crc32c_append(self.salt, &blk[..self.hlen() - 4]) == hcrc).then_some(h)
+    }
+
+    /// The length of a record header in the shard's format.
+    fn hlen(&self) -> usize {
+        if self.v2 { HEADER_LEN2 } else { HEADER_LEN }
+    }
+
+    /// What dense block maps count from (D270).
+    fn dense_base(&self) -> u64 {
+        if self.v2 { self.region.data_start() } else { 0 }
     }
 
     /// Reads records from `head_lsn` until the first block that isn't the
@@ -897,16 +1053,17 @@ impl Shard {
     fn scan_log(&self) -> Result<Vec<LogRecord>, EngineError> {
         let mut out = Vec::new();
         let mut lsn = self.head_lsn;
-        while lsn - self.head_lsn < self.region.log_blocks {
+        let mut chain = self.chain;
+        while lsn - self.head_lsn < self.ring {
             let hdr = self.read_log(lsn, 1)?;
             let Some(h) = self.header(&hdr, lsn) else {
                 break;
             };
             let nblocks = h.nblocks;
             if nblocks == 0
-                || nblocks > self.region.log_blocks / 2
-                || HEADER_LEN + h.plen > nblocks as usize * BLOCK
-                || lsn + nblocks - self.head_lsn > self.region.log_blocks
+                || nblocks > self.ring / 2
+                || self.hlen() + h.plen > nblocks as usize * BLOCK
+                || lsn + nblocks - self.head_lsn > self.ring
             {
                 break;
             }
@@ -915,10 +1072,20 @@ impl Shard {
             } else {
                 self.read_log(lsn, nblocks)?
             };
-            let payload = &full[HEADER_LEN..HEADER_LEN + h.plen];
+            let payload = &full[self.hlen()..self.hlen() + h.plen];
             if crc32c_append(self.salt, payload) != h.pcrc {
                 break;
             }
+            // A whole record that doesn't name the one before it follows
+            // another history: a record between was lost or replaced
+            // (D266).
+            if self.v2 && h.prev != chain {
+                return Err(EngineError::Corrupt(format!(
+                    "shard {}: the log record at LSN {lsn} doesn't follow the one before it",
+                    self.shard
+                )));
+            }
+            chain = h.pcrc;
             let mut d = Dec::new(payload);
             let lists = match d.seq(8, RList::decode) {
                 Ok(l) if d.finish().is_ok() => l,
@@ -933,6 +1100,7 @@ impl Shard {
                 group: h.group,
                 nblocks,
                 lists,
+                pcrc: h.pcrc,
             });
             lsn += nblocks;
         }
@@ -951,43 +1119,28 @@ impl Shard {
     /// under the salt its header checksum was seeded with.
     fn foreign_record(&self, lsn: u64) -> Result<bool, EngineError> {
         let hdr = self.read_log(lsn, 1)?;
-        let mut d = Dec::new(&hdr);
-        let fields = (|| -> Result<_, DecodeError> {
-            let magic = d.u32()?;
-            let version = d.u16()?;
-            let _flags = d.u16()?;
-            let rlsn = d.u64()?;
-            let _group = d.u64()?;
-            let nblocks = d.u32()? as u64;
-            let plen = d.u32()? as usize;
-            let pcrc = d.u32()?;
-            let hcrc = d.u32()?;
-            Ok((magic, version, rlsn, nblocks, plen, pcrc, hcrc))
-        })();
-        let Ok((magic, version, rlsn, nblocks, plen, pcrc, hcrc)) = fields else {
+        let Some((rlsn, hcrc, h)) = parse_header(&hdr, self.v2) else {
             return Ok(false);
         };
-        if magic != LOG_MAGIC
-            || version != LOG_VERSION
-            || rlsn != lsn
-            || nblocks == 0
-            || nblocks > self.region.log_blocks / 2
-            || HEADER_LEN + plen > nblocks as usize * BLOCK
+        if rlsn != lsn
+            || h.nblocks == 0
+            || h.nblocks > self.ring / 2
+            || self.hlen() + h.plen > h.nblocks as usize * BLOCK
         {
             return Ok(false);
         }
-        let Some(salt) = crc_seed(&hdr[..HEADER_LEN - 4], hcrc) else {
+        let Some(salt) = crc_seed(&hdr[..self.hlen() - 4], hcrc) else {
             return Ok(false);
         };
         if salt == self.salt {
             return Ok(false);
         }
-        let full = if nblocks == 1 {
+        let full = if h.nblocks == 1 {
             hdr
         } else {
-            self.read_log(lsn, nblocks)?
+            self.read_log(lsn, h.nblocks)?
         };
-        Ok(crc32c_append(salt, &full[HEADER_LEN..HEADER_LEN + plen]) == pcrc)
+        Ok(crc32c_append(salt, &full[self.hlen()..self.hlen() + h.plen]) == h.pcrc)
     }
 
     /// Looks through the rest of the ring after the block at `lsn` for a
@@ -998,7 +1151,7 @@ impl Shard {
         // 16 MiB a read, into one buffer: 1 MiB reads, or a fresh buffer
         // for each, make a 1 GiB ring several times slower (02-benchmarks.md).
         const CHUNK: u64 = 4096;
-        let end = self.head_lsn + self.region.log_blocks;
+        let end = self.head_lsn + self.ring;
         let mut at = lsn + 1;
         let mut buf = AlignedBuf::zeroed(((end - at.min(end)).min(CHUNK) as usize) * BLOCK);
         while at < end {
@@ -1109,8 +1262,9 @@ impl Shard {
             } else {
                 self.dev.write_batch(&io).and_then(|()| self.dev.flush())
             };
-            if let (Ok(()), Some((at, sup))) = (&r, round.take_seal()) {
-                r = self.dev.write(at, &sup).and_then(|()| self.dev.flush());
+            if let (Ok(()), Some(sup)) = (&r, round.take_seal()) {
+                let io: Vec<(u64, &[u8])> = sup.iter().map(|(o, b)| (*o, &b[..])).collect();
+                r = self.dev.write_batch(&io).and_then(|()| self.dev.flush());
             }
             results.append(&mut self.commit_end(round, r)?);
         }
@@ -1199,7 +1353,7 @@ impl Shard {
     }
 
     fn max_payload(&self) -> usize {
-        (self.region.log_blocks / 4) as usize * BLOCK - HEADER_LEN
+        (self.ring / 4) as usize * BLOCK - self.hlen()
     }
 
     fn commit_round(
@@ -1220,19 +1374,19 @@ impl Shard {
             // Room again: checkpoint now, which lifts the stall (nothing
             // that would grow the log is let through until then).
             self.checkpoint_inner()
-        } else if used > self.region.log_blocks * 3 / 4 {
+        } else if used > self.ring * 3 / 4 {
             if self.fuzzy.is_some() {
                 self.checkpoint_forced += 1;
             }
             self.checkpoint_inner()
         } else if self.fuzzy.is_some() {
-            let slice = if used > self.region.log_blocks / 2 {
+            let slice = if used > self.ring / 2 {
                 self.slice_bytes.saturating_mul(8)
             } else {
                 self.slice_bytes
             };
             self.checkpoint_slice(slice)
-        } else if used > self.region.log_blocks / 4 {
+        } else if used > self.ring / 4 {
             self.checkpoint_start()
                 .and_then(|()| self.checkpoint_slice(self.slice_bytes))
         } else {
@@ -1260,7 +1414,7 @@ impl Shard {
         // A stalled checkpoint can't move the log's head: a round takes at
         // most what the ring has left.
         let used = self.tail_lsn - self.head_lsn;
-        let room = ((self.region.log_blocks - used) as usize * BLOCK).saturating_sub(HEADER_LEN);
+        let room = ((self.ring - used) as usize * BLOCK).saturating_sub(self.hlen());
         let budget = self.max_payload().min(room);
         self.round_fresh.clear();
         let mut results = Vec::new();
@@ -1327,7 +1481,7 @@ impl Shard {
         let nblocks = (rec.len() / BLOCK) as u64;
         let lsn = self.tail_lsn;
         io.extend(writes.into_iter().map(|(pb, b)| (pb * BLOCK as u64, b)));
-        let first = (self.region.log_blocks - lsn % self.region.log_blocks).min(nblocks);
+        let first = (self.ring - lsn % self.ring).min(nblocks);
         if nblocks > first {
             // The record wraps around the ring: two writes.
             let (a, b) = rec.split_at(first as usize * BLOCK);
@@ -1348,22 +1502,29 @@ impl Shard {
         })
     }
 
-    fn encode_record(&self, group: u64, payload: &[u8]) -> AlignedBuf {
-        let nblocks = (HEADER_LEN + payload.len()).div_ceil(BLOCK);
+    /// Encodes the record at the log's tail; in the second format it names
+    /// the record before, and becomes the one the next names (D266).
+    fn encode_record(&mut self, group: u64, payload: &[u8]) -> AlignedBuf {
+        let nblocks = (self.hlen() + payload.len()).div_ceil(BLOCK);
         let mut buf = AlignedBuf::zeroed(nblocks * BLOCK);
-        let mut e = Enc::with_capacity(HEADER_LEN);
+        let mut e = Enc::with_capacity(self.hlen());
+        let pcrc = crc32c_append(self.salt, payload);
         e.u32(LOG_MAGIC)
-            .u16(LOG_VERSION)
+            .u16(if self.v2 { LOG_VERSION2 } else { LOG_VERSION })
             .u16(0)
             .u64(self.tail_lsn)
             .u64(group)
             .u32(nblocks as u32)
             .u32(payload.len() as u32)
-            .u32(crc32c_append(self.salt, payload));
+            .u32(pcrc);
+        if self.v2 {
+            e.u32(self.chain).u32(0);
+        }
+        self.chain = pcrc;
         let hcrc = crc32c_append(self.salt, e.as_slice());
         e.u32(hcrc);
-        buf[..HEADER_LEN].copy_from_slice(e.as_slice());
-        buf[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+        buf[..self.hlen()].copy_from_slice(e.as_slice());
+        buf[self.hlen()..self.hlen() + payload.len()].copy_from_slice(payload);
         buf
     }
 
@@ -1704,10 +1865,11 @@ impl Shard {
             self.dev.write_batch(&io)
         };
         if let (Ok(()), Some(s)) = (&r, &seal) {
+            let sup: Vec<(u64, &[u8])> = s.sup.iter().map(|(o, b)| (*o, &b[..])).collect();
             r = self
                 .dev
                 .flush()
-                .and_then(|()| self.dev.write(s.sup.0, &s.sup.1))
+                .and_then(|()| self.dev.write_batch(&sup))
                 .and_then(|()| self.dev.flush());
         }
         self.applying.clear();
@@ -1848,6 +2010,7 @@ impl Shard {
         let todo = self.index.take_dirty().into();
         self.fuzzy = Some(Fuzzy {
             start_lsn: self.tail_lsn,
+            start_chain: self.chain,
             next_revision: self.next_revision,
             next_group: self.next_group,
             todo,
@@ -2094,10 +2257,15 @@ impl Shard {
             salt: self.salt,
             head_lsn: f.start_lsn,
             ckpt: Some(ckpt.clone()),
+            v2: self.v2,
+            chain: f.start_chain,
         };
-        let slot = self.region.start + (sup.seq % 2);
+        let buf = sup.encode();
         self.sealing = Some(Seal {
-            sup: (slot * BLOCK as u64, sup.encode()),
+            sup: super_slots(&self.region, self.v2, sup.seq)
+                .into_iter()
+                .map(|at| (at, AlignedBuf::from_slice(&buf)))
+                .collect(),
             seq: sup.seq,
             head_lsn: f.start_lsn,
             ckpt,
@@ -2550,7 +2718,7 @@ impl Shard {
             free_blocks: self.alloc.free_blocks(),
             data_blocks: self.region.data_blocks(),
             log_used_blocks: self.tail_lsn - self.head_lsn,
-            log_blocks: self.region.log_blocks,
+            log_blocks: self.ring,
             pending_blocks: self.pending.len() as u64,
             checkpoints: self.checkpoints,
             commits: self.commits,
@@ -2817,6 +2985,35 @@ mod tests {
 
     fn key(i: u64) -> ObjKey {
         ObjKey::new(1, 1, Namespace::Vol, format!("o{i:03}").into_bytes(), 0)
+    }
+
+    /// D266: a record that passes its checksums but names another record
+    /// before it (one from another history) refuses the shard, where the
+    /// first format would replay it.
+    #[test]
+    fn a_record_that_doesnt_follow_the_one_before_refuses() {
+        let mut sh = small_shard(512);
+        let mut lsns = Vec::new();
+        for i in 0..3 {
+            lsns.push(sh.tail_lsn);
+            put(&mut sh, &key(i), 0, vec![i as u8; BLOCK]);
+        }
+        let (dev, region, salt) = (sh.dev.clone(), sh.region, sh.salt);
+        let at = sh.log_pos(lsns[1]);
+        drop(sh);
+        let mut blk = AlignedBuf::zeroed(BLOCK);
+        dev.read(at, &mut blk).unwrap();
+        let prev = u32::from_le_bytes(blk[36..40].try_into().unwrap());
+        blk[36..40].copy_from_slice(&(prev ^ 1).to_le_bytes());
+        let hcrc = crc32c_append(salt, &blk[..HEADER_LEN2 - 4]);
+        blk[HEADER_LEN2 - 4..HEADER_LEN2].copy_from_slice(&hcrc.to_le_bytes());
+        dev.write(at, &blk).unwrap();
+        dev.flush().unwrap();
+        match Shard::open(dev, region, 7, 0) {
+            Err(EngineError::Corrupt(m)) => assert!(m.contains("doesn't follow"), "{m}"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("opened"),
+        }
     }
 
     /// D267: the salt a record header was written under is found from its
@@ -3088,14 +3285,15 @@ mod tests {
     /// first checkpoint replaces the blob with pages and frees it.
     #[test]
     fn a_checkpoint_from_before_pages_is_read_and_replaced() {
+        // Only devices of the first format have them.
         let region = Region {
             start: 0,
             blocks: 4096,
             log_blocks: 256,
         };
         let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(4096 * BLOCK as u64));
-        Shard::format(dev.clone(), region, 7, 0).unwrap();
-        let mut sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        Shard::format_as(dev.clone(), region, 7, 0, false).unwrap();
+        let mut sh = Shard::open_as(dev.clone(), region, 7, 0, false).unwrap();
         sh.set_checkpoint_page(512);
         for i in 0..40 {
             sh.commit(vec![OpList {
@@ -3151,17 +3349,19 @@ mod tests {
                 len: dir.len() as u64,
                 crc: crc32c(&dir),
             }),
+            v2: false,
+            chain: 0,
         };
         dev.write((region.start + sup.seq % 2) * BLOCK as u64, &sup.encode())
             .unwrap();
         dev.flush().unwrap();
         drop(sh);
-        let sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        let sh = Shard::open_as(dev.clone(), region, 7, 0, false).unwrap();
         assert_eq!(sh.index, idx, "the blob reads as it was written");
         assert!(sh.legacy_blob.is_empty(), "the blob is freed");
         assert!(sh.stats().checkpoint_pages >= 1);
         drop(sh);
-        let sh = Shard::open(dev, region, 7, 0).unwrap();
+        let sh = Shard::open_as(dev, region, 7, 0, false).unwrap();
         assert_eq!(sh.index, idx, "and the pages that replace it too");
         let used: u64 = sh.index.used_extents().map(|e| e.1).sum::<u64>()
             + sh.pages
@@ -3228,7 +3428,6 @@ mod tests {
         put(&mut sh, &a, 0, vec![1; 8 * BLOCK]);
         let mut plan = sh.read_begin(&a, 0, 8 * BLOCK as u64).unwrap();
         assert_eq!(sh.reads_in_flight(), 1);
-        let free = sh.stats().free_blocks;
         // Overwritten elsewhere: its old blocks are freed, and held.
         put(&mut sh, &a, 0, vec![2; 8 * BLOCK]);
         assert_eq!(sh.held_blocks(), 8);
@@ -3238,12 +3437,17 @@ mod tests {
             put(&mut sh, &key(100 + i), 0, vec![3; 8 * BLOCK]);
         }
         let buf = complete(&sh, &mut plan);
+        let before = sh.stats().free_blocks;
         sh.read_end(&plan);
         let got = plan.finish(buf).unwrap();
         assert!(got.iter().all(|b| *b == 1), "the read got what it planned");
         assert_eq!(sh.held_blocks(), 0);
         assert_eq!(sh.reads_in_flight(), 0);
-        assert!(sh.stats().free_blocks + rest / 8 * 8 >= free);
+        assert_eq!(
+            sh.stats().free_blocks,
+            before + 8,
+            "the held blocks are free"
+        );
         assert!(
             sh.read(&a, 0, BLOCK as u64)
                 .unwrap()

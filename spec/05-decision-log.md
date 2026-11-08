@@ -1395,6 +1395,19 @@ log hash chain, which ships in v0.0.8 with the block-number change:
 | 236 | #249 placement and #250 experiments: both later (recommended); keep #249's design; keep both | Both later | D273 |
 | 237 | Where the superblock mirrors go, since a compatible flag at the region's end lets older builds put data there: the last two blocks of the log ring, in the v0.0.8 incompatible step (recommended); the region's end with a read-only-compatible flag, new devices only; no mirrors, the refusal only | The log ring's end | D267 revised |
 
+## Converting devices, discard and the commit measurement (2026-11-08)
+
+Building the v0.0.8 format step (D266, D267, D270) raised when a device
+converts, since converting is one-way; #245 needed a discard policy; and
+#248 needs an NVMe device the engine can own. Asked with
+recommendations; the owner took them:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 238 | When a device converts to the v0.0.8 format: an explicit `hyperstorctl device upgrade` once every node runs v0.0.8 (recommended); automatically at open; automatically once the cluster records every node on v0.0.8 | The explicit command | D274 |
+| 239 | Discard of freed blocks (#245): batched after each checkpoint, on by default, a per-device setting to turn it off (recommended); off by default; an `fstrim`-like command only | Batched after each checkpoint | D275 |
+| 242 | A device for #248's measurement: none at hand; skip until a host exists, as a host check (G57), and move #248 out of v0.0.8 if none turns up (recommended); name one | Skip until a host exists | G57 |
+
 ## mgmt and the leader; mgmt behind a proxy (2026-11-08)
 
 A follower host's web UI failed people's changes and logins: its mgmt
