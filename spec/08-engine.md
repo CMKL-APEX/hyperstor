@@ -251,10 +251,19 @@ device is formatted with the cluster's id; a superblock without one
   writes only the pages marked since the last one began, cutting full
   pages and dropping empty ones, then a directory of every page. A page
   nothing changed still holds what replay from `L` needs, so checkpoint
-  traffic follows the share of the index that changes. Decided (D269):
-  the directory is written twice, the second copy read when the first
-  fails, and deep scrub checks the pages (28-scrub.md §31.2), marking a
-  damaged one for the next checkpoint to rewrite.
+  traffic follows the share of the index that changes.
+- **Two directory copies, and pages scrubbed** (as built, D269, I321).
+  Every checkpoint writes its directory twice, in blocks of their own;
+  the superblock names the copy after its own checksum, with a checksum
+  of its own, so builds from before copies read the superblock as
+  before. Opening reads the copy when the first fails its checksum or
+  can't be read, and the fresh checkpoint every open writes replaces
+  both. Each device reads its checkpoint pages, then its directory, once
+  per the shortest deep scrub period of its pools (28-scrub.md §31.2),
+  one page at a time spread over the period; a damaged one is marked
+  changed and a checkpoint written at once, so a restart never meets it.
+  A page damaged after scrub last read it still refuses the whole shard
+  (D268).
 - **Deferred writes in replay** (I149). A deferred write's record names
   its physical blocks. Replayed over a page written after it, a write
   whose object no longer maps the block (a later trim, or an absorb that

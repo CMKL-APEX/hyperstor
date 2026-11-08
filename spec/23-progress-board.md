@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 0 | 44 |
+| 8 | 0 | 1 | 44 |
 
 ## In progress
 
@@ -32,7 +32,9 @@ None.
 
 ## In review
 
-None.
+| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
+|---|---|---|---|---|---|---|
+| **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy` | Built (I321): the directory written twice, the copy named after the superblock's checksum; each device reads its pages once per deep scrub period and rewrites a damaged one | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
 ## Done
 
@@ -90,7 +92,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 14 | 4 | 1 |
+| HS0 | Local storage engine and reactor | 16 | 3 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |

@@ -522,6 +522,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_device_free_bytes`, `hyperstor_device_data_bytes` | Free space and data area |
 | `hyperstor_log_used_bytes`, `hyperstor_log_bytes` | Log in use since the last checkpoint, and its size |
 | `hyperstor_commits_total`, `hyperstor_checkpoints_total` | Engine commit rounds and checkpoints |
+| `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
 
 Gauges are updated once a second. `GET /health` answers `ok` while the

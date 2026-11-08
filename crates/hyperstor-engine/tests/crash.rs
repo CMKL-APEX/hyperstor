@@ -595,6 +595,13 @@ enum Damage {
     LostWrite,
     /// A write the device stored at another block.
     MisdirectedWrite,
+    /// A block of either copy of the last checkpoint's directory (D269).
+    CheckpointDirectory,
+    /// A block of a checkpoint page, found by scrub before the restart
+    /// (D269).
+    ScrubbedPage,
+    /// A block of a checkpoint page nothing read before the restart.
+    CheckpointPage,
 }
 
 /// The model's lists applied as the engine answered them.
@@ -712,6 +719,41 @@ fn damaged_run(seed: u64, damage: Damage, out: &mut Outcomes) {
     };
     let results = sh.commit(vec![fence.clone()]).unwrap();
     apply_results(seed, &mut model, &[fence], results);
+    // A checkpoint's blocks, for the damage that strikes them: one is
+    // written now, so there is one to strike.
+    let layout = match damage {
+        Damage::CheckpointDirectory | Damage::ScrubbedPage | Damage::CheckpointPage => {
+            sh.checkpoint().unwrap();
+            let l = sh.checkpoint_layout();
+            assert!(
+                !l.directory_copy.is_empty(),
+                "seed {seed}: a checkpoint writes its directory twice"
+            );
+            Some(l)
+        }
+        _ => None,
+    };
+    let pick = |rng: &mut SmallRng, runs: &[(u64, u64)]| {
+        let blocks: Vec<u64> = runs.iter().flat_map(|&(s, n)| s..s + n).collect();
+        blocks[rng.random_range(0..blocks.len())]
+    };
+    if let (Damage::ScrubbedPage, Some(l)) = (damage, &layout) {
+        // Damaged on the media while the shard runs; scrub finds it.
+        // Its magic, which every page's checksum covers (past the page's
+        // length, its last block is neither checked nor read).
+        let page = rng.random_range(0..l.pages.len());
+        let b = l.pages[page][0].0;
+        let mut buf = AlignedBuf::zeroed(BLOCK);
+        d.read(b * BLOCK as u64, &mut buf).unwrap();
+        buf[rng.random_range(0..8)] ^= rng.random_range(1..=255u8);
+        d.write(b * BLOCK as u64, &buf).unwrap();
+        let mut found = 0;
+        for i in 0..l.pages.len() {
+            found += sh.scrub_checkpoint_page(i).unwrap() as usize;
+        }
+        assert_eq!(found, 1, "seed {seed}: scrub finds the damaged page");
+        assert!(!sh.scrub_checkpoint_directory().unwrap());
+    }
     let mut img = fd.image();
     let struck = fd.struck();
     drop(sh);
@@ -728,7 +770,17 @@ fn damaged_run(seed: u64, damage: Damage, out: &mut Outcomes) {
                 + region.log_blocks
                 + rng.random_range(0..region.blocks - 2 - region.log_blocks),
         ),
-        Damage::LostWrite | Damage::MisdirectedWrite => None,
+        Damage::CheckpointDirectory => {
+            let l = layout.as_ref().unwrap();
+            let copy = [&l.directory, &l.directory_copy][rng.random_range(0..2)];
+            Some(pick(&mut rng, copy))
+        }
+        Damage::CheckpointPage => {
+            let l = layout.as_ref().unwrap();
+            let page = rng.random_range(0..l.pages.len());
+            Some(pick(&mut rng, &l.pages[page]))
+        }
+        Damage::LostWrite | Damage::MisdirectedWrite | Damage::ScrubbedPage => None,
     };
     if let Some(b) = hit {
         let at = b as usize * BLOCK + rng.random_range(0..BLOCK);
@@ -832,11 +884,34 @@ fn a_misdirected_write_never_loses_acknowledged_changes_silently() {
     damaged_seeds(Damage::MisdirectedWrite);
 }
 
-/// A damaged checkpoint page or directory refuses the whole shard today;
-/// #243 recovers only the PGs in the page's key range instead.
+/// Either copy of the checkpoint directory serves (D269).
 #[test]
-#[ignore = "#243: a damaged checkpoint page refuses the whole shard"]
+fn a_damaged_checkpoint_directory_is_read_from_its_copy() {
+    let out = damaged_seeds(Damage::CheckpointDirectory);
+    assert_eq!(out.refused, 0, "the other copy serves");
+}
+
+/// Scrub reads every page and rewrites a damaged one (D269), so the
+/// restart never meets it.
+#[test]
+fn a_page_damaged_and_scrubbed_never_refuses_the_shard() {
+    let out = damaged_seeds(Damage::ScrubbedPage);
+    assert_eq!(out.refused, 0, "the page was rewritten before the restart");
+}
+
+/// A page damaged after scrub last read it refuses the whole shard
+/// (D268), never opens without its objects.
+#[test]
+fn a_damaged_checkpoint_page_refuses_the_shard_and_loses_nothing_silently() {
+    let out = damaged_seeds(Damage::CheckpointPage);
+    assert!(out.refused > 0, "a damaged page is noticed");
+}
+
+/// Recovering only the PGs in a damaged page's key range is for later
+/// (D268); until then, the whole shard is refused.
+#[test]
+#[ignore = "D268: a damaged checkpoint page refuses the whole shard"]
 fn a_damaged_checkpoint_page_never_refuses_the_shard() {
-    let out = damaged_seeds(Damage::DataBlock);
+    let out = damaged_seeds(Damage::CheckpointPage);
     assert_eq!(out.refused, 0);
 }

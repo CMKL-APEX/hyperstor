@@ -548,6 +548,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().strays(stray_grace));
                         spawn(st.clone().scrubbers(scrub_interval));
                         spawn(st.clone().asked_scrubs());
+                        spawn(st.clone().checkpoint_scrub(scrub_interval));
                         if !kv_jobs.off {
                             spawn(st.clone().kv_ranges(kv_jobs));
                         }
@@ -970,6 +971,25 @@ struct HoleCheck {
 /// is due a deep scrub at `now`, scrubbed every `every` and deep every
 /// `deep_every` scrubs. Half an interval early, so a pass that starts a
 /// little sooner than the last doesn't put it off by a whole pass.
+/// How often a device reads its checkpoint pages (D269): the shortest
+/// deep scrub period of the pools that scrub, `None` while none does.
+/// `every` replaces each pool's interval, as for PG scrubs.
+fn checkpoint_scrub_period(map: &ClusterMap, every: Duration) -> Option<Duration> {
+    map.pools
+        .values()
+        .map(|p| p.scrub)
+        .filter(|s| s.hours > 0)
+        .map(|s| {
+            let interval = if every.is_zero() {
+                Duration::from_secs(s.hours as u64 * 3600)
+            } else {
+                every
+            };
+            interval * s.deep_every.max(1) as u32
+        })
+        .min()
+}
+
 fn deep_due(deep_at: u64, now: u64, every: Duration, deep_every: u8) -> bool {
     let deep = every * deep_every.max(1) as u32;
     deep_at == 0 || Duration::from_secs(now.saturating_sub(deep_at)) + every / 2 >= deep
@@ -1233,6 +1253,12 @@ impl ShardState {
             None => hyperstor_engine::open(&dev).map_err(refused)?,
         };
         let mut shard = opened.1.into_iter().next().ok_or("device has no shard")?;
+        if shard.directory_copy_read() {
+            eprintln!(
+                "hyperstord: device {me}: its checkpoint directory was damaged; opened from \
+                 the copy, and the fresh checkpoint wrote both again (D269)"
+            );
+        }
         let format = if shard.is_v2() { 2 } else { 1 };
         shard.set_defer_max(defer.unwrap_or(0));
         shard.set_pending_limit(PENDING_BLOCKS);
@@ -1955,6 +1981,7 @@ impl ShardState {
                 m.log_bytes.store(st.log_blocks * block, Relaxed);
                 m.commits.store(st.commits, Relaxed);
                 m.checkpoints.store(st.checkpoints, Relaxed);
+                m.checkpoint_damage.store(st.checkpoint_damage, Relaxed);
                 m.map_epoch.store(self.map().epoch, Relaxed);
             }
             sleep(Duration::from_secs(1)).await;
@@ -5306,6 +5333,50 @@ impl ShardState {
         self.scrubbing.borrow_mut().remove(&pool);
     }
 
+    /// Reads this device's checkpoint pages, then its directory, once per
+    /// the shortest deep scrub period of the pools (D269): one page at a
+    /// time, spread over the period, so a pass costs about one read of the
+    /// index. A damaged one is rewritten at once by a checkpoint, so a
+    /// restart never meets it. `every`: the test hook of
+    /// `NodeConfig::scrub_interval`.
+    async fn checkpoint_scrub(self: Rc<Self>, every: Duration) {
+        let mut i = 0usize;
+        loop {
+            let Some(period) = checkpoint_scrub_period(&self.map(), every) else {
+                sleep(SCRUB_RECHECK).await;
+                continue;
+            };
+            let pages = self.shard.get().await.stats().checkpoint_pages as usize;
+            sleep(period / (pages as u32).saturating_add(1)).await;
+            let r = {
+                let mut sh = self.shard.get_mut().await;
+                if i < pages {
+                    sh.scrub_checkpoint_page(i)
+                        .map(|d| d.then(|| format!("page {i}")))
+                } else {
+                    sh.scrub_checkpoint_directory()
+                        .map(|d| d.then(|| "directory".to_string()))
+                }
+            };
+            match r {
+                Ok(Some(what)) => eprintln!(
+                    "hyperstord: device {}: checkpoint {what} was damaged; rewrote it (D269)",
+                    self.me
+                ),
+                Ok(None) => {}
+                Err(e) => {
+                    // The shard is failed or full: its owner reports it.
+                    eprintln!(
+                        "hyperstord: device {}: checkpoint scrub stopped: {e}",
+                        self.me
+                    );
+                    return;
+                }
+            }
+            i = if i < pages { i + 1 } else { 0 };
+        }
+    }
+
     /// Scrubs the PGs the map service asked for (`ScrubNow`; D229, D230),
     /// one at a time, the oldest asked first, outside the pass: a deep one
     /// reads at the pool's deep rate, and the pass goes on around them.
@@ -6479,6 +6550,38 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// A device reads its checkpoint pages once per the shortest deep
+    /// scrub period of the pools that scrub (D269), and not while none
+    /// does; the test hook replaces each pool's interval.
+    #[test]
+    fn checkpoint_pages_are_read_once_per_shortest_deep_period() {
+        use super::checkpoint_scrub_period;
+        use hyperstor_meta::{ClusterMap, replicated_pool};
+        use std::time::Duration;
+        let mut m = ClusterMap::new(1);
+        assert_eq!(checkpoint_scrub_period(&m, Duration::ZERO), None);
+        let mut a = replicated_pool(1, "a", 3, 8);
+        a.scrub.hours = 24;
+        a.scrub.deep_every = 7;
+        let mut b = replicated_pool(2, "b", 3, 8);
+        b.scrub.hours = 12;
+        b.scrub.deep_every = 4;
+        let mut off = replicated_pool(3, "off", 3, 8);
+        off.scrub.hours = 0;
+        m.add_pool(a);
+        m.add_pool(b);
+        m.add_pool(off);
+        let h = |n: u64| Duration::from_secs(n * 3600);
+        assert_eq!(checkpoint_scrub_period(&m, Duration::ZERO), Some(h(48)));
+        let every = Duration::from_millis(100);
+        assert_eq!(
+            checkpoint_scrub_period(&m, every),
+            Some(Duration::from_millis(400))
+        );
+        m.pools.retain(|id, _| *id == 3);
+        assert_eq!(checkpoint_scrub_period(&m, Duration::ZERO), None);
+    }
 
     /// I232: a held reactor's log tells a busy thread from one the host
     /// didn't run, from this thread's own schedstat.
