@@ -1900,3 +1900,48 @@ overlapping.
    the client's copy into its frame, the engine's copy into an aligned
    buffer (I12), zeroed receive buffers, and the CRCs computed again by
    the engine. Those are the next HS5b items, with registered buffers.
+
+## 2026-11-07: CRC32C at hardware speed (HS5b, I304)
+
+What each step of a 1 MiB write or read costs on one of the pilot's HGX
+A100 hosts (AMD EPYC 7742, Linux 6.8.0), from a small program built
+with `--release` (2000 iterations after 20 to warm up):
+
+| Step, per MiB | µs |
+|---|---|
+| memcpy, warm | 26.9 |
+| memcpy, cold (a 64 MiB ring) | 138.9 |
+| Zeroing in place | 15.2 |
+| A fresh zeroed `Vec`, one write per page | 18.0 |
+| CRC32C, `crc32c` 0.6.8 | 183.8 |
+| CRC32C per 4 KiB block, `crc32c` 0.6.8 | 203.9 |
+| CRC32C, `crc32c` 0.6.9 (or 0.6.8 built with SSE4.2) | 40.9 |
+| CRC32C per 4 KiB block, `crc32c` 0.6.9 | 54.6 |
+
+End to end, `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` as in the
+section before: main at 944997d3 (before) and the same with `crc32c`
+0.6.9 (after), run alternately, three rounds each; medians, with the
+range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6702 (6697–6790) | 6858 (6785–6862) | +2.3% | 147 → 144 |
+| 4 KiB random writes, QD32 | 23752 (23726–24065) | 24012 (23993–24367) | +1.1% | 1014 → 973 |
+| 4 KiB random reads, QD1 | 16447 (16434–16795) | 17175 (17132–17234) | +4.4% | 61 → 58 |
+| 4 KiB random reads, QD32 | 51859 (51133–51993) | 53087 (52890–54025) | +2.4% | 402 → 397 |
+| 1 MiB writes, QD4 | 586 (581–590) | 756 (754–762) | +29.0% | 6590 → 5124 |
+| 1 MiB reads, QD1 | 803 (803–810) | 1282 (1270–1285) | +59.7% | 1226 → 768 |
+| 1 MiB reads, QD2 | 1218 (1215–1228) | 1875 (1871–1887) | +53.9% | 1557 → 973 |
+| 1 MiB reads, QD4 | 1882 (1871–1897) | 2789 (2779–2824) | +48.2% | 1946 → 1333 |
+
+### Findings
+
+1. **CRCs were the largest cost per byte**: 184 µs per MiB, seven times
+   a warm copy, taken about five times along a replicated write. With
+   0.6.9 they cost 41 µs.
+2. **The gain is larger than removing the copies** (I300: 6–25%), and
+   adds to it: 1 MiB reads at QD1 now take 0.77 ms, from 1.3 ms before
+   either change.
+3. **The remaining copies and zeroing cost 15–30 µs per MiB each while
+   warm**, so they matter less than the CRC the engine computes again
+   (41 µs per node).
