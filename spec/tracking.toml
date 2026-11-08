@@ -210,6 +210,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A backup device superblock in the last block, read when both copies fail; a device whose copies are blank over its shards' superblocks is damaged, never formatted over"
+spec = ["08-engine.md §7.1", "D271", "I312"]
+status = "done"
+tests = [
+    "engine::a_backup_superblock_serves_and_shards_are_never_formatted_over",
+    "hyperstor_engine::device::tests::a_conversion_adds_a_backup_where_the_last_block_is_free",
+]
+
+[[milestone.item]]
 what = "Device back ends: memory, files and block devices through io_uring with O_DIRECT"
 spec = ["08-engine.md §6.2"]
 status = "done"

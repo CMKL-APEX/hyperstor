@@ -108,11 +108,13 @@ repeats, so compare-and-set has no ABA problem.
 ### On-device format
 
 ```text
-device:  [superblock A][superblock B][shard 0][shard 1] ... [shard n]
+device:  [superblock A][superblock B][shard 0][shard 1] ... [shard n][backup]
 shard:   [super A][super B][log ring ... mirror A][mirror B][data area]
 ```
 
-- The **device superblock**, in two copies, names the device (its id in
+- The **device superblock**, in two copies at the start and a backup in
+  the last block (read when both copies fail, as GPT and XFS keep one),
+  names the device (its id in
   the map), the cluster, the format version and three words of **feature
   flags**: *compatible* ones, which a build that doesn't know them
   ignores; *read-only-compatible* ones, which it could only read past
@@ -159,7 +161,8 @@ reads the device superblock alone, before any log is replayed:
   copy first, so a crash leaves the old or the new.
 - Only a **blank** device is formatted: one where neither copy holds a
   Hyperstor superblock. A newer format version, a damaged superblock or a
-  shard without one is refused, never formatted over.
+  shard without one is refused, never formatted over; so is a device whose
+  copies are blank while its shards' superblocks are still there.
 - `hyperstord` formats only files. Block devices are formatted by the
   installer, after it looks for other systems' signatures (partition
   tables, filesystems, swap, LVM, md RAID, LUKS, Ceph BlueStore) in the
