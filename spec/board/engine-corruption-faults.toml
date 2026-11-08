@@ -1,10 +1,8 @@
-title = "Engine durability against a device that lies (#241, #242, #243, #253)"
-status = "active"
+title = "Engine durability against a device that lies (#241, #242, #253)"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-08
-updated = 2026-11-08
+updated = 2026-11-09
 milestone = "HS2"
 branch = "fix/engine-log-lookahead"
 prs = [254, 257]
-now = "Merged, not deployed: #241 (#254), #242 and #253 refusals (#257); the format step continues in engine-format-v008"
-next = "The v0.0.8 incompatible format step: the log hash chain (D266), relative block numbers (D270) and superblock mirrors at the log ring's end (D267, revised); then #243 and #246"
