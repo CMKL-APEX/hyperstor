@@ -432,7 +432,7 @@ impl Client {
     /// once share one connect (I184).
     pub async fn conn(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
         let hello = Msg::Hello {
-            min_version: VERSION,
+            min_version: hyperstor_proto::OLDEST_VERSION,
             max_version: VERSION,
             id: self.id,
             instance: self.instance,

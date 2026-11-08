@@ -957,11 +957,12 @@ tests = [
 
 [[milestone.item]]
 what = "Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host`"
-spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302"]
+spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302", "I311"]
 status = "done"
 tests = [
     "hyperstor_map::port_tests::hosts_bound_to_realms_attach_only_theirs",
     "vhost::a_host_bound_to_a_realm_attaches_only_its_volumes",
+    "hyperstor_proto::tests::frame_headers_stay_readable_by_older_builds",
 ]
 
 [[milestone.item]]
@@ -1414,6 +1415,14 @@ tests = [
     "hyperstor_mgmt::people::tests::the_first_claim_makes_a_security_admin_once",
     "hyperstor_mgmt::tests::named_hosts_join_the_allowlist",
     "hyperstor_mgmt::tests::ui_files_stay_in_their_directory",
+]
+
+[[milestone.item]]
+what = "The web UI's footer names the installed build: release, branch and commit, linked to GitHub"
+spec = ["19-administration.md §23.7", "I317"]
+status = "done"
+tests = [
+    "hyperstor_mgmt::tests::the_build_names_its_commit_and_release",
 ]
 
 [[milestone.item]]
