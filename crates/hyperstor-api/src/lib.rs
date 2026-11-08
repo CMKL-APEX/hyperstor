@@ -29,6 +29,35 @@ pub fn valid_person(p: &str) -> bool {
     })
 }
 
+/// The header with which `hyperstor-mgmt` limits a call it makes on a
+/// person's behalf to realms, their names comma-separated (04-decisions.md
+/// D260, D262): the person holds the role the call needs only in those.
+/// The map service believes it only with [`ON_BEHALF_HEADER`] from mgmt's
+/// certificate, then shows and changes only what is in those realms, and
+/// refuses what reaches the cluster as a whole.
+pub const REALMS_HEADER: &str = "x-hyperstor-realms";
+
+/// The header with which a person asks `hyperstor-mgmt` to act in one
+/// realm (`hyperstorctl --realm`, the UI's realm picker; D265): mgmt then
+/// uses their cluster-wide roles and their grants in that realm, for
+/// that realm alone.
+pub const ACT_IN_REALM_HEADER: &str = "x-hyperstor-realm";
+
+/// The realms of a [`REALMS_HEADER`]: one or more names, each 1-63 of
+/// a-z, 0-9 and `-` ("default" among them); `None` if it isn't one.
+pub fn parse_realms(v: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = v.split(',').map(str::to_string).collect();
+    names
+        .iter()
+        .all(|n| {
+            !n.is_empty()
+                && n.len() <= 63
+                && n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        .then_some(names)
+}
+
 /// The domain of the API's error reasons.
 pub const REASON_DOMAIN: &str = "hyperstor";
 
@@ -88,6 +117,25 @@ mod tests {
             super::reason_of(&connectrpc::ConnectError::not_found("x")),
             None
         );
+    }
+
+    #[test]
+    fn realms_are_names_comma_separated() {
+        assert_eq!(
+            super::parse_realms("acme,default"),
+            Some(vec!["acme".to_string(), "default".to_string()])
+        );
+        for bad in [
+            "",
+            "acme,",
+            ",acme",
+            "Acme",
+            "a b",
+            "acme;x",
+            &"a".repeat(64),
+        ] {
+            assert_eq!(super::parse_realms(bad), None, "{bad}");
+        }
     }
 
     #[test]

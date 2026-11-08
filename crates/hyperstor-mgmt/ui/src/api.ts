@@ -60,7 +60,50 @@ const csrf: Interceptor = (next) => async (req) => {
   return next(req);
 };
 
+/** The realm the person acts in (D265), or null for the cluster as a
+ * whole: every call says so, and mgmt then reaches that realm alone. */
+let actingRealm: string | null = null;
+const realmListeners = new Set<() => void>();
+export function getActingRealm(): string | null {
+  return actingRealm;
+}
+export function setActingRealm(r: string | null) {
+  actingRealm = r;
+  try {
+    if (r) localStorage.setItem("hyperstor.realm", r);
+    else localStorage.removeItem("hyperstor.realm");
+  } catch {
+    // No storage: the choice lasts this page.
+  }
+  realmListeners.forEach((f) => f());
+}
+export function onActingRealm(f: () => void): () => void {
+  realmListeners.add(f);
+  return () => realmListeners.delete(f);
+}
+/** The realm chosen last time on this browser, if any. */
+export function savedRealm(): string | null {
+  try {
+    return localStorage.getItem("hyperstor.realm");
+  } catch {
+    return null;
+  }
+}
+
+const realmHeader: Interceptor = (next) => async (req) => {
+  if (actingRealm) req.header.set("X-Hyperstor-Realm", actingRealm);
+  return next(req);
+};
+
 const transport = createConnectTransport({
+  baseUrl: "/api",
+  useBinaryFormat: false,
+  interceptors: [csrf, realmHeader],
+  fetch: (input, init) => fetch(input, { ...init, credentials: "same-origin" }),
+});
+
+/** For the realm picker: the realms there are, whichever is chosen. */
+const anyRealm = createConnectTransport({
   baseUrl: "/api",
   useBinaryFormat: false,
   interceptors: [csrf],
@@ -68,8 +111,8 @@ const transport = createConnectTransport({
 });
 
 /** A client whose every call goes through the session's 401 handling. */
-function client<S extends DescService>(service: S): Client<S> {
-  const raw = createClient(service, transport) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+function client<S extends DescService>(service: S, via = transport): Client<S> {
+  const raw = createClient(service, via) as Record<string, (...a: unknown[]) => Promise<unknown>>;
   return new Proxy(raw, {
     get(target, prop: string) {
       const f = target[prop];
@@ -89,6 +132,8 @@ export const trash = client(TrashService);
 export const audit = client(AuditService);
 export const s3 = client(S3Service);
 export const realms = client(RealmService);
+/** Every realm the person may see, not only the one they act in. */
+export const allRealms = client(RealmService, anyRealm);
 
 /** mgmt's own JSON routes. */
 async function call<T>(method: string, path: string, body?: unknown, quiet401 = false): Promise<T> {
@@ -98,6 +143,7 @@ async function call<T>(method: string, path: string, body?: unknown, quiet401 = 
       if (body !== undefined) headers["Content-Type"] = "application/json";
       const t = csrfToken();
       if (method !== "GET" && t) headers["X-Hyperstor-CSRF"] = t;
+      if (actingRealm) headers["X-Hyperstor-Realm"] = actingRealm;
       const r = await fetch(path, {
         method,
         headers,
@@ -142,6 +188,27 @@ export interface ApiToken {
 }
 
 export const ROLES = ["viewer", "operator", "storage-admin", "security-admin"] as const;
+
+/** A grant's role and realm: `viewer` is cluster-wide, `viewer@acme` is
+ * in realm acme (D263). */
+export function grantOf(g: string): [string, string | null] {
+  const i = g.indexOf("@");
+  return i < 0 ? [g, null] : [g.slice(0, i), g.slice(i + 1)];
+}
+
+/** The realms a person holds grants in, by name. */
+export function grantRealms(roles: string[]): string[] {
+  return [...new Set(roles.map((g) => grantOf(g)[1]).filter((r): r is string => r != null))].sort();
+}
+
+/** The roles in effect acting in `realm` (null: the cluster as a whole):
+ * the cluster-wide ones, and that realm's. */
+export function rolesIn(roles: string[], realm: string | null): string[] {
+  return roles
+    .map(grantOf)
+    .filter(([, r]) => r == null || r === realm)
+    .map(([role]) => role);
+}
 
 /** The first security administrator's claim code, typed on the login
  * page: it goes with the next login, in the body, never in a URL. */

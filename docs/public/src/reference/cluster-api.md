@@ -175,7 +175,7 @@ values are left out of answers.
 | `DeleteS3Bucket` | `{"tenant": 1, "name": "photos"}` | `{}`; `in_use` while it holds objects or uploads under way (D255), `not_found` for none |
 | `GetS3Gateway` | `{}`, or `{"realm": "acme"}` | the realm's tenants' `keys` with their `secret`s, and its `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy. Without `realm`, `default`'s; `not_found` for an unknown realm |
 | `CreateRealm` (`RealmService`) | `{"name": "acme"}`, optionally `"description"` | `realm` (`id`, `name`, …). On the leader; `failed_precondition` (`realm_exists`) |
-| `ListRealms` | `{}` | `realms`, `default` first, each with its `tenants` and the `pools` whose lists name it; `open_pools`, which every realm may use |
+| `ListRealms` | `{}` | `realms`, `default` first, each with its `tenants`, the `pools` whose lists name it and their `pool_ids`; `open_pools` and `open_pool_ids`, which every realm may use. Through hyperstor-mgmt for someone acting in realms, only those |
 | `DeleteRealm` | `{"name": "acme"}` | `{}`; `failed_precondition` (`realm_in_use`) while a tenant, pool or placement names it |
 | `SetTenantRealm` | `{"tenant": 2, "realm": "acme"}` | `{}`; `"default"` takes it back. `failed_precondition` (`pool_not_in_realm`) while one of its buckets or volumes is in a pool the realm may not use; `unavailable` while they can't be read. Needs step-up through hyperstor-mgmt |
 | `SetPoolRealms` | `{"pool": 3, "realms": ["acme"]}` | `{}`; no realms: every realm may use it. `failed_precondition` (`pool_in_use`) while a placement of a realm it leaves names the pool, or a bucket or volume of one of that realm's tenants is in it |

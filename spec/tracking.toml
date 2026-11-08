@@ -933,9 +933,19 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Roles granted on a realm (in mgmt, D260), `--realm` in hyperstorctl and the UI"
-spec = ["20-tenants.md §24.8", "D252", "D253", "D260"]
-status = "planned"
+what = "Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI"
+spec = ["20-tenants.md §24.8", "D252", "D260", "D262", "D263", "D264", "D265", "I303"]
+status = "done"
+# Also shown by s3::a_realm_has_its_own_gateway_keys_and_pools (copy and
+# move refused) and hyperstor_mgmt::people::tests::sessions_tokens_and_roles,
+# tracked above.
+tests = [
+    "hyperstor_mgmt::policy::tests::grants_in_a_realm_reach_only_it",
+    "hyperstor_mgmt::policy::tests::realm_calls_are_people_calls",
+    "hyperstor_api::tests::realms_are_names_comma_separated",
+    "dashboard::roles_on_a_realm_reach_only_it",
+    "browser::someone_with_roles_in_a_realm_acts_only_there",
+]
 
 [[milestone]]
 id = "HS16"
@@ -1429,7 +1439,7 @@ title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
 what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI"
-spec = ["19-administration.md §23.9.3", "D54", "D114", "D115"]
+spec = ["19-administration.md §23.9.3", "D54", "D114", "D115", "I301"]
 status = "done"
 tests = [
     "cluster::the_trash_keeps_what_it_holds_until_purged",

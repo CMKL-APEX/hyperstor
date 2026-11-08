@@ -417,11 +417,12 @@ impl People {
         self.logged_in_user(&link.user).await
     }
 
-    /// Sets `name`'s roles (security administrators, step-up).
+    /// Sets `name`'s roles (security administrators, step-up): each a
+    /// role, cluster-wide, or `role@realm` (D263).
     pub async fn set_roles(&self, name: &str, roles: &[String]) -> Result<User, Error> {
         for r in roles {
-            if !crate::policy::ROLES.contains(&r.as_str()) {
-                return Err(Error::Invalid(format!("{r}: not a role")));
+            if crate::policy::grant(r).is_none() {
+                return Err(Error::Invalid(format!("{r}: not a role, nor role@realm")));
             }
         }
         let mut u = self.user(name).await?.ok_or(Error::NotFound)?;
@@ -692,6 +693,15 @@ mod tests {
                 .unwrap();
             assert_eq!(p.session(&s.id).await.unwrap().roles, vec!["viewer"]);
             assert!(p.set_roles("ann", &["root".into()]).await.is_err());
+            for bad in ["root@acme", "viewer@", "viewer@Acme", "viewer@a,b"] {
+                assert!(p.set_roles("ann", &[bad.into()]).await.is_err(), "{bad}");
+            }
+            let u = p
+                .set_roles("ann", &["viewer".into(), "storage-admin@acme".into()])
+                .await
+                .unwrap();
+            assert_eq!(u.roles, ["storage-admin@acme", "viewer"]);
+            p.set_roles("ann", &["viewer".into()]).await.unwrap();
             // Tokens: hst_, shown once, never fresh, revocable.
             let (secret, t) = p.create_token("ann", "ci", Some(30)).await.unwrap();
             assert!(secret.starts_with("hst_"));

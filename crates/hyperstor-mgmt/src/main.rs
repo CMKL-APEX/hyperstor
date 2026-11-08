@@ -90,6 +90,8 @@ struct Login {
 
 struct State {
     api: ClusterServiceClient<HttpClient>,
+    /// Which realms there are, to check a grant's (D263).
+    realms: hyperstor_api::RealmServiceClient<HttpClient>,
     api_addrs: Vec<String>,
     tls: Arc<connectrpc::rustls::ClientConfig>,
     metrics: Vec<String>,
@@ -237,6 +239,10 @@ fn main() {
         });
         let state = Arc::new(State {
             api: ClusterServiceClient::new(
+                HttpClient::with_tls(tls.clone()),
+                ClientConfig::new(uri.clone()).with_default_timeout(Duration::from_secs(5)),
+            ),
+            realms: hyperstor_api::RealmServiceClient::new(
                 HttpClient::with_tls(tls.clone()),
                 ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
             ),
@@ -610,6 +616,30 @@ fn ui_file(dir: &std::path::Path, path: &str) -> Resp {
     }
 }
 
+/// Refuses grants in realms that don't exist (D263): a grant in a realm
+/// made later would otherwise wake up with it.
+async fn realms_exist(state: &State, roles: &[String]) -> Result<(), Resp> {
+    let named: Vec<&str> = roles
+        .iter()
+        .filter_map(|g| policy::grant(g).and_then(|(_, r)| r))
+        .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    let have = match state
+        .realms
+        .list_realms(pb::ListRealmsRequest::default())
+        .await
+    {
+        Ok(r) => r.into_owned().realms,
+        Err(e) => return Err(api_error(&e)),
+    };
+    match named.iter().find(|n| !have.iter().any(|r| r.name == **n)) {
+        Some(n) => Err(error(404, "not_found", &format!("no realm {n:?}"))),
+        None => Ok(()),
+    }
+}
+
 fn people_error(e: people::Error) -> Resp {
     match e {
         people::Error::Unauthenticated => error(401, "unauthenticated", "log in first"),
@@ -621,11 +651,35 @@ fn people_error(e: people::Error) -> Resp {
 }
 
 /// Checks `action` for `p`: `Err` with the response to send if refused.
+/// Refuses unless `p` may do `action` in the cluster as a whole.
 fn authorize(l: &Login, p: &people::Principal, action: &str, target: &str) -> Result<(), Resp> {
-    let d = policy::allowed(&l.engine, &p.user, &p.roles, action, &p.method, p.age_secs);
-    if d.allowed {
-        return Ok(());
+    match authorize_in(l, p, action, target, None)? {
+        policy::Reach::Cluster => Ok(()),
+        policy::Reach::Realms(_) => {
+            audit(&format!("user:{}", p.user), action, target, "refused");
+            Err(error(
+                403,
+                "outside_realm",
+                &format!("{} may do {action} only in realms", p.user),
+            ))
+        }
     }
+}
+
+/// Where `p` may do `action` (D262), acting in realm `only` if given.
+fn authorize_in(
+    l: &Login,
+    p: &people::Principal,
+    action: &str,
+    target: &str,
+    only: Option<&str>,
+) -> Result<policy::Reach, Resp> {
+    let d = match policy::reach(
+        &l.engine, &p.user, &p.roles, action, &p.method, p.age_secs, only,
+    ) {
+        Ok(r) => return Ok(r),
+        Err(d) => d,
+    };
     let step_up = policy::action(action).is_some_and(|(_, s)| s) && d.denied_by("base.step-up");
     audit(&format!("user:{}", p.user), action, target, "refused");
     Err(if step_up {
@@ -638,8 +692,30 @@ fn authorize(l: &Login, p: &people::Principal, action: &str, target: &str) -> Re
         error(
             403,
             "permission_denied",
-            &format!("{} may not do {action}", p.user),
+            &d.errors
+                .last()
+                .cloned()
+                .unwrap_or_else(|| format!("{} may not do {action}", p.user)),
         )
+    })
+}
+
+/// The realms of `reach` in a person's grants: those whose grants a
+/// security administrator in those realms sees and sets (D264); `None`
+/// is every grant.
+fn grant_realms(reach: &policy::Reach) -> Option<&[String]> {
+    match reach {
+        policy::Reach::Cluster => None,
+        policy::Reach::Realms(r) => Some(r),
+    }
+}
+
+/// Whether grant `g` is in one of `realms` (all grants, with none).
+fn grant_in(g: &str, realms: Option<&[String]>) -> bool {
+    realms.is_none_or(|rs| {
+        policy::grant(g)
+            .and_then(|(_, r)| r)
+            .is_some_and(|r| rs.iter().any(|x| x == r))
     })
 }
 
@@ -940,6 +1016,20 @@ async fn with_login(
         .get(CSRF_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
+    // Acting in one realm (D265).
+    let only = match req.headers().get(hyperstor_api::ACT_IN_REALM_HEADER) {
+        None => None,
+        Some(v) => match v
+            .to_str()
+            .ok()
+            .and_then(hyperstor_api::parse_realms)
+            .filter(|r| r.len() == 1)
+        {
+            Some(mut r) => r.pop(),
+            None => return error(400, "invalid_argument", "a realm is 1-63 of a-z, 0-9 and -"),
+        },
+    };
+    let only = only.as_deref();
     // Before a login.
     match (&method, path) {
         (_, "/health") => return respond(200, "text/plain", "ok\n"),
@@ -1078,25 +1168,36 @@ async fn with_login(
             }
         }
         (&http::Method::GET, "/auth/users") => {
-            if let Err(r) = authorize(l, &p, "People.ListUsers", "people") {
-                return r;
-            }
+            let reach = match authorize_in(l, &p, "People.ListUsers", "people", only) {
+                Ok(r) => r,
+                Err(r) => return r,
+            };
+            // In realms, everyone, with only those realms' grants (D264):
+            // whoever logged in may be given one.
+            let realms = grant_realms(&reach);
             match l.people.users().await {
-                Ok(u) => json_resp(200, serde_json::json!({ "users": u })),
+                Ok(mut u) => {
+                    for u in &mut u {
+                        u.roles.retain(|g| grant_in(g, realms));
+                    }
+                    json_resp(200, serde_json::json!({ "users": u }))
+                }
                 Err(e) => people_error(e),
             }
         }
         (&http::Method::PUT, p2) if p2.starts_with("/auth/users/") && p2.ends_with("/roles") => {
             let name = p2["/auth/users/".len()..p2.len() - "/roles".len()].to_string();
-            if let Err(r) = authorize(l, &p, "People.SetRoles", &format!("user {name}")) {
-                return r;
-            }
+            let target = format!("user {name}");
+            let reach = match authorize_in(l, &p, "People.SetRoles", &target, only) {
+                Ok(r) => r,
+                Err(r) => return r,
+            };
             let (_, body) = match body_of(req).await {
                 Ok(b) => b,
                 Err(r) => return r,
             };
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-            let roles: Vec<String> = v["roles"]
+            let mut roles: Vec<String> = v["roles"]
                 .as_array()
                 .map(|a| {
                     a.iter()
@@ -1104,6 +1205,29 @@ async fn with_login(
                         .collect()
                 })
                 .unwrap_or_default();
+            // In realms, the grants in those realms replace theirs there;
+            // the rest stay (D264).
+            let realms = grant_realms(&reach);
+            if let Some(g) = roles.iter().find(|g| !grant_in(g, realms)) {
+                audit(&who, "People.SetRoles", &target, "refused");
+                return error(
+                    403,
+                    "outside_realm",
+                    &format!("{g} isn't a grant in the realms {} acts in", p.user),
+                );
+            }
+            if let Err(r) = realms_exist(state, &roles).await {
+                return r;
+            }
+            if realms.is_some() {
+                match l.people.user(&name).await {
+                    Ok(Some(u)) => {
+                        roles.extend(u.roles.into_iter().filter(|g| !grant_in(g, realms)))
+                    }
+                    Ok(None) => return people_error(people::Error::NotFound),
+                    Err(e) => return people_error(e),
+                }
+            }
             match l.people.set_roles(&name, &roles).await {
                 Ok(u) => {
                     audit(
@@ -1140,9 +1264,10 @@ async fn with_login(
                 return error(404, "not_found", "no such call");
             };
             let action = format!("{service}.{m}");
-            if let Err(r) = authorize(l, &p, &action, "cluster") {
-                return r;
-            }
+            let reach = match authorize_in(l, &p, &action, "cluster", only) {
+                Ok(r) => r,
+                Err(r) => return r,
+            };
             let (parts, body) = match body_of(req).await {
                 Ok(b) => b,
                 Err(r) => return r,
@@ -1153,6 +1278,7 @@ async fn with_login(
                 &rpc_path(rpc),
                 &parts.headers,
                 &who,
+                grant_realms(&reach),
                 body,
             )
             .await;
@@ -1160,7 +1286,11 @@ async fn with_login(
             match r {
                 Ok(a) => {
                     if !read_only {
-                        audit(&who, &action, "cluster", &format!("status {}", a.status));
+                        let target = match &reach {
+                            policy::Reach::Cluster => "cluster".to_string(),
+                            policy::Reach::Realms(r) => format!("realms {}", r.join(",")),
+                        };
+                        audit(&who, &action, &target, &format!("status {}", a.status));
                     }
                     let mut resp = http::Response::builder().status(a.status);
                     for (k, v) in a.headers.iter() {

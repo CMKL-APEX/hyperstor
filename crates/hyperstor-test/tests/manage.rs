@@ -1170,6 +1170,11 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
         let s = c.ctl(&["status", "--json"]);
         (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
     });
+    // On a slow host a node may be marked down at the start while its
+    // device opens (I284); a cache PG written then moves and starts empty,
+    // and its data is gone when the node comes up (CI). Every node is up
+    // once health is ok.
+    c.ctl(&["status", "--wait", "60"]).ok();
     c.ctl(&[
         "pool",
         "create",
@@ -1335,7 +1340,9 @@ fn weights_follow_capacity_or_are_set() {
     let c = Cluster::all_in_one("weights", 3);
     // (id, weight, fixed, reported bytes) of each device.
     let devices = || -> Vec<(u64, f64, bool, Option<u64>)> {
-        let s = c.ctl(&["status", "--json"]).ok();
+        // Exit status 1 while health is an error, as it is while PGs are
+        // fenced for a new map on a slow runner: read it anyway.
+        let s = c.ctl(&["status", "--json"]);
         let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
         v["nodes"]
             .as_array()

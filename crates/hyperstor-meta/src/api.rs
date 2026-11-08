@@ -342,6 +342,27 @@ impl Api {
         )
     }
 
+    /// [`Api::authorize_as`] for a call that a person holding a role only
+    /// in some realms may make (D262): also returns those realms, `None`
+    /// for the cluster as a whole. The caller shows and changes only what
+    /// is in them.
+    pub(super) fn authorize_in(
+        &self,
+        ctx: &RequestContext,
+        op: &str,
+        target: &str,
+        write: bool,
+    ) -> Result<(String, Option<Vec<String>>), ConnectError> {
+        self.authorize_reach(
+            ctx,
+            op,
+            target,
+            if write { Need::Write } else { Need::Read },
+        )
+    }
+
+    /// Refuses a call limited to realms: only [`Api::authorize_in`]'s
+    /// callers know what is in a realm (D262).
     fn authorize_as(
         &self,
         ctx: &RequestContext,
@@ -349,11 +370,34 @@ impl Api {
         target: &str,
         need: Need,
     ) -> Result<String, ConnectError> {
+        let (who, reach) = self.authorize_reach(ctx, op, target, need)?;
+        if let Some(realms) = reach {
+            let e = with_reason(
+                ConnectError::permission_denied(format!(
+                    "{op} reaches the cluster as a whole, and {who} acts only in realms {}",
+                    realms.join(", ")
+                )),
+                "outside_realm",
+            );
+            refused(&who, op, target, &e);
+            return Err(e);
+        }
+        Ok(who)
+    }
+
+    fn authorize_reach(
+        &self,
+        ctx: &RequestContext,
+        op: &str,
+        target: &str,
+        need: Need,
+    ) -> Result<(String, Option<Vec<String>>), ConnectError> {
         let refuse = |who: &str, e: ConnectError| {
             refused(who, op, target, &e);
             e
         };
         let local = ctx.extensions().get::<LocalPeer>().copied();
+        let mut reach = None;
         let principal = match (&self.cluster, local) {
             (_, Some(p)) => {
                 let who = format!("local:uid={}", p.uid);
@@ -389,7 +433,7 @@ impl Api {
                     // new port.
                     _ if need == Need::Anyone => {
                         let ip = ctx.peer_addr().map_or("?".into(), |a| a.ip().to_string());
-                        return self.take_rate(op, target, format!("join@{ip}"));
+                        return Ok((self.take_rate(op, target, format!("join@{ip}"))?, None));
                     }
                     Some(who) => who,
                     None => {
@@ -475,15 +519,46 @@ impl Api {
                         ),
                     ));
                 }
-                // mgmt names the person a call is for; no one else may.
+                // mgmt names the person a call is for, and the realms
+                // it is limited to (D262); no one else may.
+                let realms = ctx.header(hyperstor_api::REALMS_HEADER);
                 match ctx.header(hyperstor_api::ON_BEHALF_HEADER) {
-                    None => who.uri(),
+                    None if realms.is_none() => who.uri(),
+                    None => {
+                        return Err(refuse(
+                            &who.uri(),
+                            with_reason(
+                                ConnectError::permission_denied(format!(
+                                    "{} may not limit a call to realms on its own",
+                                    who.uri()
+                                )),
+                                "permission_denied",
+                            ),
+                        ));
+                    }
                     Some(v) => match v.to_str() {
                         Ok(p)
                             if who.role == hyperstor_pki::Role::Mgmt
                                 && hyperstor_api::valid_person(p) =>
                         {
-                            format!("{} for {p}", who.uri())
+                            let p = format!("{} for {p}", who.uri());
+                            if let Some(r) = realms {
+                                match r.to_str().ok().and_then(hyperstor_api::parse_realms) {
+                                    Some(r) => reach = Some(r),
+                                    None => {
+                                        return Err(refuse(
+                                            &p,
+                                            with_reason(
+                                                ConnectError::invalid_argument(
+                                                    "realms aren't names, comma-separated",
+                                                ),
+                                                "invalid_argument",
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            p
                         }
                         _ => {
                             return Err(refuse(
@@ -501,7 +576,7 @@ impl Api {
                 }
             }
         };
-        self.take_rate(op, target, principal)
+        Ok((self.take_rate(op, target, principal)?, reach))
     }
 
     /// Takes a call from `principal`'s rate (§23.3); a refusal is audited.
@@ -2722,7 +2797,9 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::ListVolumesRequest>,
     ) -> ServiceResult<pb::ListVolumesResponse> {
-        self.authorize(&ctx, "ListVolumes", &format!("pool {}", req.pool), false)?;
+        let (_, reach) =
+            self.authorize_in(&ctx, "ListVolumes", &format!("pool {}", req.pool), false)?;
+        let scope = self.scope(reach).await?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::ListVolumes {
@@ -2733,7 +2810,11 @@ impl ClusterService for Api {
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let vols = volume_result(rx.recv().await)?;
         Ok(pb::ListVolumesResponse {
-            volumes: vols.iter().map(volume_pb).collect(),
+            volumes: vols
+                .iter()
+                .filter(|v| scope.tenant(v.tenant))
+                .map(volume_pb)
+                .collect(),
             ..Default::default()
         }
         .into())
@@ -2748,7 +2829,16 @@ impl ClusterService for Api {
         if req.tenant != 0 {
             target.push_str(&format!(" tenant {}", req.tenant));
         }
-        let who = self.authorize(&ctx, "CreateVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "CreateVolume", &target, true)?;
+        let scope = self.scope(reach).await?;
+        if !scope.tenant(req.tenant) {
+            return Err(scope.outside(
+                &who,
+                "CreateVolume",
+                &target,
+                &format!("tenant {}", req.tenant),
+            ));
+        }
         let id = if req.id.is_empty() {
             None
         } else {
@@ -2811,8 +2901,11 @@ impl ClusterService for Api {
         req: ServiceRequest<'_, pb::ExpandVolumeRequest>,
     ) -> ServiceResult<pb::ExpandVolumeResponse> {
         let target = format!("volume {} size {}", req.id, req.size);
-        let who = self.authorize(&ctx, "ExpandVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "ExpandVolume", &target, true)?;
         let id = parse_volume_id(req.id)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "ExpandVolume", &target)
+            .await?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::ExpandVolume {
@@ -2850,8 +2943,11 @@ impl ClusterService for Api {
         } else {
             format!("volume {}", req.id)
         };
-        let who = self.authorize(&ctx, "DeleteVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "DeleteVolume", &target, true)?;
         let id = parse_volume_id(req.id)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "DeleteVolume", &target)
+            .await?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::DeleteVolume {
@@ -3007,7 +3103,10 @@ impl ClusterService for Api {
     ) -> ServiceResult<pb::FlattenVolumeResponse> {
         let id = parse_volume_id(req.id)?;
         let target = format!("volume {id:032x}");
-        let who = self.authorize(&ctx, "FlattenVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "FlattenVolume", &target, true)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "FlattenVolume", &target)
+            .await?;
         // Checked now, run as an operation (D121): it copies every chunk.
         let v = self.volume_any(id).await?;
         if v.state == crate::VolumeState::Trashed {
@@ -3050,10 +3149,15 @@ impl ClusterService for Api {
             Some(e) => format!("volume {id:032x} snapshot {e} to pool {}", req.pool),
             None => format!("volume {id:032x} to pool {}", req.pool),
         };
-        let who = self.authorize(&ctx, "CopyVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "CopyVolume", &target, true)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "CopyVolume", &target)
+            .await?;
         // Checked now, run as an operation (D214): it copies every block.
         let v = self.active_volume(id).await?;
         self.copy_target(req.pool).await?;
+        self.pool_for(&v, req.pool, &who, "CopyVolume", &target)
+            .await?;
         let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
         match epoch {
             Some(e) => {
@@ -3114,9 +3218,14 @@ impl ClusterService for Api {
         use crate::VolumeFault as F;
         let id = parse_volume_id(req.id)?;
         let target = format!("volume {id:032x} to pool {}", req.pool);
-        let who = self.authorize(&ctx, "MoveVolume", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "MoveVolume", &target, true)?;
+        let scope = self.scope(reach).await?;
+        self.volume_in(&scope, id, &who, "MoveVolume", &target)
+            .await?;
         let v = self.active_volume(id).await?;
         self.copy_target(req.pool).await?;
+        self.pool_for(&v, req.pool, &who, "MoveVolume", &target)
+            .await?;
         let refuse = |f, e: String| volume_result::<()>(Some(Err((f, e))));
         if v.pool == req.pool {
             refuse(
@@ -3353,7 +3462,29 @@ impl Api {
         write: bool,
         op: crate::SnapOp,
     ) -> Result<crate::SnapDone, ConnectError> {
-        let who = self.authorize(ctx, rpc, &target, write)?;
+        let (who, reach) = self.authorize_in(ctx, rpc, &target, write)?;
+        let scope = self.scope(reach).await?;
+        match &op {
+            crate::SnapOp::Group { ids, .. } => {
+                for id in ids {
+                    self.volume_in(&scope, *id, &who, rpc, &target).await?;
+                }
+            }
+            crate::SnapOp::DeleteGroup { group } => {
+                self.group_in(&scope, *group, &who, rpc, &target).await?
+            }
+            crate::SnapOp::List { id }
+            | crate::SnapOp::Get { id }
+            | crate::SnapOp::Create { id, .. }
+            | crate::SnapOp::Delete { id, .. }
+            | crate::SnapOp::Clone { id, .. }
+            | crate::SnapOp::Rollback { id, .. }
+            | crate::SnapOp::Flatten { id }
+            | crate::SnapOp::Copy { id, .. }
+            | crate::SnapOp::Move { id, .. } => {
+                self.volume_in(&scope, *id, &who, rpc, &target).await?
+            }
+        }
         // Snapshots and clones make more to keep: none in a full pool.
         let full = match &op {
             crate::SnapOp::Create { id, .. } | crate::SnapOp::Clone { id, .. } => {
