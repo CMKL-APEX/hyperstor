@@ -53,6 +53,8 @@ enum MetaCmd {
     /// Each device's reported shard format, and the devices the published
     /// map still asks to convert.
     Formats(std::sync::mpsc::Sender<(std::collections::BTreeMap<u32, u8>, Vec<u32>)>),
+    /// The map the map service has published.
+    Published(std::sync::mpsc::Sender<ClusterMap>),
 }
 
 thread_local! {
@@ -80,7 +82,41 @@ const KV_OFF: KvJobs = KvJobs {
 /// so that tests exercise the parts without tables of tens of megabytes.
 const TEST_PART_BYTES: usize = 16 << 10;
 
+/// Clusters running at once in this process (#264). Each runs several
+/// nodes' reactors and a map service on sub-second timeouts; the test
+/// runner starts as many tests as the host has cores, and on a large host
+/// that many clusters at once starved them: nodes seen down, connections
+/// reset, PGs moved while the test checked them. CI runs about this many.
+const CLUSTERS_AT_ONCE: usize = 8;
+
+static RUNNING: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+/// One of [`CLUSTERS_AT_ONCE`] places, held while a cluster runs.
+struct Slot;
+
+impl Slot {
+    fn take() -> Slot {
+        let (n, freed) = &RUNNING;
+        let mut n = freed
+            .wait_while(n.lock().unwrap(), |n| *n >= CLUSTERS_AT_ONCE)
+            .unwrap();
+        *n += 1;
+        Slot
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let (n, freed) = &RUNNING;
+        *n.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        freed.notify_one();
+    }
+}
+
 struct Cluster {
+    /// Its place among the clusters running at once; freed when it goes.
+    _slot: Slot,
     /// Peer timeout given to restarted nodes.
     peer_timeout: std::time::Duration,
     /// Scrub interval of every node; zero: off.
@@ -289,6 +325,7 @@ impl Cluster {
         kv: KvJobs,
         perf_every: std::time::Duration,
     ) -> Cluster {
+        let slot = Slot::take();
         let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let meta_addr = meta_l.local_addr().unwrap();
         let mut map = ClusterMap::new(1);
@@ -382,6 +419,9 @@ impl Cluster {
                             let asked = meta.published.borrow().upgrades.iter().copied().collect();
                             let _ = tx.send((meta.device_formats(), asked));
                         }
+                        MetaCmd::Published(tx) => {
+                            let _ = tx.send(meta.published.borrow().clone());
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -451,6 +491,7 @@ impl Cluster {
             })
             .collect();
         Cluster {
+            _slot: slot,
             peer_timeout,
             scrub,
             meta_addr,
@@ -574,6 +615,16 @@ impl Cluster {
     }
 
     /// Each PG's last scrubs, as the map service keeps them (D227).
+    /// The map published now. Copies are checked against it, taken before
+    /// [`Cluster::stop`]: stopping the nodes one by one can take longer than
+    /// the down timeout, and the map service then marks the first ones down
+    /// and moves their PGs before it stops itself (#264).
+    fn published(&self) -> ClusterMap {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Published(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
     fn stuck(&self) -> hyperstor_meta::Stuck {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Stuck(tx)).is_ok());
@@ -931,12 +982,13 @@ fn a_node_fails_writes_continue_and_backfill_restores_copies() {
     })
     .join()
     .unwrap();
+    let settled = c.published();
     let (map, devs) = c.stop();
     assert!(!map.nodes[&2].up);
     let chunks: Vec<(u128, u64)> = (1..=2u128)
         .flat_map(|v| (0..12u64).map(move |c| (v, c)))
         .collect();
-    copies_agree(&map, devs, &chunks);
+    copies_agree(&settled, devs, &chunks);
 }
 
 /// Waits until no PG is backfilling, from a client's view of the map.
@@ -1021,6 +1073,7 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
     })
     .join()
     .unwrap();
+    let settled = c.published();
     let (map, devs) = c.stop();
     assert!(
         map.pgs
@@ -1031,7 +1084,7 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
     let chunks: Vec<(u128, u64)> = (1..=2u128)
         .flat_map(|v| (0..8u64).map(move |c| (v, c)))
         .collect();
-    copies_agree(&map, devs, &chunks);
+    copies_agree(&settled, devs, &chunks);
 }
 
 /// Delta recovery (09-replication.md §8.5): a node that returns after a short
@@ -1123,6 +1176,7 @@ fn a_returning_node_gets_only_what_changed() {
         "node 3 was sent {pushed} bytes for {} chunks, 2 of them changed",
         on3.len()
     );
+    let settled = c.published();
     let (map, devs) = c.stop();
     assert!(
         map.pgs
@@ -1131,7 +1185,7 @@ fn a_returning_node_gets_only_what_changed() {
         "node 3 serves PGs again"
     );
     let chunks: Vec<(u128, u64)> = (0..32u64).map(|c| (1, c)).collect();
-    copies_agree(&map, devs, &chunks);
+    copies_agree(&settled, devs, &chunks);
 }
 
 /// A node from before digests (a rolling upgrade) answers `Digests` with
@@ -1191,7 +1245,8 @@ fn a_returning_node_without_digests_is_refilled_whole() {
         .map(|(_, m)| m.pushes.load(std::sync::atomic::Ordering::Relaxed))
         .sum();
     assert!(pushes > 0, "node 3 was refilled");
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..16u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -1274,7 +1329,8 @@ fn scrub_repairs_a_copy_the_others_outvote() {
         0
     );
     let _ = replica;
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -1354,7 +1410,8 @@ fn deep_scrub_finds_a_damaged_block_and_repairs_it() {
     .unwrap();
     // Every copy reads back through the engine's CRC check, the
     // replica's included.
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64)
         .map(|c| (1, c))
         .chain((0..32u64).map(|c| (2, c)))
@@ -1559,7 +1616,8 @@ fn a_new_primary_makes_its_members_agree_before_serving() {
         .peer_pushes
         .load(std::sync::atomic::Ordering::Relaxed);
     assert!(pushed >= 1, "the new primary pushed nothing while peering");
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -1653,7 +1711,8 @@ fn random_failures(seed: u64) {
         )
     })
     .unwrap_or_else(|_| panic!("seed {seed}: final read failed after {log:?}"));
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -3462,7 +3521,8 @@ fn a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write() {
     })
     .join()
     .unwrap();
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     copies_agree(&map, devs, &[(v, 0)]);
 }
 
@@ -4357,7 +4417,8 @@ fn a_node_down_past_the_interval_is_marked_out_and_back_in() {
         wait_backfilled(&cl).await;
         assert!(cl.map().pgs.values().any(|p| p.acting.contains(&3000)));
     });
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..8u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -4403,10 +4464,11 @@ fn a_failed_device_is_placed_elsewhere_at_once() {
     });
     // Readable again for the final check, which opens every device.
     c.faulty[&2000].set_failed(false);
+    let settled = c.published();
     let (map, devs) = c.stop();
     assert!(map.failed.contains(&2000));
     let chunks: Vec<(u128, u64)> = (0..8u64).map(|c| (1, c)).collect();
-    copies_agree(&map, devs, &chunks);
+    copies_agree(&settled, devs, &chunks);
     let _ = data;
 }
 
@@ -4679,7 +4741,8 @@ fn slow_backfill(to_pushed: bool) -> (usize, u64, u64) {
     };
     let rereads = count(|m| m.push_rereads.load(std::sync::atomic::Ordering::Relaxed));
     let holds = count(|m| m.push_holds.load(std::sync::atomic::Ordering::Relaxed));
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (1..=2u128)
         .flat_map(|v| (0..CHUNKS).map(move |i| (v, i)))
         .collect();
@@ -4966,6 +5029,7 @@ fn a_device_deletes_the_copies_it_no_longer_serves() {
             assert!(got == pattern(300 + v as u64, CHUNK as usize), "volume {v}");
         }
     });
+    let settled = c.published();
     let (map, devs) = c.stop();
     let dev = &devs.iter().find(|(id, _)| *id == 3000).unwrap().1;
     let shard = hyperstor_engine::open(dev).unwrap().1.pop().unwrap();
@@ -4979,7 +5043,7 @@ fn a_device_deletes_the_copies_it_no_longer_serves() {
         .collect();
     assert!(left.is_empty(), "copies of PGs device 3000 left: {left:?}");
     let others: Devices = devs.into_iter().filter(|(id, _)| *id != 3000).collect();
-    copies_agree(&map, others, &chunks);
+    copies_agree(&settled, others, &chunks);
 }
 
 /// D181: a deleted pool leaves the map, its PGs with it; a read of it is
@@ -5073,7 +5137,8 @@ fn a_hung_replica_is_dropped_from_its_pg_and_comes_back() {
         .await;
         assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
     });
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -5113,7 +5178,8 @@ fn a_partition_between_two_nodes_is_worked_around() {
         .await;
         assert!(cl.read(POOL, 1, 0, d.len() as u64).await.unwrap() == d);
     });
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -5174,7 +5240,8 @@ fn a_read_of_a_damaged_primary_copy_is_served_and_repaired() {
         assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
     });
     // Every copy reads back through the CRC check, the primary's included.
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..4u64).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }
@@ -5510,7 +5577,8 @@ fn scrub_repairs_an_outvoted_primary_and_reports_what_it_cant() {
         assert!(t.elapsed().as_secs() < 15, "still reported inconsistent");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     copies_agree(&map, devs, &[(1, 0), (1, 1), (1, 2), (1, 3)]);
 }
 
@@ -5626,7 +5694,8 @@ fn random_faults(seed: u64) {
         );
     }
     eprintln!("random faults, seed {seed}: {log:?}");
-    let (map, devs) = c.stop();
+    let map = c.published();
+    let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
     copies_agree(&map, devs, &chunks);
 }

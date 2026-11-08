@@ -14,6 +14,7 @@ import {
   type Me,
   type Methods,
 } from "./api";
+import Footer from "./Footer";
 import { input, usePoll, useRealm } from "./ui";
 import Overview from "./pages/Overview";
 import Nodes from "./pages/Nodes";
@@ -173,6 +174,7 @@ function Shell() {
         </Routes>
         )}
       </main>
+      <Footer build={me.build} />
     </div>
   );
 }

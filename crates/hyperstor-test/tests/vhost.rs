@@ -261,14 +261,20 @@ fn a_detach_leaves_a_connected_disk_alone() {
     let data = pattern(7, 64 << 10);
     let mut g = Guest::connect(&sa, true);
     g.write(0, &data);
+    let t = std::time::Instant::now();
     let d = detach(&a, false);
     assert_eq!(d["error"]["code"], "busy", "{d}");
+    assert!(t.elapsed().as_millis() >= 1900, "it waited for a hang-up");
     assert!(sa.exists(), "the socket stays");
     assert!(g.read(0, data.len() as u32) == data, "the guest goes on");
-    // A hypervisor that has gone: detached at once, though the service may
-    // not have read the hang-up yet.
-    drop(g);
-    let d = detach(&a, false);
+    // A hypervisor that hangs up while the detach waits (#265): a VM just
+    // stopped, still exiting. Its disk goes without force.
+    let d = std::thread::scope(|s| {
+        let pending = s.spawn(|| detach(&a, false));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(g);
+        pending.join().unwrap()
+    });
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!sa.exists());
     // Forced: the hypervisor is cut off.

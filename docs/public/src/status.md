@@ -243,6 +243,7 @@ covered by tests that run on every change.
 | Grafana dashboard and Prometheus scrape configuration for the storage nodes' metrics | Done |
 | The PAM helper, and the management service's rows in the map service's store | Done |
 | People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf) | Done |
+| The web UI's footer names the installed build: release, branch and commit, linked to GitHub | Done |
 | Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit | Done |
 | People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate | Done |
 | Every host's mgmt sends its calls to the map service's leader, found from the member list; mgmt behind a proxy or a CDN: any CA's certificate and its names, proxies known by a client certificate or address, the person's address from them only, proxy-only | Done |

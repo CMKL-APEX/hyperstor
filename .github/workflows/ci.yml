@@ -27,6 +27,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job runs on GitHub's runners. The tests can run on the project's
+# self-hosted runner instead (#237, #262): set the test job's runs-on to the
+# expression in its comment. Pull requests from forks then still test on
+# GitHub's: the repository is public, and a fork's code (build scripts,
+# tests, this file) would otherwise run on the runner's host. The steps for
+# the self-hosted runner (tmpfs scratch, 8 tests at once, Chromium's
+# libraries installed by hand) check runner.environment and stay in place.
 jobs:
   # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
   fmt:
@@ -58,16 +65,17 @@ jobs:
     timeout-minutes: 5
 
     env:
-      BUF_VERSION: "1.47.2"
-      BUF_SHA256: "3a0c4da8d46eea8136affa63db202c76a44f8112384160b73c3fffb1cf14b5d8"
+      BUF_VERSION: "1.75.0"
+      BUF_SHA256: "fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b"
 
     steps:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Install buf
+      # Retried: GitHub's release downloads sometimes answer 504.
       run: |
-        curl -fsSL -o "$RUNNER_TEMP/buf" \
+        curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/buf" \
           "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
         echo "${BUF_SHA256}  $RUNNER_TEMP/buf" | sha256sum -c
         chmod +x "$RUNNER_TEMP/buf"
@@ -78,7 +86,7 @@ jobs:
     # buf.gen.yaml) is committed: it must be what buf makes now.
     - uses: oven-sh/setup-bun@v2
       with:
-        bun-version: "1.4.2"
+        bun-version: "1.4.4"
     - name: Generated TypeScript is current
       run: |
         (cd crates/hyperstor-mgmt/ui && bun install --frozen-lockfile)
@@ -98,6 +106,20 @@ jobs:
         "$RUNNER_TEMP/buf" breaking crates/hyperstor-api/proto
         --against ".git#ref=origin/${{ github.base_ref }},subdir=crates/hyperstor-api/proto"
 
+  # Known vulnerabilities in the crates of Cargo.lock (RustSec's advisory
+  # database), with the ignores and their reasons in .cargo/audit.toml.
+  audit:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit@0.22.2
+    - run: cargo audit
+
   # The spec hangs together and code cites it correctly; no build needed.
   spec:
 
@@ -113,6 +135,8 @@ jobs:
 
   test:
 
+    # On the self-hosted runner, except for forks' pull requests:
+    # runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     runs-on: ubuntu-26.04
     # A run takes a few minutes; a test that hangs (a cluster test waiting
     # on a node) fails the job instead of holding the runner for 6 hours.
@@ -130,7 +154,21 @@ jobs:
     - name: Install boto3
       run: |
         python3 -m venv "$RUNNER_TEMP/s3sdk"
-        "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.38.46
+        "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.43.126
+    # The self-hosted runner's disk is a Hyperstor volume, slow to sync
+    # (about 2.7 ms a write): end-to-end clusters starting together took
+    # over 20 s to open their devices and their map services never elected
+    # a leader. Their scratch (target/tmp/e2e) needs no durability, so it
+    # goes to tmpfs there; O_DIRECT on tmpfs needs Linux 6.6 or later.
+    - name: End-to-end scratch on tmpfs
+      if: runner.environment == 'self-hosted'
+      run: |
+        d="/dev/shm/hyperstor-e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+        mkdir -p "$d" target/tmp
+        rm -rf target/tmp/e2e
+        ln -sfn "$d" target/tmp/e2e
+    # Tests at once: one per CPU by default, 4 on GitHub's runners; 8 on
+    # the self-hosted one, which has 32 CPUs.
     - name: Run tests
       id: tests
       env:
@@ -139,14 +177,14 @@ jobs:
         HS_S3_SDK_REQUIRED: "1"
       run: |
         set -o pipefail
-        cargo test --workspace --release --no-fail-fast 2>&1 | tee target/test.log
+        cargo test --workspace --release --no-fail-fast ${{ runner.environment == 'self-hosted' && '-- --test-threads 8' || '' }} 2>&1 | tee target/test.log
     # The web UI (crates/hyperstor-mgmt/ui): built, then driven in a
     # browser against a cluster installed from the binaries just built
     # (crates/hyperstor-mgmt/e2e). Its results join the tracking check.
     - uses: oven-sh/setup-bun@v2
       if: success() || failure()
       with:
-        bun-version: "1.4.2"
+        bun-version: "1.4.4"
     - name: Build the web UI
       id: ui
       if: success() || failure()
@@ -156,11 +194,13 @@ jobs:
       id: browser
       if: (success() || failure()) && steps.ui.outcome == 'success'
       working-directory: crates/hyperstor-mgmt/e2e
+      # Chromium's system libraries: installed with apt on GitHub's runners,
+      # once by hand on the self-hosted one, so its jobs need no sudo.
       run: |
         bun install --frozen-lockfile
-        bunx playwright install --with-deps chromium
+        bunx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
         bunx playwright test
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: failure() && steps.browser.outcome == 'failure'
       with:
         name: playwright-report
@@ -177,8 +217,11 @@ jobs:
         >> "$GITHUB_STEP_SUMMARY"
     - name: Check the command-line reference against the binaries
       run: python3 scripts/cli-docs-check.py target/release
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: (success() || failure()) && steps.tests.outcome != 'skipped'
       with:
         name: test-log
         path: target/test.log
+    - name: Remove the end-to-end scratch from tmpfs
+      if: always() && runner.environment == 'self-hosted'
+      run: rm -rf "/dev/shm/hyperstor-e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB" target/tmp/e2e

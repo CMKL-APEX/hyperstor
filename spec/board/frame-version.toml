@@ -1,0 +1,10 @@
+title = "Frames stay readable across a rolling install (I311)"
+status = "done"
+owner = "Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M"
+started = 2026-11-08
+updated = 2026-11-08
+milestone = "HS15"
+branch = "fix/frame-version"
+prs = [261]
+now = "Merged (#261) and rolled to the pilot host by host on 2026-11-08, each node staying up"
+next = "Nothing"

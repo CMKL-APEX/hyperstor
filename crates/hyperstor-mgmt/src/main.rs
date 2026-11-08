@@ -426,6 +426,21 @@ fn respond(status: u16, ctype: &str, body: impl Into<Bytes>) -> Resp {
         .expect("response")
 }
 
+/// The build of this mgmt (`build.rs`), for the web UI's footer: the
+/// version tag on its commit, else the release before it and the commits
+/// since, its branch and commit, and the repository they are in.
+fn build() -> serde_json::Value {
+    let some = |v: &'static str| (!v.is_empty()).then_some(v);
+    serde_json::json!({
+        "tag": some(env!("HS_BUILD_TAG")),
+        "release": some(env!("HS_BUILD_RELEASE")),
+        "ahead": env!("HS_BUILD_AHEAD").parse::<u64>().unwrap_or(0),
+        "branch": some(env!("HS_BUILD_BRANCH")),
+        "commit": some(env!("HS_BUILD_COMMIT")),
+        "repo": env!("HS_BUILD_REPO"),
+    })
+}
+
 fn json_resp(status: u16, v: serde_json::Value) -> Resp {
     respond(status, "application/json", v.to_string())
 }
@@ -921,15 +936,27 @@ async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::In
         }
     };
     let after = oidc::After { claim: r.claim };
-    match o
-        .start(
+    let begun = o
+        .begin(
             r.return_to.as_deref(),
             &redirect_uri(state, o, &host),
             r.reauth,
             after,
         )
         .await
-    {
+        .map_err(|e| e.to_string());
+    // Kept in the map service, so that any mgmt behind the same name
+    // finishes it (I310).
+    let kept = match begun {
+        Ok((s, p)) => l
+            .people
+            .keep_login(&p)
+            .await
+            .map(|()| s)
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    match kept {
         Ok(s) => {
             let mut resp = json_resp(200, serde_json::json!({ "redirect": s.redirect }));
             let mut c = format!(
@@ -946,7 +973,7 @@ async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::In
                 .insert(http::header::SET_COOKIE, c.parse().expect("cookie"));
             resp
         }
-        Err(e) => error(503, "unavailable", &e.to_string()),
+        Err(e) => error(503, "unavailable", &e),
     }
 }
 
@@ -1000,8 +1027,18 @@ async fn oidc_callback(
                 .map(String::from)
         });
     let host = host_of(&req);
+    let pending = match l.people.take_login(st, browser.as_deref()).await {
+        Ok(p) => p,
+        Err(e) => return failed(&e.to_string()),
+    };
     let (id, return_to, after) = match o
-        .callback(code, st, browser.as_deref(), &redirect_uri(state, o, &host))
+        .finish(
+            code,
+            st,
+            pending,
+            browser.as_deref(),
+            &redirect_uri(state, o, &host),
+        )
         .await
     {
         Ok(v) => v,
@@ -1190,7 +1227,10 @@ async fn with_login(
     match (&method, path) {
         (&http::Method::GET, "/auth/whoami") => json_resp(
             200,
-            serde_json::json!({ "user": p.user, "roles": p.roles, "method": p.method, "csrf": p.csrf }),
+            serde_json::json!({
+                "user": p.user, "roles": p.roles, "method": p.method, "csrf": p.csrf,
+                "build": build(),
+            }),
         ),
         (&http::Method::POST, "/auth/logout") => {
             if let Some(c) = &cookie {
@@ -1466,6 +1506,34 @@ pub fn parse_metrics(text: &str) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_build_names_its_commit_and_release() {
+        let b = build();
+        assert!(
+            b["repo"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://github.com/"),
+            "{b}"
+        );
+        // Built in a checkout here; a CI checkout may have no tags.
+        let commit = b["commit"].as_str().expect("a commit");
+        assert!(
+            commit.len() == 40 && commit.bytes().all(|c| c.is_ascii_hexdigit()),
+            "{b}"
+        );
+        if let Some(tag) = b["tag"].as_str() {
+            assert_eq!(
+                (b["release"].as_str(), b["ahead"].as_u64()),
+                (Some(tag), Some(0)),
+                "{b}"
+            );
+        }
+        if b["release"].is_null() {
+            assert_eq!(b["ahead"], 0, "{b}");
+        }
+    }
 
     #[test]
     fn only_loopback_names_on_our_port() {

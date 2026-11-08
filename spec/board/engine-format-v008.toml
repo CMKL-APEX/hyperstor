@@ -6,5 +6,5 @@ updated = 2026-11-08
 milestone = "HS2"
 branch = "feat/device-upgrade"
 prs = [258, 260]
-now = "#258 (engine, I309) and #260 (device upgrade, I311, stacked) open"
+now = "#258 (engine, I309) and #260 (device upgrade, I319, stacked) open"
 next = "Pull request for device upgrade; then #246 (D271), #243 (D269), #245 (D275), #251"

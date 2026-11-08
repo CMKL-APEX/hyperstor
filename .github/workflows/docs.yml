@@ -51,7 +51,7 @@ jobs:
         cp -r target/doc target/site/api
     - name: Check links
       run: python3 scripts/site-link-check.py target/site
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: docs-public
         path: target/site
@@ -71,7 +71,7 @@ jobs:
       cancel-in-progress: false
 
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         name: docs-public
         path: site
@@ -102,7 +102,7 @@ jobs:
       run: cargo doc --workspace --no-deps --document-private-items
     - name: Put the API reference under the book
       run: cp -r target/doc target/docs/internal/api
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: docs-internal
         path: target/docs/internal
