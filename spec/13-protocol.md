@@ -32,6 +32,11 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   Each release speaks its own version and the one before, so rolling
   upgrades work node by node (15-operations.md §18.4). The exception is
   version 2 (lease identities), which replaced 1 at once (D152).
+- **The header's version is the frame's, not the protocol's** (I311):
+  every header says 2, the layout since D150, whatever version `Hello`
+  agreed; a peer refuses a frame whose header version it doesn't read.
+  A new message is negotiated through `Hello` and sent only to peers
+  that answered a version that has it (`Host`, version 3, D261).
 - **Security** per D25.
 
 ### 13.2 Transports (D30)

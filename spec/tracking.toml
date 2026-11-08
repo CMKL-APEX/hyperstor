@@ -945,11 +945,12 @@ tests = [
 
 [[milestone.item]]
 what = "Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host`"
-spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302"]
+spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302", "I311"]
 status = "done"
 tests = [
     "hyperstor_map::port_tests::hosts_bound_to_realms_attach_only_theirs",
     "vhost::a_host_bound_to_a_realm_attaches_only_its_volumes",
+    "hyperstor_proto::tests::frame_headers_stay_readable_by_older_builds",
 ]
 
 [[milestone.item]]
