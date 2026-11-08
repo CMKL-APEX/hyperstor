@@ -7,4 +7,4 @@ milestone = "HS2"
 branch = "feat/device-super-backup"
 prs = []
 now = "Built (I311): COMPAT_BACKUP_SUPER in the last block, on new devices and conversions with a free last block; blank copies over shard superblocks refused"
-next = "Pull request, stacked on #260; then #243 (D269), #245 (D275), #251"
+next = "Then #243 (D269), #245 (D275), #251"
