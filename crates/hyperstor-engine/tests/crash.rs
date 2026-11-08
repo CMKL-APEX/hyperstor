@@ -85,7 +85,7 @@ fn model_apply(m: &mut Model, l: &OpList, revision: Option<u64>) -> bool {
         let o = m.entry(l.key.clone()).or_default();
         match op {
             Op::Touch => {}
-            Op::Write { off, data } => {
+            Op::Write { off, data, .. } => {
                 let lb = off / BLOCK as u64;
                 for (i, c) in data.chunks(BLOCK).enumerate() {
                     o.data.insert(lb + i as u64, c[0]);
@@ -156,10 +156,16 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
                 };
                 let off = rng.random_range(0..MAX_BLOCK - blocks) * BLOCK as u64;
                 let fill = rng.random_range(1..=255u8);
-                Op::Write {
-                    off,
-                    data: vec![fill; blocks as usize * BLOCK],
-                }
+                // A byte of its own in each block, so a CRC filed under
+                // the wrong block doesn't match it; about half the writes
+                // come with their CRCs, as writes from the network do (I305).
+                let data: Vec<u8> = (0..blocks as usize)
+                    .flat_map(|i| [((fill as usize + i) % 255 + 1) as u8; BLOCK])
+                    .collect();
+                let crcs = rng
+                    .random_bool(0.5)
+                    .then(|| data.chunks(BLOCK).map(hyperstor_codec::crc32c).collect());
+                Op::Write { off, data, crcs }
             }
             40..=47 => {
                 let b = rng.random_range(0..MAX_BLOCK - 4);
@@ -417,7 +423,7 @@ fn run(seed: u64) -> usize {
                         l.ops
                             .iter()
                             .map(|o| match o {
-                                Op::Write { off, data } =>
+                                Op::Write { off, data, .. } =>
                                     format!("W{}+{}", off / 4096, data.len() / 4096),
                                 o => format!("{o:?}").chars().take(20).collect(),
                             })

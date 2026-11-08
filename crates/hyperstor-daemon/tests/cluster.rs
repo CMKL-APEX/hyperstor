@@ -7920,3 +7920,92 @@ fn s3_put_throughput() {
     .unwrap();
     c.stop();
 }
+
+/// A node refuses data whose CRCs don't match it, at each way data comes
+/// in (a client's write to the primary, the primary's copy to a replica,
+/// a recovery push), and stores none of it. The engine keeps the CRCs a
+/// write came with rather than computing them again (I305), so this check
+/// is what keeps the stored CRCs true to the data.
+#[test]
+fn data_whose_crcs_disagree_is_refused_at_every_way_in() {
+    use hyperstor_proto::{Code, Msg, Target, WireKey, block_crcs};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let good = pattern(61, 16 * 4096);
+            cl.write(POOL, 1, 0, good.clone()).await.unwrap();
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pg = pg_of(1, 0, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: m.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let key = WireKey {
+                ns: hyperstor_client::NS_VOL,
+                name: chunk_name(1, 0),
+                version: 0,
+            };
+            // The CRCs of other data, as damage after they were taken.
+            let bad = pattern(62, 16 * 4096);
+            let crcs = block_crcs(&pattern(63, 16 * 4096));
+            let primary = hyperstor_rpc::Conn::connect(m.device_addr(info.acting[0]).unwrap())
+                .await
+                .unwrap();
+            let replica = hyperstor_rpc::Conn::connect(m.device_addr(info.acting[1]).unwrap())
+                .await
+                .unwrap();
+            let sends = [
+                (
+                    &primary,
+                    Msg::Write {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        crcs: crcs.clone(),
+                    },
+                ),
+                (
+                    &replica,
+                    Msg::Repl {
+                        to,
+                        seq: 1,
+                        key: key.clone(),
+                        off: 0,
+                        crcs: crcs.clone(),
+                    },
+                ),
+                (
+                    &replica,
+                    Msg::Push {
+                        to,
+                        key: key.clone(),
+                        crcs: crcs.clone(),
+                    },
+                ),
+            ];
+            for (conn, msg) in sends {
+                let (reply, _) = conn.call(&msg, &bad).await.unwrap();
+                assert!(
+                    matches!(
+                        reply,
+                        Msg::Error {
+                            code: Code::Checksum,
+                            ..
+                        }
+                    ),
+                    "{msg:?} with CRCs of other data: {reply:?}"
+                );
+            }
+            assert_eq!(cl.read(POOL, 1, 0, 16 * 4096).await.unwrap(), good);
+        })
+    })
+    .join()
+    .unwrap();
+}

@@ -137,6 +137,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                 ops: vec![Op::Write {
                     off: c * 256 * BLOCK as u64,
                     data: mb.clone(),
+                    crcs: None,
                 }],
             }])
             .unwrap();
@@ -169,6 +170,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
@@ -201,6 +203,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS / 16) * 16 * BLOCK as u64,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
@@ -843,6 +846,7 @@ fn index_suite(path: &Path) {
             ops: vec![Op::Write {
                 off: 0,
                 data: chunk.clone(),
+                crcs: None,
             }],
         }])
         .unwrap();
@@ -864,6 +868,7 @@ fn index_suite(path: &Path) {
                 ops: vec![Op::Write {
                     off: b * BLOCK as u64,
                     data: data.clone(),
+                    crcs: None,
                 }],
             })
             .collect();
@@ -907,6 +912,7 @@ fn fill(sh: &mut Shard, objects: u64) {
             ops: vec![Op::Write {
                 off: 0,
                 data: chunk.clone(),
+                crcs: None,
             }],
         }])
         .unwrap();
@@ -925,6 +931,7 @@ fn overwrite(sh: &mut Shard, rng: &mut SmallRng, objects: u64, n: u64) {
                 ops: vec![Op::Write {
                     off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                     data: data.clone(),
+                    crcs: None,
                 }],
             })
             .collect();
@@ -976,6 +983,7 @@ fn log_size_sweep() {
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
@@ -1077,6 +1085,7 @@ fn paged_sweep() {
                         ops: vec![Op::Write {
                             off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                             data: data.clone(),
+                            crcs: None,
                         }],
                     })
                     .collect();
@@ -1236,6 +1245,7 @@ fn decisions_suite(dir: &Path, secs: f64) {
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
@@ -1379,6 +1389,7 @@ fn redb_suite(dir: &Path, secs: f64) {
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
@@ -1742,6 +1753,7 @@ fn digest_suite() {
                     ops: vec![Op::Write {
                         off: 0,
                         data: data.clone(),
+                        crcs: None,
                     }],
                 })
                 .collect();
