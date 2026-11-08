@@ -1,4 +1,4 @@
-//! `hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]`
+//! `hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]`
 //!
 //! The management service (spec/19-administration.md §23.7): the web
 //! dashboard, and with `--authd`, people's logins and the cluster API on
@@ -23,6 +23,17 @@
 //! - `--web-tls DIR` serves HTTPS with `DIR/web.crt` and `web.key`;
 //!   listening beyond loopback needs it and `--authd`. `--hosts` adds the
 //!   names people reach it by to the `Host` allowlist.
+//! - Behind a proxy or a CDN (D277, [`front`]): `--proxy-ca FILE` takes
+//!   proxies' client certificates from that CA (Cloudflare's Authenticated
+//!   Origin Pulls, or the organization's), `--trusted-proxies CIDR,...`
+//!   names proxies by address (`127.0.0.1,::1` for a tunnel on the host);
+//!   only from those is the person's address read from `CF-Connecting-IP`
+//!   or `X-Forwarded-For`. `--proxy-only` refuses everyone else but
+//!   loopback. The names on `web.crt` are allowed `Host` names, so a
+//!   certificate from Cloudflare's Origin CA or the organization's CA for
+//!   the public name needs no `--hosts`.
+//! - Calls to the map service go to its leader first, found from the
+//!   member list ([`members`], D276), so every host's mgmt serves changes.
 //! - `--ui DIR` serves the web UI's files from `DIR` instead of the
 //!   built-in dashboard (D100).
 //! - Browser protections as glidex's UI: a `Host` allowlist against DNS
@@ -38,7 +49,6 @@
 // costs nothing worth boxing it for.
 #![allow(clippy::result_large_err)]
 
-use connectrpc::client::{ClientConfig, HttpClient};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyperstor_api::ClusterServiceClient;
@@ -48,9 +58,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--ui DIR]";
+const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]";
 
 mod audit_ship;
+mod front;
+mod members;
 mod oidc;
 mod people;
 mod policy;
@@ -89,15 +101,16 @@ struct Login {
 }
 
 struct State {
-    api: ClusterServiceClient<HttpClient>,
-    /// Which realms there are, to check a grant's (D263).
-    realms: hyperstor_api::RealmServiceClient<HttpClient>,
-    api_addrs: Vec<String>,
+    /// The map service's members, the leader first (D276).
+    members: Arc<members::Members>,
     tls: Arc<connectrpc::rustls::ClientConfig>,
     metrics: Vec<String>,
     port: u16,
     hosts: Vec<String>,
     https: bool,
+    /// The DNS names on `--web-tls`'s certificate now (D277).
+    cert_names: Arc<std::sync::RwLock<Vec<String>>>,
+    front: front::Front,
     /// The Tailscale names served their certificate now (`--tailscale`).
     held: Option<Arc<glidex_tls::tailscale::Held>>,
     login: Option<Login>,
@@ -114,7 +127,10 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // The one flag without a value.
+    let proxy_only = args.iter().any(|a| a == "--proxy-only");
+    args.retain(|a| a != "--proxy-only");
     let get = |flag: &str| {
         args.iter()
             .position(|a| a == flag)
@@ -133,6 +149,8 @@ fn main() {
                 | "--web-tls"
                 | "--tailscale"
                 | "--hosts"
+                | "--proxy-ca"
+                | "--trusted-proxies"
                 | "--ui"
         ) {
             usage();
@@ -204,14 +222,35 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display()))),
     );
     let ui = get("--ui").map(PathBuf::from);
+    let proxy_ca = get("--proxy-ca").map(PathBuf::from);
+    if proxy_ca.is_some() && web_tls.is_none() {
+        eprintln!(
+            "hyperstor-mgmt: --proxy-ca needs --web-tls (proxies' certificates come over HTTPS)"
+        );
+        std::process::exit(2);
+    }
+    let front = front::Front {
+        trusted: front::parse_cidrs(&get("--trusted-proxies").unwrap_or_default()).unwrap_or_else(
+            |e| {
+                eprintln!("hyperstor-mgmt: --trusted-proxies {e}");
+                std::process::exit(2)
+            },
+        ),
+        only: proxy_only,
+    };
+    if front.only && proxy_ca.is_none() && front.trusted.is_empty() {
+        eprintln!("hyperstor-mgmt: --proxy-only needs --proxy-ca or --trusted-proxies");
+        std::process::exit(2);
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
     rt.block_on(async move {
-        let web = web_tls
-            .as_ref()
-            .map(|d| web::start(d, tailscale).unwrap_or_else(|e| fail(&format!("--web-tls {e}"))));
+        let web = web_tls.as_ref().map(|d| {
+            web::start(d, tailscale, proxy_ca.as_deref())
+                .unwrap_or_else(|e| fail(&format!("--web-tls {e}")))
+        });
         let mut listeners = Vec::new();
         for a in &listen {
             match glidex_tls::bind(*a) {
@@ -230,27 +269,22 @@ fn main() {
             .local_addr()
             .map(|a| a.port())
             .unwrap_or(listen[0].port());
-        let uri: http::Uri = format!("https://{}", api_addrs[0]).parse().expect("uri");
+        let members = members::Members::new(api_addrs, tls.clone());
+        tokio::spawn(members.clone().run());
         let login = (authd.is_some() || oidc.is_some()).then(|| Login {
-            people: people::People::new(people::Rows::api(&api_addrs, tls.clone())),
+            people: people::People::new(people::Rows::api(members.clone())),
             authd,
             oidc,
             engine: policy::engine(),
         });
         let state = Arc::new(State {
-            api: ClusterServiceClient::new(
-                HttpClient::with_tls(tls.clone()),
-                ClientConfig::new(uri.clone()).with_default_timeout(Duration::from_secs(5)),
-            ),
-            realms: hyperstor_api::RealmServiceClient::new(
-                HttpClient::with_tls(tls.clone()),
-                ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
-            ),
-            api_addrs,
+            members,
             tls,
             metrics,
             port,
             hosts,
+            cert_names: web.as_ref().map(|w| w.names.clone()).unwrap_or_default(),
+            front,
             https: web.is_some(),
             held: web.as_ref().and_then(|w| w.held.clone()),
             login,
@@ -266,7 +300,7 @@ fn main() {
             eprintln!("hyperstor-mgmt: dashboard on {at} (read-only)");
         }
         if state.login.is_some() {
-            tokio::spawn(audit_ship::ship(state.api_addrs.clone(), state.tls.clone()));
+            tokio::spawn(audit_ship::ship(state.members.clone()));
         }
         let acceptor = web.map(|w| tokio_rustls::TlsAcceptor::from(w.config));
         let mut tasks = tokio::task::JoinSet::new();
@@ -293,9 +327,12 @@ async fn serve(
         tokio::spawn(async move {
             let builder = hyper::server::conn::http1::Builder::new();
             let Some(a) = acceptor else {
+                let via = state.front.via_proxy(peer.ip(), false);
                 let svc = hyper::service::service_fn(move |req| {
                     let state = state.clone();
-                    async move { Ok::<_, std::convert::Infallible>(handle(&state, req, peer).await) }
+                    async move {
+                        Ok::<_, std::convert::Infallible>(serve_one(&state, req, peer, via).await)
+                    }
                 });
                 let _ = builder
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
@@ -325,10 +362,13 @@ async fn serve(
                 .1
                 .server_name()
                 .is_some_and(|n| state.held.as_ref().is_some_and(|h| h.contains(n)));
+            // A client certificate got this far only if `--proxy-ca` took it.
+            let cert = tls.get_ref().1.peer_certificates().is_some();
+            let via = state.front.via_proxy(peer.ip(), cert);
             let svc = hyper::service::service_fn(move |req| {
                 let state = state.clone();
                 async move {
-                    let mut r = handle(&state, req, peer).await;
+                    let mut r = serve_one(&state, req, peer, via).await;
                     if hsts {
                         r.headers_mut().insert(
                             http::header::STRICT_TRANSPORT_SECURITY,
@@ -490,6 +530,20 @@ fn set_cookie(s: &State, value: &str, max_age: Option<u64>) -> String {
     c
 }
 
+/// One request on a connection from `peer`; `via`: from a proxy (D277).
+async fn serve_one(
+    state: &State,
+    req: http::Request<hyper::body::Incoming>,
+    peer: SocketAddr,
+    via: bool,
+) -> Resp {
+    if !state.front.admits(peer.ip(), via) {
+        return respond(403, "text/plain", "only through the proxy\n");
+    }
+    let client = front::client(req.headers(), peer, via);
+    handle(state, req, client).await
+}
+
 async fn handle(
     state: &State,
     req: http::Request<hyper::body::Incoming>,
@@ -508,7 +562,15 @@ async fn handle(
                 && h.contains(name)
         })
     };
-    if !host_allowed(&host, state.port, &state.hosts) && !tailscale_name() {
+    let cert_name = || {
+        let (name, port) = host.rsplit_once(':').unwrap_or((&host, ""));
+        (port.is_empty() || port.parse::<u16>().is_ok_and(|p| p == state.port))
+            && front::on_cert(
+                name,
+                &state.cert_names.read().unwrap_or_else(|e| e.into_inner()),
+            )
+    };
+    if !host_allowed(&host, state.port, &state.hosts) && !tailscale_name() && !cert_name() {
         return respond(421, "text/plain", "misdirected request\n");
     }
     let path = req.uri().path().to_string();
@@ -542,11 +604,19 @@ async fn handle(
 async fn dashboard(state: &State, path: &str, query: &str) -> Resp {
     match path {
         "/health" => respond(200, "text/plain", "ok\n"),
-        "/api/status" => match state.api.get_status(pb::GetStatusRequest::default()).await {
+        "/api/status" => match state
+            .members
+            .each(ClusterServiceClient::new, |c| async move {
+                c.get_status(pb::GetStatusRequest::default())
+                    .await
+                    .map(|r| r.into_owned())
+            })
+            .await
+        {
             Ok(r) => respond(
                 200,
                 "application/json",
-                serde_json::to_string(&r.into_owned()).expect("json"),
+                serde_json::to_string(&r).expect("json"),
             ),
             Err(e) => api_error(&e),
         },
@@ -559,17 +629,21 @@ async fn dashboard(state: &State, path: &str, query: &str) -> Resp {
                 return respond(400, "text/plain", "pool=N is required\n");
             };
             match state
-                .api
-                .list_pgs(pb::ListPgsRequest {
-                    pool,
-                    ..Default::default()
+                .members
+                .each(ClusterServiceClient::new, |c| async move {
+                    c.list_pgs(pb::ListPgsRequest {
+                        pool,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| r.into_owned())
                 })
                 .await
             {
                 Ok(r) => respond(
                     200,
                     "application/json",
-                    serde_json::to_string(&r.into_owned()).expect("json"),
+                    serde_json::to_string(&r).expect("json"),
                 ),
                 Err(e) => api_error(&e),
             }
@@ -627,11 +701,15 @@ async fn realms_exist(state: &State, roles: &[String]) -> Result<(), Resp> {
         return Ok(());
     }
     let have = match state
-        .realms
-        .list_realms(pb::ListRealmsRequest::default())
+        .members
+        .each(hyperstor_api::RealmServiceClient::new, |c| async move {
+            c.list_realms(pb::ListRealmsRequest::default())
+                .await
+                .map(|r| r.into_owned())
+        })
         .await
     {
-        Ok(r) => r.into_owned().realms,
+        Ok(r) => r.realms,
         Err(e) => return Err(api_error(&e)),
     };
     match named.iter().find(|n| !have.iter().any(|r| r.name == **n)) {
@@ -1274,7 +1352,7 @@ async fn with_login(
             };
             let r = proxy::forward(
                 &state.tls,
-                &state.api_addrs,
+                &state.members,
                 &rpc_path(rpc),
                 &parts.headers,
                 &who,

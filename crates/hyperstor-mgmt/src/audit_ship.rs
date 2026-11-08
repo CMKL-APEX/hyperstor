@@ -5,7 +5,6 @@
 //! (`AuditService.AppendAudit`), sent every second. Up to [`QUEUE_MAX`]
 //! wait; past that the oldest are dropped (journald has them all).
 
-use connectrpc::client::{ClientConfig, HttpClient};
 use hyperstor_api::AuditServiceClient;
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use std::collections::VecDeque;
@@ -26,19 +25,9 @@ pub fn push(line: String) {
     q.push_back(line);
 }
 
-/// Sends what is queued, every second, to the first member of `addrs`
-/// that takes it. Runs for good.
-pub async fn ship(addrs: Vec<String>, tls: Arc<connectrpc::rustls::ClientConfig>) {
-    let clients: Vec<AuditServiceClient<HttpClient>> = addrs
-        .iter()
-        .map(|a| {
-            let uri: http::Uri = format!("https://{a}").parse().expect("address");
-            AuditServiceClient::new(
-                HttpClient::with_tls(tls.clone()),
-                ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5)),
-            )
-        })
-        .collect();
+/// Sends what is queued, every second, to the map service's members in
+/// turn, the leader first (D276). Runs for good.
+pub async fn ship(members: Arc<crate::members::Members>) {
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let batch: Vec<String> = {
@@ -52,14 +41,17 @@ pub async fn ship(addrs: Vec<String>, tls: Arc<connectrpc::rustls::ClientConfig>
             lines: batch.clone(),
             ..Default::default()
         };
-        for c in &clients {
-            if c.append_audit(req.clone()).await.is_ok() {
-                let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-                // Only what was sent: more may have come meanwhile.
-                for _ in 0..batch.len().min(q.len()) {
-                    q.pop_front();
-                }
-                break;
+        let sent = members
+            .each(AuditServiceClient::new, |c| {
+                let req = req.clone();
+                async move { c.append_audit(req).await.map(|_| ()) }
+            })
+            .await;
+        if sent.is_ok() {
+            let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+            // Only what was sent: more may have come meanwhile.
+            for _ in 0..batch.len().min(q.len()) {
+                q.pop_front();
             }
         }
     }
