@@ -1323,7 +1323,7 @@ impl ShardState {
             // A checkpoint the round completes is named once its pages
             // are durable (I281).
             if let (Ok(()), Some(seal)) = (&io, round.take_seal()) {
-                io = self.write_round(vec![seal]).await;
+                io = self.write_round(seal).await;
             }
             waited += w.elapsed();
             let ended = c.shard().commit_end(round, io);

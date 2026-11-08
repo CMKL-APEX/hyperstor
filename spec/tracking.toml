@@ -194,6 +194,18 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted by the engine (the operator's command comes next)"
+spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "D266", "D267", "D270", "D274"]
+status = "partial"
+tests = [
+    "crash::random_crashes_on_a_device_of_the_first_format",
+    "crash::a_device_converted_while_power_fails_keeps_every_change",
+    "hyperstor_engine::shard::tests::a_record_that_doesnt_follow_the_one_before_refuses",
+    "hyperstor_engine::device::tests::only_upgrade_converts_a_device_of_the_first_format",
+    "hyperstor_engine::blockmap::tests::dense_maps_count_from_their_base",
+]
+
+[[milestone.item]]
 what = "Device back ends: memory, files and block devices through io_uring with O_DIRECT"
 spec = ["08-engine.md §6.2"]
 status = "done"

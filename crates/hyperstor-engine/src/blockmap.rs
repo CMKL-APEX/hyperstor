@@ -75,9 +75,13 @@ impl Default for DensePolicy {
 pub enum BlockMap {
     /// Runs keyed by their first logical block. Runs never overlap.
     Runs(BTreeMap<u64, Run>),
-    /// Slot `i` maps logical block `i`: physical block in the high 32 bits
-    /// (`HOLE` for none), CRC32C in the low 32.
-    Dense(Vec<u64>),
+    /// Slot `i` maps logical block `i`: its physical block less the base
+    /// (the second field) in the high 32 bits (`HOLE` for none), CRC32C in
+    /// the low 32. The base is 0 on a device that stores absolute block
+    /// numbers, the shard's data start on one that stores them relative to
+    /// it (D270), so a shard's dense maps reach 16 TiB past its start
+    /// rather than past the device's.
+    Dense(Vec<u64>, u64),
 }
 
 impl Default for BlockMap {
@@ -87,21 +91,27 @@ impl Default for BlockMap {
 }
 
 #[inline]
-fn pack(pblock: u64, crc: u32) -> u64 {
-    (pblock << 32) | crc as u64
+fn pack(pblock: u64, base: u64, crc: u32) -> u64 {
+    ((pblock - base) << 32) | crc as u64
 }
 
 #[inline]
-fn unpack(slot: u64) -> Option<(u64, u32)> {
+fn unpack(slot: u64, base: u64) -> Option<(u64, u32)> {
     let pb = (slot >> 32) as u32;
-    (pb != HOLE).then_some((pb as u64, slot as u32))
+    (pb != HOLE).then_some((pb as u64 + base, slot as u32))
+}
+
+/// Whether physical blocks `[pblock, pblock + n)` fit a dense map with
+/// `base`.
+fn fits(pblock: u64, n: u64, base: u64) -> bool {
+    pblock >= base && pblock - base + n < HOLE as u64
 }
 
 const EMPTY: u64 = (HOLE as u64) << 32;
 
 impl BlockMap {
     pub fn is_dense(&self) -> bool {
-        matches!(self, BlockMap::Dense(_))
+        matches!(self, BlockMap::Dense(..))
     }
 
     pub fn lookup(&self, lb: u64) -> Loc {
@@ -118,7 +128,7 @@ impl BlockMap {
                 }
                 Loc::Hole
             }
-            BlockMap::Dense(v) => match v.get(lb as usize).copied().and_then(unpack) {
+            BlockMap::Dense(v, base) => match v.get(lb as usize).and_then(|s| unpack(*s, *base)) {
                 Some((pblock, crc)) => Loc::Mapped { pblock, crc },
                 None => Loc::Hole,
             },
@@ -139,8 +149,8 @@ impl BlockMap {
                 }
                 true
             }
-            BlockMap::Dense(v) => {
-                (lb..lb + n).all(|b| v.get(b as usize).copied().and_then(unpack).is_some())
+            BlockMap::Dense(v, _) => {
+                (lb..lb + n).all(|b| v.get(b as usize).is_some_and(|s| unpack(*s, 0).is_some()))
             }
         }
     }
@@ -149,7 +159,7 @@ impl BlockMap {
     pub fn block_count(&self) -> u64 {
         match self {
             BlockMap::Runs(m) => m.values().map(Run::len).sum(),
-            BlockMap::Dense(v) => v.iter().filter(|s| unpack(**s).is_some()).count() as u64,
+            BlockMap::Dense(v, _) => v.iter().filter(|s| unpack(**s, 0).is_some()).count() as u64,
         }
     }
 
@@ -171,9 +181,9 @@ impl BlockMap {
                     }
                 }
             }
-            BlockMap::Dense(v) => {
+            BlockMap::Dense(v, base) => {
                 for (i, s) in v.iter().enumerate() {
-                    if let Some((pb, c)) = unpack(*s) {
+                    if let Some((pb, c)) = unpack(*s, *base) {
                         push(i as u64, pb, c);
                     }
                 }
@@ -186,7 +196,7 @@ impl BlockMap {
     pub fn run_count(&self) -> u64 {
         match self {
             BlockMap::Runs(m) => m.len() as u64,
-            BlockMap::Dense(v) => dense_runs(v).0,
+            BlockMap::Dense(v, _) => dense_runs(v).0,
         }
     }
 
@@ -194,7 +204,7 @@ impl BlockMap {
     pub fn extents(&self) -> Vec<(u64, u64)> {
         match self {
             BlockMap::Runs(m) => m.values().map(|r| (r.pblock, r.len())).collect(),
-            BlockMap::Dense(_) => self
+            BlockMap::Dense(..) => self
                 .runs()
                 .into_iter()
                 .map(|(_, p, c)| (p, c.len() as u64))
@@ -208,7 +218,7 @@ impl BlockMap {
             BlockMap::Runs(m) => {
                 m.len() as u64 * RUN_OVERHEAD + 4 * m.values().map(Run::len).sum::<u64>()
             }
-            BlockMap::Dense(v) => 8 * v.capacity() as u64,
+            BlockMap::Dense(v, _) => 8 * v.capacity() as u64,
         }
     }
 
@@ -233,12 +243,12 @@ impl BlockMap {
                     })
                     .collect()
             }
-            BlockMap::Dense(v) => {
+            BlockMap::Dense(v, base) => {
                 let mut freed: Vec<(u64, u64)> = Vec::new();
                 let end = (lb.saturating_add(n)).min(v.len() as u64);
                 for b in lb.min(end)..end {
                     let slot = &mut v[b as usize];
-                    if let Some((pb, _)) = unpack(*slot) {
+                    if let Some((pb, _)) = unpack(*slot, *base) {
                         match freed.last_mut() {
                             Some((s, c)) if *s + *c == pb => *c += 1,
                             _ => freed.push((pb, 1)),
@@ -247,7 +257,7 @@ impl BlockMap {
                     }
                 }
                 // Trailing holes cost memory for nothing.
-                while v.last().is_some_and(|s| unpack(*s).is_none()) {
+                while v.last().is_some_and(|s| unpack(*s, 0).is_none()) {
                     v.pop();
                 }
                 freed
@@ -262,8 +272,8 @@ impl BlockMap {
             return;
         }
         let end = lb + crcs.len() as u64;
-        if let BlockMap::Dense(_) = self
-            && (pblock + crcs.len() as u64 >= HOLE as u64 || end > MAX_DENSE_SPAN)
+        if let BlockMap::Dense(_, base) = self
+            && (!fits(pblock, crcs.len() as u64, *base) || end > MAX_DENSE_SPAN)
         {
             self.make_runs();
         }
@@ -277,12 +287,12 @@ impl BlockMap {
                     },
                 );
             }
-            BlockMap::Dense(v) => {
+            BlockMap::Dense(v, base) => {
                 if v.len() < end as usize {
                     v.resize(end as usize, EMPTY);
                 }
                 for (i, c) in crcs.iter().enumerate() {
-                    v[lb as usize + i] = pack(pblock + i as u64, *c);
+                    v[lb as usize + i] = pack(pblock + i as u64, *base, *c);
                 }
             }
         }
@@ -302,11 +312,11 @@ impl BlockMap {
                     out.push(run.pblock + j as u64);
                 }
             }
-            BlockMap::Dense(v) => {
+            BlockMap::Dense(v, base) => {
                 for (i, &c) in crcs.iter().enumerate() {
                     let slot = &mut v[lb as usize + i];
-                    let (pb, _) = unpack(*slot).expect("mapped block");
-                    *slot = pack(pb, c);
+                    let (pb, _) = unpack(*slot, *base).expect("mapped block");
+                    *slot = pack(pb, *base, c);
                     out.push(pb);
                 }
             }
@@ -317,8 +327,9 @@ impl BlockMap {
     /// Switches representation if the other one now costs clearly less.
     /// `changed` is how many blocks the last operation touched: a dense map
     /// is only reconsidered after a change large enough (an eighth of its
-    /// span) to have made it contiguous, so small writes cost no scan.
-    pub fn rebalance(&mut self, policy: &DensePolicy, changed: u64) {
+    /// span) to have made it contiguous, so small writes cost no scan. A
+    /// map made dense packs its blocks relative to `base`.
+    pub fn rebalance(&mut self, policy: &DensePolicy, base: u64, changed: u64) {
         match self {
             BlockMap::Runs(m) => {
                 if policy.disabled || m.len() < 2 {
@@ -328,13 +339,13 @@ impl BlockMap {
                 let span = last_lb + last.len();
                 let blocks: u64 = m.values().map(Run::len).sum();
                 let runs_cost = m.len() as u64 * policy.run_overhead + 4 * blocks;
-                let fits =
-                    span <= MAX_DENSE_SPAN && m.values().all(|r| r.pblock + r.len() < HOLE as u64);
-                if fits && runs_cost > 8 * span {
-                    self.make_dense();
+                let fit =
+                    span <= MAX_DENSE_SPAN && m.values().all(|r| fits(r.pblock, r.len(), base));
+                if fit && runs_cost > 8 * span {
+                    self.make_dense(base);
                 }
             }
-            BlockMap::Dense(v) => {
+            BlockMap::Dense(v, _) => {
                 if policy.disabled {
                     self.make_runs();
                     return;
@@ -355,20 +366,37 @@ impl BlockMap {
         }
     }
 
-    fn make_dense(&mut self) {
+    fn make_dense(&mut self, base: u64) {
         let BlockMap::Runs(m) = self else { return };
         let span = m.iter().next_back().map_or(0, |(lb, r)| lb + r.len()) as usize;
         let mut v = vec![EMPTY; span];
         for (lb, r) in m.iter() {
             for (i, c) in r.crcs.iter().enumerate() {
-                v[*lb as usize + i] = pack(r.pblock + i as u64, *c);
+                v[*lb as usize + i] = pack(r.pblock + i as u64, base, *c);
             }
         }
-        *self = BlockMap::Dense(v);
+        *self = BlockMap::Dense(v, base);
+    }
+
+    /// Repacks a dense map relative to `base` (D270), or makes it runs if
+    /// its blocks don't fit.
+    pub fn rebase(&mut self, base: u64) {
+        if let BlockMap::Dense(_, b) = self
+            && *b != base
+        {
+            let fit = self
+                .runs()
+                .iter()
+                .all(|(_, pb, c)| fits(*pb, c.len() as u64, base));
+            self.make_runs();
+            if fit {
+                self.make_dense(base);
+            }
+        }
     }
 
     fn make_runs(&mut self) {
-        if let BlockMap::Dense(_) = self {
+        if let BlockMap::Dense(..) = self {
             let m = self
                 .runs()
                 .into_iter()
@@ -385,7 +413,7 @@ fn dense_runs(v: &[u64]) -> (u64, u64) {
     let mut blocks = 0u64;
     let mut prev: Option<u64> = None;
     for s in v {
-        match unpack(*s) {
+        match unpack(*s, 0) {
             Some((pb, _)) => {
                 blocks += 1;
                 if prev != Some(pb.wrapping_sub(1)) {
@@ -474,7 +502,7 @@ mod tests {
                         assert_eq!(a.all_mapped(lb, n), b.all_mapped(lb, n));
                     }
                 }
-                a.rebalance(&never, u64::MAX);
+                a.rebalance(&never, 0, u64::MAX);
                 let default = DensePolicy::default();
                 let changed = if rng.random_bool(0.2) { u64::MAX } else { n };
                 b.rebalance(
@@ -483,6 +511,7 @@ mod tests {
                     } else {
                         &default
                     },
+                    0,
                     changed,
                 );
                 assert!(!a.is_dense());
@@ -513,13 +542,13 @@ mod tests {
         let mut m = BlockMap::default();
         // A 1024-block chunk written whole: one run, stays runs.
         m.map(0, 10_000, &vec![7; 1024]);
-        m.rebalance(&p, 1024);
+        m.rebalance(&p, 0, 1024);
         assert!(!m.is_dense());
         // Every other block remapped: hundreds of runs, switches to dense.
         for b in (0..1024).step_by(2) {
             m.unmap(b, 1);
             m.map(b, 50_000 + b, &[1]);
-            m.rebalance(&p, 1);
+            m.rebalance(&p, 0, 1);
         }
         assert!(m.is_dense(), "{} runs", m.run_count());
         assert!(m.mem_bytes() <= 8 * 1024);
@@ -527,7 +556,7 @@ mod tests {
         let freed = m.unmap(0, 1024);
         assert_eq!(total(&freed), 1024);
         m.map(0, 90_000, &vec![3; 1024]);
-        m.rebalance(&p, 1024);
+        m.rebalance(&p, 0, 1024);
         assert!(!m.is_dense());
         assert_eq!(m.run_count(), 1);
     }
@@ -541,12 +570,12 @@ mod tests {
         let mut m = BlockMap::default();
         m.map(0, u32::MAX as u64 + 5, &[1, 2]);
         m.map(4, 1, &[3]);
-        m.rebalance(&p, 1);
+        m.rebalance(&p, 0, 1);
         assert!(!m.is_dense(), "32-bit slots can't hold the block number");
         let mut d = BlockMap::default();
         d.map(0, 1, &[1]);
         d.map(4, 9, &[1]);
-        d.rebalance(&p, 1);
+        d.rebalance(&p, 0, 1);
         assert!(d.is_dense());
         d.map(8, u32::MAX as u64 + 1, &[2]);
         assert!(!d.is_dense(), "converted back to hold it");
@@ -557,5 +586,46 @@ mod tests {
                 crc: 2
             }
         );
+    }
+
+    /// D270: relative to a shard's data start, block numbers past 16 TiB
+    /// of device stay dense; blocks before the base don't fit.
+    #[test]
+    fn dense_maps_count_from_their_base() {
+        let p = DensePolicy {
+            disabled: false,
+            run_overhead: 1 << 20,
+        };
+        let base = 5 * u32::MAX as u64;
+        let mut m = BlockMap::default();
+        m.map(0, base + 7, &[1, 2]);
+        m.map(4, base + 100, &[3]);
+        m.rebalance(&p, base, 1);
+        assert!(m.is_dense());
+        let at = Loc::Mapped {
+            pblock: base + 100,
+            crc: 3,
+        };
+        assert_eq!(m.lookup(4), at);
+        assert_eq!(m.unmap(1, 1), vec![(base + 8, 1)]);
+        m.map(1, base + 8, &[9]);
+        assert!(m.is_dense());
+        m.map(6, base - 1, &[4]);
+        assert!(!m.is_dense(), "before its base");
+        assert_eq!(m.lookup(4), at);
+
+        // An absolute map converted (D270): the same mappings, relative.
+        let mut a = BlockMap::default();
+        a.map(0, 10, &[1]);
+        a.map(2, 20, &[2]);
+        a.rebalance(&p, 0, 1);
+        assert!(a.is_dense());
+        let runs = a.runs();
+        a.rebase(8);
+        assert!(matches!(a, BlockMap::Dense(_, 8)));
+        assert_eq!(a.runs(), runs);
+        a.rebase(15);
+        assert!(!a.is_dense(), "block 10 is before the base");
+        assert_eq!(a.runs(), runs);
     }
 }

@@ -152,6 +152,9 @@ pub struct Index {
     pub objects: BTreeMap<ObjKey, Object>,
     /// When block maps switch representation (not part of the content).
     pub policy: DensePolicy,
+    /// What dense block maps count from: 0, or the shard's data start on a
+    /// device that stores block numbers relative to it (D270).
+    pub base: u64,
     /// Where checkpoint pages start (D105): a page holds the objects from
     /// its bound up to the next; the first page starts before every key
     /// and has no bound.
@@ -215,7 +218,7 @@ impl Index {
 
     /// Applies one resolved operation to the object `key`.
     pub fn apply_op(&mut self, key: &ObjKey, op: &ROp, fx: &mut Effects) {
-        let policy = self.policy;
+        let (policy, base) = (self.policy, self.base);
         self.touch(key);
         {
             if let ROp::Delete = op {
@@ -259,7 +262,7 @@ impl Index {
                     }
                     fx.free(freed);
                     o.blocks.map(*lb, *pblock, crcs);
-                    o.blocks.rebalance(&policy, crcs.len() as u64);
+                    o.blocks.rebalance(&policy, base, crcs.len() as u64);
                 }
                 ROp::Deferred(w) => {
                     let DeferredWrite {
@@ -305,7 +308,7 @@ impl Index {
                 ROp::Unmap { lb, n } => {
                     let freed = o.unmap(*lb, *n);
                     fx.free(freed);
-                    o.blocks.rebalance(&policy, *n);
+                    o.blocks.rebalance(&policy, base, *n);
                 }
                 ROp::SetAttr(k, v) => {
                     o.attrs.insert(k.clone(), v.clone());
@@ -330,7 +333,7 @@ impl Index {
                 ROp::Forget { lb, n } => {
                     // Now another object's: not freed.
                     let _ = o.unmap(*lb, *n);
-                    o.blocks.rebalance(&policy, *n);
+                    o.blocks.rebalance(&policy, base, *n);
                 }
             }
         }
@@ -366,6 +369,14 @@ impl Index {
         }
     }
 
+    /// Makes every dense block map count from `base` (D270).
+    pub fn rebase(&mut self, base: u64) {
+        self.base = base;
+        for o in self.objects.values_mut() {
+            o.blocks.rebase(base);
+        }
+    }
+
     /// Every physical extent in use.
     pub fn used_extents(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.objects.values().flat_map(|o| o.blocks.extents())
@@ -382,7 +393,7 @@ impl Index {
         let n = d.u64()?;
         let mut objects = BTreeMap::new();
         for _ in 0..n {
-            let (k, o) = decode_object(d)?;
+            let (k, o) = decode_object(d, 0)?;
             objects.insert(k, o);
         }
         Ok(Self {
@@ -406,7 +417,7 @@ pub fn encode_object(k: &ObjKey, o: &Object, e: &mut Enc) {
                 }
             }
         }
-        BlockMap::Dense(v) => {
+        BlockMap::Dense(v, _) => {
             e.u8(1).u32(v.len() as u32);
             for slot in v {
                 e.u64(*slot);
@@ -423,7 +434,8 @@ pub fn encode_object(k: &ObjKey, o: &Object, e: &mut Enc) {
     }
 }
 
-pub fn decode_object(d: &mut Dec<'_>) -> Result<(ObjKey, Object), DecodeError> {
+/// Decodes one object; its dense block map, if any, counts from `base`.
+pub fn decode_object(d: &mut Dec<'_>, base: u64) -> Result<(ObjKey, Object), DecodeError> {
     let k = ObjKey::decode(d)?;
     let mut o = Object {
         size: d.u64()?,
@@ -441,7 +453,7 @@ pub fn decode_object(d: &mut Dec<'_>) -> Result<(ObjKey, Object), DecodeError> {
             }
             BlockMap::Runs(m)
         }
-        1 => BlockMap::Dense(d.seq(8, |d| d.u64())?),
+        1 => BlockMap::Dense(d.seq(8, |d| d.u64())?, base),
         v => {
             return Err(DecodeError::Invalid {
                 field: "block map",
