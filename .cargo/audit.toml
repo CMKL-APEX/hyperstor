@@ -1,0 +1,17 @@
+# cargo audit (the `audit` job in .github/workflows/ci.yml). An advisory is
+# ignored here only with the reason it doesn't reach Hyperstor, and until
+# the change that removes it.
+[advisories]
+ignore = [
+    # rsa 0.9: the Marvin attack, timing that leaks an RSA private key.
+    # Pulled in only by jsonwebtoken's rust_crypto backend, through glidex's
+    # glidex-auth (hyperstor-mgmt checks an identity provider's tokens with
+    # its public keys; nothing signs with an RSA key) and hyperstor-test.
+    # Gone when both use jsonwebtoken's aws_lc_rs backend (glidex PR, then
+    # the glidex pin).
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5: operations meant to be constant-time aren't. Same
+    # path (p256 and p384 under jsonwebtoken's rust_crypto); the only
+    # signing is hyperstor-test's ES256 tokens, with a key made per run.
+    "RUSTSEC-2026-0387",
+]
