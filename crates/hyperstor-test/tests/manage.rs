@@ -1335,7 +1335,9 @@ fn weights_follow_capacity_or_are_set() {
     let c = Cluster::all_in_one("weights", 3);
     // (id, weight, fixed, reported bytes) of each device.
     let devices = || -> Vec<(u64, f64, bool, Option<u64>)> {
-        let s = c.ctl(&["status", "--json"]).ok();
+        // Exit status 1 while health is an error, as it is while PGs are
+        // fenced for a new map on a slow runner: read it anyway.
+        let s = c.ctl(&["status", "--json"]);
         let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
         v["nodes"]
             .as_array()
