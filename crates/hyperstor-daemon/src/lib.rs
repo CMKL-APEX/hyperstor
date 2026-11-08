@@ -988,7 +988,11 @@ fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
         | WireOp::AssertAttr { .. }
         | WireOp::AssertKv { .. } => return None,
         WireOp::Touch => Op::Touch,
-        WireOp::Write { off, data } => Op::Write { off, data },
+        WireOp::Write { off, data } => Op::Write {
+            off,
+            data,
+            crcs: None,
+        },
         WireOp::Zero { off, len } => Op::Zero { off, len },
         WireOp::Truncate(n) => Op::Truncate(n),
         WireOp::SetAttr(k, v) => Op::SetAttr(k, v),
@@ -2369,7 +2373,7 @@ impl ShardState {
             seq,
             key: key.clone(),
             off,
-            crcs,
+            crcs: crcs.clone(),
         };
         // One payload for every replica's frame, sent from it uncopied
         // when large; the engine then takes a copy (HS5b).
@@ -2395,6 +2399,8 @@ impl ShardState {
             ops: vec![Op::Write {
                 off,
                 data: Rc::unwrap_or_clone(data),
+                // Checked against the data above (I306).
+                crcs: Some(crcs),
             }],
         });
         let me = self.clone();
@@ -3822,6 +3828,7 @@ impl ShardState {
                     first.push(Op::Write {
                         off: lb * 4096,
                         data: obj.data[at..at + len].to_vec(),
+                        crcs: None,
                     });
                     at += len;
                 }
@@ -3829,6 +3836,7 @@ impl ShardState {
             None if !obj.data.is_empty() => first.push(Op::Write {
                 off: 0,
                 data: obj.data,
+                crcs: None,
             }),
             None => {}
         }
@@ -3867,7 +3875,11 @@ impl ShardState {
         };
         let local = self.enqueue(OpList {
             key: okey,
-            ops: vec![Op::Write { off, data }],
+            ops: vec![Op::Write {
+                off,
+                data,
+                crcs: Some(crcs),
+            }],
         });
         spawn(async move {
             send(match local.await {
@@ -4074,7 +4086,11 @@ impl ShardState {
             };
             let mut ops = vec![Op::Delete];
             if !data.is_empty() {
-                ops.push(Op::Write { off: 0, data });
+                ops.push(Op::Write {
+                    off: 0,
+                    data,
+                    crcs: Some(crcs),
+                });
             }
             vec![OpList { key: okey, ops }]
         };
@@ -6585,6 +6601,7 @@ mod tests {
                 Op::Write {
                     off: 0,
                     data: vec![k.name[0]; 4096],
+                    crcs: None,
                 },
                 Op::SetAttr(b"a".to_vec(), k.name.clone()),
                 Op::KvPut(b"k".to_vec(), k.name.clone()),
@@ -6610,6 +6627,7 @@ mod tests {
             Op::Write {
                 off: 0,
                 data: vec![7; 4096],
+                crcs: None,
             },
             Op::SetAttr(b"a".to_vec(), newer.name.clone()),
             Op::KvPut(b"k".to_vec(), newer.name.clone()),
