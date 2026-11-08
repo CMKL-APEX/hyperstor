@@ -136,10 +136,20 @@ jobs:
       run: |
         python3 -m venv "$RUNNER_TEMP/s3sdk"
         "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.38.46
-    # Tests at once: one per CPU by default, 4 on GitHub's runners. The
-    # self-hosted one has 32 CPUs and a disk slow to sync (about 2.7 ms a
-    # write): 31 end-to-end clusters starting together took over 20 s to
-    # open their devices and their map services never elected a leader.
+    # The self-hosted runner's disk is a Hyperstor volume, slow to sync
+    # (about 2.7 ms a write): end-to-end clusters starting together took
+    # over 20 s to open their devices and their map services never elected
+    # a leader. Their scratch (target/tmp/e2e) needs no durability, so it
+    # goes to tmpfs there; O_DIRECT on tmpfs needs Linux 6.6 or later.
+    - name: End-to-end scratch on tmpfs
+      if: runner.environment == 'self-hosted'
+      run: |
+        d="/dev/shm/hyperstor-e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+        mkdir -p "$d" target/tmp
+        rm -rf target/tmp/e2e
+        ln -sfn "$d" target/tmp/e2e
+    # Tests at once: one per CPU by default, 4 on GitHub's runners; 8 on
+    # the self-hosted one, which has 32 CPUs.
     - name: Run tests
       id: tests
       env:
@@ -193,3 +203,6 @@ jobs:
       with:
         name: test-log
         path: target/test.log
+    - name: Remove the end-to-end scratch from tmpfs
+      if: always() && runner.environment == 'self-hosted'
+      run: rm -rf "/dev/shm/hyperstor-e2e-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB" target/tmp/e2e
