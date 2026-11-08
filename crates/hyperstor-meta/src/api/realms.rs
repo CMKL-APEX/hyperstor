@@ -23,6 +23,72 @@ fn invalid(msg: impl Into<String>) -> ConnectError {
     )
 }
 
+/// The realms a call reaches (D262): every one, or those a person holds
+/// the call's role in. Realms that don't exist reach nothing.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Scope {
+    ids: Option<Vec<u32>>,
+    pub(super) realms: Realms,
+}
+
+impl Scope {
+    /// Whether the call reaches the cluster as a whole.
+    pub(super) fn whole(&self) -> bool {
+        self.ids.is_none()
+    }
+
+    pub(super) fn realm(&self, id: u32) -> bool {
+        self.ids.as_ref().is_none_or(|l| l.contains(&id))
+    }
+
+    /// Whether `tenant`'s realm is reached; tenant 0 is "default"'s.
+    pub(super) fn tenant(&self, tenant: u32) -> bool {
+        self.whole() || self.realm(self.realms.realm_of(tenant))
+    }
+
+    /// Bucket `tenant/...` if reached; one outside answers as one that
+    /// doesn't exist (D244).
+    pub(super) fn bucket(
+        &self,
+        who: &str,
+        op: &str,
+        target: &str,
+        tenant: u32,
+    ) -> Result<(), ConnectError> {
+        if self.tenant(tenant) {
+            return Ok(());
+        }
+        let e = with_reason(ConnectError::not_found(format!("no {target}")), "not_found");
+        super::refused(who, op, target, &e);
+        Err(e)
+    }
+
+    /// Realm `name` ("" is "default") if reached.
+    pub(super) fn realm_named(
+        &self,
+        who: &str,
+        op: &str,
+        target: &str,
+        name: &str,
+    ) -> Result<(), ConnectError> {
+        match self.realms.id(name) {
+            Some(id) if self.realm(id) => Ok(()),
+            _ if self.whole() => Ok(()),
+            _ => Err(self.outside(who, op, target, &format!("realm {name:?}"))),
+        }
+    }
+
+    /// A refusal of something outside the realms reached, audited.
+    pub(super) fn outside(&self, who: &str, op: &str, target: &str, what: &str) -> ConnectError {
+        let e = with_reason(
+            ConnectError::permission_denied(format!("{what} is outside the realms {who} acts in")),
+            "outside_realm",
+        );
+        super::refused(who, op, target, &e);
+        e
+    }
+}
+
 impl Api {
     /// Runs `f` on the store off the API's thread; "not found" is `what`'s,
     /// and a refusal is a failed precondition with its reason.
@@ -115,6 +181,114 @@ impl Api {
         self.realm_rows("realm", realms::load).await
     }
 
+    /// What a call that [`Api::authorize_in`] limited to `reach` may see
+    /// and change (D262). Realms are read only for a limited call.
+    pub(super) async fn scope(&self, reach: Option<Vec<String>>) -> Result<Scope, ConnectError> {
+        Ok(match reach {
+            None => Scope::default(),
+            Some(names) => {
+                let realms = self.realms().await?;
+                Scope {
+                    ids: Some(names.iter().filter_map(|n| realms.id(n)).collect()),
+                    realms,
+                }
+            }
+        })
+    }
+
+    /// Volume `id` if `scope` reaches it: its tenant's realm is one of
+    /// the scope's. One outside answers as one that doesn't exist, as
+    /// another tenant's bucket does (D244). Read whatever its state, the
+    /// trash's too; nothing is read for the cluster as a whole.
+    pub(super) async fn volume_in(
+        &self,
+        scope: &Scope,
+        id: u128,
+        who: &str,
+        op: &str,
+        target: &str,
+    ) -> Result<(), ConnectError> {
+        if scope.whole() {
+            return Ok(());
+        }
+        match self.volume_any(id).await? {
+            v if scope.tenant(v.tenant) => Ok(()),
+            _ => {
+                let e = with_reason(
+                    ConnectError::not_found(format!("no volume {id:032x}")),
+                    "not_found",
+                );
+                super::refused(who, op, target, &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Group snapshot `group` if `scope` reaches every volume with a
+    /// snapshot in it; read only for a limited call. A group outside
+    /// answers as one that doesn't exist.
+    pub(super) async fn group_in(
+        &self,
+        scope: &Scope,
+        group: u128,
+        who: &str,
+        op: &str,
+        target: &str,
+    ) -> Result<(), ConnectError> {
+        if scope.whole() {
+            return Ok(());
+        }
+        let (map, ..) = self.published().await?;
+        for pool in map.pools.keys().filter(|&&p| p != hyperstor_map::META_POOL) {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ListVolumes {
+                    pool: *pool,
+                    trash: true,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            for v in super::volume_result(rx.recv().await)? {
+                if v.snapshots.iter().any(|s| s.group == group) && !scope.tenant(v.tenant) {
+                    let e = with_reason(
+                        ConnectError::not_found(format!("no group snapshot {group:032x}")),
+                        "not_found",
+                    );
+                    super::refused(who, op, target, &e);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses `pool` for a copy or move of `v` unless its tenant's realm
+    /// may use it (D249), as creating a volume there would be.
+    pub(super) async fn pool_for(
+        &self,
+        v: &crate::Volume,
+        pool: u32,
+        who: &str,
+        op: &str,
+        target: &str,
+    ) -> Result<(), ConnectError> {
+        let realms = self.realms().await?;
+        let realm = realms.realm_of(v.tenant);
+        if realms.may_use(realm, pool) {
+            return Ok(());
+        }
+        let why = format!(
+            "realm {} of tenant {} may not use pool {pool}",
+            realms.name(realm),
+            v.tenant
+        );
+        super::audit(who, op, target, &format!("failed: {why}"));
+        Err(with_reason(
+            ConnectError::failed_precondition(why),
+            "pool_not_in_realm",
+        ))
+    }
+
     /// The id of realm `name`, which must exist.
     pub(super) async fn realm_id(&self, name: &str) -> Result<u32, ConnectError> {
         self.realms().await?.id(name).ok_or_else(|| {
@@ -183,15 +357,16 @@ impl RealmService for Api {
         ctx: RequestContext,
         _req: ServiceRequest<'_, pb::ListRealmsRequest>,
     ) -> ServiceResult<pb::ListRealmsResponse> {
-        self.authorize(&ctx, "ListRealms", "realms", false)?;
+        let (_, reach) = self.authorize_in(&ctx, "ListRealms", "realms", false)?;
+        let scope = self.scope(reach).await?;
         let all = self.realms().await?;
         let (map, ..) = self.published().await?;
-        let pools_of = |id: u32| -> Vec<String> {
+        let pools_of = |id: u32| -> (Vec<String>, Vec<u32>) {
             map.pools
                 .values()
                 .filter(|p| all.pools.get(&p.id).is_some_and(|l| l.contains(&id)))
-                .map(|p| p.name.clone())
-                .collect()
+                .map(|p| (p.name.clone(), p.id))
+                .unzip()
         };
         let hosts_of = |id: u32| -> Vec<String> {
             all.hosts
@@ -207,15 +382,18 @@ impl RealmService for Api {
                 .map(|(t, _)| *t)
                 .collect()
         };
+        let (pools, pool_ids) = pools_of(0);
         let mut out = vec![pb::Realm {
             id: 0,
             name: DEFAULT_REALM.into(),
             description: "every tenant not put in another realm".into(),
-            pools: pools_of(0),
+            pools,
+            pool_ids,
             hosts: hosts_of(0),
             ..Default::default()
         }];
         for r in &all.realms {
+            let (pools, pool_ids) = pools_of(r.id);
             out.push(pb::Realm {
                 id: r.id,
                 name: r.name.clone(),
@@ -223,19 +401,23 @@ impl RealmService for Api {
                 created_unix: r.created_unix,
                 created_by: r.created_by.clone(),
                 tenants: tenants_of(r.id),
-                pools: pools_of(r.id),
+                pools,
+                pool_ids,
                 hosts: hosts_of(r.id),
                 ..Default::default()
             });
         }
+        out.retain(|r| scope.realm(r.id));
+        let (open_pools, open_pool_ids) = map
+            .pools
+            .values()
+            .filter(|p| p.id != hyperstor_map::META_POOL && !all.pools.contains_key(&p.id))
+            .map(|p| (p.name.clone(), p.id))
+            .unzip();
         Ok(pb::ListRealmsResponse {
             realms: out,
-            open_pools: map
-                .pools
-                .values()
-                .filter(|p| p.id != hyperstor_map::META_POOL && !all.pools.contains_key(&p.id))
-                .map(|p| p.name.clone())
-                .collect(),
+            open_pools,
+            open_pool_ids,
             ..Default::default()
         }
         .into())

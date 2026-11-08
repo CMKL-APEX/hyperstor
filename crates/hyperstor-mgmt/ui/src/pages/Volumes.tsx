@@ -1,13 +1,14 @@
 // A pool's volumes, and a volume's snapshots: create, expand and delete
 // volumes, take snapshots (alone or as a consistency group), clone, roll back and
 // flatten, move or copy to another pool (storage administrators). Above
-// them, the volumes sending most requests now (D219).
+// them, the volumes sending most requests now (D219). Acting in a realm
+// (D265), the pools it may use and its tenants' volumes alone.
 import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { fmtRate } from "../perf";
-import { cluster } from "../api";
+import { cluster, realms } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll, useRealm } from "../ui";
 
 type Dialog =
   | { kind: "create" }
@@ -57,8 +58,16 @@ function Snapshots({ v, open }: { v: Volume; open: (d: Dialog) => void }) {
 
 export default function Volumes() {
   const can = useCan();
-  const status = usePoll(() => cluster.getStatus({}), 0);
-  const pools = (status.data?.pools ?? []).filter((p) => p.id !== 0);
+  const realm = useRealm();
+  // The cluster's pools, or acting in a realm, those it may use: its own,
+  // then those open to every realm.
+  const status = usePoll(async () => {
+    if (!realm) return (await cluster.getStatus({})).pools.filter((p) => p.id !== 0).map((p) => ({ id: p.id, name: p.name }));
+    const r = await realms.listRealms({});
+    const mine = r.realms.flatMap((x) => x.poolIds.map((id, i) => ({ id, name: x.pools[i] })));
+    return [...mine, ...r.openPoolIds.map((id, i) => ({ id, name: r.openPools[i] }))];
+  }, 0);
+  const pools = status.data ?? [];
   const [pool, setPool] = useState<number | null>(null);
   useEffect(() => {
     if (pool == null && pools.length) setPool(pools[0].id);
@@ -77,7 +86,8 @@ export default function Volumes() {
   const [force, setForce] = useState(false);
   const [target, setTarget] = useState<number | null>(null);
   const [copy, setCopy] = useState(false);
-  const top = usePoll(async () => (await cluster.listTopVolumes({ limit: 10 })).volumes, 5000);
+  const [tenant, setTenant] = useState("");
+  const top = usePoll(async () => (realm ? [] : (await cluster.listTopVolumes({ limit: 10 })).volumes), 5000);
   // From the Advisor: a volume to show (`?id=`), in its pool.
   const [params] = useSearchParams();
   const want = params.get("id");
@@ -99,6 +109,7 @@ export default function Volumes() {
 
   return (
     <>
+    {!realm && (
     <Card title="Busiest volumes now">
       <ErrorText error={top.error} />
       <Table head={["Volume", "Pool", "Requests/s", "MiB/s"]} empty="No volume traffic in the last window.">
@@ -115,6 +126,7 @@ export default function Volumes() {
       </Table>
       <Cli cmd="top-volumes" />
     </Card>
+    )}
     <Card
       title="Volumes"
       actions={
@@ -203,11 +215,13 @@ export default function Volumes() {
         <ActionDialog
           title="Create a volume"
           submit="Create"
-          cli={`create-volume --pool ${pool} --size ${size || "S"}${name ? ` --name ${name}` : ""}`}
+          cli={`${realm ? `--in-realm ${realm} ` : ""}create-volume --pool ${pool} --size ${size || "S"}${name ? ` --name ${name}` : ""}${tenant ? ` --tenant ${tenant}` : ""}`}
           run={async () => {
             const bytes = parseSize(size);
             if (bytes == null) throw new Error("size: bytes, or a number with K, M, G or T");
-            const r = await cluster.createVolume({ pool, size: bytes, name });
+            const t = tenant.trim() === "" ? 0 : Number(tenant);
+            if (!Number.isInteger(t) || t < 0) throw new Error("tenant: a number, or empty for none");
+            const r = await cluster.createVolume({ pool, size: bytes, name, tenant: t });
             setNotice(`Created volume ${r.volume?.id}.`);
           }}
           onClose={close}
@@ -217,6 +231,9 @@ export default function Volumes() {
           </Field>
           <Field label="Size (bytes, or with K, M, G or T)">
             <input className={input} value={size} onChange={(e) => setSize(e.target.value)} />
+          </Field>
+          <Field label={realm ? `Tenant (one of realm ${realm}'s)` : "Tenant (empty: none)"}>
+            <input className={input} value={tenant} inputMode="numeric" onChange={(e) => setTenant(e.target.value)} />
           </Field>
         </ActionDialog>
       )}

@@ -185,11 +185,13 @@ impl S3Service for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::ListS3BucketsRequest>,
     ) -> ServiceResult<pb::ListS3BucketsResponse> {
-        self.authorize(&ctx, "ListS3Buckets", "s3 buckets", false)?;
+        let (_, reach) = self.authorize_in(&ctx, "ListS3Buckets", "s3 buckets", false)?;
+        let scope = self.scope(reach).await?;
         let tenant = (req.tenant != 0).then_some(req.tenant);
-        let BucketDone::List(rows) = self.bucket_op(BucketOp::List { tenant }).await? else {
+        let BucketDone::List(mut rows) = self.bucket_op(BucketOp::List { tenant }).await? else {
             return Err(ConnectError::internal("not a list"));
         };
+        rows.retain(|b| scope.tenant(b.tenant));
         Ok(pb::ListS3BucketsResponse {
             buckets: self.buckets_pb(rows).await?,
             ..Default::default()
@@ -203,8 +205,11 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::GetS3BucketRequest>,
     ) -> ServiceResult<pb::GetS3BucketResponse> {
         let target = format!("bucket {}/{}", req.tenant, req.name);
-        self.authorize(&ctx, "GetS3Bucket", &target, false)?;
+        let (who, reach) = self.authorize_in(&ctx, "GetS3Bucket", &target, false)?;
         let (tenant, name) = bucket_of(req.tenant, req.name)?;
+        self.scope(reach)
+            .await?
+            .bucket(&who, "GetS3Bucket", &target, tenant)?;
         let BucketDone::List(rows) = self.bucket_op(BucketOp::Get { tenant, name }).await? else {
             return Err(ConnectError::internal("not a list"));
         };
@@ -221,7 +226,10 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::DeleteS3BucketRequest>,
     ) -> ServiceResult<pb::DeleteS3BucketResponse> {
         let target = format!("bucket {}/{}", req.tenant, req.name);
-        let who = self.authorize(&ctx, "DeleteS3Bucket", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "DeleteS3Bucket", &target, true)?;
+        self.scope(reach)
+            .await?
+            .bucket(&who, "DeleteS3Bucket", &target, req.tenant)?;
         let r = match bucket_of(req.tenant, req.name) {
             Ok((tenant, name)) => self
                 .bucket_op(BucketOp::Delete { tenant, name })
@@ -239,9 +247,13 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::CreateS3KeyRequest>,
     ) -> ServiceResult<pb::CreateS3KeyResponse> {
         let target = format!("tenant {}", req.tenant);
-        let who = self.authorize(&ctx, "CreateS3Key", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "CreateS3Key", &target, true)?;
         if req.tenant == 0 {
             return Err(invalid("a key's tenant is 1 or more"));
+        }
+        let scope = self.scope(reach).await?;
+        if !scope.tenant(req.tenant) {
+            return Err(scope.outside(&who, "CreateS3Key", &target, &target));
         }
         if req.description.chars().count() > 200 || req.description.chars().any(char::is_control) {
             return Err(invalid(
@@ -287,12 +299,14 @@ impl S3Service for Api {
         ctx: RequestContext,
         _req: ServiceRequest<'_, pb::ListS3KeysRequest>,
     ) -> ServiceResult<pb::ListS3KeysResponse> {
-        self.authorize(&ctx, "ListS3Keys", "s3 keys", false)?;
+        let (_, reach) = self.authorize_in(&ctx, "ListS3Keys", "s3 keys", false)?;
+        let scope = self.scope(reach).await?;
         let keys = self.s3_rows("key", s3keys::keys).await?;
         let realms = self.realms().await?;
         Ok(pb::ListS3KeysResponse {
             keys: keys
                 .into_iter()
+                .filter(|k| scope.tenant(k.tenant))
                 .map(|k| pb::S3Key {
                     realm: realms.name(realms.realm_of(k.tenant)),
                     id: k.id,
@@ -314,7 +328,23 @@ impl S3Service for Api {
         req: ServiceRequest<'_, pb::RevokeS3KeyRequest>,
     ) -> ServiceResult<pb::RevokeS3KeyResponse> {
         let target = format!("key {}", req.id);
-        let who = self.authorize(&ctx, "RevokeS3Key", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "RevokeS3Key", &target, true)?;
+        let scope = self.scope(reach).await?;
+        if !scope.whole() {
+            // Another realm's key answers as one that doesn't exist.
+            let keys = self.s3_rows("key", s3keys::keys).await?;
+            if !keys
+                .iter()
+                .any(|k| k.id == req.id && scope.tenant(k.tenant))
+            {
+                let e = with_reason(
+                    ConnectError::not_found(format!("no key {:?}", req.id)),
+                    "not_found",
+                );
+                super::refused(&who, "RevokeS3Key", &target, &e);
+                return Err(e);
+            }
+        }
         let r = if s3keys::valid_id(req.id) {
             let id = req.id.to_string();
             self.s3_rows("such key", move |db| s3keys::revoke(db, &id))
@@ -336,7 +366,10 @@ impl S3Service for Api {
             "" | realms::DEFAULT_REALM => format!("placement {}", p.name),
             r => format!("realm {r}'s placement {}", p.name),
         };
-        let who = self.authorize(&ctx, "SetS3Placement", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "SetS3Placement", &target, true)?;
+        self.scope(reach)
+            .await?
+            .realm_named(&who, "SetS3Placement", &target, p.realm)?;
         let r = async {
             if !s3keys::valid_placement(p.name) {
                 return Err(invalid(format!(
@@ -384,7 +417,10 @@ impl S3Service for Api {
             "" | realms::DEFAULT_REALM => format!("placement {}", req.name),
             r => format!("realm {r}'s placement {}", req.name),
         };
-        let who = self.authorize(&ctx, "DeleteS3Placement", &target, true)?;
+        let (who, reach) = self.authorize_in(&ctx, "DeleteS3Placement", &target, true)?;
+        self.scope(reach)
+            .await?
+            .realm_named(&who, "DeleteS3Placement", &target, req.realm)?;
         let name = req.name.to_string();
         let r = async {
             let realm = self.realm_id(req.realm).await?;
@@ -403,8 +439,10 @@ impl S3Service for Api {
         ctx: RequestContext,
         _req: ServiceRequest<'_, pb::ListS3PlacementsRequest>,
     ) -> ServiceResult<pb::ListS3PlacementsResponse> {
-        self.authorize(&ctx, "ListS3Placements", "s3 placements", false)?;
-        let p = self.s3_rows("placement", s3keys::placements).await?;
+        let (_, reach) = self.authorize_in(&ctx, "ListS3Placements", "s3 placements", false)?;
+        let scope = self.scope(reach).await?;
+        let mut p = self.s3_rows("placement", s3keys::placements).await?;
+        p.retain(|p| scope.realm(p.realm));
         let realms = self.realms().await?;
         let (map, ..) = self.published().await?;
         Ok(pb::ListS3PlacementsResponse {

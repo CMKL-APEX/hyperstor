@@ -1359,6 +1359,23 @@ sent only to peers new enough (D261):
 |---|---|---|---|
 | 224 | A host's name: `--host`, its hostname by default, checked against its certificate once D25 comes (recommended); a host certificate now; glidex's node id | `--host`, the hostname by default | D261 |
 
+## Roles on a realm (2026-11-07)
+
+Building D260, mgmt turned out to pass calls on unread, in any of three
+protocols, while only the map service knows each volume's, bucket's and
+key's realm. Asked where realm scoping is checked, how a grant names a
+realm, what a realm's security administrators may do, and what
+someone with roles only in realms sees of the cluster, with a
+recommendation for each; the owner took three and chose otherwise for
+the third (D262–D265):
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 225 | Where realm scoping is checked: mgmt names the realms, the map service applies them (recommended); mgmt decodes every call and answer | mgmt names, the map service applies | D262, amending D260's wording |
+| 226 | How a grant names a realm: per grant, `role@realm` (recommended); one realm per person | `role@realm` | D263 |
+| 227 | A realm's security administrators: S3 keys only (recommended); keys and their realm's people's grants | keys and their realm's people | D264 |
+| 228 | What someone with roles only in realms sees of the cluster: nothing (recommended); read-only health | nothing | D265 |
+
 ## Engine durability after the format review (2026-11-08)
 
 The review of the engine's on-disk format (issues #241–#253) and #241's
