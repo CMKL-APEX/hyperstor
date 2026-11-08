@@ -34,7 +34,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/CMKL-APEX/hyperstor"
 
 [workspace.dependencies]
-crc32c = "0.6"
+crc32c = "0.6.9"
 io-uring = "0.7"
 libc = "0.2"
 thiserror = "2"

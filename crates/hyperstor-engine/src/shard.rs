@@ -1401,9 +1401,12 @@ impl Shard {
                     return Err(OpError::AssertFailed { current: cur });
                 }
                 Op::AssertRevision(_) | Op::AssertExists | Op::AssertAbsent => {}
-                Op::Write { off, data } => {
+                Op::Write { off, data, crcs } => {
                     if off % BLOCK as u64 != 0 || data.len() % BLOCK != 0 {
                         return Err(OpError::Unaligned);
+                    }
+                    if crcs.as_ref().is_some_and(|c| c.len() != data.len() / BLOCK) {
+                        return Err(OpError::Crcs);
                     }
                     need += (data.len() / BLOCK) as u64;
                     mutates = true;
@@ -1473,13 +1476,16 @@ impl Shard {
             }
             match op {
                 Op::AssertRevision(_) | Op::AssertExists | Op::AssertAbsent | Op::Touch => {}
-                Op::Write { off, data } => {
+                Op::Write { off, data, crcs } => {
                     if data.is_empty() {
                         continue;
                     }
                     let lb = off / BLOCK as u64;
                     let n = (data.len() / BLOCK) as u64;
-                    let crcs: Vec<u32> = data.chunks(BLOCK).map(crc32c).collect();
+                    // CRCs that came with the data were checked against it
+                    // when it arrived; computing them again here would
+                    // also bless data damaged since (I306).
+                    let crcs = crcs.unwrap_or_else(|| data.chunks(BLOCK).map(crc32c).collect());
                     // Never under a read in flight, which may have
                     // planned the old data from the device (D190).
                     let deferred = data.len() < self.defer_max
@@ -2843,6 +2849,7 @@ mod tests {
                 ops: vec![Op::Write {
                     off: 0,
                     data: vec![1; blocks * BLOCK],
+                    crcs: None,
                 }],
             }])
             .unwrap()
@@ -2935,6 +2942,7 @@ mod tests {
                 ops: vec![Op::Write {
                     off: off * BLOCK as u64,
                     data: vec![i as u8; blocks * BLOCK],
+                    crcs: None,
                 }],
             }])
             .unwrap()
@@ -3096,6 +3104,7 @@ mod tests {
                     Op::Write {
                         off: 0,
                         data: vec![i as u8; BLOCK],
+                        crcs: None,
                     },
                     Op::KvPut(b"k".to_vec(), vec![i as u8; 64]),
                 ],
@@ -3188,7 +3197,11 @@ mod tests {
     fn put(sh: &mut Shard, k: &ObjKey, off: u64, data: Vec<u8>) {
         sh.commit(vec![OpList {
             key: k.clone(),
-            ops: vec![Op::Write { off, data }],
+            ops: vec![Op::Write {
+                off,
+                data,
+                crcs: None,
+            }],
         }])
         .unwrap()
         .pop()
