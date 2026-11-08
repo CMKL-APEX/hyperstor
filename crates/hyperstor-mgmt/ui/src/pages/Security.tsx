@@ -1,10 +1,11 @@
 // People and their roles, your API tokens, join tokens and certificates
 // (the map service's backup stays with hyperstorctl: a file to keep). Everyone manages their own API tokens; the
-// rest is for security administrators.
+// rest is for security administrators. Acting in a realm (D264, D265),
+// only that realm's grants, which its security administrators set too.
 import { useState } from "react";
 import { Modal, TokenReveal, useSession } from "@glidex/ui-kit";
 import { ROLES, ca, people, tokens, type Me, type Methods, type Person } from "../api";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtTime, input, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtTime, input, td, useCan, usePoll, useRealm } from "../ui";
 
 function People() {
   const { me, refresh } = useSession<Me, Methods>();
@@ -12,6 +13,9 @@ function People() {
   const [edit, setEdit] = useState<Person | null>(null);
   const [del, setDel] = useState<Person | null>(null);
   const [roles, setRoles] = useState<string[]>([]);
+  // Grants in realms, as typed: `role@realm`, comma-separated.
+  const [inRealms, setInRealms] = useState("");
+  const realm = useRealm();
   return (
     <Card title="People">
       <ErrorText error={list.error} />
@@ -28,14 +32,17 @@ function People() {
               <Button
                 onClick={() => {
                   setRoles(p.roles);
+                  setInRealms(p.roles.filter((g) => g.includes("@")).join(", "));
                   setEdit(p);
                 }}
               >
                 Roles
               </Button>
-              <Button kind="danger" onClick={() => setDel(p)}>
-                Delete
-              </Button>
+              {!realm && (
+                <Button kind="danger" onClick={() => setDel(p)}>
+                  Delete
+                </Button>
+              )}
             </td>
           </tr>
         ))}
@@ -43,13 +50,28 @@ function People() {
       <p className="mt-2 text-xs text-slate-500">
         People appear here when they first log in, with no roles. viewer reads; operator also takes devices out and
         in, drains and cancels; storage-admin also manages volumes, snapshots and members; security-admin manages
-        people, tokens, certificates and backups, and nothing else.
+        people, tokens, certificates and backups, and nothing else. A role in a realm (storage-admin@acme) reaches
+        only that realm&apos;s tenants, volumes, buckets, keys, placements and people&apos;s grants in it.
+        {realm && ` Acting in realm ${realm}: these are its grants alone; the others stay.`}
       </p>
       {edit && (
         <ActionDialog
           title={`${edit.name}'s roles`}
           submit="Save"
-          run={() => people.setRoles(edit.name, roles)}
+          run={() =>
+            people.setRoles(
+              edit.name,
+              realm
+                ? roles
+                : [
+                    ...roles.filter((g) => !g.includes("@")),
+                    ...inRealms
+                      .split(",")
+                      .map((g) => g.trim())
+                      .filter(Boolean),
+                  ],
+            )
+          }
           onClose={(done) => {
             const mine = edit.name === me.name;
             setEdit(null);
@@ -58,17 +80,31 @@ function People() {
             if (done && mine) refresh();
           }}
         >
-          {ROLES.map((r) => (
-            <label key={r} className="text-sm flex gap-2 items-center">
+          {ROLES.map((r) => {
+            const g = realm ? `${r}@${realm}` : r;
+            return (
+              <label key={r} className="text-sm flex gap-2 items-center">
+                <input
+                  type="checkbox"
+                  aria-label={r}
+                  checked={roles.includes(g)}
+                  onChange={(e) => setRoles((x) => (e.target.checked ? [...x, g] : x.filter((y) => y !== g)))}
+                />
+                {g}
+              </label>
+            );
+          })}
+          {!realm && (
+            <Field label="Roles in realms (role@realm, comma-separated)">
               <input
-                type="checkbox"
-                aria-label={r}
-                checked={roles.includes(r)}
-                onChange={(e) => setRoles((x) => (e.target.checked ? [...x, r] : x.filter((y) => y !== r)))}
+                className={input}
+                aria-label="Roles in realms"
+                value={inRealms}
+                placeholder="storage-admin@acme"
+                onChange={(e) => setInRealms(e.target.value)}
               />
-              {r}
-            </label>
-          ))}
+            </Field>
+          )}
           <p className="text-xs text-slate-500">This needs a login of the last 10 minutes.</p>
         </ActionDialog>
       )}
@@ -328,8 +364,9 @@ function Certificates() {
 
 export default function Security() {
   const can = useCan();
+  const realm = useRealm();
   const tabs = [
-    ...(can("secure") ? (["People", "Join tokens", "Certificates"] as const) : []),
+    ...(can("secure") ? (realm ? (["People"] as const) : (["People", "Join tokens", "Certificates"] as const)) : []),
     "Your API tokens",
   ] as const;
   const [tab, setTab] = useState<string>(tabs[0]);

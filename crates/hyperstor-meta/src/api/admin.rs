@@ -1262,13 +1262,20 @@ impl OperationService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::GetOperationRequest>,
     ) -> ServiceResult<pb::Operation> {
-        self.authorize(
-            &ctx,
-            "GetOperation",
-            &format!("operation {}", req.id),
-            false,
-        )?;
-        Ok(super::ops::op_pb(&self.op(req.id).await?).into())
+        let target = format!("operation {}", req.id);
+        let (who, reach) = self.authorize_in(&ctx, "GetOperation", &target, false)?;
+        let op = self.op(req.id).await?;
+        // In realms, only one's own (D262): a volume operation one started
+        // in them. Another's answers as one that doesn't exist.
+        if reach.is_some() && op.created_by != who {
+            let e = with_reason(
+                ConnectError::not_found(format!("no operation {}", req.id)),
+                "not_found",
+            );
+            super::refused(&who, "GetOperation", &target, &e);
+            return Err(e);
+        }
+        Ok(super::ops::op_pb(&op).into())
     }
 
     async fn list_operations(

@@ -792,12 +792,14 @@ impl Runner {
     /// set to `purge`, a purge of its oldest item, one at a time per pool,
     /// skipping an item whose purge failed in the last hour. A pool set
     /// to `keep` (the default) keeps its trash and stays full. `busy` has
-    /// when each pool last had a purge running: the next waits 10 s, two
-    /// device reports, so the space a purge freed is counted first.
+    /// the purge last started for each pool and when the pool last had a
+    /// purge running: the next waits 10 s, two device reports, so the
+    /// space a purge freed is counted first. The purge started is followed
+    /// by its target, as its item leaves the trash before it finishes.
     async fn purge_for_full(
         &self,
         settings: Option<&Arc<crate::settings::Settings>>,
-        busy: &mut std::collections::BTreeMap<u32, std::time::Instant>,
+        busy: &mut std::collections::BTreeMap<u32, (std::time::Instant, String)>,
     ) {
         let Some(settings) = settings else {
             return;
@@ -824,18 +826,21 @@ impl Runner {
                 .filter(|i| i.pool() == pool)
                 .map(|i| (i.trashed_unix(), purged(i)))
                 .collect();
-            if held
+            if let Some((_, (v, e))) = held
                 .iter()
-                .any(|(_, (v, e))| running.contains(&purge_target(*v, *e)))
+                .find(|(_, (v, e))| running.contains(&purge_target(*v, *e)))
             {
-                busy.insert(pool, std::time::Instant::now());
+                busy.insert(pool, (std::time::Instant::now(), purge_target(*v, *e)));
                 continue;
             }
-            if busy
-                .get(&pool)
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(10))
-            {
-                continue;
+            if let Some((t, target)) = busy.get_mut(&pool) {
+                if running.contains(target) {
+                    *t = std::time::Instant::now();
+                    continue;
+                }
+                if t.elapsed() < Duration::from_secs(10) {
+                    continue;
+                }
             }
             held.sort();
             let Some((_, (volume, epoch))) = held
@@ -857,7 +862,10 @@ impl Runner {
                     "map-service/purger".into(),
                 )
                 .await;
-            busy.insert(pool, std::time::Instant::now());
+            busy.insert(
+                pool,
+                (std::time::Instant::now(), purge_target(volume, epoch)),
+            );
         }
     }
 

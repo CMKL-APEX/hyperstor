@@ -16,6 +16,11 @@
 //!   roles) needs a login of the last 10 minutes.
 //!   An API token is never fresh (as glidex's personal tokens), so those
 //!   calls need a person at a browser, the local socket, or a certificate.
+//! - Realms (D252, D260, D262–D265): a grant is a role, cluster-wide, or
+//!   `role@realm`, that role in one realm. A grant in a realm reaches only
+//!   the calls of [`IN_REALM`], and only that realm's tenants, volumes,
+//!   buckets, keys, placements and people's grants: mgmt names the realms
+//!   in [`hyperstor_api::REALMS_HEADER`] and the map service applies them.
 
 use glidex_auth::cedar::{AuthContext, Decision, Engine, Model, PolicySource, Query};
 use serde_json::{Value, json};
@@ -150,6 +155,137 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     // The cluster key, for map service members alone (D162).
     ("CaService.GetClusterKey", Group::Machine, false),
 ];
+
+/// What a grant in a realm reaches (D252, D264, D265): the calls about a
+/// realm's tenants, volumes and snapshots, the trash's volumes, buckets,
+/// keys, placements and realm, its people's grants, and the operations one
+/// started oneself. Everything else
+/// (devices, nodes, pools, members, hosts, others' operations, scrub, the audit,
+/// certificates, tokens, moving tenants) is the cluster's as a whole.
+pub const IN_REALM: &[&str] = &[
+    "ClusterService.ListVolumes",
+    "ClusterService.ListSnapshots",
+    "TrashService.ListTrash",
+    "S3Service.ListS3Placements",
+    "S3Service.ListS3Buckets",
+    "S3Service.GetS3Bucket",
+    "RealmService.ListRealms",
+    // One's own only: what a copy, flatten or purge started.
+    "OperationService.GetOperation",
+    "ClusterService.CreateSnapshot",
+    "ClusterService.CreateGroupSnapshot",
+    "TrashService.RestoreFromTrash",
+    "ClusterService.CreateVolume",
+    "ClusterService.ExpandVolume",
+    "ClusterService.DeleteVolume",
+    "ClusterService.DeleteSnapshot",
+    "ClusterService.CloneVolume",
+    "ClusterService.RollbackVolume",
+    "ClusterService.FlattenVolume",
+    "ClusterService.CopyVolume",
+    "ClusterService.MoveVolume",
+    "ClusterService.DeleteGroupSnapshot",
+    "TrashService.PurgeFromTrash",
+    "S3Service.SetS3Placement",
+    "S3Service.DeleteS3Placement",
+    "S3Service.DeleteS3Bucket",
+    "S3Service.CreateS3Key",
+    "S3Service.ListS3Keys",
+    "S3Service.RevokeS3Key",
+    "People.ListUsers",
+    "People.SetRoles",
+];
+
+/// A grant's role and realm: `viewer`, cluster-wide, or `viewer@acme`.
+/// `None` if the role isn't one or the realm isn't a name (1-63 of a-z,
+/// 0-9 and `-`, "default" among them).
+pub fn grant(g: &str) -> Option<(&str, Option<&str>)> {
+    let (role, realm) = match g.split_once('@') {
+        Some((r, realm)) => (r, Some(realm)),
+        None => (g, None),
+    };
+    if !ROLES.contains(&role) {
+        return None;
+    }
+    if let Some(r) = realm
+        && hyperstor_api::parse_realms(r).is_none_or(|v| v.len() != 1)
+    {
+        return None;
+    }
+    Some((role, realm))
+}
+
+/// Where a call reaches (D262).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    Cluster,
+    /// Only these realms, by name.
+    Realms(Vec<String>),
+}
+
+/// Where `user` with grants `roles` may do `action`: the cluster, if a
+/// cluster-wide role allows it; otherwise the realms in which a grant,
+/// with the cluster-wide roles, allows it, if `action` is one of
+/// [`IN_REALM`]. With `only` (a person acting in one realm, `--realm`),
+/// just that realm, whatever their roles reach, and nothing that isn't in
+/// a realm. A refusal is the decision on every grant at once, so a
+/// stale login still reads as step-up.
+pub fn reach(
+    e: &Engine<Hyperstor>,
+    user: &str,
+    roles: &[String],
+    action: &str,
+    method: &str,
+    age_secs: i64,
+    only: Option<&str>,
+) -> Result<Reach, Decision> {
+    let cluster: Vec<String> = roles.iter().filter(|r| !r.contains('@')).cloned().collect();
+    let in_realm = IN_REALM.contains(&action);
+    if only.is_none() && allowed(e, user, &cluster, action, method, age_secs).allowed {
+        return Ok(Reach::Cluster);
+    }
+    let mut realms: Vec<&str> = roles
+        .iter()
+        .filter_map(|g| grant(g).and_then(|(_, r)| r))
+        .collect();
+    if let Some(o) = only {
+        realms = vec![o];
+    }
+    realms.sort();
+    realms.dedup();
+    let mut out = Vec::new();
+    if in_realm {
+        for r in realms {
+            let mut with: Vec<String> = cluster.clone();
+            with.extend(
+                roles
+                    .iter()
+                    .filter_map(|g| grant(g).filter(|(_, x)| *x == Some(r)))
+                    .map(|(role, _)| role.to_string()),
+            );
+            if allowed(e, user, &with, action, method, age_secs).allowed {
+                out.push(r.to_string());
+            }
+        }
+    }
+    if !out.is_empty() {
+        return Ok(Reach::Realms(out));
+    }
+    let every: Vec<String> = roles
+        .iter()
+        .filter_map(|g| grant(g).map(|(role, _)| role.to_string()))
+        .collect();
+    let mut d = allowed(e, user, &every, action, method, age_secs);
+    if d.allowed {
+        d.allowed = false;
+        d.errors.push(match only {
+            Some(r) if in_realm => format!("{user} may not do {action} in realm {r}"),
+            Some(r) => format!("{action} isn't done in a realm, and {user} acts in {r}"),
+            None => format!("{user} may do {action} only in realms, and it isn't done in one"),
+        });
+    }
+    Err(d)
+}
 
 /// The row of `action`, if it is one.
 pub fn action(name: &str) -> Option<(Group, bool)> {
@@ -312,6 +448,100 @@ mod tests {
             }
         }
         assert!(!can(&e, &["storage-admin"], "Nothing.AtAll", 5));
+    }
+
+    /// Grants in a realm reach the calls of IN_REALM there, with the
+    /// cluster-wide roles; `--realm` narrows to one realm; step-up still
+    /// holds; nothing outside IN_REALM is reached through a realm.
+    #[test]
+    fn grants_in_a_realm_reach_only_it() {
+        let e = engine();
+        let at = |roles: &[&str], action: &str, age: i64, only: Option<&str>| {
+            let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
+            reach(&e, "ann", &roles, action, "pam", age, only)
+        };
+        let r = |roles: &[&str], action: &str, only: Option<&str>| at(roles, action, 5, only).ok();
+        let realms = |v: &[&str]| Some(Reach::Realms(v.iter().map(|s| s.to_string()).collect()));
+        let sa = ["storage-admin@acme"];
+        assert_eq!(
+            r(&sa, "ClusterService.CreateVolume", None),
+            realms(&["acme"])
+        );
+        assert_eq!(
+            r(&sa, "ClusterService.ListVolumes", None),
+            realms(&["acme"])
+        );
+        for cluster_only in [
+            "ClusterService.CreatePool",
+            "ClusterService.GetStatus",
+            "RealmService.SetHostRealms",
+            "RealmService.SetTenantRealm",
+            "OperationService.ListOperations",
+            "Dashboard.Read",
+        ] {
+            assert_eq!(r(&sa, cluster_only, None), None, "{cluster_only}");
+        }
+        // A cluster-wide role reaches everything it allows.
+        let mixed = ["viewer", "storage-admin@acme"];
+        assert_eq!(
+            r(&mixed, "ClusterService.ListVolumes", None),
+            Some(Reach::Cluster)
+        );
+        assert_eq!(
+            r(&mixed, "ClusterService.CreateVolume", None),
+            realms(&["acme"])
+        );
+        // Each realm its own roles.
+        let two = ["storage-admin@acme", "operator@globex"];
+        assert_eq!(
+            r(&two, "ClusterService.CreateSnapshot", None),
+            realms(&["acme", "globex"])
+        );
+        assert_eq!(
+            r(&two, "ClusterService.DeleteVolume", None),
+            realms(&["acme"])
+        );
+        // Security in a realm: keys and its people's grants, fresh.
+        let sec = ["security-admin@acme"];
+        assert_eq!(r(&sec, "S3Service.CreateS3Key", None), realms(&["acme"]));
+        assert_eq!(r(&sec, "People.SetRoles", None), realms(&["acme"]));
+        let stale = at(&sec, "People.SetRoles", 601, None).unwrap_err();
+        assert!(stale.denied_by("base.step-up"), "{stale:?}");
+        assert_eq!(r(&sec, "People.DeleteUser", None), None);
+        assert_eq!(r(&sec, "AuditService.ListAudit", None), None);
+        assert_eq!(r(&sec, "ClusterService.ListVolumes", None), None);
+        // Everyone's own tokens, realm or not.
+        assert_eq!(r(&sec, "People.ListTokens", None), Some(Reach::Cluster));
+        // Acting in one realm.
+        let admin = ["storage-admin"];
+        assert_eq!(
+            r(&admin, "ClusterService.CreateVolume", Some("acme")),
+            realms(&["acme"])
+        );
+        assert_eq!(r(&admin, "ClusterService.GetStatus", Some("acme")), None);
+        assert_eq!(r(&sa, "ClusterService.CreateVolume", Some("globex")), None);
+        assert_eq!(
+            r(&two, "ClusterService.CreateSnapshot", Some("globex")),
+            realms(&["globex"])
+        );
+        // Bad grants count for nothing.
+        assert_eq!(r(&["root@acme"], "ClusterService.ListVolumes", None), None);
+    }
+
+    /// What a realm reaches is something people do.
+    #[test]
+    fn realm_calls_are_people_calls() {
+        for a in IN_REALM {
+            assert!(
+                matches!(action(a), Some((g, _)) if g != Group::Machine),
+                "{a}"
+            );
+        }
+        assert_eq!(grant("viewer@acme"), Some(("viewer", Some("acme"))));
+        assert_eq!(grant("viewer"), Some(("viewer", None)));
+        for bad in ["root", "viewer@", "viewer@a,b", "viewer@A", "@acme"] {
+            assert_eq!(grant(bad), None, "{bad}");
+        }
     }
 
     /// Step-up: a stale login (or a token, never fresh) can't do what is

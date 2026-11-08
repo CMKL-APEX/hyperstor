@@ -62,6 +62,20 @@ first login makes an account with no roles. What a role allows:
 | `storage-admin` | Also create and delete volumes and snapshots, clones, roll volumes back, purge the trash and set its grace periods, add and remove members |
 | `security-admin` | People and their roles, join tokens, certificates, map backups, the audit log; nothing else |
 
+**Roles in a realm.** A role may also be granted in one realm, as
+`role@realm` (`storage-admin@acme`), beside cluster-wide roles. It then
+reaches only that realm's tenants' volumes, snapshots and trashed
+volumes, their buckets and keys, the realm's placements, the realm
+itself and the pools it may use, its people's grants, and the
+operations you started; nothing of the cluster as a whole (status,
+PGs, devices, nodes, pools, members, hosts, the audit). A
+`security-admin@acme` manages acme's S3 keys and grants roles in acme
+to anyone who has logged in; their other grants stay. A volume, bucket
+or key of another realm answers as one that doesn't exist. The UI's
+realm picker and `hyperstorctl --in-realm R` act in one realm, which
+sends `X-Hyperstor-Realm: R`; a cluster administrator may use it to see
+what a realm's administrators see. A grant names a realm that exists.
+
 Everyone may make API tokens for themselves. Deleting a volume, a
 snapshot or a member, rolling a volume back, purging the trash or
 changing its grace period, changing how long the audit log is kept, making a join token or an API token, revoking
@@ -118,7 +132,7 @@ never goes in `FILE` itself.
 | `GET /auth/oidc/callback` | Where the provider sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
-| `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators) |
+| `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators). Roles are `role` or `role@realm`; a security administrator in realms sees and sets only those realms' grants, and the rest stay |
 | `POST /api/hyperstor.v1.SERVICE/METHOD` | The cluster API's call, as it came (Connect, gRPC-Web; JSON or protobuf), if your roles allow it |
 | `/api/status` | `GetStatus`, as JSON |
 | `/api/pgs?pool=N` | `ListPgs` for pool N |
