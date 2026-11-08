@@ -921,15 +921,27 @@ async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::In
         }
     };
     let after = oidc::After { claim: r.claim };
-    match o
-        .start(
+    let begun = o
+        .begin(
             r.return_to.as_deref(),
             &redirect_uri(state, o, &host),
             r.reauth,
             after,
         )
         .await
-    {
+        .map_err(|e| e.to_string());
+    // Kept in the map service, so that any mgmt behind the same name
+    // finishes it (I310).
+    let kept = match begun {
+        Ok((s, p)) => l
+            .people
+            .keep_login(&p)
+            .await
+            .map(|()| s)
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    match kept {
         Ok(s) => {
             let mut resp = json_resp(200, serde_json::json!({ "redirect": s.redirect }));
             let mut c = format!(
@@ -946,7 +958,7 @@ async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::In
                 .insert(http::header::SET_COOKIE, c.parse().expect("cookie"));
             resp
         }
-        Err(e) => error(503, "unavailable", &e.to_string()),
+        Err(e) => error(503, "unavailable", &e),
     }
 }
 
@@ -1000,8 +1012,18 @@ async fn oidc_callback(
                 .map(String::from)
         });
     let host = host_of(&req);
+    let pending = match l.people.take_login(st, browser.as_deref()).await {
+        Ok(p) => p,
+        Err(e) => return failed(&e.to_string()),
+    };
     let (id, return_to, after) = match o
-        .callback(code, st, browser.as_deref(), &redirect_uri(state, o, &host))
+        .finish(
+            code,
+            st,
+            pending,
+            browser.as_deref(),
+            &redirect_uri(state, o, &host),
+        )
         .await
     {
         Ok(v) => v,

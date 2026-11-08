@@ -16,14 +16,16 @@
 //! A person is named by the email the provider vouches for, and tied to
 //! the provider's subject ([`crate::people::People::oidc_user`]). A
 //! login is begun with a `POST`, so a claim code never travels in a URL,
-//! and is bound to the browser that began it (cookie `hs_oidc`).
+//! and is bound to the browser that began it (cookie `hs_oidc`). Its
+//! state is kept in the map service ([`crate::people::People::keep_login`],
+//! 04-decisions.md D278), so any mgmt behind the same name finishes it.
 
 use glidex_auth::oidc::{ClientConfig, ClientSecret, OidcState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// What a login is for, kept with its state and never in a URL.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct After {
     /// The first security administrator's claim code.
     pub claim: Option<String>,

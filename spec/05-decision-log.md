@@ -1420,3 +1420,12 @@ for a proxy with Cloudflare's Origin CA or an organization's CA:
 |---|---|---|---|
 | 240 | A follower's UI: mgmt follows the leader for its calls, no redirect (recommended); a browser redirect to the leader's UI; both | mgmt follows the leader | D276 |
 | 241 | Behind a proxy: the operator's certificate from any CA, its names allowed; proxies known by a client certificate or by address; only theirs say who calls | Yes, compatible with Cloudflare's Origin CA or the organization's CA; the details open for review | D277 |
+
+Behind a Cloudflare tunnel with a connector on each pilot host, an
+identity provider's login could come back to another host's mgmt than
+the one that began it, which kept the login's state in memory (I310).
+The owner chose where to keep it:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 242 | An OIDC login's state across mgmt instances: a map service row, sealed with a key from the browser's cookie and used once, through a `glidex-auth` change (recommended); a sealed browser cookie under a key every mgmt shares; forwarding the callback to the mgmt that began it | The map service row | D278 |
