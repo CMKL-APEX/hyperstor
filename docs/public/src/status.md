@@ -56,7 +56,7 @@ covered by tests that run on every change.
 | A flatten reads its parents on the ring, holding the chunk; writes racing it win | Done |
 | The connection writer joins only small frames, up to 256 KiB a send, and sends a push uncopied | Done |
 | Crash safety: randomized crash tests against a model | Done |
-| A device that lies: damaged blocks, lost and misdirected writes never read back as other data (some cases fail until #242, #243, #253) | In progress |
+| A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log or a shard superblock refuses the shard (a damaged checkpoint page still refuses it whole until #243) | In progress |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
 | Performance gate against SPDK on a storage test host | In progress |

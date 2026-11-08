@@ -1900,3 +1900,32 @@ overlapping.
    the client's copy into its frame, the engine's copy into an aligned
    buffer (I12), zeroed receive buffers, and the CRCs computed again by
    the engine. Those are the next HS5b items, with registered buffers.
+
+## 2026-11-08: opening a shard with the log look-ahead (I308)
+
+A shard's open now reads the rest of its log ring after the scan stops
+(D266). The ring is at most 1 GiB (262,144 blocks), the size of every
+shard of 16 GiB or more. Measured on one of the pilot's HGX A100 hosts
+(Linux 6.8.0, root filesystem on two NVMe drives in RAID 1, other
+sessions' load), with a throwaway test around `hyperstor_engine::open`:
+a 4 GiB file, zeroed by writing, formatted with one shard and a 1 GiB
+ring, `FileDev` with and without `O_DIRECT`, opened three times.
+
+| Build | Open, `O_DIRECT` | Open, page cache |
+|---|---|---|
+| Before (no look-ahead) | 1.6–2.0 ms | — |
+| Look-ahead, a fresh 16 MiB buffer per read | 1.11 s | 0.76 s |
+| Look-ahead, one 16 MiB buffer reused | 0.43–0.47 s | 0.20–0.21 s |
+
+The same 1 GiB file read with `dd iflag=direct`: 2.7 s at `bs=1M`,
+0.54 s at 4M, 0.46 s at 16M.
+
+### Findings
+
+1. **A fresh zeroed buffer per read cost more than the reads**: each
+   16 MiB allocation is new pages, faulted in by the read. One buffer
+   for the whole look-ahead takes 60% off.
+2. **What is left is the read itself**, about 2.3 GB/s here, so a
+   restart costs about half a second a shard on this host, once. The
+   hash chain (D266) doesn't remove the read: a gap is proven only by a
+   record found after it.

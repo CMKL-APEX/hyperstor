@@ -725,13 +725,11 @@ fn damaged_seeds(damage: Damage) -> Outcomes {
 }
 
 #[test]
-#[ignore = "#242: a damaged record drops those after it"]
 fn damaged_log_blocks_never_lose_acknowledged_changes() {
     damaged_seeds(Damage::LogBlock);
 }
 
 #[test]
-#[ignore = "#253: the older superblock opens the shard empty"]
 fn a_damaged_shard_superblock_never_loses_acknowledged_changes() {
     damaged_seeds(Damage::ShardSuper);
 }
@@ -748,13 +746,11 @@ fn damaged_data_and_checkpoint_blocks_never_read_as_other_data() {
 }
 
 #[test]
-#[ignore = "#242: a lost log write drops the records after it"]
 fn a_lost_write_never_loses_acknowledged_changes_silently() {
     damaged_seeds(Damage::LostWrite);
 }
 
 #[test]
-#[ignore = "#242: a misdirected log write drops the records after it"]
 fn a_misdirected_write_never_loses_acknowledged_changes_silently() {
     damaged_seeds(Damage::MisdirectedWrite);
 }
