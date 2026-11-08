@@ -1127,18 +1127,18 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=8dcb9b3c3a06b2a05f5c716de41f0599b76421b4#8dcb9b3c3a06b2a05f5c716de41f0599b76421b4"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=f891a028aa21b2a885b71c68fbf641531a2a19ba#f891a028aa21b2a885b71c68fbf641531a2a19ba"
 dependencies = [
  "arc-swap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cedar-policy",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "thiserror 1.0.69",
+ "sha2",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "zeroize",
@@ -1146,8 +1146,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
 dependencies = [
  "libc",
  "libloading",
@@ -1162,8 +1162,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1182,8 +1182,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
 dependencies = [
  "arc-swap",
  "http",
@@ -1196,7 +1196,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pki-types",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "socket2",
  "time",
  "tokio",
@@ -1207,8 +1207,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=bc1fa833fab0d36bc7ba341569a64dd9d7489a8a#bc1fa833fab0d36bc7ba341569a64dd9d7489a8a"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=eb1c545e089a599d2c3cb63e6895ae9f1befe2bf#eb1c545e089a599d2c3cb63e6895ae9f1befe2bf"
 dependencies = [
  "nix",
  "serde",
@@ -3279,17 +3279,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]
