@@ -103,7 +103,11 @@ relative block numbers (D270). New devices are formatted with it; a
 device of the first format is opened as it is, and converted only when an
 operator asks (D274): each shard is checkpointed in the new format, all
 its pages under a new salt, then the device superblock gets the flag, so
-a crash before that leaves the first format (as built, I309). A build formats a device only
+a crash before that leaves the first format (as built, I309). The
+operator runs `hyperstorctl device upgrade --device D|--all`, refused
+while any device asked hasn't reported its format (nodes before v0.0.8
+don't); the map lists the devices asked (map format 20), and each node
+converts its own when it next starts (as built, I310). A build formats a device only
 when neither copy holds a hyperstor superblock: a newer version, a
 damaged superblock or a shard without one is refused, never formatted
 over.

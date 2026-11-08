@@ -194,10 +194,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted by the engine (the operator's command comes next)"
-spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "D266", "D267", "D270", "D274"]
-status = "partial"
+what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start"
+spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "I310", "D266", "D267", "D270", "D274"]
+status = "done"
 tests = [
+    "cluster::devices_convert_at_their_nodes_next_start",
+    "hyperstor_meta::tests::only_devices_that_report_a_format_are_converted",
+    "hyperstor_map::port_tests::devices_to_convert_travel_only_while_asked",
+    "manage::installed_devices_report_the_new_format",
     "crash::random_crashes_on_a_device_of_the_first_format",
     "crash::a_device_converted_while_power_fails_keeps_every_change",
     "hyperstor_engine::shard::tests::a_record_that_doesnt_follow_the_one_before_refuses",

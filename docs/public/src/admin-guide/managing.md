@@ -94,7 +94,7 @@ hosts stay yours. To see what they see, pick the realm in the UI's
 realm picker, or use `hyperstorctl --mgmt URL --in-realm acme`.
 
 The exact list is in [hyperstor-mgmt](../reference/hyperstor-mgmt.md#logins).
-Deleting, rolling back, purging, removing a device, making tokens,
+Deleting, rolling back, purging, removing or converting a device, making tokens,
 revoking certificates, fetching a backup and changing roles need a
 login of the last 10 minutes (step-up), since they are hard to undo:
 the UI asks you to log in again. Sessions last 12 hours, or 30 minutes

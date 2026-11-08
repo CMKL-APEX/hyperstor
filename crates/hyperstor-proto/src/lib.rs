@@ -561,6 +561,15 @@ pub enum Msg {
         device: u32,
         kind: u8,
     },
+    /// Storage node to map service: the shard format `device` is in (1, or
+    /// 2 for v0.0.8's, 08-engine.md §7.1), with its space reports. A device
+    /// that reports one has a node of v0.0.8 or later; only such devices
+    /// are converted (D274). Answered `Noted`; a map service from before
+    /// answers it as invalid.
+    DeviceFormat {
+        device: u32,
+        format: u8,
+    },
     /// Storage node to map service: `device` has split PG `pool`.`pg`,
     /// marked to split at `pg_epoch`: its objects that belong to the PG's
     /// new sibling are under the sibling's keys (24-pools-and-devices.md
@@ -835,6 +844,7 @@ mod kind {
     pub const STUCK_STATE_OK: u16 = 91;
     pub const PORT_REPORT: u16 = 92;
     pub const HOST: u16 = 93;
+    pub const DEVICE_FORMAT: u16 = 94;
     pub const ERROR: u16 = 99;
 }
 
@@ -924,6 +934,7 @@ impl Msg {
             Msg::DeviceFailed { .. } => DEVICE_FAILED,
             Msg::DeviceSpace { .. } => DEVICE_SPACE,
             Msg::DeviceKind { .. } => DEVICE_KIND,
+            Msg::DeviceFormat { .. } => DEVICE_FORMAT,
             Msg::PgSplit { .. } => PG_SPLIT,
             Msg::CacheRelease { .. } => CACHE_RELEASE,
             Msg::ReadCopy { .. } => READ_COPY,
@@ -1221,6 +1232,9 @@ impl Msg {
             }
             Msg::DeviceKind { device, kind } => {
                 e.u32(*device).u8(*kind);
+            }
+            Msg::DeviceFormat { device, format } => {
+                e.u32(*device).u8(*format);
             }
             Msg::PgSplit {
                 pool,
@@ -1612,6 +1626,10 @@ impl Msg {
             DEVICE_KIND => Msg::DeviceKind {
                 device: d.u32()?,
                 kind: d.u8()?,
+            },
+            DEVICE_FORMAT => Msg::DeviceFormat {
+                device: d.u32()?,
+                format: d.u8()?,
             },
             PG_SPLIT => Msg::PgSplit {
                 pool: d.u32()?,
@@ -2565,6 +2583,10 @@ mod tests {
             Msg::DeviceKind {
                 device: 2001,
                 kind: 1,
+            },
+            Msg::DeviceFormat {
+                device: 2001,
+                format: 2,
             },
             Msg::PgSplit {
                 pool: 1,

@@ -71,6 +71,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.SetFullRatios", Group::Operate, false),
     ("ClusterService.AddDevice", Group::Operate, false),
     ("ClusterService.SetDeviceClass", Group::Operate, false),
+    // One-way (D274): a converted device can't go back to older builds.
+    ("ClusterService.UpgradeDevices", Group::Operate, true),
     // A device's endpoints (D215): where its traffic goes.
     ("ClusterService.SetEndpoints", Group::Operate, false),
     ("ClusterService.ListPorts", Group::Read, false),

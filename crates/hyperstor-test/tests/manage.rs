@@ -641,6 +641,55 @@ fn devices_report_their_kind_and_classes_follow_it() {
     });
 }
 
+/// D274: devices a v0.0.8 install formats are in its shard format; each
+/// node reports it, `nodes` shows it, and `device upgrade` answers that
+/// they are converted already. A device not in the map, or neither a
+/// device nor `--all`, is refused. Audited. (Converting a device of the
+/// first format is in hyperstor-daemon's cluster test.)
+#[test]
+fn installed_devices_report_the_new_format() {
+    let c = Cluster::all_in_one("format", 2);
+    let formats = |c: &Cluster| -> Vec<(u64, Option<u64>, bool)> {
+        let s = c.ctl(&["status", "--json"]);
+        let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|n| n["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["id"].as_u64().unwrap_or(0),
+                    d["format"].as_u64(),
+                    d["upgrade_asked"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    };
+    wait_for("every device's format", 20, || {
+        let f = formats(&c);
+        (!f.is_empty() && f.iter().all(|d| d.1 == Some(2) && !d.2)).then_some(())
+    });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(n.has(" FORMAT STATE"), "{}", n.out);
+    let up = c.ctl(&["device", "upgrade", "--all"]).ok();
+    assert!(
+        up.has("devices 0, 1000 are already in v0.0.8's format"),
+        "{}",
+        up.out
+    );
+    assert!(formats(&c).iter().all(|d| !d.2), "nothing asked");
+    let missing = c.ctl(&["device", "upgrade", "--device", "99"]).expect(1);
+    assert!(missing.has("no device 99"), "{}", missing.out);
+    c.ctl(&["device", "upgrade"]).expect(2);
+    c.ctl(&["device", "upgrade", "--all", "--device", "0"])
+        .expect(2);
+    wait_for("the upgrade in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "UpgradeDevices"]).ok();
+        a.has("every device").then_some(())
+    });
+}
+
 /// D237: an operator gives a port a role, `port list` shows it as set,
 /// and `default` returns it to the default; a bad role, an unknown node
 /// or a missing name is refused. Audited.
