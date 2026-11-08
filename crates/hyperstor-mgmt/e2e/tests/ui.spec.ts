@@ -26,6 +26,9 @@ test("the first security administrator claims the cluster", async ({ page }) => 
   await expect(page.getByText("Wrong username or password.")).toBeVisible();
   await logIn(page, "ann", process.env.HS_CLAIM);
   await expect(page.getByTestId("whoami")).toContainText("security-admin");
+  // The footer names the build, linked to its commit on GitHub.
+  const commit = page.getByTestId("build-info").getByRole("link", { name: /^[0-9a-f]{10}$/ });
+  await expect(commit).toHaveAttribute("href", /^https:\/\/github\.com\/.+\/commit\/[0-9a-f]{40}$/);
   // Security administrators manage people: ann takes storage too.
   await page.getByRole("link", { name: "Security" }).click();
   await page.getByTestId("person-ann").getByRole("button", { name: "Roles" }).click();

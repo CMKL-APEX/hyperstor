@@ -165,11 +165,26 @@ export interface Methods {
   claim_open: boolean;
 }
 
+/** The build of the mgmt serving the UI (its `build.rs`). */
+export interface Build {
+  /** The version tag on the built commit. */
+  tag: string | null;
+  /** That tag, else the latest release tag before the commit. */
+  release: string | null;
+  /** Commits after `release` (0 on a tagged build). */
+  ahead: number;
+  branch: string | null;
+  commit: string | null;
+  /** The repository the footer links to, `https://github.com/<owner>/<repo>`. */
+  repo: string;
+}
+
 /** Who is logged in (whoami, shaped for the kit). */
 export interface Me extends WhoAmIBase {
   name: string;
   roles: string[];
   method: string;
+  build: Build | null;
 }
 
 export interface Person {
@@ -221,13 +236,20 @@ export function setClaimCode(c: string) {
 export const auth: AuthApi<Me, Methods> = {
   methods: () => call<Methods>("GET", "/auth/methods"),
   whoami: async () => {
-    const w = await call<{ user: string; roles: string[]; method: string; csrf: string | null }>(
+    const w = await call<{ user: string; roles: string[]; method: string; csrf: string | null; build?: Build }>(
       "GET",
       "/auth/whoami",
       undefined,
       true,
     );
-    return { name: w.user, roles: w.roles, method: w.method, csrf: w.csrf, user: { display_name: w.user } };
+    return {
+      name: w.user,
+      roles: w.roles,
+      method: w.method,
+      csrf: w.csrf,
+      build: w.build ?? null,
+      user: { display_name: w.user },
+    };
   },
   login: async (user, password) => {
     const body: Record<string, string> = { user, password };

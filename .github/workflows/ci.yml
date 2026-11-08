@@ -65,8 +65,8 @@ jobs:
     timeout-minutes: 5
 
     env:
-      BUF_VERSION: "1.47.2"
-      BUF_SHA256: "3a0c4da8d46eea8136affa63db202c76a44f8112384160b73c3fffb1cf14b5d8"
+      BUF_VERSION: "1.75.0"
+      BUF_SHA256: "fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b"
 
     steps:
     - uses: actions/checkout@v7
@@ -86,7 +86,7 @@ jobs:
     # buf.gen.yaml) is committed: it must be what buf makes now.
     - uses: oven-sh/setup-bun@v2
       with:
-        bun-version: "1.4.2"
+        bun-version: "1.4.4"
     - name: Generated TypeScript is current
       run: |
         (cd crates/hyperstor-mgmt/ui && bun install --frozen-lockfile)
@@ -105,6 +105,20 @@ jobs:
       run: >-
         "$RUNNER_TEMP/buf" breaking crates/hyperstor-api/proto
         --against ".git#ref=origin/${{ github.base_ref }},subdir=crates/hyperstor-api/proto"
+
+  # Known vulnerabilities in the crates of Cargo.lock (RustSec's advisory
+  # database), with the ignores and their reasons in .cargo/audit.toml.
+  audit:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit@0.22.2
+    - run: cargo audit
 
   # The spec hangs together and code cites it correctly; no build needed.
   spec:
@@ -140,7 +154,7 @@ jobs:
     - name: Install boto3
       run: |
         python3 -m venv "$RUNNER_TEMP/s3sdk"
-        "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.38.46
+        "$RUNNER_TEMP/s3sdk/bin/pip" install --quiet boto3==1.43.126
     # The self-hosted runner's disk is a Hyperstor volume, slow to sync
     # (about 2.7 ms a write): end-to-end clusters starting together took
     # over 20 s to open their devices and their map services never elected
@@ -170,7 +184,7 @@ jobs:
     - uses: oven-sh/setup-bun@v2
       if: success() || failure()
       with:
-        bun-version: "1.4.2"
+        bun-version: "1.4.4"
     - name: Build the web UI
       id: ui
       if: success() || failure()
@@ -186,7 +200,7 @@ jobs:
         bun install --frozen-lockfile
         bunx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
         bunx playwright test
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: failure() && steps.browser.outcome == 'failure'
       with:
         name: playwright-report
@@ -203,7 +217,7 @@ jobs:
         >> "$GITHUB_STEP_SUMMARY"
     - name: Check the command-line reference against the binaries
       run: python3 scripts/cli-docs-check.py target/release
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: (success() || failure()) && steps.tests.outcome != 'skipped'
       with:
         name: test-log

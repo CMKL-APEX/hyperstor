@@ -1,0 +1,5 @@
+# cargo audit (the `audit` job in .github/workflows/ci.yml). An advisory is
+# ignored here only with the reason it doesn't reach Hyperstor, and until
+# the change that removes it.
+[advisories]
+ignore = []

@@ -195,7 +195,7 @@ tests = [
 
 [[milestone.item]]
 what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start"
-spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "I315", "D266", "D267", "D270", "D274"]
+spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "I319", "D266", "D267", "D270", "D274"]
 status = "done"
 tests = [
     "cluster::devices_convert_at_their_nodes_next_start",
@@ -1422,11 +1422,20 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The web UI's footer names the installed build: release, branch and commit, linked to GitHub"
+spec = ["19-administration.md §23.7", "I317"]
+status = "done"
+tests = [
+    "hyperstor_mgmt::tests::the_build_names_its_commit_and_release",
+]
+
+[[milestone.item]]
 what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
-spec = ["19-administration.md §23.9", "D96", "D107"]
+spec = ["19-administration.md §23.9", "D96", "D107", "D278"]
 status = "done"
 tests = [
     "oidc::people_log_in_with_an_identity_provider",
+    "hyperstor_mgmt::people::tests::logins_begun_are_kept_sealed_and_taken_once",
     "security::only_mgmt_names_a_person",
     "hyperstor_mgmt::people::tests::oidc_people_are_their_subject",
     "hyperstor_mgmt::oidc::tests::configuration_is_checked",

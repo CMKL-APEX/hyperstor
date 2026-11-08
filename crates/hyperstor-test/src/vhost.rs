@@ -109,23 +109,6 @@ impl Service {
         serde_json::from_str(&line).unwrap()
     }
 
-    /// Detaches `volume` once its hypervisor has hung up, retrying `busy`
-    /// for up to 2 s: a child process another test is starting may hold a
-    /// copy of the closed connection until it runs its program, so the
-    /// service can still see the peer open for a moment (CI, 8 tests at
-    /// once).
-    pub fn detach_gone(&self, volume: &str) -> Value {
-        let until = Instant::now() + Duration::from_secs(2);
-        loop {
-            let d =
-                self.ctl(serde_json::json!({"id": 3, "op": "detach", "args": {"volume": volume}}));
-            if d["error"]["code"] != "busy" || Instant::now() >= until {
-                return d;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
     pub fn attach(&self, volume: &str, take: &str) -> Value {
         self.ctl(serde_json::json!({"id": 1, "op": "attach", "args": {
             "volume": volume, "serial": "disk-under-test", "take": take}}))
