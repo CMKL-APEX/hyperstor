@@ -5,6 +5,6 @@ started = 2026-11-08
 updated = 2026-11-08
 milestone = "HS2"
 branch = "feat/engine-format-v008"
-prs = []
+prs = [258]
 now = "Engine part (I309): one incompatible flag for the log hash chain (D266), superblock mirrors in the log ring (D267) and relative dense block maps (D270); new devices formatted with it; hyperstor_engine::upgrade converts a device, crash-safe"
 next = "hyperstorctl device upgrade (D274): the request in the map, the node converting at its next open, the format in device status, an end-to-end test; then #246, #243, #245 (D275)"
