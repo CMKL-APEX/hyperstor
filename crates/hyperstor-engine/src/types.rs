@@ -101,6 +101,10 @@ pub enum Op {
     Write {
         off: u64,
         data: Vec<u8>,
+        /// The CRC32C of each block of `data`, when the caller has them
+        /// already checked against it (the CRCs a write arrived with,
+        /// I306); `None` has the engine compute them.
+        crcs: Option<Vec<u32>>,
     },
     /// Drops the blocks of a range; they read as zeros.
     Zero {
@@ -161,6 +165,8 @@ pub enum OpError {
     TooLarge,
     #[error("an object can't absorb or take itself")]
     SelfAbsorb,
+    #[error("a write's CRCs don't count its blocks")]
+    Crcs,
 }
 
 /// Engine failures. After an I/O error during a commit, the shard refuses

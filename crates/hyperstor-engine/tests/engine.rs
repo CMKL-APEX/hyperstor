@@ -50,6 +50,7 @@ fn write_read_stat_and_holes() {
         vec![Op::Write {
             off: 4 * BLOCK as u64,
             data: block(1, 2),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -82,6 +83,7 @@ fn small_overwrites_are_deferred_and_survive_reopen() {
         vec![Op::Write {
             off: 0,
             data: block(1, 32),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -92,6 +94,7 @@ fn small_overwrites_are_deferred_and_survive_reopen() {
         vec![Op::Write {
             off: 8 * BLOCK as u64,
             data: block(2, 2),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -122,6 +125,7 @@ fn large_overwrites_redirect_and_free_old_blocks() {
         vec![Op::Write {
             off: 0,
             data: block(1, 32),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -132,6 +136,7 @@ fn large_overwrites_redirect_and_free_old_blocks() {
         vec![Op::Write {
             off: 0,
             data: block(3, 32),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -199,6 +204,7 @@ fn assertions_and_revisions() {
             Op::Write {
                 off: 0,
                 data: block(5, 1),
+                crcs: None,
             },
         ],
     )
@@ -219,6 +225,7 @@ fn unaligned_and_refused_lists_leave_no_trace() {
                 ops: vec![Op::Write {
                     off: 0,
                     data: block(1, 1),
+                    crcs: None,
                 }],
             },
             OpList {
@@ -226,6 +233,7 @@ fn unaligned_and_refused_lists_leave_no_trace() {
                 ops: vec![Op::Write {
                     off: 3,
                     data: block(2, 1),
+                    crcs: None,
                 }],
             },
             OpList {
@@ -262,6 +270,7 @@ fn zero_truncate_and_delete_free_space() {
         vec![Op::Write {
             off: 0,
             data: block(1, 16),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -351,6 +360,7 @@ fn log_wraps_and_checkpoints_keep_state() {
             vec![Op::Write {
                 off,
                 data: block(fill, blocks),
+                crcs: None,
             }],
         )
         .unwrap();
@@ -385,7 +395,8 @@ fn no_space_and_too_large() {
             k.clone(),
             vec![Op::Write {
                 off: 0,
-                data: block(1, free as usize + 1)
+                data: block(1, free as usize + 1),
+                crcs: None,
             }]
         ),
         Err(OpError::NoSpace)
@@ -410,6 +421,7 @@ fn shards_are_independent() {
             vec![Op::Write {
                 off: 0,
                 data: block(i as u8 + 1, 1),
+                crcs: None,
             }],
         )
         .unwrap();
@@ -497,6 +509,7 @@ fn features_this_build_does_not_know_are_refused_unless_compatible() {
         vec![Op::Write {
             off: 0,
             data: block(5, 1),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -563,6 +576,7 @@ fn a_torn_first_checkpoint_falls_back_to_the_formatted_superblock() {
         vec![Op::Write {
             off: 0,
             data: block(3, 1),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -583,6 +597,7 @@ fn corrupted_data_is_detected_on_read() {
         vec![Op::Write {
             off: 0,
             data: block(1, 16),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -612,6 +627,7 @@ fn io_error_poisons_until_reopen() {
         vec![Op::Write {
             off: 0,
             data: block(1, 1),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -648,6 +664,7 @@ fn digests_follow_content_not_history() {
         vec![Op::Write {
             off: 0,
             data: data.clone(),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -659,6 +676,7 @@ fn digests_follow_content_not_history() {
         vec![Op::Write {
             off: 3 * BLOCK as u64,
             data: block(1, 1),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -668,6 +686,7 @@ fn digests_follow_content_not_history() {
         vec![Op::Write {
             off: 0,
             data: block(1, 2),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -682,6 +701,7 @@ fn digests_follow_content_not_history() {
             vec![Op::Write {
                 off: BLOCK as u64,
                 data: block(2, 1),
+                crcs: None,
             }],
         ),
         (
@@ -689,6 +709,7 @@ fn digests_follow_content_not_history() {
             vec![Op::Write {
                 off: 2 * BLOCK as u64,
                 data: block(3, 1),
+                crcs: None,
             }],
         ),
         ("attribute", vec![Op::SetAttr(b"k".to_vec(), b"v".to_vec())]),
@@ -703,6 +724,7 @@ fn digests_follow_content_not_history() {
             vec![Op::Write {
                 off: 0,
                 data: data.clone(),
+                crcs: None,
             }],
         )
         .unwrap();
@@ -750,6 +772,7 @@ fn large_objects_keep_their_digest_until_they_change() {
             vec![Op::Write {
                 off: 0,
                 data: block(5, 1),
+                crcs: None,
             }],
         ),
         ("size", vec![Op::Truncate(3 * BLOCK as u64)]),
@@ -788,6 +811,7 @@ fn a_large_digest_comes_in_parts_and_agrees() {
     ops.push(Op::Write {
         off: 0,
         data: block(3, 2),
+        crcs: None,
     });
     for k in ["x", "y"] {
         for part in ops.chunks(300) {
@@ -863,6 +887,7 @@ fn versions_read_through_layers_and_merge_without_copying() {
         vec![Op::Write {
             off: 0,
             data: block(1, 4),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -873,10 +898,12 @@ fn versions_read_through_layers_and_merge_without_copying() {
             Op::Write {
                 off: BLOCK as u64,
                 data: block(3, 2),
+                crcs: None,
             },
             Op::Write {
                 off: 6 * BLOCK as u64,
                 data: block(3, 1),
+                crcs: None,
             },
         ],
     )
@@ -940,6 +967,7 @@ fn take_moves_an_object_whole() {
         Op::Write {
             off: 0,
             data: block(5, 4),
+            crcs: None,
         },
         Op::SetAttr(b"a".to_vec(), b"1".to_vec()),
     ];
@@ -956,6 +984,7 @@ fn take_moves_an_object_whole() {
         vec![Op::Write {
             off: 0,
             data: block(1, 2),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -1068,6 +1097,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
                     Op::Write {
                         off: 0,
                         data: block(n as u8, 1),
+                        crcs: None,
                     },
                     Op::KvPut(b"k".to_vec(), vec![1; 64]),
                 ],
@@ -1087,6 +1117,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
             ops: vec![Op::Write {
                 off: 0,
                 data: block(1, 1),
+                crcs: None,
             }],
         }])
         .expect("not poisoned");
@@ -1114,6 +1145,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
         vec![Op::Write {
             off: 0,
             data: block(9, 4),
+            crcs: None,
         }],
     )
     .unwrap();
@@ -1185,11 +1217,13 @@ fn commit_rounds_leave_every_write_to_their_writer() {
             None => vec![Op::Write {
                 off: 0,
                 data: block(fill, 16),
+                crcs: None,
             }],
             Some(_) if round % 23 == 0 => vec![Op::Delete],
             Some(_) => vec![Op::Write {
                 off: (round as u64 % 16) * BLOCK as u64,
                 data: block(fill, 1),
+                crcs: None,
             }],
         };
         let mut lists: std::collections::VecDeque<OpList> = vec![OpList {
@@ -1201,7 +1235,7 @@ fn commit_rounds_leave_every_write_to_their_writer() {
             Op::Delete => {
                 model.remove(&name);
             }
-            Op::Write { off, data } => {
+            Op::Write { off, data, .. } => {
                 let v = model.entry(name.clone()).or_default();
                 let end = *off as usize + data.len();
                 if v.len() < end {
@@ -1250,4 +1284,121 @@ fn commit_rounds_leave_every_write_to_their_writer() {
         assert!(got[..] == want[..], "{n} after reopen");
     }
     assert_eq!(sh.stats().objects, model.len() as u64);
+}
+
+/// `n` blocks, each filled with a byte of its own, so a CRC filed under
+/// the wrong block doesn't match it.
+fn distinct(seed: u8, n: usize) -> Vec<u8> {
+    (0..n)
+        .flat_map(|i| [((seed as usize + i) % 250 + 1) as u8; BLOCK])
+        .collect()
+}
+
+fn crcs_of(data: &[u8]) -> Option<Vec<u32>> {
+    Some(data.chunks(BLOCK).map(hyperstor_codec::crc32c).collect())
+}
+
+/// A write that comes with its blocks' CRCs, already checked against the
+/// data (I306), keeps each one with its block: across every run a
+/// fragmented shard splits it into, through a deferred overwrite, and
+/// after reopening, where reads check every block against its CRC.
+#[test]
+fn a_write_keeps_the_crcs_it_came_with() {
+    let (d, mut sh) = fresh(1024, Some(64));
+    // One-block objects until the shard is full, then every other one
+    // deleted: the free space is in holes, so a large write is split.
+    let mut n = 0;
+    while one(
+        &mut sh,
+        key(&format!("f{n}")),
+        vec![Op::Write {
+            off: 0,
+            data: block(9, 1),
+            crcs: None,
+        }],
+    )
+    .is_ok()
+    {
+        n += 1;
+    }
+    for i in (0..n).step_by(2) {
+        one(&mut sh, key(&format!("f{i}")), vec![Op::Delete]).unwrap();
+    }
+    let k = key("a");
+    let data = distinct(1, 64);
+    one(
+        &mut sh,
+        k.clone(),
+        vec![Op::Write {
+            off: 0,
+            crcs: crcs_of(&data),
+            data: data.clone(),
+        }],
+    )
+    .unwrap();
+    assert!(
+        sh.index().objects[&k].blocks.runs().len() > 1,
+        "the write is split across runs"
+    );
+    assert_eq!(&sh.read(&k, 0, 64 * BLOCK as u64).unwrap()[..], &data[..]);
+    let small = distinct(100, 2);
+    one(
+        &mut sh,
+        k.clone(),
+        vec![Op::Write {
+            off: 30 * BLOCK as u64,
+            crcs: crcs_of(&small),
+            data: small.clone(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(sh.stats().pending_blocks, 2, "the overwrite is deferred");
+    drop(sh);
+    let sh = reopen(&d);
+    let mut want = data;
+    want[30 * BLOCK..32 * BLOCK].copy_from_slice(&small);
+    assert_eq!(&sh.read(&k, 0, 64 * BLOCK as u64).unwrap()[..], &want[..]);
+}
+
+/// The engine doesn't recompute CRCs it is given: a list whose CRCs don't
+/// count its blocks is refused, leaving no trace, and a block whose CRC
+/// doesn't match (data damaged after it was checked) is caught on read
+/// instead of being stored as good.
+#[test]
+fn a_write_whose_crcs_disagree_is_refused_or_caught_on_read() {
+    let (_d, mut sh) = fresh(4096, None);
+    let k = key("a");
+    let data = distinct(1, 4);
+    let mut short = crcs_of(&data).unwrap();
+    short.pop();
+    assert_eq!(
+        one(
+            &mut sh,
+            k.clone(),
+            vec![Op::Write {
+                off: 0,
+                data: data.clone(),
+                crcs: Some(short),
+            }],
+        ),
+        Err(OpError::Crcs)
+    );
+    assert!(!sh.index().objects.contains_key(&k));
+    let mut wrong = crcs_of(&data).unwrap();
+    wrong[2] ^= 1;
+    one(
+        &mut sh,
+        k.clone(),
+        vec![Op::Write {
+            off: 0,
+            data,
+            crcs: Some(wrong),
+        }],
+    )
+    .unwrap();
+    assert!(matches!(
+        sh.read(&k, 0, 4 * BLOCK as u64),
+        Err(EngineError::Checksum { lblock: 2 })
+    ));
+    assert!(sh.read(&k, 0, 2 * BLOCK as u64).is_ok());
 }

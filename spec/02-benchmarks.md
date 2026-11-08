@@ -1945,3 +1945,31 @@ range of ops/s.
 3. **The remaining copies and zeroing cost 15–30 µs per MiB each while
    warm**, so they matter less than the CRC the engine computes again
    (41 µs per node).
+
+## 2026-11-08: The engine keeps the CRCs a write came with (HS5b, I306)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the section before:
+the `crc32c` 0.6.9 branch at cbf65f36 (before) and the same with the
+engine taking the CRCs each node has checked on arrival (after), run
+alternately, three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6934 (6913–6950) | 6923 (6807–7012) | −0.2% | 143 → 142 |
+| 4 KiB random writes, QD32 | 24930 (24787–25024) | 25371 (25105–25385) | +1.8% | 1063 → 1044 |
+| 4 KiB random reads, QD1 | 17154 (17142–17230) | 17234 (17113–17244) | +0.5% | 58 → 58 |
+| 4 KiB random reads, QD32 | 52158 (51853–52426) | 52737 (52369–52895) | +1.1% | 398 → 395 |
+| 1 MiB writes, QD4 | 762 (755–766) | 803 (794–809) | +5.4% | 5032 → 4784 |
+| 1 MiB reads, QD1 | 1298 (1284–1302) | 1299 (1293–1306) | +0.1% | 763 → 762 |
+| 1 MiB reads, QD2 | 1877 (1868–1881) | 1882 (1881–1891) | +0.3% | 969 → 966 |
+| 1 MiB reads, QD4 | 2793 (2770–2830) | 2835 (2788–2850) | +1.5% | 1338 → 1328 |
+
+### Findings
+
+1. **1 MiB writes gain 5%**, with no overlap between the runs: one CRC
+   pass less on each of the three nodes, about 55 µs per MiB each (the
+   per-block cost in the section before).
+2. **Reads and 4 KiB writes don't change** beyond the run-to-run range:
+   reads never took the engine's write path, and at 4 KiB a CRC costs
+   about 0.2 µs.
