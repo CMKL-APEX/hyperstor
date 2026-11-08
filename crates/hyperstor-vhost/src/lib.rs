@@ -516,13 +516,10 @@ impl Service {
     /// Closes the volume's socket, cuts off its frontend, and detaches it.
     /// Refused (`busy`) while a hypervisor is connected, unless `force` or
     /// the volume was taken elsewhere (D256): a client's mistake must not
-    /// pull a running VM's disk.
+    /// pull a running VM's disk. One that hangs up within [`HANGUP_GRACE`]
+    /// is let go.
     async fn detach(&self, volume: u128, force: bool) -> Result<(), (&'static str, String)> {
-        if let Some(d) = self.disks.borrow().get(&volume)
-            && !force
-            && !d.disk.volume.lost()
-            && d.conn.borrow().as_ref().is_some_and(peer_open)
-        {
+        if !force && self.still_connected(volume).await {
             return Err((
                 "busy",
                 format!(
@@ -554,7 +551,29 @@ impl Service {
             .await
             .map_err(|e| ("internal", e.to_string()))
     }
+
+    /// Whether a frontend stays connected to `volume`'s disk through
+    /// [`HANGUP_GRACE`], checked every 50 ms without holding the reactor.
+    /// A volume not attached, or taken elsewhere (D150), has none.
+    async fn still_connected(&self, volume: u128) -> bool {
+        let t = std::time::Instant::now();
+        loop {
+            let open = self.disks.borrow().get(&volume).is_some_and(|d| {
+                !d.disk.volume.lost() && d.conn.borrow().as_ref().is_some_and(peer_open)
+            });
+            if !open || t.elapsed() >= HANGUP_GRACE {
+                return open;
+            }
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }
+
+/// How long a detach waits for a connected frontend to hang up before it
+/// answers `busy` (D256): a hypervisor that was just stopped closes its
+/// socket only once its process has exited, which takes a large VM a
+/// while, and a process forked meanwhile holds the socket until it execs.
+const HANGUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Whether the frontend on `s` is still there: a hypervisor that exited
 /// has hung up, though the disk's task may not have read the end yet.

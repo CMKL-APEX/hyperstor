@@ -16,7 +16,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `ctl hello` | Checks the service answers, and its protocol version |
 | `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, and whether the volume was taken elsewhere (`lost`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
-| `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor is connected, unless `--force` |
+| `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor stays connected for 2 s, unless `--force` |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -41,8 +41,11 @@ afresh.
 
 `detach` is refused (`busy`) while a hypervisor is connected to the
 volume's socket, so a running VM keeps its disk whoever asks: stop the
-VM first, or pass `--force` (`"force": true`) to cut it off. A volume
-taken elsewhere detaches without `--force`. `hyperstor-install
+VM first, or pass `--force` (`"force": true`) to cut it off. A
+hypervisor that is still exiting (a VM just stopped) gets 2 s to hang
+up, so a detach right after stopping the VM works without `--force`;
+one still connected then is answered `busy`. A volume taken elsewhere
+detaches without `--force`. `hyperstor-install
 --no-vhost` and `uninstall` force.
 
 ```sh

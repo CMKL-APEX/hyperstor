@@ -157,7 +157,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     );
     drop(g2);
     // Detach: the socket goes, and the volume can be attached elsewhere.
-    let d = other.detach_gone(&id);
+    let d = other.ctl(serde_json::json!({"id": 3, "op": "detach", "args": {"volume": id}}));
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!socket2.exists());
     // Only that volume's lease was fenced, not the service (D150): its
@@ -261,14 +261,20 @@ fn a_detach_leaves_a_connected_disk_alone() {
     let data = pattern(7, 64 << 10);
     let mut g = Guest::connect(&sa, true);
     g.write(0, &data);
+    let t = std::time::Instant::now();
     let d = detach(&a, false);
     assert_eq!(d["error"]["code"], "busy", "{d}");
+    assert!(t.elapsed().as_millis() >= 1900, "it waited for a hang-up");
     assert!(sa.exists(), "the socket stays");
     assert!(g.read(0, data.len() as u32) == data, "the guest goes on");
-    // A hypervisor that has gone: detached, though the service may not have
-    // read the hang-up yet (retried briefly, `detach_gone`).
-    drop(g);
-    let d = svc.detach_gone(&a);
+    // A hypervisor that hangs up while the detach waits (#265): a VM just
+    // stopped, still exiting. Its disk goes without force.
+    let d = std::thread::scope(|s| {
+        let pending = s.spawn(|| detach(&a, false));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(g);
+        pending.join().unwrap()
+    });
     assert!(d.get("ok").is_some(), "{d}");
     assert!(!sa.exists());
     // Forced: the hypervisor is cut off.
