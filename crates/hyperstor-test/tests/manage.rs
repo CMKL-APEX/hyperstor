@@ -453,9 +453,18 @@ fn the_installer_adds_a_device_to_a_node() {
     assert!(conf.contains(&format!("devices = 1@{addr}={d}")), "{conf}");
     let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
     assert!(env.contains(&format!("--shard {addr}={d}:0")), "{env}");
-    // A later run keeps it, and adds nothing twice.
+    // A later run keeps it, and adds nothing twice; it removes the rules
+    // file where it was before I333.
+    let old = c.root.join("etc/udev/rules.d/60-hyperstor.rules");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, "# rules\n").unwrap();
     let again = install(&c.root, &["--no-start", "--node", "0", "--device", d]);
     assert!(!again.has("added"), "{}", again.out);
+    assert!(
+        again.has("removed /etc/udev/rules.d/60-hyperstor.rules") && !old.exists(),
+        "{}",
+        again.out
+    );
     let env2 = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
     assert_eq!(env, env2);
     // The node runs it once restarted from its options.

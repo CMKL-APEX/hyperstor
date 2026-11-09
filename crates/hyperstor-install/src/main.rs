@@ -2564,8 +2564,14 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
     out
 }
 
-/// The udev rules for devices added (D167).
-const UDEV_RULES: &str = "/etc/udev/rules.d/60-hyperstor.rules";
+/// The udev rules for devices added (D167). Their name sorts after
+/// `60-persistent-storage.rules`, which makes the `/dev/disk/by-id/`
+/// links they match (I333).
+const UDEV_RULES: &str = "/etc/udev/rules.d/61-hyperstor.rules";
+
+/// Where they were, read before the by-id links existed, so they never
+/// matched (I333): removed.
+const OLD_UDEV_RULES: &str = "/etc/udev/rules.d/60-hyperstor.rules";
 
 /// The cluster id: kept from an existing cluster file, else fresh.
 fn cluster_id(root: &Path) -> u64 {
@@ -3108,6 +3114,9 @@ fn install(
         units_changed |= !removed.is_empty();
         changed.extend(removed.into_iter().map(|r| format!("removed {r}")));
     }
+    if fs::remove_file(under(root, OLD_UDEV_RULES)).is_ok() {
+        changed.push(format!("removed {OLD_UDEV_RULES}"));
+    }
     let mut service_units_changed: Vec<&str> = Vec::new();
     for (path, content, mode) in files(s, &p) {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
@@ -3579,9 +3588,10 @@ fn open_device(path: &str) -> Result<std::sync::Arc<dyn hyperstor_engine::BlockD
 /// Adds the block devices `paths` to this host's storage node `s.node`
 /// (24-pools-and-devices.md §27.2.1; D167, D168). Each is checked for
 /// another system's signature before anything changes; registered with
-/// the map service by the `hyperstorctl` beside this installer
-/// (`device add`, through this member's API, or the leader's if this
-/// member isn't it); formatted with the id it was given; and recorded in
+/// the map service (`AddDevice`: with the administrator's certificate
+/// through this member's API, or with the node's own through the API a
+/// storage-only host joined with, D280; the leader's if that member
+/// isn't it); formatted with the id it was given; and recorded in
 /// `s.devices`, which this run and every later one turn into a `--shard`.
 /// A device already recorded is left as it is.
 fn add_devices(
@@ -3598,12 +3608,19 @@ fn add_devices(
         .node
         .unwrap_or_else(|| fail("--device needs --node N: the storage node to add it to"));
     let pki = under(root, "/etc/hyperstor/pki");
-    if !pki.join("admin.key").exists() {
-        fail(
-            "--device needs the administrator's certificate, which map service hosts have; on a storage-only host, add the device from one (hyperstorctl device add) and its --shard by hand for now",
-        );
-    }
     let p = plan(root, s, cluster_file);
+    // The administrator's certificate on a map service host, through its
+    // own API; a storage-only host's node certificate, through the API it
+    // joined with (D280).
+    let (who, api) = if pki.join("admin.key").exists() {
+        ("admin", p.api.clone())
+    } else if pki.join("node.key").exists() && !s.join.is_empty() {
+        ("node", s.join.clone())
+    } else {
+        fail(
+            "--device needs the administrator's certificate (a map service host) or the node's own (a host joined with --join)",
+        );
+    };
     let Some(node) = p.nodes.iter().find(|x| x.n == n) else {
         fail(&format!("node {n} isn't this host's"));
     };
@@ -3633,10 +3650,6 @@ fn add_devices(
         .map(|a| a.port())
         .max()
         .unwrap_or(s.node_port);
-    let ctl = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
-        .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
     for path in new {
         let meta = fs::metadata(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
         let block = meta.file_type().is_block_device();
@@ -3669,7 +3682,7 @@ fn add_devices(
                 std::net::SocketAddr::new(ip, port)
             }
         };
-        let id = register_device(&ctl, &p.api, &pki, s.api_port, n, addr);
+        let id = register_device(who, &api, &pki, s.api_port, n, addr);
         match format_device(root, path, id, force) {
             Ok(done) => println!("{done}"),
             Err(e) => fail(&e),
@@ -3779,32 +3792,42 @@ fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, i
     }
 }
 
-/// Registers a device at `addr` on node `n` (`hyperstorctl device add`)
-/// and returns its id: through `api`, else through the leader it names;
-/// an address already registered (a run that stopped before saving)
-/// gives that device back.
+/// Registers a device at `addr` on node `n` (`AddDevice`, with the
+/// certificate `who` in `pki`: `admin`, or a storage-only host's `node`,
+/// D280) and returns its id: through `api`, else through the leader it
+/// names; an address already registered (a run that stopped before
+/// saving) gives that device back.
 fn register_device(
-    ctl: &Path,
+    who: &str,
     api: &str,
     pki: &Path,
     api_port: u16,
     n: u32,
     addr: std::net::SocketAddr,
 ) -> u32 {
+    let read = |f: &str| fs::read_to_string(pki.join(f)).unwrap_or_default();
     let mut api = api.to_string();
     for _ in 0..2 {
-        let out = Command::new(ctl)
-            .args(["--api", &api, "--tls"])
-            .arg(pki)
-            .args(["device", "add", "--node", &n.to_string(), "--address"])
-            .arg(addr.to_string())
-            .output()
-            .unwrap_or_else(|e| fail(&format!("{}: {e}", ctl.display())));
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let tls = hyperstor_pki::client_config(
+            &read(&format!("{who}.crt")),
+            &read(&format!("{who}.key")),
+            &read("root.crt"),
+        )
+        .unwrap_or_else(|e| fail(&format!("{who}'s certificate: {e}")));
+        let r = api_call(&api, tls, |c| async move {
+            hyperstor_api::ClusterServiceClient::new(c.0, c.1)
+                .add_device(hyperstor_api::AddDeviceRequest {
+                    node: n,
+                    address: addr.to_string(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+        });
+        let text = match r {
+            Ok(r) => return r.device,
+            Err(e) => e,
+        };
         let number_after = |key: &str| -> Option<u32> {
             let rest = &text[text.find(key)? + key.len()..];
             rest.split(|c: char| !c.is_ascii_digit())
@@ -3812,11 +3835,6 @@ fn register_device(
                 .parse()
                 .ok()
         };
-        if out.status.success()
-            && let Some(id) = number_after("device ")
-        {
-            return id;
-        }
         if let Some(id) = number_after("is already device ")
             && id / 1000 == n
         {
@@ -3836,9 +3854,9 @@ fn register_device(
             api = std::net::SocketAddr::new(leader.ip(), api_port).to_string();
             continue;
         }
-        fail(&format!("hyperstorctl device add: {}", text.trim()));
+        fail(&format!("adding the device through {api}: {}", text.trim()));
     }
-    fail("hyperstorctl device add: the leader kept moving; run it again")
+    fail("adding the device: the leader kept moving; run it again")
 }
 
 /// `format-device --path P --id D [--force-format] [--root DIR]`
@@ -4116,6 +4134,8 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
+        UDEV_RULES.to_string(),
+        OLD_UDEV_RULES.to_string(),
     ]
     .into_iter()
     .chain(BINARIES.iter().map(|b| format!("/usr/local/bin/{b}")));
@@ -4354,6 +4374,16 @@ mod tests {
             ]
         );
         assert_eq!(node.networks, vec!["fast".to_string(), "ib".to_string()]);
+    }
+
+    /// I333: udev reads rules files in the order of their names; ours
+    /// match by-id links, which `60-persistent-storage.rules` makes, so
+    /// they come after it, and the old name came before.
+    #[test]
+    fn udev_rules_come_after_the_by_id_links() {
+        let name = |p: &'static str| p.rsplit('/').next().unwrap();
+        assert!(name(UDEV_RULES) > "60-persistent-storage.rules");
+        assert!(name(OLD_UDEV_RULES) < "60-persistent-storage.rules");
     }
 
     /// D207: a node serves the endpoints the cluster file gives its

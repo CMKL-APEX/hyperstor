@@ -1431,6 +1431,18 @@ The owner chose where to keep it:
 | 242 | An OIDC login's state across mgmt instances: a map service row, sealed with a key from the browser's cookie and used once, through a `glidex-auth` change (recommended); a sealed browser cookie under a key every mgmt shares; forwarding the callback to the mgmt that began it | The map service row | D278 |
 | 243 | #244's remaining gap: operation-list writes (S3 object data) carry no CRCs; fix in v0.0.8 with a checksummed write op, plain to older peers (recommended); close #244 and follow up in v0.0.9; close #244 and leave it | Fix in v0.0.8 | D279 |
 
+## Devices on storage-only hosts (2026-11-10)
+
+Adding a storage-only host to the pilot, its NVMe drive had to
+be added by hand: the installer's `--device` needed the administrator's
+certificate, which only map service hosts have, and D167's other way, a
+second join with a token, was never built (I334). The owner chose how
+such a host may register its own devices:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 244 | `--device` on a storage-only host: the node's certificate may add devices to its own node, at an IP it already serves on, as D215 lets it set its own endpoints (recommended); a one-time `device` token from the administrator per addition; both, with a setting to require the token | The node's certificate | D280 |
+
 ## Networks on a running cluster (2026-11-10)
 
 The pilot's hosts have 100 GbE ports on a shared subnet, but the
