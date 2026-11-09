@@ -8,7 +8,9 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 - `hyperstord` runs one reactor thread per reserved core (D7). Cores
   come from host-topology's reserved list, on the NUMA node of the
-  NVMe devices and NIC they serve.
+  NVMe devices and NIC they serve. As built, one reactor per device,
+  pinned to the cores `--cpus` names, if any; placing reactors per
+  NUMA node is planned (05-decision-log.md point 101).
 - A small tokio runtime (two threads) runs the control work: map watch,
   heartbeats, peering, recovery scheduling, the admin socket.
 - **PG ownership.** Each PG belongs to one reactor, chosen by
@@ -26,14 +28,15 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 
 ### 6.2 Devices and queues
 
-- **NVMe back end.** The engine opens each NVMe namespace through its
-  generic character device (`/dev/ngXnY`) and submits reads, writes and
-  deallocates with `uring_cmd` passthrough, on one io_uring per reactor.
-  Polled queues are used where the driver has them (`nvme.poll_queues`);
-  otherwise completions come by interrupt. The installer suggests the
-  module option and never forces it (host-topology H12). *Planned*: not
-  built; NVMe drives use the block back end until a namespace the engine
-  owns can measure it against write plus `fdatasync` (G57, #248).
+- **NVMe back end** (planned; #248, G57). The engine opens each NVMe
+  namespace through its generic character device (`/dev/ngXnY`) and
+  submits reads, writes and deallocates with `uring_cmd` passthrough, on
+  one io_uring per reactor. Polled queues are used where the driver has
+  them (`nvme.poll_queues`); otherwise completions come by interrupt.
+  The installer suggests the module option and never forces it
+  (host-topology H12). Not built: it waits for G57's measurements on a
+  namespace the engine can own. Until then NVMe drives use the block
+  back end.
 - **Block back end** (D29), for every other device:
   - io_uring `O_DIRECT` reads and writes on the block device (`/dev/sdX`,
     by its stable `/dev/disk/by-id` name), on the same per-reactor
@@ -42,9 +45,9 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
     where the device supports it (`queue/fua`) and as a write plus flush
     otherwise. A device with a volatile write cache and no FUA is
     accepted with a warning, because every log write then costs a flush.
-    As built, a commit round writes its data and records, then flushes
-    with `fdatasync` (`IORING_OP_FSYNC`); `RWF_DSYNC` waits for G57's
-    numbers (§7.3);
+    As built, a commit round's writes are followed by one `fdatasync`
+    (§7.3), whatever the device, and there is no warning; `RWF_DSYNC`
+    waits for G57 (#248);
   - discard and write-zeroes through `IORING_OP_FALLOCATE` (punch hole
     and zero range on the block device), which the kernel turns into the
     device's own commands. As built, there is no write-zeroes (a client's
@@ -54,9 +57,10 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
     hole on a block device becomes);
   - queue depth per reactor is capped from the device's
     `queue/nr_requests`, so one reactor can't starve the others on a SATA
-    device's single queue. *Planned*: as built, each shard has one commit
-    round in flight and each device at most 144 reads (below), whatever
-    the device.
+    device's single queue. As built, each device has a ring of 256
+    entries and one reactor, so there is nothing to share yet; a shard
+    has one commit round in flight and a device at most 144 reads
+    (below).
 - **Completion-driven** (D165): the engine plans an operation in
   memory, submits its I/O on the reactor's io_uring and finishes on the
   completions, so no device wait holds a reactor's thread. As built:
@@ -71,7 +75,11 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   served from a member, and three in a row fail the device (D190).
   Extents freed while reads are in flight are held until those reads
   end, and nothing is deferred in place meanwhile.
-- **Hard disks** (D29):
+- **Hard disks** (D29). As built, only deferral: `hyperstord --hdd`
+  sends writes under 64 KiB to blocks an object holds through the log
+  (§7.3, I14) and applies them in place in runs of consecutive blocks,
+  in block order; the log device and 64 KiB allocation units are
+  planned:
   - the log and the index go on a partition of a flash **log device**;
     one log device serves up to eight hard disks, each with its own
     partition;
@@ -81,16 +89,12 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - losing a log device fails every hard disk that uses it. Placement
     treats them as one failure unit, which the host failure domain
     already covers.
-
-  As built, `hyperstord --hdd` defers small overwrites (D38) and applies
-  them in place in runs of consecutive blocks, in block order; the log
-  device and the 64 KiB unit are planned, and a hard disk's log and index
-  are on the disk itself.
 - **Buffers.** Each reactor owns a buffer pool registered once with its
   io_uring (fixed buffers) and with its RDMA protection domain, so data
   moves between disk and network without a copy and without registration
-  on the I/O path. *Planned*: as built, I/O uses aligned buffers allocated
-  per request, with no fixed buffers and no RDMA.
+  on the I/O path. Not built: buffers are allocated per request and
+  aligned for `O_DIRECT`, and copies are being removed one by one
+  (17-milestones.md HS5b, D41).
 
 ## 7. Local engine
 

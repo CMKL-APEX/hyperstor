@@ -3416,9 +3416,26 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
             .scrub_repaired
             .load(std::sync::atomic::Ordering::Relaxed)
     };
+    // Until the primary's own copy (a lookup reads it) is no longer the
+    // stray one. Not just until `scrub_repaired` rises: it counts every
+    // repair on that node, and scrub may have counted one while the table
+    // was being written, a replica behind on its last batch (I331, #288).
+    let n = name.clone();
+    with_client(meta, 6, move |cl| async move {
+        let t = std::time::Instant::now();
+        loop {
+            let l = cl.lookup(POOL, NS_META, &n, b"stray", None, 1).await;
+            if l.is_ok_and(|l| l.is_some_and(|l| l.kv.is_empty())) {
+                return;
+            }
+            assert!(t.elapsed().as_secs() < 20, "not repaired");
+            hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+    // Counted once the fetched copy is also pushed to members that lack it.
     let t = std::time::Instant::now();
     while repaired() == 0 {
-        assert!(t.elapsed().as_secs() < 20, "not repaired");
+        assert!(t.elapsed().as_secs() < 20, "repair not counted");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let (map, devs) = c.stop();

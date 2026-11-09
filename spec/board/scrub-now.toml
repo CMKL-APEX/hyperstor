@@ -1,9 +1,0 @@
-title = "Scrubbing now and after recovery (D229, D230)"
-status = "done"
-owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
-started = 2026-11-04
-updated = 2026-11-05
-milestone = "AD3"
-branch = "feat/scrub-now"
-prs = [188]
-now = "Merged as d084cff and deployed to the pilot on 2026-11-05; a scrub of the .meta pool ran as an operation, 256 of 256 PGs (I267)"
