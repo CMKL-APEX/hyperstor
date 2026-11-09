@@ -237,14 +237,14 @@ export function PgGrid({
       <ul className="flex flex-wrap gap-x-4 mt-1 text-xs text-slate-600 dark:text-slate-400">
         {Object.entries(PG_STATES).map(([s, [name, color]]) => (
           <li key={s} className="flex items-center gap-1" data-testid={`pg-grid-${pool}-${name}`}>
-            <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
+            <span className="inline-block w-2.5 h-2.5 rounded-xs" style={{ background: color }} />
             {counts.get(Number(s)) ?? 0} {name}
           </li>
         ))}
         {view === "scrub" && (
           <li className="flex items-center gap-1" data-testid={`pg-grid-${pool}-scrub`}>
             <span
-              className="inline-block w-8 h-2.5 rounded-sm"
+              className="inline-block w-8 h-2.5 rounded-xs"
               style={{ background: `linear-gradient(to right, ${ageColor(0)}, ${ageColor(1)}, ${ageColor(2)})` }}
             />
             last deep scrub fresh, due, overdue; a dark centre: findings
@@ -252,14 +252,14 @@ export function PgGrid({
         )}
         {loadView && (
           <li className="flex items-center gap-1" data-testid={`pg-grid-${pool}-heat`}>
-            <span className="inline-block w-8 h-2.5 rounded-sm" style={{ background: `linear-gradient(to right, ${heatColor(0)}, ${heatColor(1)})` }} />
+            <span className="inline-block w-8 h-2.5 rounded-xs" style={{ background: `linear-gradient(to right, ${heatColor(0)}, ${heatColor(1)})` }} />
             {busiest > 0 ? `quiet to busiest, ${busiest.toFixed(0)} ${view}/s` : `no ${view} in the last window`}
           </li>
         )}
         {view === "state" && usage && (
           <li className="flex items-center gap-1" data-testid={`pg-grid-${pool}-usage`}>
             <span
-              className="inline-block w-8 h-2.5 rounded-sm"
+              className="inline-block w-8 h-2.5 rounded-xs"
               style={{ background: `linear-gradient(to right, ${PG_STATES[1][1]}4d, ${PG_STATES[1][1]})` }}
             />
             less to more data, the fullest PG {fmtBytes(usage.max)}
