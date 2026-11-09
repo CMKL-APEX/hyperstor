@@ -213,7 +213,6 @@ what = "Freed space discarded on the device (a deallocate on a drive, a punched 
 spec = ["08-engine.md §7.4", "D275", "I322", "G58"]
 status = "done"
 tests = [
-    "crash::random_crashes_recover_to_a_consistent_prefix",
     "cluster::devices_discard_freed_blocks_unless_told_not_to",
     "hyperstor_engine::shard::tests::freed_blocks_are_discarded_after_the_next_checkpoint",
     "hyperstor_engine::shard::tests::free_space_is_queued_only_right_after_opening",
