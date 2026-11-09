@@ -114,7 +114,7 @@ export function ErrorText({ error }: { error: unknown }) {
 export function Cli({ cmd }: { cmd: string }) {
   return (
     <p className="mt-2 text-xs text-slate-500">
-      CLI: <code className="px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">hyperstorctl {cmd}</code>
+      CLI: <code className="px-1 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800">hyperstorctl {cmd}</code>
     </p>
   );
 }
@@ -249,7 +249,7 @@ export function Space({ total, free, testId }: { total?: bigint; free?: bigint; 
   const color = used >= 0.95 ? "bg-red-500" : used >= 0.85 ? "bg-amber-500" : "bg-emerald-500";
   return (
     <div className="min-w-32" data-testid={testId} title={`${(100 * used).toFixed(1)} % used`}>
-      <div className="flex h-2 w-full rounded overflow-hidden bg-slate-200 dark:bg-slate-700">
+      <div className="flex h-2 w-full rounded-sm overflow-hidden bg-slate-200 dark:bg-slate-700">
         <span className={color} style={{ width: `${Math.min(100, 100 * used)}%` }} />
       </div>
       <div className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 whitespace-nowrap">

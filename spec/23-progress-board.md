@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 3 | 48 |
+| 5 | 0 | 3 | 48 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **The web UI on Vite 8, Tailwind CSS 4 and TypeScript 7 (I325)** (`ui-deps`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `deps/ui-vite8-tw4-ts7`, [#284](https://github.com/CMKL-APEX/hyperstor/pull/284) | As glidex #402: ui-kit synced, Tailwind 4 migrated, vite 8 and TypeScript 7; 13 of 13 browser tests pass | PR #284; deploy to the pilot when asked | 2026-11-09 |
 | **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-wire-crcs`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255) | HS5b: the engine keeps the CRCs a write came with, checked on arrival (I306), on top of #240 (crc32c 0.6.9, I304) | The client's copy; the check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6 | 2026-11-08 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-claims`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161), [#181](https://github.com/CMKL-APEX/hyperstor/pull/181), [#197](https://github.com/CMKL-APEX/hyperstor/pull/197), [#199](https://github.com/CMKL-APEX/hyperstor/pull/199), [#203](https://github.com/CMKL-APEX/hyperstor/pull/203), [#205](https://github.com/CMKL-APEX/hyperstor/pull/205) | Stage 3 merged (#203; D237, D238, I277). On feat/fabric-claims: stage 4, claims on ports by the orchestrator role and lending settings (D239–D241, I278) | Merge; the glidex issue for its scheduler; deploy to the pilot when asked; then stage 5 with HS6, and G52 | 2026-11-06 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
