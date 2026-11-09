@@ -1,0 +1,10 @@
+title = "Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-09
+updated = 2026-11-09
+milestone = "HS2"
+branch = "fix/checkpoint-dir-copy"
+prs = [278]
+now = "Built (I321): the directory written twice, the copy named after the superblock's checksum; each device reads its pages once per deep scrub period and rewrites a damaged one"
+next = "Then #245 (D275), #244 (needs a decision), #251"

@@ -23,7 +23,7 @@ pub use device::{
     record_cluster, upgrade,
 };
 pub use shard::{
-    DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, ReadPlan, Region, Round, Shard,
-    ShardStats,
+    CheckpointLayout, DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, ReadPlan,
+    Region, Round, Shard, ShardStats,
 };
 pub use types::{Committed, EngineError, Namespace, ObjKey, ObjStat, Op, OpError, OpList};

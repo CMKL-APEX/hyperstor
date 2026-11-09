@@ -42,7 +42,7 @@ Each pool carries its scrub settings in the map:
 | Setting | Default | Range | Meaning |
 |---|---|---|---|
 | `scrub_hours` | 24 | 1–720, or 0 (off) | Every PG of the pool is light-scrubbed once in this many hours |
-| `deep_every` | 7 | 1–28 | Every *n*-th pass is deep: every block is read and its CRC checked; decided: the device's checkpoint pages too (D269) |
+| `deep_every` | 7 | 1–28 | Every *n*-th pass is deep: every block is read and its CRC checked; each device also reads its checkpoint pages and directory once per the shortest deep period of its pools, and rewrites a damaged one (D269, I321) |
 | `hole_repair` | `repair` | `repair`, `report` | Whether copies holding zeros where another has holes (D223) are replaced, or only reported |
 | `deep_rate` | 64 MiB/s | 8–1024 MiB/s | The most a deep scrub reads per second, per device |
 

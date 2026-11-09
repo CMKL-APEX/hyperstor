@@ -94,6 +94,7 @@ pub struct ShardMetrics {
     pub log_bytes: AtomicU64,
     pub commits: AtomicU64,
     pub checkpoints: AtomicU64,
+    pub checkpoint_damage: AtomicU64,
     pub map_epoch: AtomicU64,
 }
 
@@ -249,6 +250,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         &|m| vec![("", g(&m.checkpoints))],
     );
     family(
+        "hyperstor_checkpoint_damage_total",
+        "counter",
+        "Damaged checkpoint pages and directories scrub found and rewrote (D269).",
+        &|m| vec![("", g(&m.checkpoint_damage))],
+    );
+    family(
         "hyperstor_map_epoch",
         "gauge",
         "Epoch of the cluster map this reactor holds.",
@@ -343,7 +350,8 @@ mod tests {
             "hyperstor_scrub_pgs_total{node=\"4\",device=\"4001\",kind=\"holes_unchecked\"} 0\n"
         ));
         assert!(t.contains("hyperstor_push_holds_total{node=\"4\",device=\"4001\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 18);
+        assert!(t.contains("hyperstor_checkpoint_damage_total{node=\"4\",device=\"4001\"} 0\n"));
+        assert_eq!(t.matches("# TYPE ").count(), 19);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {
