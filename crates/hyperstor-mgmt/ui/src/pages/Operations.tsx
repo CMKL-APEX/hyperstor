@@ -33,7 +33,7 @@ export default function Operations() {
               <td className={td}>
                 {o.total ? (
                   <div className="flex items-center gap-2">
-                    <div className="w-24 h-2 rounded bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                    <div className="w-24 h-2 rounded-sm bg-slate-200 dark:bg-slate-700 overflow-hidden">
                       <div className="h-full bg-sky-500" style={{ width: `${(100 * o.done) / o.total}%` }} />
                     </div>
                     {o.done}/{o.total}
