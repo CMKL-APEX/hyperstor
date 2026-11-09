@@ -479,6 +479,101 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
+/// D281, D282: a running cluster takes a data network (`hyperstorctl
+/// network set`); a device gets an endpoint on it by hand; the network
+/// stays while it has one; the installer on the map service host writes
+/// the endpoint into the node's options, and the node, restarted, serves
+/// it.
+#[test]
+fn a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it() {
+    let mut c = Cluster::all_in_one("netset", 3);
+    assert!(c.ctl(&["network", "list"]).ok().has("no networks"));
+    let r = c
+        .ctl(&[
+            "network",
+            "set",
+            "--name",
+            "fast",
+            "--kind",
+            "data",
+            "--match",
+            "subnet 127.0.0.2/32",
+        ])
+        .ok();
+    assert!(r.has("network fast set"), "{}", r.out);
+    let list = c.ctl(&["network", "list"]).ok();
+    assert!(
+        list.has("fast") && list.has("subnet 127.0.0.2/32"),
+        "{}",
+        list.out
+    );
+    let bad = c.ctl(&[
+        "network",
+        "set",
+        "--name",
+        "f a",
+        "--kind",
+        "data",
+        "--match",
+        "subnet 127.0.0.2/32",
+    ]);
+    assert!(bad.code == 1 && bad.has("lowercase"), "{}", bad.out);
+    let bad = c.ctl(&[
+        "network",
+        "set",
+        "--name",
+        "slow",
+        "--kind",
+        "data",
+        "--match",
+        "127.0.0.3",
+    ]);
+    assert!(bad.code == 1 && bad.has("subnet CIDR"), "{}", bad.out);
+    let ep = format!("127.0.0.2:{}", free_ports(1));
+    c.ctl(&[
+        "device",
+        "endpoints",
+        "--device",
+        "0",
+        "--endpoints",
+        &format!("fast={ep}"),
+    ])
+    .ok();
+    let held = c.ctl(&["network", "remove", "--name", "fast"]);
+    assert!(held.code == 1 && held.has("devices [0]"), "{}", held.out);
+    // The map service host's installer serves the map's endpoints (D282).
+    install(&c.root, &["--no-start"]);
+    let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
+    assert!(
+        env.contains(&format!("--endpoint 0={ep}")) && env.contains("--networks fast"),
+        "{env}"
+    );
+    c.kill_node(0);
+    c.start_node(0);
+    wait_for("node 0 serving its endpoint", 60, || {
+        std::net::TcpStream::connect(&ep).ok()
+    });
+    wait_for("health ok", 120, || {
+        c.ctl(&["status"]).has("health  ok").then_some(())
+    });
+    // Without endpoints on it, it goes.
+    c.ctl(&[
+        "device",
+        "endpoints",
+        "--device",
+        "0",
+        "--endpoints",
+        "none",
+    ])
+    .ok();
+    assert!(
+        c.ctl(&["network", "remove", "--name", "fast"])
+            .ok()
+            .has("network fast removed")
+    );
+    assert!(c.ctl(&["network", "list"]).ok().has("no networks"));
+}
+
 /// D186: `hyperstor-install install --remove-device ID` drops a device
 /// removed from the map from its node: refused while the map still has
 /// it; then kept in install.conf, so the node's options lose its

@@ -54,6 +54,11 @@
 //! - `device endpoints --device D --endpoints NET=ADDR,...|none`: set a
 //!   device's endpoints on the cluster's data networks, replacing them
 //!   (26-networks.md §29.5, D215); the installer keeps its own node's;
+//! - `network list`, `network set --name N --kind control|data|both
+//!   --match "subnet IP/LEN"|"ib PREFIX" [--trusted]`, `network remove
+//!   --name N`: the cluster's networks (D281), as the cluster file's
+//!   `network` lines give them; one with endpoints on it stays, carries
+//!   data and keeps its match;
 //! - `device upgrade --device D | --all`: convert devices to v0.0.8's
 //!   shard format (D274) at their node's next start; one-way, and only
 //!   devices whose node runs v0.0.8 or later;
@@ -197,7 +202,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -287,6 +292,10 @@ struct Args {
     all: bool,
     /// `port lending`: off, idle, always or default (D209).
     lending: Option<String>,
+    /// `network set`: `subnet IP/LEN` or `ib PREFIX` (D281).
+    matches: Option<String>,
+    /// `network set`: plaintext after the handshake (D25).
+    trusted: bool,
     json: bool,
     yaml: bool,
     role: Option<String>,
@@ -429,6 +438,8 @@ fn main() {
         exclusive: false,
         all: false,
         lending: None,
+        matches: None,
+        trusted: false,
         epoch: None,
         ids: Vec::new(),
         group: None,
@@ -608,6 +619,8 @@ fn main() {
             "--exclusive" => a.exclusive = true,
             "--all" => a.all = true,
             "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--match" => a.matches = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--trusted" => a.trusted = true,
             "--epoch" => {
                 a.epoch = Some(
                     it.next()
@@ -673,7 +686,7 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool" | "scrub" | "port" | "claim" | "realm"
+            | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -696,6 +709,7 @@ fn main() {
                         )
                     }
                     "port" => matches!(sub, Some("list" | "role" | "lending")),
+                    "network" => matches!(sub, Some("list" | "set" | "remove")),
                     "claim" => matches!(sub, Some("list" | "port" | "renew" | "release")),
                     "realm" => {
                         matches!(
@@ -760,7 +774,7 @@ fn main() {
                 || a.autoscale.is_some()
                 || a.cache_grace.is_some()))
         || (!create
-            && (a.kind.is_some()
+            && ((a.kind.is_some() && cmd != "network set")
                 || a.copies.is_some()
                 || a.min.is_some()
                 || (a.pgs.is_some() && !set)
@@ -841,6 +855,16 @@ fn main() {
     if (cmd == "scrub set") != scrub_given
         || (cmd == "scrub set" && a.pool.is_none())
         || (a.reason.is_some() && cmd != "scrub set")
+    {
+        usage();
+    }
+    // network set takes a name, a kind and a match, maybe --trusted;
+    // network remove a name; nothing else takes a match or trust (D281).
+    let network_set = cmd == "network set";
+    if (network_set && (a.name.is_empty() || a.kind.is_none() || a.matches.is_none()))
+        || (cmd == "network remove" && a.name.is_empty())
+        || (cmd == "network list" && !a.name.is_empty())
+        || (!network_set && (a.matches.is_some() || a.trusted))
     {
         usage();
     }
@@ -2313,6 +2337,48 @@ where
                 }
                 Err(e) => return Err(e),
             }
+        }
+        "network list" => {
+            let r = client
+                .get_status(pb::GetStatusRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r.networks, || hyperstor_ctl::networks_text(&r.networks));
+            Next::Exit(0)
+        }
+        "network set" | "network remove" => {
+            let remove = cmd == "network remove";
+            let name = a.name.clone();
+            let r = client
+                .set_network(pb::SetNetworkRequest {
+                    network: pb::Network {
+                        name: name.clone(),
+                        kind: a.kind.clone().unwrap_or_default(),
+                        trusted: a.trusted,
+                        matches: a.matches.clone().unwrap_or_default(),
+                        ..Default::default()
+                    }
+                    .into(),
+                    remove,
+                    ..Default::default()
+                })
+                .await;
+            if let Err(e) = &r
+                && e.code == connectrpc::ErrorCode::PermissionDenied
+            {
+                eprintln!(
+                    "hyperstorctl: {}",
+                    e.message.as_deref().unwrap_or("refused")
+                );
+                return Ok(Next::Exit(1));
+            }
+            return refused_or(r, |r| {
+                println!(
+                    "network {name} {} (map epoch {}); hosts take endpoints on it at their installer's next run",
+                    if remove { "removed" } else { "set" },
+                    r.into_owned().map_epoch
+                )
+            });
         }
         "device class" => {
             let (Some(device), Some(class)) = (a.device, a.class.clone()) else {

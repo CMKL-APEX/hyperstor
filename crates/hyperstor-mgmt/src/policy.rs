@@ -75,6 +75,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.UpgradeDevices", Group::Operate, true),
     // A device's endpoints (D215): where its traffic goes.
     ("ClusterService.SetEndpoints", Group::Operate, false),
+    // The cluster's networks (D281): which links data may take.
+    ("ClusterService.SetNetwork", Group::Operate, false),
     ("ClusterService.ListPorts", Group::Read, false),
     ("ClusterService.SetPortRole", Group::Operate, false),
     ("ClusterService.SetLending", Group::Operate, false),

@@ -1430,3 +1430,15 @@ The owner chose where to keep it:
 |---|---|---|---|
 | 242 | An OIDC login's state across mgmt instances: a map service row, sealed with a key from the browser's cookie and used once, through a `glidex-auth` change (recommended); a sealed browser cookie under a key every mgmt shares; forwarding the callback to the mgmt that began it | The map service row | D278 |
 | 243 | #244's remaining gap: operation-list writes (S3 object data) carry no CRCs; fix in v0.0.8 with a checksummed write op, plain to older peers (recommended); close #244 and follow up in v0.0.9; close #244 and leave it | Fix in v0.0.8 | D279 |
+
+## Networks on a running cluster (2026-11-10)
+
+The pilot's hosts have 100 GbE ports on a shared subnet, but the
+cluster was installed without networks, which only the cluster file
+names, so storage used its 1 GbE addresses. Given the options (a
+network set through the API; re-adding a device at its fast address),
+the owner chose the first:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 245 | Networks on a running cluster: `SetNetwork` through the map service, then endpoints on it (recommended); re-add a device at its fast address, without endpoints' failover or weights | Through the map service | D281 |

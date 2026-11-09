@@ -462,6 +462,39 @@ pub struct NetworkDef {
     pub matches: String,
 }
 
+impl NetworkDef {
+    /// A network from its parts as the cluster file and `SetNetwork`
+    /// (D281) give them: its kind (`control`, `data` or `both`), and its
+    /// match (`subnet IP/LEN`, or `ib PREFIX` in four groups).
+    pub fn parse(kind: &str, trusted: bool, matches: &str) -> Result<NetworkDef, String> {
+        let kind = match kind {
+            "control" => NetKind::Control,
+            "data" => NetKind::Data,
+            "both" => NetKind::Both,
+            _ => return Err("a network is control, data or both".into()),
+        };
+        let words: Vec<&str> = matches.split_whitespace().collect();
+        let matches = match words[..] {
+            ["subnet", cidr] => {
+                let (ip, len) = cidr.split_once('/').ok_or("subnet IP/LEN")?;
+                let ip: std::net::IpAddr = ip.parse().map_err(|_| "bad subnet")?;
+                let len: u8 = len.parse().map_err(|_| "bad subnet length")?;
+                if len > if ip.is_ipv4() { 32 } else { 128 } {
+                    return Err("bad subnet length".into());
+                }
+                format!("subnet {ip}/{len}")
+            }
+            ["ib", prefix] if prefix.split(':').count() == 4 => format!("ib {prefix}"),
+            _ => return Err("a network is matched by subnet CIDR or ib PREFIX".into()),
+        };
+        Ok(NetworkDef {
+            kind,
+            trusted,
+            matches,
+        })
+    }
+}
+
 /// Fullness thresholds, in thousandths of a device's data region
 /// (04-decisions.md D27, D182): past `nearfull` a device warns, past
 /// `backfillfull` it takes no backfill, past `full` it refuses what would
@@ -772,6 +805,52 @@ impl ClusterMap {
             self.fixed_classes.remove(&device)
         };
         Ok(changed || was != fixed)
+    }
+
+    /// Adds or replaces network `name` (D281), or with `None` removes it.
+    /// While devices have endpoints on it, it stays, keeps carrying data
+    /// and keeps its match, so no endpoint is left on a network that
+    /// doesn't reach it. Whether it changed; the epoch moves when it did.
+    pub fn set_network(&mut self, name: &str, def: Option<NetworkDef>) -> Result<bool, String> {
+        let used: Vec<u32> = self
+            .endpoints
+            .iter()
+            .filter(|(_, eps)| eps.iter().any(|(n, _)| n == name))
+            .map(|(d, _)| *d)
+            .collect();
+        let held = |what: &str| {
+            format!(
+                "devices {used:?} have endpoints on network {name}: {what}; set theirs elsewhere first"
+            )
+        };
+        let old = self.networks.get(name);
+        match def {
+            None => {
+                if old.is_none() {
+                    return Err(format!("no network {name}"));
+                }
+                if !used.is_empty() {
+                    return Err(held("it stays while they do"));
+                }
+                self.networks.remove(name);
+            }
+            Some(def) => {
+                if old == Some(&def) {
+                    return Ok(false);
+                }
+                if !used.is_empty() {
+                    if def.kind == NetKind::Control {
+                        return Err(held("it carries data while they do"));
+                    }
+                    if old.is_some_and(|o| o.matches != def.matches) {
+                        return Err(held("its match stays while they do"));
+                    }
+                }
+                self.networks.insert(name.to_string(), def);
+            }
+        }
+        self.epoch += 1;
+        Ok(true)
     }
 
     /// Replaces `device`'s endpoints (D215): each on a network of the map
@@ -2487,38 +2566,13 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
             }
             // network NAME control|data|both [trusted] subnet CIDR | ib PREFIX
             "network" if w.len() >= 5 => {
-                let kind = match w[2] {
-                    "control" => NetKind::Control,
-                    "data" => NetKind::Data,
-                    "both" => NetKind::Both,
-                    _ => return Err(bad("a network is control, data or both")),
-                };
                 let trusted = w[3] == "trusted";
-                let rest = &w[3 + usize::from(trusted)..];
-                let matches = match rest {
-                    ["subnet", cidr] => {
-                        let (ip, len) = cidr.split_once('/').ok_or_else(|| bad("subnet IP/LEN"))?;
-                        let ip: std::net::IpAddr = ip.parse().map_err(|_| bad("bad subnet"))?;
-                        let len: u8 = len.parse().map_err(|_| bad("bad subnet length"))?;
-                        if len > if ip.is_ipv4() { 32 } else { 128 } {
-                            return Err(bad("bad subnet length"));
-                        }
-                        format!("subnet {ip}/{len}")
-                    }
-                    ["ib", prefix] if prefix.split(':').count() == 4 => format!("ib {prefix}"),
-                    _ => return Err(bad("a network is matched by subnet CIDR or ib PREFIX")),
-                };
+                let rest = w[3 + usize::from(trusted)..].join(" ");
+                let def = NetworkDef::parse(w[2], trusted, &rest).map_err(|e| bad(&e))?;
                 if map.networks.contains_key(w[1]) {
                     return Err(bad("network given twice"));
                 }
-                map.networks.insert(
-                    w[1].to_string(),
-                    NetworkDef {
-                        kind,
-                        trusted,
-                        matches,
-                    },
-                );
+                map.networks.insert(w[1].to_string(), def);
             }
             // endpoint DEV NETWORK IP:PORT
             "endpoint" if w.len() == 4 => {
@@ -2641,6 +2695,51 @@ pool 1 v replicated size 2 min 1 pgs 8
         let b = plain.encode();
         assert!(u32::from_le_bytes(b[..4].try_into().unwrap()) < 14);
         assert_eq!(ClusterMap::decode(&b).unwrap(), plain);
+    }
+
+    /// D281: a running cluster's networks change through the map. One
+    /// that devices have endpoints on stays, keeps carrying data and keeps
+    /// its match; its trust may change. An unchanged one moves no epoch.
+    #[test]
+    fn networks_are_set_and_removed_unless_endpoints_are_on_them() {
+        let mut m = parse_cluster(FILE).unwrap();
+        let fast = NetworkDef::parse("data", false, "subnet 198.51.100.0/24").unwrap();
+        let e = m.epoch;
+        assert_eq!(m.set_network("fast", Some(fast.clone())), Ok(true));
+        assert_eq!(m.epoch, e + 1);
+        assert_eq!(m.set_network("fast", Some(fast.clone())), Ok(false));
+        assert_eq!(m.epoch, e + 1, "unchanged");
+        let ep = "198.51.100.10:9100".parse().unwrap();
+        m.set_endpoints(1, vec![("fast".into(), ep)]).unwrap();
+        let err = m.set_network("fast", None).unwrap_err();
+        assert!(
+            err.contains("devices [1]") && err.contains("stays"),
+            "{err}"
+        );
+        let control = NetworkDef::parse("control", false, "subnet 198.51.100.0/24").unwrap();
+        assert!(m.set_network("fast", Some(control)).is_err());
+        let moved = NetworkDef::parse("data", false, "subnet 198.51.0.0/16").unwrap();
+        assert!(m.set_network("fast", Some(moved)).is_err());
+        let trusted = NetworkDef::parse("data", true, "subnet 198.51.100.0/24").unwrap();
+        assert_eq!(m.set_network("fast", Some(trusted)), Ok(true));
+        m.set_endpoints(1, Vec::new()).unwrap();
+        assert_eq!(m.set_network("fast", None), Ok(true));
+        assert!(!m.networks.contains_key("fast"));
+        assert!(
+            m.set_network("fast", None)
+                .unwrap_err()
+                .contains("no network")
+        );
+        // The same parts the cluster file takes, and its refusals.
+        assert!(NetworkDef::parse("fast", false, "subnet 10.0.0.0/8").is_err());
+        assert!(NetworkDef::parse("data", false, "subnet 10.0.0.0/33").is_err());
+        assert!(NetworkDef::parse("data", false, "10.0.0.0/8").is_err());
+        assert_eq!(
+            NetworkDef::parse("both", false, "ib fe80:0:0:0")
+                .unwrap()
+                .matches,
+            "ib fe80:0:0:0"
+        );
     }
 
     #[test]

@@ -85,6 +85,12 @@ service ClusterService {
   // may set only its own devices'; admin and mgmt any device's.
   rpc SetEndpoints(SetEndpointsRequest) returns (SetEndpointsResponse);
 
+  // Adds or changes a network of the map (26-networks.md §29.3, D281), as
+  // the cluster file's `network` lines name them, or with `remove` drops
+  // it. While devices have endpoints on it, it stays, carries data and
+  // keeps its match. admin and mgmt.
+  rpc SetNetwork(SetNetworkRequest) returns (SetNetworkResponse);
+
   // The nodes' network ports (26-networks.md §29.3, §29.8): each one's
   // role and, as its node last reported it, its state, speed, addresses
   // and traffic; for ports that carry storage, the fabric reconciler's
@@ -897,6 +903,17 @@ message SetEndpointsRequest {
 }
 
 message SetEndpointsResponse {
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+}
+
+message SetNetworkRequest {
+  // Its name, kind, trust and match; with `remove`, only its name counts.
+  Network network = 1;
+  bool remove = 2;
+}
+
+message SetNetworkResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
 }
