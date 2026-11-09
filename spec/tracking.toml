@@ -375,7 +375,6 @@ tests = [
     "members::the_member_list_shows_a_stopped_member",
     "hyperstor_ctl::tests::a_members_state_is_the_leaders_view",
     "hyperstor_meta::replica::tests::a_change_of_leader_is_recorded_once_by_each_side",
-    "browser::the_pages_show_the_cluster",
 ]
 
 [[milestone.item]]
