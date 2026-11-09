@@ -9,7 +9,8 @@ use hyperstor_test::*;
 fn roles_strangers_and_plain_http() {
     let c = Cluster::all_in_one("roles", 3);
     let node = c.identity(Role::Node, "node7", false);
-    c.ctl_via(Via::Tls(&node), &["status"]).ok();
+    // Health ok first (I284, I307), then status exits 0.
+    c.ctl_via(Via::Tls(&node), &["status", "--wait", "60"]).ok();
     // Refusals exit 4, with the API's reason.
     let r = c
         .ctl_via(Via::Tls(&node), &["out", "--device", "0"])
@@ -65,7 +66,8 @@ fn roles_strangers_and_plain_http() {
 #[test]
 fn local_socket_break_glass() {
     let c = Cluster::all_in_one("socket", 3);
-    c.ctl_via(Via::Socket, &["status"]).ok();
+    // Health ok first (I284, I307), then status exits 0.
+    c.ctl_via(Via::Socket, &["status", "--wait", "60"]).ok();
     c.ctl_via(Via::Socket, &["out", "--device", "0"]).ok();
     c.ctl_via(Via::Socket, &["in", "--device", "0", "--wait", "30"])
         .ok();
@@ -101,7 +103,8 @@ fn unreachable_api_is_status_3() {
 fn revoked_certificates_are_refused() {
     let c = Cluster::all_in_one("revoke", 3);
     let ops = c.identity(Role::Admin, "ops2", false);
-    c.ctl_via(Via::Tls(&ops), &["status"]).ok();
+    // Health ok first (I284, I307), then status exits 0.
+    c.ctl_via(Via::Tls(&ops), &["status", "--wait", "60"]).ok();
     let shown = c
         .ctl(&[
             "cert",
