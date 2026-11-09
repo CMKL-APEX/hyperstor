@@ -31,7 +31,9 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   deallocates with `uring_cmd` passthrough, on one io_uring per reactor.
   Polled queues are used where the driver has them (`nvme.poll_queues`);
   otherwise completions come by interrupt. The installer suggests the
-  module option and never forces it (host-topology H12).
+  module option and never forces it (host-topology H12). *Planned*: not
+  built; NVMe drives use the block back end until a namespace the engine
+  owns can measure it against write plus `fdatasync` (G57, #248).
 - **Block back end** (D29), for every other device:
   - io_uring `O_DIRECT` reads and writes on the block device (`/dev/sdX`,
     by its stable `/dev/disk/by-id` name), on the same per-reactor
@@ -39,16 +41,22 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - durability: a log write is `RWF_DSYNC`, which the kernel sends as FUA
     where the device supports it (`queue/fua`) and as a write plus flush
     otherwise. A device with a volatile write cache and no FUA is
-    accepted with a warning, because every log write then costs a flush;
+    accepted with a warning, because every log write then costs a flush.
+    As built, a commit round writes its data and records, then flushes
+    with `fdatasync` (`IORING_OP_FSYNC`); `RWF_DSYNC` waits for G57's
+    numbers (§7.3);
   - discard and write-zeroes through `IORING_OP_FALLOCATE` (punch hole
     and zero range on the block device), which the kernel turns into the
-    device's own commands. As built, freed space is discarded with
+    device's own commands. As built, there is no write-zeroes (a client's
+    write-zeroes drops blocks, §7.4), and freed space is discarded with
     `BLKDISCARD` on a block device and a punched hole on a file, from a
     thread of the device's own (§7.4; G58 asks which command a punched
     hole on a block device becomes);
   - queue depth per reactor is capped from the device's
     `queue/nr_requests`, so one reactor can't starve the others on a SATA
-    device's single queue.
+    device's single queue. *Planned*: as built, each shard has one commit
+    round in flight and each device at most 144 reads (below), whatever
+    the device.
 - **Completion-driven** (D165): the engine plans an operation in
   memory, submits its I/O on the reactor's io_uring and finishes on the
   completions, so no device wait holds a reactor's thread. As built:
@@ -73,10 +81,16 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - losing a log device fails every hard disk that uses it. Placement
     treats them as one failure unit, which the host failure domain
     already covers.
+
+  As built, `hyperstord --hdd` defers small overwrites (D38) and applies
+  them in place in runs of consecutive blocks, in block order; the log
+  device and the 64 KiB unit are planned, and a hard disk's log and index
+  are on the disk itself.
 - **Buffers.** Each reactor owns a buffer pool registered once with its
   io_uring (fixed buffers) and with its RDMA protection domain, so data
   moves between disk and network without a copy and without registration
-  on the I/O path.
+  on the I/O path. *Planned*: as built, I/O uses aligned buffers allocated
+  per request, with no fixed buffers and no RDMA.
 
 ## 7. Local engine
 
@@ -142,8 +156,8 @@ device is formatted with the cluster's id; a superblock without one
     extent carries one CRC32C per 4 KiB block;
   - **attributes**: a few small named values;
   - a **key–value table**: ordered keys and values of its own, stored in
-    the index B+tree under the object's key prefix, so a range scan of
-    them is a range scan of the tree.
+    the index under the object's key prefix, so a range scan of them is a
+    range scan of the index (as built, an ordered map in memory, §7.1).
 - **Namespaces** and their names:
 
 | Namespace | Name | Used by |
@@ -184,7 +198,10 @@ device is formatted with the cluster's id; a superblock without one
   zeros.
 - EC fragments are objects too, with the shard index in the key (09-replication.md §8.6).
 - The index is cached in memory per PG. The CRC arrays stay on disk in
-  the index's leaf pages and are cached by use.
+  the index's leaf pages and are cached by use. As built, the whole index,
+  CRCs included, is in memory and saved as paged checkpoints (§7.1, §7.3);
+  caching by use comes with the on-device index (D43, D44; D272: after
+  v0.0.8).
 
 ### 7.3 Writes (D22)
 
