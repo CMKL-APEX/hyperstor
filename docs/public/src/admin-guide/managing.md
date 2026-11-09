@@ -184,6 +184,15 @@ more there were. The journal has every one:
 hyperstorctl audit list --op Refused
 ```
 
+The map service records its own changes of leader, as `hyperstor-meta`:
+the member that takes over records `LeaderElected` with the term and the
+leader before it, and a leader that sees another take over, or none,
+records `LeaderLost`:
+
+```sh
+hyperstorctl audit list --since 7d --op LeaderElected
+```
+
 ## Health
 
 ```sh

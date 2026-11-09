@@ -338,6 +338,8 @@ async fn run(
         tokio::spawn(async move {
             let mut metrics = node.raft.metrics();
             let mut last = None;
+            // The last leader this member knew, for the audit (I334).
+            let mut before: Option<RaftId> = None;
             loop {
                 // Copied out first: `map_of` reads the metrics again, and a
                 // second read while this one is held deadlocks once
@@ -360,8 +362,17 @@ async fn run(
                         Some(l) => eprintln!("hyperstor-meta: member {l} leads (term {term})"),
                         None => eprintln!("hyperstor-meta: no leader (term {term})"),
                     }
+                    if let Some((op, result)) = leader_change(node.id, before, leader, term) {
+                        crate::audit_log::record(
+                            "hyperstor-meta",
+                            op,
+                            &format!("member {}", node.id),
+                            &result,
+                        );
+                    }
                     let _ = to.send(ToReactor::Leader(leading));
                 }
+                before = current.or(before);
                 if metrics.changed().await.is_err() {
                     return;
                 }
@@ -440,6 +451,31 @@ async fn run(
 const APPEND: u8 = 1;
 const VOTE: u8 = 2;
 const SNAPSHOT: u8 = 3;
+/// The audit record of a change of leader, as member `me` sees it go from
+/// `before` (the last leader it knew) to `now` (I334): the member that
+/// takes over records `LeaderElected`, and one that led and sees another
+/// lead, or none, records `LeaderLost`. Others record nothing, so a change
+/// is one record, or two when the old leader still runs.
+fn leader_change(
+    me: RaftId,
+    before: Option<RaftId>,
+    now: Option<RaftId>,
+    term: u64,
+) -> Option<(&'static str, String)> {
+    let was =
+        |b: Option<RaftId>| b.map_or("none known before".into(), |b| format!("member {b} before"));
+    match now {
+        Some(l) if l == me && before != Some(me) => {
+            Some(("LeaderElected", format!("term {term}; {}", was(before))))
+        }
+        Some(l) if l != me && before == Some(me) => {
+            Some(("LeaderLost", format!("term {term}; member {l} leads")))
+        }
+        None if before == Some(me) => Some(("LeaderLost", format!("term {term}; no leader"))),
+        _ => None,
+    }
+}
+
 /// The group from this member's metrics.
 fn members_now(node: &ClusterNode<MapSchema>, me: RaftId, heard: &Heard) -> Members {
     let m = node.raft.metrics();
@@ -885,6 +921,29 @@ mod tests {
 
     /// Members refuse each other's certificates once revoked (D56), and
     /// any that isn't a `meta` of this cluster.
+    #[test]
+    fn a_change_of_leader_is_recorded_once_by_each_side() {
+        assert_eq!(
+            leader_change(2, Some(1), Some(2), 7),
+            Some(("LeaderElected", "term 7; member 1 before".into()))
+        );
+        assert_eq!(
+            leader_change(2, None, Some(2), 1),
+            Some(("LeaderElected", "term 1; none known before".into()))
+        );
+        assert_eq!(
+            leader_change(1, Some(1), Some(2), 7),
+            Some(("LeaderLost", "term 7; member 2 leads".into()))
+        );
+        assert_eq!(
+            leader_change(1, Some(1), None, 7),
+            Some(("LeaderLost", "term 7; no leader".into()))
+        );
+        // A bystander, and the same leader again.
+        assert_eq!(leader_change(3, Some(1), Some(2), 7), None);
+        assert_eq!(leader_change(2, Some(2), Some(2), 8), None);
+    }
+
     #[test]
     fn members_refuse_revoked_peers() {
         let dir = tempfile::tempdir().unwrap();

@@ -319,7 +319,8 @@ fn members_change_at_run_time() {
 
 /// Each member's Raft state in the leader's member list (D280): in step;
 /// stopped, no reply, and behind by the writes since; started again, in
-/// step. Another member's list has no state.
+/// step. Another member's list has no state. The leader stopped, the next
+/// one records the change in the audit (I334).
 #[test]
 fn the_member_list_shows_a_stopped_member() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -364,6 +365,19 @@ fn the_member_list_shows_a_stopped_member() {
         let r = row(&g, l, f + 1);
         r.contains(" in step ").then_some(())
     });
+    // The leader stops: the next records the change in the audit (I334).
+    g.m[l].stop();
+    let others: Vec<usize> = (0..3).filter(|i| *i != l).collect();
+    let n = g.leader(&others);
+    let log = g.m[n].log();
+    let elected = log
+        .lines()
+        .rfind(|x| x.contains("\"op\":\"LeaderElected\""))
+        .unwrap_or_else(|| panic!("no LeaderElected record:\n{log}"));
+    assert!(
+        elected.contains(&format!("member {} before", l + 1)),
+        "{elected}"
+    );
 }
 
 /// A group that lost its majority for good (D85): the survivor can't

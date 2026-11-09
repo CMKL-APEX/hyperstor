@@ -368,12 +368,13 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI"
-spec = ["D280", "D281", "I333", "19-administration.md §23.7"]
+what = "Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log"
+spec = ["D280", "D281", "I333", "I334", "19-administration.md §23.7"]
 status = "done"
 tests = [
     "members::the_member_list_shows_a_stopped_member",
     "hyperstor_ctl::tests::a_members_state_is_the_leaders_view",
+    "hyperstor_meta::replica::tests::a_change_of_leader_is_recorded_once_by_each_side",
     "browser::the_pages_show_the_cluster",
 ]
 
