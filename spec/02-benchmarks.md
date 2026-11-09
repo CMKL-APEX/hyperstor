@@ -2002,3 +2002,30 @@ The same 1 GiB file read with `dd iflag=direct`: 2.7 s at `bs=1M`,
    restart costs about half a second a shard on this host, once. The
    hash chain (D266) doesn't remove the read: a gap is proven only by a
    record found after it.
+
+## 2026-11-09: A client's write sent from its own buffer (HS5b, I323)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:
+main at 00b3fa7f (before) and the same with each chunk's piece of a
+client's write sent from the caller's buffer (after), run alternately,
+three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6556 (6547–6614) | 6570 (6516–6617) | +0.2% | 153 → 152 |
+| 4 KiB random writes, QD32 | 25506 (25221–25560) | 25344 (25079–25602) | −0.6% | 1002 → 1019 |
+| 4 KiB random reads, QD1 | 17164 (17043–17308) | 17176 (17163–17372) | +0.1% | 58 → 58 |
+| 4 KiB random reads, QD32 | 51716 (51487–52362) | 51690 (51511–51906) | −0.1% | 404 → 407 |
+| 1 MiB writes, QD4 | 799 (796–800) | 833 (827–835) | +4.3% | 4867 → 4627 |
+| 1 MiB reads, QD1 | 1296 (1294–1317) | 1295 (1284–1315) | −0.1% | 759 → 758 |
+| 1 MiB reads, QD2 | 1873 (1872–1899) | 1883 (1875–1913) | +0.5% | 971 → 964 |
+| 1 MiB reads, QD4 | 2806 (2804–2817) | 2817 (2801–2822) | +0.4% | 1331 → 1329 |
+
+### Findings
+
+1. **1 MiB writes gain 4%**, with no overlap between the runs: one copy
+   of each write less on the client, which in this benchmark shares the
+   host with the three nodes.
+2. **Nothing else changes** beyond the run-to-run range: reads send no
+   payload, and pieces under 16 KiB are still copied into their frame.

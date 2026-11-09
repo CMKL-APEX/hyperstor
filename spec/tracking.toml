@@ -711,11 +711,12 @@ status = "done"
 tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
 
 [[milestone.item]]
-what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`)"
-spec = ["D41", "I23", "I283", "I300"]
+what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place, a client's write sent from its own buffer; then zero-copy sends (`SEND_ZC`)"
+spec = ["D41", "I23", "I283", "I300", "I323"]
 status = "partial"
 tests = [
     "hyperstor_rpc::pool_tests::a_shared_payload_reaches_the_peer_from_both_frames",
+    "hyperstor_rpc::pool_tests::parts_of_one_buffer_reach_the_peer_as_cut",
 ]
 
 [[milestone.item]]

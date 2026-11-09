@@ -153,6 +153,13 @@ pub(crate) enum Route<'a> {
     },
 }
 
+/// A request's payload: copied into its frame, or `buf[range]` sent as it
+/// is when large ([`rpc::Frame::part`]).
+enum Payload<'a> {
+    Copy(&'a [u8]),
+    Part(&'a Rc<Vec<u8>>, std::ops::Range<usize>),
+}
+
 /// The PG of a named object: by a hash of its name.
 pub use hyperstor_placement::object_pg;
 
@@ -470,6 +477,20 @@ impl Client {
         payload: &[u8],
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
+        self.send_primary(pool, route, lease, Payload::Copy(payload), make)
+            .await
+    }
+
+    /// [`Client::to_primary`] with a payload that may be part of a shared
+    /// buffer, sent without a copy when large.
+    async fn send_primary(
+        &self,
+        pool: u32,
+        route: Route<'_>,
+        lease: u64,
+        payload: Payload<'_>,
+        make: &dyn Fn(Target, WireKey) -> Msg,
+    ) -> Result<rpc::Reply, ClientError> {
         let mut last = String::new();
         for attempt in 0..RETRIES {
             if attempt > 0 {
@@ -537,7 +558,13 @@ impl Client {
                     continue;
                 }
             };
-            match conn.call(&make(to, key), payload).await {
+            let sent = match &payload {
+                Payload::Copy(p) => conn.call(&make(to, key), p).await,
+                Payload::Part(buf, range) => {
+                    conn.start_part(&make(to, key), buf, range.clone()).await
+                }
+            };
+            match sent {
                 Ok((
                     Msg::Error {
                         code: Code::StaleMap | Code::NotPrimary | Code::Unavailable,
@@ -626,6 +653,7 @@ impl Client {
         data: Vec<u8>,
     ) -> Result<(), ClientError> {
         let pieces = self.pieces(pool, off, data.len() as u64)?;
+        // Each piece is sent from `data` as it is when large (HS5b, I323).
         let data = Rc::new(data);
         let handles: Vec<_> = pieces
             .into_iter()
@@ -633,8 +661,8 @@ impl Client {
                 let me = self.clone();
                 let data = data.clone();
                 spawn(async move {
-                    let piece = &data[roff as usize..(roff + n) as usize];
-                    let crcs = block_crcs(piece);
+                    let range = roff as usize..(roff + n) as usize;
+                    let crcs = block_crcs(&data[range.clone()]);
                     let route = Route::Chunk {
                         lineage,
                         chunk,
@@ -642,12 +670,18 @@ impl Client {
                         epoch,
                     };
                     let (msg, _) = me
-                        .to_primary(pool, route, lease, piece, &|to, key| Msg::Write {
-                            to,
-                            key,
-                            off: coff,
-                            crcs: crcs.clone(),
-                        })
+                        .send_primary(
+                            pool,
+                            route,
+                            lease,
+                            Payload::Part(&data, range),
+                            &|to, key| Msg::Write {
+                                to,
+                                key,
+                                off: coff,
+                                crcs: crcs.clone(),
+                            },
+                        )
                         .await?;
                     match msg {
                         Msg::WriteOk { .. } => Ok(()),
