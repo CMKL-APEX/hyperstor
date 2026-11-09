@@ -38,4 +38,3 @@
 - [Decision log](05-decision-log.md)
 - [Implementation notes](01-implementation-notes.md)
 - [Benchmarks](02-benchmarks.md)
-- [Progress board](23-progress-board.md)

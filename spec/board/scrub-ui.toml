@@ -1,9 +1,0 @@
-title = "Scrub in the web UI and the scrub metrics; scrub start through the leader (28-scrub.md §31.8)"
-status = "done"
-owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
-started = 2026-11-05
-updated = 2026-11-06
-milestone = "AD3"
-branch = "feat/scrub-ui"
-prs = [190]
-now = "Merged as 262507a and deployed to the pilot on 2026-11-05; scrub start from a follower went to the leader and scrubbed .meta, 256 of 256 PGs (I271), and /metrics answered on a follower, 401 without a certificate (D234, D235, I272)"
