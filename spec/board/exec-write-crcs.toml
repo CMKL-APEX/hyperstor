@@ -5,6 +5,6 @@ started = 2026-11-09
 updated = 2026-11-09
 milestone = "HS2"
 branch = "feat/exec-write-crcs"
-prs = []
+prs = [280]
 now = "Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so"
 next = "Then #251 (08-engine.md pass); v0.0.8"

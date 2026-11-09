@@ -34,7 +34,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs` | Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so | Then #251 (08-engine.md pass); v0.0.8 | 2026-11-09 |
+| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs`, [#280](https://github.com/CMKL-APEX/hyperstor/pull/280) | Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so | Then #251 (08-engine.md pass); v0.0.8 | 2026-11-09 |
 | **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Built (I321): the directory written twice, the copy named after the superblock's checksum; each device reads its pages once per deep scrub period and rewrites a damaged one | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
 ## Done
