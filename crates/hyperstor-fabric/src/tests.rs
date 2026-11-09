@@ -8,7 +8,7 @@ use glidex_topology::net::{LinkLayer, NetPort, PortAddr, RdmaPort};
 use glidex_topology::numa::Numa;
 use glidex_topology::pci::{RawPci, places};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::BTreeMap;
 
 const BRIDGE: &str = "0x060400";

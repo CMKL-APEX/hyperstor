@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 2 | 48 |
+| 4 | 0 | 3 | 48 |
 
 ## In progress
 
@@ -30,6 +30,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs`, [#280](https://github.com/CMKL-APEX/hyperstor/pull/280) | Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so | Then #251 (08-engine.md pass); v0.0.8 | 2026-11-09 |
 | **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
 | **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Merged as 00b3fa7 (I321), not deployed | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
@@ -99,7 +100,7 @@ against the tests.
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |
 | HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
-| HS5b | Lower CPU cost per operation | 3 | 1 | 2 |
+| HS5b | Lower CPU cost per operation | 4 | 1 | 2 |
 | HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 9 |
 | HS6b | NVMe over RDMA | 0 | 0 | 0 |
 | HS7 | Erasure-coded pools | 0 | 0 | 0 |

@@ -19,7 +19,7 @@ serde_json = "1"
 # and ID tokens.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-base64 = "0.22"
+base64 = "0.23"
 # A fake tailscaled (glidex's), for mgmt's Tailscale certificates (D109).
 glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "4d1f5b13f71b134d2bee07c96120438aaf044ef2", features = ["test-util"] }
 tokio = { version = "1", features = ["rt", "net"] }
