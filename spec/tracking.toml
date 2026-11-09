@@ -1094,7 +1094,6 @@ tests = [
     "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
     "hyperstor_install::tests::udev_rules_come_after_the_by_id_links",
     "manage::the_installer_adds_a_device_to_a_node",
-    "join::storage_hosts_join_with_tokens",
 ]
 
 [[milestone.item]]
