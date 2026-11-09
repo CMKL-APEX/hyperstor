@@ -246,7 +246,7 @@ export default function Pools() {
                   )}
                 </td>
                 <td className={td}>
-                  <div className="flex h-2.5 w-40 rounded overflow-hidden bg-slate-200 dark:bg-slate-700">
+                  <div className="flex h-2.5 w-40 rounded-sm overflow-hidden bg-slate-200 dark:bg-slate-700">
                     {STATES.map(([k, color]) => {
                       const n = c?.[k] ?? 0;
                       return n ? <span key={k} className={color} style={{ width: `${(100 * n) / total}%` }} /> : null;
