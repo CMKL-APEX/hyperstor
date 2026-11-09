@@ -21,8 +21,11 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// The protocol's version, which `Hello` and `HelloOk` exchange; what a
 /// peer may be sent depends on what it answered. 2: [`Target::lease`],
 /// delegates and per-volume fencing (D150, D152). 3: [`Msg::Host`], sent
-/// only to a peer whose `HelloOk` answers 3 or more (D261).
-pub const VERSION: u16 = 3;
+/// only to a peer whose `HelloOk` answers 3 or more (D261). 4:
+/// [`WireOp::WriteCrcs`] in operation lists (D279).
+pub const VERSION: u16 = 4;
+/// The first version that decodes [`WireOp::WriteCrcs`] (D279).
+pub const WRITE_CRCS_VERSION: u16 = 4;
 /// The oldest version this build still talks to: what it sends in
 /// `Hello` as `min_version`.
 pub const OLDEST_VERSION: u16 = 2;
@@ -1996,9 +1999,29 @@ pub enum WireOp {
         key: Vec<u8>,
         value: Option<Vec<u8>>,
     },
+    /// A [`WireOp::Write`] with the CRC32C of each 4 KiB block of `data`,
+    /// computed by the writer and kept to the media (D279): the node checks
+    /// them on arrival, and the engine stores them instead of computing
+    /// its own. `off` is block-aligned. Sent only to a peer of
+    /// [`WRITE_CRCS_VERSION`] or later; [`WireOp::without_crcs`] for older
+    /// ones.
+    WriteCrcs {
+        off: u64,
+        data: Vec<u8>,
+        crcs: Vec<u32>,
+    },
 }
 
 impl WireOp {
+    /// The op as a peer from before [`WireOp::WriteCrcs`] reads it: a
+    /// plain [`WireOp::Write`]; every other op as it is.
+    pub fn without_crcs(self) -> WireOp {
+        match self {
+            WireOp::WriteCrcs { off, data, .. } => WireOp::Write { off, data },
+            o => o,
+        }
+    }
+
     pub fn is_assertion(&self) -> bool {
         matches!(
             self,
@@ -2068,6 +2091,11 @@ pub fn encode_ops(ops: &[WireOp]) -> Vec<u8> {
                     None => e.bool(false),
                 };
             }
+            WireOp::WriteCrcs { off, data, crcs } => {
+                e.u8(16).u64(*off).bytes(data).seq(crcs, |e, c| {
+                    e.u32(*c);
+                });
+            }
         }
     }
     e.into_vec()
@@ -2117,6 +2145,11 @@ pub fn decode_ops(b: &[u8]) -> Result<Vec<WireOp>, DecodeError> {
                 } else {
                     None
                 },
+            },
+            16 => WireOp::WriteCrcs {
+                off: d.u64()?,
+                data: bytes(&mut d)?,
+                crcs: d.seq(4, |d| d.u32())?,
             },
             k => {
                 return Err(DecodeError::Invalid {
@@ -2944,8 +2977,23 @@ mod tests {
                 key: b"k".to_vec(),
                 value: None,
             },
+            WireOp::WriteCrcs {
+                off: 8192,
+                data: vec![2; 8192],
+                crcs: vec![7, 9],
+            },
         ];
         assert_eq!(decode_ops(&encode_ops(&ops)).unwrap(), ops);
+        // For a peer from before D279: plain writes, the rest unchanged.
+        let old: Vec<WireOp> = ops.iter().cloned().map(WireOp::without_crcs).collect();
+        assert_eq!(
+            old.last(),
+            Some(&WireOp::Write {
+                off: 8192,
+                data: vec![2; 8192]
+            })
+        );
+        assert_eq!(old[..old.len() - 1], ops[..ops.len() - 1]);
         assert!(decode_ops(&[1, 0, 0, 0, 99]).is_err());
         let o = WireObject {
             size: 5000,
