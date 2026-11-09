@@ -751,7 +751,7 @@ tests = [
 
 [[milestone.item]]
 what = "Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data"
-spec = ["D41", "I326"]
+spec = ["D41", "I327"]
 status = "done"
 tests = [
     "hyperstor_engine::align::tests::copies_are_aligned_and_padded_with_zeros",

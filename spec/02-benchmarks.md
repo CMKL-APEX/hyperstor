@@ -2003,7 +2003,7 @@ The same 1 GiB file read with `dd iflag=direct`: 2.7 s at `bs=1M`,
    hash chain (D266) doesn't remove the read: a gap is proven only by a
    record found after it.
 
-## 2026-11-09: Buffers not zeroed before they are overwritten (HS5b, I326)
+## 2026-11-09: Buffers not zeroed before they are overwritten (HS5b, I327)
 
 What allocating, filling and checking a 1 MiB buffer costs on one of
 the pilot's HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0, glibc malloc),

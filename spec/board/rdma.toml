@@ -6,5 +6,5 @@ updated = 2026-11-09
 milestone = "HS6"
 prs = [234, 238, 240, 255]
 branch = "perf/hs5b-aligned-copy"
-now = "HS5b: buffers not zeroed before they are overwritten (I326); a client's write sent from its own buffer is #282"
+now = "HS5b: buffers not zeroed before they are overwritten (I327); a client's write sent from its own buffer is #282"
 next = "Registered buffers (I12); the measurement item; then HS6's transport trait and verbs module"

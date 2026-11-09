@@ -28,7 +28,7 @@ impl AlignedBuf {
 
     /// A buffer holding `data`, padded with zeros to whole blocks. Only
     /// the padding is zeroed: zeroing what the copy overwrites cost nearly
-    /// as much as the copy (HS5b, I326).
+    /// as much as the copy (HS5b, I327).
     pub fn from_slice(data: &[u8]) -> Self {
         // SAFETY: the layout has a non-zero size.
         let b = Self::with(data.len(), |l| unsafe { alloc(l) });
@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(c.len(), BLOCK);
     }
 
-    /// I326: a copy is aligned and holds the data, then zeros to the end
+    /// I327: a copy is aligned and holds the data, then zeros to the end
     /// of its last block, at every length and from any source offset.
     #[test]
     fn copies_are_aligned_and_padded_with_zeros() {
