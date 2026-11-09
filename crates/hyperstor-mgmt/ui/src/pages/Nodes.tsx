@@ -1,13 +1,15 @@
-// Storage nodes and their devices: state, last heartbeat; take a device
+// Storage nodes and their devices: state, last heartbeat, the map
+// service member on the same host (D281); take a device
 // out and in, set its weight and class, add and remove devices, drain a
 // node (operators). Below, each device's load and drive (D220): the
 // matrix of the last minute, and one device's 15 minutes when picked.
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { DeviceMatrix, DevicePanel, useDevicePerf } from "../perf";
-import { cluster, nodes as nodeApi } from "../api";
+import { cluster, members, nodes as nodeApi } from "../api";
+import { sameHost } from "../hosts";
 import type { PgMove } from "../gen/hyperstor/v1/admin_pb";
-import type { RemoveDeviceResponse } from "../gen/hyperstor/v1/cluster_pb";
+import type { Node, RemoveDeviceResponse } from "../gen/hyperstor/v1/cluster_pb";
 import { ActionDialog, Button, Card, ErrorText, Field, Pill, Space, Table, fmtBytes, input, td, useCan, usePoll } from "../ui";
 
 type Pending =
@@ -34,6 +36,7 @@ function Moves({ moves }: { moves: PgMove[] }) {
 export default function Nodes() {
   const can = useCan();
   const status = usePoll(() => cluster.getStatus({}), 2000);
+  const group = usePoll(() => members.listMembers({}), 5000);
   const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState<unknown>();
   const [result, setResult] = useState("");
@@ -76,6 +79,14 @@ export default function Nodes() {
     }
   };
 
+  // The map service member on the node's host, or storage only.
+  const memberOn = (n: Node) => {
+    if (!group.data) return "–";
+    const on = group.data.members.filter((m) => sameHost(m, n));
+    if (!on.length) return <span className="text-slate-500">storage only</span>;
+    return on.map((m) => `member ${m.id}${m.leader ? " (leader)" : ""}`).join(", ");
+  };
+
   return (
     <>
     <Card
@@ -89,7 +100,7 @@ export default function Nodes() {
         </p>
       )}
       {result && <p className="text-sm text-emerald-700 mb-2">{result}</p>}
-      <Table head={["Node", "Rack", "State", "Heard", "Device", "Address", "Class", "Weight", "Space", "Placement", ""]}>
+      <Table head={["Node", "Rack", "State", "Heard", "Map service", "Device", "Address", "Class", "Weight", "Space", "Placement", ""]}>
         {(status.data?.nodes ?? []).flatMap((n) =>
           n.devices.map((d, i) => (
             <tr key={`${n.id}-${d.id}`} data-testid={`device-${d.id}`}>
@@ -98,6 +109,9 @@ export default function Nodes() {
               <td className={td}>{i === 0 && <Pill tone={n.up ? "ok" : "error"}>{n.up ? "up" : "down"}</Pill>}</td>
               <td className={`${td} text-slate-500`}>
                 {i === 0 && (n.lastHeardMs == null ? "never" : `${(Number(n.lastHeardMs) / 1000).toFixed(1)} s ago`)}
+              </td>
+              <td className={td} data-testid={i === 0 ? `node-${n.id}-member` : undefined}>
+                {i === 0 && memberOn(n)}
               </td>
               <td className={td}>{d.id}</td>
               <td className={td}>{d.addr}</td>

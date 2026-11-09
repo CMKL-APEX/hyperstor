@@ -887,12 +887,17 @@ fn revoked_pb(r: &crate::certs::Revoked) -> pb::RevokedSerial {
 }
 
 fn members_pb(m: &crate::replica::Members) -> Vec<pb::Member> {
+    // The leader's view of each member's log (D280).
+    let matched = |id| m.raft.matched.as_ref()?.get(&id).copied().flatten();
     let one = |x: &crate::replica::Member, voter: bool| pb::Member {
         id: x.id,
         raft_address: x.raft.to_string(),
         map_address: x.map.to_string(),
         voter,
         leader: m.leader == Some(x.id),
+        matched: matched(x.id),
+        behind: matched(x.id).map(|i| m.raft.last_log.unwrap_or(0).saturating_sub(i)),
+        heard_ms: m.raft.heard_ms.get(&x.id).copied(),
         ..Default::default()
     };
     m.voters
@@ -1064,6 +1069,10 @@ impl MemberService for Api {
         Ok(pb::ListMembersResponse {
             members,
             me: m.me,
+            term: m.raft.term,
+            last_log_index: m.raft.last_log,
+            applied: m.raft.applied,
+            quorum_ack_ms: m.raft.quorum_ack_ms,
             ..Default::default()
         }
         .into())

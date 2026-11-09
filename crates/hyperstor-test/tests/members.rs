@@ -317,6 +317,55 @@ fn members_change_at_run_time() {
     assert!(audit.contains("\"op\":\"AddMember\"") && audit.contains("\"op\":\"RemoveMember\""));
 }
 
+/// Each member's Raft state in the leader's member list (D280): in step;
+/// stopped, no reply, and behind by the writes since; started again, in
+/// step. Another member's list has no state.
+#[test]
+fn the_member_list_shows_a_stopped_member() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = group("health", 3, 3);
+    let l = g.leader(&[0, 1, 2]);
+    // A member's row by its id, in the list `i` gives.
+    let row = |g: &Group, i: usize, id: usize| -> String {
+        let r = g.ctl(i, &["member", "list"]);
+        let row = r.out.lines().find(|x| x.starts_with(&format!("{id} ")));
+        row.unwrap_or_default().to_string()
+    };
+    let f = (0..3).find(|i| *i != l).unwrap();
+    wait_for("every member in step", 20, || {
+        (0..3)
+            .all(|i| row(&g, l, i + 1).contains(" in step "))
+            .then_some(())
+    });
+    let r = g.ctl(f, &["member", "list"]).ok();
+    assert!(
+        !r.has("in step"),
+        "a follower's list has no state:\n{}",
+        r.out
+    );
+    let json = g.ctl(l, &["--json", "member", "list"]).ok();
+    let v: serde_json::Value = serde_json::from_str(&json.out).unwrap();
+    // uint64 as a number or, in protobuf's JSON, a string.
+    let num = |x: &serde_json::Value| x.as_u64().or_else(|| x.as_str()?.parse().ok());
+    assert!(num(&v["term"]).unwrap_or(0) > 0, "{}", json.out);
+    assert!(num(&v["quorum_ack_ms"]).is_some(), "{}", json.out);
+    g.m[f].stop();
+    for _ in 0..3 {
+        g.ctl(l, &["token", "create", "--role", "meta"]).ok();
+    }
+    let gone = wait_for("the stopped member to show no reply", 20, || {
+        let r = row(&g, l, f + 1);
+        r.contains(" no reply ").then_some(r)
+    });
+    let behind: u64 = gone.split_whitespace().nth(4).unwrap().parse().unwrap();
+    assert!(behind >= 3, "{gone}");
+    g.m[f].start(&g.s, &[]);
+    wait_for("the restarted member in step", 30, || {
+        let r = row(&g, l, f + 1);
+        r.contains(" in step ").then_some(())
+    });
+}
+
 /// A group that lost its majority for good (D85): the survivor can't
 /// change anything; forcing it alone is refused while another member
 /// answers; forced, it leads alone, serves and adds hosts; an old member
