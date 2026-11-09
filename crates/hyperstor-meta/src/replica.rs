@@ -803,6 +803,8 @@ pub fn settings() -> RaftSettings {
         // An entry is usually what one change touched, but a whole map
         // (the first, a new pool) can be megabytes: keep the log short.
         log_keep_entries: 1_000,
+        // Every apply flushes, as before glidex D31 (I332).
+        checkpointed_applies: false,
     }
 }
 
