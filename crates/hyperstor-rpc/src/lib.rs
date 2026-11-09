@@ -214,7 +214,7 @@ async fn read_n(s: &TcpStream, n: usize) -> Result<Vec<u8>, RpcError> {
     if n == 0 {
         return Ok(Vec::new());
     }
-    let (r, b) = s.read_exact(vec![0; n]).await;
+    let (r, b) = s.read_exact_n(n).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     Ok(b)
 }

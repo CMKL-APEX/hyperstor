@@ -1,6 +1,6 @@
 //! Buffers aligned for `O_DIRECT` and NVMe passthrough I/O.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
@@ -22,19 +22,33 @@ unsafe impl Sync for AlignedBuf {}
 impl AlignedBuf {
     /// A zeroed buffer of `len` bytes, rounded up to whole blocks.
     pub fn zeroed(len: usize) -> Self {
-        let len = round_up(len.max(BLOCK));
-        let layout = Layout::from_size_align(len, BLOCK).expect("valid layout");
         // SAFETY: the layout has a non-zero size.
-        let p = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
-        Self { ptr, len }
+        Self::with(len, |l| unsafe { alloc_zeroed(l) })
     }
 
-    /// A buffer holding `data`, padded with zeros to whole blocks.
+    /// A buffer holding `data`, padded with zeros to whole blocks. Only
+    /// the padding is zeroed: zeroing what the copy overwrites cost nearly
+    /// as much as the copy (HS5b, I326).
     pub fn from_slice(data: &[u8]) -> Self {
-        let mut b = Self::zeroed(data.len());
-        b[..data.len()].copy_from_slice(data);
+        // SAFETY: the layout has a non-zero size.
+        let b = Self::with(data.len(), |l| unsafe { alloc(l) });
+        // SAFETY: `ptr` is valid for `b.len >= data.len()` bytes, and the
+        // allocation is new, so it doesn't overlap `data`. Every byte is
+        // written here, before the buffer can be read.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), b.ptr.as_ptr(), data.len());
+            std::ptr::write_bytes(b.ptr.as_ptr().add(data.len()), 0, b.len - data.len());
+        }
         b
+    }
+
+    /// A buffer of `len` bytes, rounded up to whole blocks, from `get`.
+    fn with(len: usize, get: impl FnOnce(Layout) -> *mut u8) -> Self {
+        let len = round_up(len.max(BLOCK));
+        let layout = Layout::from_size_align(len, BLOCK).expect("valid layout");
+        let p = get(layout);
+        let ptr = NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        Self { ptr, len }
     }
 
     pub fn len(&self) -> usize {
@@ -49,7 +63,8 @@ impl AlignedBuf {
 impl Deref for AlignedBuf {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
-        // SAFETY: ptr is valid for len initialized (zeroed) bytes while self lives.
+        // SAFETY: ptr is valid for len initialized bytes while self lives
+        // (zeroed, or copied and padded with zeros).
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -70,7 +85,7 @@ impl DerefMut for AlignedBuf {
 impl Drop for AlignedBuf {
     fn drop(&mut self) {
         let layout = Layout::from_size_align(self.len, BLOCK).expect("valid layout");
-        // SAFETY: ptr was allocated with this exact layout in `zeroed`.
+        // SAFETY: ptr was allocated with this exact layout in `with`.
         unsafe { dealloc(self.ptr.as_ptr(), layout) }
     }
 }
@@ -99,5 +114,24 @@ mod tests {
         b[8191] = 7;
         let c = AlignedBuf::from_slice(&b[..10]);
         assert_eq!(c.len(), BLOCK);
+    }
+
+    /// I326: a copy is aligned and holds the data, then zeros to the end
+    /// of its last block, at every length and from any source offset.
+    #[test]
+    fn copies_are_aligned_and_padded_with_zeros() {
+        let src: Vec<u8> = (0..(1 << 20) + 9).map(|i| (i % 251) as u8 + 1).collect();
+        for len in [0, 1, 4095, 4096, 4097, 300_000, 1 << 20] {
+            for from in [0, 1, 7] {
+                // A freed buffer of the same size first, so the copy may
+                // land in memory that held other data.
+                drop(AlignedBuf::from_slice(&vec![0xee; len]));
+                let c = AlignedBuf::from_slice(&src[from..from + len]);
+                assert_eq!(c.as_ptr() as usize % BLOCK, 0);
+                assert_eq!(c.len(), round_up(len.max(1)));
+                assert!(c[..len] == src[from..from + len]);
+                assert!(c[len..].iter().all(|&x| x == 0), "padding at {len}");
+            }
+        }
     }
 }
