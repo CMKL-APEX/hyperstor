@@ -1,0 +1,10 @@
+title = "Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-09
+updated = 2026-11-09
+milestone = "HS2"
+branch = "feat/exec-write-crcs"
+prs = [280]
+now = "Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so"
+next = "Then #251 (08-engine.md pass); v0.0.8"

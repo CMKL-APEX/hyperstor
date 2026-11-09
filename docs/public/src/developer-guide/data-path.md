@@ -160,7 +160,10 @@ shard:   [super A][super B][log ring ... mirror A][mirror B][data area]
   back is possible.
 - The **data area** holds extents. Every 4 KiB block in an extent has its
   own CRC32C, kept in the index and carried on the wire unchanged from
-  the client to the device and back.
+  the client to the device and back: with a volume's writes, and in
+  operation lists as checksummed writes (`WriteCrcs`, protocol version
+  4, D279), which the S3 gateway sends. Each copy checks them on
+  arrival; peers of version 3 get plain writes.
 
 ### Whose device it is
 
