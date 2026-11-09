@@ -1436,7 +1436,7 @@ dependencies = [
  "hyperstor-placement",
  "hyperstor-reactor",
  "libc",
- "rand 0.9.5",
+ "rand 0.10.3",
  "redb",
 ]
 
@@ -1452,7 +1452,7 @@ dependencies = [
  "hyperstor-reactor",
  "hyperstor-rpc",
  "libc",
- "rand 0.9.5",
+ "rand 0.10.3",
  "thiserror 2.0.21",
 ]
 
@@ -1501,7 +1501,7 @@ dependencies = [
  "hyperstor-rpc",
  "hyperstor-s3",
  "md-5",
- "rand 0.9.5",
+ "rand 0.10.3",
  "socket2",
  "tempfile",
 ]
@@ -1513,7 +1513,7 @@ dependencies = [
  "hyperstor-codec",
  "io-uring",
  "libc",
- "rand 0.9.5",
+ "rand 0.10.3",
  "thiserror 2.0.21",
 ]
 
@@ -1522,7 +1522,7 @@ name = "hyperstor-fabric"
 version = "0.1.0"
 dependencies = [
  "glidex-topology",
- "rand 0.9.5",
+ "rand 0.10.3",
  "tempfile",
 ]
 
@@ -1555,7 +1555,7 @@ dependencies = [
  "hyperstor-map",
  "hyperstor-proto",
  "hyperstor-reactor",
- "rand 0.9.5",
+ "rand 0.10.3",
  "thiserror 2.0.21",
 ]
 
@@ -1650,7 +1650,7 @@ dependencies = [
 name = "hyperstor-placement"
 version = "0.1.0"
 dependencies = [
- "rand 0.9.5",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -1682,7 +1682,7 @@ dependencies = [
 name = "hyperstor-s3"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "connectrpc",
  "crc32c",
  "crc32fast",
@@ -1699,7 +1699,7 @@ dependencies = [
  "hyperstor-reactor",
  "libc",
  "md-5",
- "rand 0.9.5",
+ "rand 0.10.3",
  "ring",
  "rustls",
  "thiserror 2.0.21",
@@ -1719,7 +1719,7 @@ dependencies = [
 name = "hyperstor-test"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "connectrpc",
  "glidex-authd",
  "glidex-tls",
@@ -2215,12 +2215,12 @@ dependencies = [
 
 [[package]]
 name = "md-5"
-version = "0.10.6"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
- "digest 0.10.7",
+ "digest 0.11.3",
 ]
 
 [[package]]

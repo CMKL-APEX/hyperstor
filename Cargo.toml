@@ -38,7 +38,7 @@ crc32c = "0.6.9"
 io-uring = "0.7"
 libc = "0.2"
 thiserror = "2"
-rand = { version = "0.9", features = ["small_rng"] }
+rand = "0.10"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -113,6 +113,8 @@ struct Inner {
     pending: RefCell<HashMap<u64, OneSender<Result<Reply, RpcError>>>>,
     next: Cell<u64>,
     dead: Cell<bool>,
+    /// The protocol version the peer's `HelloOk` answered; 0 before one.
+    version: Cell<u16>,
 }
 
 /// A client connection. Cheap to clone; all clones share the socket.
@@ -288,6 +290,7 @@ impl Conn {
             pending: RefCell::new(HashMap::new()),
             next: Cell::new(1),
             dead: Cell::new(false),
+            version: Cell::new(0),
         });
         spawn(writer(s.clone(), rx));
         let rd = inner.clone();
@@ -314,6 +317,17 @@ impl Conn {
 
     pub fn is_dead(&self) -> bool {
         self.inner.dead.get()
+    }
+
+    /// The protocol version the peer answered in `HelloOk`, which says what
+    /// it may be sent (`hyperstor_proto::VERSION`); 0 if it wasn't asked.
+    pub fn version(&self) -> u16 {
+        self.inner.version.get()
+    }
+
+    /// Records what the peer's `HelloOk` answered.
+    pub fn set_version(&self, v: u16) {
+        self.inner.version.set(v);
     }
 
     /// Requests waiting for their answer (tests).
