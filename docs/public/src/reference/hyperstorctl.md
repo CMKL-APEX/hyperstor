@@ -106,7 +106,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`). Never on the command line, where others could read it |
 | `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
-| `--in-realm R` | | With `--mgmt`: act in realm `R` alone, with your cluster-wide roles and your roles in `R`. Lists show only `R`'s tenants' volumes, buckets and keys, its placements and itself; what isn't done in a realm (status, pools, devices, nodes, members, hosts, the audit) is refused (exit 4). Not `--realm`, which names the realm that `realm` and `s3 placement` commands change |
+| `--in-realm R` | | With `--mgmt`: act in realm `R` alone, with your cluster-wide roles and your roles in `R`. Lists show only `R`'s tenants' volumes, buckets and keys, its placements, itself and the operations on its volumes; what isn't done in a realm (status, pools, devices, nodes, members, hosts, the audit) is refused (exit 4). Not `--realm`, which names the realm that `realm` and `s3 placement` commands change |
 | `--timeout-secs N` | `$HYPERSTOR_TIMEOUT`, else 5 | How long each call to the API may take before `hyperstorctl` gives up (exit status 3). On a slow or busy disk a change that writes the map service's pool several times can take longer; one that times out may still be made, so check before asking again |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `device remove`, `flatten-volume`, `copy-volume`, `move-volume`, `trash purge`, `pool delete --force`: follow the operation until it finishes. `pool set --pgs`: until the split is done. `op watch`: give up after SECS. Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
@@ -186,7 +186,9 @@ The map service's audit names you (`… for user:NAME`).
 
 With roles only in realms (`storage-admin@acme`), you reach only those
 realms: `volumes` and `create-volume` without `--pool` take the first
-pool your realm may use, and `status` is refused. `--in-realm R`
+pool your realm may use, and `status` is refused. `volumes`, `trash
+list` and `op list` name each row's realm; `create-volume` names its
+`--tenant` unless `default` is your only realm. `--in-realm R`
 picks one realm, for you or for a cluster administrator who wants to
 see what that realm's administrators see.
 

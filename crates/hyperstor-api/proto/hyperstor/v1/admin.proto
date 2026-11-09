@@ -513,6 +513,11 @@ message Operation {
   // 0 while running.
   uint64 finished_unix = 9 [json_name = "finished_unix"];
   string created_by = 10 [json_name = "created_by"];
+  // The tenant of the volume it acts on, whose realm's people see it
+  // (D280); unset for the cluster's own (drains, scrubs, pools, devices).
+  optional uint32 tenant = 11;
+  // In answers: the tenant's realm (D281); empty for the cluster's own.
+  string realm = 12;
 }
 
 message GetOperationRequest {

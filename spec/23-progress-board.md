@@ -11,13 +11,14 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 3 | 48 |
+| 6 | 0 | 3 | 47 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
 | **The web UI on Vite 8, Tailwind CSS 4 and TypeScript 7 (I325)** (`ui-deps`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `deps/ui-vite8-tw4-ts7`, [#284](https://github.com/CMKL-APEX/hyperstor/pull/284) | As glidex #402: ui-kit synced, Tailwind 4 migrated, vite 8 and TypeScript 7; 13 of 13 browser tests pass | PR #284; deploy to the pilot when asked | 2026-11-09 |
+| **HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D265, D280, D281)** (`hs15-tenancy`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS15 | `feat/hs15-realm-ops`, [#231](https://github.com/CMKL-APEX/hyperstor/pull/231), [#233](https://github.com/CMKL-APEX/hyperstor/pull/233), [#235](https://github.com/CMKL-APEX/hyperstor/pull/235), [#239](https://github.com/CMKL-APEX/hyperstor/pull/239) | After HS15 (merged and deployed, main 030c5e7 on the pilot): a realm's people see its operations, lists name each row's realm, creations in realms name their tenant or realm (D280, D281, I329) | Pull request, then merge and deploy on the owner's word | 2026-11-09 |
 | **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-wire-crcs`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255) | HS5b: the engine keeps the CRCs a write came with, checked on arrival (I306), on top of #240 (crc32c 0.6.9, I304) | The client's copy; the check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6 | 2026-11-08 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-claims`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161), [#181](https://github.com/CMKL-APEX/hyperstor/pull/181), [#197](https://github.com/CMKL-APEX/hyperstor/pull/197), [#199](https://github.com/CMKL-APEX/hyperstor/pull/199), [#203](https://github.com/CMKL-APEX/hyperstor/pull/203), [#205](https://github.com/CMKL-APEX/hyperstor/pull/205) | Stage 3 merged (#203; D237, D238, I277). On feat/fabric-claims: stage 4, claims on ports by the orchestrator role and lending settings (D239–D241, I278) | Merge; the glidex issue for its scheduler; deploy to the pilot when asked; then stage 5 with HS6, and G52 | 2026-11-06 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
@@ -41,7 +42,6 @@ None.
 |---|---|---|---|---|
 | **The web UI's footer names the installed build (I317)** (`ui-build-footer`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/ui-build-footer`, [#272](https://github.com/CMKL-APEX/hyperstor/pull/272) | 2026-11-09 |
 | **OIDC logins finish on any mgmt (D278, I316)** (`oidc-shared-login`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/oidc-shared-login`, [#271](https://github.com/CMKL-APEX/hyperstor/pull/271) | 2026-11-09 |
-| **HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D265)** (`hs15-tenancy`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS15 | `board/hs15-done`, [#231](https://github.com/CMKL-APEX/hyperstor/pull/231), [#233](https://github.com/CMKL-APEX/hyperstor/pull/233), [#235](https://github.com/CMKL-APEX/hyperstor/pull/235), [#239](https://github.com/CMKL-APEX/hyperstor/pull/239) | 2026-11-09 |
 | **Engine: the v0.0.8 shard format and converting devices to it (#242, #253, #247)** (`engine-format-v008`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-upgrade`, [#258](https://github.com/CMKL-APEX/hyperstor/pull/258), [#260](https://github.com/CMKL-APEX/hyperstor/pull/260) | 2026-11-09 |
 | **Engine durability against a device that lies (#241, #242, #253)** (`engine-corruption-faults`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/engine-log-lookahead`, [#254](https://github.com/CMKL-APEX/hyperstor/pull/254), [#257](https://github.com/CMKL-APEX/hyperstor/pull/257) | 2026-11-09 |
 | **Engine: a backup device superblock, and never formatting over shards (#246, D271)** (`device-super-backup`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-super-backup`, [#263](https://github.com/CMKL-APEX/hyperstor/pull/263) | 2026-11-09 |
@@ -114,7 +114,7 @@ against the tests.
 | HS12 | S3 gateway | 7 | 0 | 0 |
 | HS13 | S3 over RDMA | 0 | 0 | 0 |
 | HS14 | Distributed filesystem | 0 | 0 | 0 |
-| HS15 | Tenancy: quotas and fair share between tenants | 4 | 0 | 0 |
+| HS15 | Tenancy: quotas and fair share between tenants | 5 | 0 | 0 |
 | HS16 | Sites and replication between clusters | 0 | 0 | 0 |
 | HS17 | Global namespace and federation | 0 | 0 | 0 |
 | HS18 | Pools and devices at run time | 14 | 2 | 0 |

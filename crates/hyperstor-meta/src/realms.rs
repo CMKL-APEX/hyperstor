@@ -117,6 +117,11 @@ impl Realms {
         self.tenants.get(&tenant).copied().unwrap_or(0)
     }
 
+    /// The name of the realm `tenant` is in.
+    pub fn realm_name(&self, tenant: u32) -> String {
+        self.name(self.realm_of(tenant))
+    }
+
     /// Whether `realm` may use `pool` (D249): it's on the pool's list, or
     /// the pool has none.
     pub fn may_use(&self, realm: u32, pool: u32) -> bool {

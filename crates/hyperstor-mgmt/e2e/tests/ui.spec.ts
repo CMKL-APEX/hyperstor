@@ -386,9 +386,12 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   await logIn(page, "cy");
   await expect(page.getByLabel("Realm")).toHaveValue("acme");
   await expect(page.getByRole("option", { name: "Whole cluster" })).toHaveCount(0);
-  for (const hidden of ["Overview", "Nodes", "Pools", "Operations", "Members", "Audit"]) {
+  for (const hidden of ["Overview", "Nodes", "Pools", "Members", "Audit"]) {
     await expect(page.getByRole("link", { name: hidden })).toHaveCount(0);
   }
+  // Its operations (D280).
+  await page.getByRole("link", { name: "Operations" }).click();
+  await expect(page.getByText("hyperstorctl --in-realm acme op list")).toBeVisible();
   await page.getByRole("link", { name: "Volumes" }).click();
   await expect(page.getByTestId("volume-acme-ui")).toBeVisible();
   await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
@@ -414,6 +417,9 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
   await page.getByLabel("Realm").selectOption("");
   await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
+  // The whole cluster's lists name each row's realm (D281).
+  await expect(page.getByTestId("volume-acme-ui")).toContainText("acme (tenant 7)");
+  await expect(page.getByTestId("volume-plain-ui")).toContainText("default");
   await expect(page.getByRole("link", { name: "Nodes" })).toBeVisible();
 });
 

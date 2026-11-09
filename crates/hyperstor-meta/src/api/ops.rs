@@ -47,7 +47,16 @@ pub(super) fn op_pb(o: &Op) -> pb::Operation {
         started_unix: o.started_unix,
         finished_unix: o.finished_unix,
         created_by: o.created_by.clone(),
+        tenant: o.tenant,
         ..Default::default()
+    }
+}
+
+/// `o` with its tenant's realm named from `realms` (D281).
+pub(super) fn op_pb_in(o: &Op, realms: &crate::realms::Realms) -> pb::Operation {
+    pb::Operation {
+        realm: o.tenant.map(|t| realms.realm_name(t)).unwrap_or_default(),
+        ..op_pb(o)
     }
 }
 
@@ -175,6 +184,7 @@ impl Runner {
         total: u32,
         message: String,
         created_by: String,
+        tenant: Option<u32>,
     ) -> Result<Op, TokenError> {
         self.fence().await?;
         let started_ms = std::time::SystemTime::now()
@@ -192,6 +202,7 @@ impl Runner {
             started_ms,
             finished_unix: 0,
             created_by,
+            tenant,
         };
         let o = op.clone();
         self.store(move |s| s.put(&o)).await?;
@@ -783,6 +794,7 @@ impl Runner {
                     1,
                     format!("past its pool's grace ({grace} s in the trash)"),
                     "map-service/purger".into(),
+                    Some(item.tenant()),
                 )
                 .await;
         }
@@ -860,6 +872,10 @@ impl Runner {
                     1,
                     format!("{why}; its oldest in the trash, as trash_on_full = purge"),
                     "map-service/purger".into(),
+                    items
+                        .iter()
+                        .find(|i| purged(i) == (volume, epoch))
+                        .map(|i| i.tenant()),
                 )
                 .await;
             busy.insert(

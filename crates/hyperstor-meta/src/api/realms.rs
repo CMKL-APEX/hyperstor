@@ -46,6 +46,30 @@ impl Scope {
         self.whole() || self.realm(self.realms.realm_of(tenant))
     }
 
+    /// Whether operation `op` is seen (D280): the cluster's sees them all;
+    /// in realms, those on their tenants' volumes, and a volume's recorded
+    /// before tenants were (none) if `who` started it. The cluster's own
+    /// (drains, scrubs, pools, devices) never.
+    pub(super) fn op(&self, op: &crate::operations::Op, who: &str) -> bool {
+        use crate::operations::Work;
+        if self.whole() {
+            return true;
+        }
+        match op.tenant {
+            Some(t) => self.tenant(t),
+            None => {
+                op.created_by == who
+                    && matches!(
+                        op.work,
+                        Work::Flatten { .. }
+                            | Work::Copy { .. }
+                            | Work::Move { .. }
+                            | Work::Purge { .. }
+                    )
+            }
+        }
+    }
+
     /// Bucket `tenant/...` if reached; one outside answers as one that
     /// doesn't exist (D244).
     pub(super) fn bucket(
@@ -75,6 +99,35 @@ impl Scope {
             Some(id) if self.realm(id) => Ok(()),
             _ if self.whole() => Ok(()),
             _ => Err(self.outside(who, op, target, &format!("realm {name:?}"))),
+        }
+    }
+
+    /// For a creation that names no tenant or realm, which would land in
+    /// "default" (D281): in realms, refused with `reason` unless "default"
+    /// is the only one reached, so it never lands in one by chance.
+    pub(super) fn named(
+        &self,
+        who: &str,
+        op: &str,
+        target: &str,
+        what: &str,
+        reason: &str,
+    ) -> Result<(), ConnectError> {
+        match &self.ids {
+            None => Ok(()),
+            Some(ids) if ids[..] == [0] => Ok(()),
+            Some(ids) => {
+                let names: Vec<String> = ids.iter().map(|&i| self.realms.name(i)).collect();
+                let e = with_reason(
+                    ConnectError::invalid_argument(format!(
+                        "name {what}: this call acts in realm {}",
+                        names.join(", ")
+                    )),
+                    reason,
+                );
+                super::refused(who, op, target, &e);
+                Err(e)
+            }
         }
     }
 
@@ -179,6 +232,17 @@ impl Api {
     /// The realms, from this member's copy.
     pub(super) async fn realms(&self) -> Result<Realms, ConnectError> {
         self.realm_rows("realm", realms::load).await
+    }
+
+    /// Every realm, to name the realm of each row a list answers (D281):
+    /// a limited call's, read once; read for the cluster's too, and
+    /// "default" for all when they can't be read, rather than no list.
+    pub(super) async fn realm_names(&self, scope: &Scope) -> Realms {
+        if scope.whole() {
+            self.realms().await.unwrap_or_default()
+        } else {
+            scope.realms.clone()
+        }
     }
 
     /// What a call that [`Api::authorize_in`] limited to `reach` may see
@@ -539,5 +603,83 @@ impl RealmService for Api {
         .await;
         Self::audited(&who, "SetHostRealms", &target, r)?;
         Ok(pb::SetHostRealmsResponse::default().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::{Op, State, Work};
+
+    /// D280, D281: in realms, the operations on their tenants' volumes and
+    /// one's own are seen, the cluster's are not; a creation naming no
+    /// tenant or realm passes only for the cluster or "default" alone.
+    #[test]
+    fn realms_see_their_operations_and_name_their_creations() {
+        let realms = Realms {
+            realms: vec![crate::realms::Realm {
+                id: 1,
+                name: "acme".into(),
+                description: String::new(),
+                created_unix: 0,
+                created_by: String::new(),
+            }],
+            tenants: [(7, 1)].into(),
+            ..Default::default()
+        };
+        let scope = |ids: Option<Vec<u32>>| Scope {
+            ids,
+            realms: realms.clone(),
+        };
+        let op = |tenant: Option<u32>, by: &str| Op {
+            id: "o".into(),
+            work: Work::Purge {
+                volume: 1,
+                epoch: None,
+            },
+            target: String::new(),
+            state: State::Running,
+            done: 0,
+            total: 1,
+            message: String::new(),
+            started_unix: 0,
+            started_ms: 0,
+            finished_unix: 0,
+            created_by: by.into(),
+            tenant,
+        };
+        let acme = scope(Some(vec![1]));
+        assert!(acme.op(&op(Some(7), "ann"), "bob"));
+        assert!(!acme.op(&op(Some(8), "ann"), "bob"));
+        assert!(
+            !acme.op(&op(Some(8), "bob"), "bob"),
+            "another realm's, one's own"
+        );
+        assert!(
+            acme.op(&op(None, "bob"), "bob"),
+            "one's own, recorded before"
+        );
+        assert!(!acme.op(&op(None, "ann"), "bob"));
+        let mut drain = op(None, "bob");
+        drain.work = Work::Drain {
+            node: 1,
+            devices: vec![],
+            pgs: vec![],
+        };
+        assert!(!acme.op(&drain, "bob"), "the cluster's own");
+        assert!(scope(None).op(&op(None, "ann"), "bob"));
+        assert_eq!(realms.realm_name(7), "acme");
+        assert_eq!(realms.realm_name(8), "default");
+
+        let named = |s: &Scope| s.named("bob", "CreateVolume", "t", "a tenant", "tenant_required");
+        assert!(named(&scope(None)).is_ok());
+        assert!(named(&scope(Some(vec![0]))).is_ok());
+        let e = named(&acme).unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::InvalidArgument);
+        assert!(
+            e.message.as_deref().unwrap_or("").contains("realm acme"),
+            "{e:?}"
+        );
+        assert!(named(&scope(Some(vec![0, 1]))).is_err());
     }
 }

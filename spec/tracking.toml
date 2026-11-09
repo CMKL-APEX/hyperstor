@@ -1033,6 +1033,17 @@ tests = [
     "browser::someone_with_roles_in_a_realm_acts_only_there",
 ]
 
+[[milestone.item]]
+what = "A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm"
+spec = ["20-tenants.md §24.8", "D280", "D281", "I329"]
+status = "done"
+# Also shown end to end by dashboard::roles_on_a_realm_reach_only_it,
+# hyperstor_mgmt::policy::tests::grants_in_a_realm_reach_only_it and
+# browser::someone_with_roles_in_a_realm_acts_only_there, tracked above.
+tests = [
+    "hyperstor_meta::api::realms::tests::realms_see_their_operations_and_name_their_creations",
+]
+
 [[milestone]]
 id = "HS16"
 title = "Sites and replication between clusters"

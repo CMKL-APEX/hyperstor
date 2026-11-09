@@ -1,9 +1,10 @@
 // Running and recent operations (drains, flattens, purges; finished ones
-// are kept a week) with their progress; cancel a drain (operators).
+// are kept a week) with their progress; cancel a drain (operators). In a
+// realm, those on its tenants' volumes and one's own (D280).
 import { useState } from "react";
 import { ops } from "../api";
 import { OperationState, type Operation } from "../gen/hyperstor/v1/admin_pb";
-import { ActionDialog, Card, Cli, ErrorText, Pill, Table, fmtTime, td, useCan, usePoll, Button } from "../ui";
+import { ActionDialog, Card, Cli, ErrorText, Pill, Table, fmtTime, realmOf, td, useCan, usePoll, useRealm, Button } from "../ui";
 
 const STATE: Record<number, [string, "ok" | "warn" | "error" | "muted"]> = {
   [OperationState.RUNNING]: ["running", "warn"],
@@ -14,12 +15,16 @@ const STATE: Record<number, [string, "ok" | "warn" | "error" | "muted"]> = {
 
 export default function Operations() {
   const can = useCan();
+  const realm = useRealm();
   const list = usePoll(async () => (await ops.listOperations({})).operations, 2000);
   const [cancel, setCancel] = useState<Operation | null>(null);
   return (
     <Card title="Operations">
       <ErrorText error={list.error} />
-      <Table head={["Id", "Kind", "Target", "State", "Progress", "Started", "Finished", "By", "Message", ""]} empty="No operations.">
+      <Table
+        head={["Id", "Kind", "Target", ...(realm ? [] : ["Realm"]), "State", "Progress", "Started", "Finished", "By", "Message", ""]}
+        empty="No operations."
+      >
         {(list.data ?? []).map((o) => {
           const [text, tone] = STATE[o.state] ?? ["unknown", "muted"];
           return (
@@ -27,6 +32,7 @@ export default function Operations() {
               <td className={`${td} font-mono text-xs`}>{o.id}</td>
               <td className={td}>{o.kind}</td>
               <td className={td}>{o.target}</td>
+              {!realm && <td className={td}>{o.tenant === undefined ? "–" : realmOf(o.realm, o.tenant)}</td>}
               <td className={td}>
                 <Pill tone={tone}>{text}</Pill>
               </td>
@@ -47,13 +53,13 @@ export default function Operations() {
               <td className={`${td} text-xs`}>{o.createdBy}</td>
               <td className={`${td} whitespace-normal`}>{o.message}</td>
               <td className={td}>
-                {can("operate") && o.state === OperationState.RUNNING && o.kind === "drain" && <Button onClick={() => setCancel(o)}>Cancel</Button>}
+                {!realm && can("operate") && o.state === OperationState.RUNNING && o.kind === "drain" && <Button onClick={() => setCancel(o)}>Cancel</Button>}
               </td>
             </tr>
           );
         })}
       </Table>
-      <Cli cmd="op list" />
+      <Cli cmd={`${realm ? `--in-realm ${realm} ` : ""}op list`} />
       {cancel && (
         <ActionDialog
           title={`Cancel ${cancel.kind} ${cancel.id}`}

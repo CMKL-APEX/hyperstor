@@ -1384,6 +1384,7 @@ impl ClusterService for Api {
                     if req.deep { " deep" } else { "" }
                 ),
                 who.clone(),
+                None,
             )
             .await;
         audit(
@@ -2568,6 +2569,7 @@ impl ClusterService for Api {
                     crate::operations::Work::DeletePool { pool },
                     target,
                     format!("{} volume(s) left", held.len()),
+                    None,
                 )
                 .await?;
             return Ok(pb::DeletePoolResponse {
@@ -2705,6 +2707,7 @@ impl ClusterService for Api {
                 n as u32,
                 format!("{n} PG(s) to move off device {device}"),
                 who.clone(),
+                None,
             )
             .await;
         audit(
@@ -2880,11 +2883,15 @@ impl ClusterService for Api {
             })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let vols = volume_result(rx.recv().await)?;
+        let names = self.realm_names(&scope).await;
         Ok(pb::ListVolumesResponse {
             volumes: vols
                 .iter()
                 .filter(|v| scope.tenant(v.tenant))
-                .map(volume_pb)
+                .map(|v| pb::Volume {
+                    realm: names.realm_name(v.tenant),
+                    ..volume_pb(v)
+                })
                 .collect(),
             ..Default::default()
         }
@@ -2902,6 +2909,15 @@ impl ClusterService for Api {
         }
         let (who, reach) = self.authorize_in(&ctx, "CreateVolume", &target, true)?;
         let scope = self.scope(reach).await?;
+        if req.tenant == 0 {
+            scope.named(
+                &who,
+                "CreateVolume",
+                &target,
+                "the volume's tenant",
+                "tenant_required",
+            )?;
+        }
         if !scope.tenant(req.tenant) {
             return Err(scope.outside(
                 &who,
@@ -3193,6 +3209,7 @@ impl ClusterService for Api {
                 crate::operations::Work::Flatten { volume: id },
                 target,
                 format!("copying what {} reads through its parents", v.name),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::FlattenVolumeResponse {
@@ -3270,6 +3287,7 @@ impl ClusterService for Api {
                 },
                 target,
                 format!("copying {} to pool {}", v.name, req.pool),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::CopyVolumeResponse {
@@ -3329,6 +3347,7 @@ impl ClusterService for Api {
                 },
                 target,
                 format!("moving {} to pool {}", v.name, req.pool),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::MoveVolumeResponse {
@@ -3497,6 +3516,7 @@ impl Api {
         work: crate::operations::Work,
         target: String,
         message: String,
+        tenant: Option<u32>,
     ) -> Result<pb::Operation, ConnectError> {
         let (reply, rx) = oneshot();
         self.tx
@@ -3508,7 +3528,7 @@ impl Api {
         let r = self
             .admin
             .runner
-            .create(work, target.clone(), 1, message, who.to_string())
+            .create(work, target.clone(), 1, message, who.to_string(), tenant)
             .await;
         audit(
             who,

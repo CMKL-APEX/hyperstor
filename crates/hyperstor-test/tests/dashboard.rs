@@ -337,12 +337,13 @@ fn people_log_in_and_do_what_their_roles_allow() {
     assert!(!c.mgmt_log().contains("claim code"));
 }
 
-/// Roles granted on a realm (D252, D260, D262–D265): a storage
+/// Roles granted on a realm (D252, D260, D262–D265, D280, D281): a storage
 /// administrator of acme sees and changes only acme's tenants' volumes and
-/// the realm's own things, and nothing of the cluster as a whole; a
-/// security administrator of acme manages acme's keys and acme's grants
-/// only; `--in-realm` narrows anyone to one realm; and the realms mgmt
-/// names can't be forged by a browser.
+/// their operations, and the realm's own things, and nothing of the
+/// cluster as a whole; creations in realms name their tenant or realm;
+/// lists name each row's realm; a security administrator of acme manages
+/// acme's keys and acme's grants only; `--in-realm` narrows anyone to one
+/// realm; and the realms mgmt names can't be forged by a browser.
 #[test]
 fn roles_on_a_realm_reach_only_it() {
     let c = Cluster::all_in_one("realmroles", 3);
@@ -400,7 +401,7 @@ fn roles_on_a_realm_reach_only_it() {
         ("ClusterService/GetStatus", "{}"),
         ("ClusterService/CreatePool", r#"{"name":"x"}"#),
         ("RealmService/SetHostRealms", r#"{"host":"h"}"#),
-        ("OperationService/ListOperations", "{}"),
+        ("OperationService/CancelOperation", r#"{"id":"x"}"#),
     ] {
         let (code, _, b) = call(&bob, rpc, body);
         assert_eq!(code, 403, "{rpc}: {b}");
@@ -415,10 +416,62 @@ fn roles_on_a_realm_reach_only_it() {
     };
     let (code, _, b) = create(7, "by-bob");
     assert_eq!(code, 200, "{b}");
+    let by_bob = json(&b)["volume"]["id"].as_str().unwrap().to_string();
     let (code, _, b) = create(8, "not-bob");
     assert!(code == 403 && b.contains("outside the realms"), "{b}");
+    // No tenant would be default's: in realms, a creation names one (D281).
     let (code, _, b) = create(0, "not-bob");
-    assert_eq!(code, 403, "{b}");
+    assert!(code == 400 && b.contains("name the volume's tenant"), "{b}");
+    let (code, _, b) = call(
+        &bob,
+        "S3Service/SetS3Placement",
+        r#"{"placement":{"name":"p"}}"#,
+    );
+    assert!(
+        code == 400 && b.contains("name the placement's realm"),
+        "{b}"
+    );
+
+    // Operations on acme's volumes are bob's to see, whoever started them,
+    // with their realm; others' answer as ones that don't exist (D280).
+    let flatten = |id: &str| {
+        let (code, _, b) = call(
+            &ann,
+            "ClusterService/FlattenVolume",
+            &format!(r#"{{"id":"{id}"}}"#),
+        );
+        assert_eq!(code, 200, "{b}");
+        json(&b)["operation"]["id"].as_str().unwrap().to_string()
+    };
+    let (acme_op, other_op) = (flatten(&by_bob), flatten(&other_vol));
+    for op in [&acme_op, &other_op] {
+        wait_for("the flatten done", 30, || {
+            let (_, _, b) = call(
+                &ann,
+                "OperationService/GetOperation",
+                &format!(r#"{{"id":"{op}"}}"#),
+            );
+            b.contains("OPERATION_STATE_DONE").then_some(())
+        });
+    }
+    let (code, _, b) = call(&bob, "OperationService/ListOperations", "{}");
+    assert_eq!(code, 200, "{b}");
+    assert!(b.contains(&acme_op) && !b.contains(&other_op), "{b}");
+    assert!(
+        b.contains("\"realm\":\"acme\"") && b.contains("\"tenant\":7"),
+        "{b}"
+    );
+    let get = |id: &str| {
+        call(
+            &bob,
+            "OperationService/GetOperation",
+            &format!(r#"{{"id":"{id}"}}"#),
+        )
+    };
+    assert_eq!(get(&acme_op).0, 200);
+    assert_eq!(get(&other_op).0, 404);
+    let (_, _, b) = call(&ann, "OperationService/ListOperations", "{}");
+    assert!(b.contains(&acme_op) && b.contains(&other_op), "{b}");
     // Another realm's volume answers as one that doesn't exist.
     let expand = |id: &str| {
         call(
@@ -605,6 +658,19 @@ fn roles_on_a_realm_reach_only_it() {
     assert_eq!(code, 4, "{out}");
     let (code, out) = ctl(&["volumes", "--pool", "1"], &ann_t);
     assert!(code == 0 && out.contains("by-bob"), "{out}");
+    // Each row names its realm (D281).
+    let row = |out: &str, what: &str| {
+        out.lines()
+            .find(|l| l.contains(what))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(row(&out, "by-bob").contains("acme"), "{out}");
+    let (code, out) = ctl(&["--in-realm", "acme", "op", "list"], &ann_t);
+    assert!(
+        code == 0 && row(&out, &acme_op).contains("acme") && !out.contains(&other_op),
+        "{out}"
+    );
     let (code, out) = ctl(&["--in-realm", "default", "volumes", "--pool", "1"], &ann_t);
     assert!(code == 0 && !out.contains("by-bob"), "{out}");
     let (code, out) = ctl(&["--in-realm", "acme", "status"], &ann_t);
