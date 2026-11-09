@@ -7,6 +7,9 @@ use hyperstor_test::*;
 #[test]
 fn status_and_tables() {
     let c = Cluster::all_in_one("status", 3);
+    // A node whose device opens slowly on a shared runner disk is down
+    // for a moment at the start (I284, I307): health ok first.
+    c.ctl(&["status", "--wait", "60"]).ok();
     let s = c.ctl(&["status", "--json"]).ok();
     assert!(s.has("\"health\":\"HEALTH_OK\""), "{}", s.out);
     assert!(
