@@ -1,10 +1,8 @@
 title = "Engine: the v0.0.8 shard format and converting devices to it (#242, #253, #247)"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-08
-updated = 2026-11-08
+updated = 2026-11-09
 milestone = "HS2"
 branch = "feat/device-upgrade"
 prs = [258, 260]
-now = "#258 (engine, I309) and #260 (device upgrade, I319, stacked) open"
-next = "Pull request for device upgrade; then #246 (D271), #243 (D269), #245 (D275), #251"
