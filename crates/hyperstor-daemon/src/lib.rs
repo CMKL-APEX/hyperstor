@@ -1002,6 +1002,33 @@ fn unix_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// An operation list as `version` decodes it: builds from before D279
+/// don't know checksummed writes.
+fn decode_ops_as(version: u16, payload: &[u8]) -> Option<Vec<WireOp>> {
+    let ops = decode_ops(payload).ok()?;
+    let known = |o: &WireOp| {
+        version >= hyperstor_proto::WRITE_CRCS_VERSION || !matches!(o, WireOp::WriteCrcs { .. })
+    };
+    ops.iter().all(known).then_some(ops)
+}
+
+/// Checks the CRCs of an operation list's checksummed writes against
+/// their data (D279): the answer to send if one is unaligned or doesn't
+/// match.
+fn check_write_crcs(ops: &[WireOp]) -> Result<(), (Code, &'static str)> {
+    for o in ops {
+        if let WireOp::WriteCrcs { off, data, crcs } = o {
+            if !off.is_multiple_of(4096) || !data.len().is_multiple_of(4096) {
+                return Err((Code::Invalid, "a checksummed write is not whole blocks"));
+            }
+            if verify_crcs(data, crcs).is_err() {
+                return Err((Code::Checksum, "payload checksum"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The engine operation of an operation list's effect (assertions have
 /// none: the primary decides them).
 fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
@@ -1015,6 +1042,12 @@ fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
             off,
             data,
             crcs: None,
+        },
+        // Checked on arrival (check_write_crcs): stored as they came.
+        WireOp::WriteCrcs { off, data, crcs } => Op::Write {
+            off,
+            data,
+            crcs: Some(crcs),
         },
         WireOp::Zero { off, len } => Op::Zero { off, len },
         WireOp::Truncate(n) => Op::Truncate(n),
@@ -1891,9 +1924,37 @@ impl ShardState {
         true
     }
 
+    /// The protocol version this node speaks: this build's, unless the
+    /// test hook makes it an older one's.
+    fn version(&self) -> u16 {
+        match &*self.older.borrow() {
+            Some((node, o)) => o.version(*node).unwrap_or(VERSION),
+            None => VERSION,
+        }
+    }
+
     async fn peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
         self.partitioned(addr)?;
-        Ok(self.peers.get(addr).await?)
+        // Hello first, so what the peer may be sent is known (D279).
+        let hello = Msg::Hello {
+            min_version: hyperstor_proto::OLDEST_VERSION,
+            max_version: VERSION,
+            id: self.me as u64,
+            instance: 0,
+        };
+        Ok(self
+            .peers
+            .get_with(addr, |addr| async move {
+                let c = Conn::connect(addr).await?;
+                if let (Msg::HelloOk { version, .. }, _) = c
+                    .call_within(&hello, &[], hyperstor_client::rpc::CALL_TIMEOUT)
+                    .await?
+                {
+                    c.set_version(version);
+                }
+                Ok(c)
+            })
+            .await?)
     }
 
     /// Bytes of backfill pushes on the wire to `target`.
@@ -2031,7 +2092,7 @@ impl ShardState {
             match msg {
                 Msg::Hello { .. } => reply(
                     &Msg::HelloOk {
-                        version: VERSION,
+                        version: self.version(),
                         node: self.me as u64,
                         map_epoch: self.map().epoch,
                     },
@@ -2662,9 +2723,12 @@ impl ShardState {
         let send = move |m: Msg| {
             let _ = tx.send(Frame::new(req, &m, &[]));
         };
-        let Ok(ops) = decode_ops(&payload) else {
+        let Some(ops) = decode_ops_as(self.version(), &payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        if let Err((code, why)) = check_write_crcs(&ops) {
+            return send(err(code, &self.map(), why));
+        }
         self.kv_wrote(&to, &key);
         let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
             Err(why) => Err(err(Code::Conflict, &me.map(), why)),
@@ -2771,9 +2835,33 @@ impl ShardState {
         };
         let repl = Msg::ReplExec { to, seq, key };
         let body = Rc::new(encode_ops(&effects));
+        // A replica from before D279 gets plain writes, which it can read.
+        let plain = Rc::new(
+            if effects
+                .iter()
+                .any(|o| matches!(o, WireOp::WriteCrcs { .. }))
+            {
+                encode_ops(
+                    &effects
+                        .iter()
+                        .cloned()
+                        .map(WireOp::without_crcs)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                body.to_vec()
+            },
+        );
+        let body_for = |c: &Conn| {
+            if c.version() >= hyperstor_proto::WRITE_CRCS_VERSION {
+                &body
+            } else {
+                &plain
+            }
+        };
         let remote: Vec<_> = conns
             .iter()
-            .map(|(d, c)| (*d, c.start_shared(&repl, &body)))
+            .map(|(d, c)| (*d, c.start_shared(&repl, body_for(c))))
             .collect();
         let deadline = std::time::Instant::now() + REPL_TIMEOUT;
         let filling: Vec<_> = fills
@@ -2784,7 +2872,7 @@ impl ShardState {
                     .borrow_mut()
                     .entry((to.pool, to.pg, *d))
                     .or_default() += 1;
-                (*d, c.start_shared(&repl, &body))
+                (*d, c.start_shared(&repl, body_for(c)))
             })
             .collect();
         let local = self.enqueue(OpList {
@@ -3687,9 +3775,13 @@ impl ShardState {
         if let Err(m) = self.check(&to, false).await {
             return send(m);
         }
-        let Ok(ops) = decode_ops(&payload) else {
+        let Some(ops) = decode_ops_as(self.version(), &payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        // Checked again here: damage between the primary and this copy.
+        if let Err((code, why)) = check_write_crcs(&ops) {
+            return send(err(code, &self.map(), why));
+        }
         let Ok(okey) = engine_key(&to, &key) else {
             return send(err(Code::Invalid, &self.map(), "bad namespace"));
         };
@@ -6550,6 +6642,44 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// Checksummed writes are checked whole (D279), and a node of the
+    /// protocol before reads a list with one as malformed.
+    #[test]
+    fn checksummed_writes_are_checked_and_unknown_to_older_nodes() {
+        use super::{check_write_crcs, decode_ops_as};
+        use hyperstor_proto::{Code, WireOp, block_crcs, encode_ops};
+        let data = vec![5u8; 8192];
+        let good = WireOp::WriteCrcs {
+            off: 4096,
+            data: data.clone(),
+            crcs: block_crcs(&data),
+        };
+        assert!(check_write_crcs(&[WireOp::Touch, good.clone()]).is_ok());
+        let wrong = WireOp::WriteCrcs {
+            off: 0,
+            data: data.clone(),
+            crcs: vec![1, 2],
+        };
+        assert_eq!(check_write_crcs(&[wrong]).unwrap_err().0, Code::Checksum);
+        let short = WireOp::WriteCrcs {
+            off: 0,
+            data: data.clone(),
+            crcs: block_crcs(&data)[..1].to_vec(),
+        };
+        assert_eq!(check_write_crcs(&[short]).unwrap_err().0, Code::Checksum);
+        let unaligned = WireOp::WriteCrcs {
+            off: 100,
+            data: data.clone(),
+            crcs: block_crcs(&data),
+        };
+        assert_eq!(check_write_crcs(&[unaligned]).unwrap_err().0, Code::Invalid);
+        let list = encode_ops(&[WireOp::Touch, good]);
+        assert_eq!(decode_ops_as(4, &list).map(|o| o.len()), Some(2));
+        assert_eq!(decode_ops_as(3, &list), None);
+        let plain = encode_ops(&[WireOp::Write { off: 0, data }]);
+        assert!(decode_ops_as(3, &plain).is_some());
+    }
 
     /// A device reads its checkpoint pages once per the shortest deep
     /// scrub period of the pools that scrub (D269), and not while none

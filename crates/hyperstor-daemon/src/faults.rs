@@ -101,9 +101,25 @@ impl Pings {
 #[derive(Default)]
 pub struct Older {
     unknown: Mutex<HashSet<(u32, u16)>>,
+    /// Nodes that answer `HelloOk` with this protocol version and read
+    /// operation lists as that version's builds do.
+    versions: Mutex<std::collections::HashMap<u32, u16>>,
 }
 
 impl Older {
+    /// `node` speaks protocol `version` (`None`: this build's).
+    pub fn set_version(&self, node: u32, version: Option<u16>) {
+        let mut v = self.versions.lock().unwrap();
+        match version {
+            Some(x) => v.insert(node, x),
+            None => v.remove(&node),
+        };
+    }
+
+    pub fn version(&self, node: u32) -> Option<u16> {
+        self.versions.lock().unwrap().get(&node).copied()
+    }
+
     /// `node` doesn't know message `kind` while `unknown`.
     pub fn set(&self, node: u32, kind: u16, unknown: bool) {
         let mut s = self.unknown.lock().unwrap();
