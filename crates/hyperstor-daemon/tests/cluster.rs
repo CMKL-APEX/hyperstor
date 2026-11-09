@@ -65,6 +65,21 @@ thread_local! {
     static NO_DISCARD: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A node's listener, on a port held for the cluster's lifetime: a
+/// bound socket that never listens keeps the port while the node is
+/// stopped (#276). Another bind, or an outgoing connection's ephemeral
+/// port, can't take it, and connections to the stopped node are still
+/// refused; the node binds it again when it restarts (both sockets set
+/// SO_REUSEADDR, and the hold isn't listening).
+fn held_listener() -> (socket2::Socket, std::net::TcpListener) {
+    let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    hold.set_reuse_address(true).unwrap();
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    hold.bind(&any.into()).unwrap();
+    let a = hold.local_addr().unwrap().as_socket().unwrap();
+    (hold, std::net::TcpListener::bind(a).unwrap())
+}
+
 /// Each stopped device, by device id.
 type Devices = Vec<(u32, Arc<dyn BlockDev>)>;
 
@@ -126,6 +141,8 @@ struct Cluster {
     meta_addr: SocketAddr,
     /// Each node's reactor addresses, to restart it at the same place.
     addrs: Vec<Vec<SocketAddr>>,
+    /// What keeps those addresses free for the node while it is stopped.
+    _holds: Vec<socket2::Socket>,
     /// Per node: set to cut it off from the map service (heartbeats stop)
     /// while clients and peers can still reach it.
     blocked: Vec<Arc<std::sync::atomic::AtomicBool>>,
@@ -333,10 +350,10 @@ impl Cluster {
         let mut map = ClusterMap::new(1);
         let mut listeners = Vec::new();
         let mut all_addrs = Vec::new();
+        let mut holds = Vec::new();
         for n in 0..nodes {
-            let ls: Vec<std::net::TcpListener> = (0..shards)
-                .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
-                .collect();
+            let (hs, ls): (Vec<_>, Vec<_>) = (0..shards).map(|_| held_listener()).unzip();
+            holds.extend(hs);
             let addrs: Vec<SocketAddr> = ls.iter().map(|l| l.local_addr().unwrap()).collect();
             map.add_node(n, &addrs, 0);
             all_addrs.push(addrs);
@@ -500,6 +517,7 @@ impl Cluster {
             meta_addr,
             blocked,
             addrs: all_addrs,
+            _holds: holds,
             stopped: std::collections::HashMap::new(),
             meta_tx,
             meta_thread: Some(meta_thread),

@@ -1471,6 +1471,9 @@ fn weights_follow_capacity_or_are_set() {
 #[test]
 fn a_full_device_refuses_growth_only() {
     let c = Cluster::all_in_one("full", 3);
+    // A node whose device opens slowly on a shared runner disk is down
+    // for a moment at the start (I284, I307): health ok first.
+    c.ctl(&["status", "--wait", "60"]).ok();
     let r = c.ctl(&["full-ratios"]).ok();
     assert!(
         r.has("nearfull 85%  backfillfull 90%  full 95%"),
@@ -2070,6 +2073,9 @@ fn snapshots_through_hyperstorctl() {
 #[test]
 fn scrub_settings_are_set_and_weakening_needs_a_reason() {
     let c = Cluster::all_in_one("scrubset", 3);
+    // A node whose device opens slowly on a shared runner disk is down
+    // for a moment at the start (I284, I307): health ok first.
+    c.ctl(&["status", "--wait", "60"]).ok();
     let r = c
         .ctl(&[
             "scrub",
@@ -2149,6 +2155,9 @@ fn scrub_settings_are_set_and_weakening_needs_a_reason() {
 #[test]
 fn scrub_status_and_pgs_are_shown() {
     let c = Cluster::all_in_one("scrubstat", 3);
+    // A node whose device opens slowly on a shared runner disk is down
+    // for a moment at the start (I284, I307): health ok first.
+    c.ctl(&["status", "--wait", "60"]).ok();
     let r = c.ctl(&["scrub", "status"]).ok();
     assert!(
         r.has("POOL") && r.has("OVERDUE") && r.has(".meta") && r.has("last 7 days"),
