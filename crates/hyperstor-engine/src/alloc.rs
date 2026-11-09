@@ -102,6 +102,23 @@ impl Allocator {
     }
 
     /// Marks `[start, start + len)` as used. It must be free.
+    /// The parts of `[start, start + len)` that are free, in order.
+    pub fn free_within(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
+        let end = start + len;
+        let first = self
+            .by_start
+            .range(..=start)
+            .next_back()
+            .map_or(start, |(&s, _)| s);
+        self.by_start
+            .range(first..end)
+            .filter_map(|(&s, &n)| {
+                let (a, b) = (s.max(start), (s + n).min(end));
+                (a < b).then_some((a, b - a))
+            })
+            .collect()
+    }
+
     pub fn reserve(&mut self, start: u64, len: u64) -> bool {
         let Some((&fs, &fl)) = self.by_start.range(..=start).next_back() else {
             return false;
@@ -123,6 +140,16 @@ impl Allocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_within_clips_to_the_range() {
+        let mut a = Allocator::new(100, 100);
+        assert!(a.reserve(110, 10));
+        assert!(a.reserve(150, 20));
+        assert_eq!(a.free_within(105, 60), vec![(105, 5), (120, 30)]);
+        assert_eq!(a.free_within(112, 5), vec![]);
+        assert_eq!(a.free_within(165, 100), vec![(170, 30)]);
+    }
 
     #[test]
     fn best_fit_split_and_merge() {

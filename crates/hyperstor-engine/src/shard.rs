@@ -44,6 +44,10 @@ const DIR_MAGIC: u64 = 0x4853_434b_4449_5231; // "HSCKDIR1"
 /// A paged checkpoint's directory, and one page (D105).
 const DIR2_MAGIC: u64 = 0x4853_434b_4449_5232; // "HSCKDIR2"
 const PAGE_MAGIC: u64 = 0x4853_434b_5047_3031; // "HSCKPG01"
+/// Where the second copy of a checkpoint's directory is (D269): after the
+/// superblock's checksum, with a checksum of its own, so builds from before
+/// it read the superblock as before and leave the copy alone.
+const DIR_COPY_MAGIC: u64 = 0x4853_434b_4350_5931; // "HSCKCPY1"
 /// A checkpoint page is cut once it holds this much: small enough that a
 /// change rewrites little, large enough that the directory stays small
 /// (about 100 bytes a page).
@@ -72,6 +76,8 @@ const DIGEST_CACHE_MAX: usize = 4096;
 /// Pending in-place writes above this many blocks are applied before the
 /// next commit, to bound memory.
 const PENDING_LIMIT: usize = 16 * 1024;
+/// A discard batch takes at most this share of the free space (1/8).
+const DISCARD_SHARE: u64 = 8;
 /// Checkpoint runs a super block can name.
 const MAX_CKPT_RUNS: usize = 200;
 
@@ -114,6 +120,9 @@ struct Ckpt {
     runs: Vec<(u64, u64)>,
     len: u64,
     crc: u32,
+    /// The directory's second copy (D269): the same bytes, so the same
+    /// length and checksum; empty when it has none.
+    copy: Vec<(u64, u64)>,
 }
 
 impl Super {
@@ -143,6 +152,14 @@ impl Super {
         }
         let crc = crc32c(e.as_slice());
         e.u32(crc);
+        if let Some(c) = self.ckpt.as_ref().filter(|c| !c.copy.is_empty()) {
+            let at = e.len();
+            e.u64(DIR_COPY_MAGIC).seq(&c.copy, |e, (s, n)| {
+                e.u64(*s).u64(*n);
+            });
+            let crc = crc32c(&e.as_slice()[at..]);
+            e.u32(crc);
+        }
         assert!(e.len() <= BLOCK);
         AlignedBuf::from_slice(e.as_slice())
     }
@@ -165,7 +182,12 @@ impl Super {
                 let len = d.u64()?;
                 let crc = d.u32()?;
                 let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
-                Some(Ckpt { runs, len, crc })
+                Some(Ckpt {
+                    runs,
+                    len,
+                    crc,
+                    copy: Vec::new(),
+                })
             } else {
                 None
             };
@@ -180,10 +202,29 @@ impl Super {
                 chain,
             })
         };
-        let s = parse(&mut d).ok()?;
+        let mut s = parse(&mut d).ok()?;
         let end = d.position();
         let crc = d.u32().ok()?;
-        (crc32c(&buf[..end]) == crc).then_some(s)
+        if crc32c(&buf[..end]) != crc {
+            return None;
+        }
+        // The directory's copy, if any (D269). A damaged one is no copy:
+        // the superblock itself is sound.
+        let at = d.position();
+        let copy = |d: &mut Dec<'_>| -> Result<Vec<(u64, u64)>, DecodeError> {
+            if d.u64()? != DIR_COPY_MAGIC {
+                return Err(DecodeError::Magic(0));
+            }
+            let runs = d.seq(16, |d| Ok((d.u64()?, d.u64()?)))?;
+            let end = d.position();
+            (crc32c(&buf[at..end]) == d.u32()?)
+                .then_some(runs)
+                .ok_or(DecodeError::Checksum)
+        };
+        if let (Some(c), Ok(runs)) = (s.ckpt.as_mut(), copy(&mut d)) {
+            c.copy = runs;
+        }
+        Some(s)
     }
 }
 
@@ -193,6 +234,59 @@ struct PageLoc {
     runs: Vec<(u64, u64)>,
     len: u64,
     crc: u32,
+}
+
+/// Freed extents on their way to a discard (D275), by generation: `next`
+/// (freed since the running checkpoint began) moves to `sealing` when one
+/// begins, and `sealing` to `ready` once it is named, so discards go out
+/// in batches after each checkpoint, merged into long runs. A block is
+/// freed only once the commit that frees it is durable, and recovery
+/// drops only a commit never acknowledged, so a freed block is never
+/// needed again; what keeps a discard safe is that only the parts still
+/// free are discarded ([`Shard::take_discards`]). Each is merged runs,
+/// start to length, in blocks.
+#[derive(Default)]
+struct Discards {
+    next: BTreeMap<u64, u64>,
+    sealing: BTreeMap<u64, u64>,
+    ready: BTreeMap<u64, u64>,
+}
+
+/// Adds `[s, s + n)` to merged runs.
+fn add_run(runs: &mut BTreeMap<u64, u64>, mut s: u64, mut n: u64) {
+    if n == 0 {
+        return;
+    }
+    if let Some((&ps, &pn)) = runs.range(..=s).next_back()
+        && ps + pn >= s
+    {
+        n = (s + n).max(ps + pn) - ps;
+        s = ps;
+        runs.remove(&ps);
+    }
+    while let Some((&ns, &nn)) = runs.range(s..).next()
+        && ns <= s + n
+    {
+        n = (s + n).max(ns + nn) - s;
+        runs.remove(&ns);
+    }
+    runs.insert(s, n);
+}
+
+fn merge_runs(into: &mut BTreeMap<u64, u64>, from: BTreeMap<u64, u64>) {
+    for (s, n) in from {
+        add_run(into, s, n);
+    }
+}
+
+/// Where a checkpoint is on the device ([`Shard::checkpoint_layout`]), as
+/// runs of blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckpointLayout {
+    pub directory: Vec<(u64, u64)>,
+    /// The directory's second copy (D269); empty without one.
+    pub directory_copy: Vec<(u64, u64)>,
+    pub pages: Vec<Vec<(u64, u64)>>,
 }
 
 /// A fuzzy checkpoint being written (01-implementation-notes.md I33): only
@@ -310,6 +404,13 @@ pub struct ShardStats {
     /// The last checkpoint's directory, in bytes: written by every
     /// checkpoint, whatever changed.
     pub checkpoint_directory_bytes: u64,
+    /// Damaged checkpoint pages and directories found by scrub since
+    /// opened, each rewritten by a checkpoint (D269).
+    pub checkpoint_damage: u64,
+    /// Freed blocks waiting for a discard, and blocks discarded since
+    /// opened (D275).
+    pub discard_queued_blocks: u64,
+    pub discarded_blocks: u64,
 }
 
 /// Totals over the whole index. Computing them walks every block map, so
@@ -433,6 +534,14 @@ pub struct Shard {
     slice_bytes: usize,
     opened_lsn: u64,
     ckpt_written: u64,
+    /// Opening read the checkpoint directory's second copy (D269).
+    directory_copy_read: bool,
+    /// Damaged checkpoint pages and directories scrub found (D269).
+    checkpoint_damage: u64,
+    /// Freed blocks to discard (D275); `None`: off.
+    discards: Option<Discards>,
+    /// Blocks discarded since opened.
+    discarded: u64,
     checkpoint_slices: u64,
     checkpoint_forced: u64,
     checkpoints: u64,
@@ -721,6 +830,10 @@ impl Shard {
             slice_bytes: SLICE_BYTES,
             opened_lsn: 0,
             ckpt_written: 0,
+            directory_copy_read: false,
+            checkpoint_damage: 0,
+            discards: None,
+            discarded: 0,
             checkpoint_slices: 0,
             checkpoint_forced: 0,
             checkpoints: 0,
@@ -887,6 +1000,23 @@ impl Shard {
                 )));
             }
         }
+        // The directory's copy last, and only if its blocks are free: a
+        // build from before copies reads past it, and may have written
+        // over it before this one opened the device again (D269).
+        if let Some(c) = self.ckpt.as_mut() {
+            let mut taken = Vec::new();
+            for &(s, n) in &c.copy {
+                if !a.reserve(s, n) {
+                    for &(s, n) in &taken {
+                        a.free(s, n);
+                    }
+                    taken.clear();
+                    c.copy.clear();
+                    break;
+                }
+                taken.push((s, n));
+            }
+        }
         self.alloc = a;
         Ok(())
     }
@@ -914,17 +1044,32 @@ impl Shard {
     /// `head_lsn`); replay from `head_lsn` brings it to the state the log
     /// describes.
     fn load_checkpoint(&mut self, c: &Ckpt) -> Result<(), EngineError> {
-        let dir = self.read_extents(&c.runs, c.len)?;
+        let dir = match self.read_directory(&c.runs, c) {
+            Some(d) => d,
+            // The second copy (D269), when the first can't be read or
+            // fails its checksum; the fresh checkpoint every open writes
+            // replaces both.
+            None if !c.copy.is_empty() => {
+                self.directory_copy_read = true;
+                self.read_directory(&c.copy, c)
+                    .ok_or_else(|| EngineError::Corrupt("checkpoint directory checksum".into()))?
+            }
+            None => return Err(EngineError::Corrupt("checkpoint directory checksum".into())),
+        };
         let dir = &dir[..c.len as usize];
-        if crc32c(dir) != c.crc {
-            return Err(EngineError::Corrupt("checkpoint directory checksum".into()));
-        }
         let mut d = Dec::new(dir);
         match d.u64()? {
             DIR_MAGIC => self.load_blob(&mut d),
             DIR2_MAGIC => self.load_pages(&mut d),
             _ => Err(EngineError::Corrupt("checkpoint directory magic".into())),
         }
+    }
+
+    /// One copy of a checkpoint's directory at `runs`, if it reads and
+    /// matches the superblock's checksum.
+    fn read_directory(&self, runs: &[(u64, u64)], c: &Ckpt) -> Option<AlignedBuf> {
+        let dir = self.read_extents(runs, c.len).ok()?;
+        (crc32c(&dir[..c.len as usize]) == c.crc).then_some(dir)
     }
 
     /// A checkpoint from before pages: one blob, which the next checkpoint
@@ -1950,6 +2095,147 @@ impl Shard {
         }
     }
 
+    /// Starts or stops discarding freed blocks (D275). Started right after
+    /// opening, while nothing is in the log since the checkpoint every open
+    /// writes, every free block is queued too, so space freed before a
+    /// crash, or by a build without discards, is discarded once.
+    pub fn set_discard(&mut self, on: bool) {
+        if !on {
+            self.discards = None;
+            return;
+        }
+        if self.discards.is_some() {
+            return;
+        }
+        let mut d = Discards::default();
+        if self.head_lsn == self.tail_lsn && self.fuzzy.is_none() && self.sealing.is_none() {
+            for (s, n) in self.alloc.free_within(0, u64::MAX) {
+                add_run(&mut d.ready, s, n);
+            }
+        }
+        self.discards = Some(d);
+    }
+
+    /// Up to `max_blocks` of freed blocks ready to discard (D275), as runs
+    /// of blocks: only the parts still free, which stay out of the
+    /// allocator until [`Shard::discards_done`] returns them, so nothing
+    /// is written there while the discard is in flight. Parts reused since
+    /// they were freed are dropped from the queue. At most an eighth of the
+    /// free space is taken at once, so writes go on meanwhile.
+    pub fn take_discards(&mut self, max_blocks: u64) -> Vec<(u64, u64)> {
+        let max_blocks = max_blocks.min(self.alloc.free_blocks() / DISCARD_SHARE);
+        let Some(d) = self.discards.as_mut().filter(|_| !self.poisoned) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        // Queued blocks looked at: those reused since count too, so that a
+        // queue of them can't make one call long.
+        let mut seen = 0;
+        while seen < max_blocks {
+            let Some((s, n)) = d.ready.pop_first() else {
+                break;
+            };
+            let n = if n > max_blocks - seen {
+                let keep = max_blocks - seen;
+                d.ready.insert(s + keep, n - keep);
+                keep
+            } else {
+                n
+            };
+            seen += n;
+            for (fs, fn_) in self.alloc.free_within(s, n) {
+                let reserved = self.alloc.reserve(fs, fn_);
+                debug_assert!(reserved, "a free run reserves");
+                out.push((fs, fn_));
+            }
+        }
+        out
+    }
+
+    /// Discards made for [`Shard::take_discards`]'s runs have ended, well
+    /// (`ok`) or not: the blocks are free again.
+    pub fn discards_done(&mut self, runs: &[(u64, u64)], ok: bool) {
+        for &(s, n) in runs {
+            self.alloc.free(s, n);
+            if ok {
+                self.discarded += n;
+            }
+        }
+    }
+
+    /// Where the last checkpoint is on the device: its directory, the
+    /// directory's copy (empty without one), and each page, in key order.
+    /// For tests and diagnostics.
+    pub fn checkpoint_layout(&self) -> CheckpointLayout {
+        CheckpointLayout {
+            directory: self.ckpt.as_ref().map_or(Vec::new(), |c| c.runs.clone()),
+            directory_copy: self.ckpt.as_ref().map_or(Vec::new(), |c| c.copy.clone()),
+            pages: self.pages.values().map(|p| p.runs.clone()).collect(),
+        }
+    }
+
+    /// Whether opening read the checkpoint directory's second copy, the
+    /// first being damaged (D269).
+    pub fn directory_copy_read(&self) -> bool {
+        self.directory_copy_read
+    }
+
+    /// Reads page `i` of the last checkpoint (in key order) and checks it
+    /// against the directory (D269). A damaged one, or one that can't be
+    /// read, is marked changed and a checkpoint written at once, so a
+    /// restart never needs it; returns whether it was damaged. Past the
+    /// last page, nothing is read. The caller holds the shard between
+    /// commit rounds.
+    pub fn scrub_checkpoint_page(&mut self, i: usize) -> Result<bool, EngineError> {
+        self.check()?;
+        let Some((bound, p)) = self.pages.iter().nth(i) else {
+            return Ok(false);
+        };
+        let sound = self
+            .read_extents(&p.runs, p.len)
+            .is_ok_and(|b| crc32c(&b[..p.len as usize]) == p.crc);
+        if sound {
+            return Ok(false);
+        }
+        // Its range's page now: a fuzzy checkpoint may have cut or dropped
+        // bounds since this one was named.
+        let page = match bound {
+            Some(b) => self.index.page_of(b).cloned(),
+            None => None,
+        };
+        self.index.mark(page);
+        self.checkpoint_damage += 1;
+        self.rewrite_checkpoint()?;
+        Ok(true)
+    }
+
+    /// Reads both copies of the last checkpoint's directory (D269). If one
+    /// is damaged, or the checkpoint is from before copies, a checkpoint
+    /// is written at once, with both; returns whether one was damaged.
+    pub fn scrub_checkpoint_directory(&mut self) -> Result<bool, EngineError> {
+        self.check()?;
+        let Some(c) = self.ckpt.clone() else {
+            return Ok(false);
+        };
+        let damaged = self.read_directory(&c.runs, &c).is_none()
+            || (!c.copy.is_empty() && self.read_directory(&c.copy, &c).is_none());
+        self.checkpoint_damage += damaged as u64;
+        if damaged || c.copy.is_empty() {
+            self.rewrite_checkpoint()?;
+        }
+        Ok(damaged)
+    }
+
+    /// Writes a checkpoint now for scrub's repairs: first finishes one
+    /// that is running (its pages were chosen before the mark), then
+    /// writes the pages marked since.
+    fn rewrite_checkpoint(&mut self) -> Result<(), EngineError> {
+        if self.fuzzy.is_some() {
+            self.checkpoint()?;
+        }
+        self.checkpoint()
+    }
+
     /// True while a fuzzy checkpoint is being written.
     pub fn checkpoint_in_progress(&self) -> bool {
         self.fuzzy.is_some()
@@ -1982,7 +2268,8 @@ impl Shard {
         let blocks = |len: u64| len.div_ceil(BLOCK as u64);
         let pages: u64 = self.pages.values().map(|p| blocks(p.len) + 1).sum();
         let legacy: u64 = self.legacy_blob.iter().map(|r| r.1).sum();
-        let dir = self.ckpt.as_ref().map_or(1, |c| blocks(c.len));
+        // The directory and its copy (D269).
+        let dir = 2 * self.ckpt.as_ref().map_or(1, |c| blocks(c.len));
         let base = pages + legacy + dir + 1;
         base + base / 4 + 8
     }
@@ -2024,6 +2311,11 @@ impl Shard {
     /// since then holds what replay from here needs.
     fn checkpoint_start(&mut self) -> Result<(), EngineError> {
         self.stage_deferred();
+        // Freed so far: discarded once this checkpoint is named (D275).
+        if let Some(d) = self.discards.as_mut() {
+            let next = std::mem::take(&mut d.next);
+            merge_runs(&mut d.sealing, next);
+        }
         if !self.pages.contains_key(&None) {
             // A new shard: the first page is always written.
             self.index.mark(None);
@@ -2253,16 +2545,33 @@ impl Shard {
                 return Err(EngineError::NoSpace);
             }
         };
-        let mut done = 0usize;
-        for &(s, n) in &dir_runs {
-            let end = ((done + n as usize) * BLOCK).min(dir.len());
-            self.staged_ckpt.push((
-                s * BLOCK as u64,
-                AlignedBuf::from_slice(&dir[done * BLOCK..end]),
-            ));
-            done += n as usize;
+        // The directory's copy (D269), in blocks of its own; without room
+        // for it, or past the runs a superblock holds, the checkpoint goes
+        // on without one rather than stall.
+        let copy_runs = match self.alloc.alloc(nblocks) {
+            Some(r) if dir_runs.len() + r.len() <= MAX_CKPT_RUNS => r,
+            Some(r) => {
+                for (s, n) in r {
+                    self.alloc.free(s, n);
+                }
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        for runs in [&dir_runs, &copy_runs] {
+            let mut done = 0usize;
+            for &(s, n) in runs {
+                let end = ((done + n as usize) * BLOCK).min(dir.len());
+                self.staged_ckpt.push((
+                    s * BLOCK as u64,
+                    AlignedBuf::from_slice(&dir[done * BLOCK..end]),
+                ));
+                done += n as usize;
+            }
+            if !runs.is_empty() {
+                self.ckpt_written += nblocks * BLOCK as u64;
+            }
         }
-        self.ckpt_written += nblocks * BLOCK as u64;
         // Pages, directory, and every deferred write applied since the
         // start become durable (the flush after the round's writes)
         // before the superblock refers to them.
@@ -2270,6 +2579,7 @@ impl Shard {
             runs: dir_runs,
             len: dir.len() as u64,
             crc: dir_crc,
+            copy: copy_runs,
         };
         let sup = Super {
             seq: self.super_seq + 1,
@@ -2311,8 +2621,18 @@ impl Shard {
         self.head_lsn = head_lsn;
         if let Some(old) = self.ckpt.replace(ckpt) {
             free.extend(old.runs);
+            free.extend(old.copy);
         }
         free.append(&mut self.legacy_blob);
+        // Blocks freed before this checkpoint began are discarded now;
+        // what it frees waits for the next one.
+        if let Some(d) = self.discards.as_mut() {
+            let sealing = std::mem::take(&mut d.sealing);
+            merge_runs(&mut d.ready, sealing);
+            for &(s, n) in &free {
+                add_run(&mut d.next, s, n);
+            }
+        }
         for (s, n) in free {
             self.alloc.free(s, n);
         }
@@ -2397,6 +2717,11 @@ impl Shard {
     /// Frees extents now, or once the reads in flight that may use them
     /// end.
     fn free_after_reads(&mut self, freed: Vec<(u64, u64)>) {
+        if let Some(d) = self.discards.as_mut() {
+            for &(s, n) in &freed {
+                add_run(&mut d.next, s, n);
+            }
+        }
         if self.reads.is_empty() {
             for (s, n) in freed {
                 self.alloc.free(s, n);
@@ -2752,6 +3077,14 @@ impl Shard {
             checkpoint_forced: self.checkpoint_forced,
             log_blocks_written: self.tail_lsn - self.opened_lsn,
             checkpoint_bytes_written: self.ckpt_written,
+            checkpoint_damage: self.checkpoint_damage,
+            discard_queued_blocks: self.discards.as_ref().map_or(0, |d| {
+                [&d.next, &d.sealing, &d.ready]
+                    .iter()
+                    .flat_map(|m| m.values())
+                    .sum()
+            }),
+            discarded_blocks: self.discarded,
         }
     }
 
@@ -3369,6 +3702,7 @@ mod tests {
                 runs: dir_runs,
                 len: dir.len() as u64,
                 crc: crc32c(&dir),
+                copy: Vec::new(),
             }),
             v2: false,
             chain: 0,
@@ -3392,7 +3726,7 @@ mod tests {
                 .sum::<u64>()
             + sh.ckpt
                 .as_ref()
-                .map_or(0, |c| c.runs.iter().map(|r| r.1).sum());
+                .map_or(0, |c| c.runs.iter().chain(&c.copy).map(|r| r.1).sum());
         assert_eq!(
             sh.stats().free_blocks,
             region.data_blocks() - used,
@@ -3413,6 +3747,240 @@ mod tests {
         let dev: Arc<dyn BlockDev> = Arc::new(MemDev::new(blocks * BLOCK as u64));
         Shard::format(dev.clone(), region, 7, 0).unwrap();
         Shard::open(dev, region, 7, 0).unwrap()
+    }
+
+    /// The directory's copy follows the superblock's checksum (D269): up
+    /// to it, the bytes are a superblock without one, which builds from
+    /// before copies read; a damaged copy is read as none.
+    #[test]
+    fn a_superblock_names_its_directory_copy_after_its_checksum() {
+        let mut sup = Super {
+            seq: 5,
+            device_id: 7,
+            shard: 0,
+            salt: 9,
+            head_lsn: 40,
+            ckpt: Some(Ckpt {
+                runs: vec![(300, 1)],
+                len: 120,
+                crc: 77,
+                copy: Vec::new(),
+            }),
+            v2: true,
+            chain: 3,
+        };
+        let without = sup.encode();
+        sup.ckpt.as_mut().unwrap().copy = vec![(310, 1)];
+        let with = sup.encode();
+        assert_eq!(Super::decode(&with), Some(sup.clone()));
+        let end = without.iter().rposition(|&b| b != 0).unwrap() + 1;
+        assert_eq!(with[..end], without[..end], "older builds read the same");
+        let mut damaged = with.to_vec();
+        damaged[end + 9] ^= 1;
+        let read = Super::decode(&damaged).unwrap();
+        assert!(read.ckpt.unwrap().copy.is_empty());
+    }
+
+    /// A copy whose blocks something else holds, as when a build from
+    /// before copies wrote there, is dropped rather than refuse the shard.
+    #[test]
+    fn a_directory_copy_written_over_is_dropped() {
+        let mut sh = small_shard(2048);
+        for i in 0..8 {
+            put(&mut sh, &key(i), 0, vec![i as u8; BLOCK]);
+        }
+        sh.checkpoint().unwrap();
+        let (region, dev) = (sh.region, sh.dev.clone());
+        // The superblock the checkpoint wrote, named again with the copy
+        // moved onto an object's blocks.
+        let mut buf = AlignedBuf::zeroed(BLOCK);
+        let at = super_slots(&region, sh.v2, sh.super_seq)[0];
+        dev.read(at, &mut buf).unwrap();
+        let mut sup = Super::decode(&buf).unwrap();
+        assert!(!sup.ckpt.as_ref().unwrap().copy.is_empty());
+        sup.seq += 1;
+        let taken = sh.index.used_extents().next().unwrap();
+        sup.ckpt.as_mut().unwrap().copy = vec![taken];
+        drop(sh);
+        let buf = sup.encode();
+        for at in super_slots(&region, sup.v2, sup.seq) {
+            dev.write(at, &buf).unwrap();
+        }
+        dev.flush().unwrap();
+        // It opens, and its fresh checkpoint's copy is elsewhere.
+        let sh = Shard::open(dev, region, 7, 0).unwrap();
+        let copy = sh.checkpoint_layout().directory_copy;
+        assert!(!copy.is_empty() && !copy.contains(&taken));
+        for i in 0..8 {
+            let r = sh.read(&key(i), 0, BLOCK as u64).unwrap();
+            assert!(r.iter().all(|b| *b == i as u8));
+        }
+    }
+
+    /// Scrub gives a checkpoint from before copies one, and counts no
+    /// damage for it; a damaged first copy is read past and rewritten.
+    #[test]
+    fn scrub_writes_a_missing_or_damaged_directory_again() {
+        let mut sh = small_shard(2048);
+        for i in 0..8 {
+            put(&mut sh, &key(i), 0, vec![i as u8; BLOCK]);
+        }
+        sh.checkpoint().unwrap();
+        // As a build from before copies left it.
+        let copy = std::mem::take(&mut sh.ckpt.as_mut().unwrap().copy);
+        for (s, n) in copy {
+            sh.alloc.free(s, n);
+        }
+        let checkpoints = sh.stats().checkpoints;
+        assert!(!sh.scrub_checkpoint_directory().unwrap());
+        assert_eq!(sh.stats().checkpoints, checkpoints + 1);
+        assert_eq!(sh.stats().checkpoint_damage, 0);
+        let l = sh.checkpoint_layout();
+        assert!(!l.directory_copy.is_empty());
+        assert!(!sh.scrub_checkpoint_directory().unwrap(), "sound now");
+        assert_eq!(sh.stats().checkpoints, checkpoints + 1, "and left alone");
+        // The first copy damaged while the shard runs: scrub rewrites both.
+        let (region, dev) = (sh.region, sh.dev.clone());
+        let zero = AlignedBuf::zeroed(BLOCK);
+        dev.write(l.directory[0].0 * BLOCK as u64, &zero).unwrap();
+        assert!(sh.scrub_checkpoint_directory().unwrap());
+        assert_eq!(sh.stats().checkpoint_damage, 1);
+        assert_eq!(sh.stats().checkpoints, checkpoints + 2);
+        // Damaged again, and the shard stops: it opens from the copy, and
+        // its fresh checkpoint writes both again.
+        let l = sh.checkpoint_layout();
+        drop(sh);
+        dev.write(l.directory[0].0 * BLOCK as u64, &zero).unwrap();
+        let sh = Shard::open(dev.clone(), region, 7, 0).unwrap();
+        assert!(sh.directory_copy_read());
+        for i in 0..8 {
+            let r = sh.read(&key(i), 0, BLOCK as u64).unwrap();
+            assert!(r.iter().all(|b| *b == i as u8));
+        }
+        drop(sh);
+        let sh = Shard::open(dev, region, 7, 0).unwrap();
+        assert!(!sh.directory_copy_read(), "both copies are sound again");
+    }
+
+    #[test]
+    fn freed_runs_merge() {
+        let mut m = BTreeMap::new();
+        add_run(&mut m, 10, 5);
+        add_run(&mut m, 20, 5);
+        add_run(&mut m, 15, 5);
+        assert_eq!(m.into_iter().collect::<Vec<_>>(), vec![(10, 15)]);
+        let mut m = BTreeMap::new();
+        add_run(&mut m, 30, 2);
+        add_run(&mut m, 10, 2);
+        add_run(&mut m, 5, 40);
+        add_run(&mut m, 50, 0);
+        assert_eq!(m.into_iter().collect::<Vec<_>>(), vec![(5, 40)]);
+    }
+
+    /// Freed blocks are discarded only once a checkpoint that began after
+    /// they were freed is named (D275), only where still free, and held
+    /// out of the allocator while the discard runs.
+    #[test]
+    fn freed_blocks_are_discarded_after_the_next_checkpoint() {
+        let mut sh = small_shard(2048);
+        sh.set_discard(true);
+        // Right after opening, the free space is queued once, and taken
+        // an eighth of what is free at a time.
+        let free = sh.stats().free_blocks;
+        let first = sh.take_discards(u64::MAX);
+        let n: u64 = first.iter().map(|r| r.1).sum();
+        assert_eq!(n, free / 8);
+        assert_eq!(sh.stats().free_blocks, free - n, "held while in flight");
+        sh.discards_done(&first, true);
+        assert_eq!(sh.stats().discarded_blocks, n);
+        loop {
+            let more = sh.take_discards(u64::MAX);
+            if more.is_empty() {
+                break;
+            }
+            sh.discards_done(&more, true);
+        }
+        assert_eq!(sh.stats().discard_queued_blocks, 0);
+        put(&mut sh, &key(2), 0, vec![2; 4 * BLOCK]);
+        let kept: Vec<(u64, u64)> = sh.index.used_extents().collect();
+        put(&mut sh, &key(1), 0, vec![1; 64 * BLOCK]);
+        let old: Vec<(u64, u64)> = sh
+            .index
+            .used_extents()
+            .filter(|e| !kept.contains(e))
+            .collect();
+        // Deleted: its blocks are freed, but not ready.
+        sh.commit(vec![OpList {
+            key: key(1),
+            ops: vec![Op::Delete],
+        }])
+        .unwrap();
+        assert!(sh.take_discards(u64::MAX).is_empty());
+        assert!(sh.stats().discard_queued_blocks >= 64);
+        sh.checkpoint().unwrap();
+        // Freed before the checkpoint began: ready now, unless reused.
+        let mut ready = Vec::new();
+        while let Some(more) = Some(sh.take_discards(u64::MAX)).filter(|r| !r.is_empty()) {
+            ready.extend(more);
+        }
+        let ready_blocks: Vec<u64> = ready.iter().flat_map(|&(s, n)| s..s + n).collect();
+        // In use: objects' blocks, and the checkpoint's own.
+        let l = sh.checkpoint_layout();
+        let live: Vec<u64> = sh
+            .index
+            .used_extents()
+            .chain(l.directory.iter().copied())
+            .chain(l.directory_copy.iter().copied())
+            .chain(l.pages.iter().flatten().copied())
+            .flat_map(|(s, n)| s..s + n)
+            .collect();
+        assert!(ready_blocks.iter().all(|b| !live.contains(b)), "never live");
+        for (s, n) in old {
+            for b in s..s + n {
+                assert!(
+                    ready_blocks.contains(&b) || live.contains(&b),
+                    "block {b}: freed and free, so discarded"
+                );
+            }
+        }
+        assert!(!ready.is_empty());
+        sh.discards_done(&ready, false);
+        let r = sh.read(&key(2), 0, 4 * BLOCK as u64).unwrap();
+        assert!(r.iter().all(|b| *b == 2));
+    }
+
+    /// Started with records in the log, only what is freed from then on
+    /// is queued: free space may be freed by records not yet checkpointed.
+    #[test]
+    fn free_space_is_queued_only_right_after_opening() {
+        let mut sh = small_shard(2048);
+        put(&mut sh, &key(1), 0, vec![1; BLOCK]);
+        sh.set_discard(true);
+        assert_eq!(sh.stats().discard_queued_blocks, 0);
+        sh.set_discard(false);
+        assert!(sh.take_discards(u64::MAX).is_empty());
+    }
+
+    /// Discards are taken at most `max_blocks` at a time, and the rest
+    /// stays queued.
+    #[test]
+    fn discards_are_taken_in_bounded_batches() {
+        let mut sh = small_shard(2048);
+        sh.set_discard(true);
+        let first = sh.take_discards(100);
+        assert_eq!(first.iter().map(|r| r.1).sum::<u64>(), 100);
+        let rest = sh.take_discards(u64::MAX);
+        assert!(!rest.is_empty());
+        assert!(
+            rest.iter()
+                .all(|&(s, _)| first.iter().all(|&(f, n)| s >= f + n || s < f))
+        );
+        sh.discards_done(&first, true);
+        sh.discards_done(&rest, true);
+        while let Some(more) = Some(sh.take_discards(u64::MAX)).filter(|r| !r.is_empty()) {
+            sh.discards_done(&more, true);
+        }
+        assert_eq!(sh.stats().discard_queued_blocks, 0);
     }
 
     fn put(sh: &mut Shard, k: &ObjKey, off: u64, data: Vec<u8>) {
@@ -3526,14 +4094,14 @@ mod tests {
             let mut sh = small_shard(1024);
             sh.set_defer_max(if seed % 2 == 0 { 0 } else { DEFER_MAX });
             let used = |sh: &Shard| {
-                sh.ckpt
-                    .as_ref()
-                    .map_or(0, |c| c.runs.iter().map(|r| r.1).sum::<u64>())
-                    + sh.pages
-                        .values()
-                        .flat_map(|p| &p.runs)
-                        .map(|r| r.1)
-                        .sum::<u64>()
+                sh.ckpt.as_ref().map_or(0, |c| {
+                    c.runs.iter().chain(&c.copy).map(|r| r.1).sum::<u64>()
+                }) + sh
+                    .pages
+                    .values()
+                    .flat_map(|p| &p.runs)
+                    .map(|r| r.1)
+                    .sum::<u64>()
             };
             let free0 = sh.stats().free_blocks + used(&sh);
             let mut model: BTreeMap<u64, Vec<u8>> = BTreeMap::new();

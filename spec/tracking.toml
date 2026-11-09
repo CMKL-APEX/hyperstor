@@ -179,9 +179,9 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log or a shard superblock refuses the shard (a damaged checkpoint page still refuses it whole until #243)"
-spec = ["08-engine.md §7.3", "I305", "I308", "D266", "D267"]
-status = "partial"
+what = "A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log, a shard superblock or a checkpoint page nothing scrubbed refuses the shard (D268)"
+spec = ["08-engine.md §7.3", "I305", "I308", "D266", "D267", "D268"]
+status = "done"
 tests = [
     "crash::a_damaged_device_superblock_copy_is_read_past",
     "crash::damaged_data_and_checkpoint_blocks_never_read_as_other_data",
@@ -191,6 +191,36 @@ tests = [
     "crash::a_misdirected_write_never_loses_acknowledged_changes_silently",
     "hyperstor_engine::dev::tests::fault_dev_loses_and_misdirects_single_blocks",
     "hyperstor_engine::shard::tests::a_checksum_seed_is_solved",
+    "crash::a_damaged_checkpoint_page_refuses_the_shard_and_loses_nothing_silently",
+]
+
+[[milestone.item]]
+what = "Checkpoint directories written twice, the copy read when the first is damaged; each device reads its checkpoint pages once per deep scrub period and rewrites a damaged one before a restart needs it"
+spec = ["08-engine.md §7.3", "28-scrub.md §31.2", "D269", "I321"]
+status = "done"
+tests = [
+    "crash::a_damaged_checkpoint_directory_is_read_from_its_copy",
+    "crash::a_page_damaged_and_scrubbed_never_refuses_the_shard",
+    "cluster::damaged_checkpoint_pages_are_rewritten_before_a_restart",
+    "hyperstor_engine::shard::tests::a_superblock_names_its_directory_copy_after_its_checksum",
+    "hyperstor_engine::shard::tests::a_directory_copy_written_over_is_dropped",
+    "hyperstor_engine::shard::tests::scrub_writes_a_missing_or_damaged_directory_again",
+    "hyperstor_daemon::tests::checkpoint_pages_are_read_once_per_shortest_deep_period",
+]
+
+[[milestone.item]]
+what = "Freed space discarded on the device (a deallocate on a drive, a punched hole in a file) in batches after each checkpoint, only where still free; on by default, hyperstord --no-discard turns it off per device"
+spec = ["08-engine.md §7.4", "D275", "I322", "G58"]
+status = "done"
+tests = [
+    "cluster::devices_discard_freed_blocks_unless_told_not_to",
+    "hyperstor_engine::shard::tests::freed_blocks_are_discarded_after_the_next_checkpoint",
+    "hyperstor_engine::shard::tests::free_space_is_queued_only_right_after_opening",
+    "hyperstor_engine::shard::tests::discards_are_taken_in_bounded_batches",
+    "hyperstor_engine::shard::tests::freed_runs_merge",
+    "hyperstor_engine::alloc::tests::free_within_clips_to_the_range",
+    "hyperstor_engine::dev::tests::discarded_ranges_read_as_zeros",
+    "hyperstor_daemon::tests::a_device_without_discards_is_told_apart_from_a_failed_one",
 ]
 
 [[milestone.item]]

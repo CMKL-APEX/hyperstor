@@ -42,7 +42,10 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
     accepted with a warning, because every log write then costs a flush;
   - discard and write-zeroes through `IORING_OP_FALLOCATE` (punch hole
     and zero range on the block device), which the kernel turns into the
-    device's own commands;
+    device's own commands. As built, freed space is discarded with
+    `BLKDISCARD` on a block device and a punched hole on a file, from a
+    thread of the device's own (§7.4; G58 asks which command a punched
+    hole on a block device becomes);
   - queue depth per reactor is capped from the device's
     `queue/nr_requests`, so one reactor can't starve the others on a SATA
     device's single queue.
@@ -251,10 +254,19 @@ device is formatted with the cluster's id; a superblock without one
   writes only the pages marked since the last one began, cutting full
   pages and dropping empty ones, then a directory of every page. A page
   nothing changed still holds what replay from `L` needs, so checkpoint
-  traffic follows the share of the index that changes. Decided (D269):
-  the directory is written twice, the second copy read when the first
-  fails, and deep scrub checks the pages (28-scrub.md §31.2), marking a
-  damaged one for the next checkpoint to rewrite.
+  traffic follows the share of the index that changes.
+- **Two directory copies, and pages scrubbed** (as built, D269, I321).
+  Every checkpoint writes its directory twice, in blocks of their own;
+  the superblock names the copy after its own checksum, with a checksum
+  of its own, so builds from before copies read the superblock as
+  before. Opening reads the copy when the first fails its checksum or
+  can't be read, and the fresh checkpoint every open writes replaces
+  both. Each device reads its checkpoint pages, then its directory, once
+  per the shortest deep scrub period of its pools (28-scrub.md §31.2),
+  one page at a time spread over the period; a damaged one is marked
+  changed and a checkpoint written at once, so a restart never meets it.
+  A page damaged after scrub last read it still refuses the whole shard
+  (D268).
 - **Deferred writes in replay** (I149). A deferred write's record names
   its physical blocks. Replayed over a page written after it, a write
   whose object no longer maps the block (a later trim, or an absorb that
@@ -267,11 +279,26 @@ device is formatted with the cluster's id; a superblock without one
   the extents the index and the checkpoint use (as built; no bitmap on
   disk).
 - Discard and write-zeroes from a client drop blocks from the head
-  version. Blocks no version holds any more are freed. Decided (D275,
-  #245, not built yet): extents freed since a checkpoint are deallocated
-  on the device in large runs once it is sealed, off the commit path; on
-  files, by punching holes; on by default, a per-device setting turns it
-  off.
+  version. Blocks no version holds any more are freed.
+- **Freed space is discarded** (as built, D275, I322). Freed extents are
+  queued, merged into runs, and become ready once a checkpoint that
+  began after they were freed is named. The daemon takes them in
+  batches (at most 256 MiB, and an eighth of the free space): only the
+  parts still free, held out of the allocator while a thread of the
+  device's own discards them (`BLKDISCARD`, or a punched hole on a file).
+  A block is freed only once the commit that frees it is durable, and
+  recovery drops only commits never acknowledged, so a freed block is
+  never needed again; reused ones are skipped. Right after a start, the
+  whole free space is queued once. On by default; `hyperstord
+  --no-discard` names devices that don't, and a device that answers
+  `EOPNOTSUPP` stops after one log line.
+- **G58. What a discard costs on the drives Hyperstor runs on** (#245).
+  On an NVMe drive the engine owns: sustained random 4 KiB overwrite
+  throughput and p99 over several fills of the device, with discards and
+  with `--no-discard`; how long `BLKDISCARD` of 256 MiB takes and whether
+  it delays reads and writes meanwhile; and whether
+  `fallocate(PUNCH_HOLE)` on the block device sends a deallocate or a
+  write-zeroes (§6.2).
 - The engine reports used, free and allocated-per-lineage bytes to the
   daemon, which reports them to the metadata service with its heartbeat.
 - **A full shard stays up** (as built, I162). Room for a whole checkpoint
