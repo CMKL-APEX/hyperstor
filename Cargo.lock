@@ -1502,6 +1502,7 @@ dependencies = [
  "hyperstor-s3",
  "md-5",
  "rand 0.10.3",
+ "socket2",
  "tempfile",
 ]
 
