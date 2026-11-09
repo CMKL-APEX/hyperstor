@@ -254,6 +254,11 @@ impl BlockDev for FaultyDev {
         self.fault()?;
         self.inner.read_batch(reads)
     }
+
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        self.fault()?;
+        self.inner.discard(off, len)
+    }
 }
 
 #[cfg(test)]

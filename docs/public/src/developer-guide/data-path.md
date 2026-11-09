@@ -80,6 +80,19 @@ read, and space freed at most a read timeout late. A randomized test
 runs reads, writes and deletes begun and ended in any order against a
 model.
 
+**Discarding freed space** (D275). Freed extents are queued and, once a
+checkpoint that began after they were freed is named, handed out in
+batches of long runs: only the parts still free, held out of the
+allocator while a thread of the device's own discards them (`BLKDISCARD`
+on a block device, a punched hole in a file), at most 256 MiB and an
+eighth of the free space at a time. A block is freed only once the commit
+that frees it is durable, and recovery drops only commits never
+acknowledged, so a freed block is never needed again; a block reused in
+the meantime is skipped. **The cost:** a little free space held while a
+batch runs. The crash test discards at random points on a device that
+zeros what it discards; discarding a reused block instead fails it at
+once.
+
 ## The engine
 
 The engine stores **objects**. An object has sparse data in 4 KiB

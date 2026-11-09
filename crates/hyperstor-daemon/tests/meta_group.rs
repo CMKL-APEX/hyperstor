@@ -164,6 +164,7 @@ impl Group {
 
     fn node(&self, n: usize, device: DeviceSpec) -> NodeHandle {
         start(NodeConfig {
+            no_discard: Vec::new(),
             endpoints: Vec::new(),
             networks: Vec::new(),
             push_part_bytes: 0,

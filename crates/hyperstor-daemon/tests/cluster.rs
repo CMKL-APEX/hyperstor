@@ -61,6 +61,8 @@ thread_local! {
     /// [`Cluster::start`] formats its devices in the first shard format,
     /// as before v0.0.8 (D274).
     static FIRST_FORMAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Devices that run as `hyperstord --no-discard` names them (D275).
+    static NO_DISCARD: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Each stopped device, by device id.
@@ -439,6 +441,7 @@ impl Cluster {
             .enumerate()
             .map(|(n, ls)| {
                 Some(start(NodeConfig {
+                    no_discard: NO_DISCARD.with(|d| d.borrow().clone()),
                     endpoints: Vec::new(),
                     networks: Vec::new(),
                     push_part_bytes: TEST_PART_BYTES,
@@ -543,6 +546,7 @@ impl Cluster {
             })
             .collect();
         self.nodes[n] = Some(start(NodeConfig {
+            no_discard: NO_DISCARD.with(|d| d.borrow().clone()),
             endpoints: Vec::new(),
             networks: Vec::new(),
             push_part_bytes: TEST_PART_BYTES,
@@ -663,6 +667,56 @@ impl Cluster {
         let map = self.meta_thread.take().unwrap().join().unwrap();
         (map, devs)
     }
+}
+
+/// D275: each device discards its free space once it starts, then what
+/// it frees, in batches after its checkpoints; one `--no-discard` names
+/// never does. Discards on these test devices zero the blocks, so data
+/// that reads back, on every copy, was never discarded while in use.
+#[test]
+fn devices_discard_freed_blocks_unless_told_not_to() {
+    NO_DISCARD.with(|d| *d.borrow_mut() = vec![1000]);
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let data = pattern(57, 16 * CHUNK as usize);
+    let d = data.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            for round in 0..3u8 {
+                cl.write(POOL, 1, 0, pattern(60 + round as u64, 16 * CHUNK as usize))
+                    .await
+                    .unwrap();
+            }
+            cl.write(POOL, 1, 0, d).await.unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let get = |n: usize, f: fn(&metrics::ShardMetrics) -> &std::sync::atomic::AtomicU64| {
+        f(&c.nodes[n].as_ref().unwrap().metrics[0].1).load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let t = std::time::Instant::now();
+    while get(0, |m| &m.discarded_bytes) == 0 || get(2, |m| &m.discarded_bytes) == 0 {
+        assert!(t.elapsed().as_secs() < 20, "free space was never discarded");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(get(1, |m| &m.discarded_bytes), 0, "--no-discard");
+    assert_eq!(get(1, |m| &m.discard_queued_bytes), 0, "nothing queued");
+    let dr = data.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            assert!(cl.read(POOL, 1, 0, dr.len() as u64).await.unwrap() == dr);
+        })
+    })
+    .join()
+    .unwrap();
+    let map = c.published();
+    let (_, devs) = c.stop();
+    let chunks: Vec<(u128, u64)> = (0..16u64).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
 }
 
 /// D274: devices of the first shard format, as every device was before
