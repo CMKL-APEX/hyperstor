@@ -1,9 +1,0 @@
-title = "The map service's stall at a rolling install (issue #177)"
-status = "done"
-owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
-started = 2026-11-03
-updated = 2026-11-06
-milestone = "HS2"
-branch = "fix/meta-raft-stall"
-prs = [180, 204]
-now = "Merged (#204, I279) and deployed 2026-11-06 by a rolling install, with no stall and no AppendEntries timeout. Two forced elections on the pilot then each took one term, under a second, with writes committed at once and the stopped leader caught up within a second of its restart. #177 closed"
