@@ -6,5 +6,5 @@ updated = 2026-11-09
 milestone = "HS6"
 prs = [234, 238, 240, 255]
 branch = "perf/hs5b-client-copy"
-now = "HS5b: a client's write sent from its own buffer, each chunk's piece uncopied (I323); #240 and #255 merged"
+now = "HS5b: a client's write sent from its own buffer, each chunk's piece uncopied (I324); #240 and #255 merged"
 next = "The check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6"

@@ -653,7 +653,7 @@ impl Client {
         data: Vec<u8>,
     ) -> Result<(), ClientError> {
         let pieces = self.pieces(pool, off, data.len() as u64)?;
-        // Each piece is sent from `data` as it is when large (HS5b, I323).
+        // Each piece is sent from `data` as it is when large (HS5b, I324).
         let data = Rc::new(data);
         let handles: Vec<_> = pieces
             .into_iter()

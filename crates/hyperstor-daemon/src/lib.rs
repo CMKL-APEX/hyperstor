@@ -163,6 +163,9 @@ pub struct ShardSpec {
 
 pub struct NodeConfig {
     pub node_id: u32,
+    /// Devices that never discard freed blocks (D275): drives that handle
+    /// a deallocate slowly. Every other device does.
+    pub no_discard: Vec<u32>,
     /// More listeners for devices' reactors, one per endpoint in the map
     /// (26-networks.md §29.5, D207), as (device, listener).
     pub endpoints: Vec<(u32, std::net::TcpListener)>,
@@ -425,6 +428,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let spin = cfg.spin;
         let peer_timeout = cfg.peer_timeout;
         let scrub_interval = cfg.scrub_interval;
+        let discard = !cfg.no_discard.contains(&sh.device_id);
         let no_digests = cfg.no_digests;
         let push_part_bytes = match cfg.push_part_bytes {
             0 => PUSH_PART_BYTES,
@@ -509,6 +513,8 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.read_timeout.set(read_timeout);
                         st.kind.set(kind);
                         *st.networks.borrow_mut() = networks;
+                        // Before any commit: the free space is queued too.
+                        st.shard.get_mut().await.set_discard(discard);
                         let l = TcpListener::from_std(sh.listener);
                         let udp = if no_udp {
                             Err(std::io::Error::other("test hook"))
@@ -549,6 +555,9 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         spawn(st.clone().scrubbers(scrub_interval));
                         spawn(st.clone().asked_scrubs());
                         spawn(st.clone().checkpoint_scrub(scrub_interval));
+                        if discard {
+                            spawn(st.clone().discarder());
+                        }
                         if !kv_jobs.off {
                             spawn(st.clone().kv_ranges(kv_jobs));
                         }
@@ -971,6 +980,26 @@ struct HoleCheck {
 /// is due a deep scrub at `now`, scrubbed every `every` and deep every
 /// `deep_every` scrubs. Half an interval early, so a pass that starts a
 /// little sooner than the last doesn't put it off by a whole pass.
+/// Most blocks of one discard batch (D275): 256 MiB, held out of the
+/// allocator while the batch runs.
+const DISCARD_BATCH: u64 = 256 << 20 >> 12;
+/// How often a device looks for freed blocks to discard, between
+/// batches, and after a failed discard.
+const DISCARD_EVERY: Duration = Duration::from_secs(1);
+const DISCARD_PAUSE: Duration = Duration::from_millis(10);
+const DISCARD_RETRY: Duration = Duration::from_secs(60);
+
+/// Whether `e` says the device takes no discards at all, rather than that
+/// one failed.
+fn discards_unsupported(e: &std::io::Error) -> bool {
+    // Linux's EOPNOTSUPP (no discard, no hole punching) and ENOTTY (not a
+    // block device after all).
+    const EOPNOTSUPP: i32 = 95;
+    const ENOTTY: i32 = 25;
+    e.kind() == std::io::ErrorKind::Unsupported
+        || matches!(e.raw_os_error(), Some(EOPNOTSUPP) | Some(ENOTTY))
+}
+
 /// How often a device reads its checkpoint pages (D269): the shortest
 /// deep scrub period of the pools that scrub, `None` while none does.
 /// `every` replaces each pool's interval, as for PG scrubs.
@@ -1982,6 +2011,10 @@ impl ShardState {
                 m.commits.store(st.commits, Relaxed);
                 m.checkpoints.store(st.checkpoints, Relaxed);
                 m.checkpoint_damage.store(st.checkpoint_damage, Relaxed);
+                m.discarded_bytes
+                    .store(st.discarded_blocks * block, Relaxed);
+                m.discard_queued_bytes
+                    .store(st.discard_queued_blocks * block, Relaxed);
                 m.map_epoch.store(self.map().epoch, Relaxed);
             }
             sleep(Duration::from_secs(1)).await;
@@ -5333,6 +5366,75 @@ impl ShardState {
         self.scrubbing.borrow_mut().remove(&pool);
     }
 
+    /// Discards this device's freed blocks (D275): what the engine has
+    /// ready after each checkpoint, at most [`DISCARD_BATCH`] at a time, on
+    /// a thread of its own, so neither the reactor nor commits wait for a
+    /// drive that discards slowly. The blocks stay out of the allocator
+    /// until their discard ends. A device that takes no discards is told
+    /// once and left alone.
+    async fn discarder(self: Rc<Self>) {
+        let (jobs, todo) = std::sync::mpsc::channel::<Vec<(u64, u64)>>();
+        let (done_tx, mut done) = channel::<(Vec<(u64, u64)>, std::io::Result<()>)>();
+        let dev = self.dev.clone();
+        let block = hyperstor_engine::BLOCK as u64;
+        let worker = std::thread::Builder::new()
+            .name(format!("hs-discard-{}", self.me))
+            .spawn(move || {
+                for runs in todo {
+                    let r = runs
+                        .iter()
+                        .try_for_each(|&(s, n)| dev.discard(s * block, n * block));
+                    if done_tx.send((runs, r)).is_err() {
+                        break;
+                    }
+                }
+            });
+        if worker.is_err() {
+            self.shard.get_mut().await.set_discard(false);
+            return;
+        }
+        loop {
+            let runs = self.shard.get_mut().await.take_discards(DISCARD_BATCH);
+            if runs.is_empty() {
+                sleep(DISCARD_EVERY).await;
+                continue;
+            }
+            if jobs.send(runs.clone()).is_err() {
+                self.shard.get_mut().await.discards_done(&runs, false);
+                return;
+            }
+            let Some((runs, r)) = done.recv().await else {
+                return;
+            };
+            {
+                let mut sh = self.shard.get_mut().await;
+                sh.discards_done(&runs, r.is_ok());
+                if r.as_ref().is_err_and(discards_unsupported) {
+                    sh.set_discard(false);
+                }
+            }
+            match r {
+                // The rest after a breath: the device serves clients.
+                Ok(()) => sleep(DISCARD_PAUSE).await,
+                Err(e) if discards_unsupported(&e) => {
+                    eprintln!(
+                        "hyperstord: device {}: takes no discards ({e}); freed blocks are not \
+                         discarded",
+                        self.me
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "hyperstord: device {}: a discard failed ({e}); trying again later",
+                        self.me
+                    );
+                    sleep(DISCARD_RETRY).await;
+                }
+            }
+        }
+    }
+
     /// Reads this device's checkpoint pages, then its directory, once per
     /// the shortest deep scrub period of the pools (D269): one page at a
     /// time, spread over the period, so a pass costs about one read of the
@@ -6550,6 +6652,19 @@ async fn push_all(conn: &Conn, parts: Vec<(Msg, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Verdict, verdict};
+
+    /// A device that takes no discards at all is told apart from one
+    /// discard that failed (D275).
+    #[test]
+    fn a_device_without_discards_is_told_apart_from_a_failed_one() {
+        use super::discards_unsupported;
+        use std::io::{Error, ErrorKind};
+        assert!(discards_unsupported(&Error::from(ErrorKind::Unsupported)));
+        assert!(discards_unsupported(&Error::from_raw_os_error(95)));
+        assert!(discards_unsupported(&Error::from_raw_os_error(25)));
+        assert!(!discards_unsupported(&Error::from_raw_os_error(5)));
+        assert!(!discards_unsupported(&Error::from(ErrorKind::TimedOut)));
+    }
 
     /// A device reads its checkpoint pages once per the shortest deep
     /// scrub period of the pools that scrub (D269), and not while none

@@ -752,7 +752,7 @@ mod pool_tests {
         });
     }
 
-    /// HS5b (I323): the parts of one buffer that a client's write sends to
+    /// HS5b (I324): the parts of one buffer that a client's write sends to
     /// different chunks reach the peer as they were cut: large ones from
     /// the buffer itself, at any offset, and a small one copied.
     #[test]

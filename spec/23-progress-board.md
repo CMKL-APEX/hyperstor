@@ -11,13 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 8 | 0 | 1 | 44 |
+| 8 | 0 | 2 | 44 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-client-copy`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255) | HS5b: a client's write sent from its own buffer, each chunk's piece uncopied (I323); #240 and #255 merged | The check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6 | 2026-11-09 |
+| **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-client-copy`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255) | HS5b: a client's write sent from its own buffer, each chunk's piece uncopied (I324); #240 and #255 merged | The check on arrival folded into the engine's aligned copy (I12); zeroed receive buffers; registered buffers; then HS6 | 2026-11-09 |
 | **Engine: the v0.0.8 shard format and converting devices to it (#242, #253, #247)** (`engine-format-v008`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-upgrade`, [#258](https://github.com/CMKL-APEX/hyperstor/pull/258), [#260](https://github.com/CMKL-APEX/hyperstor/pull/260) | #258 (engine, I309) and #260 (device upgrade, I319, stacked) open | Pull request for device upgrade; then #246 (D271), #243 (D269), #245 (D275), #251 | 2026-11-08 |
 | **Engine durability against a device that lies (#241, #242, #243, #253)** (`engine-corruption-faults`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/engine-log-lookahead`, [#254](https://github.com/CMKL-APEX/hyperstor/pull/254), [#257](https://github.com/CMKL-APEX/hyperstor/pull/257) | Merged, not deployed: #241 (#254), #242 and #253 refusals (#257); the format step continues in engine-format-v008 | The v0.0.8 incompatible format step: the log hash chain (D266), relative block numbers (D270) and superblock mirrors at the log ring's end (D267, revised); then #243 and #246 | 2026-11-08 |
 | **Engine: a backup device superblock, and never formatting over shards (#246, D271)** (`device-super-backup`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-super-backup`, [#263](https://github.com/CMKL-APEX/hyperstor/pull/263) | Built (I312): COMPAT_BACKUP_SUPER in the last block, on new devices and conversions with a free last block; blank copies over shard superblocks refused | Then #243 (D269), #245 (D275), #251 | 2026-11-08 |
@@ -34,7 +34,8 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Built (I321): the directory written twice, the copy named after the superblock's checksum; each device reads its pages once per deep scrub period and rewrites a damaged one | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
+| **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
+| **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Merged as 00b3fa7 (I321), not deployed | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
 ## Done
 
@@ -92,7 +93,7 @@ against the tests.
 
 | Milestone | Title | Done | Partial | Planned |
 |---|---|---|---|---|
-| HS0 | Local storage engine and reactor | 16 | 3 | 1 |
+| HS0 | Local storage engine and reactor | 17 | 3 | 1 |
 | HS1 | Replicated pools over TCP | 9 | 1 | 0 |
 | HS2 | Failure handling | 16 | 0 | 0 |
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |

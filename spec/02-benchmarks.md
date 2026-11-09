@@ -2003,7 +2003,7 @@ The same 1 GiB file read with `dd iflag=direct`: 2.7 s at `bs=1M`,
    hash chain (D266) doesn't remove the read: a gap is proven only by a
    record found after it.
 
-## 2026-11-09: A client's write sent from its own buffer (HS5b, I323)
+## 2026-11-09: A client's write sent from its own buffer (HS5b, I324)
 
 `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
 HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:
