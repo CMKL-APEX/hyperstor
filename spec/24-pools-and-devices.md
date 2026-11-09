@@ -12,7 +12,7 @@ Built so far, on `feature/elastic-pools`: the identity check of
 §27.2.2 (I203, also on `main`), adding a device (§27.2.1, I204),
 named device ids (§27.2.3, I205), the format rule (§27.2.2,
 I206) and the installer's `--device` on map service hosts (§27.2.1,
-I207). The work
+I207) and on storage-only hosts (D280, I334). The work
 lands on the branch `feature/elastic-pools`, which merges into `main`
 once the required features are in.
 
@@ -57,10 +57,16 @@ device weights from capacity (D158).
   (D158: nothing is placed by a guess), the class given or the one its
   kind implies (§27.2.4). `hyperstorctl device add --node N --address A
   [--class C]`; role `operate` in mgmt's Cedar policy; audited.
-- A storage-only host has no administrator certificate, so a join of a
-  node that is already in the map may also append: the same addresses
-  first, in the same order, then the new ones. Anything else is still
-  refused.
+- A storage-only host has no administrator certificate, so its node's
+  own certificate may call `AddDevice` too (D280), as it may set its own
+  devices' endpoints (D215): for its own node only, at an IP one of that
+  node's devices already has, and without a class. Anything else is
+  refused (`permission_denied`) and audited. Why: the host adds its own
+  disks without an administrator's errand, and can't add a device to
+  another node or at another host's address.
+- A join of a node that is already in the map may also append: the
+  same addresses first, in the same order, then the new ones. Anything
+  else is still refused. The installer doesn't use it (D280).
 - **The installer** records each device in `install.conf`, so a later
   run (the daily renewal too) keeps it:
   - `--device PATH` (repeatable): a block device, by its
@@ -69,9 +75,14 @@ device weights from capacity (D158).
   - files as now (`--reactors N`, `--data-dir`, `--size-gib`);
   - each device gets its own reactor and port, its own `--shard`, and a
     udev rule that gives the `hyperstor` user that device only (and its
-    NVMe generic device, for passthrough), never the `disk` group.
+    NVMe generic device, for passthrough), never the `disk` group. The
+    rules are in `/etc/udev/rules.d/61-hyperstor.rules`, a name that
+    sorts after `60-persistent-storage.rules`, which makes the by-id
+    links they match: udev reads rules files in the order of their
+    names, whatever their directory (I333).
 - Adding a device to a running node: the installer formats it (§27.2.2),
-  registers it (`AddDevice`, or the join above), rewrites `node-N.env`
+  registers it (`AddDevice`, with the administrator's certificate or the
+  node's, D280), rewrites `node-N.env`
   and restarts `hyperstord` (D170; a reactor started without a restart comes later). The node's other devices keep
   their data; a restart is a short down, held as any other (D149).
 - **Data moves once it runs.** The new device reports its space as its

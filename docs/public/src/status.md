@@ -193,7 +193,7 @@ covered by tests that run on every change.
 | A device added to a running node: registered, weighted once it runs, then given PGs | In progress |
 | Device ids named in --shard and the cluster file; a node serves only devices the map has, on it, at their address | Done |
 | Block devices are formatted by the installer after a check for other systems' signatures; the node formats only files | Done |
-| The installer adds a block device to an installed node and keeps it across runs | In progress |
+| The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts | In progress |
 | Each device's kind reported; classes follow it unless an operator sets one | Done |
 | Pools place on a set of device classes; hard disks and flash mix only when forced | Done |
 | Pools made at run time on the device classes they name | Done |

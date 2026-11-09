@@ -1087,12 +1087,14 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The installer adds a block device to an installed node and keeps it across runs"
-spec = ["24-pools-and-devices.md §27.2.1", "D167", "I207"]
+what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "D280", "I207", "I333", "I334"]
 status = "partial"
 tests = [
     "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
+    "hyperstor_install::tests::udev_rules_come_after_the_by_id_links",
     "manage::the_installer_adds_a_device_to_a_node",
+    "join::storage_hosts_join_with_tokens",
 ]
 
 [[milestone.item]]

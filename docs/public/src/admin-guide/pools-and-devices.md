@@ -103,7 +103,8 @@ a build that has `hyperstorctl full-ratios`.
 ## Adding a device to a node
 
 A node can take more devices while the cluster runs. On the
-node's host, if it runs the map service too:
+node's host, whether it runs the map service or joined as a storage
+host:
 
 ```sh
 sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-NAME
@@ -112,16 +113,28 @@ sudo hyperstor-install install --node 1 --device /dev/disk/by-id/nvme-NAME
 The installer refuses a device that holds anything it recognises (a
 partition table, LVM, a Ceph OSD, a filesystem...; `--force-format`
 overwrites it), registers it with the map service, formats it, lets
-the `hyperstor` user open it (a udev rule for that disk only), records
-it in `install.conf` and restarts the node with it. Later runs, the
-daily renewal included, keep it. Name devices by `/dev/disk/by-id/`.
+the `hyperstor` user open it (a udev rule for that disk only, in
+`/etc/udev/rules.d/61-hyperstor.rules`), records it in `install.conf`
+and restarts the node with it. Later runs, the daily renewal included,
+keep it. Name devices by `/dev/disk/by-id/`.
+
+A map service host registers the device with the administrator's
+certificate. A storage host uses its node's own certificate, through
+the API it joined with; that certificate may add devices only to its
+own node, at an address the node already serves on, and without a
+class (set one afterwards with `hyperstorctl device class`).
+
+Installers before this release wrote the rules to
+`60-hyperstor.rules`, which udev reads before it makes the by-id links
+the rules match, so they didn't apply after a reboot. Running the
+installer again on each host with an added disk moves them.
 
 The device is the node's next one, `node × 1000 + i`, and starts at
 weight 0: nothing moves until the node runs it. Once it has reported
 its capacity, within a second of starting, it gets its weight and PGs
 move onto it, as after a weight change.
 
-By hand, or on a host without the map service: `hyperstorctl device
+By hand: `hyperstorctl device
 add --node 1 --address 192.0.2.21:9102` (from a host that has the
 administrator's certificate), `hyperstor-install format-device --path
 PATH --id D` on the node's host, then one more `--shard
