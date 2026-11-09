@@ -204,7 +204,7 @@ strict multi-tenancy without a cluster per customer.
   realms a call reaches; the map service, which knows each container's
   realm, applies them (D260, D262); cluster API certificates stay
   cluster-wide. Pools, devices and hosts stay the cluster
-  administrator's. Built (I303, I329). Why: the operator of one realm can't
+  administrator's. Built (I303, I331). Why: the operator of one realm can't
   make keys or attach volumes in another.
 - **The name (D253).** "Realm", as in Kerberos: an administrative domain
   with its own keys. Rejected: *partition* (network partitions),

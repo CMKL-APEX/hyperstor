@@ -97,8 +97,8 @@ design is split by topic, with section numbers kept across files.
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo fmt --check`, `cargo build --workspace --release`, then
   `cargo test --workspace --release` (the end-to-end suite runs the built
-  binaries and refuses stale ones), `scripts/spec-check.py` and
-  `scripts/board.py check`. CI (`.github/workflows/ci.yml`) runs them all.
+  binaries and refuses stale ones), and `scripts/spec-check.py`. CI
+  (`.github/workflows/ci.yml`) runs them all.
 - **Track what is built** in `spec/tracking.toml`: each milestone's items,
   their status (`done`, `partial`, `planned`) and the tests that show them
   working. CI fails when a tracked test is renamed, removed or failing,
@@ -132,14 +132,16 @@ design is split by topic, with section numbers kept across files.
 - Work on a branch in your own worktree or clone; other sessions may be
   using the main checkout. Commit and push only when asked; open pull
   requests against `main`.
-- **Keep the progress board current** (`spec/23-progress-board.md`):
-  when you start a workstream, add `spec/board/<workstream>.toml` (fields
-  in `scripts/board.py`); update its `status`, `now`, `next`, PRs and
-  `updated` in the same branch as the work, at least with every pull
-  request; mark it `done` when the work is merged and deployed, and
-  remove entries done for more than two weeks. Edit only your own
-  workstream's file, then run `scripts/board.py write`; CI runs
-  `scripts/board.py check`.
+- **Track workstreams on the [Hyperstor project](https://github.com/orgs/CMKL-APEX/projects/1)**, not in
+  the repository: no shared file for parallel sessions to conflict on.
+  Before starting, check the project and `gh pr list` that nobody has
+  it. Then take the work's issue (or open one), add it to the project
+  with Status *In progress*, Owner (your session's link or your name)
+  and Spec milestone (`HS2`, `AD3`, …). PRs say `Part of #N`, the last
+  one `Closes #N`. Keep Status current: *Blocked* (say on what, in the
+  issue), *In review* while a PR is open, *Merged* once on `main`, and
+  *Deployed* when it runs on the pilot, with the commit and date in the
+  Deployed field. Progress goes in issue comments.
 - Use your own `CARGO_TARGET_DIR`. Never point it at another checkout's
   target directory (such as glidex's): cargo mixes the builds.
 - On shared development hosts, build with `-j1` or `-j2` to avoid

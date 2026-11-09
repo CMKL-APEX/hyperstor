@@ -48,17 +48,14 @@ documents cite them by number.
 | [05-decision-log.md](05-decision-log.md) | — | Decision points reviewed with the owner, answers, and points still open with their trade-offs |
 | [01-implementation-notes.md](01-implementation-notes.md) | — | What is built, decisions made while building it (I1…), bugs the tests found |
 | [02-benchmarks.md](02-benchmarks.md) | — | Hosts, methods, results and findings |
-| [23-progress-board.md](23-progress-board.md) | — | Who is working on what, and how far each milestone is built (generated) |
 
 What each milestone delivers, how far it is built and the tests that
 show it are tracked in [tracking.toml](tracking.toml), which CI checks
 against every test run (`scripts/tracking.py`).
 
-The [progress board](23-progress-board.md) shows the work under way:
-each workstream (what one agent or person is carrying) keeps one file
-in [board/](board/), and `scripts/board.py write` makes the page from
-those files and tracking.toml. CI checks the files and that the page is
-current (`scripts/board.py check`).
+The work under way, who carries it and whether it is merged and
+deployed, is on the [Hyperstor project](https://github.com/orgs/CMKL-APEX/projects/1): one issue per
+workstream (CLAUDE.md, "Working on the host").
 
 ## Conventions
 
