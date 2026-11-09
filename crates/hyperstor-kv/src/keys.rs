@@ -173,7 +173,7 @@ pub fn map_start(id: u64, key: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     fn bytes(rng: &mut SmallRng) -> Vec<u8> {
         let n = rng.random_range(0..6);

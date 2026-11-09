@@ -1,6 +1,28 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@source '../../ui-kit/src/**/*.{js,ts,jsx,tsx}';
+
+/* Light only, as @glidex/ui-kit's dialogs are: `dark:` classes stay inert
+   until a theme switch sets the class. */
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  /* A border with no color of its own: gray-200, as in Tailwind 3, not
+     4's currentcolor (near-black on most text). */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  /* Tailwind 4 gives buttons the default cursor; keep the pointer. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
 
 :root {
   color-scheme: light;

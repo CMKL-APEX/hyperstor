@@ -16,19 +16,19 @@
     "@connectrpc/connect": "^2.3.0",
     "@connectrpc/connect-web": "^2.3.0",
     "@glidex/ui-kit": "workspace:*",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.17.0",
-    "@types/react": "^19.1.2",
-    "@types/react-dom": "^19.1.2",
-    "@vitejs/plugin-react": "^4.4.1",
-    "autoprefixer": "^10.6.2",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
     "postcss": "^8.5.32",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.2"
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
   }
 }

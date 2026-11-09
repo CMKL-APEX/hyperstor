@@ -37,6 +37,14 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   agreed; a peer refuses a frame whose header version it doesn't read.
   A new message is negotiated through `Hello` and sent only to peers
   that answered a version that has it (`Host`, version 3, D261).
+- **Checksummed writes in operation lists** (version 4, D279, I323).
+  `WriteCrcs { off, data, crcs }` is a write with the CRC32C of each
+  4 KiB block, taken by the writer (the S3 gateway, as it cuts a chunk).
+  The primary checks them on arrival, its engine stores them as given,
+  and each replica checks them again; a mismatch is `Checksum`. A
+  storage node greets its peers with `Hello` too, so a primary sends
+  replicas of version 3 plain writes, and a client whose primary
+  refuses the list as malformed (version 3) sends it once more plain.
 - **Security** per D25.
 
 ### 13.2 Transports (D30)

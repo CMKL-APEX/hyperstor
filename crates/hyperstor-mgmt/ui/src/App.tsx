@@ -33,7 +33,7 @@ const SSO = [{ label: "your identity provider" }];
 function Login({ methods, onLoggedIn }: { methods: Methods; onLoggedIn: () => void }) {
   const [claim, setClaim] = useState("");
   return (
-    <div className="max-w-sm mx-auto mt-24 p-6 bg-white dark:bg-slate-900 rounded-xl shadow border border-slate-200 dark:border-slate-700 grid gap-4">
+    <div className="max-w-sm mx-auto mt-24 p-6 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 grid gap-4">
       <h1 className="text-lg font-semibold">Hyperstor</h1>
       {methods.claim_open && (
         <label className="grid gap-1 text-xs text-slate-500">

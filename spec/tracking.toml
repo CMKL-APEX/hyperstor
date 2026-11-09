@@ -750,6 +750,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Writes in operation lists (S3 object data) carry the writer's CRCs to every copy's media, checked on arrival; plain writes to peers of the protocol before"
+spec = ["13-protocol.md §13.1", "D279", "I323"]
+status = "done"
+tests = [
+    "cluster::operation_list_writes_keep_the_writers_crcs",
+    "cluster::checksummed_writes_reach_nodes_of_the_protocol_before",
+    "hyperstor_daemon::tests::checksummed_writes_are_checked_and_unknown_to_older_nodes",
+]
+
+[[milestone.item]]
 what = "Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data"
 spec = ["D41", "I327"]
 status = "done"

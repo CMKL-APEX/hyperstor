@@ -11,12 +11,13 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 4 | 0 | 2 | 48 |
+| 5 | 0 | 3 | 48 |
 
 ## In progress
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **The web UI on Vite 8, Tailwind CSS 4 and TypeScript 7 (I325)** (`ui-deps`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `deps/ui-vite8-tw4-ts7`, [#284](https://github.com/CMKL-APEX/hyperstor/pull/284) | As glidex #402: ui-kit synced, Tailwind 4 migrated, vite 8 and TypeScript 7; 13 of 13 browser tests pass | PR #284; deploy to the pilot when asked | 2026-11-09 |
 | **RDMA over RoCEv2 and InfiniBand (HS6), after the CPU work of HS5b** (`rdma`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS6 | `perf/hs5b-aligned-copy`, [#234](https://github.com/CMKL-APEX/hyperstor/pull/234), [#238](https://github.com/CMKL-APEX/hyperstor/pull/238), [#240](https://github.com/CMKL-APEX/hyperstor/pull/240), [#255](https://github.com/CMKL-APEX/hyperstor/pull/255), [#282](https://github.com/CMKL-APEX/hyperstor/pull/282), [#286](https://github.com/CMKL-APEX/hyperstor/pull/286) | HS5b: buffers not zeroed before they are overwritten (I327); a client's write sent from its own buffer is #282 | Registered buffers (I12); the measurement item; then HS6's transport trait and verbs module | 2026-11-09 |
 | **Networks: several ports, path choice, the fabric reconciler and claims (HS19)** (`networks`) | Claude Code session https://claude.ai/code/session_01DuenNco8o8Ttg3B9PiCPXH | HS19 | `feat/fabric-claims`, [#154](https://github.com/CMKL-APEX/hyperstor/pull/154), [#156](https://github.com/CMKL-APEX/hyperstor/pull/156), [#161](https://github.com/CMKL-APEX/hyperstor/pull/161), [#181](https://github.com/CMKL-APEX/hyperstor/pull/181), [#197](https://github.com/CMKL-APEX/hyperstor/pull/197), [#199](https://github.com/CMKL-APEX/hyperstor/pull/199), [#203](https://github.com/CMKL-APEX/hyperstor/pull/203), [#205](https://github.com/CMKL-APEX/hyperstor/pull/205) | Stage 3 merged (#203; D237, D238, I277). On feat/fabric-claims: stage 4, claims on ports by the orchestrator role and lending settings (D239–D241, I278) | Merge; the glidex issue for its scheduler; deploy to the pilot when asked; then stage 5 with HS6, and G52 | 2026-11-06 |
 | **A follower's status asks the leader** (`follower-status`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD3 | `fix/follower-status-from-leader`, [#91](https://github.com/CMKL-APEX/hyperstor/pull/91) | Built and tested (I197): followers fetch heartbeats, scrub results, flapping and device space from the leader | Merge once CI passes, then deploy to the pilot | 2026-10-31 |
@@ -30,6 +31,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
+| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs`, [#280](https://github.com/CMKL-APEX/hyperstor/pull/280) | Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so | Then #251 (08-engine.md pass); v0.0.8 | 2026-11-09 |
 | **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
 | **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Merged as 00b3fa7 (I321), not deployed | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
@@ -99,7 +101,7 @@ against the tests.
 | HS3 | Virtual machine disks (vhost-user-blk) and the glidex driver | 6 | 1 | 4 |
 | HS4 | Snapshots, clones and the host read cache | 5 | 1 | 0 |
 | HS5 | NVMe over TCP | 0 | 0 | 0 |
-| HS5b | Lower CPU cost per operation | 4 | 1 | 2 |
+| HS5b | Lower CPU cost per operation | 5 | 1 | 2 |
 | HS6 | RDMA over RoCEv2 and InfiniBand | 0 | 0 | 9 |
 | HS6b | NVMe over RDMA | 0 | 0 | 0 |
 | HS7 | Erasure-coded pools | 0 | 0 | 0 |
