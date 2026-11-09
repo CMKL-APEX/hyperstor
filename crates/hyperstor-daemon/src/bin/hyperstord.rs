@@ -1,6 +1,7 @@
 //! `hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...]
 //!            [--cpus 2,3] [--buffered] [--hdd] [--spin-us N] [--peer-timeout-ms N]
-//!            [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N]`
+//!            [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N]
+//!            [--no-discard ID[,ID...]|all]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
 //! the cluster file) as device ID (default `N * 1000 +` its position among
@@ -27,6 +28,10 @@
 //! 04-decisions.md D190).
 //! `--hdd` marks the devices as hard disks, which defer small overwrites
 //! through the log (04-decisions.md D38); flash redirects every write.
+//! Every device discards the blocks it frees, in batches after each
+//! checkpoint (a deallocate on a drive, a punched hole in a file;
+//! 04-decisions.md D275); `--no-discard` names devices that don't, for
+//! drives that handle a discard slowly, or `all`.
 
 use hyperstor_daemon::*;
 use std::path::PathBuf;
@@ -41,7 +46,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--no-discard ID[,ID...]|all] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
         );
         std::process::exit(2)
     };
@@ -170,7 +175,27 @@ fn main() {
             .collect::<Vec<_>>()
             .join(",")
     );
+    // D275: devices that don't discard what they free.
+    let no_discard: Vec<u32> = match get("--no-discard").as_deref() {
+        None => Vec::new(),
+        Some("all") => shards.iter().map(|s| s.device_id).collect(),
+        Some(list) => list
+            .split(',')
+            .map(|d| {
+                d.parse()
+                    .ok()
+                    .filter(|d| shards.iter().any(|s| s.device_id == *d))
+                    .unwrap_or_else(|| {
+                        eprintln!(
+                            "hyperstord: --no-discard: {d} is not one of this node's devices"
+                        );
+                        std::process::exit(2)
+                    })
+            })
+            .collect(),
+    };
     let h = start(NodeConfig {
+        no_discard,
         endpoints,
         networks,
         push_part_bytes: 0,

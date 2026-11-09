@@ -58,6 +58,7 @@ covered by tests that run on every change.
 | Crash safety: randomized crash tests against a model | Done |
 | A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log, a shard superblock or a checkpoint page nothing scrubbed refuses the shard (D268) | Done |
 | Checkpoint directories written twice, the copy read when the first is damaged; each device reads its checkpoint pages once per deep scrub period and rewrites a damaged one before a restart needs it | Done |
+| Freed space discarded on the device (a deallocate on a drive, a punched hole in a file) in batches after each checkpoint, only where still free; on by default, hyperstord --no-discard turns it off per device | Done |
 | The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start | Done |
 | A backup device superblock in the last block, read when both copies fail; a device whose copies are blank over its shards' superblocks is damaged, never formatted over | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |

@@ -1,0 +1,10 @@
+title = "Engine: freed space discarded after each checkpoint (#245, D275)"
+status = "review"
+owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
+started = 2026-11-09
+updated = 2026-11-09
+milestone = "HS2"
+branch = "feat/discard-freed"
+prs = []
+now = "Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58)"
+next = "Then #244 (needs a decision), #251"

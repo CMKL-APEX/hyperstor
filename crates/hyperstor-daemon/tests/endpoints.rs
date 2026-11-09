@@ -145,6 +145,7 @@ impl Rig {
             .into_iter()
             .map(|(n, main, eps)| {
                 start(NodeConfig {
+                    no_discard: Vec::new(),
                     endpoints: eps.into_iter().map(|l| (n * 1000, l)).collect(),
                     networks: networks(nodes),
                     push_part_bytes: 0,

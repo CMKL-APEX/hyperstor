@@ -209,6 +209,22 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Freed space discarded on the device (a deallocate on a drive, a punched hole in a file) in batches after each checkpoint, only where still free; on by default, hyperstord --no-discard turns it off per device"
+spec = ["08-engine.md §7.4", "D275", "I322", "G58"]
+status = "done"
+tests = [
+    "crash::random_crashes_recover_to_a_consistent_prefix",
+    "cluster::devices_discard_freed_blocks_unless_told_not_to",
+    "hyperstor_engine::shard::tests::freed_blocks_are_discarded_after_the_next_checkpoint",
+    "hyperstor_engine::shard::tests::free_space_is_queued_only_right_after_opening",
+    "hyperstor_engine::shard::tests::discards_are_taken_in_bounded_batches",
+    "hyperstor_engine::shard::tests::freed_runs_merge",
+    "hyperstor_engine::alloc::tests::free_within_clips_to_the_range",
+    "hyperstor_engine::dev::tests::discarded_ranges_read_as_zeros",
+    "hyperstor_daemon::tests::a_device_without_discards_is_told_apart_from_a_failed_one",
+]
+
+[[milestone.item]]
 what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start"
 spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "I319", "D266", "D267", "D270", "D274"]
 status = "done"
