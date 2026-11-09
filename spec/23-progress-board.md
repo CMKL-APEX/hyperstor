@@ -34,7 +34,7 @@ None.
 
 | Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
 |---|---|---|---|---|---|---|
-| **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed` | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
+| **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
 | **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Merged as 00b3fa7 (I321), not deployed | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
 
 ## Done
