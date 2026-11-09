@@ -9,6 +9,9 @@ use hyperstor_test::*;
 #[test]
 fn a_lost_store_comes_back_from_a_backup() {
     let mut c = Cluster::all_in_one("backup", 3);
+    // A node whose device opens slowly on a shared runner disk is down
+    // for a moment at the start (I284, I307): health ok first.
+    c.ctl(&["status", "--wait", "60"]).ok();
     // Something in every table: a volume (its header lives on the storage
     // nodes, in .meta), a token, a revoked certificate.
     let v = c
