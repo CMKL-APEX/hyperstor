@@ -30,6 +30,8 @@ hyperstor-pki = { path = "../hyperstor-pki" }
 md-5 = "0.10"
 crc32c.workspace = true
 tempfile = "3"
+# Holds a stopped test node's port for its restart (#276).
+socket2 = "0.6"
 
 [lints]
 workspace = true
