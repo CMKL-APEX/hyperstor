@@ -260,6 +260,24 @@ fn assert_matches(sh: &Shard, m: &Model, check_revisions: bool) -> Result<(), St
 /// Crashes that happened while a fuzzy checkpoint was being written.
 static MID_CHECKPOINT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Blocks discarded during runs (D275): every open discards freed blocks.
+static DISCARDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Discards a random share of what is ready (D275), as the daemon does
+/// between commits. The device zeros what it discards, so a block in use
+/// discarded by mistake reads wrong when the model is compared.
+fn discard_some(sh: &mut Shard, d: &Arc<dyn BlockDev>, rng: &mut SmallRng) {
+    let runs = sh.take_discards(rng.random_range(1..256));
+    let ok = runs
+        .iter()
+        .all(|&(s, n)| d.discard(s * BLOCK as u64, n * BLOCK as u64).is_ok());
+    if ok {
+        let n: u64 = runs.iter().map(|r| r.1).sum();
+        DISCARDED.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+    sh.discards_done(&runs, ok);
+}
+
 /// Commits after which some object's block map was dense.
 static DENSE_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -294,6 +312,7 @@ fn open_shard(d: &Arc<dyn BlockDev>) -> Result<Shard, EngineError> {
         if let Some(p) = POLICY.with(|p| p.get()) {
             sh.set_dense_policy(p);
         }
+        sh.set_discard(true);
         sh
     })
 }
@@ -370,6 +389,9 @@ fn run(seed: u64) -> usize {
                         panic!(
                             "seed {seed}: diverged before any crash after batch {batch:#?}: {e}"
                         );
+                    }
+                    if rng.random_bool(0.4) {
+                        discard_some(&mut sh, &d, &mut rng);
                     }
                     if sh.stats().pending_blocks > 0 && rng.random_bool(0.3) {
                         // Power may go out here too; the state is then
@@ -508,11 +530,13 @@ fn run_seeds(label: &str) {
     }
     assert!(crashes >= runs as usize);
     let mid = MID_CHECKPOINT.load(std::sync::atomic::Ordering::Relaxed);
+    let discarded = DISCARDED.load(std::sync::atomic::Ordering::Relaxed);
     eprintln!(
-        "{label}: {runs} runs, {crashes} crashes recovered and checked ({mid} so far during a fuzzy checkpoint)"
+        "{label}: {runs} runs, {crashes} crashes recovered and checked ({mid} so far during a fuzzy checkpoint, {discarded} blocks discarded)"
     );
     if runs >= 100 {
         assert!(mid > 50, "crashes during fuzzy checkpoints were exercised");
+        assert!(discarded > 0, "freed blocks were discarded");
     }
 }
 

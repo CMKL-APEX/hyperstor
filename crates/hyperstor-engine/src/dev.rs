@@ -17,7 +17,7 @@ use crate::align::BLOCK;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, FileTypeExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -53,9 +53,47 @@ pub trait BlockDev: Send + Sync {
         Ok(())
     }
 
+    /// Tells the device a range holds nothing it needs (D275): a
+    /// deallocate on a drive, a hole in a file. What reads there
+    /// afterwards is undefined until written again. `Unsupported` where
+    /// there is nothing to tell.
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        let _ = (off, len);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// `BLKDISCARD`, `_IO(0x12, 119)` (linux/fs.h); `libc` doesn't name it.
+const BLKDISCARD: libc::Ioctl = 0x1277;
+
+/// Discards `[off, off + len)` of `file` (D275): `BLKDISCARD` on a block
+/// device, a punched hole in a regular file.
+fn discard_fd(file: &File, off: u64, len: u64) -> io::Result<()> {
+    let fd = file.as_raw_fd();
+    let r = if file.metadata()?.file_type().is_block_device() {
+        let range = [off, len];
+        // SAFETY: BLKDISCARD reads two u64s (start, length) from the
+        // pointer, which points at `range`, alive for the call.
+        unsafe { libc::ioctl(fd, BLKDISCARD, range.as_ptr()) }
+    } else {
+        // SAFETY: fallocate takes plain integers; `fd` is open for writing.
+        unsafe {
+            libc::fallocate(
+                fd,
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                off as libc::off_t,
+                len as libc::off_t,
+            )
+        }
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn check_aligned(off: u64, len: usize, dev_len: u64) -> io::Result<()> {
@@ -113,6 +151,14 @@ impl BlockDev for MemDev {
         Ok(())
     }
     fn flush(&self) -> io::Result<()> {
+        Ok(())
+    }
+    /// Zeros, so that a test reading a block discarded while it was in
+    /// use sees it.
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        let mut d = self.data.lock().unwrap();
+        check_aligned(off, len as usize, d.len() as u64)?;
+        d[off as usize..(off + len) as usize].fill(0);
         Ok(())
     }
 }
@@ -188,6 +234,10 @@ impl BlockDev for FileDev {
     }
     fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
         Some(self.file.as_raw_fd())
+    }
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        check_aligned(off, len as usize, self.len)?;
+        discard_fd(&self.file, off, len)
     }
 }
 
@@ -284,6 +334,10 @@ impl BlockDev for UringDev {
     }
     fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
         Some(self.file.as_raw_fd())
+    }
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        check_aligned(off, len as usize, self.len)?;
+        discard_fd(&self.file, off, len)
     }
     fn write_batch(&self, writes: &[(u64, &[u8])]) -> io::Result<()> {
         use io_uring::{opcode, types};
@@ -493,6 +547,23 @@ impl BlockDev for FaultDev {
         }
         Ok(())
     }
+    /// Zeros at once, on the media and in cached writes alike, so that
+    /// neither a flush nor a crash brings back what was there: a test
+    /// reading a block discarded while in use sees zeros.
+    fn discard(&self, off: u64, len: u64) -> io::Result<()> {
+        let mut s = self.inner.lock().unwrap();
+        check_aligned(off, len as usize, s.durable.len() as u64)?;
+        Self::tick(&mut s)?;
+        let (a, b) = (off as usize, (off + len) as usize);
+        s.durable[a..b].fill(0);
+        for (at, data, _) in &mut s.cache {
+            let (ca, cb) = (*at as usize, *at as usize + data.len());
+            if ca < b && a < cb {
+                data[a.max(ca) - ca..b.min(cb) - ca].fill(0);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Stores one block's write at `at` in `img`, or where `fault` sends it.
@@ -541,6 +612,43 @@ mod tests {
         let direct = FileDev::open(&p, true, Some(16 * BLOCK as u64)).is_ok();
         exercise(&FileDev::open(&p, direct, Some(16 * BLOCK as u64)).unwrap());
         exercise(&UringDev::open(&p, direct, None, 8).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A discard reads back as zeros on a file (a punched hole, D275),
+    /// in memory and on the fault device, where neither a flush nor a
+    /// crash brings back what a cached write put there.
+    #[test]
+    fn discarded_ranges_read_as_zeros() {
+        let check = |d: &dyn BlockDev| {
+            let ones = AlignedBuf::from_slice(&vec![1u8; 4 * BLOCK]);
+            d.write(0, &ones).unwrap();
+            d.flush().unwrap();
+            d.discard(BLOCK as u64, 2 * BLOCK as u64).unwrap();
+            let mut r = AlignedBuf::zeroed(4 * BLOCK);
+            d.read(0, &mut r).unwrap();
+            assert!(r[..BLOCK].iter().all(|&x| x == 1));
+            assert!(r[BLOCK..3 * BLOCK].iter().all(|&x| x == 0));
+            assert!(r[3 * BLOCK..].iter().all(|&x| x == 1));
+            assert!(d.discard(1, BLOCK as u64).is_err(), "aligned only");
+            assert!(
+                d.discard(d.len(), BLOCK as u64).is_err(),
+                "within the device"
+            );
+        };
+        check(&MemDev::new(8 * BLOCK as u64));
+        let f = FaultDev::new(8 * BLOCK as u64);
+        check(&f);
+        f.write(4 * BLOCK as u64, &vec![7u8; 2 * BLOCK]).unwrap();
+        f.discard(5 * BLOCK as u64, BLOCK as u64).unwrap();
+        let img = f.crash_image(|_| true);
+        assert!(img[4 * BLOCK..5 * BLOCK].iter().all(|&x| x == 7));
+        assert!(img[5 * BLOCK..6 * BLOCK].iter().all(|&x| x == 0));
+        let dir = std::env::temp_dir().join(format!("hs-discard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f");
+        check(&FileDev::open(&p, false, Some(8 * BLOCK as u64)).unwrap());
+        check(&UringDev::open(&p, false, None, 8).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
