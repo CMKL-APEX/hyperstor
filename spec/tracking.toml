@@ -1087,6 +1087,11 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A replicated pool's copies changed, with a dry run and step-up (stage 7)"
+spec = ["24-pools-and-devices.md §27.3.5", "D283"]
+status = "planned"
+
+[[milestone.item]]
 what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"
 spec = ["24-pools-and-devices.md §27.2.1", "D167", "D280", "I207", "I333", "I334"]
 status = "partial"

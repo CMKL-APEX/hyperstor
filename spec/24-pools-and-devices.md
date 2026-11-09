@@ -12,7 +12,8 @@ Built so far, on `feature/elastic-pools`: the identity check of
 §27.2.2 (I203, also on `main`), adding a device (§27.2.1, I204),
 named device ids (§27.2.3, I205), the format rule (§27.2.2,
 I206) and the installer's `--device` on map service hosts (§27.2.1,
-I207) and on storage-only hosts (D280, I334). The work
+I207) and on storage-only hosts (D280, I334). A replicated pool's
+copies may change (§27.3.5, D283: settled, not yet built). The work
 lands on the branch `feature/elastic-pools`, which merges into `main`
 once the required features are in.
 
@@ -39,7 +40,8 @@ The goal, as settled:
   class a pool uses grows the pool; removing one shrinks it, after its
   data has moved. Data rebalances, and the PG count grows with the
   devices. A pool's copies (`size`, `min`) or EC layout never change by
-  themselves.
+  themselves; an operator may change a replicated pool's copies
+  (§27.3.5, D283).
 - **A pool uses a set of classes (D164).** It places on any device whose
   class is in its set, weighted by capacity (D158), under its failure
   domain rule. A pool's space is that of the devices it may use (D159).
@@ -193,13 +195,15 @@ Built (I211).
 | Failure domain | PGs move; refused as above |
 | PG count | Only up, by doubling (§27.5, D174) |
 | Name | Only the name |
+| Copies (`size`, `min`) | A replicated pool's, with a call of its own (§27.3.5, D283) |
 
 Built (I213): the class set, failure domain and name, any of them in one
 call; thresholds wait for them to exist, and the PG count for stage 5.
 
-Not changed: the kind, copies, `min`, the chunk size (D9: fixed per pool;
-chunks are named by index). A pool with other copies is a new pool and a
-copy of the volumes.
+Not changed: the kind, the chunk size (D9: fixed per pool; chunks are
+named by index), a cache pool's copies and an EC pool's layout (a new
+layout re-encodes every chunk: a new pool and a copy of the volumes). A
+replicated pool's copies change as §27.3.5 says.
 
 #### 27.3.3 Space
 
@@ -232,6 +236,54 @@ too (I215), as an operation that runs again from what is left.
   were down meanwhile name data by pool id.
 - A device that returns after a pool's deletion deletes what it still
   holds of it, as it drops a cache pool's stale copy now.
+
+#### 27.3.5 Changing a pool's copies
+
+D283 (settled 2026-11-10 that copies change; the rules below are open
+for review). Not yet built.
+
+- **`SetPoolCopies {pool, size, min, dry_run}`**: a replicated pool's
+  copies and the copies a write needs. `hyperstorctl pool copies --pool P
+  --size N --min M [--dry-run]`; role `storage-admin` with step-up in
+  mgmt (19-administration.md §23); audited. A call of its own, not a
+  field of `SetPool`: it needs a plan, and step-up, which `SetPool`'s
+  other fields don't.
+- **Rules.** `1 ≤ min ≤ size`. Refused for cache pools and EC pools
+  (§27.3.2). Refused when the pool's devices span fewer failure domains
+  than the new `size`, as `CreatePool` is (§27.3.1). Refused when the
+  plan would take a device past `backfillfull` (D182). A `min` above a
+  PG's copies acting now is refused: that PG would stop taking writes.
+  Why: each refusal is a change that would leave PGs short, devices
+  full, or I/O stopped.
+- **Raising `size`** adds one member to each PG per copy added, and moves
+  nothing: placement ranks a PG's failure domains by a score that doesn't
+  depend on `size` (07-placement.md §5.2), so the domains of `size + 1`
+  copies are those of `size` and one more, in the same order, and the
+  primary stays. The new member backfills under the backfill budget
+  (I187), as a device added or a node returned does; the pool is
+  degraded and backfilling meanwhile, and I/O goes on, `min` being met.
+  The `.meta` pool already grows this way as hosts join
+  (`grow_meta_pool`).
+- **Raising `min`** makes a write wait for more copies. Raised with
+  `size` in one call, it applies at once only where PGs already have
+  that many copies acting; so raise `size`, wait for the pool to be
+  clean, then raise `min`, or raise both when `min` stays at or under
+  today's copies (2/1 → 3/2).
+- **Lowering `size`** drops each PG's last-ranked members; their devices
+  delete those copies as stray copies (D177). **Lowering `min`**
+  acknowledges writes with fewer copies. Both weaken durability: the dry
+  run lists them, and step-up is asked for every call, raising too, so
+  one rule covers the call.
+- **The plan** (`dry_run`, and the answer to a real call): per PG, the
+  members added or dropped; per device, the bytes it would take and its
+  fill after (as `RemoveDevice`'s, §27.2.5); the pool's space after.
+- **Space** follows (§27.3.3): with `size` equal to the number of
+  failure domains, every PG has a copy in every domain, weights no longer
+  spread data, and the pool's usable space is about its smallest
+  domain's.
+- **Not an operation:** the map changes at once; what follows is backfill
+  or stray deletion, which the pool's PG states show, as after a change
+  of class set.
 
 ### 27.4 Class sets
 
@@ -327,12 +379,12 @@ and `pool set --pgs`, the placement count rising, and the autoscaler
 | Part | Change |
 |---|---|
 | Map | Settable classes and a class's kind; pools' class sets; a placement count per pool; deleted pool ids; devices' ids kept, not derived. A new map format, written only once used, as formats 2–4 were |
-| Map service | `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `DeletePool`; the join that appends; the autoscaler; splits |
+| Map service | `AddDevice`, `RemoveDevice`, `SetDeviceClass`, `CreatePool`, `SetPool`, `SetPoolCopies`, `DeletePool`; the join that appends; the autoscaler; splits |
 | `hyperstord` | `--shard ID@…`; formats files only; checks the device's and cluster's ids; reports its kind; splits PGs on request; deletes deleted pools' objects |
 | Engine | A rename of an object's attributes and key–value table, beside `Absorb` |
 | Installer | `--device`, `--class`, `--force-format`; signature checks; udev rules; devices kept in `install.conf` |
 | `hyperstorctl`, API, UI | The calls above; classes in `nodes` and `pools` |
-| Tests | Randomized tests of add, remove, relabel and split against a model (D22's way), with faults; end-to-end tests of each operation through the built binaries; G44 on the pilot |
+| Tests | Randomized tests of add, remove, relabel, split and copies changed against a model (D22's way), with faults; end-to-end tests of each operation through the built binaries; G44 on the pilot |
 
 ### 27.8 Stages
 
@@ -346,3 +398,4 @@ Each stage is a milestone item with its own pull requests and tests:
 4. Devices removed (§27.2.5).
 5. PG splits and the autoscaler (§27.5).
 6. Merges, by the operator (D174), when needed.
+7. A replicated pool's copies changed (§27.3.5, D283).
