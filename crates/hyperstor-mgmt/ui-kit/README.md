@@ -54,7 +54,9 @@ in `withSession` (or calls `reauthenticate` / `sessionEnded` itself).
 ## Using it
 
 Glidex's UI (`../ui`) lists this directory as a bun workspace
-(`"workspaces": ["../kit"]`, `"@glidex/ui-kit": "workspace:*"`) and adds
-`../kit/src` to Tailwind's `content`, so the classes used here are
-generated. `react` and `@types/react` are peer dependencies: the app's.
-The kit's classes are Tailwind 3 defaults, as glidex's.
+(`"workspaces": ["../kit"]`, `"@glidex/ui-kit": "workspace:*"`) and names
+`../kit/src` with `@source` in its `index.css`, so the classes used here
+are generated. `react` and `@types/react` are peer dependencies: the app's.
+The kit's classes mean the same in Tailwind 3 and 4 (glidex uses 4):
+no bare `rounded`, `shadow` or `ring`, which changed size in 4, and no
+`*-opacity-*`, which 4 removed.
