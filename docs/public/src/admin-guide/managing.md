@@ -184,6 +184,15 @@ more there were. The journal has every one:
 hyperstorctl audit list --op Refused
 ```
 
+The map service records its own changes of leader, as `hyperstor-meta`:
+the member that takes over records `LeaderElected` with the term and the
+leader before it, and a leader that sees another take over, or none,
+records `LeaderLost`:
+
+```sh
+hyperstorctl audit list --since 7d --op LeaderElected
+```
+
 ## Health
 
 ```sh
@@ -277,6 +286,35 @@ its peers wait. Each storage node logs:
   for that device's data wait.
 - `device D: node P silent for N ms; reporting it` once each time it
   reports a peer to the map service.
+
+### The map service's members
+
+`hyperstorctl member list`, asked of the leader, shows how far each
+member is behind the leader's log and its state; the web UI's Members
+page shows the same, with the term:
+
+```
+MEMBER ROLE     RAFT                   MAP                    BEHIND   STATE     API
+1      leader   192.0.2.1:8851         192.0.2.1:8849         0        in step   192.0.2.1:8850
+2      voter    192.0.2.2:8851         192.0.2.2:8849         0        in step   -
+3      voter    192.0.2.3:8851         192.0.2.3:8849         412      no reply  -
+```
+
+- `in step`: it answers the leader and is at most 1000 entries behind.
+- `behind`: more than 1000 entries behind, as many as the leader keeps
+  in its log, so it catches up from a snapshot; or it has matched none
+  yet (a new member).
+- `no reply`: it hasn't answered the leader for a second. Look at that
+  host's `hyperstor-meta` (`systemctl status hyperstor-meta`).
+
+Another member's list has no state (`-`): only the leader replicates.
+The Members page also warns when no majority has answered the leader
+for over a second, when map changes can't commit.
+
+Members and storage nodes are numbered apart. The Members page names
+the storage nodes on each member's host, and the Nodes page the member
+on each node's host, by a shared IP address; a host whose map service
+and storage use different networks shows as two.
 
 ## Pools and devices
 
