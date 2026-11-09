@@ -130,12 +130,13 @@ fn join_storage(
 
 /// A map service, then three storage hosts that join it with tokens and
 /// serve I/O; tokens are single-use, expire and can be revoked; a joined
-/// host's certificate names its node and is renewed over the API.
+/// host's certificate names its node and is renewed over the API, and
+/// adds devices to that node only (D280).
 #[test]
 fn storage_hosts_join_with_tokens() {
     let _one = one_at_a_time();
     let s = Scratch::new("join");
-    let base = free_ports(24);
+    let base = free_ports(25);
     let (api_port, map_port) = (base, base + 1);
     let file = s.path("cluster.txt");
     // No storage node yet: they join.
@@ -414,6 +415,53 @@ fn storage_hosts_join_with_tokens() {
         ],
     );
     assert!(r.code == 1 && r.has("no network slow"), "{}", r.out);
+    // D280: a node's certificate adds devices to its own node only, at an
+    // IP it already serves on and without a class; so the installer's
+    // --device works on a storage-only host.
+    let own = format!("127.0.0.1:{}", base + 24);
+    let elsewhere = format!("127.0.0.2:{}", base + 24);
+    for (args, why) in [
+        (
+            vec!["--node", "1", "--address", &own],
+            "only to its own node",
+        ),
+        (
+            vec!["--node", "0", "--address", &elsewhere],
+            "already serves on",
+        ),
+        (
+            vec!["--node", "0", "--address", &own, "--class", "fast"],
+            "without a class",
+        ),
+    ] {
+        let mut a = vec!["device", "add"];
+        a.extend(args);
+        let r = ctl(&bin, &api, &node_tls, &a);
+        assert!(r.code != 0 && r.has(why), "{why}: {}", r.out);
+    }
+    let extra = s.path("extra-0.img");
+    std::fs::File::create(&extra)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let e = extra.to_str().unwrap();
+    let r = install(
+        &s.path("host-0"),
+        &[
+            "--no-start",
+            "--node",
+            "0",
+            "--device",
+            e,
+            "--device-address",
+            &own,
+        ],
+    );
+    assert!(
+        r.has(&format!("added {e} to node 0 as device ")) && r.has(&format!("served at {own}")),
+        "{}",
+        r.out
+    );
 
     // The joins' certificates are listed, by serial; revoking node 1's
     // refuses it from then on.

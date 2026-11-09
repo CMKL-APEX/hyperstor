@@ -1434,7 +1434,7 @@ export type Member = Message<"hyperstor.v1.Member"> & {
 
   /**
    * The last log entry the leader knows this member holds, and how many
-   * entries it is behind the leader's log (D280). Only from the leader,
+   * entries it is behind the leader's log (D281). Only from the leader,
    * and only for a member that has matched an entry.
    *
    * @generated from field: optional uint64 matched = 7;
@@ -1448,7 +1448,7 @@ export type Member = Message<"hyperstor.v1.Member"> & {
 
   /**
    * Milliseconds since this member last answered the answering member's
-   * Raft calls (D280); the leader calls every member each 50 ms. Absent
+   * Raft calls (D281); the leader calls every member each 50 ms. Absent
    * for one not heard since the answering member started.
    *
    * @generated from field: optional uint64 heard_ms = 9 [json_name = "heard_ms"];
@@ -1499,7 +1499,7 @@ export type MemberJson = {
 
   /**
    * The last log entry the leader knows this member holds, and how many
-   * entries it is behind the leader's log (D280). Only from the leader,
+   * entries it is behind the leader's log (D281). Only from the leader,
    * and only for a member that has matched an entry.
    *
    * @generated from field: optional uint64 matched = 7;
@@ -1513,7 +1513,7 @@ export type MemberJson = {
 
   /**
    * Milliseconds since this member last answered the answering member's
-   * Raft calls (D280); the leader calls every member each 50 ms. Absent
+   * Raft calls (D281); the leader calls every member each 50 ms. Absent
    * for one not heard since the answering member started.
    *
    * @generated from field: optional uint64 heard_ms = 9 [json_name = "heard_ms"];
@@ -1564,7 +1564,7 @@ export type ListMembersResponse = Message<"hyperstor.v1.ListMembersResponse"> & 
   me: bigint;
 
   /**
-   * The answering member's Raft progress (D280): its term, the last
+   * The answering member's Raft progress (D281): its term, the last
    * entry in its log and the last applied to its map; on the leader
    * alone, milliseconds since a quorum last acknowledged it.
    *
@@ -1605,7 +1605,7 @@ export type ListMembersResponseJson = {
   me?: string;
 
   /**
-   * The answering member's Raft progress (D280): its term, the last
+   * The answering member's Raft progress (D281): its term, the last
    * entry in its log and the last applied to its map; on the leader
    * alone, milliseconds since a quorum last acknowledged it.
    *

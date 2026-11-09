@@ -65,7 +65,7 @@ test("the pages show the cluster", async ({ page }) => {
   await dev.getByRole("button", { name: "Bring in" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Bring in" }).click();
   await expect(dev.getByText("in", { exact: true })).toBeVisible();
-  // The map service member on each node's host (D281).
+  // The map service member on each node's host (D282).
   await expect(page.getByTestId("node-0-member")).toContainText("member 1 (leader)");
   await page.getByRole("link", { name: "Pools" }).click();
   await expect(page.getByTestId("pool-1-space")).toContainText(/free of \d/, { timeout: 20_000 });
@@ -78,8 +78,8 @@ test("the pages show the cluster", async ({ page }) => {
   await expect(page.getByText("hyperstorctl pgs --pool 1 --pg 0")).toBeVisible();
   await page.getByRole("button", { name: "List all" }).click();
   await expect(page.getByText("1.1", { exact: true })).toBeVisible();
-  // The one member leads, in step in its own view (D280), on the host of
-  // every node (D281).
+  // The one member leads, in step in its own view (D281), on the host of
+  // every node (D282).
   await page.getByRole("link", { name: "Members" }).click();
   const m1 = page.getByTestId("member-1");
   await expect(m1.getByText("leader")).toBeVisible();

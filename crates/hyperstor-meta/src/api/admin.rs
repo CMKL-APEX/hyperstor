@@ -887,7 +887,7 @@ fn revoked_pb(r: &crate::certs::Revoked) -> pb::RevokedSerial {
 }
 
 fn members_pb(m: &crate::replica::Members) -> Vec<pb::Member> {
-    // The leader's view of each member's log (D280).
+    // The leader's view of each member's log (D281).
     let matched = |id| m.raft.matched.as_ref()?.get(&id).copied().flatten();
     let one = |x: &crate::replica::Member, voter: bool| pb::Member {
         id: x.id,

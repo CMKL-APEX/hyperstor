@@ -103,11 +103,11 @@ pub struct Members {
     pub learners: Vec<Member>,
     pub leader: Option<RaftId>,
     pub me: RaftId,
-    /// Raft progress as this member sees it (D280).
+    /// Raft progress as this member sees it (D281).
     pub raft: Progress,
 }
 
-/// A member's Raft progress, from its metrics (D280).
+/// A member's Raft progress, from its metrics (D281).
 #[derive(Debug, Clone, Default)]
 pub struct Progress {
     pub term: u64,
@@ -338,7 +338,7 @@ async fn run(
         tokio::spawn(async move {
             let mut metrics = node.raft.metrics();
             let mut last = None;
-            // The last leader this member knew, for the audit (I334).
+            // The last leader this member knew, for the audit (I336).
             let mut before: Option<RaftId> = None;
             loop {
                 // Copied out first: `map_of` reads the metrics again, and a
@@ -452,7 +452,7 @@ const APPEND: u8 = 1;
 const VOTE: u8 = 2;
 const SNAPSHOT: u8 = 3;
 /// The audit record of a change of leader, as member `me` sees it go from
-/// `before` (the last leader it knew) to `now` (I334): the member that
+/// `before` (the last leader it knew) to `now` (I336): the member that
 /// takes over records `LeaderElected`, and one that led and sees another
 /// lead, or none, records `LeaderLost`. Others record nothing, so a change
 /// is one record, or two when the old leader still runs.
@@ -607,7 +607,7 @@ struct Tcp {
     heard: Heard,
 }
 
-/// When each member last answered a Raft call of this one (D280).
+/// When each member last answered a Raft call of this one (D281).
 type Heard = Arc<std::sync::Mutex<HashMap<RaftId, std::time::Instant>>>;
 
 impl Tcp {

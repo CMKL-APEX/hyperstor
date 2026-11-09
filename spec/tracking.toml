@@ -369,7 +369,7 @@ tests = [
 
 [[milestone.item]]
 what = "Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log"
-spec = ["D280", "D281", "I333", "I334", "19-administration.md §23.7"]
+spec = ["D281", "D282", "I335", "I336", "19-administration.md §23.7"]
 status = "done"
 tests = [
     "members::the_member_list_shows_a_stopped_member",
@@ -1097,11 +1097,12 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The installer adds a block device to an installed node and keeps it across runs"
-spec = ["24-pools-and-devices.md §27.2.1", "D167", "I207"]
+what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "D280", "I207", "I333", "I334"]
 status = "partial"
 tests = [
     "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
+    "hyperstor_install::tests::udev_rules_come_after_the_by_id_links",
     "manage::the_installer_adds_a_device_to_a_node",
 ]
 

@@ -317,10 +317,10 @@ fn members_change_at_run_time() {
     assert!(audit.contains("\"op\":\"AddMember\"") && audit.contains("\"op\":\"RemoveMember\""));
 }
 
-/// Each member's Raft state in the leader's member list (D280): in step;
+/// Each member's Raft state in the leader's member list (D281): in step;
 /// stopped, no reply, and behind by the writes since; started again, in
 /// step. Another member's list has no state. The leader stopped, the next
-/// one records the change in the audit (I334).
+/// one records the change in the audit (I336).
 #[test]
 fn the_member_list_shows_a_stopped_member() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -365,7 +365,7 @@ fn the_member_list_shows_a_stopped_member() {
         let r = row(&g, l, f + 1);
         r.contains(" in step ").then_some(())
     });
-    // The leader stops: the next records the change in the audit (I334).
+    // The leader stops: the next records the change in the audit (I336).
     g.m[l].stop();
     let others: Vec<usize> = (0..3).filter(|i| *i != l).collect();
     let n = g.leader(&others);

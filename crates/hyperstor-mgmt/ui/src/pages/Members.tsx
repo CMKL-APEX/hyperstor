@@ -1,6 +1,6 @@
 // The map service's members (D87): voters and learners, who leads, each
-// one's Raft state in the leader's view (D280) and the storage nodes on
-// its host (D281); add and remove (storage administrators). A new member
+// one's Raft state in the leader's view (D281) and the storage nodes on
+// its host (D282); add and remove (storage administrators). A new member
 // must be running, joined with a meta token, before it is added.
 import { useState } from "react";
 import { cluster, members } from "../api";

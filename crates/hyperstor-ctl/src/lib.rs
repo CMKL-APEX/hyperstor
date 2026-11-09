@@ -1130,12 +1130,12 @@ pub fn utc(unix: u64) -> String {
 }
 
 /// More entries behind than the leader keeps in its log (`log_keep_entries`):
-/// such a member catches up from a snapshot (D280).
+/// such a member catches up from a snapshot (D281).
 pub const MEMBER_BEHIND_ENTRIES: u64 = 1_000;
-/// Twenty of the leader's heartbeats (50 ms) without an answer (D280).
+/// Twenty of the leader's heartbeats (50 ms) without an answer (D281).
 pub const MEMBER_NO_REPLY_MS: u64 = 1_000;
 
-/// A member's state in the leader's view (D280): "in step", "behind"
+/// A member's state in the leader's view (D281): "in step", "behind"
 /// (more than [`MEMBER_BEHIND_ENTRIES`], or none matched yet), "no reply"
 /// (none for [`MEMBER_NO_REPLY_MS`]); "-" in a list another member gave.
 pub fn member_state(m: &pb::Member, members: &[pb::Member]) -> &'static str {

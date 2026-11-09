@@ -1,5 +1,5 @@
-// Which storage nodes and map service members share a host (D281), and a
-// member's Raft state in the leader's view (D280), as `hyperstorctl
+// Which storage nodes and map service members share a host (D282), and a
+// member's Raft state in the leader's view (D281), as `hyperstorctl
 // member list` gives it.
 import type { Member } from "./gen/hyperstor/v1/admin_pb";
 import type { Node } from "./gen/hyperstor/v1/cluster_pb";

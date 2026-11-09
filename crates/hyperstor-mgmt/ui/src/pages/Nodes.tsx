@@ -1,5 +1,5 @@
 // Storage nodes and their devices: state, last heartbeat, the map
-// service member on the same host (D281); take a device
+// service member on the same host (D282); take a device
 // out and in, set its weight and class, add and remove devices, drain a
 // node (operators). Below, each device's load and drive (D220): the
 // matrix of the last minute, and one device's 15 minutes when picked.

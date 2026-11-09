@@ -245,14 +245,14 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Page | Shows | Actions |
 |---|---|---|
 | Overview | health with reasons (§16), capacity, IOPS and latency | — |
-| Nodes and devices | the map service member on the node's host (D281), role, reactors, NUMA, device wear and capacity (free and total space, D156, I193), peer reports (D40) | drain, out, in, add device, weight, class, remove device (with its plan first) |
+| Nodes and devices | the map service member on the node's host (D282), role, reactors, NUMA, device wear and capacity (free and total space, D156, I193), peer reports (D40) | drain, out, in, add device, weight, class, remove device (with its plan first) |
 | Pools | kind (replicated, EC, cache, D45), fullness against D27's thresholds (usable free and total space, D156, I193), PG states | create, change (classes, name, domain, a split, autoscale, a cache pool's grace), the devices it uses, thresholds, delete (forced: with its volumes, after a dry run) |
 | PGs | a state map by pool (D154: a cell per PG, sent again only when the map changes; by failure domain later), each cell shaded by the bytes on its primary (D155) | pick a PG for its acting and up sets |
 | Volumes | size, allocated, lease holder, QoS and class (D46), snapshots and clones | create, expand, snapshot, clone, flatten, QoS, delete to trash |
 | Hosts and exports | bare-metal identities, NVMe-oF exports, allowlists | export, revoke, rotate CHAP |
 | S3 (later) | buckets, access keys | create, revoke |
 | Operations | running and recent operations with progress | cancel |
-| Members | the map service's members: voter or learner, the leader, the term and each member's Raft state in the leader's view (D280: in step, behind, no reply), the storage nodes on its host (D281) | add, remove |
+| Members | the map service's members: voter or learner, the leader, the term and each member's Raft state in the leader's view (D281: in step, behind, no reply), the storage nodes on its host (D282) | add, remove |
 | Trash | deleted volumes and snapshots with their purge time | restore, purge now |
 | Security | users, roles, tokens, site policies, certificates | grant, revoke, rotate intermediate |
 | Audit | every mutation (§23.9.4) | filter, export |
