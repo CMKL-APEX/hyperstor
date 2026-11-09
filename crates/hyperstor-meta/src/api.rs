@@ -2801,7 +2801,36 @@ impl ClusterService for Api {
                 .as_ref()
                 .map_or(String::new(), |c| format!(" class {c}"))
         );
-        let who = self.authorize(&ctx, "AddDevice", &target, true)?;
+        let who = self.authorize_as(&ctx, "AddDevice", &target, Need::Identity)?;
+        // D280: admin and mgmt to any node; a node's certificate only to
+        // its own node, at an IP it already serves on and with no class,
+        // so a storage-only host adds its own disks (D167) and nothing
+        // else. The local socket is root's.
+        let mut node_cert = false;
+        if self.cluster.is_some() && ctx.extensions().get::<LocalPeer>().is_none() {
+            let id = ctx
+                .peer_certs()
+                .and_then(|c| c.first())
+                .and_then(|leaf| hyperstor_pki::identity_of(leaf));
+            let allowed = match &id {
+                Some(i) if i.role.may_administer() => true,
+                Some(i) if i.role == hyperstor_pki::Role::Node => {
+                    node_cert = true;
+                    i.id.parse::<u32>().ok() == Some(req.node) && class.is_none()
+                }
+                _ => false,
+            };
+            if !allowed {
+                let e = with_reason(
+                    ConnectError::permission_denied(format!(
+                        "{who} may add devices only to its own node, without a class"
+                    )),
+                    "permission_denied",
+                );
+                refused(&who, "AddDevice", &target, &e);
+                return Err(e);
+            }
+        }
         let addr = req
             .address
             .parse::<SocketAddr>()
@@ -2823,6 +2852,26 @@ impl ClusterService for Api {
                 )),
                 "invalid_argument",
             ));
+        }
+        if node_cert {
+            let (map, ..) = self.published().await?;
+            let mut ips = map
+                .devices
+                .values()
+                .filter(|d| d.node == req.node)
+                .map(|d| d.addr.ip());
+            if !ips.any(|ip| ip == addr.ip()) {
+                let e = with_reason(
+                    ConnectError::permission_denied(format!(
+                        "{who} may add devices only at an IP node {} already serves on, not {}",
+                        req.node,
+                        addr.ip()
+                    )),
+                    "permission_denied",
+                );
+                refused(&who, "AddDevice", &target, &e);
+                return Err(e);
+            }
         }
         let (reply, rx) = oneshot();
         self.tx
