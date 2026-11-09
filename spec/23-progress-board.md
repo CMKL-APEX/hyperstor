@@ -11,7 +11,7 @@ updated for a while may have been left behind.
 
 | In progress | Blocked | In review | Done |
 |---|---|---|---|
-| 5 | 0 | 3 | 48 |
+| 5 | 0 | 0 | 51 |
 
 ## In progress
 
@@ -29,11 +29,7 @@ None.
 
 ## In review
 
-| Workstream | Owner | Milestone | Branch and PRs | Now | Next | Updated |
-|---|---|---|---|---|---|---|
-| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs`, [#280](https://github.com/CMKL-APEX/hyperstor/pull/280) | Built (I323): WriteCrcs in operation lists, protocol 4; plain writes to version-3 peers; the S3 gateway sends its chunks so | Then #251 (08-engine.md pass); v0.0.8 | 2026-11-09 |
-| **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | Built (I322): freed extents discarded in batches after each checkpoint, only where still free; hyperstord --no-discard; measuring waits for an NVMe host (G58) | Then #244 (needs a decision), #251 | 2026-11-09 |
-| **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | Merged as 00b3fa7 (I321), not deployed | Then #245 (D275), #244 (needs a decision), #251 | 2026-11-09 |
+None.
 
 ## Done
 
@@ -42,9 +38,12 @@ None.
 | **The web UI's footer names the installed build (I317)** (`ui-build-footer`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/ui-build-footer`, [#272](https://github.com/CMKL-APEX/hyperstor/pull/272) | 2026-11-09 |
 | **OIDC logins finish on any mgmt (D278, I316)** (`oidc-shared-login`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/oidc-shared-login`, [#271](https://github.com/CMKL-APEX/hyperstor/pull/271) | 2026-11-09 |
 | **HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D265)** (`hs15-tenancy`) | Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr | HS15 | `board/hs15-done`, [#231](https://github.com/CMKL-APEX/hyperstor/pull/231), [#233](https://github.com/CMKL-APEX/hyperstor/pull/233), [#235](https://github.com/CMKL-APEX/hyperstor/pull/235), [#239](https://github.com/CMKL-APEX/hyperstor/pull/239) | 2026-11-09 |
+| **Checksummed writes in operation lists: S3 data keeps the writer's CRCs (#244, D279)** (`exec-write-crcs`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/exec-write-crcs`, [#280](https://github.com/CMKL-APEX/hyperstor/pull/280) | 2026-11-09 |
 | **Engine: the v0.0.8 shard format and converting devices to it (#242, #253, #247)** (`engine-format-v008`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-upgrade`, [#258](https://github.com/CMKL-APEX/hyperstor/pull/258), [#260](https://github.com/CMKL-APEX/hyperstor/pull/260) | 2026-11-09 |
 | **Engine durability against a device that lies (#241, #242, #253)** (`engine-corruption-faults`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/engine-log-lookahead`, [#254](https://github.com/CMKL-APEX/hyperstor/pull/254), [#257](https://github.com/CMKL-APEX/hyperstor/pull/257) | 2026-11-09 |
+| **Engine: freed space discarded after each checkpoint (#245, D275)** (`discard-freed`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/discard-freed`, [#279](https://github.com/CMKL-APEX/hyperstor/pull/279) | 2026-11-09 |
 | **Engine: a backup device superblock, and never formatting over shards (#246, D271)** (`device-super-backup`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `feat/device-super-backup`, [#263](https://github.com/CMKL-APEX/hyperstor/pull/263) | 2026-11-09 |
+| **Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)** (`checkpoint-dir-copy`) | Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R | HS2 | `fix/checkpoint-dir-copy`, [#278](https://github.com/CMKL-APEX/hyperstor/pull/278) | 2026-11-09 |
 | **Every host's mgmt reaches the leader; mgmt behind a proxy (D276, D277, I310)** (`mgmt-follows-leader`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | AD2 | `feat/mgmt-follows-leader`, [#259](https://github.com/CMKL-APEX/hyperstor/pull/259) | 2026-11-08 |
 | **Flaky end-to-end tests in manage** (`manage-flakes`) | Claude Code session https://claude.ai/code/session_01KuFVei3Ea4zD7LcX27gvDB | HS2 | `fix/members-token-flake`, [#236](https://github.com/CMKL-APEX/hyperstor/pull/236), [#256](https://github.com/CMKL-APEX/hyperstor/pull/256), [#273](https://github.com/CMKL-APEX/hyperstor/pull/273) | 2026-11-08 |
 | **Frames stay readable across a rolling install (I311)** (`frame-version`) | Claude Code session https://claude.ai/code/session_01LNyayXL3d4H934hRFPtW4M | HS15 | `fix/frame-version`, [#261](https://github.com/CMKL-APEX/hyperstor/pull/261) | 2026-11-08 |

@@ -1,10 +1,10 @@
 title = "Engine: two checkpoint directory copies, and checkpoint pages scrubbed (#243, D269)"
-status = "review"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
 started = 2026-11-09
 updated = 2026-11-09
 milestone = "HS2"
 branch = "fix/checkpoint-dir-copy"
 prs = [278]
-now = "Merged as 00b3fa7 (I321), not deployed"
-next = "Then #245 (D275), #244 (needs a decision), #251"
+now = "Merged as 00b3fa7 (I321) and deployed to the pilot (2b1284f)"
+next = "Done"
