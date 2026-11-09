@@ -16,7 +16,7 @@
 
 use hyperstor_engine::*;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
