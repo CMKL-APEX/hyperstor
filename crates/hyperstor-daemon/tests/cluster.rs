@@ -9,7 +9,7 @@ use hyperstor_placement::pg_of;
 use hyperstor_reactor::chan::{Sender, channel};
 use hyperstor_reactor::{block_on, spawn};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -63,6 +63,21 @@ thread_local! {
     static FIRST_FORMAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Devices that run as `hyperstord --no-discard` names them (D275).
     static NO_DISCARD: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A node's listener, on a port held for the cluster's lifetime: a
+/// bound socket that never listens keeps the port while the node is
+/// stopped (#276). Another bind, or an outgoing connection's ephemeral
+/// port, can't take it, and connections to the stopped node are still
+/// refused; the node binds it again when it restarts (both sockets set
+/// SO_REUSEADDR, and the hold isn't listening).
+fn held_listener() -> (socket2::Socket, std::net::TcpListener) {
+    let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    hold.set_reuse_address(true).unwrap();
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    hold.bind(&any.into()).unwrap();
+    let a = hold.local_addr().unwrap().as_socket().unwrap();
+    (hold, std::net::TcpListener::bind(a).unwrap())
 }
 
 /// Each stopped device, by device id.
@@ -126,6 +141,8 @@ struct Cluster {
     meta_addr: SocketAddr,
     /// Each node's reactor addresses, to restart it at the same place.
     addrs: Vec<Vec<SocketAddr>>,
+    /// What keeps those addresses free for the node while it is stopped.
+    _holds: Vec<socket2::Socket>,
     /// Per node: set to cut it off from the map service (heartbeats stop)
     /// while clients and peers can still reach it.
     blocked: Vec<Arc<std::sync::atomic::AtomicBool>>,
@@ -333,10 +350,10 @@ impl Cluster {
         let mut map = ClusterMap::new(1);
         let mut listeners = Vec::new();
         let mut all_addrs = Vec::new();
+        let mut holds = Vec::new();
         for n in 0..nodes {
-            let ls: Vec<std::net::TcpListener> = (0..shards)
-                .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
-                .collect();
+            let (hs, ls): (Vec<_>, Vec<_>) = (0..shards).map(|_| held_listener()).unzip();
+            holds.extend(hs);
             let addrs: Vec<SocketAddr> = ls.iter().map(|l| l.local_addr().unwrap()).collect();
             map.add_node(n, &addrs, 0);
             all_addrs.push(addrs);
@@ -500,6 +517,7 @@ impl Cluster {
             meta_addr,
             blocked,
             addrs: all_addrs,
+            _holds: holds,
             stopped: std::collections::HashMap::new(),
             meta_tx,
             meta_thread: Some(meta_thread),
@@ -8232,6 +8250,115 @@ fn s3_put_throughput() {
 /// a recovery push), and stores none of it. The engine keeps the CRCs a
 /// write came with rather than computing them again (I306), so this check
 /// is what keeps the stored CRCs true to the data.
+/// D279: a checksummed write in an operation list keeps the writer's
+/// CRCs; one whose CRCs are another payload's is refused by the primary
+/// and by a replica, and the object is left as it was.
+#[test]
+fn operation_list_writes_keep_the_writers_crcs() {
+    use hyperstor_client::{ClientError, NS_META, object_pg};
+    use hyperstor_proto::{Code, Msg, Target, WireKey, WireOp, block_crcs, encode_ops};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let name = b"crcs".to_vec();
+            let data = pattern(81, 8 * 4096);
+            cl.exec(POOL, NS_META, &name, &[Client::write_op(0, data.clone())])
+                .await
+                .unwrap();
+            let read = cl.read_object(POOL, NS_META, &name, 0, 8 * 4096);
+            assert_eq!(read.await.unwrap(), data);
+            // The CRCs of other data, as damage after they were taken.
+            let bad = || WireOp::WriteCrcs {
+                off: 0,
+                data: pattern(82, 8 * 4096),
+                crcs: block_crcs(&pattern(83, 8 * 4096)),
+            };
+            match cl.exec(POOL, NS_META, &name, &[bad()]).await {
+                Err(ClientError::Server {
+                    code: Code::Checksum,
+                    ..
+                }) => {}
+                r => panic!("CRCs of other data at the primary: {r:?}"),
+            }
+            // And at a replica, sent the effects directly.
+            wait_backfilled(&cl).await;
+            let m = cl.map();
+            let pg = object_pg(&name, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: m.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let key = WireKey {
+                ns: NS_META,
+                name: name.clone(),
+                version: 0,
+            };
+            let replica = hyperstor_rpc::Conn::connect(m.device_addr(info.acting[1]).unwrap())
+                .await
+                .unwrap();
+            let repl = Msg::ReplExec { to, seq: 1, key };
+            let (reply, _) = replica.call(&repl, &encode_ops(&[bad()])).await.unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    Msg::Error {
+                        code: Code::Checksum,
+                        ..
+                    }
+                ),
+                "CRCs of other data at a replica: {reply:?}"
+            );
+            let read = cl.read_object(POOL, NS_META, &name, 0, 8 * 4096);
+            assert_eq!(read.await.unwrap(), data, "left as it was");
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
+/// D279 across a rolling install: nodes of protocol 3 can't read
+/// checksummed writes, so a primary of 3 gets plain writes from the
+/// client (it refuses the list, and the client sends it again plain), and
+/// a primary of 4 sends plain writes to replicas of 3. Every write lands.
+#[test]
+fn checksummed_writes_reach_nodes_of_the_protocol_before() {
+    use hyperstor_client::NS_META;
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    // Restarted as older builds: every connection to them is new.
+    for n in 1..4 {
+        c.kill(n);
+        c.older.set_version(n as u32, Some(3));
+        c.restart(n);
+    }
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            wait_backfilled(&cl).await;
+            for i in 0..24u64 {
+                let name = format!("mixed-{i}").into_bytes();
+                let data = pattern(90 + i, 4 * 4096);
+                cl.exec(POOL, NS_META, &name, &[Client::write_op(0, data.clone())])
+                    .await
+                    .unwrap();
+                let read = cl.read_object(POOL, NS_META, &name, 0, 4 * 4096);
+                assert_eq!(read.await.unwrap(), data, "object {i}");
+            }
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
 #[test]
 fn data_whose_crcs_disagree_is_refused_at_every_way_in() {
     use hyperstor_proto::{Code, Msg, Target, WireKey, block_crcs};

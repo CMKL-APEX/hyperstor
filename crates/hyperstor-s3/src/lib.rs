@@ -20,7 +20,7 @@ pub mod xml;
 
 use hyperstor_client::{Client, ClientError};
 use hyperstor_kv::{Batch, KvError, S3_STORE, Scan, Store, Table};
-use hyperstor_proto::{Code, WireOp};
+use hyperstor_proto::Code;
 use hyperstor_reactor::JoinHandle;
 use layout::*;
 use md5::{Digest, Md5};
@@ -1346,9 +1346,10 @@ impl Put<'_> {
         data.resize(data.len().div_ceil(4096) * 4096, 0);
         let name = chunk_name(self.bucket.id(), self.id, self.part, self.chunks);
         let (cl, pool) = (self.s3.client().clone(), self.bucket.table.data_pool);
+        // The chunk's CRCs, taken here and kept to the media (D279).
+        let write = Client::write_op(0, data);
         self.writing.push_back(hyperstor_reactor::spawn(async move {
-            cl.exec(pool, NS_S3, &name, &[WireOp::Write { off: 0, data }])
-                .await
+            cl.exec(pool, NS_S3, &name, &[write]).await
         }));
         self.chunks += 1;
         Ok(())

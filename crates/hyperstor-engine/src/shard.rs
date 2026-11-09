@@ -4088,7 +4088,7 @@ mod tests {
     #[test]
     fn reads_in_flight_against_a_model() {
         use rand::rngs::SmallRng;
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         for seed in 0..20u64 {
             let mut rng = SmallRng::seed_from_u64(seed);
             let mut sh = small_shard(1024);

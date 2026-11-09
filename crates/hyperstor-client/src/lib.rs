@@ -450,12 +450,12 @@ impl Client {
             .get_with(addr, |addr| async move {
                 let c = Conn::connect(addr).await?;
                 let (ok, _) = c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
+                if let Msg::HelloOk { version, .. } = ok {
+                    c.set_version(version);
+                }
                 // Only a peer that knows it: older ones refuse what they
                 // can't decode (D261).
-                if let Msg::HelloOk { version, .. } = ok
-                    && version >= 3
-                    && !host.is_empty()
-                {
+                if c.version() >= 3 && !host.is_empty() {
                     let name = Msg::Host { name: host };
                     c.call_within(&name, &[], rpc::CALL_TIMEOUT).await?;
                 }
@@ -913,16 +913,41 @@ impl Client {
         route: Route<'_>,
         ops: &[hyperstor_proto::WireOp],
     ) -> Result<(), ClientError> {
-        let payload = hyperstor_proto::encode_ops(ops);
-        let (msg, _) = self
-            .to_primary(pool, route, 0, &payload, &|to, key| Msg::Exec { to, key })
-            .await?;
-        match msg {
-            Msg::ExecOk => Ok(()),
-            m => Err(ClientError::Rpc(RpcError::Protocol(format!(
-                "unexpected {m:?}"
-            )))),
+        let send = async |ops: &[hyperstor_proto::WireOp]| {
+            let payload = hyperstor_proto::encode_ops(ops);
+            let (msg, _) = self
+                .to_primary(pool, route, 0, &payload, &|to, key| Msg::Exec { to, key })
+                .await?;
+            match msg {
+                Msg::ExecOk => Ok(()),
+                m => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                    "unexpected {m:?}"
+                )))),
+            }
+        };
+        let crcs =
+            |o: &hyperstor_proto::WireOp| matches!(o, hyperstor_proto::WireOp::WriteCrcs { .. });
+        match send(ops).await {
+            // A primary from before D279 can't decode checksummed writes:
+            // once more as plain writes, which it checks as before.
+            Err(ClientError::Server {
+                code: Code::Invalid,
+                ..
+            }) if ops.iter().any(crcs) => {
+                let plain: Vec<_> = ops.iter().cloned().map(|o| o.without_crcs()).collect();
+                send(&plain).await
+            }
+            r => r,
         }
+    }
+
+    /// A write op for [`Client::exec`] that carries the CRC32C of each
+    /// 4 KiB block of `data` (D279), checked by every copy on arrival and
+    /// stored as given: computed here, as early as the data is whole.
+    /// `off` and `data`'s length are multiples of 4096.
+    pub fn write_op(off: u64, data: Vec<u8>) -> hyperstor_proto::WireOp {
+        let crcs = hyperstor_proto::block_crcs(&data);
+        hyperstor_proto::WireOp::WriteCrcs { off, data, crcs }
     }
 
     /// The object `name`: its size, attributes, and up to `kv_limit` of its

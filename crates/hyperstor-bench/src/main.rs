@@ -13,7 +13,7 @@
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

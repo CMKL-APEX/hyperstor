@@ -1,9 +1,0 @@
-title = "Scrub settings per pool in the map, the API and the CLI (D224–D226)"
-status = "done"
-owner = "Claude Code session https://claude.ai/code/session_011RccNsBDUVSx8YEijb839R"
-started = 2026-11-04
-updated = 2026-11-04
-milestone = "AD3"
-branch = "feat/scrub-settings"
-prs = [184]
-now = "Merged as 83534dc and deployed to the pilot on 2026-11-04; the pilot's scrub drop-in is removed and every pool scrubs on the map's defaults (I263)"

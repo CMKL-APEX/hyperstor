@@ -290,7 +290,7 @@ function JoinTokens() {
             copiedHint="Copied."
           >
             <p className="mt-2 text-xs text-slate-500">On the new host:</p>
-            <code className="block text-xs p-2 rounded bg-slate-100 dark:bg-slate-800">
+            <code className="block text-xs p-2 rounded-sm bg-slate-100 dark:bg-slate-800">
               sudo hyperstor-install install --join {made.api} --token-file FILE{made.role === "meta" ? " --role meta" : ""}
             </code>
           </TokenReveal>

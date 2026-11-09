@@ -23,8 +23,10 @@ others. Write the same data again: writes to a range are idempotent.
 ## Integrity
 
 Every 4 KiB block carries a CRC32C checksum from the client to the
-device and back. A block that doesn't match its checksum is never
-returned as data. When the primary's copy is damaged, the primary reads
+device and back: a volume's client takes it, and for S3 objects the
+gateway does, as it cuts each object into chunks. Every copy checks it
+on arrival and stores it as it came. A block that doesn't match its
+checksum is never returned as data. When the primary's copy is damaged, the primary reads
 another copy, repairs its own and returns the good data. If no copy is
 good, the read fails (`Server` with code `Checksum`); `Checksum` on its
 own means the data was damaged on the way to the client.
