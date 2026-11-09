@@ -297,15 +297,23 @@ impl TcpStream {
         (Ok(()), buf)
     }
 
-    /// Writes all of `head`, then all of `tail`, in one `sendmsg` each time
-    /// (two pieces of one buffer, so `tail` is never copied after `head`).
-    /// `tail` may be shared, with other connections sending it too.
-    pub async fn write_all2(&self, head: Vec<u8>, tail: std::rc::Rc<Vec<u8>>) -> io::Result<()> {
+    /// Writes all of `head`, then `tail[range]`, in one `sendmsg` each time
+    /// (two pieces of one buffer, so the tail is never copied after `head`).
+    /// `tail` may be shared, with other connections sending it or other
+    /// parts of it too.
+    pub async fn write_all2(
+        &self,
+        head: Vec<u8>,
+        tail: std::rc::Rc<Vec<u8>>,
+        range: std::ops::Range<usize>,
+    ) -> io::Result<()> {
+        // A range past the end panics here, before anything is sent.
+        let _ = &tail[range.clone()];
         let bufs = std::rc::Rc::new((head, tail));
-        let total = bufs.0.len() + bufs.1.len();
+        let total = bufs.0.len() + range.len();
         let mut off = 0;
         while off < total {
-            let (head, tail) = (&bufs.0[..], &bufs.1[..]);
+            let (head, tail) = (&bufs.0[..], &bufs.1[range.clone()]);
             let piece = |b: &[u8]| libc::iovec {
                 iov_base: b.as_ptr() as *mut libc::c_void,
                 iov_len: b.len(),
