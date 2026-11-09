@@ -46,8 +46,8 @@ its own.
 | `crates/hyperstor-mgmt/ui` | The web UI |
 | `docs/public/` | This book |
 | `docs/site/` | The landing page |
-| `spec/` | The internal design documents, the implementation tracking file (`spec/tracking.toml`) and the progress board (`spec/board/`) |
-| `scripts/` | CI checks: documentation against the binaries, implementation tracking, the specs and the progress board, end-to-end runs |
+| `spec/` | The internal design documents, and the implementation tracking file (`spec/tracking.toml`) |
+| `scripts/` | CI checks: documentation against the binaries, implementation tracking and the specs, end-to-end runs |
 | `.github/workflows/` | CI and documentation publishing |
 
 ### Building and testing
@@ -95,7 +95,6 @@ cargo fmt --check
 cargo build --workspace --release
 cargo test --workspace --release
 python3 scripts/spec-check.py
-python3 scripts/board.py check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p hyperstor-client -p hyperstor-reactor
 ```
 
@@ -104,14 +103,15 @@ that every tracked test exists and passes (the browser tests too), that
 the UI's generated TypeScript and the ui-kit copy are current, and that
 this book builds (`mdbook build docs/public`).
 
-### Tracking and the progress board
+### Tracking the work
 
-Two files keep the state of the work, and CI fails when they drift:
+What is built is kept in the repository, and CI fails when it drifts;
+who carries what is on GitHub:
 
 | File | Keep it current | Why |
 |---|---|---|
 | `spec/tracking.toml` | Each milestone's items, their status (`done`, `partial`, `planned`) and the tests that show them working. After changing it, regenerate the [Status](../status.md) page: `scripts/tracking.py status > docs/public/src/status.md` | A `done` item needs a test, and a tracked test that is renamed, removed or failing fails CI, so the status page can't claim more than is built |
-| `spec/board/<workstream>.toml` | One file per workstream you carry: its `status`, `now`, `next`, pull requests and `updated`, changed in the same branch as the work, at least with every pull request; `done` once merged and deployed. Edit only your own, then run `scripts/board.py write` | Several people and agents work at once; one file each means no conflicts, and everyone sees who carries what |
+| The [Hyperstor project](https://github.com/orgs/CMKL-APEX/projects/1) | One issue per workstream, on the project: its Status (*In progress*, *Blocked*, *In review*, *Merged*, *Deployed*), Owner and Spec milestone. Pull requests say `Part of #N` or `Closes #N`; *Deployed* gets the commit and date | Several people and agents work at once; an issue each means no file to conflict on, and everyone sees who carries what and what runs on the pilot |
 
 ### Rules that shape the code
 
