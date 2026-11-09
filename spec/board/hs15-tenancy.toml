@@ -1,10 +1,9 @@
 title = "HS15 tenancy: bucket counts, tenants on volumes, realm bindings and roles (D257–D265)"
-status = "active"
+status = "done"
 owner = "Claude Code session https://claude.ai/code/session_01KuFVejFot91yPacCxSeGxr"
 started = 2026-11-07
-updated = 2026-11-07
+updated = 2026-11-09
 milestone = "HS15"
 prs = [231, 233, 235, 239]
-branch = "feat/hs15-realm-roles"
-now = "Stage d: roles granted on a realm (role@realm): mgmt names the realms a call reaches, the map service applies them; --in-realm and the UI's realm picker (D262–D265, I303). Stages a–c merged: counts #231, volume tenants #233, host bindings #235"
-next = "Deploy HS15 to the pilot, on the owner's word"
+branch = "board/hs15-done"
+now = "Merged and deployed: bucket counts (#231), volume tenants (#233), host bindings (#235) and roles granted on a realm (#239, D262–D265, I303). All three pilot hosts run main 030c5e7 since 2026-11-09, their services restarted onto it"
