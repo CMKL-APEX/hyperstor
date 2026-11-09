@@ -760,6 +760,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data"
+spec = ["D41", "I327"]
+status = "done"
+tests = [
+    "hyperstor_engine::align::tests::copies_are_aligned_and_padded_with_zeros",
+    "hyperstor_reactor::net::tests::read_exact_n_fills_from_pieces_and_reports_an_early_end",
+]
+
+[[milestone.item]]
 what = "Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer"
 spec = ["08-engine.md §6.2", "D41", "I12"]
 status = "planned"

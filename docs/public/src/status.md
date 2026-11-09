@@ -137,6 +137,7 @@ covered by tests that run on every change.
 | CRC32C at hardware speed (`crc32c` 0.6.9): 41 µs per MiB, from 184 | Done |
 | The engine takes the CRCs that came with write data, checked on arrival, instead of computing them again | Done |
 | Writes in operation lists (S3 object data) carry the writer's CRCs to every copy's media, checked on arrival; plain writes to peers of the protocol before | Done |
+| Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data | Done |
 | Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer | Planned |
 | Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
 

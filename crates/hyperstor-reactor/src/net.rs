@@ -265,6 +265,38 @@ impl TcpStream {
         (Ok(()), buf)
     }
 
+    /// Reads exactly `n` bytes into a new buffer, which isn't zeroed
+    /// first: each piece is received into its spare capacity, and the
+    /// buffer's length grows only by what the kernel wrote (HS5b, I327).
+    /// On an error or an early end it holds what arrived.
+    pub async fn read_exact_n(&self, n: usize) -> (io::Result<()>, Vec<u8>) {
+        let mut buf: Vec<u8> = Vec::with_capacity(n);
+        while buf.len() < n {
+            let got = buf.len();
+            let sqe = opcode::Recv::new(
+                types::Fd(self.inner.as_raw_fd()),
+                buf.spare_capacity_mut().as_mut_ptr().cast(),
+                (n - got) as u32,
+            )
+            .build();
+            // The heap memory stays where it is while the reactor holds
+            // the vector, as for every receive.
+            let (r, res) = current().submit(sqe, Resource::Buf(buf)).await;
+            let Resource::Buf(b) = res else {
+                unreachable!()
+            };
+            buf = b;
+            match check(r) {
+                Ok(0) => return (Err(io::ErrorKind::UnexpectedEof.into()), buf),
+                // SAFETY: the kernel wrote `k <= n - got` bytes from
+                // `got`, within the capacity of `n`.
+                Ok(k) => unsafe { buf.set_len(got + k as usize) },
+                Err(e) => return (Err(e), buf),
+            }
+        }
+        (Ok(()), buf)
+    }
+
     /// Writes all of `head`, then all of `tail`, in one `sendmsg` each time
     /// (two pieces of one buffer, so `tail` is never copied after `head`).
     /// `tail` may be shared, with other connections sending it too.
@@ -513,6 +545,38 @@ mod tests {
             for h in hs {
                 h.await;
             }
+        });
+    }
+
+    /// I327: a read of `n` bytes into a buffer that isn't zeroed fills it
+    /// from pieces of any size, and an early end reports what arrived.
+    #[test]
+    fn read_exact_n_fills_from_pieces_and_reports_an_early_end() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let data: Vec<u8> = (0..3 << 20).map(|i| (i % 251) as u8).collect();
+            let sent = data.clone();
+            spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let mut at = 0;
+                for k in (1..).map(|i| (i * 7919) % 300_000 + 1) {
+                    let end = (at + k).min(sent.len());
+                    s.write_all(sent[at..end].to_vec()).await.0.unwrap();
+                    at = end;
+                    if at == sent.len() {
+                        break;
+                    }
+                }
+                s.write_all(vec![9; 10]).await.0.unwrap();
+            });
+            let s = TcpStream::connect(addr).await.unwrap();
+            let (r, got) = s.read_exact_n(data.len()).await;
+            r.unwrap();
+            assert!(got == data);
+            let (r, got) = s.read_exact_n(1000).await;
+            assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+            assert_eq!(got, vec![9; 10]);
         });
     }
 
