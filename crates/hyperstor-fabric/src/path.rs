@@ -2,7 +2,7 @@
 //! choices, weighted by the reconciler, taking the one with fewer bytes
 //! in flight, then lower RTT.
 
-use rand::Rng;
+use rand::RngExt;
 
 /// What a sender knows about one path to a peer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,7 +15,7 @@ pub struct PathLoad {
 }
 
 /// The index of the path to use, or `None` when no path has weight.
-pub fn choose(paths: &[PathLoad], rng: &mut impl Rng) -> Option<usize> {
+pub fn choose(paths: &[PathLoad], rng: &mut impl rand::Rng) -> Option<usize> {
     let total: f64 = paths.iter().map(|p| p.weight.max(0.0)).sum();
     if total <= 0.0 {
         return None;

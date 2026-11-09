@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 crc32c.workspace = true
 crc32fast = "1"
 http = "1"
@@ -24,7 +24,7 @@ hyperstor-pki = { path = "../hyperstor-pki" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 libc.workspace = true
-md-5 = "0.10"
+md-5 = "0.11"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 thiserror.workspace = true

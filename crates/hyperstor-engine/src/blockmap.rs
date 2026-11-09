@@ -457,7 +457,7 @@ impl Eq for BlockMap {}
 mod tests {
     use super::*;
     use rand::rngs::SmallRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     /// The two representations, driven by the same random operations, must
     /// agree on every lookup, on what they free, and after switching.

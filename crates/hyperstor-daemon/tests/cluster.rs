@@ -9,7 +9,7 @@ use hyperstor_placement::pg_of;
 use hyperstor_reactor::chan::{Sender, channel};
 use hyperstor_reactor::{block_on, spawn};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
