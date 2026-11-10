@@ -1310,6 +1310,31 @@ impl ClusterMap {
         n
     }
 
+    /// Drops from `acting` the members of `pool`'s PGs that `up` no longer
+    /// has, where `up` is within `acting` and nothing backfills: a pool
+    /// given fewer copies (24-pools-and-devices.md §27.3.5, D283), whose
+    /// last-ranked members no backfill would ever drop. Their devices then
+    /// delete those copies as stray (D177). Returns how many PGs changed;
+    /// the epoch moves if any did.
+    pub fn drop_extra_copies(&mut self, pool: u32) -> usize {
+        let epoch = self.epoch + 1;
+        let mut n = 0;
+        for (_, pg) in self.pgs.range_mut((pool, 0)..=(pool, u32::MAX)) {
+            if pg.acting.len() > pg.up.len()
+                && pg.up.iter().all(|d| pg.acting.contains(d))
+                && pg.backfilling().next().is_none()
+            {
+                pg.acting = pg.up.clone();
+                pg.epoch = epoch;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.epoch = epoch;
+        }
+        n
+    }
+
     /// Records that `device` has a full copy of a PG (09-replication.md §8.5). It
     /// joins `acting`; once every member of `up` has, `acting` becomes
     /// `up`, dropping members placement no longer wants. Refused (false)

@@ -2506,6 +2506,98 @@ impl ClusterService for Api {
         }
     }
 
+    async fn set_pool_copies(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetPoolCopiesRequest>,
+    ) -> ServiceResult<pb::SetPoolCopiesResponse> {
+        let (pool, dry_run) = (req.pool, req.dry_run);
+        let target = format!("pool {pool} size={} min={}", req.size, req.min);
+        // A dry run only reads.
+        let who = self.authorize(&ctx, "SetPoolCopies", &target, !dry_run)?;
+        let copies = |n: u32, what: &str| {
+            u8::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+                with_reason(
+                    ConnectError::invalid_argument(format!("{what} {n}: 1 to 255")),
+                    "invalid_argument",
+                )
+            })
+        };
+        let (size, min) = (copies(req.size, "size")?, copies(req.min, "min")?);
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetPoolCopies {
+                pool,
+                size,
+                min,
+                dry_run,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        if !dry_run {
+            audit(
+                &who,
+                "SetPoolCopies",
+                &target,
+                &match &r {
+                    Some(Ok(c)) => {
+                        format!("ok, {} PG(s) change, map epoch {}", c.moves.len(), c.epoch)
+                    }
+                    Some(Err(e)) => format!("failed: {e}"),
+                    None => "failed: map service stopped".into(),
+                },
+            );
+        }
+        let c = match r {
+            Some(Ok(c)) => c,
+            Some(Err(e)) if e.starts_with("no pool") => {
+                return Err(meta_error(e, ConnectError::not_found, "not_found"));
+            }
+            Some(Err(e)) if e.starts_with("min ") => {
+                return Err(meta_error(
+                    e,
+                    ConnectError::invalid_argument,
+                    "invalid_argument",
+                ));
+            }
+            Some(Err(e)) => {
+                return Err(meta_error(
+                    e,
+                    ConnectError::failed_precondition,
+                    "pool_conflict",
+                ));
+            }
+            None => return Err(ConnectError::unavailable("map service stopped")),
+        };
+        Ok(pb::SetPoolCopiesResponse {
+            moves: c
+                .moves
+                .iter()
+                .map(|m| pb::PgMove {
+                    pool: m.pool,
+                    pg: m.pg,
+                    before: m.before.clone(),
+                    after: m.after.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            fill: c
+                .space
+                .iter()
+                .map(|&(device, used_bytes, total_bytes)| pb::DeviceFill {
+                    device,
+                    used_bytes,
+                    total_bytes,
+                    ..Default::default()
+                })
+                .collect(),
+            map_epoch: c.epoch,
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn delete_pool(
         &self,
         ctx: RequestContext,

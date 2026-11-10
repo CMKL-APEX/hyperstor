@@ -935,6 +935,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.ListClaims", "claim list"),
     ("ClusterService.CreatePool", "pool create"),
     ("ClusterService.SetPool", "pool set"),
+    ("ClusterService.SetPoolCopies", "pool copies"),
     ("ClusterService.SetScrubSettings", "scrub set"),
     ("ClusterService.WeakenScrubSettings", "scrub set --reason"),
     ("ClusterService.GetScrubStatus", "scrub status"),

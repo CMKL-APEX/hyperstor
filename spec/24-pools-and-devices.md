@@ -13,7 +13,7 @@ Built so far, on `feature/elastic-pools`: the identity check of
 named device ids (§27.2.3, I205), the format rule (§27.2.2,
 I206) and the installer's `--device` on map service hosts (§27.2.1,
 I207) and on storage-only hosts (D280, I334). A replicated pool's
-copies may change (§27.3.5, D283: settled, not yet built). The work
+copies may change (§27.3.5, D283, I340). The work
 lands on the branch `feature/elastic-pools`, which merges into `main`
 once the required features are in.
 
@@ -240,16 +240,16 @@ too (I215), as an operation that runs again from what is left.
 #### 27.3.5 Changing a pool's copies
 
 D283 (settled 2026-11-10 that copies change; the rules below are open
-for review). Not yet built.
+for review). Built (I340), but for the web UI's form.
 
 - **`SetPoolCopies {pool, size, min, dry_run}`**: a replicated pool's
   copies and the copies a write needs. `hyperstorctl pool copies --pool P
-  --size N --min M [--dry-run]`; role `storage-admin` with step-up in
+  --copies N --min M [--dry-run]`; role `storage-admin` with step-up in
   mgmt (19-administration.md §23); audited. A call of its own, not a
   field of `SetPool`: it needs a plan, and step-up, which `SetPool`'s
   other fields don't.
-- **Rules.** `1 ≤ min ≤ size`. Refused for cache pools and EC pools
-  (§27.3.2). Refused when the pool's devices span fewer failure domains
+- **Rules.** `1 ≤ min ≤ size`. Refused for `.meta`, whose copies follow the hosts
+  (`grow_meta_pool`), and for cache and EC pools (§27.3.2). Refused when the pool's devices span fewer failure domains
   than the new `size`, as `CreatePool` is (§27.3.1). Refused when the
   plan would take a device past `backfillfull` (D182). A `min` above a
   PG's copies acting now is refused: that PG would stop taking writes.

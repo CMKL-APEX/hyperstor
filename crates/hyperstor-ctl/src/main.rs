@@ -57,6 +57,10 @@
 //! - `device upgrade --device D | --all`: convert devices to v0.0.8's
 //!   shard format (D274) at their node's next start; one-way, and only
 //!   devices whose node runs v0.0.8 or later;
+//! - `pool copies --pool P --copies N --min M [--dry-run]`: a replicated
+//!   pool's copies and the copies a write needs (D283); more copies
+//!   backfill, fewer are dropped; the dry run lists the PGs and each
+//!   device's fill;
 //! - `device add --node N --address A [--class C]`: append a device to a
 //!   node (D167), at weight 0 until the node runs it (restarted with one
 //!   more `--shard`) and it reports its capacity;
@@ -197,7 +201,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -706,7 +710,14 @@ fn main() {
                     "pool" => {
                         matches!(
                             sub,
-                            Some("set" | "create" | "add-device" | "remove-device" | "delete")
+                            Some(
+                                "set"
+                                    | "copies"
+                                    | "create"
+                                    | "add-device"
+                                    | "remove-device"
+                                    | "delete"
+                            )
                         )
                     }
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
@@ -759,10 +770,10 @@ fn main() {
                 || a.domain.is_some()
                 || a.autoscale.is_some()
                 || a.cache_grace.is_some()))
+        || (cmd == "pool copies" && (a.pool.is_none() || a.copies.is_none() || a.min.is_none()))
         || (!create
             && (a.kind.is_some()
-                || a.copies.is_some()
-                || a.min.is_some()
+                || ((a.copies.is_some() || a.min.is_some()) && cmd != "pool copies")
                 || (a.pgs.is_some() && !set)
                 || a.chunk.is_some()))
     {
@@ -985,7 +996,11 @@ fn main() {
         }));
     }
     if (cmd == "token create" || cmd == "port role") != a.role.is_some()
-        || (a.dry_run && cmd != "drain" && cmd != "pool delete" && cmd != "device remove")
+        || (a.dry_run
+            && !matches!(
+                cmd.as_str(),
+                "drain" | "pool delete" | "device remove" | "pool copies"
+            ))
         || (cmd == "pool delete" && a.pool.is_none())
         || (a.ttl != 0 && !matches!(cmd.as_str(), "token create" | "claim port" | "claim renew"))
         || (needs_id && a.id.is_none())
@@ -2419,6 +2434,61 @@ where
                 }
                 Err(e) => return Err(e),
             }
+        }
+        "pool copies" => {
+            let pool = a.pool.expect("checked with the arguments");
+            let (size, min) = (a.copies.unwrap_or(0), a.min.unwrap_or(0));
+            let r = client
+                .set_pool_copies(pb::SetPoolCopiesRequest {
+                    pool,
+                    size,
+                    min,
+                    dry_run: a.dry_run,
+                    ..Default::default()
+                })
+                .await;
+            let r = match r {
+                Ok(r) => r.into_owned(),
+                Err(e)
+                    if matches!(
+                        e.code,
+                        connectrpc::ErrorCode::NotFound
+                            | connectrpc::ErrorCode::FailedPrecondition
+                            | connectrpc::ErrorCode::InvalidArgument
+                    ) =>
+                {
+                    eprintln!(
+                        "hyperstorctl: {}",
+                        e.message.as_deref().unwrap_or("refused")
+                    );
+                    return Ok(Next::Exit(1));
+                }
+                Err(e) => return Err(e),
+            };
+            show(a, &r, || {
+                let mut t = moves_text(&r.moves);
+                for f in &r.fill {
+                    t.push_str(&format!(
+                        "device {} {} after\n",
+                        f.device,
+                        fill_text(f.used_bytes, f.total_bytes)
+                    ));
+                }
+                t.push_str(&if a.dry_run {
+                    format!(
+                        "dry run: pool {pool} would keep {size} copies, min {min}; {} PG(s) would change; nothing changed\n",
+                        r.moves.len()
+                    )
+                } else {
+                    format!(
+                        "pool {pool} keeps {size} copies, min {min} (map epoch {}); {} PG(s) change: new copies backfill, dropped ones are deleted\n",
+                        r.map_epoch,
+                        r.moves.len()
+                    )
+                });
+                t
+            });
+            Next::Exit(0)
         }
         "device remove" => {
             let device = a.device.expect("checked with the arguments");

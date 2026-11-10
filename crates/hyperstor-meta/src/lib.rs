@@ -285,6 +285,15 @@ pub enum Admin {
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
+    /// Sets a replicated pool's copies and `min` (D283), or with
+    /// `dry_run` says what that would do.
+    SetPoolCopies {
+        pool: u32,
+        size: u8,
+        min: u8,
+        dry_run: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<Copies, String>>,
+    },
     /// Asks for devices (`all`, or those listed) to be converted to v0.0.8's
     /// shard format (D274). Replies with the working map's epoch, the
     /// devices now asked and those already converted.
@@ -417,6 +426,17 @@ pub struct Removal {
     pub moves: Vec<PgMove>,
     pub short: Vec<(u32, u32, u8)>,
     pub space: Vec<(u32, u64, u64)>,
+}
+
+/// What setting a pool's copies does, or would (24-pools-and-devices.md
+/// §27.3.5, D283): the PGs whose members change, the devices that take
+/// copies with their bytes used after and their size, and the working
+/// map's epoch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Copies {
+    pub moves: Vec<PgMove>,
+    pub space: Vec<(u32, u64, u64)>,
+    pub epoch: u64,
 }
 
 /// Each marked PG's split reports: the PG epoch they name, and who sent
@@ -2326,6 +2346,116 @@ impl Meta {
         Ok((map.epoch, mixed))
     }
 
+    /// Sets a replicated pool's copies and the copies a write needs
+    /// (24-pools-and-devices.md §27.3.5, D283); with `dry_run` changes
+    /// nothing. More copies add a member to each PG, which backfills;
+    /// fewer drop each PG's last-ranked members at once. Refused for
+    /// `.meta`, cache and EC pools, for `min` outside 1 to `size`, when the
+    /// pool's devices span fewer failure domains than `size`, for a `min`
+    /// above the live copies a PG acts with now, and when a device taking
+    /// copies would pass `backfillfull` (D182), by the primaries' PG usage
+    /// (D155) and the devices' space reports.
+    pub fn set_pool_copies(
+        &self,
+        pool: u32,
+        size: u8,
+        min: u8,
+        dry_run: bool,
+    ) -> Result<Copies, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if pool == META_POOL {
+            return Err(
+                ".meta's copies follow the hosts (grow_meta_pool); they can't be set".into(),
+            );
+        }
+        if min == 0 || min > size {
+            return Err(format!("min {min} must be 1 to the copies, {size}"));
+        }
+        let mut map = self.map.borrow_mut();
+        let Some(info) = map.pools.get(&pool).cloned() else {
+            return Err(format!("no pool {pool}"));
+        };
+        if info.kind != PoolKind::Replicated {
+            return Err(format!(
+                "pool {pool} isn't replicated: a cache pool's copies and an EC pool's layout are fixed"
+            ));
+        }
+        let mut wanted = info.clone();
+        wanted.size = size;
+        wanted.min_size = min;
+        let span = domains(&map, &wanted);
+        if span < size as usize {
+            return Err(format!(
+                "pool {pool}'s devices span {span} failure domain(s); it can't keep {size} copies"
+            ));
+        }
+        if min > info.min_size
+            && let Some((k, live)) = map
+                .pgs
+                .range((pool, 0)..=(pool, u32::MAX))
+                .map(|(k, p)| (k, p.acting.iter().filter(|d| map.live(**d)).count()))
+                .find(|&(_, live)| live < min as usize)
+        {
+            return Err(format!(
+                "PG {}.{} acts with {live} live copies: min {min} would stop its writes; raise the copies and wait for the pool to be clean first",
+                k.0, k.1
+            ));
+        }
+        let mut after = map.clone();
+        after.pools.insert(pool, wanted.clone());
+        after.recompute();
+        after.drop_extra_copies(pool);
+        let mut moves = Vec::new();
+        let mut gains: BTreeMap<u32, u64> = BTreeMap::new();
+        let usage = self.usage.borrow();
+        for (k, was) in map.pgs.range((pool, 0)..=(pool, u32::MAX)) {
+            let Some(now) = after.pgs.get(k) else {
+                continue;
+            };
+            if now.up != was.acting {
+                moves.push(PgMove {
+                    pool: k.0,
+                    pg: k.1,
+                    before: was.acting.clone(),
+                    after: now.up.clone(),
+                });
+            }
+            let bytes = usage.get(k).map_or(0, |&(_, b)| b);
+            for d in now.up.iter().filter(|d| !was.acting.contains(d)) {
+                *gains.entry(*d).or_default() += bytes;
+            }
+        }
+        drop(usage);
+        let reports = self.space.borrow();
+        let mut space = Vec::new();
+        let limit = map.full_ratios.backfillfull;
+        for (&d, &gain) in &gains {
+            let Some(&(total, free)) = reports.get(&d) else {
+                continue;
+            };
+            let used = total.saturating_sub(free) + gain;
+            if used > FullRatios::limit(total, limit) {
+                return Err(format!(
+                    "device {d} would be {:.0}% full with pool {pool}'s new copies, past backfillfull {:.1}%",
+                    used as f64 * 100.0 / total.max(1) as f64,
+                    limit as f64 / 10.0
+                ));
+            }
+            space.push((d, used, total));
+        }
+        drop(reports);
+        if !dry_run && wanted != info {
+            *map = after;
+        }
+        Ok(Copies {
+            moves,
+            space,
+            epoch: map.epoch,
+        })
+    }
+
     /// Makes a pool (24-pools-and-devices.md §27.3.1; D163, D171): its
     /// classes are required, checked as `SetPool` checks them; its id is
     /// the next one no pool has had. Returns the id, its PG count and the
@@ -2905,6 +3035,16 @@ impl Meta {
                     reply,
                 } => {
                     self.reply_published(reply, self.set_pool(pool, change, force), |e| e);
+                }
+                Admin::SetPoolCopies {
+                    pool,
+                    size,
+                    min,
+                    dry_run,
+                    reply,
+                } => {
+                    let r = self.set_pool_copies(pool, size, min, dry_run);
+                    self.reply_published(reply, r, |e| e);
                 }
                 Admin::SetScrub {
                     pool,
@@ -5030,6 +5170,88 @@ mod tests {
             4,
             "node 3's id isn't given again"
         );
+    }
+
+    /// §27.3.5, D283: a replicated pool's copies change. More copies keep
+    /// each PG's members and primary and add one, which backfills; fewer
+    /// drop the last-ranked members at once. Refused for other kinds, a
+    /// bad `min`, too few failure domains, a `min` a PG can't meet now,
+    /// and a device that would pass `backfillfull`; a dry run changes
+    /// nothing.
+    #[test]
+    fn a_pools_copies_change_by_adding_or_dropping_members() {
+        let meta = Meta::new(map());
+        let err = |size, min| meta.set_pool_copies(1, size, min, true).unwrap_err();
+        assert!(
+            meta.set_pool_copies(9, 3, 2, true)
+                .unwrap_err()
+                .contains("no pool 9")
+        );
+        assert!(
+            meta.set_pool_copies(2, 3, 2, true)
+                .unwrap_err()
+                .contains("isn't replicated")
+        );
+        assert!(err(3, 0).starts_with("min 0"));
+        assert!(err(2, 3).starts_with("min 3"));
+        assert!(err(5, 2).contains("span 4 failure domain(s)"), "four hosts");
+        // A PG acting with one live copy can't take min 2.
+        let short = meta.map.borrow().pgs[&(1, 0)].acting.clone();
+        meta.map.borrow_mut().pgs.get_mut(&(1, 0)).unwrap().acting = short[..1].to_vec();
+        assert!(err(3, 3).contains("PG 1.0 acts with 1 live copies"));
+        meta.map.borrow_mut().pgs.get_mut(&(1, 0)).unwrap().acting = short;
+        // Every device 85% full, every PG 50 bytes: a fourth copy passes
+        // backfillfull (90%).
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (1000, 150));
+        }
+        let pgs: Vec<(u32, u32, u64)> = (0..64).map(|pg| (1, pg, 50)).collect();
+        meta.note_usage(0, false, &pgs);
+        assert!(err(4, 2).contains("past backfillfull"), "{}", err(4, 2));
+        for d in meta.map.borrow().devices.keys() {
+            meta.space.borrow_mut().insert(*d, (100_000, 90_000));
+        }
+        // Four copies: each PG keeps its three, in order, and gains one.
+        let before = meta.map.borrow().clone();
+        let dry = meta.set_pool_copies(1, 4, 2, true).unwrap();
+        assert_eq!(*meta.map.borrow(), before, "a dry run changes nothing");
+        assert_eq!(dry.moves.len(), 64);
+        for m in &dry.moves {
+            assert_eq!(m.after.len(), 4);
+            assert_eq!(m.after[..3], m.before[..], "PG {}.{}", m.pool, m.pg);
+        }
+        assert!(!dry.space.is_empty());
+        let done = meta.set_pool_copies(1, 4, 2, false).unwrap();
+        assert_eq!(done.moves, dry.moves);
+        let m = meta.map.borrow().clone();
+        assert_eq!((m.pools[&1].size, m.pools[&1].min_size), (4, 2));
+        assert!(m.epoch > before.epoch);
+        for (k, pg) in m.pgs.range((1, 0)..=(1, u32::MAX)) {
+            assert_eq!(pg.up.len(), 4, "{k:?}");
+            assert_eq!(pg.acting, before.pgs[k].acting, "backfills first");
+        }
+        for pg in meta.map.borrow_mut().pgs.values_mut() {
+            pg.acting = pg.up.clone();
+        }
+        // Two copies, min 1: each PG keeps its first two at once.
+        let full = meta.map.borrow().clone();
+        let fewer = meta.set_pool_copies(1, 2, 1, false).unwrap();
+        assert_eq!(fewer.moves.len(), 64);
+        assert!(fewer.space.is_empty(), "nothing taken");
+        let m = meta.map.borrow().clone();
+        for (k, pg) in m.pgs.range((1, 0)..=(1, u32::MAX)) {
+            assert_eq!(pg.acting, full.pgs[k].acting[..2], "{k:?}");
+            assert_eq!(pg.up, pg.acting);
+        }
+        // The same copies again: nothing moves.
+        let e = m.epoch;
+        assert!(
+            meta.set_pool_copies(1, 2, 1, false)
+                .unwrap()
+                .moves
+                .is_empty()
+        );
+        assert_eq!(meta.map.borrow().epoch, e);
     }
 
     #[test]
