@@ -10,6 +10,7 @@
 //! as broken: it is shut down, its other calls fail, and the next caller
 //! connects afresh (01-implementation-notes.md I184).
 
+use hyperstor_codec::{AlignedBuf, IoBuf};
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};
 use hyperstor_reactor::chan::{OneSender, Receiver, Sender, channel, oneshot};
 use hyperstor_reactor::net::TcpStream;
@@ -57,7 +58,7 @@ pub type Reply = (Msg, Vec<u8>);
 #[derive(Debug)]
 pub struct Frame {
     head: Vec<u8>,
-    tail: Option<(Rc<Vec<u8>>, Range<usize>)>,
+    tail: Option<IoBuf>,
 }
 
 impl From<Vec<u8>> for Frame {
@@ -78,28 +79,28 @@ impl Frame {
         if payload.len() < OWN_READ {
             return Frame::new(req, msg, &payload);
         }
-        Frame::shared(req, msg, &Rc::new(payload))
+        Frame::shared(req, msg, &payload.into())
     }
 
     /// A frame that sends `payload` as it is, shared with others.
-    pub fn shared(req: u64, msg: &Msg, payload: &Rc<Vec<u8>>) -> Frame {
+    pub fn shared(req: u64, msg: &Msg, payload: &IoBuf) -> Frame {
         Frame::part(req, msg, payload, 0..payload.len())
     }
 
     /// A frame that sends `buf[range]` as it is, unless it is small
     /// enough to copy: one piece of a client's write that spans chunks.
-    pub fn part(req: u64, msg: &Msg, buf: &Rc<Vec<u8>>, range: Range<usize>) -> Frame {
+    pub fn part(req: u64, msg: &Msg, buf: &IoBuf, range: Range<usize>) -> Frame {
         if range.len() < OWN_READ {
             return Frame::new(req, msg, &buf[range]);
         }
         Frame {
             head: encode_head(req, msg, range.len(), 0),
-            tail: Some((buf.clone(), range)),
+            tail: Some(buf.slice(range)),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.head.len() + self.tail.as_ref().map_or(0, |(_, r)| r.len())
+        self.head.len() + self.tail.as_ref().map_or(0, |t| t.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -195,21 +196,58 @@ pub async fn read_frame_counted(
     s: &TcpStream,
     counter: Option<&traffic::Counter>,
 ) -> Result<(Header, Msg, Vec<u8>), RpcError> {
+    match read_any(s, counter, false).await? {
+        (h, msg, Got::Vec(p)) => Ok((h, msg, p)),
+        (_, _, Got::Aligned(_)) => unreachable!("not asked for"),
+    }
+}
+
+/// [`read_frame_counted`] for a request to a storage node: a payload of
+/// 16 KiB or more is received into a buffer aligned to a
+/// block, which the engine then writes as it is (I343).
+pub async fn read_request(
+    s: &TcpStream,
+    counter: Option<&traffic::Counter>,
+) -> Result<(Header, Msg, IoBuf), RpcError> {
+    let (h, msg, p) = read_any(s, counter, true).await?;
+    let p = match p {
+        Got::Vec(p) => p.into(),
+        Got::Aligned(p) => p,
+    };
+    Ok((h, msg, p))
+}
+
+/// A payload as read: other frames keep plain vectors, which cost no
+/// allocation of an [`IoBuf`] when they are replies or empty.
+enum Got {
+    Vec(Vec<u8>),
+    Aligned(IoBuf),
+}
+
+async fn read_any(
+    s: &TcpStream,
+    counter: Option<&traffic::Counter>,
+    aligned: bool,
+) -> Result<(Header, Msg, Got), RpcError> {
     let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     let h = Header::decode(hb[..].try_into().unwrap())?;
-    let (body, payload) = if h.payload_len as usize >= OWN_READ {
-        (
-            read_n(s, h.body_len as usize).await?,
-            read_n(s, h.payload_len as usize).await?,
-        )
+    let n = h.payload_len as usize;
+    let (body, payload) = if n >= OWN_READ {
+        let body = read_n(s, h.body_len as usize).await?;
+        let payload = if aligned {
+            Got::Aligned(read_aligned(s, n).await?)
+        } else {
+            Got::Vec(read_n(s, n).await?)
+        };
+        (body, payload)
     } else {
-        let mut rest = read_n(s, (h.body_len + h.payload_len) as usize).await?;
+        let mut rest = read_n(s, h.body_len as usize + n).await?;
         let payload = rest.split_off(h.body_len as usize);
-        (rest, payload)
+        (rest, Got::Vec(payload))
     };
     if let Some(c) = counter {
-        c.received(HEADER_LEN + body.len() + payload.len());
+        c.received(HEADER_LEN + body.len() + n);
     }
     let msg = Msg::decode(h.kind, &body)?;
     Ok((h, msg, payload))
@@ -226,6 +264,30 @@ async fn read_n(s: &TcpStream, n: usize) -> Result<Vec<u8>, RpcError> {
     let (r, b) = s.read_exact_n(n).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     Ok(b)
+}
+
+/// An aligned buffer being received into: its first bytes are written
+/// by the kernel before anything reads them.
+struct Receiving(AlignedBuf);
+
+// SAFETY: the bytes are the buffer's heap allocation, owned by it and
+// never moved; `recv_cap` is its length.
+unsafe impl hyperstor_reactor::net::RecvBuf for Receiving {
+    fn recv_ptr(&mut self) -> *mut u8 {
+        self.0.as_mut_ptr()
+    }
+    fn recv_cap(&self) -> usize {
+        self.0.len()
+    }
+}
+
+async fn read_aligned(s: &TcpStream, n: usize) -> Result<IoBuf, RpcError> {
+    // SAFETY: the receive below writes all of the first `n` bytes before
+    // the buffer is read; after an error it is dropped unread.
+    let buf = Receiving(unsafe { AlignedBuf::for_receive(n) });
+    let (r, Receiving(b)) = s.read_exact_into(buf, n).await;
+    r.map_err(|e| RpcError::Io(e.to_string()))?;
+    Ok(IoBuf::aligned(b, n))
 }
 
 /// How many bytes of queued frames [`writer`] joins into one send.
@@ -270,7 +332,7 @@ pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Frame>) {
             c.sent(f.len());
         }
         let r = match f.tail {
-            Some((tail, range)) => s.write_all2(f.head, tail, range).await,
+            Some(tail) => s.write_all2(f.head, tail).await,
             None => s.write_all(f.head).await.0,
         };
         if r.is_err() {
@@ -382,7 +444,7 @@ impl Conn {
     pub fn start_shared(
         &self,
         msg: &Msg,
-        payload: &Rc<Vec<u8>>,
+        payload: &IoBuf,
     ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
         Self::answer(self.queue(|req| Frame::shared(req, msg, payload)))
     }
@@ -392,7 +454,7 @@ impl Conn {
     pub fn start_part(
         &self,
         msg: &Msg,
-        buf: &Rc<Vec<u8>>,
+        buf: &IoBuf,
         range: Range<usize>,
     ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
         Self::answer(self.queue(|req| Frame::part(req, msg, buf, range)))
@@ -725,7 +787,7 @@ mod pool_tests {
         assert_eq!(sends.len(), 7, "small frames fill sends of the batch size");
         let tail: Vec<u8> = sends[2..5].iter().flat_map(|f| f.head.clone()).collect();
         assert_eq!(tail.len(), 300 + 2 * BATCH_BYTES / 1000 * 1000);
-        let (own, _) = sends[5].tail.as_ref().expect("a payload of its own");
+        let own = sends[5].tail.as_ref().expect("a payload of its own");
         assert_eq!(own.as_ptr(), big_at, "the payload is sent as given");
         assert_eq!(sends[6].head, vec![5u8; 10]);
     }
@@ -749,7 +811,7 @@ mod pool_tests {
             let s = Rc::new(TcpStream::connect(addr).await.unwrap());
             let (tx, rx) = channel();
             let big: Vec<u8> = (0..3 << 20).map(|i| (i % 251) as u8).collect();
-            let shared = Rc::new(big.clone());
+            let shared = IoBuf::from(big.clone());
             tx.send(Frame::shared(1, &Msg::Ping, &shared)).unwrap();
             tx.send(Frame::new(2, &Msg::Ping, b"small")).unwrap();
             tx.send(Frame::shared(3, &Msg::Ping, &shared)).unwrap();
@@ -784,7 +846,7 @@ mod pool_tests {
             });
             let s = Rc::new(TcpStream::connect(addr).await.unwrap());
             let (tx, rx) = channel();
-            let buf = Rc::new((0..3 << 20).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+            let buf = IoBuf::from((0..3 << 20).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
             let cuts = [
                 0..(1 << 20) + 7,
                 (1 << 20) + 7..(3 << 20) - 100,
@@ -800,6 +862,43 @@ mod pool_tests {
             let got = reader.await;
             for (g, r) in got.iter().zip(&cuts) {
                 assert!(g[..] == buf[r.clone()]);
+            }
+        });
+    }
+
+    /// I343: a storage node receives a large payload into a buffer that
+    /// starts on a block, whole, whatever came before it on the stream.
+    #[test]
+    fn large_request_payloads_arrive_aligned() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let sizes = [OWN_READ - 1, OWN_READ, (1 << 20) + 4096, 4096, 3 << 20];
+            let reader = spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let mut got = Vec::new();
+                for _ in 0..sizes.len() {
+                    got.push(read_request(&s, None).await.unwrap().2);
+                }
+                got
+            });
+            let s = Rc::new(TcpStream::connect(addr).await.unwrap());
+            let (tx, rx) = channel();
+            let payloads: Vec<Vec<u8>> = (0..sizes.len())
+                .map(|i| (0..sizes[i]).map(|j| ((i * 31 + j) % 251) as u8).collect())
+                .collect();
+            for (i, p) in payloads.iter().enumerate() {
+                tx.send(Frame::owned(i as u64, &Msg::Ping, p.clone()))
+                    .unwrap();
+            }
+            drop(tx);
+            writer(s, rx).await;
+            let got = reader.await;
+            for (g, p) in got.iter().zip(&payloads) {
+                assert!(g[..] == p[..]);
+                if p.len() >= OWN_READ {
+                    assert!(g.is_aligned(), "{} bytes", p.len());
+                }
             }
         });
     }
@@ -838,7 +937,7 @@ mod pool_tests {
                 let f = if f.len() > BATCH_BYTES {
                     Frame {
                         head: f[..100].to_vec(),
-                        tail: Some((Rc::new(f.clone()), 100..f.len())),
+                        tail: Some(IoBuf::from(f.clone()).slice(100..f.len())),
                     }
                 } else {
                     f.into()

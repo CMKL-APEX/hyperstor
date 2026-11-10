@@ -234,6 +234,12 @@ device is formatted with the cluster's id; a superblock without one
   volatile cache), and with NVMe passthrough over io_uring
   (`IORING_OP_URING_CMD`) with FUA, at queue depths 1 to 32; and on a
   drive with power-loss protection, whether the flush costs anything.
+  **Partly answered** (I345; 02-benchmarks.md, 2026-11-10), on a file
+  on a consumer drive with a volatile cache: FUA wins for one-block
+  rounds (11% at p50) and loses for rounds of 8 and 32 blocks (21% and
+  34% fewer rounds); ext4 sends `RWF_DSYNC` on an overwrite as FUA.
+  Passthrough, polled queues and a drive with power-loss protection
+  remain.
 - **Log records** are whole blocks: a header with the record's LSN, its
   commit group and checksums seeded with the shard's salt, then the
   payload. In the second format (48-byte header, version 2) it also
