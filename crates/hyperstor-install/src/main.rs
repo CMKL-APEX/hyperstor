@@ -719,7 +719,7 @@ fn main() {
                 if real && unsafe { libc::geteuid() } != 0 {
                     fail("changing a host's role needs root: run it with sudo");
                 }
-                demote_host(&root, real, &mut s, force_role);
+                demote_host(&root, real, &mut s, force_role, given.get("join").cloned());
             } else if force_role {
                 usage();
             }
@@ -2223,7 +2223,7 @@ fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
 /// its node's addresses gives the node back, D167); out of the group;
 /// its member certificates revoked; the member's services, files, keys and
 /// store gone. `s` is then a storage host's, joined through the leader.
-fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool) {
+fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool, given_join: Option<String>) {
     let pki = under(root, "/etc/hyperstor/pki");
     if pki.join("root.key").exists() {
         fail(
@@ -2277,19 +2277,16 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool) {
             voters - 1
         ));
     }
-    // Another member's API, the leader's if it is another: the one this
-    // host reaches the cluster through from now on.
-    let others: Vec<&hyperstor_api::Member> = r
-        .members
-        .iter()
-        .filter(|m| m.id != u64::from(id) && !m.api_address.is_empty())
-        .collect();
-    let join_api = others
-        .iter()
-        .find(|m| m.leader)
-        .or_else(|| others.first())
-        .map(|m| m.api_address.clone())
-        .unwrap_or_else(|| fail("no other member to join through"));
+    let mut fallbacks: Vec<String> = given_join.into_iter().collect();
+    for m in r.members.iter().filter(|m| m.id != u64::from(id)) {
+        if let Ok(a) = m.map_address.parse::<std::net::SocketAddr>() {
+            fallbacks.push(std::net::SocketAddr::new(a.ip(), s.api_port).to_string());
+        }
+    }
+    let (leader_api, join_api) = demote_apis(&r, u64::from(id), &api, &api_here, &fallbacks)
+        .unwrap_or_else(|| {
+            fail("no other member's cluster API is known: name one with --join API")
+        });
     // 1. The store, backed up before anything changes.
     let ctl = std::env::current_exe()
         .ok()
@@ -2337,7 +2334,8 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool) {
         let n = node.n;
         let mut joined = s.clone();
         joined.role = "storage".into();
-        joined.join = join_api.clone();
+        // Joins are the leader's to answer, even when it is this host.
+        joined.join = leader_api.clone();
         joined.address = first.ip().to_string();
         joined.reactors = own.len() as u32;
         joined.node_port = first.port();
@@ -2462,6 +2460,48 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool) {
     );
 }
 
+/// A demote's APIs (D288): the leader's, which answers the node's join
+/// (tokens are the leader's, D82), whichever member it is, this one too;
+/// and the one this host reaches the cluster through from now on, another
+/// member's: the leader's if it is another, else one whose API the group
+/// knows (only leaders record theirs), else the first of `fallbacks` (an
+/// API the operator gave, then the others' map addresses on the API port)
+/// that isn't this member's `own`. `api` stands in for an unknown leader.
+/// `None` without another member's API.
+fn demote_apis(
+    r: &hyperstor_api::ListMembersResponse,
+    me: u64,
+    api: &str,
+    own: &str,
+    fallbacks: &[String],
+) -> Option<(String, String)> {
+    let with_api = |m: &&hyperstor_api::Member| !m.api_address.is_empty();
+    let leader = r
+        .members
+        .iter()
+        .filter(with_api)
+        .find(|m| m.leader)
+        .map_or_else(|| api.to_string(), |m| m.api_address.clone());
+    let others: Vec<&hyperstor_api::Member> = r
+        .members
+        .iter()
+        .filter(with_api)
+        .filter(|m| m.id != me)
+        .collect();
+    let keep = others
+        .iter()
+        .find(|m| m.leader)
+        .or_else(|| others.first())
+        .map(|m| m.api_address.clone())
+        .or_else(|| {
+            fallbacks
+                .iter()
+                .find(|a| !a.is_empty() && *a != own)
+                .cloned()
+        })?;
+    Some((leader, keep))
+}
+
 /// Member lists follow (D288): the map service's members, through the API,
 /// for the services that find it by its members' map addresses (nodes,
 /// `hyperstor-vhost`, `hyperstor-s3`). A joined host keeps them in `s`
@@ -2499,14 +2539,19 @@ fn follow_members(root: &Path, s: &mut Settings, p: &mut Plan) {
         return;
     }
     let list = maps.join(",");
-    if who == "node" {
-        if s.map != list {
-            println!("The map service's members are now at {list}.");
-            s.map = list.clone();
-        }
-        if api != s.join {
-            s.join = api;
-        }
+    if who == "node" && s.map != list {
+        println!("The map service's members are now at {list}.");
+        s.map = list.clone();
+    }
+    // The API this host joined through has gone (its member demoted, say):
+    // another that answered, for the endpoints, renewals and the next
+    // run. A member installed from the cluster file joined through none.
+    if !s.join.is_empty() && api != s.join {
+        println!(
+            "Reaching the cluster through {api} now: {} doesn't answer.",
+            s.join
+        );
+        s.join = api;
     }
     p.map = list;
 }
@@ -4937,6 +4982,78 @@ mod tests {
             "{rules}"
         );
         assert!(!rules.contains("extra.img"), "files need no rule");
+    }
+
+    /// D288: a demote joins its node through the leader, even when the
+    /// leader is the member being demoted, and keeps another member's API.
+    #[test]
+    fn a_demote_joins_through_the_leader_and_keeps_another_api() {
+        let m = |id: u64, leader: bool| hyperstor_api::Member {
+            id,
+            leader,
+            api_address: format!("192.0.2.{id}:8850"),
+            ..Default::default()
+        };
+        let none: &[String] = &[];
+        let r = |ms: Vec<hyperstor_api::Member>| hyperstor_api::ListMembersResponse {
+            members: ms,
+            ..Default::default()
+        };
+        // Another leads: both its.
+        let (lead, keep) = demote_apis(
+            &r(vec![m(1, true), m(2, false), m(3, false)]),
+            3,
+            "x",
+            "own",
+            none,
+        )
+        .unwrap();
+        assert_eq!(
+            (lead.as_str(), keep.as_str()),
+            ("192.0.2.1:8850", "192.0.2.1:8850")
+        );
+        // This member leads: the join goes to it, the host keeps another's.
+        let (lead, keep) = demote_apis(
+            &r(vec![m(1, false), m(2, false), m(3, true)]),
+            3,
+            "x",
+            "own",
+            none,
+        )
+        .unwrap();
+        assert_eq!(
+            (lead.as_str(), keep.as_str()),
+            ("192.0.2.3:8850", "192.0.2.1:8850")
+        );
+        // No leader known: the API asked stands in.
+        let (lead, _) = demote_apis(
+            &r(vec![m(1, false), m(3, false)]),
+            3,
+            "192.0.2.9:8850",
+            "own",
+            none,
+        )
+        .unwrap();
+        assert_eq!(lead, "192.0.2.9:8850");
+        assert!(
+            demote_apis(&r(vec![m(3, true)]), 3, "x", "own", none).is_none(),
+            "no other member"
+        );
+        // Only the leader's API is known (members record theirs as they
+        // lead): the fallbacks, but never this member's own.
+        let mut quiet = m(1, false);
+        quiet.api_address.clear();
+        let fallbacks = ["own".to_string(), "192.0.2.7:8850".to_string()];
+        let (_, keep) = demote_apis(
+            &r(vec![quiet.clone(), m(3, true)]),
+            3,
+            "x",
+            "own",
+            &fallbacks,
+        )
+        .unwrap();
+        assert_eq!(keep, "192.0.2.7:8850");
+        assert!(demote_apis(&r(vec![quiet, m(3, true)]), 3, "x", "own", none).is_none());
     }
 
     /// D285: a node serves the endpoints the map has for its own devices,

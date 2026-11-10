@@ -1460,10 +1460,11 @@ tests = [
 
 [[milestone.item]]
 what = "A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member"
-spec = ["19-administration.md §23.4.3", "D288", "I348"]
+spec = ["19-administration.md §23.4.3", "D288", "I348", "I349"]
 status = "done"
 tests = [
     "join::a_storage_host_is_promoted_and_a_member_demoted",
+    "hyperstor_install::tests::a_demote_joins_through_the_leader_and_keeps_another_api",
 ]
 
 [[milestone.item]]

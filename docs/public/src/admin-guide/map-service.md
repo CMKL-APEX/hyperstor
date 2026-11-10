@@ -189,7 +189,11 @@ sudo hyperstor-install install --role storage
   keys and store. It is refused while fewer than three voters would be
   left (unless `--force`), on the host with the root CA's key (move it
   first with `root-backup --remove-key` and `root-restore`), and while an
-  S3 gateway runs there (`--no-s3` first).
+  S3 gateway runs there (`--no-s3` first). The demoted host then
+  reaches the cluster through another member's API: the leader's, or one
+  the group knows (a member records its API while it leads), else the
+  other members' map addresses on the API port; if theirs differ, name
+  one with `--join API`.
 - mgmt and the web UI run on every member: point a proxy or tunnel at
   another member's before a demote.
 - A demoted member's copies of the intermediate CA's key are deleted,
