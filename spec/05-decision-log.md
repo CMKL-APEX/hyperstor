@@ -1442,3 +1442,14 @@ such a host may register its own devices:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 244 | `--device` on a storage-only host: the node's certificate may add devices to its own node, at an IP it already serves on, as D215 lets it set its own endpoints (recommended); a one-time `device` token from the administrator per addition; both, with a setting to require the token | The node's certificate | D280 |
+
+## A host's roles (2026-11-10)
+
+Moving a map service member off a poor host had no path: a storage host
+joined with a token couldn't become a member, nor a member go back to
+storage only. With 19-administration.md §23.4.3 drafted, the owner took
+the recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 248 | A host's roles: (1) the installer adds and removes the member itself (recommended), or the operator with `hyperstorctl`; (2) a demoted member's store deleted after a `map backup` (recommended), or kept; (3) the intermediate's rotation on a demote a follow-up (recommended), or a step of every demote | As recommended | D286 |

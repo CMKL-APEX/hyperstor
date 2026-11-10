@@ -145,7 +145,7 @@ join (clustering.md §5.2), so operators learn one model.
 
 #### 23.4.3 Changing a host's roles
 
-D286 (open for review, 2026-11-10). Not yet built.
+D286 (settled 2026-11-10; point 248). Not yet built.
 
 A host runs a **map service member** (`hyperstor-meta`, with mgmt, the
 web UI and authd beside it, the `api`, `mgmt`, `web` and `admin`
@@ -203,18 +203,16 @@ every step is audited. Why `--role`: the installer is convergent, and a
 role is what it already saves in `install.conf`; a change of role is a
 run with another one.
 
-To decide (the owner's; recommendations first):
+Settled with the owner (05-decision-log.md point 248):
 
-1. The installer runs `AddMember` and `RemoveMember` itself
-   (recommended: one command per host, and a demote can't stop the
-   member before the group has let it go), or the operator runs them
-   with `hyperstorctl member add|remove` around the installer.
-2. A demoted member's store: deleted after a `map backup` (recommended:
-   a stale copy could only mislead), or kept until the operator deletes
-   it.
-3. The intermediate's rotation on a demote: a follow-up of its own
-   (recommended: it needs the root's key on a member, and rotation is
-   designed but not built), or a step of every demote.
+1. The installer runs `AddMember` and `RemoveMember` itself: one command
+   per host, and a demote can't stop the member before the group has
+   let it go.
+2. A demoted member's store is deleted after a `map backup`: a stale
+   copy could only mislead.
+3. The intermediate's rotation on a demote is a follow-up of its own:
+   it needs the root's key on a member, and rotation is designed but not
+   built.
 
 On the pilot: replacing member 3 (on a host whose map address sits on
 glidex's bridge) by the new storage-only host is a promote of that host
