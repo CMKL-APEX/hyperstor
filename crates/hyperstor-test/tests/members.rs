@@ -383,7 +383,7 @@ fn the_member_list_shows_a_stopped_member() {
 /// A group that lost its majority for good (D85): the survivor can't
 /// change anything; forcing it alone is refused while another member
 /// answers; forced, it leads alone with every change it had applied
-/// before it was killed (I338), serves and adds hosts; an old member that
+/// before it was killed (I341), serves and adds hosts; an old member that
 /// comes back with its log can't rejoin.
 #[test]
 fn a_lost_majority_is_recovered_alone() {
@@ -397,7 +397,7 @@ fn a_lost_majority_is_recovered_alone() {
     let _ = s1_api;
     // A token made just before member 1 is killed: applied there, likely
     // not yet at a checkpoint (glidex D31), and kept through the forced
-    // start, which re-applies the log first (I338).
+    // start, which re-applies the log first (I341).
     let ids = |out: &str| -> Vec<String> {
         out.lines()
             .skip(1)

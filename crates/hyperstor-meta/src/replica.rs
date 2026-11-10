@@ -897,14 +897,14 @@ pub fn settings() -> RaftSettings {
         // (the first, a new pool) can be megabytes: keep the log short.
         log_keep_entries: 1_000,
         // Applies are flushed at checkpoints, every 100 entries or 1 s
-        // (glidex D31, I338); a start re-applies the rest from the log,
+        // (glidex D31, I341); a start re-applies the rest from the log,
         // and `--force-alone` does so first ([`catch_up`]).
         checkpointed_applies: true,
     }
 }
 
 /// Brings the store in `dir` up to what this member's Raft log has
-/// committed, and flushes it (I338). With checkpointed applies (glidex
+/// committed, and flushes it (I341). With checkpointed applies (glidex
 /// D31) a crash leaves the store at its last checkpoint, and openraft
 /// re-applies the rest from the log as Raft starts. `--force-alone` (D85)
 /// copies the store of a stopped member, so it starts Raft here first,

@@ -1880,6 +1880,76 @@ impl ClusterService for Api {
         }
     }
 
+    async fn set_network(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetNetworkRequest>,
+    ) -> ServiceResult<pb::SetNetworkResponse> {
+        let net = req.network.as_option();
+        let name = net.map(|n| n.name.to_string()).unwrap_or_default();
+        let target = match net {
+            Some(n) if !req.remove => format!(
+                "network {name} {}{} {}",
+                n.kind,
+                if n.trusted { " trusted" } else { "" },
+                n.matches
+            ),
+            _ => format!("network {name} remove"),
+        };
+        let who = self.authorize(&ctx, "SetNetwork", &target, true)?;
+        let invalid =
+            |e: String| with_reason(ConnectError::invalid_argument(e), "invalid_argument");
+        // Names as classes' (D178): what the cluster file and --networks
+        // take, with no spaces or commas.
+        if !crate::valid_class(&name) {
+            return Err(invalid(format!(
+                "a network's name is 1 to 32 lowercase letters, digits and dashes, not {name:?}"
+            )));
+        }
+        let def = match net {
+            Some(n) if !req.remove => Some(
+                hyperstor_map::NetworkDef::parse(n.kind, n.trusted, n.matches).map_err(invalid)?,
+            ),
+            _ => None,
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetNetwork { name, def, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetNetwork",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetNetworkResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no network") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) if e.starts_with("devices ") => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "network_in_use",
+            )),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
     async fn list_ports(
         &self,
         ctx: RequestContext,
