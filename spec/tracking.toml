@@ -797,8 +797,9 @@ status = "planned"
 
 [[milestone.item]]
 what = "Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after"
-spec = ["02-benchmarks.md", "D41", "I300"]
-status = "planned"
+spec = ["02-benchmarks.md", "D41", "I300", "I346"]
+status = "done"
+tests = ["hyperstor_bench::tests::cpu_time_counts_work_on_every_thread_and_not_sleep"]
 
 [[milestone]]
 id = "HS6"

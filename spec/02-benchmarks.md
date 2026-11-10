@@ -2176,3 +2176,66 @@ Not measured, as the host has no namespace the engine could own: NVMe
 passthrough (`uring_cmd` on `/dev/ngXnY`) with FUA, polled queues
 (`nvme.poll_queues` is 0), and a drive with power-loss protection
 (G57 stays open for them).
+
+## 2026-11-10: HS5b, before and after: CPU and latency per operation (I346)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0): main at 48c8ed09, before
+HS5b's first change (I300), against main at d7d47c2b, after its last
+(I343), both with the CPU lines added to the benchmark (I346). Run
+alternately, five rounds each; medians, with the range of CPU per
+operation. CPU per operation is the CPU time of every thread of the
+process (the client, the map service and the three nodes of one reactor
+each) over a test, divided by its operations; idle, before the tests,
+the process takes 0.01 s of CPU per second in both. The client's own
+copy of each write's data (`data.clone()` in the benchmark loop) is
+counted in both.
+
+| Test | ops/s before → after | p50 µs before → after | p99 µs before → after | CPU µs per op before → after | CPU change |
+|---|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6752 → 6385 (−5.4%) | 146 → 155 | 168 → 179 | 207 (207–208) → 222 (217–222) | +6.8% |
+| 4 KiB random writes, QD32 | 23312 → 23638 (+1.4%) | 1053 → 1054 | 3032 → 3791 | 154 (153–155) → 150 (148–152) | −2.2% |
+| 4 KiB random reads, QD1 | 16863 → 17263 (+2.4%) | 59 → 58 | 71 → 70 | 63 (63–64) → 62 (62–67) | −1.6% |
+| 4 KiB random reads, QD32 | 50744 → 52114 (+2.7%) | 417 → 402 | 1415 → 1384 | 48 (48–48) → 46 (46–48) | −4.3% |
+| 1 MiB writes, QD4 | 506 → 953 (+88.3%) | 7717 → 4007 | 13519 → 9585 | 5356 (5345–5502) → 2953 (2922–3028) | −44.9% |
+| 1 MiB reads, QD1 | 752 → 1291 (+71.7%) | 1301 → 762 | 1668 → 1061 | 1627 (1599–1637) → 1035 (1033–1060) | −36.4% |
+| 1 MiB reads, QD2 | 1066 → 1900 (+78.2%) | 1848 → 953 | 2622 → 1696 | 1596 (1572–1642) → 1007 (988–1012) | −36.9% |
+| 1 MiB reads, QD4 | 1487 → 2850 (+91.7%) | 2592 → 1283 | 4633 → 2638 | 1608 (1573–1637) → 986 (977–993) | −38.7% |
+
+4 KiB random writes at QD1 alone, 15 s per run, alternately, three
+rounds each:
+
+| Test | ops/s before → after | p50 µs before → after | CPU µs per op before → after |
+|---|---|---|---|
+| 4 KiB random writes, QD1, 15 s | 6333 (6280–6474) → 6724 (6501–6755), +6.2% | 150 → 144 | 220 (216–220) → 208 (208–213), −5.5% |
+
+### Findings
+
+1. **Large I/O does nearly twice the work per second at 36–45% less
+   CPU per operation.** 1 MiB writes go from 506 to 953 ops/s and from
+   5.4 ms to 3.0 ms of CPU each; 1 MiB reads from 1.6 ms to 1.0 ms of
+   CPU each. The copies HS5b removed (I300, I324, I327, I343), the CRC32C
+   at hardware speed (I304) and the CRCs kept from the wire (I306)
+   together.
+2. **4 KiB reads gain 2–3%, and use 2–4% less CPU.**
+3. **4 KiB writes use 5% less CPU per operation in a 15 s run.** In the
+   3 s suite they look 5% slower: they are the first test after the
+   shards open, and on the benchmark's memory devices that start costs
+   more since #257 (I346). Bisected over the 48 merges between the two
+   commits: #254 at 201–203 µs of CPU per write and #257 at 215–220
+   (five rounds each, alternately; 195 against 210 with one codegen unit
+   and fat LTO, so not code layout). #257 changed only how a shard
+   opens: its look-ahead reads the whole log ring, and on a `MemDev`
+   (`vec![0; n]`, untouched pages) that maps the ring to the zero page,
+   so each first write to a ring page afterwards replaces a mapped page
+   instead of filling an empty one. The run takes about 58,000 more
+   minor faults (535,000 against 477,000), and over 15 s the two builds
+   are the same (200–203 against 200–204 µs). A real device, read and
+   written with `O_DIRECT`, has no such faults.
+4. **What a 4 KiB operation still costs**, in CPU of the whole process:
+   about 210 µs for a replicated write, across the client, the primary
+   and two replicas, and 62 µs for a read at QD1. With 4 KiB of data
+   that is a cost per request, not per byte; how it splits between
+   system calls, the reactor, encoding and the engine's commit isn't
+   measured here (`perf` isn't open to users on this host,
+   `perf_event_paranoid` 4). That is what HS6 starts from.
