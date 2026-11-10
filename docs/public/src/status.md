@@ -240,6 +240,7 @@ covered by tests that run on every change.
 | Host checks before installing | Done |
 | One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I293) | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
+| A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member | Planned |
 | Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates | Done |
 | Backing up the root CA's key, encrypted, and restoring it | Done |
 | Installing storage hosts on whole devices | Planned |
