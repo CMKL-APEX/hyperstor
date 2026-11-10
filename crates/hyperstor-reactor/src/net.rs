@@ -311,7 +311,7 @@ impl TcpStream {
 
     /// Reads exactly `n` bytes into the start of `buf`, which isn't
     /// zeroed first: an aligned buffer, so that a payload goes to the
-    /// device as it arrived (I338). On an error or an early end, `buf`
+    /// device as it arrived (I340). On an error or an early end, `buf`
     /// comes back with fewer than `n` bytes written, which only its type
     /// can tell apart from the rest.
     pub async fn read_exact_into<B: RecvBuf>(&self, mut buf: B, n: usize) -> (io::Result<()>, B) {
@@ -649,7 +649,7 @@ mod tests {
         }
     }
 
-    /// I338: a receive into a buffer of the caller's type fills its start
+    /// I340: a receive into a buffer of the caller's type fills its start
     /// from pieces of any size, leaves the rest alone, and gives it back
     /// after an early end too.
     #[test]

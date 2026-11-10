@@ -204,7 +204,7 @@ pub async fn read_frame_counted(
 
 /// [`read_frame_counted`] for a request to a storage node: a payload of
 /// 16 KiB or more is received into a buffer aligned to a
-/// block, which the engine then writes as it is (I338).
+/// block, which the engine then writes as it is (I340).
 pub async fn read_request(
     s: &TcpStream,
     counter: Option<&traffic::Counter>,
@@ -866,7 +866,7 @@ mod pool_tests {
         });
     }
 
-    /// I338: a storage node receives a large payload into a buffer that
+    /// I340: a storage node receives a large payload into a buffer that
     /// starts on a block, whole, whatever came before it on the stream.
     #[test]
     fn large_request_payloads_arrive_aligned() {

@@ -44,7 +44,7 @@ impl AlignedBuf {
 
     /// A buffer for `n` bytes to be received into, padded with zeros to
     /// whole blocks: a payload arrives aligned, so the engine writes it
-    /// as it is (I338). Only the padding is zeroed.
+    /// as it is (I340). Only the padding is zeroed.
     ///
     /// # Safety
     ///

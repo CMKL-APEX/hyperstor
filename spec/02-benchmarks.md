@@ -2079,7 +2079,7 @@ alternately, three rounds each; medians, with the range of ops/s.
    threads; `hyperstor-bench engine` runs on the main thread, so its
    large reads and writes carry this cost.
 
-## 2026-11-10: Write data written from the buffer it arrived in (HS5b, I338)
+## 2026-11-10: Write data written from the buffer it arrived in (HS5b, I340)
 
 `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
 HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:

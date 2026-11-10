@@ -101,7 +101,7 @@ pub enum Op {
     Write {
         off: u64,
         /// Shared with the frames that sent it on to replicas; written
-        /// without a copy where it starts on a block (I338).
+        /// without a copy where it starts on a block (I340).
         data: IoBuf,
         /// The CRC32C of each block of `data`, when the caller has them
         /// already checked against it (the CRCs a write arrived with,

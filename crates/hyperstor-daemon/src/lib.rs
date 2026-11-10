@@ -2527,7 +2527,7 @@ impl ShardState {
             crcs: crcs.clone(),
         };
         // One payload for every replica's frame and the engine, sent and
-        // written from where it arrived when large (HS5b, I338).
+        // written from where it arrived when large (HS5b, I340).
         let remote: Vec<_> = conns
             .iter()
             .map(|(d, c)| (*d, c.start_shared(&repl, &data)))

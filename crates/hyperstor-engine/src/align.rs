@@ -1,11 +1,11 @@
 //! Buffers aligned for `O_DIRECT` and NVMe passthrough I/O, from
-//! `hyperstor-codec` so that the wire side can receive into them (I338).
+//! `hyperstor-codec` so that the wire side can receive into them (I340).
 
 use hyperstor_codec::IoBuf;
 pub use hyperstor_codec::align::*;
 
 /// One write of a commit round: a buffer of the engine's own, or a piece
-/// of a payload as it arrived, which starts on a block (I338).
+/// of a payload as it arrived, which starts on a block (I340).
 pub enum WriteBuf {
     Own(AlignedBuf),
     Shared(IoBuf),
