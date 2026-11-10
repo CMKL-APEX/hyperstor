@@ -58,7 +58,7 @@
 //!   shard format (D274) at their node's next start; one-way, and only
 //!   devices whose node runs v0.0.8 or later;
 //! - `pool copies --pool P --copies N --min M [--dry-run]`: a replicated
-//!   pool's copies and the copies a write needs (D283); more copies
+//!   pool's copies and the copies a write needs (D287); more copies
 //!   backfill, fewer are dropped; the dry run lists the PGs and each
 //!   device's fill;
 //! - `device add --node N --address A [--class C]`: append a device to a

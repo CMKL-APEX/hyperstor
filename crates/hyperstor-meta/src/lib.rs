@@ -285,7 +285,7 @@ pub enum Admin {
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
     },
-    /// Sets a replicated pool's copies and `min` (D283), or with
+    /// Sets a replicated pool's copies and `min` (D287), or with
     /// `dry_run` says what that would do.
     SetPoolCopies {
         pool: u32,
@@ -429,7 +429,7 @@ pub struct Removal {
 }
 
 /// What setting a pool's copies does, or would (24-pools-and-devices.md
-/// §27.3.5, D283): the PGs whose members change, the devices that take
+/// §27.3.5, D287): the PGs whose members change, the devices that take
 /// copies with their bytes used after and their size, and the working
 /// map's epoch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2347,7 +2347,7 @@ impl Meta {
     }
 
     /// Sets a replicated pool's copies and the copies a write needs
-    /// (24-pools-and-devices.md §27.3.5, D283); with `dry_run` changes
+    /// (24-pools-and-devices.md §27.3.5, D287); with `dry_run` changes
     /// nothing. More copies add a member to each PG, which backfills;
     /// fewer drop each PG's last-ranked members at once. Refused for
     /// `.meta`, cache and EC pools, for `min` outside 1 to `size`, when the
@@ -5172,7 +5172,7 @@ mod tests {
         );
     }
 
-    /// §27.3.5, D283: a replicated pool's copies change. More copies keep
+    /// §27.3.5, D287: a replicated pool's copies change. More copies keep
     /// each PG's members and primary and add one, which backfills; fewer
     /// drop the last-ranked members at once. Refused for other kinds, a
     /// bad `min`, too few failure domains, a `min` a PG can't meet now,

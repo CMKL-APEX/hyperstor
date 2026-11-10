@@ -1312,7 +1312,7 @@ impl ClusterMap {
 
     /// Drops from `acting` the members of `pool`'s PGs that `up` no longer
     /// has, where `up` is within `acting` and nothing backfills: a pool
-    /// given fewer copies (24-pools-and-devices.md §27.3.5, D283), whose
+    /// given fewer copies (24-pools-and-devices.md §27.3.5, D287), whose
     /// last-ranked members no backfill would ever drop. Their devices then
     /// delete those copies as stray (D177). Returns how many PGs changed;
     /// the epoch moves if any did.

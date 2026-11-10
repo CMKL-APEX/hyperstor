@@ -93,7 +93,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrashService.RestoreFromTrash", Group::Operate, false),
     ("ClusterService.CreatePool", Group::Store, false),
     ("ClusterService.SetPool", Group::Store, false),
-    // A pool's copies (D283): fewer weakens what a write survives.
+    // A pool's copies (D287): fewer weakens what a write survives.
     ("ClusterService.SetPoolCopies", Group::Store, true),
     // Where new buckets go (D232).
     ("S3Service.SetS3Placement", Group::Store, false),

@@ -1454,4 +1454,4 @@ the slowest copy), the owner chose to allow the change:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 246 | A replicated pool's copies: changeable with a call of its own, a dry run and step-up, raising `size` before `min` (recommended); fixed, with a new pool and a copy of the data | Changeable | D283 |
+| 249 | A replicated pool's copies: changeable with a call of its own, a dry run and step-up, raising `size` before `min` (recommended); fixed, with a new pool and a copy of the data | Changeable | D287 |

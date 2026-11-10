@@ -909,7 +909,7 @@ fn a_pool_is_renamed_and_its_domain_changed() {
     });
 }
 
-/// §27.3.5, D283: a replicated pool's copies change on a running cluster.
+/// §27.3.5, D287: a replicated pool's copies change on a running cluster.
 /// 2/1 → 3/2 adds a member to each PG, which backfills while I/O goes on;
 /// 3/2 → 2/1 drops one at once. More copies than hosts, and a dry run's
 /// change, are refused or change nothing; data reads back throughout.

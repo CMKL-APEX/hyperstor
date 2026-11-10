@@ -8323,7 +8323,7 @@ export const ClusterService: GenService<{
   },
   /**
    * Sets a replicated pool's copies (`size`) and the copies a write needs
-   * (`min`) (24-pools-and-devices.md §27.3.5, D283). More copies add a
+   * (`min`) (24-pools-and-devices.md §27.3.5, D287). More copies add a
    * member to each PG, which backfills; fewer drop each PG's last-ranked
    * members at once. Refused for .meta, cache and EC pools, for a min
    * outside 1 to size, when the pool's devices span fewer failure domains

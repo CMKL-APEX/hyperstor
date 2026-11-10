@@ -122,7 +122,7 @@ namespace Hyperstor {
   action "ClusterService.SetPool" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
-  // A pool's copies (D283): fewer weakens what a write survives.
+  // A pool's copies (D287): fewer weakens what a write survives.
   action "ClusterService.SetPoolCopies" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
