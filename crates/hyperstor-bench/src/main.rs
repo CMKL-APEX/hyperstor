@@ -3,6 +3,7 @@
 //! ```text
 //! hyperstor-bench engine <file> [size_gib]   engine on an O_DIRECT file (io_uring)
 //! hyperstor-bench raw <file> [size_gib]      the same I/O patterns without the engine
+//! hyperstor-bench commit <file> [size_gib]   commit rounds: fdatasync against RWF_DSYNC
 //! hyperstor-bench mem                        engine on memory: CPU cost only
 //! hyperstor-bench crc                        CRC32C throughput
 //! ```
@@ -315,6 +316,186 @@ fn raw_suite(dev: &UringDev, secs: f64) {
         BLOCK as u64,
         &mut lat,
     );
+}
+
+/// The whole disk under the file at `path` (`/sys/dev/block/M:m`, or its
+/// parent when that is a partition), for reading its flush counter.
+fn disk_sysfs(path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path).ok()?.dev();
+    let node = std::fs::canonicalize(format!(
+        "/sys/dev/block/{}:{}",
+        libc::major(dev),
+        libc::minor(dev)
+    ))
+    .ok()?;
+    if node.join("partition").exists() {
+        node.parent().map(Path::to_path_buf)
+    } else {
+        Some(node)
+    }
+}
+
+/// Flush requests the disk has completed (field 16 of its `stat`,
+/// Documentation/block/stat.rst).
+fn disk_flushes(disk: &Option<std::path::PathBuf>) -> Option<u64> {
+    let s = std::fs::read_to_string(disk.as_ref()?.join("stat")).ok()?;
+    s.split_whitespace().nth(15)?.parse().ok()
+}
+
+/// How a commit round is made durable (#248, G57).
+#[derive(Clone, Copy)]
+enum Durable {
+    /// The writes, then `fdatasync` once they complete: two waits (as built).
+    WriteThenSync,
+    /// The writes and an `fdatasync` drained behind them, in one submit.
+    DrainedSync,
+    /// Each write with `RWF_DSYNC`: FUA where the device has it.
+    Dsync,
+}
+
+/// One commit round: `bufs.len()` 4 KiB writes at `offs`, made durable.
+fn commit_round(
+    ring: &mut io_uring::IoUring,
+    fd: std::os::fd::RawFd,
+    bufs: &[AlignedBuf],
+    offs: &[u64],
+    how: Durable,
+) {
+    use io_uring::{opcode, squeue, types};
+    let write = |i: usize, flags: i32| {
+        opcode::Write::new(types::Fd(fd), bufs[i].as_ptr(), BLOCK as u32)
+            .offset(offs[i])
+            .rw_flags(flags)
+            .build()
+            .user_data(i as u64)
+    };
+    let sync = || {
+        opcode::Fsync::new(types::Fd(fd))
+            .flags(types::FsyncFlags::DATASYNC)
+            .build()
+            .user_data(u64::MAX)
+    };
+    let mut sqes: Vec<squeue::Entry> = (0..bufs.len())
+        .map(|i| {
+            write(
+                i,
+                if matches!(how, Durable::Dsync) {
+                    libc::RWF_DSYNC
+                } else {
+                    0
+                },
+            )
+        })
+        .collect();
+    if matches!(how, Durable::DrainedSync) {
+        sqes.push(sync().flags(squeue::Flags::IO_DRAIN));
+    }
+    let submit = |ring: &mut io_uring::IoUring, sqes: &[squeue::Entry]| {
+        for sqe in sqes {
+            // SAFETY: the buffers belong to `bufs`, which outlives this
+            // call, and every entry is reaped below before returning.
+            unsafe { ring.submission().push(sqe).expect("ring has room") };
+        }
+        ring.submit_and_wait(sqes.len()).expect("submit");
+        let mut done = 0;
+        while done < sqes.len() {
+            for cqe in ring.completion() {
+                let want = if cqe.user_data() == u64::MAX {
+                    0
+                } else {
+                    BLOCK as i32
+                };
+                assert_eq!(cqe.result(), want, "I/O failed");
+                done += 1;
+            }
+            if done < sqes.len() {
+                ring.submit_and_wait(sqes.len() - done).expect("wait");
+            }
+        }
+    };
+    submit(ring, &sqes);
+    if matches!(how, Durable::WriteThenSync) {
+        submit(ring, &[sync()]);
+    }
+}
+
+/// Commit rounds made durable three ways (#248, G57): writes then
+/// `fdatasync`, writes with a drained `fdatasync` in one submit, and
+/// writes with `RWF_DSYNC`. Prints the disk's flushes per round, which
+/// show whether `RWF_DSYNC` became FUA (none) or a write plus flush.
+fn commit_suite(path: &Path, secs: f64) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let budget = Duration::from_secs_f64(secs);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+        .expect("open O_DIRECT");
+    let blocks = file.metadata().unwrap().len() / BLOCK as u64;
+    let disk = disk_sysfs(path);
+    if let Some(d) = &disk {
+        let q = |f: &str| {
+            std::fs::read_to_string(d.join("queue").join(f))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "?".into())
+        };
+        eprintln!(
+            "disk {}: write_cache {}, fua {}",
+            d.file_name().unwrap_or_default().to_string_lossy(),
+            q("write_cache"),
+            q("fua")
+        );
+    }
+    let mut ring = io_uring::IoUring::new(64).expect("io_uring");
+    let mut rng = SmallRng::seed_from_u64(3);
+    println!("| Test | rounds/s | blocks/s | p50 µs | p99 µs | flushes per round |");
+    println!("|---|---|---|---|---|---|");
+    for batch in [1usize, 8, 32] {
+        let bufs: Vec<AlignedBuf> = (0..batch)
+            .map(|_| {
+                let mut b = AlignedBuf::zeroed(BLOCK);
+                b.fill(0x5a);
+                b
+            })
+            .collect();
+        for (how, name) in [
+            (Durable::WriteThenSync, "writes, then fdatasync"),
+            (
+                Durable::DrainedSync,
+                "writes + drained fdatasync, one submit",
+            ),
+            (Durable::Dsync, "RWF_DSYNC writes"),
+        ] {
+            let mut lat = Lat(Vec::new());
+            let f0 = disk_flushes(&disk);
+            let t = Instant::now();
+            let mut rounds = 0u64;
+            while t.elapsed() < budget {
+                let offs: Vec<u64> = (0..batch)
+                    .map(|_| rng.random_range(0..blocks) * BLOCK as u64)
+                    .collect();
+                let s = Instant::now();
+                commit_round(&mut ring, file.as_raw_fd(), &bufs, &offs, how);
+                lat.0.push(s.elapsed());
+                rounds += 1;
+            }
+            let el = t.elapsed().as_secs_f64();
+            let flushes = match (f0, disk_flushes(&disk)) {
+                (Some(a), Some(b)) => format!("{:.2}", (b - a) as f64 / rounds as f64),
+                _ => "?".into(),
+            };
+            println!(
+                "| {name}, {batch} × 4 KiB | {:.0} | {:.0} | {:.0} | {:.0} | {flushes} |",
+                rounds as f64 / el,
+                (rounds * batch as u64) as f64 / el,
+                lat.pct(0.5),
+                lat.pct(0.99),
+            );
+        }
+    }
 }
 
 fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
@@ -1837,6 +2018,13 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3.0);
     match args.get(1).map(String::as_str) {
+        Some("commit") => {
+            // hyperstor-bench commit <file> [size_gib] (#248, G57)
+            let path = Path::new(args.get(2).expect("file path"));
+            let gib: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
+            preallocate(path, gib << 30);
+            commit_suite(path, secs);
+        }
         Some("engine") | Some("raw") => {
             let path = Path::new(args.get(2).expect("file path"));
             let gib: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
