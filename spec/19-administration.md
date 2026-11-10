@@ -350,7 +350,7 @@ repository (`glidex-auth`) and taken as a pinned git dependency, as
   Storage and security are separate roles so no one administers data
   and covers their own tracks by default; a site may grant both.
 - **Step-up** (fresh login within 10 min, as glidex): pool delete,
-  purge from trash, a delete that removes snapshots, blocklisting, CA
+  a pool's copies changed (24-pools-and-devices.md §27.3.5, D287), purge from trash, a delete that removes snapshots, blocklisting, CA
   rotation, token and key creation, policy writes.
 - **Site policies** in Cedar, stored with history, as
   glidex security.md §7.6; they can add restrictions but not relax the shipped `forbid`s.
