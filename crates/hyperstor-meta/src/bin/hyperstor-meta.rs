@@ -240,6 +240,8 @@ fn main() {
             }
         }
         let dir = std::path::PathBuf::from(&d);
+        // What the log committed past the store's last checkpoint (I338).
+        hyperstor_meta::replica::catch_up(&dir, id).unwrap_or_else(|e| fail(e));
         let db = std::sync::Arc::new(
             hyperstor_meta::store::Db::create(dir.join("map.redb"))
                 .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display()))),

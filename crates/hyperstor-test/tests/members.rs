@@ -382,8 +382,9 @@ fn the_member_list_shows_a_stopped_member() {
 
 /// A group that lost its majority for good (D85): the survivor can't
 /// change anything; forcing it alone is refused while another member
-/// answers; forced, it leads alone, serves and adds hosts; an old member
-/// that comes back with its log can't rejoin.
+/// answers; forced, it leads alone with every change it had applied
+/// before it was killed (I338), serves and adds hosts; an old member that
+/// comes back with its log can't rejoin.
 #[test]
 fn a_lost_majority_is_recovered_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -394,6 +395,21 @@ fn a_lost_majority_is_recovered_alone() {
     g.m[2].stop();
     let s1_api = g.m[0].api.clone();
     let _ = s1_api;
+    // A token made just before member 1 is killed: applied there, likely
+    // not yet at a checkpoint (glidex D31), and kept through the forced
+    // start, which re-applies the log first (I338).
+    let ids = |out: &str| -> Vec<String> {
+        out.lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next().map(String::from))
+            .collect()
+    };
+    let l = g.leader(&[0, 1]);
+    g.ctl(l, &["token", "create", "--role", "meta"]).ok();
+    let want = ids(&g.ctl(l, &["token", "list"]).ok().out);
+    wait_for("member 1 to apply the token", 10, || {
+        (ids(&g.ctl(0, &["token", "list"]).out) == want).then_some(())
+    });
     // Forcing while member 2 still answers is refused.
     g.m[0].stop();
     let s = &g.s;
@@ -422,6 +438,11 @@ fn a_lost_majority_is_recovered_alone() {
     g.formed(0);
     let r = g.ctl(0, &["member", "list"]).ok();
     assert_eq!(r.out.lines().count(), 2, "one member: {}", r.out);
+    let kept = ids(&g.ctl(0, &["token", "list"]).ok().out);
+    assert!(
+        want.iter().all(|t| kept.contains(t)),
+        "{want:?} in {kept:?}"
+    );
     let log = g.m[0].log();
     assert!(
         log.contains("--force-alone: revoked") && log.contains("\"op\":\"ForceAlone\""),
