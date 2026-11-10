@@ -187,6 +187,7 @@ covered by tests that run on every change.
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
+| A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
 
 ## HS18: Pools and devices at run time
 

@@ -1249,6 +1249,7 @@ impl NodeService for Api {
                 moves.len() as u32,
                 format!("{} PG(s) to move off node {node}", moves.len()),
                 who,
+                None,
             )
             .await;
         let snapshot = match op {
@@ -1273,10 +1274,11 @@ impl OperationService for Api {
     ) -> ServiceResult<pb::Operation> {
         let target = format!("operation {}", req.id);
         let (who, reach) = self.authorize_in(&ctx, "GetOperation", &target, false)?;
+        let scope = self.scope(reach).await?;
         let op = self.op(req.id).await?;
-        // In realms, only one's own (D262): a volume operation one started
-        // in them. Another's answers as one that doesn't exist.
-        if reach.is_some() && op.created_by != who {
+        // In realms, their tenants' and one's own (D283); another's answers
+        // as one that doesn't exist.
+        if !scope.op(&op, &who) {
             let e = with_reason(
                 ConnectError::not_found(format!("no operation {}", req.id)),
                 "not_found",
@@ -1284,7 +1286,8 @@ impl OperationService for Api {
             super::refused(&who, "GetOperation", &target, &e);
             return Err(e);
         }
-        Ok(super::ops::op_pb(&op).into())
+        let names = self.realm_names(&scope).await;
+        Ok(super::ops::op_pb_in(&op, &names).into())
     }
 
     async fn list_operations(
@@ -1292,13 +1295,19 @@ impl OperationService for Api {
         ctx: RequestContext,
         _req: ServiceRequest<'_, pb::ListOperationsRequest>,
     ) -> ServiceResult<pb::ListOperationsResponse> {
-        self.authorize(&ctx, "ListOperations", "operations", false)?;
+        let (who, reach) = self.authorize_in(&ctx, "ListOperations", "operations", false)?;
+        let scope = self.scope(reach).await?;
         let all = match self.admin.runner.store(|s| s.list()).await {
             Ok(v) => v,
             Err(e) => return Err(self.token_error(e).await),
         };
+        let names = self.realm_names(&scope).await;
         Ok(pb::ListOperationsResponse {
-            operations: all.iter().map(super::ops::op_pb).collect(),
+            operations: all
+                .iter()
+                .filter(|o| scope.op(o, &who))
+                .map(|o| super::ops::op_pb_in(o, &names))
+                .collect(),
             ..Default::default()
         }
         .into())
@@ -1309,14 +1318,20 @@ impl OperationService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::WatchOperationRequest>,
     ) -> ServiceResult<connectrpc::ServiceStream<pb::WatchOperationResponse>> {
-        self.authorize(
-            &ctx,
-            "WatchOperation",
-            &format!("operation {}", req.id),
-            false,
-        )?;
+        let target = format!("operation {}", req.id);
+        let (who, reach) = self.authorize_in(&ctx, "WatchOperation", &target, false)?;
+        let scope = self.scope(reach).await?;
         let first = self.op(req.id).await?;
+        if !scope.op(&first, &who) {
+            let e = with_reason(
+                ConnectError::not_found(format!("no operation {}", req.id)),
+                "not_found",
+            );
+            super::refused(&who, "WatchOperation", &target, &e);
+            return Err(e);
+        }
         let runner = self.admin.runner.clone();
+        let names = Arc::new(self.realm_names(&scope).await);
         // The operation now, then each change (polled every 250 ms), and
         // again every 2 s so a client's per-message timeout never fires;
         // the stream ends after a finished state.
@@ -1332,12 +1347,13 @@ impl OperationService for Api {
         };
         let stream = futures_util::stream::unfold(start, move |mut w| {
             let runner = runner.clone();
+            let names = names.clone();
             async move {
                 loop {
                     if let Some(o) = w.next.take() {
                         w.sent = std::time::Instant::now();
                         let msg = pb::WatchOperationResponse {
-                            operation: buffa::MessageField::some(super::ops::op_pb(&o)),
+                            operation: buffa::MessageField::some(super::ops::op_pb_in(&o, &names)),
                             ..Default::default()
                         };
                         w.last = Some(o);

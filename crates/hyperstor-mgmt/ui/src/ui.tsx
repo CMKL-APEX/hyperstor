@@ -208,6 +208,11 @@ export function useRealm(): string | null {
   return useSyncExternalStore(onActingRealm, getActingRealm);
 }
 
+/** A row's realm as lists name it (D286), with its tenant if any. */
+export function realmOf(realm: string, tenant = 0): string {
+  return `${realm || "default"}${tenant ? ` (tenant ${tenant})` : ""}`;
+}
+
 /** Whether the person's roles allow a group of actions (policy.rs's), in
  * the realm they act in: their cluster-wide roles and that realm's. */
 export function useCan() {
