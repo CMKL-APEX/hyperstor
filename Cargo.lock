@@ -1126,7 +1126,7 @@ dependencies = [
 [[package]]
 name = "glidex-auth"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=5b56b25a55a61c810e9c5e8d89a4486f0078e9b7#5b56b25a55a61c810e9c5e8d89a4486f0078e9b7"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1146,7 +1146,7 @@ dependencies = [
 [[package]]
 name = "glidex-authd"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=5b56b25a55a61c810e9c5e8d89a4486f0078e9b7#5b56b25a55a61c810e9c5e8d89a4486f0078e9b7"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "libc",
  "libloading",
@@ -1162,7 +1162,7 @@ dependencies = [
 [[package]]
 name = "glidex-raftstore"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=5b56b25a55a61c810e9c5e8d89a4486f0078e9b7#5b56b25a55a61c810e9c5e8d89a4486f0078e9b7"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1182,7 +1182,7 @@ dependencies = [
 [[package]]
 name = "glidex-tls"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=5b56b25a55a61c810e9c5e8d89a4486f0078e9b7#5b56b25a55a61c810e9c5e8d89a4486f0078e9b7"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "arc-swap",
  "http",
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "glidex-topology"
 version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=5b56b25a55a61c810e9c5e8d89a4486f0078e9b7#5b56b25a55a61c810e9c5e8d89a4486f0078e9b7"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "nix 0.31.3",
  "serde",
