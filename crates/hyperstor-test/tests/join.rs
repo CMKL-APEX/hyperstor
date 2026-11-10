@@ -1101,10 +1101,36 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
         .map(|(i, root)| Procs(vec![start_node(root, i as u32, &format!("node-{i}.log"))]))
         .collect();
     procs.0.push(start_node(&host, 3, "node-3.log"));
+    // On a failure, the members' and nodes' logs say why.
+    let logs = || {
+        let mut out = format!("ports from {base}: members' APIs {apis:?}, promoted {p_api}\n");
+        for e in std::fs::read_dir(s.path(""))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".log") {
+                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+                let tail: Vec<&str> = text.lines().rev().take(8).collect();
+                out += &format!(
+                    "--- {name}:\n{}\n",
+                    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                );
+            }
+        }
+        out
+    };
     let voters = |api: &str, pki: &Path| -> Vec<String> {
-        ctl(&bin, api, pki, &["member", "list"])
-            .ok()
-            .out
+        let r = ctl(&bin, api, pki, &["member", "list"]);
+        assert_eq!(
+            r.code,
+            0,
+            "member list through {api}: {}\n{}",
+            r.out,
+            logs()
+        );
+        r.out
             .lines()
             .filter(|l| l.contains(" voter") || l.contains(" leader"))
             .map(|l| l.split_whitespace().next().unwrap().to_string())
