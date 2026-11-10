@@ -1418,6 +1418,7 @@ dependencies = [
  "hyperstor-meta",
  "hyperstor-placement",
  "hyperstor-reactor",
+ "io-uring",
  "libc",
  "rand 0.10.3",
  "redb",
@@ -1656,6 +1657,7 @@ dependencies = [
 name = "hyperstor-rpc"
 version = "0.1.0"
 dependencies = [
+ "hyperstor-codec",
  "hyperstor-proto",
  "hyperstor-reactor",
  "thiserror 2.0.21",

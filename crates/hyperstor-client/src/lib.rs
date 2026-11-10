@@ -157,7 +157,7 @@ pub(crate) enum Route<'a> {
 /// is when large ([`rpc::Frame::part`]).
 enum Payload<'a> {
     Copy(&'a [u8]),
-    Part(&'a Rc<Vec<u8>>, std::ops::Range<usize>),
+    Part(&'a hyperstor_codec::IoBuf, std::ops::Range<usize>),
 }
 
 /// The PG of a named object: by a hash of its name.
@@ -654,7 +654,7 @@ impl Client {
     ) -> Result<(), ClientError> {
         let pieces = self.pieces(pool, off, data.len() as u64)?;
         // Each piece is sent from `data` as it is when large (HS5b, I324).
-        let data = Rc::new(data);
+        let data = hyperstor_codec::IoBuf::from(data);
         let handles: Vec<_> = pieces
             .into_iter()
             .map(|(chunk, coff, roff, n)| {

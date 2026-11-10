@@ -1465,6 +1465,19 @@ the owner chose the first:
 |---|---|---|---|
 | 247 | Networks on a running cluster: `SetNetwork` through the map service, then endpoints on it (recommended); re-add a device at its fast address, without endpoints' failover or weights | Through the map service | D284 |
 
+## A pool's copies (2026-11-10)
+
+With a third host holding an NVMe drive, the owner asked to give the
+`nvme` pool three copies. A pool's copies were fixed at creation
+(24-pools-and-devices.md §27.3.2); given the implications (more copies
+add a member per PG and move nothing, the pool's space falls to about its
+smallest domain's when copies equal the domains, and writes wait for
+the slowest copy), the owner chose to allow the change:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 249 | A replicated pool's copies: changeable with a call of its own, a dry run and step-up, raising `size` before `min` (recommended); fixed, with a new pool and a copy of the data | Changeable | D287 |
+
 ## A host's roles (2026-11-10)
 
 Moving a map service member off a poor host had no path: a storage host
