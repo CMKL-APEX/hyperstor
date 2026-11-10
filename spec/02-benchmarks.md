@@ -2111,6 +2111,72 @@ alternately, three rounds each; medians, with the range of ops/s.
    at +12.0% and +9.4%. Without those allocations they are within it.
 3. **Reads don't change**: they carry no request payload.
 
+## 2026-11-10: Commit rounds by `fdatasync` and by FUA (#248, G57, I345)
+
+`hyperstor-bench commit` on one of the pilot's hosts (AMD EPYC 7282,
+16 cores, Linux 6.8.0), on a 2 GiB file on an ext4 partition of a
+drive the pilot doesn't use: a WD SN770 1 TB (DRAM-less, volatile
+write cache, `queue/fua` 1, no power-loss protection, firmware
+731100WD). The host was otherwise idle. The file is
+preallocated and written once, so every write overwrites an allocated
+block and ext4 has no metadata to commit.
+
+```sh
+cargo build --release -p hyperstor-bench
+HS_BENCH_SECS=10 target/release/hyperstor-bench commit <scratch>/dev.img 2   # three times
+```
+
+A round is N 4 KiB writes at random offsets, made durable three ways,
+one round at a time through one io_uring (`O_DIRECT`):
+
+- **writes, then `fdatasync`**: what the engine does (§7.3), two waits;
+- **writes + drained `fdatasync`**: the same in one submit, the
+  `fsync` marked `IOSQE_IO_DRAIN`;
+- **`RWF_DSYNC` writes**: each write durable by itself.
+
+Medians of the three runs (p99 ranges in brackets):
+
+| Round | Durable by | rounds/s | p50 µs | p99 µs | flushes per round |
+|---|---|---|---|---|---|
+| 1 × 4 KiB | writes, then `fdatasync` | 5194 | 187 | 250 (245–259) | 1 |
+| 1 × 4 KiB | writes + drained `fdatasync` | 5124 | 191 | 246 (245–247) | 1 |
+| 1 × 4 KiB | `RWF_DSYNC` | **5965** | **166** | **184** (184–187) | 0 |
+| 8 × 4 KiB | writes, then `fdatasync` | **5306** | **178** | **255** (254–257) | 1 |
+| 8 × 4 KiB | writes + drained `fdatasync` | 5111 | 183 | 321 (263–480) | 1 |
+| 8 × 4 KiB | `RWF_DSYNC` | 4192 | 228 | 290 (287–484) | 0 |
+| 32 × 4 KiB | writes, then `fdatasync` | **2894** | **321** | **532** (443–784) | 1 |
+| 32 × 4 KiB | writes + drained `fdatasync` | 2822 | 324 | 568 (502–877) | 1 |
+| 32 × 4 KiB | `RWF_DSYNC` | 1903 | 483 | 1839 (932–2371) | 0 |
+
+A block trace of a 1-second pass (bpftrace on `block:block_rq_issue`)
+showed what reached the drive: 26,218 flushes (`FF`) for the
+`fdatasync` rounds, one each, and 99,650 writes with FUA (`WFS`) for
+the `RWF_DSYNC` rounds, one per block, with no flush. So ext4 sends
+`RWF_DSYNC` on an overwrite as FUA, as 08-engine.md §6.2 assumed.
+
+### Findings
+
+1. **A one-block round is faster with FUA**: 11% lower p50, 26% lower
+   p99 and 15% more rounds per second. The write and its durability
+   are one command instead of two.
+2. **Rounds of several blocks are slower with FUA**, and more so the
+   larger the round: 21% fewer rounds at 8 blocks, 34% fewer at 32,
+   and at 32 a p99 more than three times as high. Each FUA write is programmed to flash
+   by itself, while one flush covers every write of the round. The
+   drive has no DRAM, so this may differ on drives that have it.
+3. **Submitting the `fdatasync` with the writes gains nothing**: the
+   drained `fsync` waits for the writes in the kernel instead of in the
+   engine, and the device round trips are the same.
+4. So, on a drive with a volatile cache: FUA for a round of one block,
+   a flush for larger rounds. The engine's rounds are usually several
+   blocks (data and log records), so this is a small gain; a drive
+   whose cache is write-through needs neither (the kernel drops both).
+
+Not measured, as the host has no namespace the engine could own: NVMe
+passthrough (`uring_cmd` on `/dev/ngXnY`) with FUA, polled queues
+(`nvme.poll_queues` is 0), and a drive with power-loss protection
+(G57 stays open for them).
+
 ## 2026-11-10: The map service's commits with checkpointed applies (I341)
 
 The map service flushes each applied Raft entry unless
