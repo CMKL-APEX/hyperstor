@@ -2176,3 +2176,61 @@ Not measured, as the host has no namespace the engine could own: NVMe
 passthrough (`uring_cmd` on `/dev/ngXnY`) with FUA, polled queues
 (`nvme.poll_queues` is 0), and a drive with power-loss protection
 (G57 stays open for them).
+
+## 2026-11-10: The map service's commits with checkpointed applies (I341)
+
+The map service flushes each applied Raft entry unless
+`RaftSettings::checkpointed_applies` is on (glidex D31), which defers the
+flush to a checkpoint every 100 entries or 1 s. A/B in the same run, back
+to back, twice per host: three members over loopback TCP, their stores
+and Raft logs on the disk under test, the leader committing 500 map
+changes one after another (each waits for its commit). Two maps (3 pools
+of 128 or 2048 PGs, 3 copies) and two changes: the map's head alone (an
+epoch), and a device out or in, which moves PGs (the map is recomputed
+between commits: outside the latencies, inside commits per second).
+
+```sh
+hyperstor-bench mapcommit <scratch dir on the disk> 500
+```
+
+**prism2** (AMD EPYC 7742, kernel 6.8; ext4 on md RAID1 of two Samsung
+PM983, write cache write through): p50 ms, run 1 / run 2.
+
+| Map | Change | off p50 | on p50 | off p99 | on p99 | off per s | on per s |
+|---|---|---|---|---|---|---|---|
+| 4 nodes, 3x128 PGs | epoch | 2.05 / 2.02 | 1.75 / 1.95 | 3.80 / 3.60 | 3.32 / 3.61 | 451 / 460 | 527 / 472 |
+| 4 nodes, 3x128 PGs | device out/in | 4.52 / 4.76 | 4.13 / 4.66 | 5.56 / 5.52 | 5.09 / 5.44 | 155 / 187 | 223 / 201 |
+| 32 nodes, 3x2048 PGs | epoch | 8.65 / 9.18 | 8.06 / 8.43 | 10.87 / 12.21 | 10.35 / 10.45 | 114 / 96 | 119 / 114 |
+| 32 nodes, 3x2048 PGs | device out/in | 12.32 / 12.01 | 10.32 / 10.48 | 13.88 / 14.64 | 14.91 / 14.46 | 42 / 42 | 45 / 44 |
+
+**gpu-dev2** (AMD EPYC 9124, kernel 7.0; ext4 on a WD SN770, write
+cache write back):
+
+| Map | Change | off p50 | on p50 | off p99 | on p99 | off per s | on per s |
+|---|---|---|---|---|---|---|---|
+| 4 nodes, 3x128 PGs | epoch | 2.11 / 2.15 | 1.93 / 2.06 | 3.71 / 3.74 | 3.47 / 3.71 | 453 / 447 | 495 / 463 |
+| 4 nodes, 3x128 PGs | device out/in | 4.62 / 4.64 | 4.91 / 4.78 | 6.23 / 6.07 | 6.41 / 5.98 | 200 / 203 | 193 / 193 |
+| 32 nodes, 3x2048 PGs | epoch | 11.08 / 11.40 | 11.09 / 11.33 | 14.88 / 14.80 | 14.85 / 14.94 | 93 / 89 | 91 / 87 |
+| 32 nodes, 3x2048 PGs | device out/in | 15.83 / 15.38 | 13.90 / 14.03 | 17.36 / 18.07 | 17.33 / 16.66 | 35 / 36 | 43 / 41 |
+
+Maxima were 4–8 ms on the small map and 15–300 ms on the large one, in
+either setting and on both hosts, with no pattern between them.
+
+### Findings
+
+1. **Checkpointed applies save 10–15% of a commit that moves PGs on a
+   large map** (12.2 → 10.4 ms on prism2, 15.6 → 14.0 ms on gpu-dev2, at
+   p50), and 3–15% of a head-only change on prism2; elsewhere the
+   difference is within the run-to-run range. p99 isn't worse.
+2. **The apply's flush isn't what a commit waits for.** Even on the
+   consumer drive with a write-back cache, a commit of the map's head
+   takes 2 ms either way: the Raft log's flush on a majority and the
+   round trips remain, and they are the same in both settings.
+3. **The map's size is**: the same change costs 2 ms on the small map
+   and 8–11 ms on the large one, which writes and compares 6144 PG rows
+   (`store::save` reads every PG row to find the changed ones). A large
+   cluster's commits would gain more from saving only what changed than
+   from either flush setting.
+4. **Keeping checkpointed applies on is safe on these numbers:** a small
+   gain, no loss, and `--force-alone` re-applies the log first (I341).
+
