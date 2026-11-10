@@ -79,7 +79,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -144,6 +144,10 @@ struct Settings {
     /// `auto`: propose this host's endpoints and keep them in the map
     /// (D215); `off`: leave the map's as they are (set by hand).
     endpoints: String,
+    /// The data networks this host's clients (`hyperstor-vhost`,
+    /// `hyperstor-s3`) reach storage on (D289): `auto`, those its storage
+    /// nodes use; `none`; or names, in order.
+    client_networks: String,
     /// The operator's own web certificate's directory (`web.crt`,
     /// `web.key`, kept current by their ACME client, D109); empty: the
     /// cluster CA's (D108).
@@ -209,6 +213,7 @@ impl Settings {
             mgmt_port: 8852,
             mgmt_listen: "all".into(),
             endpoints: "auto".into(),
+            client_networks: "auto".into(),
             web_tls: String::new(),
             tailscale_cert: false,
             mgmt_hosts: String::new(),
@@ -292,6 +297,7 @@ impl Settings {
                 "mgmt_port" => self.mgmt_port = v.parse().unwrap_or(self.mgmt_port),
                 "mgmt_listen" => self.mgmt_listen = v.to_string(),
                 "endpoints" => self.endpoints = v.to_string(),
+                "client_networks" => self.client_networks = v.to_string(),
                 "web_tls" => self.web_tls = v.to_string(),
                 "tailscale_cert" => self.tailscale_cert = v == "true",
                 "mgmt_hosts" => self.mgmt_hosts = v.to_string(),
@@ -368,6 +374,10 @@ impl Settings {
             String::new()
         } else {
             format!("endpoints = {}\n", self.endpoints)
+        } + &if self.client_networks == "auto" {
+            String::new()
+        } else {
+            format!("client_networks = {}\n", self.client_networks)
         } + &if self.s3
             || self.all_in_one
             || self.s3_port != DEFAULT_S3_PORT
@@ -551,6 +561,7 @@ fn main() {
             "--mgmt-port" => "mgmt_port",
             "--mgmt-listen" => "mgmt_listen",
             "--endpoints" => "endpoints",
+            "--client-networks" => "client_networks",
             "--web-tls" => "web_tls",
             "--mgmt-hosts" => "mgmt_hosts",
             "--mgmt-proxy-ca" => "mgmt_proxy_ca",
@@ -577,6 +588,15 @@ fn main() {
             // Empty: no proxies by address.
             "mgmt_trusted_proxies" => v.is_empty() || v.split(',').all(valid_cidr),
             "endpoints" => matches!(v.as_str(), "auto" | "off"),
+            // Network names as the map takes them (D284), comma-separated.
+            "client_networks" => {
+                matches!(v.as_str(), "auto" | "none")
+                    || v.split(',').all(|n| {
+                        (1..=32).contains(&n.len())
+                            && n.bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    })
+            }
             // Empty: back to the cluster CA's certificate.
             "web_tls" | "s3_tls" | "mgmt_proxy_ca" => v.is_empty() || v.starts_with('/'),
             // A realm's name (D248); empty: back to "default".
@@ -2237,6 +2257,31 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
     }
 }
 
+/// D289: ` --networks A,B` for this host's clients (`hyperstor-vhost`,
+/// `hyperstor-s3`), or nothing: `auto` takes the networks its storage
+/// nodes reach others on, in order (D207), so the host's clients take the
+/// paths its storage does.
+fn networks_arg(s: &Settings, p: &Plan) -> String {
+    let names: Vec<String> = match s.client_networks.as_str() {
+        "none" => Vec::new(),
+        "auto" => {
+            let mut v: Vec<String> = Vec::new();
+            for n in p.nodes.iter().flat_map(|n| &n.networks) {
+                if !v.contains(n) {
+                    v.push(n.clone());
+                }
+            }
+            v
+        }
+        names => names.split(',').map(str::to_string).collect(),
+    };
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(" --networks {}", names.join(","))
+    }
+}
+
 /// D285: `node` serves the endpoints `status`'s map has for its devices,
 /// after the cluster file's, and reaches others on their networks.
 fn serve_mapped_endpoints(node: &mut NodePlan, status: &hyperstor_api::GetStatusResponse) {
@@ -2440,6 +2485,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
         if let Some(g) = v.gids.first() {
             args += &format!(" --group {g}");
         }
+        args += &networks_arg(s, p);
         // It hands its sockets to these groups, so it is in them.
         let groups = if v.gids.is_empty() {
             "# No --vhost-user: only root and hyperstor use it.".to_string()
@@ -2478,7 +2524,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                         String::new()
                     } else {
                         format!(" --domain {}", g.domain)
-                    }
+                    } + &networks_arg(s, p)
                 ),
                 0o644,
             ),
@@ -4870,6 +4916,39 @@ mod tests {
         t.apply(&s.save());
         assert!(t.vhost && t.vhost_users == "root");
         assert!(user_name_ok("glidex") && !user_name_ok("Root") && !user_name_ok("a b"));
+    }
+
+    /// D289: this host's clients reach storage on the networks its storage
+    /// nodes use (`auto`), on none, or on the ones named; kept across runs.
+    #[test]
+    fn clients_take_the_networks_of_the_hosts_storage() {
+        let mut s = Settings::defaults();
+        s.all_in_one = true;
+        s.vhost = true;
+        let mut p = plan(Path::new("/nonexistent"), &s, None);
+        let env = |s: &Settings, p: &Plan| {
+            files(s, p)
+                .into_iter()
+                .find(|x| x.0.ends_with("vhost.env"))
+                .unwrap()
+                .1
+        };
+        assert!(!env(&s, &p).contains("--networks"), "no networks yet");
+        p.nodes[0].networks = vec!["fast".into(), "ib".into()];
+        p.nodes[1].networks = vec!["ib".into()];
+        assert!(
+            env(&s, &p).ends_with(" --networks fast,ib\n"),
+            "{}",
+            env(&s, &p)
+        );
+        s.client_networks = "none".into();
+        assert!(!env(&s, &p).contains("--networks"));
+        s.client_networks = "ib".into();
+        assert!(env(&s, &p).ends_with(" --networks ib\n"));
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert_eq!(t.client_networks, "ib");
+        assert!(!Settings::defaults().save().contains("client_networks"));
     }
 
     #[test]

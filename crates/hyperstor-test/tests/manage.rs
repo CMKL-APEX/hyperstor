@@ -557,6 +557,9 @@ fn a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it() {
         env.contains(&format!("--endpoint 0={ep}")) && env.contains("--networks fast"),
         "{env}"
     );
+    // The host's S3 gateway takes the network its storage uses (D289).
+    let s3 = std::fs::read_to_string(c.root.join("etc/hyperstor/s3.env")).unwrap();
+    assert!(s3.trim_end().ends_with(" --networks fast"), "{s3}");
     c.kill_node(0);
     c.start_node(0);
     wait_for("node 0 serving its endpoint", 60, || {
