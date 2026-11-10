@@ -74,7 +74,7 @@ const PAGES = [
 
 /** What someone acting in a realm sees (D265): its volumes, buckets,
  * keys and placements, its trash, and its people's grants. */
-const REALM_PAGES = new Set(["/volumes", "/s3", "/trash", "/security"]);
+const REALM_PAGES = new Set(["/volumes", "/s3", "/trash", "/operations", "/security"]);
 
 /** The realm the person acts in: someone with roles only in realms picks
  * one of theirs (the first, at first); someone with cluster-wide roles
@@ -154,6 +154,7 @@ function Shell() {
             <Route path="/volumes" element={<Volumes />} />
             <Route path="/trash" element={<Trash />} />
             <Route path="/s3" element={<ObjectStorage />} />
+            <Route path="/operations" element={<Operations />} />
             <Route path="/security" element={<Security />} />
             <Route path="*" element={<Navigate to="/volumes" replace />} />
           </Routes>

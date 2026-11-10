@@ -21,13 +21,13 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 # glidex's session and token rules, Cedar engine and PAM client, pinned to
 # a revision of glidex; glidex-auth at a later one, for OIDC logins kept
 # in the map service (04-decisions.md D278).
-glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "5b56b25a55a61c810e9c5e8d89a4486f0078e9b7" }
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "5b56b25a55a61c810e9c5e8d89a4486f0078e9b7" }
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca" }
 cedar-policy = "4.13"
 # HTTPS for people (04-decisions.md D108-D110): listeners, certificate files
 # re-read when they change, the node's Tailscale certificates; pinned to a
 # revision of glidex, as glidex-auth.
-glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "5b56b25a55a61c810e9c5e8d89a4486f0078e9b7" }
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca" }
 # glidex-tls logs through tracing: to standard error, as mgmt's own lines.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 ring = "0.17"

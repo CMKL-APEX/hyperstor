@@ -118,13 +118,20 @@ or InfiniBand ports) can carry reads, writes and replication on the
 fast ones and keep the rest on the management network:
 
 - Declare the networks in the [cluster file](../reference/cluster-file.md#network),
-  each `control`, `data` or `both`.
+  each `control`, `data` or `both`, or on a running cluster with
+  `hyperstorctl network set --name fast --kind data --match "subnet
+  192.0.2.0/24"`.
 - Give each device one or more `endpoint` lines on a data network. The
   device's own address (on its `node` line) stays where the map service
   reaches it.
 - Install as usual. Each storage node then also listens on its devices'
   endpoints, and reaches the other nodes at their endpoints on the data
-  networks it has endpoints on.
+  networks it has endpoints on. A host that joined with a token proposes
+  its devices' endpoints from its ports on every installer run. On a map
+  service host, and on a joined host installed with `--endpoints off`,
+  set them with `hyperstorctl device endpoints` and run the installer
+  again there: its nodes take the endpoints the map has for their
+  devices, and restart with them.
 - Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
   for VM disks. A client on no network uses devices' addresses.
 
