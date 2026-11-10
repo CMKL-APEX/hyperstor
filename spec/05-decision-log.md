@@ -1477,3 +1477,14 @@ the slowest copy), the owner chose to allow the change:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 249 | A replicated pool's copies: changeable with a call of its own, a dry run and step-up, raising `size` before `min` (recommended); fixed, with a new pool and a copy of the data | Changeable | D287 |
+
+## A host's roles (2026-11-10)
+
+Moving a map service member off a poor host had no path: a storage host
+joined with a token couldn't become a member, nor a member go back to
+storage only. With 19-administration.md §23.4.3 drafted, the owner took
+the recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 248 | A host's roles: (1) the installer adds and removes the member itself (recommended), or the operator with `hyperstorctl`; (2) a demoted member's store deleted after a `map backup` (recommended), or kept; (3) the intermediate's rotation on a demote a follow-up (recommended), or a step of every demote | As recommended | D288 |
