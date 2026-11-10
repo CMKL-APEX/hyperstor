@@ -141,6 +141,18 @@ impl TcpListener {
     }
 }
 
+/// A buffer the kernel receives into ([`TcpStream::read_exact_into`]).
+///
+/// # Safety
+///
+/// `recv_ptr` points to `recv_cap` bytes that may be written, owned by
+/// the value and at the same address however the value is moved, until
+/// it is dropped (heap memory, not the value's own fields).
+pub unsafe trait RecvBuf: 'static {
+    fn recv_ptr(&mut self) -> *mut u8;
+    fn recv_cap(&self) -> usize;
+}
+
 /// A connected TCP socket. Reads and writes take ownership of their buffer
 /// and give it back with the result.
 pub struct TcpStream {
@@ -297,23 +309,59 @@ impl TcpStream {
         (Ok(()), buf)
     }
 
-    /// Writes all of `head`, then `tail[range]`, in one `sendmsg` each time
+    /// Reads exactly `n` bytes into the start of `buf`, which isn't
+    /// zeroed first: an aligned buffer, so that a payload goes to the
+    /// device as it arrived (I338). On an error or an early end, `buf`
+    /// comes back with fewer than `n` bytes written, which only its type
+    /// can tell apart from the rest.
+    pub async fn read_exact_into<B: RecvBuf>(&self, mut buf: B, n: usize) -> (io::Result<()>, B) {
+        assert!(n <= buf.recv_cap(), "{n} bytes into {}", buf.recv_cap());
+        let base = buf.recv_ptr();
+        let mut keep: std::rc::Rc<dyn std::any::Any> = std::rc::Rc::new(buf);
+        let mut got = 0;
+        let mut r = Ok(());
+        while got < n {
+            // SAFETY: `base` is valid for `recv_cap() >= n` bytes, and
+            // stays where it is while `keep` holds the buffer (`RecvBuf`).
+            let at = unsafe { base.add(got) };
+            let sqe =
+                opcode::Recv::new(types::Fd(self.inner.as_raw_fd()), at, (n - got) as u32).build();
+            let (res, k) = current().submit(sqe, Resource::Keep(keep)).await;
+            let Resource::Keep(k) = k else { unreachable!() };
+            keep = k;
+            match check(res) {
+                Ok(0) => {
+                    r = Err(io::ErrorKind::UnexpectedEof.into());
+                    break;
+                }
+                Ok(k) => got += k as usize,
+                Err(e) => {
+                    r = Err(e);
+                    break;
+                }
+            }
+        }
+        let buf = std::rc::Rc::downcast::<B>(keep)
+            .ok()
+            .and_then(|b| std::rc::Rc::try_unwrap(b).ok())
+            .expect("a completed receive holds the buffer no more");
+        (r, buf)
+    }
+
+    /// Writes all of `head`, then all of `tail`, in one `sendmsg` each time
     /// (two pieces of one buffer, so the tail is never copied after `head`).
     /// `tail` may be shared, with other connections sending it or other
     /// parts of it too.
-    pub async fn write_all2(
+    pub async fn write_all2<T: AsRef<[u8]> + 'static>(
         &self,
         head: Vec<u8>,
-        tail: std::rc::Rc<Vec<u8>>,
-        range: std::ops::Range<usize>,
+        tail: T,
     ) -> io::Result<()> {
-        // A range past the end panics here, before anything is sent.
-        let _ = &tail[range.clone()];
         let bufs = std::rc::Rc::new((head, tail));
-        let total = bufs.0.len() + range.len();
+        let total = bufs.0.len() + bufs.1.as_ref().len();
         let mut off = 0;
         while off < total {
-            let (head, tail) = (&bufs.0[..], &bufs.1[range.clone()]);
+            let (head, tail) = (&bufs.0[..], bufs.1.as_ref());
             let piece = |b: &[u8]| libc::iovec {
                 iov_base: b.as_ptr() as *mut libc::c_void,
                 iov_len: b.len(),
@@ -585,6 +633,49 @@ mod tests {
             let (r, got) = s.read_exact_n(1000).await;
             assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
             assert_eq!(got, vec![9; 10]);
+        });
+    }
+
+    /// A boxed array: its bytes stay put when the box moves.
+    struct Boxed(Box<[u8; 1 << 16]>);
+
+    // SAFETY: the array is on the heap, owned by the box.
+    unsafe impl RecvBuf for Boxed {
+        fn recv_ptr(&mut self) -> *mut u8 {
+            self.0.as_mut_ptr()
+        }
+        fn recv_cap(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    /// I338: a receive into a buffer of the caller's type fills its start
+    /// from pieces of any size, leaves the rest alone, and gives it back
+    /// after an early end too.
+    #[test]
+    fn read_exact_into_fills_the_callers_buffer_from_pieces() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let data: Vec<u8> = (0..60_000).map(|i| (i % 251) as u8).collect();
+            let sent = data.clone();
+            spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                for piece in sent.chunks(7919) {
+                    s.write_all(piece.to_vec()).await.0.unwrap();
+                }
+                s.write_all(vec![9; 10]).await.0.unwrap();
+            });
+            let s = TcpStream::connect(addr).await.unwrap();
+            let (r, got) = s
+                .read_exact_into(Boxed(Box::new([1; 1 << 16])), data.len())
+                .await;
+            r.unwrap();
+            assert!(got.0[..data.len()] == data[..]);
+            assert!(got.0[data.len()..].iter().all(|&b| b == 1));
+            let (r, got) = s.read_exact_into(got, 1000).await;
+            assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+            assert_eq!(got.0[..10], [9; 10]);
         });
     }
 

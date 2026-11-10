@@ -23,7 +23,7 @@
 //!   have reached the media; a record whose data didn't is dropped with
 //!   everything after it. None of it was acknowledged.
 
-use crate::align::{AlignedBuf, BLOCK};
+use crate::align::{AlignedBuf, BLOCK, WriteBuf};
 use crate::alloc::Allocator;
 use crate::dev::BlockDev;
 use crate::index::{DeferredWrite, Effects, Index, Loc, Object, RList, ROp};
@@ -430,7 +430,7 @@ pub struct IndexStats {
 /// for its writes (I199).
 pub struct Round {
     /// Data extents and the log record, by byte offset on the device.
-    writes: Vec<(u64, AlignedBuf)>,
+    writes: Vec<(u64, WriteBuf)>,
     /// Log blocks the record takes; 0 when nothing in the round changed.
     nblocks: u64,
     freed: Vec<(u64, u64)>,
@@ -446,7 +446,7 @@ impl Round {
     /// applied in place), so that no commit round writes in the shard's
     /// own device calls. Empty when the round changed nothing, and then
     /// nothing is flushed.
-    pub fn take_writes(&mut self) -> Vec<(u64, AlignedBuf)> {
+    pub fn take_writes(&mut self) -> Vec<(u64, WriteBuf)> {
         std::mem::take(&mut self.writes)
     }
 
@@ -1587,7 +1587,7 @@ impl Shard {
         let mut payload = Enc::new();
         payload.u32(0);
         let mut count = 0u32;
-        let mut writes: Vec<(u64, AlignedBuf)> = Vec::new();
+        let mut writes: Vec<(u64, WriteBuf)> = Vec::new();
         let mut fx = Effects {
             freed: Vec::new(),
             pending: std::mem::take(&mut self.pending),
@@ -1628,8 +1628,11 @@ impl Shard {
         // Upkeep's writes go with the round's: no ordering between them
         // matters until the flush, after which the superblock of a
         // checkpoint the round completes names it.
-        let mut io = std::mem::take(&mut self.staged);
-        io.append(&mut self.staged_ckpt);
+        let mut io: Vec<(u64, WriteBuf)> = std::mem::take(&mut self.staged)
+            .into_iter()
+            .chain(std::mem::take(&mut self.staged_ckpt))
+            .map(|(at, b)| (at, b.into()))
+            .collect();
         let seal = self.sealing.take();
         if count == 0 {
             return Ok(Round {
@@ -1654,10 +1657,10 @@ impl Shard {
             for (at, part) in [(lsn, a), (lsn + first, b)] {
                 let mut buf = AlignedBuf::zeroed(part.len());
                 buf.copy_from_slice(part);
-                io.push((self.log_pos(at), buf));
+                io.push((self.log_pos(at), buf.into()));
             }
         } else {
-            io.push((self.log_pos(lsn), rec));
+            io.push((self.log_pos(lsn), rec.into()));
         }
         Ok(Round {
             writes: io,
@@ -1701,7 +1704,7 @@ impl Shard {
         &mut self,
         list: OpList,
         fx: &mut Effects,
-        writes: &mut Vec<(u64, AlignedBuf)>,
+        writes: &mut Vec<(u64, WriteBuf)>,
         others: &mut Vec<RList>,
     ) -> Result<(RList, Committed), OpError> {
         let key = list.key;
@@ -1839,7 +1842,7 @@ impl Shard {
                             fx,
                             ROp::Deferred(Box::new(DeferredWrite {
                                 lb,
-                                data,
+                                data: data.into_vec(),
                                 crcs,
                                 pbs,
                             })),
@@ -1851,9 +1854,16 @@ impl Shard {
                         for (pb, len) in runs {
                             self.round_fresh.insert(pb, len);
                             let len = len as usize;
+                            // A received payload starts on a block, and so
+                            // does every run of it: written as it is (I338).
+                            let run = data.slice(done * BLOCK..(done + len) * BLOCK);
                             writes.push((
                                 pb,
-                                AlignedBuf::from_slice(&data[done * BLOCK..(done + len) * BLOCK]),
+                                if run.is_aligned() {
+                                    WriteBuf::Shared(run)
+                                } else {
+                                    AlignedBuf::from_slice(&run).into()
+                                },
                             ));
                             step(
                                 &mut self.index,
@@ -3399,7 +3409,7 @@ mod tests {
                 key,
                 ops: vec![Op::Write {
                     off: 0,
-                    data: vec![1; blocks * BLOCK],
+                    data: vec![1; blocks * BLOCK].into(),
                     crcs: None,
                 }],
             }])
@@ -3492,7 +3502,7 @@ mod tests {
                 key: key(i),
                 ops: vec![Op::Write {
                     off: off * BLOCK as u64,
-                    data: vec![i as u8; blocks * BLOCK],
+                    data: vec![i as u8; blocks * BLOCK].into(),
                     crcs: None,
                 }],
             }])
@@ -3655,7 +3665,7 @@ mod tests {
                 ops: vec![
                     Op::Write {
                         off: 0,
-                        data: vec![i as u8; BLOCK],
+                        data: vec![i as u8; BLOCK].into(),
                         crcs: None,
                     },
                     Op::KvPut(b"k".to_vec(), vec![i as u8; 64]),
@@ -3988,7 +3998,7 @@ mod tests {
             key: k.clone(),
             ops: vec![Op::Write {
                 off,
-                data,
+                data: data.into(),
                 crcs: None,
             }],
         }])

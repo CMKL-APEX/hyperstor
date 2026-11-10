@@ -1,6 +1,6 @@
 //! Object keys, operations and errors (spec/08-engine.md §7.2, D34).
 
-use hyperstor_codec::{Dec, DecodeError, Enc};
+use hyperstor_codec::{Dec, DecodeError, Enc, IoBuf};
 use thiserror::Error;
 
 /// Object namespaces (spec/08-engine.md §7.2).
@@ -100,7 +100,9 @@ pub enum Op {
     Touch,
     Write {
         off: u64,
-        data: Vec<u8>,
+        /// Shared with the frames that sent it on to replicas; written
+        /// without a copy where it starts on a block (I338).
+        data: IoBuf,
         /// The CRC32C of each block of `data`, when the caller has them
         /// already checked against it (the CRCs a write arrived with,
         /// I306); `None` has the engine compute them.

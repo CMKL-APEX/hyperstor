@@ -49,7 +49,7 @@ fn write_read_stat_and_holes() {
         k.clone(),
         vec![Op::Write {
             off: 4 * BLOCK as u64,
-            data: block(1, 2),
+            data: block(1, 2).into(),
             crcs: None,
         }],
     )
@@ -82,7 +82,7 @@ fn small_overwrites_are_deferred_and_survive_reopen() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 32),
+            data: block(1, 32).into(),
             crcs: None,
         }],
     )
@@ -93,7 +93,7 @@ fn small_overwrites_are_deferred_and_survive_reopen() {
         k.clone(),
         vec![Op::Write {
             off: 8 * BLOCK as u64,
-            data: block(2, 2),
+            data: block(2, 2).into(),
             crcs: None,
         }],
     )
@@ -124,7 +124,7 @@ fn large_overwrites_redirect_and_free_old_blocks() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 32),
+            data: block(1, 32).into(),
             crcs: None,
         }],
     )
@@ -135,7 +135,7 @@ fn large_overwrites_redirect_and_free_old_blocks() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(3, 32),
+            data: block(3, 32).into(),
             crcs: None,
         }],
     )
@@ -203,7 +203,7 @@ fn assertions_and_revisions() {
             Op::Delete,
             Op::Write {
                 off: 0,
-                data: block(5, 1),
+                data: block(5, 1).into(),
                 crcs: None,
             },
         ],
@@ -224,7 +224,7 @@ fn unaligned_and_refused_lists_leave_no_trace() {
                 key: k.clone(),
                 ops: vec![Op::Write {
                     off: 0,
-                    data: block(1, 1),
+                    data: block(1, 1).into(),
                     crcs: None,
                 }],
             },
@@ -232,7 +232,7 @@ fn unaligned_and_refused_lists_leave_no_trace() {
                 key: k.clone(),
                 ops: vec![Op::Write {
                     off: 3,
-                    data: block(2, 1),
+                    data: block(2, 1).into(),
                     crcs: None,
                 }],
             },
@@ -269,7 +269,7 @@ fn zero_truncate_and_delete_free_space() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 16),
+            data: block(1, 16).into(),
             crcs: None,
         }],
     )
@@ -359,7 +359,7 @@ fn log_wraps_and_checkpoints_keep_state() {
             k.clone(),
             vec![Op::Write {
                 off,
-                data: block(fill, blocks),
+                data: block(fill, blocks).into(),
                 crcs: None,
             }],
         )
@@ -395,7 +395,7 @@ fn no_space_and_too_large() {
             k.clone(),
             vec![Op::Write {
                 off: 0,
-                data: block(1, free as usize + 1),
+                data: block(1, free as usize + 1).into(),
                 crcs: None,
             }]
         ),
@@ -420,7 +420,7 @@ fn shards_are_independent() {
             key("same-name"),
             vec![Op::Write {
                 off: 0,
-                data: block(i as u8 + 1, 1),
+                data: block(i as u8 + 1, 1).into(),
                 crcs: None,
             }],
         )
@@ -508,7 +508,7 @@ fn features_this_build_does_not_know_are_refused_unless_compatible() {
         key("a"),
         vec![Op::Write {
             off: 0,
-            data: block(5, 1),
+            data: block(5, 1).into(),
             crcs: None,
         }],
     )
@@ -616,7 +616,7 @@ fn a_torn_first_checkpoint_falls_back_to_the_formatted_superblock() {
         key("a"),
         vec![Op::Write {
             off: 0,
-            data: block(3, 1),
+            data: block(3, 1).into(),
             crcs: None,
         }],
     )
@@ -637,7 +637,7 @@ fn corrupted_data_is_detected_on_read() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 16),
+            data: block(1, 16).into(),
             crcs: None,
         }],
     )
@@ -667,7 +667,7 @@ fn io_error_poisons_until_reopen() {
         key("a"),
         vec![Op::Write {
             off: 0,
-            data: block(1, 1),
+            data: block(1, 1).into(),
             crcs: None,
         }],
     )
@@ -704,7 +704,7 @@ fn digests_follow_content_not_history() {
         key("a"),
         vec![Op::Write {
             off: 0,
-            data: data.clone(),
+            data: data.clone().into(),
             crcs: None,
         }],
     )
@@ -716,7 +716,7 @@ fn digests_follow_content_not_history() {
         b.clone(),
         vec![Op::Write {
             off: 3 * BLOCK as u64,
-            data: block(1, 1),
+            data: block(1, 1).into(),
             crcs: None,
         }],
     )
@@ -726,7 +726,7 @@ fn digests_follow_content_not_history() {
         b.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 2),
+            data: block(1, 2).into(),
             crcs: None,
         }],
     )
@@ -741,7 +741,7 @@ fn digests_follow_content_not_history() {
             "block",
             vec![Op::Write {
                 off: BLOCK as u64,
-                data: block(2, 1),
+                data: block(2, 1).into(),
                 crcs: None,
             }],
         ),
@@ -749,7 +749,7 @@ fn digests_follow_content_not_history() {
             "filled hole",
             vec![Op::Write {
                 off: 2 * BLOCK as u64,
-                data: block(3, 1),
+                data: block(3, 1).into(),
                 crcs: None,
             }],
         ),
@@ -764,7 +764,7 @@ fn digests_follow_content_not_history() {
             key(&k),
             vec![Op::Write {
                 off: 0,
-                data: data.clone(),
+                data: data.clone().into(),
                 crcs: None,
             }],
         )
@@ -812,7 +812,7 @@ fn large_objects_keep_their_digest_until_they_change() {
             "data",
             vec![Op::Write {
                 off: 0,
-                data: block(5, 1),
+                data: block(5, 1).into(),
                 crcs: None,
             }],
         ),
@@ -851,7 +851,7 @@ fn a_large_digest_comes_in_parts_and_agrees() {
     ops.extend((0..20).map(|i| Op::SetAttr(format!("a{i}").into_bytes(), vec![i; 8])));
     ops.push(Op::Write {
         off: 0,
-        data: block(3, 2),
+        data: block(3, 2).into(),
         crcs: None,
     });
     for k in ["x", "y"] {
@@ -927,7 +927,7 @@ fn versions_read_through_layers_and_merge_without_copying() {
         v(1),
         vec![Op::Write {
             off: 0,
-            data: block(1, 4),
+            data: block(1, 4).into(),
             crcs: None,
         }],
     )
@@ -938,12 +938,12 @@ fn versions_read_through_layers_and_merge_without_copying() {
         vec![
             Op::Write {
                 off: BLOCK as u64,
-                data: block(3, 2),
+                data: block(3, 2).into(),
                 crcs: None,
             },
             Op::Write {
                 off: 6 * BLOCK as u64,
-                data: block(3, 1),
+                data: block(3, 1).into(),
                 crcs: None,
             },
         ],
@@ -1007,7 +1007,7 @@ fn take_moves_an_object_whole() {
     let mut ops = vec![
         Op::Write {
             off: 0,
-            data: block(5, 4),
+            data: block(5, 4).into(),
             crcs: None,
         },
         Op::SetAttr(b"a".to_vec(), b"1".to_vec()),
@@ -1024,7 +1024,7 @@ fn take_moves_an_object_whole() {
         dst.clone(),
         vec![Op::Write {
             off: 0,
-            data: block(1, 2),
+            data: block(1, 2).into(),
             crcs: None,
         }],
     )
@@ -1137,7 +1137,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
                 ops: vec![
                     Op::Write {
                         off: 0,
-                        data: block(n as u8, 1),
+                        data: block(n as u8, 1).into(),
                         crcs: None,
                     },
                     Op::KvPut(b"k".to_vec(), vec![1; 64]),
@@ -1157,7 +1157,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
             key: key("new"),
             ops: vec![Op::Write {
                 off: 0,
-                data: block(1, 1),
+                data: block(1, 1).into(),
                 crcs: None,
             }],
         }])
@@ -1185,7 +1185,7 @@ fn a_full_shard_refuses_data_but_keeps_checkpointing() {
         key("again"),
         vec![Op::Write {
             off: 0,
-            data: block(9, 4),
+            data: block(9, 4).into(),
             crcs: None,
         }],
     )
@@ -1257,13 +1257,13 @@ fn commit_rounds_leave_every_write_to_their_writer() {
         let ops = match model.get(&name) {
             None => vec![Op::Write {
                 off: 0,
-                data: block(fill, 16),
+                data: block(fill, 16).into(),
                 crcs: None,
             }],
             Some(_) if round % 23 == 0 => vec![Op::Delete],
             Some(_) => vec![Op::Write {
                 off: (round as u64 % 16) * BLOCK as u64,
-                data: block(fill, 1),
+                data: block(fill, 1).into(),
                 crcs: None,
             }],
         };
@@ -1356,7 +1356,7 @@ fn a_write_keeps_the_crcs_it_came_with() {
         key(&format!("f{n}")),
         vec![Op::Write {
             off: 0,
-            data: block(9, 1),
+            data: block(9, 1).into(),
             crcs: None,
         }],
     )
@@ -1375,7 +1375,7 @@ fn a_write_keeps_the_crcs_it_came_with() {
         vec![Op::Write {
             off: 0,
             crcs: crcs_of(&data),
-            data: data.clone(),
+            data: data.clone().into(),
         }],
     )
     .unwrap();
@@ -1391,7 +1391,7 @@ fn a_write_keeps_the_crcs_it_came_with() {
         vec![Op::Write {
             off: 30 * BLOCK as u64,
             crcs: crcs_of(&small),
-            data: small.clone(),
+            data: small.clone().into(),
         }],
     )
     .unwrap();
@@ -1420,7 +1420,7 @@ fn a_write_whose_crcs_disagree_is_refused_or_caught_on_read() {
             k.clone(),
             vec![Op::Write {
                 off: 0,
-                data: data.clone(),
+                data: data.clone().into(),
                 crcs: Some(short),
             }],
         ),
@@ -1434,7 +1434,7 @@ fn a_write_whose_crcs_disagree_is_refused_or_caught_on_read() {
         k.clone(),
         vec![Op::Write {
             off: 0,
-            data,
+            data: data.into(),
             crcs: Some(wrong),
         }],
     )
@@ -1444,4 +1444,47 @@ fn a_write_whose_crcs_disagree_is_refused_or_caught_on_read() {
         Err(EngineError::Checksum { lblock: 2 })
     ));
     assert!(sh.read(&k, 0, 2 * BLOCK as u64).is_ok());
+}
+
+#[test]
+fn an_aligned_write_goes_to_the_device_from_where_it_arrived() {
+    // I338: a payload a node received into an aligned buffer is written
+    // from that buffer, with no copy; one that isn't aligned is copied
+    // into one that is.
+    let (d, mut sh) = fresh(4096, None);
+    let len = 256 << 10;
+    let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    let aligned = IoBuf::aligned(AlignedBuf::from_slice(&data), len);
+    let mut spaced = vec![0u8];
+    spaced.extend_from_slice(&data);
+    let unaligned = IoBuf::from(spaced).slice(1..len + 1);
+    assert!(aligned.is_aligned() && !unaligned.is_aligned());
+    for (name, payload, shared) in [("a", &aligned, true), ("u", &unaligned, false)] {
+        let mut lists: std::collections::VecDeque<OpList> = vec![OpList {
+            key: key(name),
+            ops: vec![Op::Write {
+                off: 0,
+                data: payload.clone(),
+                crcs: None,
+            }],
+        }]
+        .into();
+        let mut r = sh.commit_begin(&mut lists).unwrap();
+        let writes = r.take_writes();
+        assert!(
+            writes
+                .iter()
+                .all(|(_, b)| (b.as_ptr() as usize).is_multiple_of(BLOCK))
+        );
+        let from_payload = writes.iter().any(|(_, b)| b.as_ptr() == payload.as_ptr());
+        assert_eq!(from_payload, shared, "{name}");
+        let io: Vec<(u64, &[u8])> = writes.iter().map(|(o, b)| (*o, &b[..])).collect();
+        d.write_batch(&io).unwrap();
+        d.flush().unwrap();
+        for c in sh.commit_end(r, Ok(())).unwrap() {
+            c.unwrap();
+        }
+        sh.commit_done();
+        assert!(sh.read(&key(name), 0, len as u64).unwrap()[..] == data[..]);
+    }
 }

@@ -34,14 +34,14 @@ mod ports;
 mod shard_cell;
 use shard_cell::ReadKind;
 
-use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, Frame, counter_of, read_frame_counted, writer};
+use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, Frame, counter_of, read_request, writer};
 use hyperstor_client::volume::{
     DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
     encode_holder, header_deleting, header_tenant, header_version,
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
-    AlignedBuf, BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, MemDev,
+    AlignedBuf, BlockDev, Committed, DeviceConfig, DigestPart, EngineError, FileDev, IoBuf, MemDev,
     Namespace, ObjKey, Op, OpError, OpList, ReadPlan, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo, ScrubSettings};
@@ -1069,13 +1069,13 @@ fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
         WireOp::Touch => Op::Touch,
         WireOp::Write { off, data } => Op::Write {
             off,
-            data,
+            data: data.into(),
             crcs: None,
         },
         // Checked on arrival (check_write_crcs): stored as they came.
         WireOp::WriteCrcs { off, data, crcs } => Op::Write {
             off,
-            data,
+            data: data.into(),
             crcs: Some(crcs),
         },
         WireOp::Zero { off, len } => Op::Zero { off, len },
@@ -1439,7 +1439,9 @@ impl ShardState {
             // A checkpoint the round completes is named once its pages
             // are durable (I281).
             if let (Ok(()), Some(seal)) = (&io, round.take_seal()) {
-                io = self.write_round(seal).await;
+                io = self
+                    .write_round(seal.into_iter().map(|(at, b)| (at, b.into())).collect())
+                    .await;
             }
             waited += w.elapsed();
             let ended = c.shard().commit_end(round, io);
@@ -1489,7 +1491,7 @@ impl ShardState {
     /// device that takes longer than the I/O timeout fails the round.
     async fn write_round(
         &self,
-        writes: Vec<(u64, hyperstor_engine::AlignedBuf)>,
+        writes: Vec<(u64, hyperstor_engine::WriteBuf)>,
     ) -> std::io::Result<()> {
         if writes.is_empty() {
             return Ok(());
@@ -2093,7 +2095,7 @@ impl ShardState {
         let mut host = String::new();
         let counter = counter_of(&s);
         loop {
-            let Ok((h, msg, payload)) = read_frame_counted(&s, counter.as_deref()).await else {
+            let Ok((h, msg, payload)) = read_request(&s, counter.as_deref()).await else {
                 let _ = s.shutdown();
                 return;
             };
@@ -2466,7 +2468,7 @@ impl ShardState {
         key: WireKey,
         off: u64,
         crcs: Vec<u32>,
-        data: Vec<u8>,
+        data: IoBuf,
         tx: Sender<Frame>,
     ) {
         let arrived = std::time::Instant::now();
@@ -2524,9 +2526,8 @@ impl ShardState {
             off,
             crcs: crcs.clone(),
         };
-        // One payload for every replica's frame, sent from it uncopied
-        // when large; the engine then takes a copy (HS5b).
-        let data = Rc::new(data);
+        // One payload for every replica's frame and the engine, sent and
+        // written from where it arrived when large (HS5b, I338).
         let remote: Vec<_> = conns
             .iter()
             .map(|(d, c)| (*d, c.start_shared(&repl, &data)))
@@ -2547,7 +2548,7 @@ impl ShardState {
             key: okey,
             ops: vec![Op::Write {
                 off,
-                data: Rc::unwrap_or_clone(data),
+                data,
                 // Checked against the data above (I306).
                 crcs: Some(crcs),
             }],
@@ -2750,7 +2751,7 @@ impl ShardState {
         instance: u64,
         to: Target,
         key: WireKey,
-        payload: Vec<u8>,
+        payload: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -2867,24 +2868,23 @@ impl ShardState {
             *s
         };
         let repl = Msg::ReplExec { to, seq, key };
-        let body = Rc::new(encode_ops(&effects));
+        let body = IoBuf::from(encode_ops(&effects));
         // A replica from before D279 gets plain writes, which it can read.
-        let plain = Rc::new(
-            if effects
-                .iter()
-                .any(|o| matches!(o, WireOp::WriteCrcs { .. }))
-            {
-                encode_ops(
-                    &effects
-                        .iter()
-                        .cloned()
-                        .map(WireOp::without_crcs)
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                body.to_vec()
-            },
-        );
+        let plain = if effects
+            .iter()
+            .any(|o| matches!(o, WireOp::WriteCrcs { .. }))
+        {
+            encode_ops(
+                &effects
+                    .iter()
+                    .cloned()
+                    .map(WireOp::without_crcs)
+                    .collect::<Vec<_>>(),
+            )
+            .into()
+        } else {
+            body.clone()
+        };
         let body_for = |c: &Conn| {
             if c.version() >= hyperstor_proto::WRITE_CRCS_VERSION {
                 &body
@@ -3302,7 +3302,7 @@ impl ShardState {
         to: Target,
         key: WireKey,
         token: u64,
-        payload: Vec<u8>,
+        payload: IoBuf,
     ) -> Msg {
         let Ok(ops) = decode_ops(&payload) else {
             return err(Code::Invalid, &self.map(), "malformed operation list");
@@ -3799,7 +3799,7 @@ impl ShardState {
         req: u64,
         to: Target,
         key: WireKey,
-        payload: Vec<u8>,
+        payload: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -3877,7 +3877,7 @@ impl ShardState {
         req: u64,
         to: Target,
         key: WireKey,
-        payload: Vec<u8>,
+        payload: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -3929,7 +3929,7 @@ impl ShardState {
         req: u64,
         to: Target,
         key: WireKey,
-        payload: Vec<u8>,
+        payload: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -4007,7 +4007,7 @@ impl ShardState {
                     let len = n as usize * 4096;
                     first.push(Op::Write {
                         off: lb * 4096,
-                        data: obj.data[at..at + len].to_vec(),
+                        data: obj.data[at..at + len].to_vec().into(),
                         crcs: None,
                     });
                     at += len;
@@ -4015,7 +4015,7 @@ impl ShardState {
             }
             None if !obj.data.is_empty() => first.push(Op::Write {
                 off: 0,
-                data: obj.data,
+                data: obj.data.into(),
                 crcs: None,
             }),
             None => {}
@@ -4038,7 +4038,7 @@ impl ShardState {
         key: WireKey,
         off: u64,
         crcs: Vec<u32>,
-        data: Vec<u8>,
+        data: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -4238,7 +4238,7 @@ impl ShardState {
         to: Target,
         key: WireKey,
         crcs: Vec<u32>,
-        data: Vec<u8>,
+        data: IoBuf,
         tx: Sender<Frame>,
     ) {
         let send = move |m: Msg| {
@@ -6984,7 +6984,7 @@ mod tests {
             let ops = vec![
                 Op::Write {
                     off: 0,
-                    data: vec![k.name[0]; 4096],
+                    data: vec![k.name[0]; 4096].into(),
                     crcs: None,
                 },
                 Op::SetAttr(b"a".to_vec(), k.name.clone()),
@@ -7010,7 +7010,7 @@ mod tests {
         let ops = vec![
             Op::Write {
                 off: 0,
-                data: vec![7; 4096],
+                data: vec![7; 4096].into(),
                 crcs: None,
             },
             Op::SetAttr(b"a".to_vec(), newer.name.clone()),

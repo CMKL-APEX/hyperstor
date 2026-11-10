@@ -7,6 +7,12 @@
 
 use thiserror::Error;
 
+pub mod align;
+pub mod iobuf;
+
+pub use align::{AlignedBuf, BLOCK};
+pub use iobuf::IoBuf;
+
 /// Maximum length accepted for one length-prefixed byte string (64 MiB).
 ///
 /// Decoders refuse longer prefixes before allocating, so a corrupt or
