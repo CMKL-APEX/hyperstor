@@ -1317,7 +1317,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "Networks set on a running cluster, and nodes serving the endpoints the map has for their devices"
-spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "D289", "I337", "I338", "I345"]
+spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "D289", "I337", "I338", "I347"]
 status = "done"
 tests = [
     "hyperstor_map::network_tests::networks_are_set_and_removed_unless_endpoints_are_on_them",
