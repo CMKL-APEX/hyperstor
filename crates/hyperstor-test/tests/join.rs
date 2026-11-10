@@ -966,8 +966,10 @@ fn a_member_host_also_runs_storage() {
 /// runs a node of the cluster file becomes storage only (`--role
 /// storage`): its store backed up, its node given a certificate of its
 /// own, out of the group, its member files, keys and store gone; its node
-/// serves on. A demote that would leave fewer than three voters is
-/// refused.
+/// serves on. The member demoted is the one the promoted host joined
+/// through, the leader as it happens: its node joins through itself, and
+/// the promoted host's next run moves to another member's API. A demote
+/// that would leave fewer than three voters is refused.
 #[test]
 fn a_storage_host_is_promoted_and_a_member_demoted() {
     let _one = one_at_a_time();
@@ -1051,7 +1053,8 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
         )
     };
     install_member(0, &["--cluster", file.to_str().unwrap()]);
-    procs.0.push(start_meta(0));
+    // Each member's map service and node on its own: any may be stopped.
+    let mut metas: Vec<Procs> = vec![Procs(vec![start_meta(0)])];
     wait_api(&bin, &apis[0], &pkis[0]);
     for i in 1..3u16 {
         let tok = token(&bin, &apis[0], &pkis[0], &s, "meta", &[]);
@@ -1060,9 +1063,8 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
             &["--join", &apis[0], "--token-file", tok.to_str().unwrap()],
         );
     }
-    procs.0.push(start_meta(1));
-    // Stopped by the test itself later; killed with the rest on a panic.
-    let mut meta3 = Procs(vec![start_meta(2)]);
+    metas.push(Procs(vec![start_meta(1)]));
+    metas.push(Procs(vec![start_meta(2)]));
     // A token from the leader, whichever member that is.
     let leader_token = |role: &str| {
         wait_for("the leader to make a token", 40, || {
@@ -1093,17 +1095,42 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
         admin_port(3),
     )
     .ok();
-    for (i, root) in roots.iter().enumerate().take(2) {
-        procs
-            .0
-            .push(start_node(root, i as u32, &format!("node-{i}.log")));
-    }
-    let mut node2 = Procs(vec![start_node(&roots[2], 2, "node-2.log")]);
+    let mut nodes: Vec<Procs> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, root)| Procs(vec![start_node(root, i as u32, &format!("node-{i}.log"))]))
+        .collect();
     procs.0.push(start_node(&host, 3, "node-3.log"));
+    // On a failure, the members' and nodes' logs say why.
+    let logs = || {
+        let mut out = format!("ports from {base}: members' APIs {apis:?}, promoted {p_api}\n");
+        for e in std::fs::read_dir(s.path(""))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".log") {
+                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+                let tail: Vec<&str> = text.lines().rev().take(8).collect();
+                out += &format!(
+                    "--- {name}:\n{}\n",
+                    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                );
+            }
+        }
+        out
+    };
     let voters = |api: &str, pki: &Path| -> Vec<String> {
-        ctl(&bin, api, pki, &["member", "list"])
-            .ok()
-            .out
+        let r = ctl(&bin, api, pki, &["member", "list"]);
+        assert_eq!(
+            r.code,
+            0,
+            "member list through {api}: {}\n{}",
+            r.out,
+            logs()
+        );
+        r.out
             .lines()
             .filter(|l| l.contains(" voter") || l.contains(" leader"))
             .map(|l| l.split_whitespace().next().unwrap().to_string())
@@ -1178,15 +1205,56 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
     assert!(!conf.contains("member_pending"), "{conf}");
     assert_eq!(voters(&apis[0], &pkis[0]).len(), 4);
 
-    // Demote member 3: storage node 2 only.
-    let data3 = s.path("member-data-3");
-    let r = install(&roots[2], &["--role", "storage"]).ok();
+    // Demote the member whose API the promoted host joined through, the
+    // leader as it happens (tokens and joins are the leader's): its node's
+    // join goes through itself (D288).
+    let conf = std::fs::read_to_string(host.join("etc/hyperstor/install.conf")).unwrap();
+    let joined = conf
+        .lines()
+        .find_map(|l| l.strip_prefix("join = "))
+        .unwrap()
+        .to_string();
+    let t = apis
+        .iter()
+        .position(|a| *a == joined)
+        .expect("joined through a member");
+    let (id, n) = (t + 1, t);
+    // A member that stays, for the calls after.
+    let a = (t + 1) % 3;
+    // The root CA's key stays with no member that leaves: the first has
+    // it, so it goes first, backed up (as 19-administration.md §23.4.3
+    // asks).
+    if roots[t].join("etc/hyperstor/pki/root.key").exists() {
+        let refused = install_cmd(&roots[t], "install", &["--role", "storage"]);
+        assert!(
+            refused.code == 1 && refused.has("root CA's key"),
+            "{}",
+            refused.out
+        );
+        let pass = s.path("passphrase");
+        std::fs::write(&pass, "a passphrase long enough for the test\n").unwrap();
+        let out = s.path("root.backup");
+        install_cmd(
+            &roots[t],
+            "root-backup",
+            &[
+                "--out",
+                out.to_str().unwrap(),
+                "--passphrase-file",
+                pass.to_str().unwrap(),
+                "--remove-key",
+            ],
+        )
+        .ok();
+    }
+    // Only leaders record their API: name another member's.
+    let r = install(&roots[t], &["--role", "storage", "--join", &apis[a]]).ok();
     assert!(
-        r.has("Demoted: this host is storage node 2 only"),
+        r.has(&format!("Demoted: this host is storage node {n} only")),
         "{}",
         r.out
     );
-    let etc3 = roots[2].join("etc/hyperstor");
+    let etc = roots[t].join("etc/hyperstor");
     for gone in [
         "meta.env",
         "mgmt.env",
@@ -1196,61 +1264,71 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
         "pki/intermediate.key",
         "pki/cluster.key",
     ] {
-        assert!(!etc3.join(gone).exists(), "{gone} is gone");
+        assert!(!etc.join(gone).exists(), "{gone} is gone");
     }
     // The installer's paths are under its root; the processes' (the store
     // a running member writes) are the real ones.
-    let data3 = roots[2].join(data3.strip_prefix("/").unwrap());
+    let data = s.path(&format!("member-data-{id}"));
+    let data = roots[t].join(data.strip_prefix("/").unwrap());
     assert!(
-        std::fs::read_dir(data3.join("meta-backups"))
+        std::fs::read_dir(data.join("meta-backups"))
             .unwrap()
             .flatten()
             .any(|e| e
                 .file_name()
                 .to_string_lossy()
-                .starts_with("demoted-member-3-")),
+                .starts_with(&format!("demoted-member-{id}-"))),
         "the store backed up first"
     );
     let who =
-        hyperstor_pki::identity_in(&std::fs::read_to_string(etc3.join("pki/node.crt")).unwrap())
+        hyperstor_pki::identity_in(&std::fs::read_to_string(etc.join("pki/node.crt")).unwrap())
             .unwrap();
     assert_eq!(
         (who.role, who.id),
-        (hyperstor_pki::Role::Node, "2".to_string())
+        (hyperstor_pki::Role::Node, n.to_string())
     );
-    let conf = std::fs::read_to_string(etc3.join("install.conf")).unwrap();
+    let conf = std::fs::read_to_string(etc.join("install.conf")).unwrap();
     assert!(
-        conf.contains("role = storage") && conf.contains("node = 2"),
+        conf.contains("role = storage") && conf.contains(&format!("node = {n}")),
         "{conf}"
     );
-    let env = std::fs::read_to_string(etc3.join("node-2.env")).unwrap();
+    let env = std::fs::read_to_string(etc.join(format!("node-{n}.env"))).unwrap();
     assert!(
-        env.contains(&format!("127.0.0.1:{}", node_port(2))),
+        env.contains(&format!("127.0.0.1:{}", node_port(n as u16))),
         "the same device: {env}"
     );
-    let left = voters(&apis[0], &pkis[0]);
-    assert_eq!(left, vec!["1", "2", "4"], "member 3 left");
-    for mut p in meta3.0.drain(..) {
+    let mut left = vec!["1", "2", "3", "4"];
+    left.retain(|m| *m != id.to_string());
+    assert_eq!(voters(&apis[a], &pkis[a]), left, "member {id} left");
+    for mut p in metas[t].0.drain(..) {
         let _ = p.kill();
         let _ = p.wait();
     }
     // Its node restarts with the members it reaches now, and serves.
-    for mut p in node2.0.drain(..) {
+    for mut p in nodes[t].0.drain(..) {
         let _ = p.kill();
         let _ = p.wait();
     }
-    procs.0.push(start_node(&roots[2], 2, "node-2b.log"));
+    nodes[t]
+        .0
+        .push(start_node(&roots[t], n as u32, &format!("node-{n}b.log")));
     wait_for("health ok again", 60, || {
-        ctl(&bin, &apis[0], &pkis[0], &["status"])
+        ctl(&bin, &apis[a], &pkis[a], &["status"])
             .has("health  ok")
             .then_some(())
     });
-    ctl(&bin, &apis[0], &pkis[0], &["io-test", "--mib", "4"]).ok();
+    ctl(&bin, &apis[a], &pkis[a], &["io-test", "--mib", "4"]).ok();
+    // The promoted host joined through the member that left: its next run
+    // reaches the cluster through another.
+    let r = install(&host, &[]).ok();
+    assert!(r.has("Reaching the cluster through"), "{}", r.out);
+    let conf = std::fs::read_to_string(host.join("etc/hyperstor/install.conf")).unwrap();
+    assert!(!conf.contains(&format!("join = {joined}")), "{conf}");
     // Three voters left: none can go without force.
-    let r = install_cmd(&roots[1], "install", &["--role", "storage"]);
+    let r = install_cmd(&roots[a], "install", &["--role", "storage"]);
     assert!(r.code == 1 && r.has("2 voters would be left"), "{}", r.out);
     assert!(
-        roots[1].join("etc/hyperstor/meta.env").exists(),
+        roots[a].join("etc/hyperstor/meta.env").exists(),
         "nothing changed"
     );
 }
