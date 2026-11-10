@@ -143,6 +143,83 @@ Why tokens rather than copying certificates (D57): the operator moves a
 short, expiring, single-use string, never a key; this matches glidex's
 join (clustering.md §5.2), so operators learn one model.
 
+#### 23.4.3 Changing a host's roles
+
+D286 (open for review, 2026-11-10). Not yet built.
+
+A host runs a **map service member** (`hyperstor-meta`, with mgmt, the
+web UI and authd beside it, the `api`, `mgmt`, `web` and `admin`
+certificates, the intermediate CA's key and the cluster key, §23.8), a
+**storage node**, or both; and maybe a gateway or `hyperstor-vhost`.
+Members change one at a time at run time (D87), but a host's role
+couldn't: a storage host that joined with a token can't also become a
+member (`--join --role both` takes its node from the cluster file),
+and a member can't go back to storage only. The installer changes
+them:
+
+| Change | On the host | What happens |
+|---|---|---|
+| **Promote**: storage host → member and storage | `hyperstor-install install --role both --token-file F --member-id N` with a `meta` token, on a host joined with `--role storage` | Joins as member N (the member certificates, the intermediate, the cluster key and the member list, as a `meta` join does, I86); keeps its node, its node certificate and its devices; starts `hyperstor-meta`, then adds itself (`AddMember`, a learner until it has the log, then a voter), mgmt and authd |
+| **Demote**: member and storage → storage | `hyperstor-install install --role storage` on a member host | Removes itself (`RemoveMember`) and waits until it is out of the group; gets its node a certificate of its own (a `Join` with its node's addresses, which gives that node back, D167); revokes and deletes its member certificates; deletes the intermediate's key, the cluster key and the store (`meta/`), after a backup (`map backup`); stops and removes `hyperstor-meta`, mgmt and authd; keeps its node and devices, now joined through another member's API |
+| **Demote** a member without storage | `hyperstor-install uninstall` | As above, then the rest goes as an uninstall does |
+| **Replace** member N on host A by host B | Promote B (new id), then demote A | One change at a time keeps a majority throughout (D87) |
+
+- **Refused:**
+  - a demote that would leave fewer than three voters, unless
+    `--force`, as `member remove` is (D87);
+  - a demote of the host holding the root CA's key, until the key has a
+    backup and has left the host (`root-backup --remove-key`, then
+    `root-restore` on another member). Why: the root is how the
+    intermediate is rotated and new members trust the cluster (D70,
+    D84);
+  - a promote that would make an even count, unless `--force`: four
+    members survive one failure, as three do, and commit slower.
+- **The leader** may be demoted: removing it ends its term once the
+  change commits, and the others elect a leader (openraft's joint
+  consensus, D87). The installer waits for a new leader before it stops
+  anything.
+- **Member lists follow.** Storage hosts, gateways, `hyperstor-vhost`
+  and glidex hold the members' map addresses and reach the leader by
+  redirect (D72). Every installer run, the daily renewal included,
+  takes the list from `ListMembers` through the API, rewrites the
+  services' options where it changed and restarts them, one at a time.
+  Until a host's next run, it reaches a member it still lists. So a
+  replacement keeps the old member running until every host has run
+  the installer once, or the operator runs it on each.
+- **Keys after a demote.** The demoted host deletes its copies, but a
+  copy taken before is still good: the intermediate is rotated, as
+  §23.8 has for a member that leaves (not built yet), which needs the
+  root's key on a member; until then, a demote is as safe as the trust
+  put in that host. The cluster key can't be rotated (I268).
+- **mgmt and the UI** run on every member: a demote takes them off
+  that host, and a proxy or tunnel pointed at it must be pointed at
+  another member's (§23.7).
+
+Why the installer, not `hyperstorctl`: each change starts, stops and
+deletes services, keys and data on the host itself, which only the
+installer does there; the map service's part (`AddMember`,
+`RemoveMember`, a node's certificate) goes through the cluster API, so
+every step is audited. Why `--role`: the installer is convergent, and a
+role is what it already saves in `install.conf`; a change of role is a
+run with another one.
+
+To decide (the owner's; recommendations first):
+
+1. The installer runs `AddMember` and `RemoveMember` itself
+   (recommended: one command per host, and a demote can't stop the
+   member before the group has let it go), or the operator runs them
+   with `hyperstorctl member add|remove` around the installer.
+2. A demoted member's store: deleted after a `map backup` (recommended:
+   a stale copy could only mislead), or kept until the operator deletes
+   it.
+3. The intermediate's rotation on a demote: a follow-up of its own
+   (recommended: it needs the root's key on a member, and rotation is
+   designed but not built), or a step of every demote.
+
+On the pilot: replacing member 3 (on a host whose map address sits on
+glidex's bridge) by the new storage-only host is a promote of that host
+with id 4, then a demote of member 3's host to storage only.
+
 ### 23.5 Cluster API
 
 - **`hyperstor.v1`** on port 8850, served by every meta member with
