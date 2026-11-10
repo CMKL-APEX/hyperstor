@@ -1088,7 +1088,7 @@ tests = [
 
 [[milestone.item]]
 what = "A replicated pool's copies changed, with a dry run and step-up (stage 7)"
-spec = ["24-pools-and-devices.md §27.3.5", "D283"]
+spec = ["24-pools-and-devices.md §27.3.5", "D287"]
 status = "planned"
 
 [[milestone.item]]

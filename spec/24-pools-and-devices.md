@@ -13,7 +13,7 @@ Built so far, on `feature/elastic-pools`: the identity check of
 named device ids (§27.2.3, I205), the format rule (§27.2.2,
 I206) and the installer's `--device` on map service hosts (§27.2.1,
 I207) and on storage-only hosts (D280, I334). A replicated pool's
-copies may change (§27.3.5, D283: settled, not yet built). The work
+copies may change (§27.3.5, D287: settled, not yet built). The work
 lands on the branch `feature/elastic-pools`, which merges into `main`
 once the required features are in.
 
@@ -41,7 +41,7 @@ The goal, as settled:
   data has moved. Data rebalances, and the PG count grows with the
   devices. A pool's copies (`size`, `min`) or EC layout never change by
   themselves; an operator may change a replicated pool's copies
-  (§27.3.5, D283).
+  (§27.3.5, D287).
 - **A pool uses a set of classes (D164).** It places on any device whose
   class is in its set, weighted by capacity (D158), under its failure
   domain rule. A pool's space is that of the devices it may use (D159).
@@ -195,7 +195,7 @@ Built (I211).
 | Failure domain | PGs move; refused as above |
 | PG count | Only up, by doubling (§27.5, D174) |
 | Name | Only the name |
-| Copies (`size`, `min`) | A replicated pool's, with a call of its own (§27.3.5, D283) |
+| Copies (`size`, `min`) | A replicated pool's, with a call of its own (§27.3.5, D287) |
 
 Built (I213): the class set, failure domain and name, any of them in one
 call; thresholds wait for them to exist, and the PG count for stage 5.
@@ -239,7 +239,7 @@ too (I215), as an operation that runs again from what is left.
 
 #### 27.3.5 Changing a pool's copies
 
-D283 (settled 2026-11-10 that copies change; the rules below are open
+D287 (settled 2026-11-10 that copies change; the rules below are open
 for review). Not yet built.
 
 - **`SetPoolCopies {pool, size, min, dry_run}`**: a replicated pool's
@@ -398,4 +398,4 @@ Each stage is a milestone item with its own pull requests and tests:
 4. Devices removed (§27.2.5).
 5. PG splits and the autoscaler (§27.5).
 6. Merges, by the operator (D174), when needed.
-7. A replicated pool's copies changed (§27.3.5, D283).
+7. A replicated pool's copies changed (§27.3.5, D287).
