@@ -171,7 +171,11 @@ fn random_list(rng: &mut SmallRng, keys: &[ObjKey]) -> OpList {
                 let crcs = rng
                     .random_bool(0.5)
                     .then(|| data.chunks(BLOCK).map(hyperstor_codec::crc32c).collect());
-                Op::Write { off, data, crcs }
+                Op::Write {
+                    off,
+                    data: data.into(),
+                    crcs,
+                }
             }
             40..=47 => {
                 let b = rng.random_range(0..MAX_BLOCK - 4);
