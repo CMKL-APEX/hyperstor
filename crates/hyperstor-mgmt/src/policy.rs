@@ -161,7 +161,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
 /// What a grant in a realm reaches (D252, D264, D265): the calls about a
 /// realm's tenants, volumes and snapshots, the trash's volumes, buckets,
 /// keys, placements and realm, its people's grants, and the operations on
-/// its tenants' volumes and those one started oneself (D280). Everything
+/// its tenants' volumes and those one started oneself (D283). Everything
 /// else (devices, nodes, pools, members, hosts, the cluster's operations
 /// and cancelling any, scrub, the audit, certificates, tokens, moving
 /// tenants) is the cluster's as a whole.
@@ -173,7 +173,7 @@ pub const IN_REALM: &[&str] = &[
     "S3Service.ListS3Buckets",
     "S3Service.GetS3Bucket",
     "RealmService.ListRealms",
-    // Those on its tenants' volumes and one's own (D280).
+    // Those on its tenants' volumes and one's own (D283).
     "OperationService.GetOperation",
     "OperationService.ListOperations",
     "OperationService.WatchOperation",

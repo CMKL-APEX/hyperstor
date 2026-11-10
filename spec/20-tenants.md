@@ -196,15 +196,15 @@ strict multi-tenancy without a cluster per customer.
   and keys, its placements and exports, and its people's grants (D264),
   and see nothing of other realms nor of the cluster as a whole (D265),
   but follow the operations on its tenants' volumes, whoever started
-  them (D280). Lists across several realms name each row's realm, and a
-  creation in realms names its tenant or realm (D281).
+  them (D283). Lists across several realms name each row's realm, and a
+  creation in realms names its tenant or realm (D284).
   Cluster administrators see everything, and may act in one realm to
   see what its administrators see: `hyperstorctl --in-realm R` and the
   UI's realm picker. People's grants live in mgmt, which names the
   realms a call reaches; the map service, which knows each container's
   realm, applies them (D260, D262); cluster API certificates stay
   cluster-wide. Pools, devices and hosts stay the cluster
-  administrator's. Built (I303, I331). Why: the operator of one realm can't
+  administrator's. Built (I303, I337). Why: the operator of one realm can't
   make keys or attach volumes in another.
 - **The name (D253).** "Realm", as in Kerberos: an administrative domain
   with its own keys. Rejected: *partition* (network partitions),

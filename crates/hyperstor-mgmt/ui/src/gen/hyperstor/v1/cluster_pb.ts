@@ -84,7 +84,7 @@ export type TrashItem = Message<"hyperstor.v1.TrashItem"> & {
   group: string;
 
   /**
-   * The volume's tenant (D258) and its realm (D281).
+   * The volume's tenant (D258) and its realm (D284).
    *
    * @generated from field: uint32 tenant = 10;
    */
@@ -161,7 +161,7 @@ export type TrashItemJson = {
   group?: string;
 
   /**
-   * The volume's tenant (D258) and its realm (D281).
+   * The volume's tenant (D258) and its realm (D284).
    *
    * @generated from field: uint32 tenant = 10;
    */
@@ -5540,7 +5540,7 @@ export type Volume = Message<"hyperstor.v1.Volume"> & {
   tenant: number;
 
   /**
-   * In lists: the tenant's realm (D281).
+   * In lists: the tenant's realm (D284).
    *
    * @generated from field: string realm = 9;
    */
@@ -5607,7 +5607,7 @@ export type VolumeJson = {
   tenant?: number;
 
   /**
-   * In lists: the tenant's realm (D281).
+   * In lists: the tenant's realm (D284).
    *
    * @generated from field: string realm = 9;
    */

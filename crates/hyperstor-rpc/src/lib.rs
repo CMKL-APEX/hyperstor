@@ -18,6 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 use thiserror::Error;
@@ -51,12 +52,12 @@ impl From<FrameError> for RpcError {
 pub type Reply = (Msg, Vec<u8>);
 
 /// A frame queued for [`writer`]: its bytes, and perhaps a payload sent
-/// after them without being copied in, owned or shared with the frames
-/// to other replicas.
+/// after them without being copied in: all or part of a buffer, owned or
+/// shared with the frames to other replicas.
 #[derive(Debug)]
 pub struct Frame {
     head: Vec<u8>,
-    tail: Option<Rc<Vec<u8>>>,
+    tail: Option<(Rc<Vec<u8>>, Range<usize>)>,
 }
 
 impl From<Vec<u8>> for Frame {
@@ -82,17 +83,23 @@ impl Frame {
 
     /// A frame that sends `payload` as it is, shared with others.
     pub fn shared(req: u64, msg: &Msg, payload: &Rc<Vec<u8>>) -> Frame {
-        if payload.len() < OWN_READ {
-            return Frame::new(req, msg, payload);
+        Frame::part(req, msg, payload, 0..payload.len())
+    }
+
+    /// A frame that sends `buf[range]` as it is, unless it is small
+    /// enough to copy: one piece of a client's write that spans chunks.
+    pub fn part(req: u64, msg: &Msg, buf: &Rc<Vec<u8>>, range: Range<usize>) -> Frame {
+        if range.len() < OWN_READ {
+            return Frame::new(req, msg, &buf[range]);
         }
         Frame {
-            head: encode_head(req, msg, payload.len(), 0),
-            tail: Some(payload.clone()),
+            head: encode_head(req, msg, range.len(), 0),
+            tail: Some((buf.clone(), range)),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.head.len() + self.tail.as_ref().map_or(0, |t| t.len())
+        self.head.len() + self.tail.as_ref().map_or(0, |(_, r)| r.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -216,7 +223,7 @@ async fn read_n(s: &TcpStream, n: usize) -> Result<Vec<u8>, RpcError> {
     if n == 0 {
         return Ok(Vec::new());
     }
-    let (r, b) = s.read_exact(vec![0; n]).await;
+    let (r, b) = s.read_exact_n(n).await;
     r.map_err(|e| RpcError::Io(e.to_string()))?;
     Ok(b)
 }
@@ -263,7 +270,7 @@ pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Frame>) {
             c.sent(f.len());
         }
         let r = match f.tail {
-            Some(tail) => s.write_all2(f.head, tail).await,
+            Some((tail, range)) => s.write_all2(f.head, tail, range).await,
             None => s.write_all(f.head).await.0,
         };
         if r.is_err() {
@@ -378,6 +385,17 @@ impl Conn {
         payload: &Rc<Vec<u8>>,
     ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
         Self::answer(self.queue(|req| Frame::shared(req, msg, payload)))
+    }
+
+    /// [`Conn::start`] with `buf[range]` as the payload, sent without a
+    /// copy when it is large ([`Frame::part`]).
+    pub fn start_part(
+        &self,
+        msg: &Msg,
+        buf: &Rc<Vec<u8>>,
+        range: Range<usize>,
+    ) -> impl Future<Output = Result<Reply, RpcError>> + 'static {
+        Self::answer(self.queue(|req| Frame::part(req, msg, buf, range)))
     }
 
     async fn answer(queued: Queued) -> Result<Reply, RpcError> {
@@ -707,7 +725,7 @@ mod pool_tests {
         assert_eq!(sends.len(), 7, "small frames fill sends of the batch size");
         let tail: Vec<u8> = sends[2..5].iter().flat_map(|f| f.head.clone()).collect();
         assert_eq!(tail.len(), 300 + 2 * BATCH_BYTES / 1000 * 1000);
-        let own = sends[5].tail.as_ref().expect("a payload of its own");
+        let (own, _) = sends[5].tail.as_ref().expect("a payload of its own");
         assert_eq!(own.as_ptr(), big_at, "the payload is sent as given");
         assert_eq!(sends[6].head, vec![5u8; 10]);
     }
@@ -748,6 +766,44 @@ mod pool_tests {
         });
     }
 
+    /// HS5b (I324): the parts of one buffer that a client's write sends to
+    /// different chunks reach the peer as they were cut: large ones from
+    /// the buffer itself, at any offset, and a small one copied.
+    #[test]
+    fn parts_of_one_buffer_reach_the_peer_as_cut() {
+        block_on(async {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let reader = spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let mut got = Vec::new();
+                for _ in 0..3 {
+                    got.push(read_frame(&s).await.unwrap().2);
+                }
+                got
+            });
+            let s = Rc::new(TcpStream::connect(addr).await.unwrap());
+            let (tx, rx) = channel();
+            let buf = Rc::new((0..3 << 20).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+            let cuts = [
+                0..(1 << 20) + 7,
+                (1 << 20) + 7..(3 << 20) - 100,
+                (3 << 20) - 100..3 << 20,
+            ];
+            for (i, r) in cuts.iter().enumerate() {
+                let f = Frame::part(i as u64, &Msg::Ping, &buf, r.clone());
+                assert_eq!(f.tail.is_some(), r.len() >= OWN_READ);
+                tx.send(f).unwrap();
+            }
+            drop(tx);
+            writer(s, rx).await;
+            let got = reader.await;
+            for (g, r) in got.iter().zip(&cuts) {
+                assert!(g[..] == buf[r.clone()]);
+            }
+        });
+    }
+
     /// I283: frames of every size reach the peer whole and in order.
     #[test]
     fn the_writer_delivers_mixed_frames_in_order() {
@@ -777,12 +833,12 @@ mod pool_tests {
             let s = Rc::new(TcpStream::connect(addr).await.unwrap());
             let (tx, rx) = channel();
             for f in frames {
-                // The large ones as a header and a shared payload, sent by
-                // `write_all2`.
+                // The large ones as a header and the rest of a shared
+                // buffer, sent by `write_all2`.
                 let f = if f.len() > BATCH_BYTES {
                     Frame {
                         head: f[..100].to_vec(),
-                        tail: Some(Rc::new(f[100..].to_vec())),
+                        tail: Some((Rc::new(f.clone()), 100..f.len())),
                     }
                 } else {
                     f.into()

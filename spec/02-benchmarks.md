@@ -2002,3 +2002,79 @@ The same 1 GiB file read with `dd iflag=direct`: 2.7 s at `bs=1M`,
    restart costs about half a second a shard on this host, once. The
    hash chain (D266) doesn't remove the read: a gap is proven only by a
    record found after it.
+
+## 2026-11-09: A client's write sent from its own buffer (HS5b, I324)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:
+main at 00b3fa7f (before) and the same with each chunk's piece of a
+client's write sent from the caller's buffer (after), run alternately,
+three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6556 (6547–6614) | 6570 (6516–6617) | +0.2% | 153 → 152 |
+| 4 KiB random writes, QD32 | 25506 (25221–25560) | 25344 (25079–25602) | −0.6% | 1002 → 1019 |
+| 4 KiB random reads, QD1 | 17164 (17043–17308) | 17176 (17163–17372) | +0.1% | 58 → 58 |
+| 4 KiB random reads, QD32 | 51716 (51487–52362) | 51690 (51511–51906) | −0.1% | 404 → 407 |
+| 1 MiB writes, QD4 | 799 (796–800) | 833 (827–835) | +4.3% | 4867 → 4627 |
+| 1 MiB reads, QD1 | 1296 (1294–1317) | 1295 (1284–1315) | −0.1% | 759 → 758 |
+| 1 MiB reads, QD2 | 1873 (1872–1899) | 1883 (1875–1913) | +0.5% | 971 → 964 |
+| 1 MiB reads, QD4 | 2806 (2804–2817) | 2817 (2801–2822) | +0.4% | 1331 → 1329 |
+
+### Findings
+
+1. **1 MiB writes gain 4%**, with no overlap between the runs: one copy
+   of each write less on the client, which in this benchmark shares the
+   host with the three nodes.
+2. **Nothing else changes** beyond the run-to-run range: reads send no
+   payload, and pieces under 16 KiB are still copied into their frame.
+
+## 2026-11-09: Buffers not zeroed before they are overwritten (HS5b, I327)
+
+What allocating, filling and checking a 1 MiB buffer costs on one of
+the pilot's HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0, glibc malloc),
+from a small program built with `--release` (3000 iterations after 50
+to warm up), per MiB:
+
+| Step | Main thread, µs | Page faults | Spawned thread, µs |
+|---|---|---|---|
+| `Vec` of 1 MiB, filled by a copy | 24–28 | 0 | 28 |
+| 4 KiB-aligned allocation of 1 MiB, filled by a copy | 599 | 257 | 28 |
+| 4 KiB-aligned allocation of 256 KiB, filled by a copy | 632 | 260 | 25 |
+| Over-allocated by 4 KiB and aligned by hand, copy | 15 | 0 | 15 |
+| CRC32C per 4 KiB block (check on arrival) | 56 | 0 | — |
+| Check, then zeroed aligned allocation and copy | 685 | — | — |
+| Copy and check fused, block by block | 667 | — | — |
+
+End to end, `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` as in the
+sections before: main at c0a522c5 (before) and the same with neither
+receive buffers nor the engine's aligned copies zeroed (after), run
+alternately, three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6371 (6347–6408) | 6384 (6353–6407) | +0.2% | 157 → 156 |
+| 4 KiB random writes, QD32 | 24126 (23093–24354) | 24365 (23201–24453) | +1.0% | 1054 → 1091 |
+| 4 KiB random reads, QD1 | 16664 (16318–16715) | 16677 (16666–16786) | +0.1% | 61 → 61 |
+| 4 KiB random reads, QD32 | 50364 (49687–50473) | 50756 (50222–50996) | +0.8% | 418 → 412 |
+| 1 MiB writes, QD4 | 799 (786–812) | 835 (817–839) | +4.5% | 4841 → 4607 |
+| 1 MiB reads, QD1 | 1267 (1248–1289) | 1254 (1237–1275) | −1.0% | 778 → 781 |
+| 1 MiB reads, QD2 | 1858 (1841–1868) | 1861 (1802–1874) | +0.2% | 979 → 972 |
+| 1 MiB reads, QD4 | 2755 (2750–2777) | 2795 (2762–2829) | +1.5% | 1356 → 1313 |
+
+### Findings
+
+1. **1 MiB writes gain 4.5%**, with no overlap between the runs: a
+   replicated write zeroed six buffers of its size (the primary's and
+   two replicas' receive buffers and the three nodes' aligned copies).
+2. **Reads don't move beyond the run-to-run range**: they zero one
+   buffer, the client's.
+3. **Fusing the check with the copy isn't worth it**: the CRC is limited
+   by its instruction, not by reading memory, so it saves about 15 µs
+   per MiB, and would move the check into the engine's commit loop.
+4. **Large 4 KiB-aligned allocations on the main thread fault every
+   page in**, 20 times the cost of the copy; on other threads, and for
+   a `Vec`, glibc reuses its heap. The daemon allocates on its reactor
+   threads; `hyperstor-bench engine` runs on the main thread, so its
+   large reads and writes carry this cost.

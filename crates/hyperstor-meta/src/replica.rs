@@ -103,6 +103,26 @@ pub struct Members {
     pub learners: Vec<Member>,
     pub leader: Option<RaftId>,
     pub me: RaftId,
+    /// Raft progress as this member sees it (D281).
+    pub raft: Progress,
+}
+
+/// A member's Raft progress, from its metrics (D281).
+#[derive(Debug, Clone, Default)]
+pub struct Progress {
+    pub term: u64,
+    /// The last entry in its log, and the last one applied to its map.
+    pub last_log: Option<u64>,
+    pub applied: Option<u64>,
+    /// The leader alone: since a quorum last acknowledged it.
+    pub quorum_ack_ms: Option<u64>,
+    /// The leader alone: each member's last entry it knows the member
+    /// holds; `None` inside for one that has matched none yet.
+    pub matched: Option<std::collections::BTreeMap<RaftId, Option<u64>>>,
+    /// Since each member last answered this one's Raft calls, which the
+    /// leader makes to every member each heartbeat; none from one never
+    /// heard.
+    pub heard_ms: std::collections::BTreeMap<RaftId, u64>,
 }
 
 /// A change to, or a look at, the group's members (D87), done by the
@@ -224,10 +244,12 @@ async fn run(
     if !cfg.members.iter().any(|m| m.id == cfg.id) {
         return fail(format!("member {} is not in the member list", cfg.id));
     }
+    let heard = Heard::default();
     let transport = Arc::new(Tcp {
         tls: cfg.tls.clone(),
         conns: tokio::sync::Mutex::new(HashMap::new()),
         db: db.clone(),
+        heard: heard.clone(),
     });
     let node = match ClusterNode::<MapSchema>::start(
         db.clone(),
@@ -316,6 +338,8 @@ async fn run(
         tokio::spawn(async move {
             let mut metrics = node.raft.metrics();
             let mut last = None;
+            // The last leader this member knew, for the audit (I336).
+            let mut before: Option<RaftId> = None;
             loop {
                 // Copied out first: `map_of` reads the metrics again, and a
                 // second read while this one is held deadlocks once
@@ -338,8 +362,17 @@ async fn run(
                         Some(l) => eprintln!("hyperstor-meta: member {l} leads (term {term})"),
                         None => eprintln!("hyperstor-meta: no leader (term {term})"),
                     }
+                    if let Some((op, result)) = leader_change(node.id, before, leader, term) {
+                        crate::audit_log::record(
+                            "hyperstor-meta",
+                            op,
+                            &format!("member {}", node.id),
+                            &result,
+                        );
+                    }
                     let _ = to.send(ToReactor::Leader(leading));
                 }
+                before = current.or(before);
                 if metrics.changed().await.is_err() {
                     return;
                 }
@@ -389,13 +422,13 @@ async fn run(
             while let Some(op) = member_ops.recv().await {
                 match op {
                     MemberOp::List(reply) => {
-                        let _ = reply.send(members_now(&node, me));
+                        let _ = reply.send(members_now(&node, me, &heard));
                     }
                     MemberOp::Add { member, reply } => {
-                        let _ = reply.send(add_member(&node, me, member).await);
+                        let _ = reply.send(add_member(&node, me, &heard, member).await);
                     }
                     MemberOp::Remove { id, force, reply } => {
-                        let _ = reply.send(remove_member(&node, me, id, force).await);
+                        let _ = reply.send(remove_member(&node, me, &heard, id, force).await);
                     }
                 }
             }
@@ -418,8 +451,33 @@ async fn run(
 const APPEND: u8 = 1;
 const VOTE: u8 = 2;
 const SNAPSHOT: u8 = 3;
+/// The audit record of a change of leader, as member `me` sees it go from
+/// `before` (the last leader it knew) to `now` (I336): the member that
+/// takes over records `LeaderElected`, and one that led and sees another
+/// lead, or none, records `LeaderLost`. Others record nothing, so a change
+/// is one record, or two when the old leader still runs.
+fn leader_change(
+    me: RaftId,
+    before: Option<RaftId>,
+    now: Option<RaftId>,
+    term: u64,
+) -> Option<(&'static str, String)> {
+    let was =
+        |b: Option<RaftId>| b.map_or("none known before".into(), |b| format!("member {b} before"));
+    match now {
+        Some(l) if l == me && before != Some(me) => {
+            Some(("LeaderElected", format!("term {term}; {}", was(before))))
+        }
+        Some(l) if l != me && before == Some(me) => {
+            Some(("LeaderLost", format!("term {term}; member {l} leads")))
+        }
+        None if before == Some(me) => Some(("LeaderLost", format!("term {term}; no leader"))),
+        _ => None,
+    }
+}
+
 /// The group from this member's metrics.
-fn members_now(node: &ClusterNode<MapSchema>, me: RaftId) -> Members {
+fn members_now(node: &ClusterNode<MapSchema>, me: RaftId, heard: &Heard) -> Members {
     let m = node.raft.metrics();
     let b = m.borrow();
     let membership = b.membership_config.membership();
@@ -437,6 +495,22 @@ fn members_now(node: &ClusterNode<MapSchema>, me: RaftId) -> Members {
         learners: membership.learner_ids().filter_map(member).collect(),
         leader: b.current_leader,
         me,
+        raft: Progress {
+            term: b.current_term,
+            last_log: b.last_log_index,
+            applied: b.last_applied.map(|l| l.index),
+            quorum_ack_ms: b.millis_since_quorum_ack,
+            matched: b
+                .replication
+                .as_ref()
+                .map(|r| r.iter().map(|(id, l)| (*id, l.map(|l| l.index))).collect()),
+            heard_ms: heard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|(id, t)| (*id, t.elapsed().as_millis() as u64))
+                .collect(),
+        },
     }
 }
 
@@ -453,12 +527,13 @@ const CATCH_UP: std::time::Duration = std::time::Duration::from_secs(120);
 async fn add_member(
     node: &ClusterNode<MapSchema>,
     me: RaftId,
+    heard: &Heard,
     member: Member,
 ) -> Result<Members, String> {
     if !node.is_leader() {
         return Err(not_leading(node));
     }
-    let now = members_now(node, me);
+    let now = members_now(node, me, heard);
     if now
         .voters
         .iter()
@@ -482,12 +557,13 @@ async fn add_member(
     let mut voters = node.voters();
     voters.insert(member.id);
     node.set_voters(voters).await.map_err(|e| e.to_string())?;
-    Ok(members_now(node, me))
+    Ok(members_now(node, me, heard))
 }
 
 async fn remove_member(
     node: &ClusterNode<MapSchema>,
     me: RaftId,
+    heard: &Heard,
     id: RaftId,
     force: bool,
 ) -> Result<Members, String> {
@@ -511,7 +587,7 @@ async fn remove_member(
     node.remove_members([id].into_iter().collect())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(members_now(node, me))
+    Ok(members_now(node, me, heard))
 }
 
 /// A snapshot is the whole map, so a frame is bounded well above it.
@@ -528,6 +604,19 @@ struct Tcp {
     conns: tokio::sync::Mutex<HashMap<String, Slot>>,
     /// For the revocation list (`certs.rs`).
     db: Arc<Db>,
+    heard: Heard,
+}
+
+/// When each member last answered a Raft call of this one (D281).
+type Heard = Arc<std::sync::Mutex<HashMap<RaftId, std::time::Instant>>>;
+
+impl Tcp {
+    fn answered(&self, target: RaftId, r: &Result<Vec<u8>, TransportError>) {
+        if r.is_ok() {
+            let mut h = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+            h.insert(target, std::time::Instant::now());
+        }
+    }
 }
 
 /// The peer certificate's identity must be a `meta` of this cluster, and
@@ -672,7 +761,7 @@ async fn exchange(s: &mut Box<dyn Stream>, kind: u8, body: &[u8]) -> std::io::Re
 impl Transport for Tcp {
     async fn call(
         &self,
-        _target: RaftId,
+        target: RaftId,
         addr: &str,
         rpc: Rpc,
         body: Vec<u8>,
@@ -681,12 +770,14 @@ impl Transport for Tcp {
             Rpc::Append => APPEND,
             Rpc::Vote => VOTE,
         };
-        self.request(split_node(addr).0, kind, &body).await
+        let r = self.request(split_node(addr).0, kind, &body).await;
+        self.answered(target, &r);
+        r
     }
 
     async fn snapshot(
         &self,
-        _target: RaftId,
+        target: RaftId,
         addr: &str,
         header: Vec<u8>,
         data: PathBuf,
@@ -698,7 +789,9 @@ impl Transport for Tcp {
         body.extend_from_slice(&(header.len() as u32).to_le_bytes());
         body.extend_from_slice(&header);
         body.extend_from_slice(&data);
-        self.request(split_node(addr).0, SNAPSHOT, &body).await
+        let r = self.request(split_node(addr).0, SNAPSHOT, &body).await;
+        self.answered(target, &r);
+        r
     }
 }
 
@@ -803,6 +896,8 @@ pub fn settings() -> RaftSettings {
         // An entry is usually what one change touched, but a whole map
         // (the first, a new pool) can be megabytes: keep the log short.
         log_keep_entries: 1_000,
+        // Every apply flushes, as before glidex D31 (I332).
+        checkpointed_applies: false,
     }
 }
 
@@ -826,6 +921,29 @@ mod tests {
 
     /// Members refuse each other's certificates once revoked (D56), and
     /// any that isn't a `meta` of this cluster.
+    #[test]
+    fn a_change_of_leader_is_recorded_once_by_each_side() {
+        assert_eq!(
+            leader_change(2, Some(1), Some(2), 7),
+            Some(("LeaderElected", "term 7; member 1 before".into()))
+        );
+        assert_eq!(
+            leader_change(2, None, Some(2), 1),
+            Some(("LeaderElected", "term 1; none known before".into()))
+        );
+        assert_eq!(
+            leader_change(1, Some(1), Some(2), 7),
+            Some(("LeaderLost", "term 7; member 2 leads".into()))
+        );
+        assert_eq!(
+            leader_change(1, Some(1), None, 7),
+            Some(("LeaderLost", "term 7; no leader".into()))
+        );
+        // A bystander, and the same leader again.
+        assert_eq!(leader_change(3, Some(1), Some(2), 7), None);
+        assert_eq!(leader_change(2, Some(2), Some(2), 8), None);
+    }
+
     #[test]
     fn members_refuse_revoked_peers() {
         let dir = tempfile::tempdir().unwrap();
@@ -907,6 +1025,7 @@ mod tests {
                 tls: None,
                 conns: tokio::sync::Mutex::new(HashMap::new()),
                 db,
+                heard: Heard::default(),
             };
             assert_eq!(tcp.request(&addr, VOTE, b"a").await.unwrap(), b"a");
             let dropped = tokio::time::timeout(
@@ -991,6 +1110,7 @@ mod tests {
                 tls: Some(client),
                 conns: tokio::sync::Mutex::new(HashMap::new()),
                 db,
+                heard: Heard::default(),
             };
             // Calls given 50 ms each, as Raft gives them, one after another.
             let mut answered = None;

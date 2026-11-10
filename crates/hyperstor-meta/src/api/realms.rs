@@ -46,7 +46,7 @@ impl Scope {
         self.whole() || self.realm(self.realms.realm_of(tenant))
     }
 
-    /// Whether operation `op` is seen (D280): the cluster's sees them all;
+    /// Whether operation `op` is seen (D283): the cluster's sees them all;
     /// in realms, those on their tenants' volumes, and a volume's recorded
     /// before tenants were (none) if `who` started it. The cluster's own
     /// (drains, scrubs, pools, devices) never.
@@ -103,7 +103,7 @@ impl Scope {
     }
 
     /// For a creation that names no tenant or realm, which would land in
-    /// "default" (D281): in realms, refused with `reason` unless "default"
+    /// "default" (D284): in realms, refused with `reason` unless "default"
     /// is the only one reached, so it never lands in one by chance.
     pub(super) fn named(
         &self,
@@ -234,7 +234,7 @@ impl Api {
         self.realm_rows("realm", realms::load).await
     }
 
-    /// Every realm, to name the realm of each row a list answers (D281):
+    /// Every realm, to name the realm of each row a list answers (D284):
     /// a limited call's, read once; read for the cluster's too, and
     /// "default" for all when they can't be read, rather than no list.
     pub(super) async fn realm_names(&self, scope: &Scope) -> Realms {
@@ -611,7 +611,7 @@ mod tests {
     use super::*;
     use crate::operations::{Op, State, Work};
 
-    /// D280, D281: in realms, the operations on their tenants' volumes and
+    /// D283, D284: in realms, the operations on their tenants' volumes and
     /// one's own are seen, the cluster's are not; a creation naming no
     /// tenant or realm passes only for the cluster or "default" alone.
     #[test]

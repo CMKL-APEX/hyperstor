@@ -1431,12 +1431,24 @@ The owner chose where to keep it:
 | 242 | An OIDC login's state across mgmt instances: a map service row, sealed with a key from the browser's cookie and used once, through a `glidex-auth` change (recommended); a sealed browser cookie under a key every mgmt shares; forwarding the callback to the mgmt that began it | The map service row | D278 |
 | 243 | #244's remaining gap: operation-list writes (S3 object data) carry no CRCs; fix in v0.0.8 with a checksummed write op, plain to older peers (recommended); close #244 and follow up in v0.0.9; close #244 and leave it | Fix in v0.0.8 | D279 |
 
-## Realms after HS15 (2026-11-09)
+## Devices on storage-only hosts (2026-11-10)
 
-HS15's I303 left two points for review. Asked with a recommendation
-for each, the owner took both (D280, D281):
+Adding a storage-only host to the pilot, its NVMe drive had to
+be added by hand: the installer's `--device` needed the administrator's
+certificate, which only map service hosts have, and D167's other way, a
+second join with a token, was never built (I334). The owner chose how
+such a host may register its own devices:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 244 | A realm's operations: each records its volume's tenant, and the realm's people see them all, the cluster's own staying hidden (recommended); only one's own, as built | Operations record their realm | D280 |
-| 245 | Someone with roles in two realms and no realm picked: merged lists that name each row's realm, creations that could land in either refused unless they name one (recommended); a realm must be picked first; merged lists as built | Merged, each row's realm named | D281 |
+| 244 | `--device` on a storage-only host: the node's certificate may add devices to its own node, at an IP it already serves on, as D215 lets it set its own endpoints (recommended); a one-time `device` token from the administrator per addition; both, with a setting to require the token | The node's certificate | D280 |
+
+## Realms after HS15 (2026-11-09)
+
+HS15's I303 left two points for review. Asked with a recommendation
+for each, the owner took both (D283, D284):
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 245 | A realm's operations: each records its volume's tenant, and the realm's people see them all, the cluster's own staying hidden (recommended); only one's own, as built | Operations record their realm | D283 |
+| 246 | Someone with roles in two realms and no realm picked: merged lists that name each row's realm, creations that could land in either refused unless they name one (recommended); a realm must be picked first; merged lists as built | Merged, each row's realm named | D284 |

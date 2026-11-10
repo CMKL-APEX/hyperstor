@@ -1,6 +1,6 @@
 // Running and recent operations (drains, flattens, purges; finished ones
 // are kept a week) with their progress; cancel a drain (operators). In a
-// realm, those on its tenants' volumes and one's own (D280).
+// realm, those on its tenants' volumes and one's own (D283).
 import { useState } from "react";
 import { ops } from "../api";
 import { OperationState, type Operation } from "../gen/hyperstor/v1/admin_pb";

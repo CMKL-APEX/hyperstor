@@ -136,7 +136,7 @@ pub struct Op {
     pub started_ms: u64,
     pub finished_unix: u64,
     pub created_by: String,
-    /// The tenant of the volume it acts on (D280), whose realm's people
+    /// The tenant of the volume it acts on (D283), whose realm's people
     /// see it; `None` for the cluster's own (drains, scrubs, pools,
     /// devices) and in records written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]

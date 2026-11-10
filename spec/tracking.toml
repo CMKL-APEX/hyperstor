@@ -368,6 +368,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log"
+spec = ["D281", "D282", "I335", "I336", "19-administration.md §23.7"]
+status = "done"
+tests = [
+    "members::the_member_list_shows_a_stopped_member",
+    "hyperstor_ctl::tests::a_members_state_is_the_leaders_view",
+    "hyperstor_meta::replica::tests::a_change_of_leader_is_recorded_once_by_each_side",
+]
+
+[[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
 spec = ["06-metadata.md §4.2", "06-metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
 status = "done"
@@ -726,11 +736,12 @@ status = "done"
 tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
 
 [[milestone.item]]
-what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place; then the client's payloads and zero-copy sends (`SEND_ZC`)"
-spec = ["D41", "I23", "I283", "I300"]
+what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place, a client's write sent from its own buffer; then zero-copy sends (`SEND_ZC`)"
+spec = ["D41", "I23", "I283", "I300", "I324"]
 status = "partial"
 tests = [
     "hyperstor_rpc::pool_tests::a_shared_payload_reaches_the_peer_from_both_frames",
+    "hyperstor_rpc::pool_tests::parts_of_one_buffer_reach_the_peer_as_cut",
 ]
 
 [[milestone.item]]
@@ -757,6 +768,15 @@ tests = [
     "cluster::operation_list_writes_keep_the_writers_crcs",
     "cluster::checksummed_writes_reach_nodes_of_the_protocol_before",
     "hyperstor_daemon::tests::checksummed_writes_are_checked_and_unknown_to_older_nodes",
+]
+
+[[milestone.item]]
+what = "Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data"
+spec = ["D41", "I327"]
+status = "done"
+tests = [
+    "hyperstor_engine::align::tests::copies_are_aligned_and_padded_with_zeros",
+    "hyperstor_reactor::net::tests::read_exact_n_fills_from_pieces_and_reports_an_early_end",
 ]
 
 [[milestone.item]]
@@ -1035,7 +1055,7 @@ tests = [
 
 [[milestone.item]]
 what = "A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm"
-spec = ["20-tenants.md §24.8", "D280", "D281", "I331"]
+spec = ["20-tenants.md §24.8", "D283", "D284", "I337"]
 status = "done"
 # Also shown end to end by dashboard::roles_on_a_realm_reach_only_it,
 # hyperstor_mgmt::policy::tests::grants_in_a_realm_reach_only_it and
@@ -1088,11 +1108,12 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The installer adds a block device to an installed node and keeps it across runs"
-spec = ["24-pools-and-devices.md §27.2.1", "D167", "I207"]
+what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"
+spec = ["24-pools-and-devices.md §27.2.1", "D167", "D280", "I207", "I333", "I334"]
 status = "partial"
 tests = [
     "hyperstor_install::tests::added_devices_become_shards_and_udev_rules",
+    "hyperstor_install::tests::udev_rules_come_after_the_by_id_links",
     "manage::the_installer_adds_a_device_to_a_node",
 ]
 
