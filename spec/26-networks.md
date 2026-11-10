@@ -201,6 +201,11 @@ port on its own NUMA node.
   name, and a map service host's proposal would override the cluster
   file's; nor does `glidex-topology` see an address on a bridge over a
   bond (I339).
+- **A host's clients follow its storage (D289).** The installer gives
+  `hyperstor-vhost` and `hyperstor-s3` the networks the host's storage
+  nodes reach others on (`--client-networks auto`), or the ones named;
+  a host without storage nodes names them. Why: clients on the slower
+  network would cap VM disks and S3 after storage moved.
 - **Clients** rank their own ports the same way: by closeness to the
   client reactor's CPU, and for `libhyperstor-gpu` to the GPU whose
   buffer is read or written (12-gpu.md §12.1).
