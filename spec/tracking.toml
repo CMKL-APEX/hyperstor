@@ -1416,7 +1416,7 @@ tests = [
 
 [[milestone.item]]
 what = "A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member"
-spec = ["19-administration.md §23.4.3", "D286"]
+spec = ["19-administration.md §23.4.3", "D288"]
 status = "planned"
 
 [[milestone.item]]

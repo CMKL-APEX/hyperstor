@@ -1452,4 +1452,4 @@ the recommendations:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 248 | A host's roles: (1) the installer adds and removes the member itself (recommended), or the operator with `hyperstorctl`; (2) a demoted member's store deleted after a `map backup` (recommended), or kept; (3) the intermediate's rotation on a demote a follow-up (recommended), or a step of every demote | As recommended | D286 |
+| 248 | A host's roles: (1) the installer adds and removes the member itself (recommended), or the operator with `hyperstorctl`; (2) a demoted member's store deleted after a `map backup` (recommended), or kept; (3) the intermediate's rotation on a demote a follow-up (recommended), or a step of every demote | As recommended | D288 |

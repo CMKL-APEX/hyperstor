@@ -145,7 +145,7 @@ join (clustering.md §5.2), so operators learn one model.
 
 #### 23.4.3 Changing a host's roles
 
-D286 (settled 2026-11-10; point 248). Not yet built.
+D288 (settled 2026-11-10; point 248). Not yet built.
 
 A host runs a **map service member** (`hyperstor-meta`, with mgmt, the
 web UI and authd beside it, the `api`, `mgmt`, `web` and `admin`
