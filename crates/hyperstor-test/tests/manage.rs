@@ -1004,6 +1004,105 @@ fn a_pool_is_renamed_and_its_domain_changed() {
     });
 }
 
+/// §27.3.5, D287: a replicated pool's copies change on a running cluster.
+/// 2/1 → 3/2 adds a member to each PG, which backfills while I/O goes on;
+/// 3/2 → 2/1 drops one at once. More copies than hosts, and a dry run's
+/// change, are refused or change nothing; data reads back throughout.
+#[test]
+fn a_pools_copies_are_raised_and_lowered() {
+    let c = Cluster::all_in_one("copies", 3);
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&[
+        "pool",
+        "create",
+        "--name",
+        "two",
+        "--classes",
+        "file",
+        "--copies",
+        "2",
+        "--min",
+        "1",
+    ])
+    .ok();
+    c.ctl(&["io-test", "--pool", "3", "--mib", "8"]).ok();
+    let members = |c: &Cluster| -> Vec<(usize, usize)> {
+        let v: serde_json::Value =
+            serde_json::from_str(&c.ctl(&["pgs", "--pool", "3", "--json"]).ok().out).unwrap();
+        v["pgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let n = |k: &str| p[k].as_array().map_or(0, Vec::len);
+                (n("up"), n("acting"))
+            })
+            .collect()
+    };
+    let refused = c.ctl(&[
+        "pool", "copies", "--pool", "3", "--copies", "4", "--min", "2",
+    ]);
+    assert!(
+        refused.code == 1 && refused.has("span 3 failure domain(s)"),
+        "{}",
+        refused.out
+    );
+    let dry = c
+        .ctl(&[
+            "pool",
+            "copies",
+            "--pool",
+            "3",
+            "--copies",
+            "3",
+            "--min",
+            "2",
+            "--dry-run",
+        ])
+        .ok();
+    assert!(
+        dry.has("dry run: pool 3 would keep 3 copies"),
+        "{}",
+        dry.out
+    );
+    assert!(
+        members(&c).len() == 256 && members(&c).iter().all(|&(up, _)| up == 2),
+        "a dry run changes nothing"
+    );
+    let raised = c
+        .ctl(&[
+            "pool", "copies", "--pool", "3", "--copies", "3", "--min", "2",
+        ])
+        .ok();
+    assert!(raised.has("pool 3 keeps 3 copies, min 2"), "{}", raised.out);
+    wait_for("every PG of pool 3 with three copies", 120, || {
+        let m = members(&c);
+        (!m.is_empty() && m.iter().all(|&pg| pg == (3, 3))).then_some(())
+    });
+    c.ctl(&["io-test", "--pool", "3", "--mib", "8"]).ok();
+    let lowered = c
+        .ctl(&[
+            "pool", "copies", "--pool", "3", "--copies", "2", "--min", "1",
+        ])
+        .ok();
+    assert!(
+        lowered.has("pool 3 keeps 2 copies, min 1"),
+        "{}",
+        lowered.out
+    );
+    wait_for("every PG of pool 3 with two copies", 30, || {
+        (members(&c).len() == 256 && members(&c).iter().all(|&pg| pg == (2, 2))).then_some(())
+    });
+    c.ctl(&["io-test", "--pool", "3", "--mib", "8"]).ok();
+    wait_for("the changes in the audit log", 20, || {
+        let a = c.ctl(&["audit", "list", "--op", "SetPoolCopies"]).ok();
+        (a.has("pool 3 size=3 min=2") && a.has("pool 3 size=2 min=1")).then_some(())
+    });
+}
+
 /// D176, D181: a pool that holds a volume, or a volume in the trash,
 /// isn't deleted, and `--dry-run` lists it; once purged, the pool is
 /// deleted and leaves the map, and a new pool doesn't get its id;
