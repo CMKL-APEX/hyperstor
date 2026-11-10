@@ -15,6 +15,7 @@ hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-daemon = { path = "../hyperstor-daemon" }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
+io-uring.workspace = true
 libc.workspace = true
 redb = "4.5"
 rand.workspace = true

@@ -5,7 +5,7 @@
 #   scripts/collect-decision-data.sh [suite ...]
 #
 # Suites: crc placement mem raw engine index decisions redb cluster failover adminload
-# replay logsize paged rejoin digest
+# replay logsize paged rejoin digest mapcommit
 # (default: crc placement decisions redb). Scratch files go to
 # $HS_SCRATCH (default: ~/hs-scratch, on the disk being measured; never a
 # tmpfs, which can't do O_DIRECT and measures memory instead of the device),
@@ -38,7 +38,7 @@ for s in "${suites[@]}"; do
     crc|placement|mem|failover|replay|logsize|paged|adminload|rejoin|digest) "$bench" "$s" ;;
     raw|engine) "$bench" "$s" "$scratch/dev.img" 2 ;;
     index) "$bench" index "$scratch/index.img" ;;
-    decisions|redb) "$bench" "$s" "$scratch" ;;
+    decisions|redb|mapcommit) "$bench" "$s" "$scratch" ;;
     cluster) "$bench" cluster mem 1 ;;
     *) echo "unknown suite $s" >&2; exit 2 ;;
   esac > "$out/$s.md" 2>&1

@@ -117,7 +117,15 @@ fn deletes_go_to_the_trash_until_purged() {
         "{}",
         ops.out
     );
-    let audit = c.audit();
+    // The purge's audit line is written once the operation's end has
+    // committed, after its item has left the trash (I342): wait for it.
+    let audit = wait_for("the purge's audit line", 30, || {
+        let audit = c.audit();
+        audit
+            .iter()
+            .any(|l| l.contains("map-service/purger") && l.contains("\"op\":\"PurgeFromTrash\""))
+            .then_some(audit)
+    });
     for (who, op) in [
         ("/admin/local", "DeleteVolume"),
         ("/admin/local", "RestoreFromTrash"),

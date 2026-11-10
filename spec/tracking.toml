@@ -255,7 +255,7 @@ status = "done"
 tests = [
     "hyperstor_engine::dev::tests::mem_dev",
     "hyperstor_engine::dev::tests::file_and_uring_dev_direct",
-    "hyperstor_engine::align::tests::aligned_and_zeroed",
+    "hyperstor_codec::align::tests::aligned_and_zeroed",
 ]
 
 [[milestone.item]]
@@ -775,13 +775,24 @@ what = "Buffers not zeroed before they are overwritten: frames' receive buffers 
 spec = ["D41", "I327"]
 status = "done"
 tests = [
-    "hyperstor_engine::align::tests::copies_are_aligned_and_padded_with_zeros",
+    "hyperstor_codec::align::tests::copies_are_aligned_and_padded_with_zeros",
     "hyperstor_reactor::net::tests::read_exact_n_fills_from_pieces_and_reports_an_early_end",
 ]
 
 [[milestone.item]]
-what = "Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer"
-spec = ["08-engine.md §6.2", "D41", "I12"]
+what = "Write data received into a block-aligned buffer, shared with the frames to replicas, and written by the engine from it: no copy on the primary or its replicas"
+spec = ["08-engine.md §6.2", "D41", "I12", "I343"]
+status = "done"
+tests = [
+    "hyperstor_codec::iobuf::tests::slices_share_the_bytes_and_keep_their_alignment",
+    "hyperstor_reactor::net::tests::read_exact_into_fills_the_callers_buffer_from_pieces",
+    "hyperstor_rpc::pool_tests::large_request_payloads_arrive_aligned",
+    "engine::an_aligned_write_goes_to_the_device_from_where_it_arrived",
+]
+
+[[milestone.item]]
+what = "Registered (fixed) io_uring buffers for network receives and device writes, if pinning pages per I/O shows in a profile"
+spec = ["08-engine.md §6.2", "D41", "I343"]
 status = "planned"
 
 [[milestone.item]]
@@ -1106,6 +1117,11 @@ tests = [
     "hyperstor_daemon::tests::only_files_are_formatted_by_the_node",
     "hyperstor_install::tests::format_device_refuses_foreign_signatures_unless_forced",
 ]
+
+[[milestone.item]]
+what = "A replicated pool's copies changed, with a dry run and step-up (stage 7)"
+spec = ["24-pools-and-devices.md §27.3.5", "D287"]
+status = "planned"
 
 [[milestone.item]]
 what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"

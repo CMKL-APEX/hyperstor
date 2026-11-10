@@ -2078,3 +2078,159 @@ alternately, three rounds each; medians, with the range of ops/s.
    a `Vec`, glibc reuses its heap. The daemon allocates on its reactor
    threads; `hyperstor-bench engine` runs on the main thread, so its
    large reads and writes carry this cost.
+
+## 2026-11-10: Write data written from the buffer it arrived in (HS5b, I343)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:
+main at 89d9a494 (before) and the same with large request payloads
+received into aligned buffers and written from them (after), run
+alternately, three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6358 (6289–6396) | 6334 (6215–6388) | −0.4% | 156 → 157 |
+| 4 KiB random writes, QD32 | 23493 (23303–23647) | 23362 (23352–23630) | −0.6% | 1018 → 1037 |
+| 4 KiB random reads, QD1 | 16971 (16803–17067) | 17072 (16790–17088) | +0.6% | 59 → 59 |
+| 4 KiB random reads, QD32 | 51730 (51548–51984) | 51858 (50954–52519) | +0.2% | 407 → 402 |
+| 1 MiB writes, QD4 | 871 (855–889) | 957 (926–961) | +9.9% | 4371 → 4020 |
+| 1 MiB reads, QD1 | 1300 (1292–1308) | 1293 (1291–1313) | −0.5% | 762 → 763 |
+| 1 MiB reads, QD2 | 1895 (1858–1914) | 1877 (1864–1883) | −0.9% | 955 → 956 |
+| 1 MiB reads, QD4 | 2815 (2806–2908) | 2848 (2848–2888) | +1.2% | 1293 → 1284 |
+
+### Findings
+
+1. **1 MiB writes gain 10%**, with no overlap between the runs: four
+   copies of each write less (the primary's clone and its aligned copy,
+   and each replica's aligned copy).
+2. **Small writes pay nothing once the shared buffer is kept off their
+   path.** A first version wrapped every frame's payload, replies and
+   empty ones included, and every engine write in a shared buffer: two
+   runs of the same A/B had 4 KiB writes at −2.2% and −1.1% (QD1) and
+   −2.4% and −1.5% (QD32), outside the runs' range, with 1 MiB writes
+   at +12.0% and +9.4%. Without those allocations they are within it.
+3. **Reads don't change**: they carry no request payload.
+
+## 2026-11-10: Commit rounds by `fdatasync` and by FUA (#248, G57, I345)
+
+`hyperstor-bench commit` on one of the pilot's hosts (AMD EPYC 7282,
+16 cores, Linux 6.8.0), on a 2 GiB file on an ext4 partition of a
+drive the pilot doesn't use: a WD SN770 1 TB (DRAM-less, volatile
+write cache, `queue/fua` 1, no power-loss protection, firmware
+731100WD). The host was otherwise idle. The file is
+preallocated and written once, so every write overwrites an allocated
+block and ext4 has no metadata to commit.
+
+```sh
+cargo build --release -p hyperstor-bench
+HS_BENCH_SECS=10 target/release/hyperstor-bench commit <scratch>/dev.img 2   # three times
+```
+
+A round is N 4 KiB writes at random offsets, made durable three ways,
+one round at a time through one io_uring (`O_DIRECT`):
+
+- **writes, then `fdatasync`**: what the engine does (§7.3), two waits;
+- **writes + drained `fdatasync`**: the same in one submit, the
+  `fsync` marked `IOSQE_IO_DRAIN`;
+- **`RWF_DSYNC` writes**: each write durable by itself.
+
+Medians of the three runs (p99 ranges in brackets):
+
+| Round | Durable by | rounds/s | p50 µs | p99 µs | flushes per round |
+|---|---|---|---|---|---|
+| 1 × 4 KiB | writes, then `fdatasync` | 5194 | 187 | 250 (245–259) | 1 |
+| 1 × 4 KiB | writes + drained `fdatasync` | 5124 | 191 | 246 (245–247) | 1 |
+| 1 × 4 KiB | `RWF_DSYNC` | **5965** | **166** | **184** (184–187) | 0 |
+| 8 × 4 KiB | writes, then `fdatasync` | **5306** | **178** | **255** (254–257) | 1 |
+| 8 × 4 KiB | writes + drained `fdatasync` | 5111 | 183 | 321 (263–480) | 1 |
+| 8 × 4 KiB | `RWF_DSYNC` | 4192 | 228 | 290 (287–484) | 0 |
+| 32 × 4 KiB | writes, then `fdatasync` | **2894** | **321** | **532** (443–784) | 1 |
+| 32 × 4 KiB | writes + drained `fdatasync` | 2822 | 324 | 568 (502–877) | 1 |
+| 32 × 4 KiB | `RWF_DSYNC` | 1903 | 483 | 1839 (932–2371) | 0 |
+
+A block trace of a 1-second pass (bpftrace on `block:block_rq_issue`)
+showed what reached the drive: 26,218 flushes (`FF`) for the
+`fdatasync` rounds, one each, and 99,650 writes with FUA (`WFS`) for
+the `RWF_DSYNC` rounds, one per block, with no flush. So ext4 sends
+`RWF_DSYNC` on an overwrite as FUA, as 08-engine.md §6.2 assumed.
+
+### Findings
+
+1. **A one-block round is faster with FUA**: 11% lower p50, 26% lower
+   p99 and 15% more rounds per second. The write and its durability
+   are one command instead of two.
+2. **Rounds of several blocks are slower with FUA**, and more so the
+   larger the round: 21% fewer rounds at 8 blocks, 34% fewer at 32,
+   and at 32 a p99 more than three times as high. Each FUA write is programmed to flash
+   by itself, while one flush covers every write of the round. The
+   drive has no DRAM, so this may differ on drives that have it.
+3. **Submitting the `fdatasync` with the writes gains nothing**: the
+   drained `fsync` waits for the writes in the kernel instead of in the
+   engine, and the device round trips are the same.
+4. So, on a drive with a volatile cache: FUA for a round of one block,
+   a flush for larger rounds. The engine's rounds are usually several
+   blocks (data and log records), so this is a small gain; a drive
+   whose cache is write-through needs neither (the kernel drops both).
+
+Not measured, as the host has no namespace the engine could own: NVMe
+passthrough (`uring_cmd` on `/dev/ngXnY`) with FUA, polled queues
+(`nvme.poll_queues` is 0), and a drive with power-loss protection
+(G57 stays open for them).
+
+## 2026-11-10: The map service's commits with checkpointed applies (I341)
+
+The map service flushes each applied Raft entry unless
+`RaftSettings::checkpointed_applies` is on (glidex D31), which defers the
+flush to a checkpoint every 100 entries or 1 s. A/B in the same run, back
+to back, twice per host: three members over loopback TCP, their stores
+and Raft logs on the disk under test, the leader committing 500 map
+changes one after another (each waits for its commit). Two maps (3 pools
+of 128 or 2048 PGs, 3 copies) and two changes: the map's head alone (an
+epoch), and a device out or in, which moves PGs (the map is recomputed
+between commits: outside the latencies, inside commits per second).
+
+```sh
+hyperstor-bench mapcommit <scratch dir on the disk> 500
+```
+
+**prism2** (AMD EPYC 7742, kernel 6.8; ext4 on md RAID1 of two Samsung
+PM983, write cache write through): p50 ms, run 1 / run 2.
+
+| Map | Change | off p50 | on p50 | off p99 | on p99 | off per s | on per s |
+|---|---|---|---|---|---|---|---|
+| 4 nodes, 3x128 PGs | epoch | 2.05 / 2.02 | 1.75 / 1.95 | 3.80 / 3.60 | 3.32 / 3.61 | 451 / 460 | 527 / 472 |
+| 4 nodes, 3x128 PGs | device out/in | 4.52 / 4.76 | 4.13 / 4.66 | 5.56 / 5.52 | 5.09 / 5.44 | 155 / 187 | 223 / 201 |
+| 32 nodes, 3x2048 PGs | epoch | 8.65 / 9.18 | 8.06 / 8.43 | 10.87 / 12.21 | 10.35 / 10.45 | 114 / 96 | 119 / 114 |
+| 32 nodes, 3x2048 PGs | device out/in | 12.32 / 12.01 | 10.32 / 10.48 | 13.88 / 14.64 | 14.91 / 14.46 | 42 / 42 | 45 / 44 |
+
+**gpu-dev2** (AMD EPYC 9124, kernel 7.0; ext4 on a WD SN770, write
+cache write back):
+
+| Map | Change | off p50 | on p50 | off p99 | on p99 | off per s | on per s |
+|---|---|---|---|---|---|---|---|
+| 4 nodes, 3x128 PGs | epoch | 2.11 / 2.15 | 1.93 / 2.06 | 3.71 / 3.74 | 3.47 / 3.71 | 453 / 447 | 495 / 463 |
+| 4 nodes, 3x128 PGs | device out/in | 4.62 / 4.64 | 4.91 / 4.78 | 6.23 / 6.07 | 6.41 / 5.98 | 200 / 203 | 193 / 193 |
+| 32 nodes, 3x2048 PGs | epoch | 11.08 / 11.40 | 11.09 / 11.33 | 14.88 / 14.80 | 14.85 / 14.94 | 93 / 89 | 91 / 87 |
+| 32 nodes, 3x2048 PGs | device out/in | 15.83 / 15.38 | 13.90 / 14.03 | 17.36 / 18.07 | 17.33 / 16.66 | 35 / 36 | 43 / 41 |
+
+Maxima were 4–8 ms on the small map and 15–300 ms on the large one, in
+either setting and on both hosts, with no pattern between them.
+
+### Findings
+
+1. **Checkpointed applies save 10–15% of a commit that moves PGs on a
+   large map** (12.2 → 10.4 ms on prism2, 15.6 → 14.0 ms on gpu-dev2, at
+   p50), and 3–15% of a head-only change on prism2; elsewhere the
+   difference is within the run-to-run range. p99 isn't worse.
+2. **The apply's flush isn't what a commit waits for.** Even on the
+   consumer drive with a write-back cache, a commit of the map's head
+   takes 2 ms either way: the Raft log's flush on a majority and the
+   round trips remain, and they are the same in both settings.
+3. **The map's size is**: the same change costs 2 ms on the small map
+   and 8–11 ms on the large one, which writes and compares 6144 PG rows
+   (`store::save` reads every PG row to find the changed ones). A large
+   cluster's commits would gain more from saving only what changed than
+   from either flush setting.
+4. **Keeping checkpointed applies on is safe on these numbers:** a small
+   gain, no loss, and `--force-alone` re-applies the log first (I341).
+
