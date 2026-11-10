@@ -3419,7 +3419,7 @@ fn an_outvoted_primary_fetches_a_large_table_in_parts() {
     // Until the primary's own copy (a lookup reads it) is no longer the
     // stray one. Not just until `scrub_repaired` rises: it counts every
     // repair on that node, and scrub may have counted one while the table
-    // was being written, a replica behind on its last batch (I340, #288).
+    // was being written, a replica behind on its last batch (I343, #288).
     let n = name.clone();
     with_client(meta, 6, move |cl| async move {
         let t = std::time::Instant::now();

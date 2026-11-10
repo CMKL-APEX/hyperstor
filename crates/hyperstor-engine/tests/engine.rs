@@ -1448,7 +1448,7 @@ fn a_write_whose_crcs_disagree_is_refused_or_caught_on_read() {
 
 #[test]
 fn an_aligned_write_goes_to_the_device_from_where_it_arrived() {
-    // I340: a payload a node received into an aligned buffer is written
+    // I343: a payload a node received into an aligned buffer is written
     // from that buffer, with no copy; one that isn't aligned is copied
     // into one that is.
     let (d, mut sh) = fresh(4096, None);

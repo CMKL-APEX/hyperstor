@@ -1,5 +1,5 @@
 //! Shared byte buffers: a payload received once, sent on to each replica
-//! and written by the engine, without a copy for any of them (HS5b, I340).
+//! and written by the engine, without a copy for any of them (HS5b, I343).
 
 use std::ops::{Deref, Range};
 use std::sync::Arc;
@@ -140,7 +140,7 @@ impl std::fmt::Debug for IoBuf {
 mod tests {
     use super::*;
 
-    /// I340: slices of slices share the memory and hold the bytes cut;
+    /// I343: slices of slices share the memory and hold the bytes cut;
     /// a received payload's pieces that start on a block are aligned.
     #[test]
     fn slices_share_the_bytes_and_keep_their_alignment() {

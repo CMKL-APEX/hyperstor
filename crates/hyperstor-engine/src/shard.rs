@@ -1855,7 +1855,7 @@ impl Shard {
                             self.round_fresh.insert(pb, len);
                             let len = len as usize;
                             // A received payload starts on a block, and so
-                            // does every run of it: written as it is (I340).
+                            // does every run of it: written as it is (I343).
                             let run = data.slice(done * BLOCK..(done + len) * BLOCK);
                             writes.push((
                                 pb,
