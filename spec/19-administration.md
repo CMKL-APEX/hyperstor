@@ -327,6 +327,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Hosts and exports | bare-metal identities, NVMe-oF exports, allowlists | export, revoke, rotate CHAP |
 | S3 (later) | buckets, access keys | create, revoke |
 | Operations | running and recent operations with progress | cancel |
+| Networks | the cluster's networks (kind, trust, match, endpoints on each; 26-networks.md, D284), each device's endpoints and whether peers reach them (D210, D215), the nodes' ports with their role, state, speed, traffic and weight (D237) | add, change and remove a network, set a device's endpoints, set a port's role |
 | Members | the map service's members: voter or learner, the leader, the term and each member's Raft state in the leader's view (D281: in step, behind, no reply), the storage nodes on its host (D282) | add, remove |
 | Trash | deleted volumes and snapshots with their purge time | restore, purge now |
 | Security | users, roles, tokens, site policies, certificates | grant, revoke, rotate intermediate |

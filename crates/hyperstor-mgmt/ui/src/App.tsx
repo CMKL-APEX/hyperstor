@@ -23,6 +23,7 @@ import Volumes from "./pages/Volumes";
 import Advisor from "./pages/Advisor";
 import Operations from "./pages/Operations";
 import Members from "./pages/Members";
+import Networks from "./pages/Networks";
 import Security from "./pages/Security";
 import Trash from "./pages/Trash";
 import ObjectStorage from "./pages/ObjectStorage";
@@ -67,6 +68,7 @@ const PAGES = [
   ["/advisor", "Advisor"],
   ["/trash", "Trash"],
   ["/operations", "Operations"],
+  ["/networks", "Networks"],
   ["/members", "Members"],
   ["/security", "Security"],
   ["/audit", "Audit"],
@@ -168,6 +170,7 @@ function Shell() {
           <Route path="/trash" element={<Trash />} />
           <Route path="/s3" element={<ObjectStorage />} />
           <Route path="/operations" element={<Operations />} />
+          <Route path="/networks" element={<Networks />} />
           <Route path="/members" element={<Members />} />
           <Route path="/security" element={<Security />} />
           <Route path="/audit" element={<Audit />} />

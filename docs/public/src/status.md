@@ -141,7 +141,7 @@ covered by tests that run on every change.
 | Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data | Done |
 | Write data received into a block-aligned buffer, shared with the frames to replicas, and written by the engine from it: no copy on the primary or its replicas | Done |
 | Registered (fixed) io_uring buffers for network receives and device writes, if pinning pages per I/O shows in a profile | Planned |
-| Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
+| Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Done |
 
 ## HS6: RDMA over RoCEv2 and InfiniBand
 
@@ -220,7 +220,7 @@ covered by tests that run on every change.
 | The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it) | Done |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex) | Done |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
-| Networks set on a running cluster, and nodes serving the endpoints the map has for their devices | Done |
+| Networks set on a running cluster (also on the web UI's Networks page), and nodes serving the endpoints the map has for their devices | Done |
 
 ## AD0: Administration API, identities and CLI
 

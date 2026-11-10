@@ -128,8 +128,11 @@ for: on **Nodes**, adding a device, setting its weight or class, taking
 it out or in, removing it (its plan first) and draining a node; on
 **Pools**, creating a pool, changing it, choosing the devices it uses and
 deleting it (what it holds listed first); on **Volumes**, creating,
-expanding, snapshotting, cloning, flattening and deleting volumes. It
-shows only what your roles allow, and asks you to log in again for what
+expanding, snapshotting, cloning, flattening and deleting volumes; on
+**Networks**, adding, changing and removing networks, setting a device's
+endpoints and a port's role (see [Several
+networks](planning.md#several-networks)). It shows only what your roles
+allow, and asks you to log in again for what
 needs a fresh login.
 
 ## The trash

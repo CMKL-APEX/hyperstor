@@ -536,7 +536,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 .enumerate()
                 .map(|(i, l)| {
                     let device = if where_ == "mem" {
-                        DeviceSpec::Mem { bytes: 1 << 30 }
+                        DeviceSpec::Existing(warm_mem(1 << 30))
                     } else {
                         let path = Path::new(where_).join(format!("n{n}-s{i}.img"));
                         preallocate(&path, 1 << 30);
@@ -630,6 +630,14 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
                 cl.write(1, v, off, vec![0x42; 4 << 20]).await.unwrap();
             }
         }
+        // What the process spends with no requests at all, for the CPU
+        // per operation below.
+        let cpu = cpu_time();
+        hyperstor_reactor::time::sleep(Duration::from_secs(2)).await;
+        eprintln!(
+            "{label}: idle, {:.2} s of CPU per s",
+            (cpu_time() - cpu).as_secs_f64() / 2.0
+        );
         for (name, write, len, qd) in [
             ("4 KiB random writes", true, 4096u64, 1usize),
             ("4 KiB random writes", true, 4096, 32),
@@ -647,6 +655,7 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
                 continue;
             }
             let lats = Rc::new(RefCell::new(Vec::new()));
+            let cpu = cpu_time();
             let t = Instant::now();
             let hs: Vec<_> = (0..qd)
                 .map(|w| {
@@ -673,9 +682,19 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
                 h.await;
             }
             let elapsed = t.elapsed();
+            let cpu = cpu_time() - cpu;
             let mut l = Lat(std::mem::take(&mut *lats.borrow_mut()));
             let n = l.0.len() as u64;
-            row(&format!("{label}: {name}, QD{qd}"), n, elapsed, len, &mut l);
+            let name = format!("{label}: {name}, QD{qd}");
+            // CPU per operation, on stderr like the tail: every thread of
+            // the process, so the client's and all three copies' work (D41).
+            eprintln!(
+                "{name}: CPU {:.1} µs per op ({:.2} s of CPU in {:.2} s)",
+                cpu.as_secs_f64() * 1e6 / n.max(1) as f64,
+                cpu.as_secs_f64(),
+                elapsed.as_secs_f64(),
+            );
+            row(&name, n, elapsed, len, &mut l);
         }
     });
 }
@@ -964,6 +983,34 @@ fn adminload_suite(secs: f64) {
             &mut lats,
         );
     }
+}
+
+/// A memory device of `bytes`, written once from end to end so that its
+/// pages are the process's own (I346): a fresh one is untouched, and a
+/// shard that reads its log ring at open (#257) maps that to the zero
+/// page, so the first test after the open paid a page fault no real
+/// device has for each first write to the ring.
+fn warm_mem(bytes: u64) -> Arc<dyn BlockDev> {
+    let dev = MemDev::new(bytes);
+    let zeros = vec![0u8; 4 << 20];
+    for off in (0..bytes).step_by(zeros.len()) {
+        let n = (bytes - off).min(zeros.len() as u64) as usize;
+        dev.write(off, &zeros[..n]).expect("memory device");
+    }
+    Arc::new(dev)
+}
+
+/// CPU time of every thread of this process so far: the client, the map
+/// service and the nodes of a `cluster` run together.
+fn cpu_time() -> Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid timespec for the call to fill.
+    let r = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(r, 0, "clock_gettime");
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
 fn rss_bytes() -> u64 {
@@ -2285,5 +2332,35 @@ fn main() {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// HS5b's closing measurement divides the process's CPU time by the
+    /// operations: the clock counts work on any thread, and not sleep.
+    #[test]
+    fn cpu_time_counts_work_on_every_thread_and_not_sleep() {
+        let spin = |d: Duration| {
+            let t = Instant::now();
+            let mut x = 0u64;
+            while t.elapsed() < d {
+                x = std::hint::black_box(x.wrapping_add(1));
+            }
+        };
+        let c = cpu_time();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(cpu_time() - c < Duration::from_millis(50), "sleep counted");
+        let c = cpu_time();
+        let other = std::thread::spawn(move || spin(Duration::from_millis(200)));
+        spin(Duration::from_millis(200));
+        other.join().unwrap();
+        let used = cpu_time() - c;
+        assert!(
+            used >= Duration::from_millis(300),
+            "{used:?} for two threads' 400 ms"
+        );
     }
 }
