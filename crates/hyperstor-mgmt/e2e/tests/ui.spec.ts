@@ -235,6 +235,45 @@ test("the load and the drives are shown", async ({ page }) => {
   await expect(page.getByText("hyperstorctl advise")).toBeVisible();
 });
 
+test("networks are set, a device's endpoints too, and ports are shown", async ({ page }) => {
+  await logIn(page, "ann");
+  const dialog = page.getByRole("dialog");
+  await page.getByRole("link", { name: "Networks" }).click();
+  await expect(page.getByText("No networks: storage uses devices' addresses.")).toBeVisible();
+  // A data network, as hyperstorctl network set makes it.
+  await page.getByRole("button", { name: "Add network" }).click();
+  await dialog.getByLabel(/^Name/).fill("fast");
+  await dialog.getByLabel(/^Match/).fill("subnet 127.0.0.2/32");
+  await expect(dialog.getByText('hyperstorctl network set --name fast --kind data --match "subnet 127.0.0.2/32"')).toBeVisible();
+  await dialog.getByRole("button", { name: "Add" }).click();
+  const net = page.getByTestId("network-fast");
+  await expect(net).toContainText("subnet 127.0.0.2/32");
+  // An endpoint on it for device 2000; the network then stays.
+  const dev = page.getByTestId("endpoints-2000");
+  await dev.getByRole("button", { name: "Endpoints" }).click();
+  await dialog.getByLabel(/NETWORK=IP:PORT/).fill("fast=127.0.0.2:1");
+  await expect(dialog.getByText("hyperstorctl device endpoints --device 2000 --endpoints fast=127.0.0.2:1")).toBeVisible();
+  await dialog.getByRole("button", { name: "Set" }).click();
+  await expect(dev).toContainText("fast 127.0.0.2:1");
+  await expect(net.getByRole("button", { name: "Remove" })).toBeDisabled();
+  // A bad match is refused, with the reason.
+  await net.getByRole("button", { name: "Change" }).click();
+  await dialog.getByLabel(/^Match/).fill("127.0.0.2");
+  await dialog.getByRole("button", { name: "Change" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("subnet CIDR");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  // Without the endpoint, the network goes.
+  await dev.getByRole("button", { name: "Endpoints" }).click();
+  await dialog.getByLabel(/NETWORK=IP:PORT/).fill("");
+  await dialog.getByRole("button", { name: "Set" }).click();
+  await expect(dev).toContainText("none");
+  await net.getByRole("button", { name: "Remove" }).click();
+  await expect(dialog.getByText("hyperstorctl network remove --name fast")).toBeVisible();
+  await dialog.getByRole("button", { name: "Remove" }).click();
+  await expect(net).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Ports" })).toBeVisible();
+});
+
 test("a pool's scrub is shown, changed and started", async ({ page }) => {
   await logIn(page, "ann");
   const dialog = page.getByRole("dialog");
@@ -394,7 +433,7 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   await logIn(page, "cy");
   await expect(page.getByLabel("Realm")).toHaveValue("acme");
   await expect(page.getByRole("option", { name: "Whole cluster" })).toHaveCount(0);
-  for (const hidden of ["Overview", "Nodes", "Pools", "Members", "Audit"]) {
+  for (const hidden of ["Overview", "Nodes", "Pools", "Networks", "Members", "Audit"]) {
     await expect(page.getByRole("link", { name: hidden })).toHaveCount(0);
   }
   // Its operations (D283).
