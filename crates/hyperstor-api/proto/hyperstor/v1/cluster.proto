@@ -135,6 +135,16 @@ service ClusterService {
   // splits. Write.
   rpc SetPool(SetPoolRequest) returns (SetPoolResponse);
 
+  // Sets a replicated pool's copies (`size`) and the copies a write needs
+  // (`min`) (24-pools-and-devices.md §27.3.5, D287). More copies add a
+  // member to each PG, which backfills; fewer drop each PG's last-ranked
+  // members at once. Refused for .meta, cache and EC pools, for a min
+  // outside 1 to size, when the pool's devices span fewer failure domains
+  // than size, for a min above the live copies a PG acts with now, and
+  // when a device taking copies would pass backfillfull. dry_run changes
+  // nothing. Write, with step-up.
+  rpc SetPoolCopies(SetPoolCopiesRequest) returns (SetPoolCopiesResponse);
+
   // Changes a pool's scrub settings (28-scrub.md §31.2, 04-decisions.md
   // D224); a setting not given stays as it is. Storage nodes follow them
   // from the next PG they scrub. Refused for cache pools, which aren't
@@ -842,6 +852,22 @@ message SetPoolResponse {
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   // The set mixes hard disks and flash (only when forced).
   bool mixed_kinds = 2 [json_name = "mixed_kinds"];
+}
+
+message SetPoolCopiesRequest {
+  uint32 pool = 1;
+  uint32 size = 2;
+  uint32 min = 3;
+  bool dry_run = 4 [json_name = "dry_run"];
+}
+
+message SetPoolCopiesResponse {
+  // The PGs whose members change (or would), acting before and up after.
+  repeated PgMove moves = 1;
+  // The devices that take copies, with their space after.
+  repeated DeviceFill fill = 2;
+  // The working map's epoch after the change; published once fenced.
+  uint64 map_epoch = 3 [json_name = "map_epoch"];
 }
 
 message SetPoolDeviceRequest {
