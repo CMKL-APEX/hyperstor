@@ -141,7 +141,7 @@ covered by tests that run on every change.
 | Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data | Done |
 | Write data received into a block-aligned buffer, shared with the frames to replicas, and written by the engine from it: no copy on the primary or its replicas | Done |
 | Registered (fixed) io_uring buffers for network receives and device writes, if pinning pages per I/O shows in a profile | Planned |
-| Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
+| Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Done |
 
 ## HS6: RDMA over RoCEv2 and InfiniBand
 
