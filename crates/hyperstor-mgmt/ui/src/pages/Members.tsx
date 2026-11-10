@@ -1,21 +1,32 @@
-// The map service's members (D87): voters and learners, who leads; add
-// and remove (storage administrators). A new member must be running,
-// joined with a meta token, before it is added.
+// The map service's members (D87): voters and learners, who leads, each
+// one's Raft state in the leader's view (D281) and the storage nodes on
+// its host (D282); add and remove (storage administrators). A new member
+// must be running, joined with a meta token, before it is added.
 import { useState } from "react";
-import { members } from "../api";
+import { cluster, members } from "../api";
 import type { Member } from "../gen/hyperstor/v1/admin_pb";
+import { BEHIND_ENTRIES, NO_REPLY_MS, memberState, sameHost, stateTone } from "../hosts";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, input, td, useCan, usePoll } from "../ui";
 
 export default function Members() {
   const can = useCan();
   const list = usePoll(() => members.listMembers({}), 3000);
+  const status = usePoll(() => cluster.getStatus({}), 3000);
   const [add, setAdd] = useState(false);
   const [remove, setRemove] = useState<Member | null>(null);
   const [id, setId] = useState("");
   const [raft, setRaft] = useState("");
   const [map, setMap] = useState("");
   const [force, setForce] = useState(false);
-  const voters = (list.data?.members ?? []).filter((m) => m.voter).length;
+  const all = list.data?.members ?? [];
+  const voters = all.filter((m) => m.voter).length;
+  const r = list.data;
+  const leaders = r != null && all.some((m) => m.leader && m.id === r.me);
+  const storageOn = (m: Member) => {
+    if (!status.data) return "–";
+    const on = status.data.nodes.filter((n) => sameHost(m, n)).map((n) => n.id);
+    return on.length ? `node${on.length > 1 ? "s" : ""} ${on.join(", ")}` : "none (map service only)";
+  };
   return (
     <Card
       title="Map service members"
@@ -28,9 +39,24 @@ export default function Members() {
       }
     >
       <ErrorText error={list.error} />
-      <Table head={["Id", "Raft", "Map", "Kind", "", ""]}>
-        {(list.data?.members ?? []).map((m) => (
-          <tr key={String(m.id)}>
+      {r && (
+        <p className="text-sm text-slate-500 mb-2" data-testid="raft-summary">
+          Term {String(r.term)}, log at {r.lastLogIndex == null ? "–" : String(r.lastLogIndex)}, applied{" "}
+          {r.applied == null ? "–" : String(r.applied)}, from member {String(r.me)}
+          {leaders
+            ? r.quorumAckMs != null && `; a majority answered ${String(r.quorumAckMs)} ms ago`
+            : " (not the leader: no progress of the others)"}
+          .
+        </p>
+      )}
+      {leaders && r.quorumAckMs != null && r.quorumAckMs > NO_REPLY_MS && (
+        <p className="text-sm text-red-700 mb-2">
+          No majority has answered the leader for {(Number(r.quorumAckMs) / 1000).toFixed(1)} s: map changes can't commit.
+        </p>
+      )}
+      <Table head={["Id", "Raft", "Map", "Kind", "", "Behind", "State", "Storage on its host", ""]}>
+        {all.map((m) => (
+          <tr key={String(m.id)} data-testid={`member-${m.id}`}>
             <td className={td}>{String(m.id)}</td>
             <td className={td}>{m.raftAddress}</td>
             <td className={td}>{m.mapAddress}</td>
@@ -38,6 +64,11 @@ export default function Members() {
               <Pill tone={m.voter ? "ok" : "muted"}>{m.voter ? "voter" : "learner"}</Pill>
             </td>
             <td className={td}>{m.leader && <Pill tone="ok">leader</Pill>}</td>
+            <td className={td}>{m.behind == null ? "–" : String(m.behind)}</td>
+            <td className={td}>
+              <Pill tone={stateTone[memberState(m, all)]}>{memberState(m, all)}</Pill>
+            </td>
+            <td className={td}>{storageOn(m)}</td>
             <td className={td}>
               {can("store") && (
                 <Button kind="danger" onClick={() => setRemove(m)}>
@@ -48,6 +79,11 @@ export default function Members() {
           </tr>
         ))}
       </Table>
+      <p className="text-xs text-slate-500 mt-2">
+        In the leader's view: <em>behind</em> is more than the {String(BEHIND_ENTRIES)} entries the leader keeps in its log, so
+        the member catches up from a snapshot; <em>no reply</em> is a second without an answer to the leader's
+        heartbeats. Storage on its host: the nodes with a device at one of the member's IP addresses.
+      </p>
       <Cli cmd="member list" />
       {add && (
         <ActionDialog
