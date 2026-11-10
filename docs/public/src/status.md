@@ -77,6 +77,7 @@ covered by tests that run on every change.
 | Replicated map service (Raft) | In progress |
 | Map backups by the leader and on request, and restoring a lost store from one | Done |
 | Changing the map service's members at run time, recovering a group that lost its majority, and a leader without one saying so | Done |
+| Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log | Done |
 | Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Done |
 

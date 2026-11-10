@@ -1129,13 +1129,37 @@ pub fn utc(unix: u64) -> String {
     )
 }
 
+/// More entries behind than the leader keeps in its log (`log_keep_entries`):
+/// such a member catches up from a snapshot (D281).
+pub const MEMBER_BEHIND_ENTRIES: u64 = 1_000;
+/// Twenty of the leader's heartbeats (50 ms) without an answer (D281).
+pub const MEMBER_NO_REPLY_MS: u64 = 1_000;
+
+/// A member's state in the leader's view (D281): "in step", "behind"
+/// (more than [`MEMBER_BEHIND_ENTRIES`], or none matched yet), "no reply"
+/// (none for [`MEMBER_NO_REPLY_MS`]); "-" in a list another member gave.
+pub fn member_state(m: &pb::Member, members: &[pb::Member]) -> &'static str {
+    let leaders_view = members.iter().any(|m| m.leader && m.matched.is_some());
+    if !leaders_view {
+        "-"
+    } else if m.leader {
+        "in step"
+    } else if m.heard_ms.is_none_or(|h| h > MEMBER_NO_REPLY_MS) {
+        "no reply"
+    } else if m.behind.is_none_or(|b| b > MEMBER_BEHIND_ENTRIES) {
+        "behind"
+    } else {
+        "in step"
+    }
+}
+
 /// `hyperstorctl member list`, and what `member add` and `remove` print.
 pub fn members_text(members: &[pb::Member]) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<6} {:<8} {:<22} {:<22} API",
-        "MEMBER", "ROLE", "RAFT", "MAP"
+        "{:<6} {:<8} {:<22} {:<22} {:<8} {:<9} API",
+        "MEMBER", "ROLE", "RAFT", "MAP", "BEHIND", "STATE"
     );
     for m in members {
         let role = match (m.leader, m.voter) {
@@ -1148,10 +1172,16 @@ pub fn members_text(members: &[pb::Member]) -> String {
         } else {
             &m.api_address
         };
+        let behind = m.behind.map_or("-".into(), |b| b.to_string());
         let _ = writeln!(
             o,
-            "{:<6} {:<8} {:<22} {:<22} {api}",
-            m.id, role, m.raft_address, m.map_address
+            "{:<6} {:<8} {:<22} {:<22} {:<8} {:<9} {api}",
+            m.id,
+            role,
+            m.raft_address,
+            m.map_address,
+            behind,
+            member_state(m, members)
         );
     }
     o
@@ -1602,6 +1632,37 @@ mod tests {
         let text = members_text(&three);
         assert!(text.lines().next().unwrap().ends_with("API"), "{text}");
         assert!(text.contains("10.0.0.2:8850") && text.lines().nth(3).unwrap().ends_with(" -"));
+    }
+
+    #[test]
+    fn a_members_state_is_the_leaders_view() {
+        let m = |id, leader, behind: Option<u64>, heard_ms: Option<u64>| pb::Member {
+            id,
+            leader,
+            voter: true,
+            matched: behind.map(|b| 5000 - b),
+            behind,
+            heard_ms,
+            ..Default::default()
+        };
+        let four = [
+            m(1, true, Some(0), None),
+            m(2, false, Some(3), Some(40)),
+            m(3, false, Some(4000), Some(40)),
+            m(4, false, Some(0), Some(5000)),
+            m(5, false, None, Some(40)),
+        ];
+        let states: Vec<_> = four.iter().map(|x| member_state(x, &four)).collect();
+        assert_eq!(
+            states,
+            ["in step", "in step", "behind", "no reply", "behind"]
+        );
+        // A follower's list has no progress: no state.
+        let theirs = [m(1, true, None, None), m(2, false, None, Some(40))];
+        assert_eq!(member_state(&theirs[1], &theirs), "-");
+        let text = members_text(&four);
+        let row = text.lines().nth(3).unwrap();
+        assert!(row.contains(" 4000 ") && row.contains(" behind "), "{text}");
     }
 
     #[test]
