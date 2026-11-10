@@ -2086,16 +2086,31 @@ fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) 
 /// `--networks` for `hyperstord`. Nothing without data networks; a
 /// warning when the API can't be reached (the node keeps what the
 /// cluster file gives it).
+///
+/// D285: with `--endpoints off`, and on a map service host (through its
+/// own API, with the administrator's certificate), nothing is proposed:
+/// the node serves the endpoints the map has for its devices, as
+/// `hyperstorctl device endpoints` set them, besides the cluster file's.
 fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
-    if s.join.is_empty() || p.nodes.is_empty() || s.endpoints == "off" {
+    if p.nodes.is_empty() {
         return;
     }
+    let joined = !s.join.is_empty();
     let dir = under(root, "/etc/hyperstor/pki");
     let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
-    let who = ["node", "admin"]
-        .into_iter()
-        .find(|w| dir.join(format!("{w}.crt")).exists());
+    let who = if joined {
+        ["node", "admin"]
+            .into_iter()
+            .find(|w| dir.join(format!("{w}.crt")).exists())
+    } else {
+        (!p.api.is_empty() && dir.join("admin.crt").exists()).then_some("admin")
+    };
     let Some(who) = who else { return };
+    let api = if joined {
+        s.join.clone()
+    } else {
+        p.api.clone()
+    };
     let tls = || {
         hyperstor_pki::client_config(
             &read(&format!("{who}.crt")),
@@ -2104,7 +2119,7 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
         )
     };
     let Ok(t) = tls() else { return };
-    let status = api_call(&s.join, t, |c| async move {
+    let status = api_call(&api, t, |c| async move {
         hyperstor_api::ClusterServiceClient::new(c.0, c.1)
             .get_status(hyperstor_api::GetStatusRequest::default())
             .await
@@ -2112,11 +2127,10 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
     });
     let status = match status {
         Ok(st) => st,
+        // A map service host installed before its map service runs.
+        Err(_) if !joined => return,
         Err(e) => {
-            eprintln!(
-                "hyperstor-install: endpoints: reading the map through {}: {e}",
-                s.join
-            );
+            eprintln!("hyperstor-install: endpoints: reading the map through {api}: {e}");
             return;
         }
     };
@@ -2129,6 +2143,12 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
         .filter(|n| n.kind.carries_data())
         .collect();
     if networks.is_empty() {
+        return;
+    }
+    if !joined || s.endpoints == "off" {
+        for node in &mut p.nodes {
+            serve_mapped_endpoints(node, &status);
+        }
         return;
     }
     let host = glidex_topology::Host::read();
@@ -2213,6 +2233,26 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
                     node.networks.push(net);
                 }
             }
+        }
+    }
+}
+
+/// D285: `node` serves the endpoints `status`'s map has for its devices,
+/// after the cluster file's, and reaches others on their networks.
+fn serve_mapped_endpoints(node: &mut NodePlan, status: &hyperstor_api::GetStatusResponse) {
+    let mapped = status
+        .nodes
+        .iter()
+        .flat_map(|n| n.devices.iter())
+        .filter(|d| node.ids.contains(&d.id))
+        .flat_map(|d| d.endpoints.iter().map(move |e| (d.id, e)));
+    for (id, e) in mapped {
+        let Ok(a) = e.address.parse() else { continue };
+        if !node.endpoints.contains(&(id, a)) {
+            node.endpoints.push((id, a));
+        }
+        if !node.networks.contains(&e.network) {
+            node.networks.push(e.network.clone());
         }
     }
 }
@@ -4278,6 +4318,62 @@ mod tests {
             "{rules}"
         );
         assert!(!rules.contains("extra.img"), "files need no rule");
+    }
+
+    /// D285: a node serves the endpoints the map has for its own devices,
+    /// after the cluster file's and none twice, and reaches others on
+    /// their networks; other nodes' endpoints aren't its.
+    #[test]
+    fn a_node_serves_its_devices_endpoints_from_the_map() {
+        let ep = |net: &str, a: &str| hyperstor_api::Endpoint {
+            network: net.into(),
+            address: a.into(),
+            ..Default::default()
+        };
+        let dev = |id: u32, eps: Vec<hyperstor_api::Endpoint>| hyperstor_api::Device {
+            id,
+            endpoints: eps,
+            ..Default::default()
+        };
+        let status = hyperstor_api::GetStatusResponse {
+            nodes: vec![
+                hyperstor_api::Node {
+                    devices: vec![
+                        dev(0, vec![ep("fast", "198.51.100.1:9100")]),
+                        dev(
+                            1,
+                            vec![ep("fast", "198.51.100.1:9101"), ep("ib", "192.0.2.1:9101")],
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                hyperstor_api::Node {
+                    devices: vec![dev(1000, vec![ep("fast", "198.51.100.2:9100")])],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let a = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        let mut node = NodePlan {
+            n: 0,
+            shards: vec![a("203.0.113.1:9100"), a("203.0.113.1:9101")],
+            ids: vec![0, 1],
+            paths: vec![None, None],
+            admin: String::new(),
+            endpoints: vec![(0, a("198.51.100.1:9100"))],
+            networks: vec!["fast".into()],
+        };
+        serve_mapped_endpoints(&mut node, &status);
+        assert_eq!(
+            node.endpoints,
+            vec![
+                (0, a("198.51.100.1:9100")),
+                (1, a("198.51.100.1:9101")),
+                (1, a("192.0.2.1:9101")),
+            ]
+        );
+        assert_eq!(node.networks, vec!["fast".to_string(), "ib".to_string()]);
     }
 
     /// I333: udev reads rules files in the order of their names; ours

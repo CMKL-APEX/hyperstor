@@ -208,7 +208,7 @@ export function useRealm(): string | null {
   return useSyncExternalStore(onActingRealm, getActingRealm);
 }
 
-/** A row's realm as lists name it (D284), with its tenant if any. */
+/** A row's realm as lists name it (D286), with its tenant if any. */
 export function realmOf(realm: string, tenant = 0): string {
   return `${realm || "default"}${tenant ? ` (tenant ${tenant})` : ""}`;
 }

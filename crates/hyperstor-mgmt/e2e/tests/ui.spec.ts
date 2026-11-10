@@ -425,7 +425,7 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
   await page.getByLabel("Realm").selectOption("");
   await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
-  // The whole cluster's lists name each row's realm (D284).
+  // The whole cluster's lists name each row's realm (D286).
   await expect(page.getByTestId("volume-acme-ui")).toContainText("acme (tenant 7)");
   await expect(page.getByTestId("volume-plain-ui")).toContainText("default");
   await expect(page.getByRole("link", { name: "Nodes" })).toBeVisible();

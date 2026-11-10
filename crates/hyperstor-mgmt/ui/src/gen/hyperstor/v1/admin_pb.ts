@@ -2292,7 +2292,7 @@ export type Operation = Message<"hyperstor.v1.Operation"> & {
   tenant?: number | undefined;
 
   /**
-   * In answers: the tenant's realm (D284); empty for the cluster's own.
+   * In answers: the tenant's realm (D286); empty for the cluster's own.
    *
    * @generated from field: string realm = 12;
    */
@@ -2371,7 +2371,7 @@ export type OperationJson = {
   tenant?: number;
 
   /**
-   * In answers: the tenant's realm (D284); empty for the cluster's own.
+   * In answers: the tenant's realm (D286); empty for the cluster's own.
    *
    * @generated from field: string realm = 12;
    */

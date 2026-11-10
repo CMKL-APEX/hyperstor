@@ -52,7 +52,7 @@ pub(super) fn op_pb(o: &Op) -> pb::Operation {
     }
 }
 
-/// `o` with its tenant's realm named from `realms` (D284).
+/// `o` with its tenant's realm named from `realms` (D286).
 pub(super) fn op_pb_in(o: &Op, realms: &crate::realms::Realms) -> pb::Operation {
     pb::Operation {
         realm: o.tenant.map(|t| realms.realm_name(t)).unwrap_or_default(),

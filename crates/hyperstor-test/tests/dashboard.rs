@@ -337,7 +337,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
     assert!(!c.mgmt_log().contains("claim code"));
 }
 
-/// Roles granted on a realm (D252, D260, D262–D265, D283, D284): a storage
+/// Roles granted on a realm (D252, D260, D262–D265, D283, D286): a storage
 /// administrator of acme sees and changes only acme's tenants' volumes and
 /// their operations, and the realm's own things, and nothing of the
 /// cluster as a whole; creations in realms name their tenant or realm;
@@ -419,7 +419,7 @@ fn roles_on_a_realm_reach_only_it() {
     let by_bob = json(&b)["volume"]["id"].as_str().unwrap().to_string();
     let (code, _, b) = create(8, "not-bob");
     assert!(code == 403 && b.contains("outside the realms"), "{b}");
-    // No tenant would be default's: in realms, a creation names one (D284).
+    // No tenant would be default's: in realms, a creation names one (D286).
     let (code, _, b) = create(0, "not-bob");
     assert!(code == 400 && b.contains("name the volume's tenant"), "{b}");
     let (code, _, b) = call(
@@ -658,7 +658,7 @@ fn roles_on_a_realm_reach_only_it() {
     assert_eq!(code, 4, "{out}");
     let (code, out) = ctl(&["volumes", "--pool", "1"], &ann_t);
     assert!(code == 0 && out.contains("by-bob"), "{out}");
-    // Each row names its realm (D284).
+    // Each row names its realm (D286).
     let row = |out: &str, what: &str| {
         out.lines()
             .find(|l| l.contains(what))

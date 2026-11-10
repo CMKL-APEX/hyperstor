@@ -532,7 +532,7 @@ message Operation {
   // The tenant of the volume it acts on, whose realm's people see it
   // (D283); unset for the cluster's own (drains, scrubs, pools, devices).
   optional uint32 tenant = 11;
-  // In answers: the tenant's realm (D284); empty for the cluster's own.
+  // In answers: the tenant's realm (D286); empty for the cluster's own.
   string realm = 12;
 }
 
