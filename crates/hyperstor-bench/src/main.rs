@@ -136,7 +136,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                 key: key(o),
                 ops: vec![Op::Write {
                     off: c * 256 * BLOCK as u64,
-                    data: mb.clone(),
+                    data: mb.clone().into(),
                     crcs: None,
                 }],
             }])
@@ -169,7 +169,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                     key: key(rng.random_range(0..objs)),
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })
@@ -202,7 +202,7 @@ fn engine_suite(dev: Arc<dyn BlockDev>, label: &str, secs: f64) {
                     key: key(rng.random_range(0..objs)),
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS / 16) * 16 * BLOCK as u64,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })
@@ -847,7 +847,7 @@ fn index_suite(path: &Path) {
             key: key(o),
             ops: vec![Op::Write {
                 off: 0,
-                data: chunk.clone(),
+                data: chunk.clone().into(),
                 crcs: None,
             }],
         }])
@@ -869,7 +869,7 @@ fn index_suite(path: &Path) {
                 key: key(*o),
                 ops: vec![Op::Write {
                     off: b * BLOCK as u64,
-                    data: data.clone(),
+                    data: data.clone().into(),
                     crcs: None,
                 }],
             })
@@ -913,7 +913,7 @@ fn fill(sh: &mut Shard, objects: u64) {
             key: key(o),
             ops: vec![Op::Write {
                 off: 0,
-                data: chunk.clone(),
+                data: chunk.clone().into(),
                 crcs: None,
             }],
         }])
@@ -932,7 +932,7 @@ fn overwrite(sh: &mut Shard, rng: &mut SmallRng, objects: u64, n: u64) {
                 key: key(rng.random_range(0..objects)),
                 ops: vec![Op::Write {
                     off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                    data: data.clone(),
+                    data: data.clone().into(),
                     crcs: None,
                 }],
             })
@@ -984,7 +984,7 @@ fn log_size_sweep() {
                     key: key(rng.random_range(0..objects)),
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })
@@ -1086,7 +1086,7 @@ fn paged_sweep() {
                         key: key(rng.random_range(0..hot)),
                         ops: vec![Op::Write {
                             off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                            data: data.clone(),
+                            data: data.clone().into(),
                             crcs: None,
                         }],
                     })
@@ -1246,7 +1246,7 @@ fn decisions_suite(dir: &Path, secs: f64) {
                     key: key(rng.random_range(0..objects)),
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })
@@ -1390,7 +1390,7 @@ fn redb_suite(dir: &Path, secs: f64) {
                     key: key(rng.random_range(0..objects)),
                     ops: vec![Op::Write {
                         off: rng.random_range(0..OBJ_BLOCKS) * BLOCK as u64,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })
@@ -1756,7 +1756,7 @@ fn digest_suite() {
                     key: key(i),
                     ops: vec![Op::Write {
                         off: 0,
-                        data: data.clone(),
+                        data: data.clone().into(),
                         crcs: None,
                     }],
                 })

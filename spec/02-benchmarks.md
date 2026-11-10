@@ -2079,6 +2079,38 @@ alternately, three rounds each; medians, with the range of ops/s.
    threads; `hyperstor-bench engine` runs on the main thread, so its
    large reads and writes carry this cost.
 
+## 2026-11-10: Write data written from the buffer it arrived in (HS5b, I343)
+
+`HS_BENCH_SECS=3 hyperstor-bench cluster mem 1` on one of the pilot's
+HGX A100 hosts (AMD EPYC 7742, Linux 6.8.0), as in the sections before:
+main at 89d9a494 (before) and the same with large request payloads
+received into aligned buffers and written from them (after), run
+alternately, three rounds each; medians, with the range of ops/s.
+
+| Test | ops/s before | ops/s after | Change | p50 µs before → after |
+|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6358 (6289–6396) | 6334 (6215–6388) | −0.4% | 156 → 157 |
+| 4 KiB random writes, QD32 | 23493 (23303–23647) | 23362 (23352–23630) | −0.6% | 1018 → 1037 |
+| 4 KiB random reads, QD1 | 16971 (16803–17067) | 17072 (16790–17088) | +0.6% | 59 → 59 |
+| 4 KiB random reads, QD32 | 51730 (51548–51984) | 51858 (50954–52519) | +0.2% | 407 → 402 |
+| 1 MiB writes, QD4 | 871 (855–889) | 957 (926–961) | +9.9% | 4371 → 4020 |
+| 1 MiB reads, QD1 | 1300 (1292–1308) | 1293 (1291–1313) | −0.5% | 762 → 763 |
+| 1 MiB reads, QD2 | 1895 (1858–1914) | 1877 (1864–1883) | −0.9% | 955 → 956 |
+| 1 MiB reads, QD4 | 2815 (2806–2908) | 2848 (2848–2888) | +1.2% | 1293 → 1284 |
+
+### Findings
+
+1. **1 MiB writes gain 10%**, with no overlap between the runs: four
+   copies of each write less (the primary's clone and its aligned copy,
+   and each replica's aligned copy).
+2. **Small writes pay nothing once the shared buffer is kept off their
+   path.** A first version wrapped every frame's payload, replies and
+   empty ones included, and every engine write in a shared buffer: two
+   runs of the same A/B had 4 KiB writes at −2.2% and −1.1% (QD1) and
+   −2.4% and −1.5% (QD32), outside the runs' range, with 1 MiB writes
+   at +12.0% and +9.4%. Without those allocations they are within it.
+3. **Reads don't change**: they carry no request payload.
+
 ## 2026-11-10: The map service's commits with checkpointed applies (I341)
 
 The map service flushes each applied Raft entry unless
