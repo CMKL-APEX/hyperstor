@@ -79,7 +79,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -121,6 +121,11 @@ struct Settings {
     members: String,
     /// This host's member number, for a `meta` role in a group.
     member_id: Option<u32>,
+    /// A promoted host's member isn't in the group yet: each run adds it
+    /// once its map service answers, until it is a voter (D288).
+    member_pending: bool,
+    /// The Raft port a promoted host's member listens on (D288).
+    raft_port: u16,
     /// The cluster API this host joined through (§23.4.2); empty when it
     /// was installed from a cluster file.
     join: String,
@@ -199,6 +204,8 @@ impl Settings {
             map: String::new(),
             members: String::new(),
             member_id: None,
+            member_pending: false,
+            raft_port: DEFAULT_RAFT_PORT,
             join: String::new(),
             address: String::new(),
             reactors: 1,
@@ -283,6 +290,8 @@ impl Settings {
                 "map" => self.map = v.to_string(),
                 "members" => self.members = v.to_string(),
                 "member_id" => self.member_id = v.parse().ok(),
+                "member_pending" => self.member_pending = v == "true",
+                "raft_port" => self.raft_port = v.parse().unwrap_or(self.raft_port),
                 "join" => self.join = v.to_string(),
                 "address" => self.address = v.to_string(),
                 "reactors" => self.reactors = v.parse().unwrap_or(self.reactors),
@@ -345,7 +354,15 @@ impl Settings {
             self.tailscale_cert,
             self.vhost,
             self.vhost_users
-        ) + &if self.devices.is_empty() {
+        ) + &if self.member_pending {
+            "member_pending = true\n".to_string()
+        } else {
+            String::new()
+        } + &if self.raft_port == DEFAULT_RAFT_PORT {
+            String::new()
+        } else {
+            format!("raft_port = {}\n", self.raft_port)
+        } + &if self.devices.is_empty() {
             // Written only once there is one, so other installs' files
             // stay as they were.
             String::new()
@@ -428,6 +445,8 @@ fn main() {
     let mut new_devices: Vec<String> = Vec::new();
     let mut device_address: Option<String> = None;
     let mut force_format = false;
+    // Never saved: a role change past its refusals (D288).
+    let mut force_role = false;
     // Devices removed from the map to drop from this host's node (D186).
     let mut removed: Vec<u32> = Vec::new();
     let mut it = args[1..].iter();
@@ -536,6 +555,10 @@ fn main() {
                 force_format = true;
                 continue;
             }
+            "--force" => {
+                force_role = true;
+                continue;
+            }
             "--passphrase-file" => {
                 let f = val();
                 let p = fs::read_to_string(&f).unwrap_or_else(|e| fail(&format!("{f}: {e}")));
@@ -551,6 +574,7 @@ fn main() {
             "--map" => "map",
             "--members" => "members",
             "--member-id" => "member_id",
+            "--raft-port" => "raft_port",
             "--nodes" => "nodes",
             "--size-gib" => "size_gib",
             "--data-dir" => "data_dir",
@@ -614,6 +638,7 @@ fn main() {
                 .all(|a| a.parse::<std::net::SocketAddr>().is_ok()),
             "members" => parse_members(&v).is_ok(),
             "member_id" => v.parse::<u32>().is_ok(),
+            "raft_port" => v.parse::<u16>().is_ok_and(|n| n > 0),
             "join" => v.parse::<std::net::SocketAddr>().is_ok(),
             "address" => v
                 .parse::<std::net::IpAddr>()
@@ -636,6 +661,8 @@ fn main() {
     let token = token.filter(|t| !t.trim().is_empty());
     let saved = fs::read_to_string(root.join("etc/hyperstor/install.conf")).unwrap_or_default();
     s.apply(&saved);
+    // A role given that isn't the saved one changes the host's (D288).
+    let was_role = s.role.clone();
     // The all-in-one cluster runs a gateway (D233) unless told not to.
     let s3_said =
         given.contains_key("s3") || saved.lines().any(|l| l.trim_start().starts_with("s3 ="));
@@ -683,6 +710,19 @@ fn main() {
         "uninstall" => uninstall(&root, real, &s),
         _ => {
             let mut cluster_file = cluster_file;
+            // D288: a storage host made a member too, or a member host
+            // made storage only.
+            if was_role == "storage" && s.role == "both" {
+                promote_host(&root, &mut s, token.is_some(), force_role);
+            } else if was_role == "both" && s.role == "storage" {
+                // SAFETY: geteuid has no preconditions.
+                if real && unsafe { libc::geteuid() } != 0 {
+                    fail("changing a host's role needs root: run it with sudo");
+                }
+                demote_host(&root, real, &mut s, force_role);
+            } else if force_role {
+                usage();
+            }
             if !s.join.is_empty() {
                 // SAFETY: geteuid has no preconditions.
                 if real && unsafe { libc::geteuid() } != 0 {
@@ -1705,7 +1745,17 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         )
     };
     let mut nodes = Vec::new();
-    if s.role == "storage" || s.role == "both" {
+    // A storage host that joined with a token and was promoted (D288):
+    // its node isn't in the cluster file the group started from.
+    let promoted = s.role == "both"
+        && !s.join.is_empty()
+        && under(root, "/etc/hyperstor/pki/node.crt").exists()
+        && s.node
+            .is_some_and(|n| !map.devices.values().any(|d| d.node == n));
+    if promoted {
+        nodes.extend(joined_storage_plan(s).nodes);
+    }
+    if (s.role == "storage" || s.role == "both") && !promoted {
         let n = s
             .node
             .unwrap_or_else(|| fail("--node N is needed for a storage role"));
@@ -1954,6 +2004,511 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
     } else {
         Some(r.cluster_file.clone())
     }
+}
+
+// --- A host's roles (19-administration.md §23.4.3, D288) -------------
+
+/// A client of the cluster API with this host's certificate `who`
+/// (`node`, `admin`, `s3`), if it has one.
+fn host_tls(root: &Path, who: &str) -> Option<hyperstor_pki::ClientConfig> {
+    let dir = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| fs::read_to_string(dir.join(f)).ok();
+    hyperstor_pki::client_config(
+        &read(&format!("{who}.crt"))?,
+        &read(&format!("{who}.key"))?,
+        &read("root.crt")?,
+    )
+    .ok()
+}
+
+/// The map service's members, as the first of `apis` that answers says,
+/// with that API's address.
+fn members_at(
+    root: &Path,
+    who: &str,
+    apis: &[String],
+) -> Result<(String, hyperstor_api::ListMembersResponse), String> {
+    let mut last = format!("no {who} certificate here");
+    for api in apis.iter().filter(|a| !a.is_empty()) {
+        let Some(tls) = host_tls(root, who) else {
+            break;
+        };
+        match api_call(api, tls, |c| async move {
+            hyperstor_api::MemberServiceClient::new(c.0, c.1)
+                .list_members(hyperstor_api::ListMembersRequest::default())
+                .await
+                .map(|r| r.into_owned())
+        }) {
+            Ok(r) => return Ok((api.clone(), r)),
+            Err(e) => last = format!("{api}: {e}"),
+        }
+    }
+    Err(last)
+}
+
+/// The APIs to ask: `first`, then each member's at its map address's IP
+/// on the API port.
+fn api_candidates(first: &str, map: &str, api_port: u16) -> Vec<String> {
+    let mut out = vec![first.to_string()];
+    for a in map
+        .split(',')
+        .filter_map(|a| a.trim().parse::<std::net::SocketAddr>().ok())
+    {
+        let api = std::net::SocketAddr::new(a.ip(), api_port).to_string();
+        if !out.contains(&api) {
+            out.push(api);
+        }
+    }
+    out
+}
+
+/// One call through the leader: `api` first, then the leader a
+/// follower's refusal names. `call` gets the address to use.
+fn on_leader<T>(
+    members: &hyperstor_api::ListMembersResponse,
+    api: &str,
+    mut call: impl FnMut(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    let leader = members
+        .members
+        .iter()
+        .find(|m| m.leader)
+        .map(|m| m.api_address.clone())
+        .filter(|a| !a.is_empty());
+    let mut tried = Vec::new();
+    for a in leader.into_iter().chain([api.to_string()]) {
+        if tried.contains(&a) {
+            continue;
+        }
+        match call(&a) {
+            Ok(v) => return Ok(v),
+            Err(e) => tried.push(format!("{a}: {e}")),
+        }
+    }
+    Err(tried.join("; "))
+}
+
+/// Promotes a storage host that joined with a token to a map service
+/// member too (`--role both`, D288): its member list is the group's and
+/// itself, at its address on the Raft and map ports; the member joins
+/// with the meta token like any member (I86), keeps its node, and adds
+/// itself once its map service answers (`ensure_member`). Refused without
+/// a token, for a member id the group has, and for an even count of
+/// voters unless `force`.
+fn promote_host(root: &Path, s: &mut Settings, has_token: bool, force: bool) {
+    let pki = under(root, "/etc/hyperstor/pki");
+    if pki.join("api.crt").exists() {
+        return;
+    }
+    if s.join.is_empty() || s.node.is_none() || !pki.join("node.crt").exists() {
+        fail(
+            "--role both makes a storage host a member too: one that joined with --join --role storage (D288)",
+        );
+    }
+    if !has_token {
+        fail(
+            "promoting needs a meta token: --token-file F (hyperstorctl token create --role meta)",
+        );
+    }
+    let (_, r) = members_at(root, "node", &api_candidates(&s.join, &s.map, s.api_port))
+        .unwrap_or_else(|e| fail(&format!("reading the map service's members: {e}")));
+    let voters = r.members.iter().filter(|m| m.voter).count();
+    if (voters + 1) % 2 == 0 && !force {
+        fail(&format!(
+            "{} voters survive no more failures than {voters} and commit slower: --force allows it",
+            voters + 1
+        ));
+    }
+    let id = s
+        .member_id
+        .unwrap_or_else(|| r.members.iter().map(|m| m.id as u32).max().unwrap_or(0) + 1);
+    if r.members.iter().any(|m| m.id == u64::from(id)) {
+        fail(&format!("member {id} is in the group already"));
+    }
+    let ip: std::net::IpAddr = s
+        .address
+        .parse()
+        .unwrap_or_else(|_| fail("this host's address isn't an IP: --address IP"));
+    let mut list: Vec<String> = r
+        .members
+        .iter()
+        .map(|m| format!("{}={}/{}", m.id, m.raft_address, m.map_address))
+        .collect();
+    list.push(format!(
+        "{id}={}/{}",
+        std::net::SocketAddr::new(ip, s.raft_port),
+        std::net::SocketAddr::new(ip, s.map_port)
+    ));
+    s.members = list.join(",");
+    s.member_id = Some(id);
+    s.member_pending = true;
+    // A member's nodes find the map service from the member list.
+    s.map.clear();
+    println!(
+        "Promoting: this host joins as map service member {id} and adds itself once its map service runs."
+    );
+}
+
+/// Adds a promoted host's member to the group (D288) once its map service
+/// answers, through the leader, with the administrator's certificate, and
+/// waits up to `wait_secs` for it to be a voter. Whether it is.
+fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
+    let Some(id) = s.member_id else {
+        return false;
+    };
+    let me = parse_members(&s.members)
+        .ok()
+        .and_then(|m| m.into_iter().find(|m| m.id == id))
+        .unwrap_or_else(|| fail(&format!("member {id} is not in --members")));
+    // The API this host joined through first: its own member, not in the
+    // group yet, knows no leader.
+    let mut apis = vec![s.join.clone()];
+    apis.extend(api_candidates(&p.api, &p.map, s.api_port));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+    let mut added = false;
+    loop {
+        // Added only once its own map service answers: the group may make
+        // it a voter at once, and a voter that isn't running weakens it.
+        let runs = members_at(root, "admin", std::slice::from_ref(&p.api)).is_ok();
+        if !runs {
+        } else if let Ok((api, r)) = members_at(root, "admin", &apis) {
+            let mine = r.members.iter().find(|m| m.id == u64::from(id));
+            if mine.is_some_and(|m| m.voter) {
+                println!("Member {id} is a voter.");
+                return true;
+            }
+            if mine.is_none() && !added {
+                let req = hyperstor_api::AddMemberRequest {
+                    id: u64::from(id),
+                    raft_address: me.raft.to_string(),
+                    map_address: me.map.to_string(),
+                    ..Default::default()
+                };
+                let done = on_leader(&r, &api, |a| {
+                    let tls = host_tls(root, "admin").ok_or("no administrator's certificate")?;
+                    let req = req.clone();
+                    api_call(a, tls, |c| async move {
+                        hyperstor_api::MemberServiceClient::new(c.0, c.1)
+                            .add_member(req)
+                            .await
+                            .map(|_| ())
+                    })
+                });
+                match done {
+                    Ok(()) => {
+                        println!(
+                            "Added member {id}: a learner until it has the log, then a voter."
+                        );
+                        added = true;
+                    }
+                    Err(e) => eprintln!("hyperstor-install: adding member {id}: {e}"),
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "hyperstor-install: member {id} isn't a voter yet: the next run adds it, or waits for it (hyperstorctl member list)"
+            );
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// Demotes a member host that also runs a storage node to a storage host
+/// (`--role storage`, D288): refused where the root CA's key is, where an
+/// S3 gateway runs on the member's certificate, below three voters unless
+/// `force`, and for a node whose devices' ports aren't consecutive. Then:
+/// a backup of the store; its node a certificate of its own (a join with
+/// its node's addresses gives the node back, D167); out of the group;
+/// its member certificates revoked; the member's services, files, keys and
+/// store gone. `s` is then a storage host's, joined through the leader.
+fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool) {
+    let pki = under(root, "/etc/hyperstor/pki");
+    if pki.join("root.key").exists() {
+        fail(
+            "the root CA's key is on this host: back it up and take it off first (root-backup --remove-key), and restore it on another member (root-restore)",
+        );
+    }
+    if s.runs_s3() {
+        fail("this host's S3 gateway runs on its member certificate: remove it first (--no-s3)");
+    }
+    let id = s
+        .member_id
+        .unwrap_or_else(|| fail("this host's member id isn't known (install.conf member_id)"));
+    let mut was = s.clone();
+    was.role = "both".into();
+    let plan = plan(root, &was, None);
+    let api_here = plan.api.clone();
+    let node = plan
+        .nodes
+        .first()
+        .unwrap_or_else(|| fail("this host runs no storage node: uninstall it instead"));
+    let added: Vec<u32> = s.devices().iter().map(|d| d.0).collect();
+    let own: Vec<std::net::SocketAddr> = node
+        .ids
+        .iter()
+        .zip(&node.shards)
+        .filter(|(i, _)| !added.contains(i))
+        .map(|(_, a)| *a)
+        .collect();
+    let first = own[0];
+    if own
+        .iter()
+        .enumerate()
+        .any(|(i, a)| a.ip() != first.ip() || a.port() != first.port() + i as u16)
+    {
+        fail(
+            "its node's devices aren't on consecutive ports of one address, as a joined node's are",
+        );
+    }
+    let (api, r) = members_at(
+        root,
+        "admin",
+        &api_candidates(&api_here, &plan.map, s.api_port),
+    )
+    .unwrap_or_else(|e| fail(&format!("reading the map service's members: {e}")));
+    let voters = r.members.iter().filter(|m| m.voter).count();
+    if !r.members.iter().any(|m| m.id == u64::from(id)) {
+        println!("Member {id} has left the group already.");
+    } else if voters <= 3 && !force {
+        fail(&format!(
+            "{} voters would be left, which survive no failure: --force allows it",
+            voters - 1
+        ));
+    }
+    // Another member's API, the leader's if it is another: the one this
+    // host reaches the cluster through from now on.
+    let others: Vec<&hyperstor_api::Member> = r
+        .members
+        .iter()
+        .filter(|m| m.id != u64::from(id) && !m.api_address.is_empty())
+        .collect();
+    let join_api = others
+        .iter()
+        .find(|m| m.leader)
+        .or_else(|| others.first())
+        .map(|m| m.api_address.clone())
+        .unwrap_or_else(|| fail("no other member to join through"));
+    // 1. The store, backed up before anything changes.
+    let ctl = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
+        .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
+    let backups = under(root, &format!("{}/meta-backups", s.data_dir));
+    let _ = fs::create_dir_all(&backups);
+    let backup = backups.join(format!(
+        "demoted-member-{id}-{}.store",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    ));
+    let out = Command::new(&ctl)
+        .args(["--api", &api, "--tls"])
+        .arg(&pki)
+        .args(["map", "backup", "--out"])
+        .arg(&backup)
+        .output()
+        .unwrap_or_else(|e| fail(&format!("{}: {e}", ctl.display())));
+    if !out.status.success() {
+        fail(&format!(
+            "map backup: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    println!("Backed up the map service's store to {}.", backup.display());
+    // 2. Its node's own certificate: a node token, and a join with the
+    // node's addresses, which gives that node back.
+    if !pki.join("node.crt").exists() {
+        let token = on_leader(&r, &api, |a| {
+            let tls = host_tls(root, "admin").ok_or("no administrator's certificate")?;
+            api_call(a, tls, |c| async move {
+                hyperstor_api::TokenServiceClient::new(c.0, c.1)
+                    .create_token(hyperstor_api::CreateTokenRequest {
+                        role: "node".into(),
+                        ttl_seconds: 600,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| r.into_owned().token)
+            })
+        })
+        .unwrap_or_else(|e| fail(&format!("a node token: {e}")));
+        let n = node.n;
+        let mut joined = s.clone();
+        joined.role = "storage".into();
+        joined.join = join_api.clone();
+        joined.address = first.ip().to_string();
+        joined.reactors = own.len() as u32;
+        joined.node_port = first.port();
+        joined.node = None;
+        join(root, real, &mut joined, Some(&token));
+        if joined.node != Some(n) {
+            fail(&format!(
+                "the join gave node {:?}, not this host's node {n}: nothing else changed; revoke the new node's certificate",
+                joined.node
+            ));
+        }
+        s.map = joined.map.clone();
+    }
+    // 3. Out of the group, through the leader.
+    if r.members.iter().any(|m| m.id == u64::from(id)) {
+        on_leader(&r, &api, |a| {
+            let tls = host_tls(root, "admin").ok_or("no administrator's certificate")?;
+            api_call(a, tls, |c| async move {
+                hyperstor_api::MemberServiceClient::new(c.0, c.1)
+                    .remove_member(hyperstor_api::RemoveMemberRequest {
+                        id: u64::from(id),
+                        force,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .unwrap_or_else(|e| fail(&format!("removing member {id}: {e}")));
+        println!("Removed member {id} from the map service.");
+    }
+    // 4. Its member certificates refused from now on: the administrator's
+    // last, since it makes the calls.
+    for name in ["api", "mgmt", "web", "admin"] {
+        let Some(serial) = fs::read_to_string(pki.join(format!("{name}.crt")))
+            .ok()
+            .and_then(|c| hyperstor_pki::serial_in(&c))
+        else {
+            continue;
+        };
+        let r = api_call(
+            &join_api,
+            host_tls(root, "admin").unwrap_or_else(|| fail("no administrator's certificate")),
+            |c| async move {
+                hyperstor_api::CaServiceClient::new(c.0, c.1)
+                    .revoke_certificate(hyperstor_api::RevokeCertificateRequest {
+                        serial,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|_| ())
+            },
+        );
+        if let Err(e) = r {
+            eprintln!("hyperstor-install: revoking this host's {name} certificate: {e}");
+        }
+    }
+    // 5. The member's services, files, keys and store.
+    if real {
+        let _ = run(
+            "systemctl",
+            &[
+                "disable",
+                "--now",
+                "hyperstor-meta.service",
+                "hyperstor-mgmt.service",
+                "hyperstor-authd.socket",
+                "hyperstor-authd.service",
+            ],
+        );
+    }
+    for f in [
+        "/etc/systemd/system/hyperstor-meta.service",
+        "/etc/systemd/system/hyperstor-mgmt.service",
+        "/etc/systemd/system/hyperstor-authd.socket",
+        "/etc/systemd/system/hyperstor-authd.service",
+        "/etc/hyperstor/meta.env",
+        "/etc/hyperstor/mgmt.env",
+        "/etc/hyperstor/authd.json",
+        "/etc/hyperstor/prometheus-targets.json",
+        "/etc/hyperstor/hyperstorctl.conf",
+        "/etc/hyperstor/cluster.txt",
+    ] {
+        let _ = fs::remove_file(under(root, f));
+    }
+    for k in [
+        "intermediate.key",
+        "intermediate.crt",
+        "cluster.key",
+        "api.crt",
+        "api.key",
+        "api.ips",
+        "admin.crt",
+        "admin.key",
+        "mgmt.crt",
+        "mgmt.key",
+        "web.crt",
+        "web.key",
+        "web.ips",
+    ] {
+        let _ = fs::remove_file(pki.join(k));
+    }
+    let store = under(root, &format!("{}/meta", s.data_dir));
+    if store.is_dir() {
+        fs::remove_dir_all(&store).unwrap_or_else(|e| fail(&format!("{}: {e}", store.display())));
+    }
+    if real {
+        let _ = run("systemctl", &["daemon-reload"]);
+    }
+    s.role = "storage".into();
+    s.join = join_api;
+    s.address = first.ip().to_string();
+    s.reactors = own.len() as u32;
+    s.node_port = first.port();
+    s.node = Some(node.n);
+    s.members.clear();
+    s.member_id = None;
+    s.member_pending = false;
+    println!(
+        "Demoted: this host is storage node {} only, joined through {}.",
+        node.n, s.join
+    );
+}
+
+/// Member lists follow (D288): the map service's members, through the API,
+/// for the services that find it by its members' map addresses (nodes,
+/// `hyperstor-vhost`, `hyperstor-s3`). A joined host keeps them in `s`
+/// (and moves to another member's API if its own has gone); a member
+/// host's only change where its nodes and clients look. A member's own
+/// list stays as installed: the group knows its members, and the list
+/// only forms a new group. Nothing when no API answers.
+fn follow_members(root: &Path, s: &mut Settings, p: &mut Plan) {
+    let (who, first) = if s.role == "storage" && !s.join.is_empty() {
+        ("node", s.join.clone())
+    } else if p.meta.is_some() && s.member_id.is_some() {
+        // A promoted member asks the API it joined through: its own may
+        // not be in the group yet.
+        (
+            "admin",
+            if s.join.is_empty() {
+                p.api.clone()
+            } else {
+                s.join.clone()
+            },
+        )
+    } else {
+        return;
+    };
+    let Ok((api, r)) = members_at(root, who, &api_candidates(&first, &p.map, s.api_port)) else {
+        return;
+    };
+    let maps: Vec<String> = r
+        .members
+        .iter()
+        .filter(|m| !m.map_address.is_empty())
+        .map(|m| m.map_address.clone())
+        .collect();
+    if maps.is_empty() {
+        return;
+    }
+    let list = maps.join(",");
+    if who == "node" {
+        if s.map != list {
+            println!("The map service's members are now at {list}.");
+            s.map = list.clone();
+        }
+        if api != s.join {
+            s.join = api;
+        }
+    }
+    p.map = list;
 }
 
 /// Creates the `hyperstor` system user and its group, the services' own,
@@ -2906,6 +3461,10 @@ const UI_DIR: &str = "/usr/local/share/hyperstor/ui";
 /// (metrics from 8853, storage from 9100) grow upward.
 const DEFAULT_S3_PORT: u16 = 8848;
 
+/// Where a promoted host's member talks Raft (D288), as the pilot's and
+/// the installation guide's members do.
+const DEFAULT_RAFT_PORT: u16 = 8851;
+
 /// Makes `UI_DIR` under `root` hold exactly `src`'s files (mode 0644):
 /// changed ones written, gone ones removed. Whether anything changed.
 fn sync_ui(root: &Path, src: &Path) -> bool {
@@ -2953,7 +3512,10 @@ fn install(
     cluster_file: Option<String>,
     ui_from: Option<String>,
 ) {
+    let mut own = s.clone();
+    let s = &mut own;
     let mut p = plan(root, s, cluster_file);
+    follow_members(root, s, &mut p);
     // SAFETY: geteuid has no preconditions.
     if real && unsafe { libc::geteuid() } != 0 {
         fail("installing to / needs root: run it with sudo (or use --root DIR)");
@@ -3270,6 +3832,17 @@ fn install(
         }
     }
 
+    // A promoted host's member, once its map service answers (D288).
+    if s.member_pending && ensure_member(root, s, &p, if real && !no_start { 120 } else { 5 }) {
+        s.member_pending = false;
+        if converge(
+            &under(root, "/etc/hyperstor/install.conf"),
+            s.save().as_bytes(),
+            0o644,
+        ) {
+            changed.push("/etc/hyperstor/install.conf".into());
+        }
+    }
     // The all-in-one's default placement, once its map service answers.
     if let Some(done) = s3_default_placement(root, s, &p, if real && !no_start { 30 } else { 1 }) {
         changed.push(done);

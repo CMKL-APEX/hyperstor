@@ -160,7 +160,40 @@ remove --id N` takes one out; fewer than three voters survive no failure,
 so going below three needs `--force`. Replacing a member on another host
 is add, then remove. Storage nodes keep the member list they were
 installed with and are redirected to the leader by any member they
-reach; installing them again gives them the new list.
+reach; each installer run, the daily renewal's too, gives them the
+current list.
+
+### Making a storage host a member, and a member storage only
+
+A storage host that joined with a token can run a member too, and a
+member host that also runs a storage node can go back to storage only.
+The installer does each on the host itself:
+
+```sh
+# on the leader: a meta token, copied to the storage host
+(umask 077; sudo hyperstorctl token create --role meta > token)
+# on the storage host: it joins as the next member id, keeps its node,
+# and adds itself once its map service runs
+sudo hyperstor-install install --role both --token-file token
+# on a member host that also runs a storage node: storage only
+sudo hyperstor-install install --role storage
+```
+
+- A promote that makes an even number of voters is refused without
+  `--force`: four survive one failure, as three do. Promote first, then
+  demote, to replace a member.
+- A demote backs up the map service's store (in the data directory's
+  `meta-backups`), gets the host's node a certificate of its own (the
+  same node and devices), takes the member out of the group, revokes its
+  certificates, and removes the map service, mgmt and authd, with their
+  keys and store. It is refused while fewer than three voters would be
+  left (unless `--force`), on the host with the root CA's key (move it
+  first with `root-backup --remove-key` and `root-restore`), and while an
+  S3 gateway runs there (`--no-s3` first).
+- mgmt and the web UI run on every member: point a proxy or tunnel at
+  another member's before a demote.
+- A demoted member's copies of the intermediate CA's key are deleted,
+  but a copy taken before stays good until the intermediate is rotated.
 
 ## Recovering a lost majority
 
