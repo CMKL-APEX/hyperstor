@@ -97,7 +97,7 @@ tests = [
 [[milestone.item]]
 what = "A slow device no longer holds its reactor: commits wait for the device in the background (first stage)"
 spec = ["08-engine.md §6.2", "I199"]
-status = "partial"
+status = "done"
 tests = [
     "cluster::a_slow_commit_holds_no_reactor",
     "cluster::a_hung_device_fails_after_the_io_timeout",
@@ -118,7 +118,7 @@ tests = [
 [[milestone.item]]
 what = "Reads wait for the device in the background, with freed extents held for them and a read timeout served by a member (second stage)"
 spec = ["08-engine.md §6.2", "D190", "I230"]
-status = "partial"
+status = "done"
 tests = [
     "hyperstor_engine::shard::tests::freed_extents_wait_for_reads_in_flight",
     "hyperstor_engine::shard::tests::held_extents_follow_the_oldest_read",
