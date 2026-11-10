@@ -312,6 +312,38 @@ hyperstorctl pool set --pool 1 --autoscale off
 `hyperstorctl pools` lists the pools with it off; `pool create` takes
 `--autoscale off` too.
 
+## Changing a pool's copies
+
+A replicated pool's copies, and the copies a write needs, can change
+while the cluster runs. Look first, then change:
+
+```sh
+hyperstorctl pool copies --pool 3 --copies 3 --min 2 --dry-run
+hyperstorctl pool copies --pool 3 --copies 3 --min 2
+```
+
+More copies add a member to each placement group. Its other members
+and its primary stay where they are, so nothing moves: the new copy
+fills in the background, under the backfill budget, and the pool shows
+as backfilling until it is done. I/O goes on, since `--min` is still
+met. Fewer copies drop each group's last-ranked members at once, and
+their devices delete those copies.
+
+- Raise the copies before `--min`. A `--min` above the copies a
+  placement group has now is refused: that group would stop taking
+  writes. Going from 2/1 to 3/2 in one step is fine, since every group
+  already has two.
+- The pool's devices must span as many failure domains as its copies.
+  With exactly as many domains as copies, every domain holds a copy of
+  everything, and the pool's usable space is about its smallest
+  domain's.
+- A change that would take a device past `backfillfull` is refused;
+  the dry run shows each device's fill after.
+- Cache pools keep their copies, and an erasure-coded pool its layout.
+  The `.meta` pool's copies follow the hosts by themselves.
+- Through hyperstor-mgmt, it needs step-up, since fewer copies weaken
+  what a write survives.
+
 ## Deleting a pool
 
 A pool is deleted once it holds nothing: no volume, no snapshot, and

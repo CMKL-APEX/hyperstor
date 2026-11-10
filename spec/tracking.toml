@@ -1120,8 +1120,12 @@ tests = [
 
 [[milestone.item]]
 what = "A replicated pool's copies changed, with a dry run and step-up (stage 7)"
-spec = ["24-pools-and-devices.md §27.3.5", "D287"]
-status = "planned"
+spec = ["24-pools-and-devices.md §27.3.5", "D287", "I344"]
+status = "partial"
+tests = [
+    "hyperstor_meta::tests::a_pools_copies_change_by_adding_or_dropping_members",
+    "manage::a_pools_copies_are_raised_and_lowered",
+]
 
 [[milestone.item]]
 what = "The installer adds a block device to an installed node and keeps it across runs, on map service and storage-only hosts"
