@@ -705,6 +705,29 @@ pub fn ports_text(r: &pb::ListPortsResponse) -> String {
     o
 }
 
+/// `hyperstorctl network list`: the cluster's networks (26-networks.md
+/// §29.3, D284).
+pub fn networks_text(nets: &[pb::Network]) -> String {
+    let mut o = format!(
+        "{:<16} {:<8} {:<8} {}\n",
+        "NETWORK", "KIND", "TRUSTED", "MATCH"
+    );
+    for n in nets {
+        let _ = writeln!(
+            o,
+            "{:<16} {:<8} {:<8} {}",
+            n.name,
+            n.kind,
+            if n.trusted { "yes" } else { "no" },
+            n.matches
+        );
+    }
+    if nets.is_empty() {
+        o.push_str("no networks: storage uses devices' addresses\n");
+    }
+    o
+}
+
 /// `hyperstorctl claim list`: the live claims on ports, and the lending
 /// settings (26-networks.md §29.9, D205, D209).
 pub fn claims_text(r: &pb::ListClaimsResponse) -> String {
@@ -926,6 +949,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.UpgradeDevices", "device upgrade"),
     ("ClusterService.SetEndpoints", "device endpoints"),
+    ("ClusterService.SetNetwork", "network set, network remove"),
     ("ClusterService.ListPorts", "port list"),
     ("ClusterService.SetPortRole", "port role"),
     ("ClusterService.SetLending", "port lending"),
