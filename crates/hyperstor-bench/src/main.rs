@@ -536,7 +536,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 .enumerate()
                 .map(|(i, l)| {
                     let device = if where_ == "mem" {
-                        DeviceSpec::Mem { bytes: 1 << 30 }
+                        DeviceSpec::Existing(warm_mem(1 << 30))
                     } else {
                         let path = Path::new(where_).join(format!("n{n}-s{i}.img"));
                         preallocate(&path, 1 << 30);
@@ -983,6 +983,21 @@ fn adminload_suite(secs: f64) {
             &mut lats,
         );
     }
+}
+
+/// A memory device of `bytes`, written once from end to end so that its
+/// pages are the process's own (I346): a fresh one is untouched, and a
+/// shard that reads its log ring at open (#257) maps that to the zero
+/// page, so the first test after the open paid a page fault no real
+/// device has for each first write to the ring.
+fn warm_mem(bytes: u64) -> Arc<dyn BlockDev> {
+    let dev = MemDev::new(bytes);
+    let zeros = vec![0u8; 4 << 20];
+    for off in (0..bytes).step_by(zeros.len()) {
+        let n = (bytes - off).min(zeros.len() as u64) as usize;
+        dev.write(off, &zeros[..n]).expect("memory device");
+    }
+    Arc::new(dev)
 }
 
 /// CPU time of every thread of this process so far: the client, the map

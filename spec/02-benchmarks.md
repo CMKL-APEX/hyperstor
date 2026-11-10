@@ -2266,6 +2266,14 @@ rounds each:
 |---|---|---|---|
 | 4 KiB random writes, QD1, 15 s | 6333 (6280–6474) → 6724 (6501–6755), +6.2% | 150 → 144 | 220 (216–220) → 208 (208–213), −5.5% |
 
+With the memory devices warmed (written once from end to end before the
+nodes start, as the benchmark now does: I346), the same 3 s test, five
+rounds each, alternately:
+
+| Test | ops/s before → after | CPU µs per op before → after |
+|---|---|---|
+| 4 KiB random writes, QD1, warm devices | 6827 (6041–6884) → 7210 (7149–7245), +5.6% | 203 (202–227) → 194 (192–195), −4.8% |
+
 ### Findings
 
 1. **Large I/O does nearly twice the work per second at 36–45% less
@@ -2288,7 +2296,8 @@ rounds each:
    instead of filling an empty one. The run takes about 58,000 more
    minor faults (535,000 against 477,000), and over 15 s the two builds
    are the same (200–203 against 200–204 µs). A real device, read and
-   written with `O_DIRECT`, has no such faults.
+   written with `O_DIRECT`, has no such faults. With warmed devices the
+   3 s test shows what the 15 s one does: 5% less CPU per write.
 4. **What a 4 KiB operation still costs**, in CPU of the whole process:
    about 210 µs for a replicated write, across the client, the primary
    and two replicas, and 62 µs for a read at QD1. With 4 KiB of data
