@@ -13,7 +13,7 @@ hyperstor-pki = { path = "../hyperstor-pki" }
 hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "client", "client-tls"] }
 # A PAM helper with made-up people, for hyperstor-mgmt's logins.
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "5b56b25a55a61c810e9c5e8d89a4486f0078e9b7" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca" }
 serde_json = "1"
 # A made-up identity provider for hyperstor-mgmt's OIDC logins: ES256 keys
 # and ID tokens.
@@ -21,7 +21,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 base64 = "0.23"
 # A fake tailscaled (glidex's), for mgmt's Tailscale certificates (D109).
-glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "5b56b25a55a61c810e9c5e8d89a4486f0078e9b7", features = ["test-util"] }
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca", features = ["test-util"] }
 tokio = { version = "1", features = ["rt", "net"] }
 # HTTPS to hyperstor-mgmt, verified against the cluster's root (D108).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

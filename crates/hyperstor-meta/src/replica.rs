@@ -896,8 +896,66 @@ pub fn settings() -> RaftSettings {
         // An entry is usually what one change touched, but a whole map
         // (the first, a new pool) can be megabytes: keep the log short.
         log_keep_entries: 1_000,
-        // Every apply flushes, as before glidex D31 (I332).
-        checkpointed_applies: false,
+        // Applies are flushed at checkpoints, every 100 entries or 1 s
+        // (glidex D31, I341); a start re-applies the rest from the log,
+        // and `--force-alone` does so first ([`catch_up`]).
+        checkpointed_applies: true,
+    }
+}
+
+/// Brings the store in `dir` up to what this member's Raft log has
+/// committed, and flushes it (I341). With checkpointed applies (glidex
+/// D31) a crash leaves the store at its last checkpoint, and openraft
+/// re-applies the rest from the log as Raft starts. `--force-alone` (D85)
+/// copies the store of a stopped member, so it starts Raft here first,
+/// with no network, and stops it at once: the stop checkpoints. The store
+/// is closed again on return.
+pub fn catch_up(dir: &std::path::Path, id: RaftId) -> Result<(), String> {
+    let db = Arc::new(Db::create(dir.join("map.redb")).map_err(|e| e.to_string())?);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    // The runtime goes with its tasks before this returns, and with them
+    // every handle on the store: the caller opens it again.
+    rt.block_on(async {
+        let node = ClusterNode::<MapSchema>::start(
+            db,
+            &dir.join("raft"),
+            id,
+            &settings(),
+            Arc::new(Offline),
+        )
+        .await
+        .map_err(|e| format!("starting Raft to re-apply its log: {e}"))?;
+        node.shutdown().await;
+        Ok(())
+    })
+}
+
+/// No peers: [`catch_up`]'s Raft reaches nobody.
+struct Offline;
+
+#[async_trait::async_trait]
+impl Transport for Offline {
+    async fn call(
+        &self,
+        _target: RaftId,
+        _addr: &str,
+        _rpc: Rpc,
+        _body: Vec<u8>,
+    ) -> Result<Vec<u8>, TransportError> {
+        Err(TransportError("offline".into()))
+    }
+
+    async fn snapshot(
+        &self,
+        _target: RaftId,
+        _addr: &str,
+        _header: Vec<u8>,
+        _data: PathBuf,
+    ) -> Result<Vec<u8>, TransportError> {
+        Err(TransportError("offline".into()))
     }
 }
 
