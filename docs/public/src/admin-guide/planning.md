@@ -120,7 +120,8 @@ fast ones and keep the rest on the management network:
 - Declare the networks in the [cluster file](../reference/cluster-file.md#network),
   each `control`, `data` or `both`, or on a running cluster with
   `hyperstorctl network set --name fast --kind data --match "subnet
-  192.0.2.0/24"`.
+  192.0.2.0/24"` or the web UI's Networks page, which also shows each
+  device's endpoints and the nodes' ports, and sets them.
 - Give each device one or more `endpoint` lines on a data network. The
   device's own address (on its `node` line) stays where the map service
   reaches it.

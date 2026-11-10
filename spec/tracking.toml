@@ -1336,13 +1336,14 @@ spec = ["26-networks.md §29.10", "D211", "D212", "G50", "G51"]
 status = "planned"
 
 [[milestone.item]]
-what = "Networks set on a running cluster, and nodes serving the endpoints the map has for their devices"
+what = "Networks set on a running cluster (also on the web UI's Networks page), and nodes serving the endpoints the map has for their devices"
 spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "I337", "I338"]
 status = "done"
 tests = [
     "hyperstor_map::network_tests::networks_are_set_and_removed_unless_endpoints_are_on_them",
     "hyperstor_install::tests::a_node_serves_its_devices_endpoints_from_the_map",
     "manage::a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it",
+    "browser::networks_are_set_a_device_s_endpoints_too_and_ports_are_shown",
 ]
 
 [[milestone]]
