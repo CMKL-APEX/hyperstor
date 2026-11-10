@@ -52,6 +52,12 @@ impl Trashed {
             Trashed::Volume(v) | Trashed::Snapshot(v, _) => v.pool,
         }
     }
+
+    pub fn tenant(&self) -> u32 {
+        match self {
+            Trashed::Volume(v) | Trashed::Snapshot(v, _) => v.tenant,
+        }
+    }
 }
 
 /// What's in the trash among `volumes`: trashed volumes (with their

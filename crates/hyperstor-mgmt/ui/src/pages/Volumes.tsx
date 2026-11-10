@@ -8,7 +8,7 @@ import { useSearchParams } from "react-router-dom";
 import { fmtRate } from "../perf";
 import { cluster, realms } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll, useRealm } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, realmOf, td, useCan, usePoll, useRealm } from "../ui";
 
 type Dialog =
   | { kind: "create" }
@@ -149,7 +149,10 @@ export default function Volumes() {
     >
       <ErrorText error={status.error ?? vols.error} />
       {notice && <p className="text-sm text-emerald-700 mb-2">{notice}</p>}
-      <Table head={["", "Id", "Name", "Size", "State", "Attached by", ""]} empty="No volumes in this pool.">
+      <Table
+        head={["", "Id", "Name", "Size", "State", ...(realm ? [] : ["Realm"]), "Attached by", ""]}
+        empty="No volumes in this pool."
+      >
         {(vols.data ?? []).map((v) => (
           <Fragment key={v.id}>
             <tr data-testid={`volume-${v.name}`}>
@@ -167,6 +170,7 @@ export default function Volumes() {
               <td className={td}>
                 <Pill tone={v.state === "active" ? "ok" : "muted"}>{v.state}</Pill>
               </td>
+              {!realm && <td className={td}>{realmOf(v.realm, v.tenant)}</td>}
               <td className={`${td} text-xs`}>{v.attachedBy || "–"}</td>
               <td className={`${td} flex gap-2`}>
                 <Button onClick={() => setOpen(open === v.id ? null : v.id)}>{open === v.id ? "Hide snapshots" : "Snapshots"}</Button>

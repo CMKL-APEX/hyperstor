@@ -316,6 +316,13 @@ pub enum Admin {
         endpoints: Vec<(String, SocketAddr)>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Adds or changes a network, or (`None`) removes it (D284). Replies
+    /// with the working map's epoch.
+    SetNetwork {
+        name: String,
+        def: Option<hyperstor_map::NetworkDef>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Sets a port's role, or returns it to the default (D237). Replies
     /// with the working map's epoch.
     SetPortRole {
@@ -2147,6 +2154,21 @@ impl Meta {
         Ok(map.epoch)
     }
 
+    /// Adds or changes network `name`, or (`None`) removes it (D284).
+    /// Returns the working map's epoch.
+    pub fn set_network(
+        &self,
+        name: &str,
+        def: Option<hyperstor_map::NetworkDef>,
+    ) -> Result<u64, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let mut map = self.map.borrow_mut();
+        map.set_network(name, def)?;
+        Ok(map.epoch)
+    }
+
     /// Sets port `NODE/NETDEV`'s role, or with `None` returns it to the
     /// default (D237). Returns the working map's epoch.
     pub fn set_port_role(
@@ -3080,6 +3102,9 @@ impl Meta {
                     reply,
                 } => {
                     self.reply_published(reply, self.set_endpoints(device, endpoints), |e| e);
+                }
+                Admin::SetNetwork { name, def, reply } => {
+                    self.reply_published(reply, self.set_network(&name, def), |e| e);
                 }
                 Admin::SetLending {
                     port,

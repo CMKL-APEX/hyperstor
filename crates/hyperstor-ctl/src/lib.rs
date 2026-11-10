@@ -705,6 +705,29 @@ pub fn ports_text(r: &pb::ListPortsResponse) -> String {
     o
 }
 
+/// `hyperstorctl network list`: the cluster's networks (26-networks.md
+/// §29.3, D284).
+pub fn networks_text(nets: &[pb::Network]) -> String {
+    let mut o = format!(
+        "{:<16} {:<8} {:<8} {}\n",
+        "NETWORK", "KIND", "TRUSTED", "MATCH"
+    );
+    for n in nets {
+        let _ = writeln!(
+            o,
+            "{:<16} {:<8} {:<8} {}",
+            n.name,
+            n.kind,
+            if n.trusted { "yes" } else { "no" },
+            n.matches
+        );
+    }
+    if nets.is_empty() {
+        o.push_str("no networks: storage uses devices' addresses\n");
+    }
+    o
+}
+
 /// `hyperstorctl claim list`: the live claims on ports, and the lending
 /// settings (26-networks.md §29.9, D205, D209).
 pub fn claims_text(r: &pb::ListClaimsResponse) -> String {
@@ -862,14 +885,19 @@ pub fn findings_text(r: &pb::ListFindingsResponse) -> String {
 }
 
 /// A pool's volumes: id, name, size and state.
+/// `s`, or "-" when empty.
+fn dash(s: &str) -> &str {
+    if s.is_empty() { "-" } else { s }
+}
+
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
-        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  ATTACHED BY\n",
-        "ID", "NAME", "SIZE", "STATE", "TENANT"
+        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  ATTACHED BY\n",
+        "ID", "NAME", "SIZE", "STATE", "TENANT", "REALM"
     );
     for v in &r.volumes {
         out.push_str(&format!(
-            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {}\n",
+            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {}\n",
             v.id,
             v.name,
             v.size,
@@ -880,6 +908,8 @@ pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
             } else {
                 v.tenant.to_string()
             },
+            // Named in lists (D286).
+            dash(&v.realm),
             if v.attached_by.is_empty() {
                 "-"
             } else {
@@ -926,6 +956,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.UpgradeDevices", "device upgrade"),
     ("ClusterService.SetEndpoints", "device endpoints"),
+    ("ClusterService.SetNetwork", "network set, network remove"),
     ("ClusterService.ListPorts", "port list"),
     ("ClusterService.SetPortRole", "port role"),
     ("ClusterService.SetLending", "port lending"),
@@ -1071,8 +1102,8 @@ pub fn trash_text(r: &pb::ListTrashResponse) -> String {
         return "The trash is empty.\n".into();
     }
     let mut t = format!(
-        "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
-        "KIND", "VOLUME", "EPOCH", "NAME", "POOL", "TRASHED", "PURGED"
+        "{:<9} {:<32} {:>5} {:<16} {:>4} {:<12} {:<16} {:<16}\n",
+        "KIND", "VOLUME", "EPOCH", "NAME", "POOL", "REALM", "TRASHED", "PURGED"
     );
     for i in &r.items {
         let epoch = if i.kind == "snapshot" {
@@ -1081,12 +1112,13 @@ pub fn trash_text(r: &pb::ListTrashResponse) -> String {
             "-".into()
         };
         t.push_str(&format!(
-            "{:<9} {:<32} {:>5} {:<16} {:>4} {:<16} {:<16}\n",
+            "{:<9} {:<32} {:>5} {:<16} {:>4} {:<12} {:<16} {:<16}\n",
             i.kind,
             i.id,
             epoch,
             if i.name.is_empty() { "-" } else { &i.name },
             i.pool,
+            dash(&i.realm),
             utc(i.trashed_unix),
             utc(i.purge_unix)
         ));
@@ -1460,19 +1492,21 @@ pub fn ops_text(ops: &[pb::Operation]) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  MESSAGE",
-        "OPERATION", "KIND", "TARGET", "STATE", "PROGRESS", "STARTED (UTC)"
+        "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  {:<12}  MESSAGE",
+        "OPERATION", "KIND", "TARGET", "STATE", "PROGRESS", "STARTED (UTC)", "REALM"
     );
     for op in ops {
         let _ = writeln!(
             o,
-            "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  {}",
+            "{:<16}  {:<7} {:<10} {:<9} {:>9}  {:<16}  {:<12}  {}",
             op.id,
             op.kind,
             op.target,
             state_str(op),
             format!("{}/{}", op.done, op.total),
             utc(op.started_unix),
+            // Empty for the cluster's own (D283).
+            dash(&op.realm),
             op.message
         );
     }

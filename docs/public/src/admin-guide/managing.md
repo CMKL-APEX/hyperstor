@@ -92,8 +92,9 @@ role adds to the one before, except the last:
 realm's administrators their roles in it alone: `storage-admin@acme`,
 `security-admin@acme` (on the Security page, "Roles in realms"). They
 then see and manage only acme's tenants' volumes, buckets and keys,
-its placements and its people's grants, and nothing of the cluster as a
-whole; the UI starts them in their realm. Pools, devices, nodes and
+its placements, its people's grants and the operations on its volumes,
+and nothing of the cluster as a whole; the UI starts them in their
+realm. Volumes, the trash and operations show each one's realm. Pools, devices, nodes and
 hosts stay yours. To see what they see, pick the realm in the UI's
 realm picker, or use `hyperstorctl --mgmt URL --in-realm acme`.
 
