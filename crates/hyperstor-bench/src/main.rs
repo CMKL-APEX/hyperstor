@@ -1830,6 +1830,130 @@ fn replay_suite() {
     }
 }
 
+/// The map service's commit latency (I341): three members over loopback
+/// TCP, their stores and logs under `dir` (on the disk being measured),
+/// the leader committing map changes one after another, with checkpointed
+/// applies (glidex D31) off and on, back to back. Two kinds of change: the
+/// map's head alone (an epoch), and a device out or in, which moves PGs.
+fn map_commit_suite(dir: &Path, n: usize) {
+    use hyperstor_meta::replica::{self, Commit, Config, Member};
+    use hyperstor_meta::{ClusterMap, replicated_pool};
+    let map_of = |nodes: u32, devices: u32, pgs: u32| {
+        let mut map = ClusterMap::new(1);
+        for node in 0..nodes {
+            let addrs: Vec<std::net::SocketAddr> = (0..devices)
+                .map(|d| ([127, 0, 0, 1], 20000 + (node * devices + d) as u16).into())
+                .collect();
+            map.add_node(node, &addrs, node % 4);
+        }
+        for pool in 1..=3 {
+            map.add_pool(hyperstor_meta::PoolInfo {
+                autoscale: false,
+                ..replicated_pool(pool, &format!("p{pool}"), 3, pgs)
+            });
+        }
+        map.recompute();
+        map
+    };
+    println!(
+        "| Checkpointed applies | Map | Change | Commits | p50 ms | p99 ms | max ms | per s |"
+    );
+    println!("|---|---|---|---|---|---|---|---|");
+    for (label, nodes, devices, pgs) in [
+        ("4 nodes, 3x128 PGs", 4, 2, 128),
+        ("32 nodes, 3x2048 PGs", 32, 8, 2048),
+    ] {
+        for checkpointed in [false, true] {
+            let base = dir.join(format!("mapcommit-{nodes}-{checkpointed}"));
+            let _ = std::fs::remove_dir_all(&base);
+            let listeners: Vec<_> = (0..3)
+                .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+                .collect();
+            let members: Vec<Member> = listeners
+                .iter()
+                .enumerate()
+                .map(|(i, l)| Member {
+                    id: i as u64 + 1,
+                    raft: l.local_addr().unwrap(),
+                    map: ([127, 0, 0, 1], 1).into(),
+                })
+                .collect();
+            let mut keep = Vec::new();
+            let replicas: Vec<_> = listeners
+                .into_iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let (to, from) = hyperstor_reactor::chan::channel();
+                    keep.push(from);
+                    let mut settings = replica::settings();
+                    settings.checkpointed_applies = checkpointed;
+                    replica::spawn(
+                        Config {
+                            id: i as u64 + 1,
+                            members: members.clone(),
+                            dir: base.join(format!("m{}", i + 1)),
+                            tls: None,
+                            settings,
+                            backup: None,
+                            restore: None,
+                        },
+                        l,
+                        to,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let commit = |r: &replica::Replica, map: &ClusterMap| -> Result<(), String> {
+                let (reply, rx) = hyperstor_reactor::chan::oneshot();
+                r.commits
+                    .send(Commit {
+                        map: map.clone(),
+                        reply,
+                    })
+                    .map_err(|_| "stopped".to_string())?;
+                hyperstor_reactor::block_on(rx.recv()).unwrap_or(Err("dropped".into()))
+            };
+            let mut map = map_of(nodes, devices, pgs);
+            // The leader: the member whose commit goes through.
+            let t = Instant::now();
+            let leader = loop {
+                if let Some(l) = replicas.iter().find(|r| commit(r, &map).is_ok()) {
+                    break l;
+                }
+                assert!(t.elapsed() < Duration::from_secs(20), "no leader");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let device = *map.devices.keys().next().unwrap();
+            for change in ["epoch", "device out/in"] {
+                let mut lat = Lat(Vec::with_capacity(n));
+                let t = Instant::now();
+                for i in 0..n {
+                    map.epoch += 1;
+                    if change != "epoch" {
+                        map.devices.get_mut(&device).unwrap().up_in = i % 2 == 1;
+                        map.recompute();
+                    }
+                    let s = Instant::now();
+                    commit(leader, &map).unwrap();
+                    lat.0.push(s.elapsed());
+                }
+                let el = t.elapsed();
+                let max = lat.0.iter().max().unwrap().as_secs_f64() * 1e3;
+                println!(
+                    "| {} | {label} | {change} | {n} | {:.2} | {:.2} | {max:.2} | {:.0} |",
+                    if checkpointed { "on" } else { "off" },
+                    lat.pct(0.5) / 1e3,
+                    lat.pct(0.99) / 1e3,
+                    n as f64 / el.as_secs_f64()
+                );
+            }
+            drop(replicas);
+            drop(keep);
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let secs: f64 = std::env::var("HS_BENCH_SECS")
@@ -1944,6 +2068,11 @@ fn main() {
         Some("redb") => {
             // hyperstor-bench redb <scratch dir>: G13 baseline
             redb_suite(Path::new(args.get(2).expect("scratch directory")), secs);
+        }
+        Some("mapcommit") => {
+            // hyperstor-bench mapcommit <scratch dir on the disk> [commits]
+            let n = args.get(3).map_or(500, |v| v.parse().unwrap());
+            map_commit_suite(Path::new(args.get(2).expect("scratch directory")), n);
         }
         Some("index") => {
             // hyperstor-bench index <file on a filesystem with 2 GiB free>
