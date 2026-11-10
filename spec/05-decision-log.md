@@ -1443,6 +1443,16 @@ such a host may register its own devices:
 |---|---|---|---|
 | 244 | `--device` on a storage-only host: the node's certificate may add devices to its own node, at an IP it already serves on, as D215 lets it set its own endpoints (recommended); a one-time `device` token from the administrator per addition; both, with a setting to require the token | The node's certificate | D280 |
 
+## Realms after HS15 (2026-11-09)
+
+HS15's I303 left two points for review. Asked with a recommendation
+for each, the owner took both (D283, D286):
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 245 | A realm's operations: each records its volume's tenant, and the realm's people see them all, the cluster's own staying hidden (recommended); only one's own, as built | Operations record their realm | D283 |
+| 246 | Someone with roles in two realms and no realm picked: merged lists that name each row's realm, creations that could land in either refused unless they name one (recommended); a realm must be picked first; merged lists as built | Merged, each row's realm named | D286 |
+
 ## Networks on a running cluster (2026-11-10)
 
 The pilot's hosts have 100 GbE ports on a shared subnet, but the

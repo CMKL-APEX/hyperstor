@@ -162,10 +162,11 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
 
 /// What a grant in a realm reaches (D252, D264, D265): the calls about a
 /// realm's tenants, volumes and snapshots, the trash's volumes, buckets,
-/// keys, placements and realm, its people's grants, and the operations one
-/// started oneself. Everything else
-/// (devices, nodes, pools, members, hosts, others' operations, scrub, the audit,
-/// certificates, tokens, moving tenants) is the cluster's as a whole.
+/// keys, placements and realm, its people's grants, and the operations on
+/// its tenants' volumes and those one started oneself (D283). Everything
+/// else (devices, nodes, pools, members, hosts, the cluster's operations
+/// and cancelling any, scrub, the audit, certificates, tokens, moving
+/// tenants) is the cluster's as a whole.
 pub const IN_REALM: &[&str] = &[
     "ClusterService.ListVolumes",
     "ClusterService.ListSnapshots",
@@ -174,8 +175,10 @@ pub const IN_REALM: &[&str] = &[
     "S3Service.ListS3Buckets",
     "S3Service.GetS3Bucket",
     "RealmService.ListRealms",
-    // One's own only: what a copy, flatten or purge started.
+    // Those on its tenants' volumes and one's own (D283).
     "OperationService.GetOperation",
+    "OperationService.ListOperations",
+    "OperationService.WatchOperation",
     "ClusterService.CreateSnapshot",
     "ClusterService.CreateGroupSnapshot",
     "TrashService.RestoreFromTrash",
@@ -475,12 +478,16 @@ mod tests {
             r(&sa, "ClusterService.ListVolumes", None),
             realms(&["acme"])
         );
+        assert_eq!(
+            r(&sa, "OperationService.ListOperations", None),
+            realms(&["acme"])
+        );
         for cluster_only in [
             "ClusterService.CreatePool",
             "ClusterService.GetStatus",
             "RealmService.SetHostRealms",
             "RealmService.SetTenantRealm",
-            "OperationService.ListOperations",
+            "OperationService.CancelOperation",
             "Dashboard.Read",
         ] {
             assert_eq!(r(&sa, cluster_only, None), None, "{cluster_only}");

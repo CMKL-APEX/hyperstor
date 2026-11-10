@@ -65,6 +65,7 @@ fn item_pb(api: &Api, t: &Trashed) -> pb::TrashItem {
         trashed_unix: t.trashed_unix(),
         purge_unix: api.purge_at(v.pool, t.trashed_unix()),
         group,
+        tenant: v.tenant,
         ..Default::default()
     }
 }
@@ -82,13 +83,15 @@ impl TrashService for Api {
         let TrashDone::Items(items) = self.trash_op(TrashOp::List { pool }).await? else {
             return Err(ConnectError::internal("unexpected result"));
         };
+        let names = self.realm_names(&scope).await;
         Ok(pb::ListTrashResponse {
             items: items
                 .iter()
-                .filter(|t| match t {
-                    Trashed::Volume(v) | Trashed::Snapshot(v, _) => scope.tenant(v.tenant),
+                .filter(|t| scope.tenant(t.tenant()))
+                .map(|t| pb::TrashItem {
+                    realm: names.realm_name(t.tenant()),
+                    ..item_pb(self, t)
                 })
-                .map(|t| item_pb(self, t))
                 .collect(),
             ..Default::default()
         }
@@ -175,6 +178,7 @@ impl TrashService for Api {
                 crate::operations::Work::Purge { volume: id, epoch },
                 target,
                 "deleting its data".into(),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::PurgeFromTrashResponse {

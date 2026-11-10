@@ -15,13 +15,14 @@ pub mod probe;
 pub mod shard;
 pub mod types;
 
-pub use align::{AlignedBuf, BLOCK};
+pub use align::{AlignedBuf, BLOCK, WriteBuf};
 pub use blockmap::DensePolicy;
 pub use dev::{BlockDev, FaultDev, FileDev, MemDev, UringDev, WriteFault};
 pub use device::{
     DeviceConfig, DeviceInfo, Features, INCOMPAT_SHARD_V2, format, info as device_info, open,
     record_cluster, upgrade,
 };
+pub use hyperstor_codec::IoBuf;
 pub use shard::{
     CheckpointLayout, DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, ReadPlan,
     Region, Round, Shard, ShardStats,

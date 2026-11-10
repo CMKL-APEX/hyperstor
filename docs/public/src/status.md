@@ -139,7 +139,8 @@ covered by tests that run on every change.
 | The engine takes the CRCs that came with write data, checked on arrival, instead of computing them again | Done |
 | Writes in operation lists (S3 object data) carry the writer's CRCs to every copy's media, checked on arrival; plain writes to peers of the protocol before | Done |
 | Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data | Done |
-| Registered buffers shared by the reactor's network and disk paths, so write data isn't copied into an aligned buffer | Planned |
+| Write data received into a block-aligned buffer, shared with the frames to replicas, and written by the engine from it: no copy on the primary or its replicas | Done |
+| Registered (fixed) io_uring buffers for network receives and device writes, if pinning pages per I/O shows in a profile | Planned |
 | Measured against the end-to-end benchmark: CPU and latency per 4 KiB read and replicated write, before and after | Planned |
 
 ## HS6: RDMA over RoCEv2 and InfiniBand
@@ -186,6 +187,7 @@ covered by tests that run on every change.
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
+| A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
 
 ## HS18: Pools and devices at run time
 
