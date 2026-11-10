@@ -959,3 +959,298 @@ fn a_member_host_also_runs_storage() {
     assert_eq!(again.code, 0, "{}", again.out);
     assert!(!again.has("Joined cluster"), "{}", again.out);
 }
+
+/// D288: a storage host that joined with a token becomes a map service
+/// member too (`--role both`), refused at an even count unless forced,
+/// and adds itself once its map service runs; a member host that also
+/// runs a node of the cluster file becomes storage only (`--role
+/// storage`): its store backed up, its node given a certificate of its
+/// own, out of the group, its member files, keys and store gone; its node
+/// serves on. A demote that would leave fewer than three voters is
+/// refused.
+#[test]
+fn a_storage_host_is_promoted_and_a_member_demoted() {
+    let _one = one_at_a_time();
+    let s = Scratch::new("roles");
+    let base = free_ports(22);
+    let member = |i: u16| (base + 3 * i, base + 3 * i + 1, base + 3 * i + 2); // api, map, raft
+    let node_port = |i: u16| base + 9 + i; // nodes 0..2 of the file, 3 joined
+    let admin_port = |i: u16| base + 13 + i;
+    let (p_api, p_map, p_raft) = (base + 17, base + 18, base + 19);
+    let members: String = (0..3)
+        .map(|i| {
+            let (_, m, r) = member(i);
+            format!("{}=127.0.0.1:{r}/127.0.0.1:{m}", i + 1)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let file = s.path("cluster.txt");
+    std::fs::write(
+        &file,
+        format!(
+            "cluster 14\nnode 0 rack 0 127.0.0.1:{}\nnode 1 rack 1 127.0.0.1:{}\nnode 2 rack 2 127.0.0.1:{}\n\
+             pool 1 vol replicated size 2 min 1 pgs 16 domain host\n",
+            node_port(0),
+            node_port(1),
+            node_port(2)
+        ),
+    )
+    .unwrap();
+    let mut procs = Procs::default();
+    let roots: Vec<PathBuf> = (1..=3).map(|i| s.path(&format!("member-{i}"))).collect();
+    let pkis: Vec<PathBuf> = roots.iter().map(|r| r.join("etc/hyperstor/pki")).collect();
+    let apis: Vec<String> = (0..3)
+        .map(|i| format!("127.0.0.1:{}", member(i).0))
+        .collect();
+    let bin = roots[0].join("usr/local/bin");
+    let install_member = |i: u16, extra: &[&str]| {
+        let root = &roots[i as usize];
+        link_binaries(root);
+        let data = s.path(&format!("member-data-{}", i + 1));
+        std::fs::create_dir_all(&data).unwrap();
+        let (api_port, _, _) = member(i);
+        let (id, node, api_s, adm) = (
+            (i + 1).to_string(),
+            i.to_string(),
+            api_port.to_string(),
+            admin_port(i).to_string(),
+        );
+        let mut args = vec![
+            "--role",
+            "both",
+            "--node",
+            &node,
+            "--members",
+            &members,
+            "--member-id",
+            &id,
+            "--api-port",
+            &api_s,
+            "--admin-port",
+            &adm,
+            "--size-gib",
+            "1",
+            "--data-dir",
+            data.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        install(root, &args).ok()
+    };
+    let start_meta = |i: usize| {
+        start(
+            &bin.join("hyperstor-meta"),
+            env_args(&roots[i], s.run(), "meta.env"),
+            s.path(&format!("meta-{}.log", i + 1)),
+        )
+    };
+    let start_node = |root: &Path, n: u32, log: &str| {
+        start(
+            &bin.join("hyperstord"),
+            env_args(root, s.run(), &format!("node-{n}.env")),
+            s.path(log),
+        )
+    };
+    install_member(0, &["--cluster", file.to_str().unwrap()]);
+    procs.0.push(start_meta(0));
+    wait_api(&bin, &apis[0], &pkis[0]);
+    for i in 1..3u16 {
+        let tok = token(&bin, &apis[0], &pkis[0], &s, "meta", &[]);
+        install_member(
+            i,
+            &["--join", &apis[0], "--token-file", tok.to_str().unwrap()],
+        );
+    }
+    procs.0.push(start_meta(1));
+    // Stopped by the test itself later; killed with the rest on a panic.
+    let mut meta3 = Procs(vec![start_meta(2)]);
+    // A token from the leader, whichever member that is.
+    let leader_token = |role: &str| {
+        wait_for("the leader to make a token", 40, || {
+            (0..3).find_map(|i| {
+                let r = ctl(
+                    &bin,
+                    &apis[i],
+                    &pkis[i],
+                    &["token", "create", "--role", role],
+                );
+                (r.code == 0).then(|| {
+                    let f = s.path(&format!("token-{role}-{}", rand_suffix()));
+                    std::fs::write(&f, r.out.lines().next().unwrap()).unwrap();
+                    (apis[i].clone(), f)
+                })
+            })
+        })
+    };
+    let (lead, t) = leader_token("node");
+    let host = s.path("store");
+    join_storage(
+        &host,
+        &s.path("store-data"),
+        &lead,
+        &t,
+        node_port(3),
+        1,
+        admin_port(3),
+    )
+    .ok();
+    for (i, root) in roots.iter().enumerate().take(2) {
+        procs
+            .0
+            .push(start_node(root, i as u32, &format!("node-{i}.log")));
+    }
+    let mut node2 = Procs(vec![start_node(&roots[2], 2, "node-2.log")]);
+    procs.0.push(start_node(&host, 3, "node-3.log"));
+    let voters = |api: &str, pki: &Path| -> Vec<String> {
+        ctl(&bin, api, pki, &["member", "list"])
+            .ok()
+            .out
+            .lines()
+            .filter(|l| l.contains(" voter") || l.contains(" leader"))
+            .map(|l| l.split_whitespace().next().unwrap().to_string())
+            .collect()
+    };
+    wait_for("nodes up and health ok", 60, || {
+        ctl(&bin, &apis[0], &pkis[0], &["status"])
+            .has("health  ok")
+            .then_some(())
+    });
+    ctl(&bin, &apis[0], &pkis[0], &["io-test", "--mib", "4"]).ok();
+
+    // Promote: refused at four voters unless forced, then member 4.
+    let (lead, t) = leader_token("meta");
+    let promote = |extra: &[&str]| {
+        let (a, m, r) = (p_api.to_string(), p_map.to_string(), p_raft.to_string());
+        let mut args = vec![
+            "--role",
+            "both",
+            "--token-file",
+            t.to_str().unwrap(),
+            "--api-port",
+            &a,
+            "--map-port",
+            &m,
+            "--raft-port",
+            &r,
+        ];
+        args.extend(extra);
+        install_cmd(&host, "install", &args)
+    };
+    let r = promote(&[]);
+    assert!(
+        r.code == 1 && r.has("4 voters survive no more failures"),
+        "{}",
+        r.out
+    );
+    let r = promote(&["--force"]).ok();
+    assert!(r.has("joins as map service member 4"), "{}", r.out);
+    assert!(
+        !r.has("Added member 4") && r.has("member 4 isn't a voter yet"),
+        "not added before its map service runs: {}",
+        r.out
+    );
+    assert_eq!(voters(&apis[0], &pkis[0]).len(), 3);
+    let hpki = host.join("etc/hyperstor/pki");
+    let who = hyperstor_pki::identity_in(&std::fs::read_to_string(hpki.join("api.crt")).unwrap())
+        .unwrap();
+    assert_eq!(
+        (who.role, who.id),
+        (hyperstor_pki::Role::Meta, "4".to_string())
+    );
+    assert!(
+        hpki.join("node.crt").exists(),
+        "its node keeps its certificate"
+    );
+    let env = std::fs::read_to_string(host.join("etc/hyperstor/node-3.env")).unwrap();
+    assert!(
+        env.contains(&format!("127.0.0.1:{}", node_port(3))),
+        "{env}"
+    );
+    let _ = lead;
+    procs.0.push(start(
+        &bin.join("hyperstor-meta"),
+        env_args(&host, s.run(), "meta.env"),
+        s.path("meta-4.log"),
+    ));
+    // The next run adds it, once its map service answers.
+    let r = install(&host, &[]).ok();
+    assert!(r.has("Member 4 is a voter."), "{}", r.out);
+    let conf = std::fs::read_to_string(host.join("etc/hyperstor/install.conf")).unwrap();
+    assert!(!conf.contains("member_pending"), "{conf}");
+    assert_eq!(voters(&apis[0], &pkis[0]).len(), 4);
+
+    // Demote member 3: storage node 2 only.
+    let data3 = s.path("member-data-3");
+    let r = install(&roots[2], &["--role", "storage"]).ok();
+    assert!(
+        r.has("Demoted: this host is storage node 2 only"),
+        "{}",
+        r.out
+    );
+    let etc3 = roots[2].join("etc/hyperstor");
+    for gone in [
+        "meta.env",
+        "mgmt.env",
+        "cluster.txt",
+        "pki/api.crt",
+        "pki/admin.key",
+        "pki/intermediate.key",
+        "pki/cluster.key",
+    ] {
+        assert!(!etc3.join(gone).exists(), "{gone} is gone");
+    }
+    // The installer's paths are under its root; the processes' (the store
+    // a running member writes) are the real ones.
+    let data3 = roots[2].join(data3.strip_prefix("/").unwrap());
+    assert!(
+        std::fs::read_dir(data3.join("meta-backups"))
+            .unwrap()
+            .flatten()
+            .any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .starts_with("demoted-member-3-")),
+        "the store backed up first"
+    );
+    let who =
+        hyperstor_pki::identity_in(&std::fs::read_to_string(etc3.join("pki/node.crt")).unwrap())
+            .unwrap();
+    assert_eq!(
+        (who.role, who.id),
+        (hyperstor_pki::Role::Node, "2".to_string())
+    );
+    let conf = std::fs::read_to_string(etc3.join("install.conf")).unwrap();
+    assert!(
+        conf.contains("role = storage") && conf.contains("node = 2"),
+        "{conf}"
+    );
+    let env = std::fs::read_to_string(etc3.join("node-2.env")).unwrap();
+    assert!(
+        env.contains(&format!("127.0.0.1:{}", node_port(2))),
+        "the same device: {env}"
+    );
+    let left = voters(&apis[0], &pkis[0]);
+    assert_eq!(left, vec!["1", "2", "4"], "member 3 left");
+    for mut p in meta3.0.drain(..) {
+        let _ = p.kill();
+        let _ = p.wait();
+    }
+    // Its node restarts with the members it reaches now, and serves.
+    for mut p in node2.0.drain(..) {
+        let _ = p.kill();
+        let _ = p.wait();
+    }
+    procs.0.push(start_node(&roots[2], 2, "node-2b.log"));
+    wait_for("health ok again", 60, || {
+        ctl(&bin, &apis[0], &pkis[0], &["status"])
+            .has("health  ok")
+            .then_some(())
+    });
+    ctl(&bin, &apis[0], &pkis[0], &["io-test", "--mib", "4"]).ok();
+    // Three voters left: none can go without force.
+    let r = install_cmd(&roots[1], "install", &["--role", "storage"]);
+    assert!(r.code == 1 && r.has("2 voters would be left"), "{}", r.out);
+    assert!(
+        roots[1].join("etc/hyperstor/meta.env").exists(),
+        "nothing changed"
+    );
+}

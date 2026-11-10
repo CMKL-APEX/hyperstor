@@ -1460,8 +1460,11 @@ tests = [
 
 [[milestone.item]]
 what = "A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member"
-spec = ["19-administration.md §23.4.3", "D288"]
-status = "planned"
+spec = ["19-administration.md §23.4.3", "D288", "I348"]
+status = "done"
+tests = [
+    "join::a_storage_host_is_promoted_and_a_member_demoted",
+]
 
 [[milestone.item]]
 what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates"

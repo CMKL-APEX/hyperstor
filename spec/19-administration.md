@@ -145,7 +145,11 @@ join (clustering.md §5.2), so operators learn one model.
 
 #### 23.4.3 Changing a host's roles
 
-D288 (settled 2026-11-10; point 248). Not yet built.
+D288 (settled 2026-11-10; point 248). Built (I348): the member id
+defaults to the next free one, and `--raft-port` (8851) is where the
+promoted member talks Raft; a demote is also refused where an S3
+gateway runs on the member's certificate, and for a node whose devices
+aren't on consecutive ports of one address, as a joined node's are.
 
 A host runs a **map service member** (`hyperstor-meta`, with mgmt, the
 web UI and authd beside it, the `api`, `mgmt`, `web` and `admin`
@@ -183,6 +187,8 @@ them:
   redirect (D72). Every installer run, the daily renewal included,
   takes the list from `ListMembers` through the API, rewrites the
   services' options where it changed and restarts them, one at a time.
+  A member's own list (`hyperstor-meta --member`) stays as installed: it
+  only forms a new group, and rewriting it would restart members.
   Until a host's next run, it reaches a member it still lists. So a
   replacement keeps the old member running until every host has run
   the installer once, or the operator runs it on each.
