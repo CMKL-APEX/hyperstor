@@ -464,7 +464,7 @@ pub struct NetworkDef {
 
 impl NetworkDef {
     /// A network from its parts as the cluster file and `SetNetwork`
-    /// (D281) give them: its kind (`control`, `data` or `both`), and its
+    /// (D284) give them: its kind (`control`, `data` or `both`), and its
     /// match (`subnet IP/LEN`, or `ib PREFIX` in four groups).
     pub fn parse(kind: &str, trusted: bool, matches: &str) -> Result<NetworkDef, String> {
         let kind = match kind {
@@ -807,7 +807,7 @@ impl ClusterMap {
         Ok(changed || was != fixed)
     }
 
-    /// Adds or replaces network `name` (D281), or with `None` removes it.
+    /// Adds or replaces network `name` (D284), or with `None` removes it.
     /// While devices have endpoints on it, it stays, keeps carrying data
     /// and keeps its match, so no endpoint is left on a network that
     /// doesn't reach it. Whether it changed; the epoch moves when it did.
@@ -2697,7 +2697,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(ClusterMap::decode(&b).unwrap(), plain);
     }
 
-    /// D281: a running cluster's networks change through the map. One
+    /// D284: a running cluster's networks change through the map. One
     /// that devices have endpoints on stays, keeps carrying data and keeps
     /// its match; its trust may change. An unchanged one moves no epoch.
     #[test]

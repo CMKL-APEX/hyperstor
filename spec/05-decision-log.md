@@ -1453,4 +1453,4 @@ the owner chose the first:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 245 | Networks on a running cluster: `SetNetwork` through the map service, then endpoints on it (recommended); re-add a device at its fast address, without endpoints' failover or weights | Through the map service | D281 |
+| 247 | Networks on a running cluster: `SetNetwork` through the map service, then endpoints on it (recommended); re-add a device at its fast address, without endpoints' failover or weights | Through the map service | D284 |

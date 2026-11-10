@@ -488,7 +488,7 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
-/// D281, D282: a running cluster takes a data network (`hyperstorctl
+/// D284, D285: a running cluster takes a data network (`hyperstorctl
 /// network set`); a device gets an endpoint on it by hand; the network
 /// stays while it has one; the installer on the map service host writes
 /// the endpoint into the node's options, and the node, restarted, serves
@@ -550,7 +550,7 @@ fn a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it() {
     .ok();
     let held = c.ctl(&["network", "remove", "--name", "fast"]);
     assert!(held.code == 1 && held.has("devices [0]"), "{}", held.out);
-    // The map service host's installer serves the map's endpoints (D282).
+    // The map service host's installer serves the map's endpoints (D285).
     install(&c.root, &["--no-start"]);
     let env = std::fs::read_to_string(c.root.join("etc/hyperstor/node-0.env")).unwrap();
     assert!(

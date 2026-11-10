@@ -2087,7 +2087,7 @@ fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) 
 /// warning when the API can't be reached (the node keeps what the
 /// cluster file gives it).
 ///
-/// D282: with `--endpoints off`, and on a map service host (through its
+/// D285: with `--endpoints off`, and on a map service host (through its
 /// own API, with the administrator's certificate), nothing is proposed:
 /// the node serves the endpoints the map has for its devices, as
 /// `hyperstorctl device endpoints` set them, besides the cluster file's.
@@ -2237,7 +2237,7 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
     }
 }
 
-/// D282: `node` serves the endpoints `status`'s map has for its devices,
+/// D285: `node` serves the endpoints `status`'s map has for its devices,
 /// after the cluster file's, and reaches others on their networks.
 fn serve_mapped_endpoints(node: &mut NodePlan, status: &hyperstor_api::GetStatusResponse) {
     let mapped = status
@@ -4320,7 +4320,7 @@ mod tests {
         assert!(!rules.contains("extra.img"), "files need no rule");
     }
 
-    /// D282: a node serves the endpoints the map has for its own devices,
+    /// D285: a node serves the endpoints the map has for its own devices,
     /// after the cluster file's and none twice, and reaches others on
     /// their networks; other nodes' endpoints aren't its.
     #[test]

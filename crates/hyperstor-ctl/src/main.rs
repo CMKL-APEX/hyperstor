@@ -56,7 +56,7 @@
 //!   (26-networks.md §29.5, D215); the installer keeps its own node's;
 //! - `network list`, `network set --name N --kind control|data|both
 //!   --match "subnet IP/LEN"|"ib PREFIX" [--trusted]`, `network remove
-//!   --name N`: the cluster's networks (D281), as the cluster file's
+//!   --name N`: the cluster's networks (D284), as the cluster file's
 //!   `network` lines give them; one with endpoints on it stays, carries
 //!   data and keeps its match;
 //! - `device upgrade --device D | --all`: convert devices to v0.0.8's
@@ -292,7 +292,7 @@ struct Args {
     all: bool,
     /// `port lending`: off, idle, always or default (D209).
     lending: Option<String>,
-    /// `network set`: `subnet IP/LEN` or `ib PREFIX` (D281).
+    /// `network set`: `subnet IP/LEN` or `ib PREFIX` (D284).
     matches: Option<String>,
     /// `network set`: plaintext after the handshake (D25).
     trusted: bool,
@@ -859,7 +859,7 @@ fn main() {
         usage();
     }
     // network set takes a name, a kind and a match, maybe --trusted;
-    // network remove a name; nothing else takes a match or trust (D281).
+    // network remove a name; nothing else takes a match or trust (D284).
     let network_set = cmd == "network set";
     if (network_set && (a.name.is_empty() || a.kind.is_none() || a.matches.is_none()))
         || (cmd == "network remove" && a.name.is_empty())

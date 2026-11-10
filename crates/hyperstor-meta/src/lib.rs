@@ -307,7 +307,7 @@ pub enum Admin {
         endpoints: Vec<(String, SocketAddr)>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
-    /// Adds or changes a network, or (`None`) removes it (D281). Replies
+    /// Adds or changes a network, or (`None`) removes it (D284). Replies
     /// with the working map's epoch.
     SetNetwork {
         name: String,
@@ -2134,7 +2134,7 @@ impl Meta {
         Ok(map.epoch)
     }
 
-    /// Adds or changes network `name`, or (`None`) removes it (D281).
+    /// Adds or changes network `name`, or (`None`) removes it (D284).
     /// Returns the working map's epoch.
     pub fn set_network(
         &self,

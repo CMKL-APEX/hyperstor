@@ -8178,7 +8178,7 @@ export const ClusterService: GenService<{
     output: typeof SetEndpointsResponseSchema;
   },
   /**
-   * Adds or changes a network of the map (26-networks.md §29.3, D281), as
+   * Adds or changes a network of the map (26-networks.md §29.3, D284), as
    * the cluster file's `network` lines name them, or with `remove` drops
    * it. While devices have endpoints on it, it stays, carries data and
    * keeps its match. admin and mgmt.

@@ -706,7 +706,7 @@ pub fn ports_text(r: &pb::ListPortsResponse) -> String {
 }
 
 /// `hyperstorctl network list`: the cluster's networks (26-networks.md
-/// §29.3, D281).
+/// §29.3, D284).
 pub fn networks_text(nets: &[pb::Network]) -> String {
     let mut o = format!(
         "{:<16} {:<8} {:<8} {}\n",

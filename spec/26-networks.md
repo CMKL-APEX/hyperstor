@@ -25,7 +25,7 @@ devices at their endpoints, and in `hyperstor-fabric` the ranking by
 closeness, path choice and the reconciler's decisions, not yet wired;
 health per network (§29.7; I258); the reconciler in the leader, with
 port roles set by the operator (§29.8; I277); claims on ports by the
-`orchestrator` role and lending settings (§29.9; I278); networks set on a running cluster (§29.3; D281, I335) and nodes serving the map's endpoints (§29.5; D282, I336). It builds on 13-protocol.md §13.2 (networks and transports in
+`orchestrator` role and lending settings (§29.9; I278); networks set on a running cluster (§29.3; D284, I337) and nodes serving the map's endpoints (§29.5; D285, I338). It builds on 13-protocol.md §13.2 (networks and transports in
 the map) and D31 (port roles), and amends both.
 
 ## 29. Networks (D203–D217)
@@ -105,7 +105,7 @@ shared link (G49).
 
 **Networks** are named in the cluster file and the map; a running cluster
 takes, changes and drops them with `SetNetwork` (`hyperstorctl network
-set|remove`, D281), except that one with endpoints on it stays, carries
+set|remove`, D284), except that one with endpoints on it stays, carries
 data and keeps its match:
 
 | Field | Meaning |
@@ -193,14 +193,14 @@ port on its own NUMA node.
   node's own certificate may set only its own devices' endpoints;
   `admin` and `mgmt` may set any. The cluster file's `endpoint` lines
   stay, for endpoints written by hand.
-- **Nodes serve the map's endpoints (D282).** On a map service host the
+- **Nodes serve the map's endpoints (D285).** On a map service host the
   installer proposes none: it reads its devices' endpoints from the map
   (as `hyperstorctl device endpoints` set them) and gives them to the
   node, after the cluster file's. A joined host does the same with
   `--endpoints off`. Why: a node serves only the endpoints its options
   name, and a map service host's proposal would override the cluster
   file's; nor does `glidex-topology` see an address on a bridge over a
-  bond (I337).
+  bond (I339).
 - **Clients** rank their own ports the same way: by closeness to the
   client reactor's CPU, and for `libhyperstor-gpu` to the GPU whose
   buffer is read or written (12-gpu.md §12.1).
