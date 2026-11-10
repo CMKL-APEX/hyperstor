@@ -317,10 +317,74 @@ fn members_change_at_run_time() {
     assert!(audit.contains("\"op\":\"AddMember\"") && audit.contains("\"op\":\"RemoveMember\""));
 }
 
+/// Each member's Raft state in the leader's member list (D281): in step;
+/// stopped, no reply, and behind by the writes since; started again, in
+/// step. Another member's list has no state. The leader stopped, the next
+/// one records the change in the audit (I336).
+#[test]
+fn the_member_list_shows_a_stopped_member() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = group("health", 3, 3);
+    let l = g.leader(&[0, 1, 2]);
+    // A member's row by its id, in the list `i` gives.
+    let row = |g: &Group, i: usize, id: usize| -> String {
+        let r = g.ctl(i, &["member", "list"]);
+        let row = r.out.lines().find(|x| x.starts_with(&format!("{id} ")));
+        row.unwrap_or_default().to_string()
+    };
+    let f = (0..3).find(|i| *i != l).unwrap();
+    wait_for("every member in step", 20, || {
+        (0..3)
+            .all(|i| row(&g, l, i + 1).contains(" in step "))
+            .then_some(())
+    });
+    let r = g.ctl(f, &["member", "list"]).ok();
+    assert!(
+        !r.has("in step"),
+        "a follower's list has no state:\n{}",
+        r.out
+    );
+    let json = g.ctl(l, &["--json", "member", "list"]).ok();
+    let v: serde_json::Value = serde_json::from_str(&json.out).unwrap();
+    // uint64 as a number or, in protobuf's JSON, a string.
+    let num = |x: &serde_json::Value| x.as_u64().or_else(|| x.as_str()?.parse().ok());
+    assert!(num(&v["term"]).unwrap_or(0) > 0, "{}", json.out);
+    assert!(num(&v["quorum_ack_ms"]).is_some(), "{}", json.out);
+    g.m[f].stop();
+    for _ in 0..3 {
+        g.ctl(l, &["token", "create", "--role", "meta"]).ok();
+    }
+    let gone = wait_for("the stopped member to show no reply", 20, || {
+        let r = row(&g, l, f + 1);
+        r.contains(" no reply ").then_some(r)
+    });
+    let behind: u64 = gone.split_whitespace().nth(4).unwrap().parse().unwrap();
+    assert!(behind >= 3, "{gone}");
+    g.m[f].start(&g.s, &[]);
+    wait_for("the restarted member in step", 30, || {
+        let r = row(&g, l, f + 1);
+        r.contains(" in step ").then_some(())
+    });
+    // The leader stops: the next records the change in the audit (I336).
+    g.m[l].stop();
+    let others: Vec<usize> = (0..3).filter(|i| *i != l).collect();
+    let n = g.leader(&others);
+    let log = g.m[n].log();
+    let elected = log
+        .lines()
+        .rfind(|x| x.contains("\"op\":\"LeaderElected\""))
+        .unwrap_or_else(|| panic!("no LeaderElected record:\n{log}"));
+    assert!(
+        elected.contains(&format!("member {} before", l + 1)),
+        "{elected}"
+    );
+}
+
 /// A group that lost its majority for good (D85): the survivor can't
 /// change anything; forcing it alone is refused while another member
-/// answers; forced, it leads alone, serves and adds hosts; an old member
-/// that comes back with its log can't rejoin.
+/// answers; forced, it leads alone with every change it had applied
+/// before it was killed (I341), serves and adds hosts; an old member that
+/// comes back with its log can't rejoin.
 #[test]
 fn a_lost_majority_is_recovered_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,6 +395,21 @@ fn a_lost_majority_is_recovered_alone() {
     g.m[2].stop();
     let s1_api = g.m[0].api.clone();
     let _ = s1_api;
+    // A token made just before member 1 is killed: applied there, likely
+    // not yet at a checkpoint (glidex D31), and kept through the forced
+    // start, which re-applies the log first (I341).
+    let ids = |out: &str| -> Vec<String> {
+        out.lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next().map(String::from))
+            .collect()
+    };
+    let l = g.leader(&[0, 1]);
+    g.ctl(l, &["token", "create", "--role", "meta"]).ok();
+    let want = ids(&g.ctl(l, &["token", "list"]).ok().out);
+    wait_for("member 1 to apply the token", 10, || {
+        (ids(&g.ctl(0, &["token", "list"]).out) == want).then_some(())
+    });
     // Forcing while member 2 still answers is refused.
     g.m[0].stop();
     let s = &g.s;
@@ -359,6 +438,11 @@ fn a_lost_majority_is_recovered_alone() {
     g.formed(0);
     let r = g.ctl(0, &["member", "list"]).ok();
     assert_eq!(r.out.lines().count(), 2, "one member: {}", r.out);
+    let kept = ids(&g.ctl(0, &["token", "list"]).ok().out);
+    assert!(
+        want.iter().all(|t| kept.contains(t)),
+        "{want:?} in {kept:?}"
+    );
     let log = g.m[0].log();
     assert!(
         log.contains("--force-alone: revoked") && log.contains("\"op\":\"ForceAlone\""),

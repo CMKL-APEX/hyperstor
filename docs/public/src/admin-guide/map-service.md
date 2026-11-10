@@ -182,5 +182,7 @@ other members' certificates issued until then, so an old member that
 comes back with its log is refused; reinstall those with fresh data
 directories, join them with `meta` tokens, and add them. Map changes the
 survivor hadn't received before the loss are lost: hosts joined in that
-window join again.
+window join again. Changes it had received are kept, even if it crashed:
+a member makes what it applies durable at checkpoints, at most a second
+apart, and the forced start first re-applies the rest from its log.
 

@@ -77,6 +77,7 @@ covered by tests that run on every change.
 | Replicated map service (Raft) | In progress |
 | Map backups by the leader and on request, and restoring a lost store from one | Done |
 | Changing the map service's members at run time, recovering a group that lost its majority, and a leader without one saying so | Done |
+| Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log | Done |
 | Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Done |
 
@@ -185,6 +186,7 @@ covered by tests that run on every change.
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
+| A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
 
 ## HS18: Pools and devices at run time
 
@@ -217,6 +219,7 @@ covered by tests that run on every change.
 | The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it) | Done |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex) | Done |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
+| Networks set on a running cluster, and nodes serving the endpoints the map has for their devices | Done |
 
 ## AD0: Administration API, identities and CLI
 

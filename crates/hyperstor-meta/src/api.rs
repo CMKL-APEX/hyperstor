@@ -1384,6 +1384,7 @@ impl ClusterService for Api {
                     if req.deep { " deep" } else { "" }
                 ),
                 who.clone(),
+                None,
             )
             .await;
         audit(
@@ -1871,6 +1872,76 @@ impl ClusterService for Api {
             Some(Err(e)) if e.starts_with("no device") => {
                 Err(meta_error(e, ConnectError::not_found, "not_found"))
             }
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::invalid_argument,
+                "invalid_argument",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    async fn set_network(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetNetworkRequest>,
+    ) -> ServiceResult<pb::SetNetworkResponse> {
+        let net = req.network.as_option();
+        let name = net.map(|n| n.name.to_string()).unwrap_or_default();
+        let target = match net {
+            Some(n) if !req.remove => format!(
+                "network {name} {}{} {}",
+                n.kind,
+                if n.trusted { " trusted" } else { "" },
+                n.matches
+            ),
+            _ => format!("network {name} remove"),
+        };
+        let who = self.authorize(&ctx, "SetNetwork", &target, true)?;
+        let invalid =
+            |e: String| with_reason(ConnectError::invalid_argument(e), "invalid_argument");
+        // Names as classes' (D178): what the cluster file and --networks
+        // take, with no spaces or commas.
+        if !crate::valid_class(&name) {
+            return Err(invalid(format!(
+                "a network's name is 1 to 32 lowercase letters, digits and dashes, not {name:?}"
+            )));
+        }
+        let def = match net {
+            Some(n) if !req.remove => Some(
+                hyperstor_map::NetworkDef::parse(n.kind, n.trusted, n.matches).map_err(invalid)?,
+            ),
+            _ => None,
+        };
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetNetwork { name, def, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetNetwork",
+            &target,
+            &match &r {
+                Some(Ok(epoch)) => format!("ok, map epoch {epoch}"),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok(map_epoch)) => Ok(pb::SetNetworkResponse {
+                map_epoch,
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) if e.starts_with("no network") => {
+                Err(meta_error(e, ConnectError::not_found, "not_found"))
+            }
+            Some(Err(e)) if e.starts_with("devices ") => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "network_in_use",
+            )),
             Some(Err(e)) => Err(meta_error(
                 e,
                 ConnectError::invalid_argument,
@@ -2568,6 +2639,7 @@ impl ClusterService for Api {
                     crate::operations::Work::DeletePool { pool },
                     target,
                     format!("{} volume(s) left", held.len()),
+                    None,
                 )
                 .await?;
             return Ok(pb::DeletePoolResponse {
@@ -2705,6 +2777,7 @@ impl ClusterService for Api {
                 n as u32,
                 format!("{n} PG(s) to move off device {device}"),
                 who.clone(),
+                None,
             )
             .await;
         audit(
@@ -2929,11 +3002,15 @@ impl ClusterService for Api {
             })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let vols = volume_result(rx.recv().await)?;
+        let names = self.realm_names(&scope).await;
         Ok(pb::ListVolumesResponse {
             volumes: vols
                 .iter()
                 .filter(|v| scope.tenant(v.tenant))
-                .map(volume_pb)
+                .map(|v| pb::Volume {
+                    realm: names.realm_name(v.tenant),
+                    ..volume_pb(v)
+                })
                 .collect(),
             ..Default::default()
         }
@@ -2951,6 +3028,15 @@ impl ClusterService for Api {
         }
         let (who, reach) = self.authorize_in(&ctx, "CreateVolume", &target, true)?;
         let scope = self.scope(reach).await?;
+        if req.tenant == 0 {
+            scope.named(
+                &who,
+                "CreateVolume",
+                &target,
+                "the volume's tenant",
+                "tenant_required",
+            )?;
+        }
         if !scope.tenant(req.tenant) {
             return Err(scope.outside(
                 &who,
@@ -3242,6 +3328,7 @@ impl ClusterService for Api {
                 crate::operations::Work::Flatten { volume: id },
                 target,
                 format!("copying what {} reads through its parents", v.name),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::FlattenVolumeResponse {
@@ -3319,6 +3406,7 @@ impl ClusterService for Api {
                 },
                 target,
                 format!("copying {} to pool {}", v.name, req.pool),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::CopyVolumeResponse {
@@ -3378,6 +3466,7 @@ impl ClusterService for Api {
                 },
                 target,
                 format!("moving {} to pool {}", v.name, req.pool),
+                Some(v.tenant),
             )
             .await?;
         Ok(pb::MoveVolumeResponse {
@@ -3546,6 +3635,7 @@ impl Api {
         work: crate::operations::Work,
         target: String,
         message: String,
+        tenant: Option<u32>,
     ) -> Result<pb::Operation, ConnectError> {
         let (reply, rx) = oneshot();
         self.tx
@@ -3557,7 +3647,7 @@ impl Api {
         let r = self
             .admin
             .runner
-            .create(work, target.clone(), 1, message, who.to_string())
+            .create(work, target.clone(), 1, message, who.to_string(), tenant)
             .await;
         audit(
             who,

@@ -367,9 +367,17 @@ impl S3Service for Api {
             r => format!("realm {r}'s placement {}", p.name),
         };
         let (who, reach) = self.authorize_in(&ctx, "SetS3Placement", &target, true)?;
-        self.scope(reach)
-            .await?
-            .realm_named(&who, "SetS3Placement", &target, p.realm)?;
+        let scope = self.scope(reach).await?;
+        if p.realm.is_empty() {
+            scope.named(
+                &who,
+                "SetS3Placement",
+                &target,
+                "the placement's realm",
+                "realm_required",
+            )?;
+        }
+        scope.realm_named(&who, "SetS3Placement", &target, p.realm)?;
         let r = async {
             if !s3keys::valid_placement(p.name) {
                 return Err(invalid(format!(
