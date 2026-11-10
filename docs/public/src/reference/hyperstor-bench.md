@@ -12,6 +12,7 @@ The usage line lists the most common modes; all of them:
 |---|---|
 | `raw FILE [SIZE_GIB]` | The device alone: the engine's I/O patterns on an `O_DIRECT` file of `SIZE_GIB` GiB (default 2), preallocated |
 | `engine FILE [SIZE_GIB]` | The storage engine on the same file |
+| `commit FILE [SIZE_GIB]` | Commit rounds of 1, 8 and 32 blocks made durable by `fdatasync` and by `RWF_DSYNC` (FUA), with the disk's flushes per round |
 | `mem` | The engine on memory: its CPU cost only |
 | `crc` | CRC32C checksum throughput |
 | `placement` | How fast data placement is computed, for a cluster of 1,024 devices |
@@ -25,5 +26,5 @@ The usage line lists the most common modes; all of them:
 | `HS_BENCH_ONLY` | every test | `remote`: only the tests named, as in its output after the address (`1 MiB reads, QD4`), separated by `;` |
 | `HS_DEFER_MAX` | | Override the size up to which the engine defers overwrites through its log, in bytes (`engine` and `mem`) |
 
-Output is Markdown table rows. Files given to `raw`, `engine` and
-`index` are overwritten.
+Output is Markdown table rows. Files given to `raw`, `engine`,
+`commit` and `index` are overwritten.

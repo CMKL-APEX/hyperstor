@@ -1418,6 +1418,7 @@ dependencies = [
  "hyperstor-meta",
  "hyperstor-placement",
  "hyperstor-reactor",
+ "io-uring",
  "libc",
  "rand 0.10.3",
  "redb",
