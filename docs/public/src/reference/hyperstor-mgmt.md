@@ -107,14 +107,18 @@ first login makes an account with no roles. What a role allows:
 reaches only that realm's tenants' volumes, snapshots and trashed
 volumes, their buckets and keys, the realm's placements, the realm
 itself and the pools it may use, its people's grants, and the
-operations you started; nothing of the cluster as a whole (status,
+operations on its tenants' volumes, whoever started them; nothing of
+the cluster as a whole (status,
 PGs, devices, nodes, pools, members, hosts, the audit). A
 `security-admin@acme` manages acme's S3 keys and grants roles in acme
 to anyone who has logged in; their other grants stay. A volume, bucket
 or key of another realm answers as one that doesn't exist. The UI's
 realm picker and `hyperstorctl --in-realm R` act in one realm, which
 sends `X-Hyperstor-Realm: R`; a cluster administrator may use it to see
-what a realm's administrators see. A grant names a realm that exists.
+what a realm's administrators see. Without it, someone with roles in
+several realms gets one list across them, each row naming its realm;
+creating a volume or a placement there must name its tenant or realm
+(`tenant_required`, `realm_required`). A grant names a realm that exists.
 
 Everyone may make API tokens for themselves. Deleting a volume, a
 snapshot or a member, rolling a volume back, purging the trash or

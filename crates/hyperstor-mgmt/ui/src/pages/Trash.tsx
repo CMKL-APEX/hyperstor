@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { cluster, trash } from "../api";
 import type { TrashItem } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useRealm } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, realmOf, td, useCan, usePoll, useRealm } from "../ui";
 
 type Dialog = { kind: "restore" | "purge"; item: TrashItem } | { kind: "settings"; pool: number };
 
@@ -84,7 +84,10 @@ export default function Trash() {
       <Card title="Trash">
         <ErrorText error={items.error} />
         {notice && <p className="text-sm text-emerald-700 mb-2">{notice}</p>}
-        <Table head={["What", "Volume", "Name", "Pool", "Size", "Deleted", "Purged", ""]} empty="The trash is empty.">
+        <Table
+          head={["What", "Volume", "Name", "Pool", ...(realm ? [] : ["Realm"]), "Size", "Deleted", "Purged", ""]}
+          empty="The trash is empty."
+        >
           {(items.data ?? []).map((i) => (
             <tr key={`${i.id}-${String(i.epoch)}`} data-testid={`trash-${i.name}`}>
               <td className={td}>
@@ -93,6 +96,7 @@ export default function Trash() {
               <td className={`${td} font-mono text-xs`}>{i.id}</td>
               <td className={td}>{i.name || "–"}</td>
               <td className={td}>{i.pool}</td>
+              {!realm && <td className={td}>{realmOf(i.realm, i.tenant)}</td>}
               <td className={td}>{fmtBytes(i.size)}</td>
               <td className={td}>{fmtTime(i.trashedUnix)}</td>
               <td className={td}>{fmtTime(i.purgeUnix)}</td>

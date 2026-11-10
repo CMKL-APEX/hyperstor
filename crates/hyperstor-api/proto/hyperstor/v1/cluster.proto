@@ -275,6 +275,9 @@ message TrashItem {
   uint64 purge_unix = 8 [json_name = "purge_unix"];
   // A snapshot's consistency group, if any.
   string group = 9;
+  // The volume's tenant (D258) and its realm (D286).
+  uint32 tenant = 10;
+  string realm = 11;
 }
 
 message ListTrashRequest {
@@ -1114,6 +1117,8 @@ message Volume {
   string attached_by = 7 [json_name = "attached_by"];
   // Its lineage's tenant (D258); 0: none, in realm "default".
   uint32 tenant = 8;
+  // In lists: the tenant's realm (D286).
+  string realm = 9;
 }
 
 message ListVolumesRequest {
