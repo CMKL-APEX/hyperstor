@@ -36,6 +36,7 @@ zeroize = "1"
 
 [dev-dependencies]
 rand.workspace = true
+tokio = { version = "1", features = ["io-util"] }
 
 [lints]
 workspace = true
