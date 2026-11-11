@@ -94,6 +94,13 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   `hyperstor-vhost`'s own mapping of the guest's memory, when the memory
   table arrives, return the node the hypervisor bound it to? And for
   unbound memory, how soon do `move_pages` counts settle after boot?
+  **Answered for memfd: yes** (2026-11-11, on a development host;
+  02-benchmarks.md). Through `hyperstor-vhost`'s mapping, bound guests
+  show `bind:N` under both hypervisors as soon as the memory table
+  arrives, before the guest has faulted its pages in; unbound ones show
+  `default`. An unbound guest's pages, and the I/O buffers
+  `hyperstor-vhost` touches, were on one node from the first I/O. Still
+  open: hugepage memory (the host had none).
 - **G13. redb on a shard region** (D43). Run redb through its
   `StorageBackend` on a region of a shard device, and measure commit rate
   and write amplification for the index's update pattern against the
