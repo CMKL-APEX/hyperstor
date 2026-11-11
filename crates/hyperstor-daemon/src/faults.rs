@@ -141,11 +141,16 @@ impl Older {
 /// node's reactors consult it before each commit round's writes
 /// (`NodeConfig::commit_delays`); the wait counts toward the I/O timeout.
 /// Reads can be made slow the same way ([`CommitDelays::set_reads`], D190),
-/// and their wait counts toward the read timeout.
+/// and their wait counts toward the read timeout. A primary's peering can
+/// be made slow too ([`CommitDelays::set_peering`]), and a member slow to
+/// pause the PGs a split marks ([`CommitDelays::set_member_splits`]), as
+/// across hosts (#330).
 #[derive(Default)]
 pub struct CommitDelays {
     by_device: Mutex<std::collections::HashMap<u32, Duration>>,
     reads: Mutex<std::collections::HashMap<u32, Duration>>,
+    peering: Mutex<std::collections::HashMap<u32, Duration>>,
+    member_splits: Mutex<std::collections::HashMap<u32, Duration>>,
 }
 
 impl CommitDelays {
@@ -179,6 +184,47 @@ impl CommitDelays {
 
     pub fn reads(&self, device: u32) -> Duration {
         self.reads
+            .lock()
+            .unwrap()
+            .get(&device)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Makes each peering of a PG `device` is primary of end `d` later,
+    /// once its members have answered; zero: none.
+    pub fn set_peering(&self, device: u32, d: Duration) {
+        let mut m = self.peering.lock().unwrap();
+        if d.is_zero() {
+            m.remove(&device);
+        } else {
+            m.insert(device, d);
+        }
+    }
+
+    pub fn peering(&self, device: u32) -> Duration {
+        self.peering
+            .lock()
+            .unwrap()
+            .get(&device)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Makes `device` pause each PG a split marks that it is a member of,
+    /// not its primary, `d` after it first sees the mark, as a device that
+    /// sees the map late; zero: as soon as it does.
+    pub fn set_member_splits(&self, device: u32, d: Duration) {
+        let mut m = self.member_splits.lock().unwrap();
+        if d.is_zero() {
+            m.remove(&device);
+        } else {
+            m.insert(device, d);
+        }
+    }
+
+    pub fn member_splits(&self, device: u32) -> Duration {
+        self.member_splits
             .lock()
             .unwrap()
             .get(&device)
