@@ -1691,8 +1691,11 @@ fn a_full_device_refuses_growth_only() {
     c.ctl(&["full-ratios", "--full", "x"]).expect(2);
     c.ctl(&["full-ratios", "--device", "0"]).expect(2);
     // The most any device has used, as a percentage of its data area.
+    // Only devices are read: health may be a warning by now (PGs
+    // backfilling once devices are weighted, #345), and `status` exits 1.
     let used = || -> f64 {
-        let s = c.ctl(&["status", "--json"]).ok();
+        let s = c.ctl(&["status", "--json"]);
+        assert!(s.code == 0 || s.code == 1, "status: {}", s.out);
         let v: serde_json::Value = serde_json::from_str(&s.out).unwrap();
         let n = |d: &serde_json::Value, f: &str| {
             d[f].as_str()
