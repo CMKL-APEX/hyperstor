@@ -88,6 +88,12 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   ODP and with pinned hugepages, and the cost of ODP page faults on the
   first I/O to each region. Decide whether NICs without ODP need a
   registration cache of bounce buffers instead.
+- **G59. A guest's NUMA node from its memory policy** (D292; 11-frontends.md
+  §11.1). Under Cloud Hypervisor and QEMU, with memfd and hugepage
+  memory bound to one node: does `get_mempolicy(MPOL_F_ADDR)` on
+  `hyperstor-vhost`'s own mapping of the guest's memory, when the memory
+  table arrives, return the node the hypervisor bound it to? And for
+  unbound memory, how soon do `move_pages` counts settle after boot?
 - **G13. redb on a shard region** (D43). Run redb through its
   `StorageBackend` on a region of a shard device, and measure commit rate
   and write amplification for the index's update pattern against the
