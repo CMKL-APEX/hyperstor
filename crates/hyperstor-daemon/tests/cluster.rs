@@ -931,6 +931,131 @@ fn writes_reach_every_copy_and_read_back() {
     assert!(checked > 10);
 }
 
+/// A read's answer holds its data in one frame, so a read longer than a
+/// frame's payload is refused as invalid, by every kind of read, before
+/// anything is read; the node serves reads as before afterwards.
+#[test]
+fn reads_longer_than_a_frame_are_refused_and_reads_go_on() {
+    use hyperstor_proto::{Code, MAX_PAYLOAD, Msg, Target, WireKey};
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 99).await.unwrap();
+            let v = 5u128;
+            let data = pattern(5, 8 * 4096);
+            cl.write(POOL, v, 0, data.clone()).await.unwrap();
+            let map = cl.map();
+            let pg = pg_of(v, 0, map.pools[&POOL].pg_count);
+            let info = map.pg(POOL, pg).unwrap();
+            let conn =
+                hyperstor_rpc::Conn::connect(map.device_addr(info.primary().unwrap()).unwrap())
+                    .await
+                    .unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: map.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let key = WireKey {
+                ns: hyperstor_client::NS_VOL,
+                name: chunk_name(v, 0),
+                version: 0,
+            };
+            let layers = vec![(0u32, 0u64, u64::MAX)];
+            let long = [MAX_PAYLOAD as u64 + 4096, 1 << 40, u64::MAX - 4095];
+            for len in long {
+                let asks = [
+                    Msg::Read {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadAt {
+                        to,
+                        key: key.clone(),
+                        layers: layers.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::Sources {
+                        to,
+                        key: key.clone(),
+                        layers: layers.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadCopy {
+                        to,
+                        key: key.clone(),
+                        layers: None,
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadCopy {
+                        to,
+                        key: key.clone(),
+                        layers: Some(layers.clone()),
+                        off: 0,
+                        len,
+                    },
+                ];
+                for ask in asks {
+                    let (reply, payload) = conn.call(&ask, &[]).await.unwrap();
+                    assert!(
+                        matches!(
+                            reply,
+                            Msg::Error {
+                                code: Code::Invalid,
+                                ..
+                            }
+                        ),
+                        "a read of {len} bytes was answered with {reply:?}"
+                    );
+                    assert!(payload.is_empty());
+                }
+            }
+            // The longest read one answer holds is still served.
+            let (reply, payload) = conn
+                .call(
+                    &Msg::Read {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        len: MAX_PAYLOAD as u64,
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply, Msg::ReadOk { .. }), "{reply:?}");
+            assert_eq!(payload.len(), MAX_PAYLOAD);
+            assert!(payload[..data.len()] == data[..]);
+            // And reads go on, on this connection and through the client.
+            let (reply, payload) = conn
+                .call(
+                    &Msg::Read {
+                        to,
+                        key,
+                        off: 0,
+                        len: data.len() as u64,
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply, Msg::ReadOk { .. }), "{reply:?}");
+            assert!(payload[..] == data[..]);
+            assert!(cl.read(POOL, v, 0, data.len() as u64).await.unwrap() == data);
+        })
+    })
+    .join()
+    .unwrap();
+}
+
 /// A copy of a stopped node's device, to open its engine again.
 fn copy(d: &Arc<dyn BlockDev>) -> Arc<dyn BlockDev> {
     let mut img = vec![0u8; d.len() as usize];

@@ -73,6 +73,35 @@ fn write_read_stat_and_holes() {
     ));
 }
 
+/// A read longer than one read may be is refused before its buffer is
+/// allocated, the layered read too, and the shard reads on as before.
+#[test]
+fn reads_longer_than_the_bound_are_refused() {
+    let (_d, mut sh) = fresh(4096, None);
+    let k = key("a");
+    one(
+        &mut sh,
+        k.clone(),
+        vec![Op::Write {
+            off: 0,
+            data: block(3, 1).into(),
+            crcs: None,
+        }],
+    )
+    .unwrap();
+    let past = hyperstor_engine::MAX_READ + BLOCK as u64;
+    let last = u64::MAX - (BLOCK as u64 - 1);
+    for len in [past, last] {
+        assert!(matches!(sh.read(&k, 0, len), Err(EngineError::TooLong(l)) if l == len));
+        assert!(matches!(
+            sh.read_layered_begin(std::slice::from_ref(&k), 0, len),
+            Err(EngineError::TooLong(_))
+        ));
+    }
+    let r = sh.read(&k, 0, BLOCK as u64).unwrap();
+    assert!(r.iter().all(|&b| b == 3));
+}
+
 #[test]
 fn small_overwrites_are_deferred_and_survive_reopen() {
     let (d, mut sh) = fresh(4096, None);
