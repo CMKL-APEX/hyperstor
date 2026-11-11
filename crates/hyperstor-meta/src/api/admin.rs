@@ -1097,8 +1097,16 @@ impl MemberService for Api {
             raft: parse(req.raft_address, "raft_address")?,
             map: parse(req.map_address, "map_address")?,
         };
+        let catch_up = match req.catch_up_secs {
+            0 => crate::replica::CATCH_UP,
+            n => std::time::Duration::from_secs(n.into()),
+        };
         let r = self
-            .member_change(|reply| crate::replica::MemberOp::Add { member, reply })
+            .member_change(|reply| crate::replica::MemberOp::Add {
+                member,
+                catch_up,
+                reply,
+            })
             .await;
         audit(
             &who,
