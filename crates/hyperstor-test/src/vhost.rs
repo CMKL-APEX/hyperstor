@@ -114,6 +114,11 @@ impl Service {
             "volume": volume, "serial": "disk-under-test", "take": take}}))
     }
 
+    /// The service's process id, for reading its CPU time.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn stop(mut self) {
         // SAFETY: kill on our own child's pid.
         unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };

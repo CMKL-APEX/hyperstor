@@ -593,7 +593,7 @@ tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
 [[milestone.item]]
 what = "Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory"
-spec = ["11-frontends.md §11.1", "D26", "G8"]
+spec = ["11-frontends.md §11.1", "D26", "G8", "I350"]
 status = "planned"
 
 [[milestone.item]]
