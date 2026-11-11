@@ -384,6 +384,34 @@ pub struct Session {
     pub roles: Vec<String>,
 }
 
+/// A TCP connection to 127.0.0.1:`port` from `from` (a loopback address).
+fn connect_from(from: std::net::Ipv4Addr, port: u16) -> std::net::TcpStream {
+    use std::os::fd::FromRawFd;
+    let addr = |ip: std::net::Ipv4Addr, port: u16| libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(ip).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+    let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    // SAFETY: plain socket creation; the result is checked.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+    // SAFETY: `fd` was just opened and is owned by the stream from here.
+    let tcp = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    let local = addr(from, 0);
+    let remote = addr(std::net::Ipv4Addr::LOCALHOST, port);
+    // SAFETY: `local` is a valid sockaddr_in of `len` bytes; checked.
+    let r = unsafe { libc::bind(fd, (&raw const local).cast(), len) };
+    assert_eq!(r, 0, "bind {from}: {}", std::io::Error::last_os_error());
+    // SAFETY: `remote` is a valid sockaddr_in of `len` bytes; checked.
+    let r = unsafe { libc::connect(fd, (&raw const remote).cast(), len) };
+    assert_eq!(r, 0, "connect: {}", std::io::Error::last_os_error());
+    tcp
+}
+
 /// Everyone's password in the made-up account database ([`start_authd`]).
 /// A test value: these people exist only in the test.
 pub const PASSWORD: &str = "test-only password";
@@ -804,8 +832,25 @@ impl Cluster {
         headers: &[(&str, &str)],
         body: &str,
     ) -> (u16, String, String) {
+        self.web_from(None, method, path, host, headers, body)
+    }
+
+    /// As [`web`](Self::web), from the loopback address `from` (another
+    /// client, as mgmt sees it) when given.
+    pub fn web_from(
+        &self,
+        from: Option<std::net::Ipv4Addr>,
+        method: &str,
+        path: &str,
+        host: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (u16, String, String) {
         use std::io::{Read, Write};
-        let tcp = std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap();
+        let tcp = match from {
+            None => std::net::TcpStream::connect(("127.0.0.1", self.mgmt_port)).unwrap(),
+            Some(ip) => connect_from(ip, self.mgmt_port),
+        };
         let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
         for (k, v) in headers {
             req.push_str(&format!("{k}: {v}\r\n"));

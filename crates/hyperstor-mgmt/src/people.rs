@@ -99,6 +99,8 @@ pub enum Error {
     Exists,
     /// The map service can't be reached or has no leader.
     Unavailable(String),
+    /// Too many logins begun and not finished: try again later.
+    Busy,
 }
 
 impl std::fmt::Display for Error {
@@ -108,6 +110,7 @@ impl std::fmt::Display for Error {
             Error::Invalid(m) | Error::Unavailable(m) => write!(f, "{m}"),
             Error::NotFound => write!(f, "not found"),
             Error::Exists => write!(f, "already exists"),
+            Error::Busy => write!(f, "too many logins in progress; try again later"),
         }
     }
 }
@@ -325,7 +328,20 @@ pub struct People {
     sessions: SessionRules,
     tokens: TokenRules,
     cache: Mutex<HashMap<String, (Principal, Instant)>>,
+    /// Session and token keys the map service just didn't have.
+    unknown: crate::limits::Unknown,
+    /// Whether anyone is a security administrator, and when asked.
+    claimed: Mutex<Option<(bool, Instant)>>,
+    /// Logins begun with an identity provider: when the rows were last
+    /// swept, and about how many are pending since.
+    logins: Mutex<(Option<Instant>, usize)>,
 }
+
+/// Logins begun with an identity provider and not finished that mgmt
+/// keeps at most (each a row in the map service for [`STATE_SECS`]).
+pub const PENDING_LOGINS: usize = 1000;
+/// How often the pending logins' rows are listed and the old removed.
+const SWEEP: Duration = Duration::from_secs(60);
 
 impl People {
     pub fn new(rows: Rows) -> People {
@@ -339,6 +355,12 @@ impl People {
                 max_days: 365,
             },
             cache: Mutex::new(HashMap::new()),
+            unknown: crate::limits::Unknown::new(
+                crate::limits::UNKNOWN_TTL,
+                crate::limits::UNKNOWN,
+            ),
+            claimed: Mutex::new(None),
+            logins: Mutex::new((None, 0)),
         }
     }
 
@@ -446,6 +468,7 @@ impl People {
             .put(&format!("user/{name}"), encode(&u), false)
             .await?;
         self.forget(|p| p.user == name);
+        *lock(&self.claimed) = None;
         Ok(u)
     }
 
@@ -468,6 +491,7 @@ impl People {
             }
         }
         self.forget(|p| p.user == name);
+        *lock(&self.claimed) = None;
         Ok(())
     }
 
@@ -487,9 +511,9 @@ impl People {
             csrf: s.csrf.clone(),
             method: method.to_string(),
         };
-        self.rows
-            .put(&format!("sess/{}", s.hash), encode(&rec), true)
-            .await?;
+        let key = format!("sess/{}", s.hash);
+        self.rows.put(&key, encode(&rec), true).await?;
+        self.unknown.remove(&key);
         Ok(NewSession {
             id: s.id,
             csrf: s.csrf,
@@ -504,13 +528,18 @@ impl People {
         if let Some(p) = self.cached(&key) {
             return Ok(p);
         }
+        if self.unknown.has(&key, Instant::now()) {
+            return Err(Error::Unauthenticated);
+        }
         let Some(b) = self.rows.get(&key).await? else {
+            self.unknown.insert(&key, Instant::now());
             return Err(Error::Unauthenticated);
         };
         let mut s: Session = decode(&b)?;
         let t = now();
         if self.sessions.expired(s.created, s.last_seen, t) {
             self.rows.delete(&key).await?;
+            self.unknown.insert(&key, Instant::now());
             return Err(Error::Unauthenticated);
         }
         let u = self.user(&s.user).await?.ok_or(Error::Unauthenticated)?;
@@ -614,11 +643,16 @@ impl People {
         if let Some(p) = self.cached(&key) {
             return Ok(p);
         }
+        if self.unknown.has(&key, Instant::now()) {
+            return Err(Error::Unauthenticated);
+        }
         let Some(b) = self.rows.get(&key).await? else {
+            self.unknown.insert(&key, Instant::now());
             return Err(Error::Unauthenticated);
         };
         let t: Token = decode(&b)?;
         if t.expires <= now() {
+            self.unknown.insert(&key, Instant::now());
             return Err(Error::Unauthenticated);
         }
         let u = self.user(&t.user).await?.ok_or(Error::Unauthenticated)?;
@@ -639,12 +673,25 @@ impl People {
 
     /// Keeps a login begun with an identity provider for whichever mgmt
     /// the browser comes back to, and forgets those begun too long ago.
+    /// At most [`PENDING_LOGINS`] are kept: past that, [`Error::Busy`].
+    /// The rows are listed (and the old removed) once a [`SWEEP`], not
+    /// for each login; in between, the count is this mgmt's own.
     pub async fn keep_login<A: Serialize>(&self, p: &Pending<A>) -> Result<(), Error> {
-        let t = now();
-        for (k, v) in self.rows.list(LOGIN).await? {
-            if begun(&v).is_none_or(|b| b + STATE_SECS <= t) {
-                self.rows.delete(&k).await?;
+        let due = lock(&self.logins).0.is_none_or(|at| at.elapsed() >= SWEEP);
+        if due {
+            let t = now();
+            let mut left = 0;
+            for (k, v) in self.rows.list(LOGIN).await? {
+                if begun(&v).is_none_or(|b| b + STATE_SECS <= t) {
+                    self.rows.delete(&k).await?;
+                } else {
+                    left += 1;
+                }
             }
+            *lock(&self.logins) = (Some(Instant::now()), left);
+        }
+        if lock(&self.logins).1 >= PENDING_LOGINS {
+            return Err(Error::Busy);
         }
         let key = format!("{LOGIN}{}", sha256_hex(p.state.as_bytes()));
         let mut nonce = [0u8; 12];
@@ -661,7 +708,9 @@ impl People {
         let mut v = p.created.to_be_bytes().to_vec();
         v.extend(nonce);
         v.extend(sealed);
-        self.rows.put(&key, v, true).await
+        self.rows.put(&key, v, true).await?;
+        lock(&self.logins).1 += 1;
+        Ok(())
     }
 
     /// Takes the login begun with `state`, once, if `browser` began it;
@@ -680,6 +729,10 @@ impl People {
         if !self.rows.delete(&key).await? {
             return Err(unknown());
         }
+        {
+            let mut l = lock(&self.logins);
+            l.1 = l.1.saturating_sub(1);
+        }
         let (Some(browser), Some(_)) = (browser, begun(&v)) else {
             return Err(other());
         };
@@ -696,12 +749,20 @@ impl People {
     }
 
     /// Whether anyone is a security administrator yet.
+    /// Remembered for [`CACHE`]; a change of roles here asks again.
     pub async fn claimed(&self) -> Result<bool, Error> {
-        Ok(self
+        if let Some((c, at)) = *lock(&self.claimed)
+            && at.elapsed() < CACHE
+        {
+            return Ok(c);
+        }
+        let c = self
             .users()
             .await?
             .iter()
-            .any(|u| u.roles.iter().any(|r| r == "security-admin")))
+            .any(|u| u.roles.iter().any(|r| r == "security-admin"));
+        *lock(&self.claimed) = Some((c, Instant::now()));
+        Ok(c)
     }
 
     /// A new first-boot claim code, valid [`CLAIM_SECS`], replacing any.
@@ -785,10 +846,12 @@ mod tests {
             assert!(p.take_login::<String>("s2", Some("b2")).await.is_err());
             p.keep_login(&pending("s3", "b3", now())).await.unwrap();
             assert!(p.take_login::<String>("s3", None).await.is_err());
-            // A new login forgets those begun too long ago.
+            // A new login forgets those begun too long ago (once a sweep
+            // is due).
             p.keep_login(&pending("old", "b", now() - STATE_SECS))
                 .await
                 .unwrap();
+            lock(&p.logins).0 = None;
             p.keep_login(&pending("s4", "b4", now())).await.unwrap();
             let left: Vec<String> = p
                 .rows
@@ -799,6 +862,67 @@ mod tests {
                 .map(|r| r.0)
                 .collect();
             assert_eq!(left, [format!("{LOGIN}{}", sha256_hex(b"s4"))]);
+        });
+    }
+
+    #[test]
+    fn pending_logins_are_bounded() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            for i in 0..PENDING_LOGINS {
+                p.keep_login(&pending(&format!("s{i}"), "b", now()))
+                    .await
+                    .unwrap();
+            }
+            let more = p.keep_login(&pending("more", "b", now())).await;
+            assert_eq!(more, Err(Error::Busy));
+            // One finished makes room; a sweep counts what is there.
+            p.take_login::<String>("s0", Some("b")).await.unwrap();
+            p.keep_login(&pending("more", "b", now())).await.unwrap();
+            lock(&p.logins).0 = None;
+            let again = p.keep_login(&pending("again", "b", now())).await;
+            assert_eq!(again, Err(Error::Busy));
+        });
+    }
+
+    #[test]
+    fn unknown_sessions_and_tokens_are_remembered() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            let s = p.new_session("ann", "pam").await.unwrap();
+            p.logged_in_user("ann").await.unwrap();
+            // A cookie the store doesn't have: asked once, then known.
+            let key = format!("sess/{}", rules::session_hash("nope"));
+            assert_eq!(p.session("nope").await, Err(Error::Unauthenticated));
+            let Rows::Memory(m) = &p.rows else {
+                unreachable!()
+            };
+            let row = lock(m)
+                .get(&format!("sess/{}", rules::session_hash(&s.id)))
+                .cloned()
+                .unwrap();
+            lock(m).insert(key, row);
+            assert_eq!(p.session("nope").await, Err(Error::Unauthenticated));
+            // So is a token.
+            let secret = format!("{TOKEN_PREFIX}nope");
+            assert_eq!(p.token(&secret).await, Err(Error::Unauthenticated));
+            let (made, _) = p.create_token("ann", "t", None).await.unwrap();
+            assert!(p.token(&made).await.is_ok());
+            // Real sessions are unaffected.
+            assert!(p.session(&s.id).await.is_ok());
+        });
+    }
+
+    #[test]
+    fn claimed_is_remembered_until_roles_change() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            p.logged_in_user("ann").await.unwrap();
+            assert!(!p.claimed().await.unwrap());
+            p.set_roles("ann", &["security-admin".into()])
+                .await
+                .unwrap();
+            assert!(p.claimed().await.unwrap());
         });
     }
 
