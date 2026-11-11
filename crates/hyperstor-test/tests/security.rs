@@ -223,3 +223,38 @@ fn only_mgmt_names_a_person() {
             && !l.contains("refused")
     }));
 }
+
+/// Failed password logins are paced per client address by mgmt itself:
+/// after ten from one address it answers 429 with `Retry-After`, even to
+/// a right password, while people at other addresses log in as before.
+#[test]
+fn failed_logins_are_paced_per_client_address() {
+    let c = Cluster::all_in_one("login-pace", 1);
+    let from = std::net::Ipv4Addr::new(127, 0, 0, 2);
+    let login = |user: &str, password: &str| {
+        c.web_from(
+            Some(from),
+            "POST",
+            "/auth/login",
+            &c.dashboard_host(),
+            &[("Content-Type", "application/json")],
+            &serde_json::json!({ "user": user, "password": password }).to_string(),
+        )
+    };
+    // Each under another name: the PAM helper's own limit is per name.
+    for i in 0..10 {
+        let (code, head, body) = login(&format!("nobody{i}"), "wrong");
+        assert_eq!(code, 401, "{head}{body}");
+    }
+    let (code, head, body) = login("bob", "wrong");
+    assert_eq!(code, 429, "{body}");
+    assert!(
+        head.lines()
+            .any(|l| l.to_ascii_lowercase().starts_with("retry-after: ")),
+        "{head}"
+    );
+    assert!(body.contains("rate_limited"), "{body}");
+    assert_eq!(login("bob", PASSWORD).0, 429);
+    // Another address: a right password still logs in.
+    c.login("bob", None).unwrap();
+}

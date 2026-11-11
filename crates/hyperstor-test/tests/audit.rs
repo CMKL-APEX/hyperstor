@@ -171,3 +171,37 @@ fn a_refusal_storm_is_summarised_and_pages() {
     let listed: Vec<_> = recs.iter().map(key).collect();
     assert_eq!(paged, listed);
 }
+
+/// A login with a user name far longer than any is refused and recorded
+/// as no one's; what is audited after it still reaches the cluster's log
+/// (each field of a record is bounded, and a line the map service won't
+/// take never holds back the ones after it).
+#[test]
+fn a_long_login_name_does_not_hold_back_later_records() {
+    let c = Cluster::all_in_one("audit-long", 3);
+    let long = serde_json::json!({ "user": "x".repeat(5000), "password": PASSWORD });
+    let (code, _, body) = c.web(
+        "POST",
+        "/auth/login",
+        &c.dashboard_host(),
+        &[("Content-Type", "application/json")],
+        &long.to_string(),
+    );
+    assert_eq!(code, 401, "{body}");
+    let ann = c.login("ann", Some(&c.claim_code())).unwrap();
+    assert_eq!(
+        c.as_session(&ann, "POST", "/auth/tokens", r#"{"name":"t1"}"#)
+            .0,
+        200
+    );
+    let later = wait_for("the later records", 30, || {
+        let r = c.ctl(&["audit", "list", "--principal", "user:ann"]).ok();
+        (r.has("Claim") && r.has("People.CreateToken")).then_some(r)
+    });
+    assert!(later.has("ok, pam"), "{}", later.out);
+    let refused = wait_for("the long name's refusal", 30, || {
+        let r = c.ctl(&["audit", "list", "--op", "Login", "--json"]).ok();
+        r.has("user:<invalid>").then_some(r)
+    });
+    assert!(!refused.has(&"x".repeat(300)), "{}", refused.out);
+}
