@@ -2169,7 +2169,7 @@ fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
     loop {
         // Added only once its own map service answers, so that it can
         // catch up; a learner left from an earlier run is added again,
-        // which waits for it once more and makes it a voter (I351).
+        // which waits for it once more and makes it a voter (I352).
         let runs = members_at(root, "admin", std::slice::from_ref(&p.api)).is_ok();
         if !runs {
         } else if let Ok((api, r)) = members_at(root, "admin", &apis) {

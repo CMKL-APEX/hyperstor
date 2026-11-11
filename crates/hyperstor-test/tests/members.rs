@@ -245,7 +245,7 @@ impl Group {
 }
 
 /// Members added and removed at run time (D87): a fourth member, joined
-/// with a meta token, added before it runs, stays a learner (I351);
+/// with a meta token, added before it runs, stays a learner (I352);
 /// started and added again, a voter; removed again; a removal that would
 /// leave two voters is refused.
 #[test]
@@ -275,7 +275,7 @@ fn members_change_at_run_time() {
         })
         .collect::<Vec<_>>()
         .join(",");
-    // Added before it runs (I351): a learner that never caught up, not a
+    // Added before it runs (I352): a learner that never caught up, not a
     // voter, and the group's three voters unchanged.
     let mut m4 = g.install_host(3, &list, None);
     let (raft, map) = (m4.raft.clone(), m4.map.clone());

@@ -532,7 +532,7 @@ fn not_leading(node: &ClusterNode<MapSchema>) -> String {
 pub const CATCH_UP: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Adds `member` as a learner and makes it a voter once it holds the whole
-/// log (D87, I351). openraft's own wait counts a learner within
+/// log (D87, I352). openraft's own wait counts a learner within
 /// `replication_lag_threshold` (5000) entries as caught up, one that never
 /// answered included, so a short log made a stopped member a voter at
 /// once: this waits until the learner has acknowledged the leader's last
