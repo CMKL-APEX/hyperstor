@@ -247,8 +247,29 @@ fn call_timeout() -> Duration {
     TIMEOUT.get().copied().unwrap_or(Duration::from_secs(5))
 }
 
+/// What `usage` says was wrong, set as the command line is read: the
+/// argument being read, or the command once it is known.
+static HINT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn hint(what: String) {
+    if let Ok(mut h) = HINT.lock() {
+        *h = what;
+    }
+}
+
+/// A wrong command line: what was wrong if known, the usage line (the one
+/// line `scripts/cli-docs-check.py` and the reference page quote), and
+/// where the descriptions are. Exit status 2.
 fn usage() -> ! {
+    if let Ok(h) = HINT.lock()
+        && !h.is_empty()
+    {
+        eprintln!("hyperstorctl: {h}");
+    }
     eprintln!("{USAGE}");
+    eprintln!(
+        "run `hyperstorctl --help` for the commands, or `hyperstorctl help COMMAND` for one command and its options"
+    );
     std::process::exit(2)
 }
 
@@ -407,6 +428,17 @@ fn parse_size(s: &str) -> Option<u64> {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    match hyperstor_ctl::help::handle(&argv) {
+        Some(hyperstor_ctl::help::Help::Text(t)) => {
+            print!("{t}");
+            std::process::exit(0)
+        }
+        Some(hyperstor_ctl::help::Help::Unknown(m)) => {
+            eprintln!("{m}");
+            std::process::exit(2)
+        }
+        None => {}
+    }
     let mut api = None;
     let mut tls = None;
     let mut socket = None;
@@ -492,6 +524,7 @@ fn main() {
     let num =
         |v: Option<&String>| -> u32 { v.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()) };
     while let Some(arg) = it.next() {
+        hint(format!("{arg}: missing or invalid value"));
         match arg.as_str() {
             "--api" => api = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--tls" => tls = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -528,6 +561,11 @@ fn main() {
                     _ => false,
                 };
                 if !ok {
+                    hint(format!(
+                        "no such command: s3 {} {}",
+                        what.unwrap_or_default(),
+                        sub.unwrap_or_default()
+                    ));
                     usage();
                 }
                 cmd = Some(format!(
@@ -737,14 +775,27 @@ fn main() {
                     _ => matches!(sub, Some("list" | "get" | "watch" | "cancel")),
                 };
                 if !ok {
+                    hint(format!(
+                        "no such command: {arg} {}",
+                        sub.unwrap_or_default()
+                    ));
                     usage();
                 }
                 cmd = Some(format!("{arg} {}", sub.unwrap_or_default()));
             }
-            _ => usage(),
+            _ => {
+                hint(format!("unknown argument {arg}"));
+                usage()
+            }
         }
     }
-    let Some(cmd) = cmd else { usage() };
+    let Some(cmd) = cmd else {
+        hint("no command given".to_string());
+        usage()
+    };
+    hint(format!(
+        "wrong or missing options for `{cmd}`; `hyperstorctl help {cmd}` lists them"
+    ));
     let timeout = timeout.or_else(|| {
         let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
         Some(v.parse().unwrap_or_else(|_| {
