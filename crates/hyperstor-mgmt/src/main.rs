@@ -49,7 +49,7 @@
 // costs nothing worth boxing it for.
 #![allow(clippy::result_large_err)]
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyperstor_api::ClusterServiceClient;
 use hyperstor_api::proto::hyperstor::v1 as pb;
@@ -79,6 +79,14 @@ const CSRF_HEADER: &str = "x-hyperstor-csrf";
 const PAM_SERVICE: &str = "hyperstor";
 /// Requests to mgmt itself are small; cluster API calls may be larger.
 const MAX_BODY: usize = 4 << 20;
+/// The most of a body read before the request's credentials are checked:
+/// anyone may send this much, and only a person logged in more, up to
+/// [`MAX_BODY`] (#329's follow-up).
+const MAX_BODY_UNCHECKED: usize = 256 << 10;
+/// How long a body's first [`MAX_BODY_UNCHECKED`] bytes may take to
+/// arrive, and the rest of it, before mgmt gives up (`408`).
+const BODY_TIME: Duration = Duration::from_secs(10);
+const BODY_TIME_REST: Duration = Duration::from_secs(60);
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -344,7 +352,7 @@ async fn serve(
                 Some(false) => {
                     // Plain HTTP on the HTTPS port: to HTTPS.
                     let svc = hyper::service::service_fn(|req| async move {
-                        Ok::<_, std::convert::Infallible>(match whole(req).await {
+                        Ok::<_, std::convert::Infallible>(match whole(None, req).await {
                             Ok(req) => web::to_https(&req),
                             Err(r) => r,
                         })
@@ -462,6 +470,7 @@ fn error(status: u16, reason: &str, message: &str) -> Resp {
         403 => E::permission_denied(message),
         404 => E::not_found(message),
         409 => E::already_exists(message),
+        408 => E::deadline_exceeded(message),
         413 | 429 => E::resource_exhausted(message),
         503 => E::unavailable(message),
         _ => E::internal(message),
@@ -507,8 +516,8 @@ pub fn host_allowed(host: &str, port: u16, extra: &[String]) -> bool {
         && port_ok
 }
 
-fn cookie_of(req: &Req) -> Option<String> {
-    req.headers()
+fn cookie_of(headers: &http::HeaderMap) -> Option<String> {
+    headers
         .get_all(http::header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
@@ -520,8 +529,8 @@ fn cookie_of(req: &Req) -> Option<String> {
         })
 }
 
-fn bearer_of(req: &Req) -> Option<String> {
-    req.headers()
+fn bearer_of(headers: &http::HeaderMap) -> Option<String> {
+    headers
         .get(http::header::AUTHORIZATION)?
         .to_str()
         .ok()?
@@ -529,35 +538,107 @@ fn bearer_of(req: &Req) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
-/// Reads all of `req`'s body (at most [`MAX_BODY`]) before anything
-/// answers it (#329). hyper drops a connection whose request body is left
-/// unread, without a `Connection: close` in the answer, so a client that
-/// keeps connections open, such as a proxy or a tunnel, sends its next
-/// request on a closed one. Every handler that takes a body reads all of
-/// it anyway. A larger body is refused, with `Connection: close`, as
-/// the connection is then dropped.
-async fn whole(req: http::Request<hyper::body::Incoming>) -> Result<Req, Resp> {
-    let (parts, body) = req.into_parts();
-    let too_large = || {
-        let mut r = error(413, "too_large", "request too large");
+/// Reads all of `req`'s body before anything answers it (#329). hyper
+/// drops a connection whose request body is left unread, without a
+/// `Connection: close` in the answer, so a client that keeps connections
+/// open, such as a proxy or a tunnel, sends its next request on a closed
+/// one. Every handler that takes a body reads all of it anyway.
+///
+/// Anyone may send [`MAX_BODY_UNCHECKED`]; beyond that, the request's
+/// token or session must be valid (checked with `login`; none, as for
+/// the read-only dashboard and the redirect to HTTPS, admits no more),
+/// up to [`MAX_BODY`]. So a client that isn't logged in can't make mgmt
+/// hold more than that per connection. A body must arrive in time
+/// ([`BODY_TIME`], then [`BODY_TIME_REST`]). Refusals carry
+/// `Connection: close`, as the connection is then dropped.
+async fn whole(
+    login: Option<&Login>,
+    req: http::Request<hyper::body::Incoming>,
+) -> Result<Req, Resp> {
+    let (parts, mut body) = req.into_parts();
+    let refuse = |status: u16, reason: &str, message: &str| {
+        let mut r = error(status, reason, message);
         r.headers_mut().insert(
             http::header::CONNECTION,
             http::HeaderValue::from_static("close"),
         );
         r
     };
-    // A length said to be too large: refused without reading any of it.
+    let too_large = || refuse(413, "too_large", "request too large");
+    let unchecked_too_large = || {
+        refuse(
+            413,
+            "too_large",
+            "request too large for a client that isn't logged in",
+        )
+    };
     let said = parts
         .headers
         .get(http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
+    // A length said to be too large: refused without reading any of it.
     if said.is_some_and(|n| n > MAX_BODY as u64) {
         return Err(too_large());
     }
-    match Limited::new(body, MAX_BODY).collect().await {
-        Ok(b) => Ok(http::Request::from_parts(parts, b.to_bytes())),
-        Err(_) => Err(too_large()),
+    let mut buf = Vec::new();
+    let mut done = false;
+    if !said.is_some_and(|n| n > MAX_BODY_UNCHECKED as u64) {
+        match tokio::time::timeout(
+            BODY_TIME,
+            read_up_to(&mut body, &mut buf, MAX_BODY_UNCHECKED),
+        )
+        .await
+        {
+            Err(_) => return Err(refuse(408, "timeout", "request body too slow")),
+            Ok(Err(())) => return Err(refuse(400, "invalid_argument", "broken request body")),
+            Ok(Ok(end)) => done = end,
+        }
+    }
+    if !done {
+        // More than anyone may send: only for a person logged in.
+        if !credentialed(login, &parts.headers).await {
+            return Err(unchecked_too_large());
+        }
+        match tokio::time::timeout(BODY_TIME_REST, read_up_to(&mut body, &mut buf, MAX_BODY)).await
+        {
+            Err(_) => return Err(refuse(408, "timeout", "request body too slow")),
+            Ok(Err(())) => return Err(refuse(400, "invalid_argument", "broken request body")),
+            Ok(Ok(false)) => return Err(too_large()),
+            Ok(Ok(true)) => {}
+        }
+    }
+    Ok(http::Request::from_parts(parts, Bytes::from(buf)))
+}
+
+/// Reads `body` into `buf` until it ends (true) or `buf` holds more than
+/// `max` bytes (false).
+async fn read_up_to(
+    body: &mut hyper::body::Incoming,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> Result<bool, ()> {
+    while buf.len() <= max {
+        match body.frame().await {
+            None => return Ok(true),
+            Some(Err(_)) => return Err(()),
+            Some(Ok(f)) => {
+                if let Ok(d) = f.into_data() {
+                    buf.extend_from_slice(&d);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether `headers` carry a valid API token or session.
+async fn credentialed(login: Option<&Login>, headers: &http::HeaderMap) -> bool {
+    let Some(l) = login else { return false };
+    match (bearer_of(headers), cookie_of(headers)) {
+        (Some(t), _) => l.people.token(&t).await.is_ok(),
+        (None, Some(c)) => l.people.session(&c).await.is_ok(),
+        (None, None) => false,
     }
 }
 
@@ -579,7 +660,7 @@ async fn serve_one(
     peer: SocketAddr,
     via: bool,
 ) -> Resp {
-    let req = match whole(req).await {
+    let req = match whole(state.login.as_ref(), req).await {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -1143,8 +1224,8 @@ async fn with_login(
     peer: SocketAddr,
 ) -> Resp {
     let method = req.method().clone();
-    let cookie = cookie_of(&req);
-    let bearer = bearer_of(&req);
+    let cookie = cookie_of(req.headers());
+    let bearer = bearer_of(req.headers());
     let csrf = req
         .headers()
         .get(CSRF_HEADER)
