@@ -634,7 +634,7 @@ fn map_service_members_join_the_first() {
         assert_eq!((who.role, who.id), (hyperstor_pki::Role::Meta, id.clone()));
         procs.0.push(start(
             &root.join("usr/local/bin/hyperstor-meta"),
-            env_args(&root, s.run(), "meta.env"),
+            env_args(&root, &s.run_of(&root), "meta.env"),
             s.path(&format!("member-{}.log", i + 1)),
         ));
         apis.push(format!("127.0.0.1:{api_port}"));
@@ -1041,7 +1041,7 @@ fn a_storage_host_is_promoted_and_a_member_demoted() {
     let start_meta = |i: usize| {
         start(
             &bin.join("hyperstor-meta"),
-            env_args(&roots[i], s.run(), "meta.env"),
+            env_args(&roots[i], &s.run_of(&roots[i]), "meta.env"),
             s.path(&format!("meta-{}.log", i + 1)),
         )
     };
