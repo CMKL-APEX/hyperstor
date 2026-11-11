@@ -1488,3 +1488,21 @@ the recommendations:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 248 | A host's roles: (1) the installer adds and removes the member itself (recommended), or the operator with `hyperstorctl`; (2) a demoted member's store deleted after a `map backup` (recommended), or kept; (3) the intermediate's rotation on a demote a follow-up (recommended), or a step of every demote | As recommended | D288 |
+
+## VM disks on reactors per NUMA node (2026-11-11)
+
+Measured first (02-benchmarks.md, 2026-11-11; I350): one
+`hyperstor-vhost` reactor serves about 35,000 4 KiB reads a second
+whatever the number of VMs, and a second one doubles it; the reactor's
+spin helps only reads at QD1, for half again the CPU. Asked, with
+options and a recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 250 | How many reactors, on which CPUs: one per NUMA node, on the core glidex reserves for the host there (recommended); a configured count per node on CPUs given by `--cpus`; or reactors added with load | One per node, on the reserved core | D290 |
+| 251 | How a disk's work is placed: the whole disk on one reactor of its node (recommended); or its queues spread over the node's reactors, sharing its lease | The whole disk | D291 |
+| 252 | Who holds a lease when a disk can move between reactors: the service, every reactor's client with its one instance id (recommended); or each reactor its own instance, with a takeover on each move | The service | D291 |
+| 253 | How `hyperstor-vhost` learns a VM's node: glidex passes it in `attach` (recommended); from the guest's memory when the hypervisor connects; or from the hypervisor's allowed CPUs | From the guest's memory | D292 |
+| 254 | Where a disk goes when its guest's memory isn't bound to one node: the least-loaded reactor, for the connection (recommended); or there first, then the node holding most of its pages once they are faulted in | Re-placed once memory faults in | D292 |
+| 255 | How adaptive polling ships: opt-in per disk at attach (recommended); a service-wide `--spin-us`; or not now | Per disk | D293 |
+

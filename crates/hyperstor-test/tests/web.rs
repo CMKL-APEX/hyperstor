@@ -2,7 +2,8 @@
 //! (04-decisions.md D108–D110): the cluster CA's certificate, re-read when
 //! its files change (an ACME client's renewals, D109), the node's
 //! Tailscale certificate for its ts.net names with HSTS, and plain HTTP
-//! sent to HTTPS.
+//! sent to HTTPS; a request body no one reads leaves the connection
+//! open (#329).
 
 use hyperstor_test::*;
 use std::io::{Read, Write};
@@ -49,7 +50,12 @@ impl rustls::client::danger::ServerCertVerifier for AnyCert {
 
 /// `GET /health` to `ip:port` naming `sni` (none: by address) and `host`:
 /// the served certificate's SHA-256 and the answer's head.
-fn probe(ip: std::net::IpAddr, port: u16, sni: Option<&str>, host: &str) -> (String, String) {
+/// A TLS connection to `ip`:`port`, naming `sni` (else the address).
+fn connect(
+    ip: std::net::IpAddr,
+    port: u16,
+    sni: Option<&str>,
+) -> rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream> {
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -64,7 +70,11 @@ fn probe(ip: std::net::IpAddr, port: u16, sni: Option<&str>, host: &str) -> (Str
     };
     let conn = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
     let tcp = std::net::TcpStream::connect((ip, port)).unwrap();
-    let mut s = rustls::StreamOwned::new(conn, tcp);
+    rustls::StreamOwned::new(conn, tcp)
+}
+
+fn probe(ip: std::net::IpAddr, port: u16, sni: Option<&str>, host: &str) -> (String, String) {
+    let mut s = connect(ip, port, sni);
     write!(
         s,
         "GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
@@ -76,6 +86,33 @@ fn probe(ip: std::net::IpAddr, port: u16, sni: Option<&str>, host: &str) -> (Str
     let text = String::from_utf8_lossy(&out).into_owned();
     let head = text.split("\r\n\r\n").next().unwrap_or("").to_string();
     (hyperstor_pki::sha256_hex(&der), head)
+}
+
+/// Sends `head` and `body` on `s` and reads one answer: its status line
+/// and headers, lower-cased, and its body.
+fn exchange(s: &mut (impl Read + Write), head: &str, body: &[u8]) -> (String, Vec<u8>) {
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    s.flush().unwrap();
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    while !buf.ends_with(b"\r\n\r\n") {
+        assert_eq!(
+            s.read(&mut byte).unwrap(),
+            1,
+            "closed: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+        buf.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+    let len = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length:"))
+        .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap();
+    (head, body)
 }
 
 fn fingerprint_of(pem: &str) -> String {
@@ -142,6 +179,71 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
     // A name that isn't this host's: refused (DNS rebinding).
     let (_, head) = probe(lo, port, None, &format!("evil.example:{port}"));
     assert!(head.starts_with("HTTP/1.1 421"), "{head}");
+
+    // A body no one reads (a POST to a page that doesn't exist, as
+    // scanners send) leaves the connection open for the next request: a
+    // proxy or tunnel that keeps connections reuses it (#329).
+    let mut s = connect(lo, port, None);
+    let junk = vec![b'x'; 100_000];
+    let (head, _) = exchange(
+        &mut s,
+        &format!(
+            "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\n\r\n",
+            junk.len()
+        ),
+        &junk,
+    );
+    assert!(!head.contains("connection: close"), "{head}");
+    let (head, _) = exchange(
+        &mut s,
+        &format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        b"",
+    );
+    assert!(head.starts_with("http/1.1 200"), "the next request: {head}");
+    // A body said to be over the limit: refused unread, and the answer
+    // says the connection closes.
+    let (head, _) = exchange(
+        &mut s,
+        &format!(
+            "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\n\r\n",
+            64 << 20
+        ),
+        b"",
+    );
+    assert!(head.starts_with("http/1.1 413"), "{head}");
+    assert!(head.contains("connection: close"), "{head}");
+    // Over 256 KiB needs a person logged in: without a valid session or
+    // token, refused unread, a made-up cookie included (#329's follow-up).
+    for cookie in ["", "Cookie: hs_session=made-up\r\n"] {
+        let mut s = connect(lo, port, None);
+        let (head, _) = exchange(
+            &mut s,
+            &format!(
+                "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Content-Length: {}\r\n\r\n",
+                300_000
+            ),
+            b"",
+        );
+        assert!(head.starts_with("http/1.1 413"), "{cookie}: {head}");
+        assert!(head.contains("connection: close"), "{head}");
+    }
+    // A body that stops arriving: given up after 10 s.
+    let mut s = connect(lo, port, None);
+    let t = std::time::Instant::now();
+    let (head, _) = exchange(
+        &mut s,
+        &format!(
+            "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 1000\r\n\r\n"
+        ),
+        b"only some",
+    );
+    assert!(head.starts_with("http/1.1 408"), "{head}");
+    assert!(head.contains("connection: close"), "{head}");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(9),
+        "{:?}",
+        t.elapsed()
+    );
 
     // Plain HTTP on the port: sent to HTTPS.
     let mut tcp = std::net::TcpStream::connect((lo, port)).unwrap();

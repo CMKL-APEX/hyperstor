@@ -65,6 +65,10 @@ fn people_log_in_and_do_what_their_roles_allow() {
     let (code, _, w) = c.as_session(&ann, "GET", "/auth/whoami", "");
     assert_eq!(code, 200, "{w}");
     assert_eq!(json(&w)["user"], "ann");
+    // A person logged in may send bodies over the 256 KiB anyone may
+    // (#329's follow-up; web.rs checks the refusals).
+    let (code, _, w) = c.as_session(&ann, "GET", "/auth/whoami", &"x".repeat(1 << 20));
+    assert_eq!(code, 200, "{w}");
 
     // Security administrators manage people, not storage.
     assert_eq!(c.as_session(&ann, "GET", "/api/status", "").0, 403);

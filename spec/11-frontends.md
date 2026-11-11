@@ -17,13 +17,24 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
 - **The disk's serial number** is the first 20 characters of the glidex
   disk id without dashes, unique within the VM. Tools in the guest, and
   the guest library (D33), find the volume behind a disk by it.
+- **Reactors** (D290–D292). One per NUMA node with CPUs, pinned to the
+  core glidex reserves for the host there (`--cpus`; by default each
+  node's first physical core, host-topology.md H7). A disk runs whole on
+  one reactor, that of the node its guest's memory is bound to (read
+  with `get_mempolicy` when the memory table arrives, G59); a guest
+  whose memory isn't bound starts on the least-loaded reactor and moves
+  to the node holding most of its pages once they are faulted in. Every
+  reactor's client uses the service's one instance id, so a disk's lease
+  doesn't move with it. Why: one reactor serves about 35,000 4 KiB reads
+  a second (I350).
 - **Fewer VM exits:**
-  - while a queue is busy, the reactor polls it and uses `EVENT_IDX` to
-    tell the guest not to notify, so submitting I/O costs the guest no
-    exit;
+  - for a disk attached with `poll: true` (D293; off by default), while
+    a queue is busy the reactor polls it and uses `EVENT_IDX` to tell the
+    guest not to notify, so submitting I/O costs the guest no exit;
   - after 50 µs (configurable) without new requests, the queue re-enables
     notifications and the reactor waits on its eventfd (adaptive
-    polling);
+    polling). Why opt-in: it helps only latency-bound I/O, for half again
+    the frontend's CPU (I350);
   - completions are signalled through irqfd, which KVM delivers as a
     posted interrupt where the CPU supports it, again without an exit;
   - a VM marked latency-critical can use polled queues in its own
@@ -52,8 +63,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
   under Cloud Hypervisor and QEMU; restarts that keep the volumes (the
   state file, in-flight tracking; D143, D145, I173, I174), and its unit
-  from `hyperstor-install --vhost` (D142, D144, I175). Not yet: discard,
-  packed rings, adaptive polling, zero copy and the config-change event.
+  from `hyperstor-install --vhost` (D142, D144, I175). Not yet: reactors per
+  NUMA node (D290–D292), discard, packed rings, adaptive polling (D293),
+  zero copy and the config-change event.
 
 ### 11.2 NVMe-oF target (D19)
 

@@ -199,6 +199,16 @@ impl Scratch {
     pub fn path(&self, p: &str) -> PathBuf {
         self.0.join(p)
     }
+
+    /// A runtime directory of its own for the host installed at `root`,
+    /// under [`Scratch::run`]. Members started together need their own:
+    /// each removes and binds `api.sock` there, and two binding one path
+    /// at once leave one of them exiting on `EADDRINUSE` (#335).
+    pub fn run_of(&self, root: &Path) -> PathBuf {
+        let d = self.1.join(root.file_name().unwrap());
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
 }
 
 impl Drop for Scratch {
