@@ -6896,6 +6896,72 @@ fn volumes_copy_and_move_between_pools() {
     c.stop();
 }
 
+/// A volume made from another keeps its tenant (D258): a copy of its head
+/// or of a snapshot, a clone, and a move. A copy run again doesn't take
+/// over a volume of another tenant.
+#[test]
+fn volumes_made_from_another_keep_its_tenant() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::copy::Progress;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let size = CHUNK as u64;
+    with_client(meta, 5, move |cl| async move {
+        let tenant = 7;
+        let v = cl
+            .create_volume_for(POOL, size, None, "t", tenant)
+            .await
+            .unwrap();
+        let data = pattern(21, 8192);
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, data.clone()).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let p = Progress::default();
+        let tenant_of = |id: u128| {
+            let cl = cl.clone();
+            async move { cl.volume(id).await.unwrap().unwrap().tenant }
+        };
+
+        let c1 = cl
+            .copy_volume(v.id, Some(s.epoch), CACHE_POOL, 21, "c1", &p)
+            .await
+            .unwrap();
+        assert_eq!(c1.tenant, tenant, "a snapshot's copy");
+        assert_eq!(tenant_of(21).await, tenant);
+        let c2 = cl
+            .copy_volume(v.id, None, POOL, 22, "c2", &p)
+            .await
+            .unwrap();
+        assert_eq!(c2.tenant, tenant, "the head's copy");
+        assert_eq!(tenant_of(22).await, tenant);
+        let c2a = cl.attach(22).await.unwrap();
+        assert!(c2a.read(0, data.len() as u64).await.unwrap() == data);
+        c2a.detach().await.unwrap();
+        // Run again, a copy refills its own volume...
+        cl.copy_volume(v.id, None, POOL, 22, "c2", &p)
+            .await
+            .unwrap();
+        assert_eq!(tenant_of(22).await, tenant);
+        // ...but not one of another tenant.
+        cl.create_volume(POOL, size, Some(23), "other")
+            .await
+            .unwrap();
+        assert!(matches!(
+            cl.copy_volume(v.id, None, POOL, 23, "c3", &p).await,
+            Err(ClientError::VolumeExists(23))
+        ));
+        assert_eq!(tenant_of(23).await, 0);
+
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        assert_eq!(k.tenant, tenant, "a clone");
+        let m = cl.move_volume(22, CACHE_POOL, &p).await.unwrap();
+        assert_eq!((m.pool, m.tenant), (CACHE_POOL, tenant), "a move");
+        assert_eq!(tenant_of(22).await, tenant);
+    });
+    c.stop();
+}
+
 /// Random snapshot, clone, rollback, flatten and delete operations on a
 /// family of volumes, with writes in between, against a model: every
 /// head and every snapshot must read back what the model holds after
