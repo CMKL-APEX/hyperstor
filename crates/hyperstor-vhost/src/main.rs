@@ -1,4 +1,4 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST]`
 //! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -58,6 +58,14 @@ fn main() {
                     .filter(|s| *s <= 3600)
                     .unwrap_or_else(|| usage()),
             };
+            // D290: a reactor on each CPU listed (`0,64`, `0-1`); by
+            // default the first CPU of each NUMA node.
+            let cpus = get("--cpus").map(|l| {
+                hyperstor_vhost::numa::parse_cpulist(&l)
+                    .ok()
+                    .filter(|c| !c.is_empty())
+                    .unwrap_or_else(|| usage())
+            });
             let stop = stop_on_signal();
             let r = serve(
                 Options {
@@ -76,6 +84,7 @@ fn main() {
                         })
                         .unwrap_or_default(),
                     host: get("--host").unwrap_or_else(hyperstor_client::Client::this_host),
+                    cpus,
                 },
                 |p| {
                     println!("hyperstor-vhost: control socket {}", p.display());

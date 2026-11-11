@@ -7,6 +7,12 @@
 //! (`EVENT_IDX`). Requests are tracked in the frontend's in-flight buffer
 //! (D145, [`crate::inflight`]), so a restarted service runs again the
 //! ones its last process took and never answered.
+//!
+//! A connection starts on the service's first reactor and moves, with
+//! `vhost`'s handler, to its disk's reactor once the frontend's memory
+//! table says where the guest's memory is (D292): [`serve_connection`]
+//! answers [`Ended::Place`] and [`resume`] carries on there. Its rings
+//! start only there, on the [`Disk`] that reactor holds.
 
 use crate::blk::{self, Bad, Request};
 use crate::inflight::Inflight;
@@ -20,7 +26,7 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use vhost::VhostUserMemoryRegionBase;
 use vhost::vhost_user::message::{
@@ -35,7 +41,8 @@ use vhost::vhost_user::{
 };
 use virtio_queue::{DescriptorChain, Queue, QueueT};
 use vm_memory::{
-    Address, Bytes, FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap, MmapRegion,
+    Address, Bytes, FileOffset, GuestAddress, GuestMemoryBackend, GuestMemoryMmap,
+    GuestMemoryRegion, GuestRegionMmap, MmapRegion,
 };
 
 const WRITE_ZEROES: u32 = virtio_bindings::virtio_blk::VIRTIO_BLK_T_WRITE_ZEROES;
@@ -235,7 +242,7 @@ async fn write_at(disk: &Disk, off: u64, data: Vec<u8>) -> Result<(), ClientErro
     v.write(start, buf).await
 }
 
-type Mem = Rc<GuestMemoryMmap>;
+type Mem = Arc<GuestMemoryMmap>;
 
 struct Vring {
     queue: Queue,
@@ -252,21 +259,60 @@ struct Vring {
 }
 
 struct State {
-    disk: Rc<Disk>,
+    /// The disk's volume, which each reactor's [`Disk`] for it is found
+    /// by ([`local_disk`]).
+    volume: u128,
+    /// The volume's size as the connection began, for the guest's
+    /// configuration.
+    size: u64,
     acked: u64,
     protocol: VhostUserProtocolFeatures,
     mem: Option<Mem>,
     regions: Vec<VhostUserMemoryRegion>,
     vrings: Vec<Vring>,
     /// The frontend's in-flight buffer, once it has given one.
-    inflight: Option<Rc<Inflight>>,
+    inflight: Option<Arc<Inflight>>,
+    /// Whether the connection is on its disk's reactor (D292); until then
+    /// no ring starts.
+    placed: bool,
+    /// The guest memory's policy, once the first memory table came and
+    /// the connection is to be placed.
+    place: Option<crate::numa::Policy>,
 }
 
-type Shared = Rc<RefCell<State>>;
+/// A connection's state, which moves with it to its disk's reactor; only
+/// one reactor uses it at a time.
+type Shared = Arc<Mutex<State>>;
+
+fn lock(s: &Shared) -> MutexGuard<'_, State> {
+    s.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+thread_local! {
+    /// The disks this reactor serves, by volume: each holds its lease
+    /// through this reactor's client (D291).
+    static DISKS: RefCell<std::collections::HashMap<u128, Rc<Disk>>> = Default::default();
+}
+
+/// This reactor's disk for `volume`, if it holds it.
+pub fn local_disk(volume: u128) -> Option<Rc<Disk>> {
+    DISKS.with(|d| d.borrow().get(&volume).cloned())
+}
+
+/// Makes `disk` this reactor's for its volume.
+pub fn hold_disk(disk: Rc<Disk>) {
+    let v = disk.volume.volume().id;
+    DISKS.with(|d| d.borrow_mut().insert(v, disk));
+}
+
+/// Lets go of this reactor's disk for `volume`, returning it.
+pub fn drop_disk(volume: u128) -> Option<Rc<Disk>> {
+    DISKS.with(|d| d.borrow_mut().remove(&volume))
+}
 
 impl State {
-    fn new(disk: Rc<Disk>) -> Self {
-        let vrings = (0..disk.queues)
+    fn new(volume: u128, size: u64, queues: u16) -> Self {
+        let vrings = (0..queues)
             .map(|_| Vring {
                 queue: Queue::new(QUEUE_MAX).expect("a valid queue size"),
                 kick: None,
@@ -278,13 +324,16 @@ impl State {
             })
             .collect();
         Self {
-            disk,
+            volume,
+            size,
             acked: 0,
             protocol: VhostUserProtocolFeatures::empty(),
             mem: None,
             regions: Vec::new(),
             vrings,
             inflight: None,
+            placed: false,
+            place: None,
         }
     }
 
@@ -345,8 +394,8 @@ fn kick(f: &File) {
 /// enabled (or the protocol features, which start rings disabled, weren't
 /// negotiated), and it isn't running already.
 fn start(shared: &Shared, index: usize) {
-    let mut s = shared.borrow_mut();
-    let can = s.mem.is_some() && (s.vrings[index].enabled || !s.protocol_acked());
+    let mut s = lock(shared);
+    let can = s.placed && s.mem.is_some() && (s.vrings[index].enabled || !s.protocol_acked());
     let event_idx = s.event_idx();
     let mem = s.mem.clone();
     let v = &mut s.vrings[index];
@@ -376,7 +425,9 @@ fn start(shared: &Shared, index: usize) {
             again = r.heads;
         }
     }
-    let disk = s.disk.clone();
+    let Some(disk) = local_disk(s.volume) else {
+        return;
+    };
     let v = &mut s.vrings[index];
     v.running = true;
     let generation = v.generation;
@@ -400,7 +451,7 @@ fn start(shared: &Shared, index: usize) {
             None => complete(shared, index, generation, &mem, head, 0),
         }
     }
-    hyperstor_reactor::spawn(run(shared.clone(), index, generation));
+    hyperstor_reactor::spawn(run(shared.clone(), disk, index, generation));
 }
 
 /// The readable and writable parts of the chain at `head` of the
@@ -454,14 +505,14 @@ fn chain_segments(
 }
 
 /// Serves ring `index` until it stops.
-async fn run(shared: Shared, index: usize, generation: u64) {
+async fn run(shared: Shared, disk: Rc<Disk>, index: usize, generation: u64) {
     // Chains made available before the first kick are served at once.
     loop {
-        if !drain(&shared, index, generation) {
+        if !drain(&shared, &disk, index, generation) {
             return;
         }
         let fd = {
-            let s = shared.borrow();
+            let s = lock(&shared);
             let v = &s.vrings[index];
             match &v.kick {
                 Some(k) if v.generation == generation => k.as_raw_fd(),
@@ -469,7 +520,7 @@ async fn run(shared: Shared, index: usize, generation: u64) {
             }
         };
         let (r, _) = fd::read(fd, vec![0; 8]).await;
-        if r.is_err() || shared.borrow().vrings[index].generation != generation {
+        if r.is_err() || lock(&shared).vrings[index].generation != generation {
             return;
         }
     }
@@ -477,9 +528,9 @@ async fn run(shared: Shared, index: usize, generation: u64) {
 
 /// Takes every available chain and starts a task for each. Returns false
 /// if the ring has stopped.
-fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
+fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> bool {
     loop {
-        let mut s = shared.borrow_mut();
+        let mut s = lock(shared);
         let event_idx = s.event_idx();
         let Some(mem) = s.mem.clone() else {
             return false;
@@ -503,7 +554,6 @@ fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
         // With EVENT_IDX, chains added while notifications were off are
         // seen here: go round again.
         let more = event_idx && v.queue.enable_notification(&*mem).unwrap_or(false);
-        let disk = s.disk.clone();
         drop(s);
         for c in chains {
             let segs = Segments::of(&c);
@@ -707,7 +757,7 @@ fn complete(
     head: u16,
     used: u32,
 ) {
-    let mut s = shared.borrow_mut();
+    let mut s = lock(shared);
     let inflight = s.inflight.clone();
     let v = &mut s.vrings[index];
     if v.generation != generation {
@@ -734,8 +784,8 @@ fn complete(
 struct Handler(Shared);
 
 impl Handler {
-    fn shared(&self) -> std::cell::RefMut<'_, State> {
-        self.0.borrow_mut()
+    fn shared(&self) -> MutexGuard<'_, State> {
+        lock(&self.0)
     }
 }
 
@@ -792,10 +842,20 @@ impl VhostUserBackendReqHandlerMut for Handler {
         }
         let mem = GuestMemoryMmap::from_regions(regions).map_err(|_| VError::InvalidParam)?;
         let mut s = self.shared();
-        s.mem = Some(Rc::new(mem));
+        // The first table places the connection (D292): by the policy of
+        // the guest's largest region, as this process maps it (G59).
+        if !s.placed {
+            let largest = mem.iter().max_by_key(|r| r.len());
+            s.place = Some(
+                largest
+                    .and_then(|r| crate::numa::policy_at(r.as_ptr() as usize).ok())
+                    .unwrap_or(crate::numa::Policy::Any),
+            );
+        }
+        s.mem = Some(Arc::new(mem));
         s.regions = ctx.to_vec();
+        let n = s.vrings.len();
         drop(s);
-        let n = self.0.borrow().vrings.len();
         for i in 0..n {
             start(&self.0, i);
         }
@@ -907,7 +967,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
         _flags: VhostUserConfigFlags,
     ) -> VResult<Vec<u8>> {
         let s = self.shared();
-        let c = blk::config(s.disk.volume.volume().size, s.disk.queues);
+        let c = blk::config(s.size, s.vrings.len() as u16);
         let (o, n) = (offset as usize, size as usize);
         if o.checked_add(n).is_none_or(|e| e > c.len()) {
             return Err(VError::InvalidParam);
@@ -954,7 +1014,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
             num_queues: inflight.num_queues,
             queue_size: inflight.queue_size,
         };
-        s.inflight = Some(Rc::new(inf));
+        s.inflight = Some(Arc::new(inf));
         Ok((answer, file))
     }
 
@@ -973,7 +1033,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
             inflight.queue_size,
         )
         .map_err(|_| VError::InvalidParam)?;
-        s.inflight = Some(Rc::new(inf));
+        s.inflight = Some(Arc::new(inf));
         Ok(())
     }
 
@@ -1016,21 +1076,55 @@ impl VhostUserBackendReqHandlerMut for Handler {
     }
 }
 
-/// Serves one frontend connected to a disk's socket until it disconnects
-/// (or the protocol fails). Its rings stop with it; the volume stays
-/// attached for the next connection (a hypervisor reconnecting).
-pub async fn serve_connection(disk: Rc<Disk>, stream: UnixStream) -> Result<(), String> {
-    let shared: Shared = Rc::new(RefCell::new(State::new(disk)));
-    // `vhost` wants its handler in an Arc; it never leaves this thread.
-    #[allow(clippy::arc_with_non_send_sync)]
+/// How a connection's part on one reactor ended.
+pub enum Ended {
+    /// The frontend hung up, or the protocol failed.
+    Closed(Result<(), String>),
+    /// The first memory table came (D292): the connection is to go on, by
+    /// [`resume`], on the reactor its guest's memory says.
+    Place(Moving, crate::numa::Policy),
+}
+
+/// A connection between reactors: `vhost`'s handler with its state.
+pub struct Moving {
+    req: BackendReqHandler<Mutex<Handler>>,
+    shared: Shared,
+}
+
+/// Serves one frontend connected to `volume`'s socket (`size` bytes,
+/// `queues` queues) until it disconnects, the protocol fails, or its
+/// memory table comes and it is to be placed.
+pub async fn serve_connection(volume: u128, size: u64, queues: u16, stream: UnixStream) -> Ended {
+    let shared: Shared = Arc::new(Mutex::new(State::new(volume, size, queues)));
     let handler = Arc::new(Mutex::new(Handler(shared.clone())));
-    let mut req = BackendReqHandler::from_stream(stream, handler);
-    let fd = req.as_raw_fd();
+    let req = BackendReqHandler::from_stream(stream, handler);
+    run_connection(Moving { req, shared }).await
+}
+
+/// Carries on with a connection on the reactor it was placed on, which
+/// holds its disk: starts its rings and serves it until it disconnects
+/// or the protocol fails. Its rings stop with it; the volume stays
+/// attached for the next connection (a hypervisor reconnecting).
+pub async fn resume(m: Moving) -> Result<(), String> {
+    lock(&m.shared).placed = true;
+    let n = lock(&m.shared).vrings.len();
+    for i in 0..n {
+        start(&m.shared, i);
+    }
+    match run_connection(m).await {
+        Ended::Closed(r) => r,
+        // Placed already: a later table never asks again.
+        Ended::Place(..) => Err("placed twice".into()),
+    }
+}
+
+async fn run_connection(mut m: Moving) -> Ended {
+    let fd = m.req.as_raw_fd();
     let r = loop {
         if let Err(e) = fd::readable(fd).await {
             break Err(e.to_string());
         }
-        match req.handle_request() {
+        match m.req.handle_request() {
             Ok(()) => {}
             Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
             // A request we refused was answered (or the frontend didn't
@@ -1038,7 +1132,14 @@ pub async fn serve_connection(disk: Rc<Disk>, stream: UnixStream) -> Result<(), 
             Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
             Err(e) => break Err(e.to_string()),
         }
+        let place = {
+            let mut s = lock(&m.shared);
+            if s.placed { None } else { s.place.take() }
+        };
+        if let Some(p) = place {
+            return Ended::Place(m, p);
+        }
     };
-    shared.borrow_mut().stop_all();
-    r
+    lock(&m.shared).stop_all();
+    Ended::Closed(r)
 }

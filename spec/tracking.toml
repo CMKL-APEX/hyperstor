@@ -592,8 +592,20 @@ status = "done"
 tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
 [[milestone.item]]
-what = "Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory"
-spec = ["11-frontends.md §11.1", "D26", "D290", "D291", "D292", "D293", "G8", "G59", "I350"]
+what = "Reactors per NUMA node: a disk on its guest's node's reactor, its connection and lease moved there"
+spec = ["11-frontends.md §11.1", "D290", "D291", "D292", "G59", "I350", "I354"]
+status = "partial"
+tests = [
+    "vhost::each_disk_runs_on_its_guests_reactor",
+    "hyperstor_vhost::numa::tests::a_memfds_binding_is_seen_through_another_mapping",
+    "hyperstor_vhost::numa::tests::a_disk_goes_to_its_guests_node_or_the_least_loaded",
+    "hyperstor_vhost::numa::tests::the_first_cpu_of_each_node_with_cpus_is_the_default",
+    "hyperstor_vhost::numa::tests::cpu_lists_parse_and_bad_ones_say_why",
+]
+
+[[milestone.item]]
+what = "Adaptive polling, zero copy from guest memory"
+spec = ["11-frontends.md §11.1", "D26", "D293", "G8", "I350"]
 status = "planned"
 
 [[milestone.item]]

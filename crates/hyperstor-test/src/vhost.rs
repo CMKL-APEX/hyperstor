@@ -166,6 +166,13 @@ pub struct Guest {
 impl Guest {
     /// Connects and sets up queue 0, with or without `EVENT_IDX`.
     pub fn connect(socket: &Path, event_idx: bool) -> Guest {
+        Self::connect_bound(socket, event_idx, None)
+    }
+
+    /// [`Guest::connect`], with the guest's memory bound to NUMA `node`
+    /// first, as a hypervisor binds a guest placed on a node (`mbind` on
+    /// its memfd; G59).
+    pub fn connect_bound(socket: &Path, event_idx: bool, node: Option<u32>) -> Guest {
         // SAFETY: memfd_create with a static name; the descriptor is owned
         // by the File below.
         let fd = unsafe { libc::memfd_create(c"guest".as_ptr(), libc::MFD_CLOEXEC) };
@@ -176,6 +183,24 @@ impl Guest {
         let region =
             MmapRegion::from_file(FileOffset::new(memfd.try_clone().unwrap(), 0), MEM).unwrap();
         let host = region.as_ptr() as u64;
+        if let Some(n) = node {
+            let mut mask = [0u64; 16];
+            mask[n as usize / 64] |= 1 << (n % 64);
+            // SAFETY: mbind (MPOL_BIND) on the mapping just made, of MEM
+            // bytes, with a local mask of 1024 bits.
+            let r = unsafe {
+                libc::syscall(
+                    libc::SYS_mbind,
+                    host as *mut libc::c_void,
+                    MEM,
+                    2 as libc::c_int,
+                    mask.as_ptr(),
+                    1024 as libc::c_ulong,
+                    0 as libc::c_uint,
+                )
+            };
+            assert_eq!(r, 0, "mbind: {}", std::io::Error::last_os_error());
+        }
         let mem = GuestMemoryMmap::from_regions(vec![
             GuestRegionMmap::new(region, GuestAddress(0)).unwrap(),
         ])

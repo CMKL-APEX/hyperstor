@@ -7,14 +7,14 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]
 ```
 
 | Command | Does |
 |---|---|
 | `serve` | Runs the service until SIGINT or SIGTERM. Its volumes stay attached for its next start (see [Restarts](#restarts)) |
 | `ctl hello` | Checks the service answers, and its protocol version |
-| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, and whether the volume was taken elsewhere (`lost`) |
+| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, whether the volume was taken elsewhere (`lost`), and the reactor serving it with that reactor's NUMA node (`reactor`, `node`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
 | `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor stays connected for 2 s, unless `--force` |
 
@@ -28,6 +28,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
 | `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
+| `--cpus LIST` | the first CPU of each NUMA node | `serve`: the CPUs its reactors run on, one reactor pinned to each (`0,64` or `0-1`). See [NUMA nodes](#numa-nodes) |
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
 | `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
@@ -77,6 +78,20 @@ to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for
 another node's service, `hyperstorctl` for a tool.
+
+## NUMA nodes
+
+The service runs a reactor, a thread doing all of a disk's I/O, on each
+CPU of `--cpus`: by default the first CPU of each NUMA node, the core
+glidex keeps for the host there. One reactor serves about 35,000 4 KiB
+reads a second. Each disk runs on one reactor: that of the node its
+guest's memory is bound to, which the service reads from the guest's
+memory when the hypervisor connects. Bind a VM's memory to a node for
+this (Cloud Hypervisor: `--memory size=0 --memory-zone
+id=mem0,size=2G,shared=on,host_numa_node=1`; QEMU:
+`memory-backend-memfd,...,host-nodes=1,policy=bind`). A guest whose
+memory isn't bound to one node goes to the reactor serving the fewest
+disks. `ctl list` shows where each disk runs.
 
 ## Restarts
 

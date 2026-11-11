@@ -177,6 +177,9 @@ pub struct Listed {
     /// Its lease was taken by a take-over or preemption elsewhere (D150):
     /// its I/O fails until it is detached or attached again.
     pub lost: bool,
+    /// The reactor that serves it (D291), and that reactor's NUMA node.
+    pub reactor: usize,
+    pub node: Option<u32>,
 }
 
 pub fn list(disks: Vec<Listed>) -> Value {
@@ -189,6 +192,8 @@ pub fn list(disks: Vec<Listed>) -> Value {
                 "size": d.size,
                 "connected": d.connected,
                 "lost": d.lost,
+                "reactor": d.reactor,
+                "node": d.node,
             })
         })
         .collect();
