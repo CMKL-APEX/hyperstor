@@ -29,7 +29,7 @@ impl M {
     fn start(&mut self, s: &Scratch, extra: &[&str]) {
         self.stop();
         let p = Command::new(self.root.join("usr/local/bin/hyperstor-meta"))
-            .args(env_args(&self.root, s.run(), "meta.env"))
+            .args(env_args(&self.root, &s.run_of(&self.root), "meta.env"))
             .args(extra)
             .stderr(std::fs::File::create(&self.log).unwrap())
             .spawn()
