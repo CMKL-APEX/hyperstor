@@ -146,7 +146,8 @@ thread_local! {
 /// in the kernel, so a request arriving soon after the last one doesn't
 /// pay a thread wake-up. Polling still enters the kernel (without waiting)
 /// so network completions are delivered. Zero, the default, turns it off;
-/// storage reactors that own their cores turn it on.
+/// storage reactors that own their cores turn it on. It takes effect on
+/// the reactor's next pass, so a task may change it.
 pub fn set_spin(spin: std::time::Duration) {
     SPIN.with(|s| s.set(spin));
 }
@@ -461,9 +462,10 @@ where
         *c.borrow_mut() = Some(inner.clone());
     });
     let main = spawn(fut);
-    let spin = SPIN.with(|s| s.get());
     let mut last_activity = std::time::Instant::now();
     let out = loop {
+        // Read each pass: a task may turn it on or off (D293).
+        let spin = SPIN.with(|s| s.get());
         // Run the tasks that are ready now. Tasks woken while they run
         // (including ones that yield) wait for the next pass, after I/O
         // completions have been collected: running until the queue is

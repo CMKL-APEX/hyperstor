@@ -108,7 +108,9 @@ covered by tests that run on every change.
 |---|---|
 | hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks | In progress |
 | VMs boot from volumes under Cloud Hypervisor and QEMU | Done |
-| Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
+| Reactors per NUMA node: a disk on its guest's node's reactor, its connection and lease moved there | In progress |
+| Adaptive polling: a disk attached with `poll` has its queues polled while busy and for a window after, its reactor spinning | Done |
+| Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |

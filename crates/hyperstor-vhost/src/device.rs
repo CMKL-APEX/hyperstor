@@ -7,6 +7,15 @@
 //! (`EVENT_IDX`). Requests are tracked in the frontend's in-flight buffer
 //! (D145, [`crate::inflight`]), so a restarted service runs again the
 //! ones its last process took and never answered.
+//!
+//! A connection starts on the service's first reactor and moves, with
+//! `vhost`'s handler, to its disk's reactor once the frontend's memory
+//! table says where the guest's memory is (D292): [`serve_connection`]
+//! answers [`Ended::Place`] and [`resume`] carries on there. Its rings
+//! start only there, on the [`Disk`] that reactor holds. A guest whose
+//! memory isn't bound to one node is placed again once the pages its
+//! requests use show where its memory is ([`Watch`]): its rings stop
+//! taking requests, those in flight finish, and it moves.
 
 use crate::blk::{self, Bad, Request};
 use crate::inflight::Inflight;
@@ -20,7 +29,7 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use vhost::VhostUserMemoryRegionBase;
 use vhost::vhost_user::message::{
@@ -35,7 +44,8 @@ use vhost::vhost_user::{
 };
 use virtio_queue::{DescriptorChain, Queue, QueueT};
 use vm_memory::{
-    Address, Bytes, FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap, MmapRegion,
+    Address, Bytes, FileOffset, GuestAddress, GuestMemoryBackend, GuestMemoryMmap,
+    GuestMemoryRegion, GuestRegionMmap, MmapRegion,
 };
 
 const WRITE_ZEROES: u32 = virtio_bindings::virtio_blk::VIRTIO_BLK_T_WRITE_ZEROES;
@@ -50,6 +60,8 @@ pub struct Disk {
     pub serial: String,
     /// Queues offered.
     pub queues: u16,
+    /// Its rings are polled while busy, not woken by the guest (D293).
+    pub poll: bool,
     pub locks: Locks,
     /// How long a write refused for space is held (04-decisions.md D183).
     pub hold: Duration,
@@ -235,7 +247,7 @@ async fn write_at(disk: &Disk, off: u64, data: Vec<u8>) -> Result<(), ClientErro
     v.write(start, buf).await
 }
 
-type Mem = Rc<GuestMemoryMmap>;
+type Mem = Arc<GuestMemoryMmap>;
 
 struct Vring {
     queue: Queue,
@@ -252,21 +264,122 @@ struct Vring {
 }
 
 struct State {
-    disk: Rc<Disk>,
+    /// The disk's volume, which each reactor's [`Disk`] for it is found
+    /// by ([`local_disk`]).
+    volume: u128,
+    /// The volume's size as the connection began, for the guest's
+    /// configuration.
+    size: u64,
     acked: u64,
     protocol: VhostUserProtocolFeatures,
     mem: Option<Mem>,
     regions: Vec<VhostUserMemoryRegion>,
     vrings: Vec<Vring>,
     /// The frontend's in-flight buffer, once it has given one.
-    inflight: Option<Rc<Inflight>>,
+    inflight: Option<Arc<Inflight>>,
+    /// Whether the connection is on its disk's reactor (D292); until then
+    /// no ring starts.
+    placed: bool,
+    /// The guest memory's policy, once the first memory table came and
+    /// the connection is to be placed.
+    place: Option<crate::numa::Policy>,
+    /// Requests taken and not yet completed, which a move waits for.
+    running: usize,
+    /// Rings stopped taking requests for a move: their tasks end, and
+    /// [`resume`] starts them again.
+    parked: bool,
+    /// For a guest whose memory isn't bound: where its pages are, until
+    /// it is placed by them.
+    watch: Option<Watch>,
 }
 
-type Shared = Rc<RefCell<State>>;
+/// The guest pages a connection's requests used lately, to find the node
+/// an unbound guest's memory is on (D292).
+pub struct Watch {
+    /// The node of the reactor serving the connection.
+    node: Option<u32>,
+    /// Host addresses of pages requests used, newest last.
+    pages: std::collections::VecDeque<usize>,
+    last: Instant,
+}
+
+/// Pages remembered for [`Watch`].
+const WATCH_PAGES: usize = 256;
+/// How often an unbound guest's pages are looked at.
+pub const WATCH_EVERY: Duration = Duration::from_secs(1);
+/// Pages that must be in memory before a node is chosen, and the share
+/// of them it must hold.
+const WATCH_MIN: usize = 32;
+
+impl Watch {
+    fn note(&mut self, mem: &GuestMemoryMmap, segs: &Segments) {
+        for &(addr, len) in segs.readable.iter().chain(&segs.writable) {
+            // Each page of the buffer, up to 64 of a large one.
+            let Ok(p) = mem.get_slice(addr, len as usize) else {
+                continue;
+            };
+            let start = p.ptr_guard().as_ptr() as usize;
+            let end = start + len as usize;
+            let mut page = start & !4095;
+            for _ in 0..64 {
+                if page >= end {
+                    break;
+                }
+                if !self.pages.contains(&page) {
+                    if self.pages.len() == WATCH_PAGES {
+                        self.pages.pop_front();
+                    }
+                    self.pages.push_back(page);
+                }
+                page += 4096;
+            }
+        }
+    }
+
+    /// The node holding two thirds or more of the pages looked at, if it
+    /// isn't this reactor's.
+    fn elsewhere(&self) -> Option<u32> {
+        let mut pages: Vec<usize> = self.pages.iter().copied().collect();
+        pages.sort_unstable();
+        pages.dedup();
+        let (node, n, of) = crate::numa::majority(&crate::numa::nodes_of(&pages))?;
+        (of >= WATCH_MIN && 3 * n >= 2 * of && Some(node) != self.node).then_some(node)
+    }
+}
+
+/// A connection's state, which moves with it to its disk's reactor; only
+/// one reactor uses it at a time.
+type Shared = Arc<Mutex<State>>;
+
+fn lock(s: &Shared) -> MutexGuard<'_, State> {
+    s.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+thread_local! {
+    /// The disks this reactor serves, by volume: each holds its lease
+    /// through this reactor's client (D291).
+    static DISKS: RefCell<std::collections::HashMap<u128, Rc<Disk>>> = Default::default();
+}
+
+/// This reactor's disk for `volume`, if it holds it.
+pub fn local_disk(volume: u128) -> Option<Rc<Disk>> {
+    DISKS.with(|d| d.borrow().get(&volume).cloned())
+}
+
+/// Makes `disk` this reactor's for its volume.
+pub fn hold_disk(disk: Rc<Disk>) {
+    let v = disk.volume.volume().id;
+    DISKS.with(|d| d.borrow_mut().insert(v, disk));
+}
+
+/// Lets go of this reactor's disk for `volume`, returning it.
+pub fn drop_disk(volume: u128) -> Option<Rc<Disk>> {
+    DISKS.with(|d| d.borrow_mut().remove(&volume))
+}
 
 impl State {
-    fn new(disk: Rc<Disk>) -> Self {
-        let vrings = (0..disk.queues)
+    fn new(volume: u128, size: u64, queues: u16) -> Self {
+        let vrings = (0..queues)
             .map(|_| Vring {
                 queue: Queue::new(QUEUE_MAX).expect("a valid queue size"),
                 kick: None,
@@ -278,13 +391,19 @@ impl State {
             })
             .collect();
         Self {
-            disk,
+            volume,
+            size,
             acked: 0,
             protocol: VhostUserProtocolFeatures::empty(),
             mem: None,
             regions: Vec::new(),
             vrings,
             inflight: None,
+            placed: false,
+            place: None,
+            running: 0,
+            parked: false,
+            watch: None,
         }
     }
 
@@ -345,8 +464,11 @@ fn kick(f: &File) {
 /// enabled (or the protocol features, which start rings disabled, weren't
 /// negotiated), and it isn't running already.
 fn start(shared: &Shared, index: usize) {
-    let mut s = shared.borrow_mut();
-    let can = s.mem.is_some() && (s.vrings[index].enabled || !s.protocol_acked());
+    let mut s = lock(shared);
+    let can = s.placed
+        && !s.parked
+        && s.mem.is_some()
+        && (s.vrings[index].enabled || !s.protocol_acked());
     let event_idx = s.event_idx();
     let mem = s.mem.clone();
     let v = &mut s.vrings[index];
@@ -376,7 +498,11 @@ fn start(shared: &Shared, index: usize) {
             again = r.heads;
         }
     }
-    let disk = s.disk.clone();
+    let Some(disk) = local_disk(s.volume) else {
+        return;
+    };
+    // Each completes, answered or given back empty.
+    s.running += again.len();
     let v = &mut s.vrings[index];
     v.running = true;
     let generation = v.generation;
@@ -400,7 +526,7 @@ fn start(shared: &Shared, index: usize) {
             None => complete(shared, index, generation, &mem, head, 0),
         }
     }
-    hyperstor_reactor::spawn(run(shared.clone(), index, generation));
+    hyperstor_reactor::spawn(run(shared.clone(), disk, index, generation));
 }
 
 /// The readable and writable parts of the chain at `head` of the
@@ -454,14 +580,32 @@ fn chain_segments(
 }
 
 /// Serves ring `index` until it stops.
-async fn run(shared: Shared, index: usize, generation: u64) {
+async fn run(shared: Shared, disk: Rc<Disk>, index: usize, generation: u64) {
+    let _polling = disk.poll.then(Polling::new);
+    let window = poll_window();
+    let mut last = Instant::now();
     // Chains made available before the first kick are served at once.
     loop {
-        if !drain(&shared, index, generation) {
+        let Some(took) = drain(&shared, &disk, index, generation) else {
             return;
+        };
+        // D293: a polled ring looks again, its guest not notifying, while
+        // requests are running and for a window after the last one.
+        if disk.poll {
+            if took || lock(&shared).running > 0 {
+                last = Instant::now();
+            }
+            if last.elapsed() < window {
+                hyperstor_reactor::yield_now().await;
+                continue;
+            }
+            // Quiet: the guest notifies again, unless one just came.
+            if notify_again(&shared, index, generation) {
+                continue;
+            }
         }
         let fd = {
-            let s = shared.borrow();
+            let s = lock(&shared);
             let v = &s.vrings[index];
             match &v.kick {
                 Some(k) if v.generation == generation => k.as_raw_fd(),
@@ -469,27 +613,88 @@ async fn run(shared: Shared, index: usize, generation: u64) {
             }
         };
         let (r, _) = fd::read(fd, vec![0; 8]).await;
-        if r.is_err() || shared.borrow().vrings[index].generation != generation {
+        if r.is_err() || lock(&shared).vrings[index].generation != generation {
             return;
         }
     }
 }
 
-/// Takes every available chain and starts a task for each. Returns false
-/// if the ring has stopped.
-fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
+/// How long a polled ring (D293) keeps looking after it was last busy,
+/// and its reactor's completion spin while it has one, in µs
+/// (`--poll-us`).
+static POLL_WINDOW_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(50);
+
+/// Sets the polled rings' window (D293), for every reactor.
+pub fn set_poll_window(d: Duration) {
+    POLL_WINDOW_US.store(
+        d.as_micros().max(1) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn poll_window() -> Duration {
+    Duration::from_micros(POLL_WINDOW_US.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+thread_local! {
+    /// The rings this reactor polls (D293).
+    static POLLING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether this reactor polls a ring (D293): its completion spin is on.
+pub(crate) fn polling() -> bool {
+    POLLING.with(|p| p.get() > 0)
+}
+
+/// A polled ring's task, counted on its reactor while it runs.
+struct Polling;
+
+impl Polling {
+    fn new() -> Self {
+        POLLING.with(|p| p.set(p.get() + 1));
+        crate::reactors::set_spin();
+        Polling
+    }
+}
+
+impl Drop for Polling {
+    fn drop(&mut self) {
+        POLLING.with(|p| p.set(p.get() - 1));
+        crate::reactors::set_spin();
+    }
+}
+
+/// A polled ring going quiet lets its guest notify again. True if a
+/// chain came meanwhile (look again), or the ring has stopped (the next
+/// look ends the task).
+fn notify_again(shared: &Shared, index: usize, generation: u64) -> bool {
+    let mut s = lock(shared);
+    let Some(mem) = s.mem.clone() else {
+        return true;
+    };
+    let v = &mut s.vrings[index];
+    v.generation != generation || v.queue.enable_notification(&*mem).unwrap_or(true)
+}
+
+/// Takes every available chain and starts a task for each: whether it
+/// took any, or `None` if the ring has stopped. A polled ring's guest is
+/// left not notifying (D293).
+fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> Option<bool> {
+    let mut took = false;
     loop {
-        let mut s = shared.borrow_mut();
+        let mut s = lock(shared);
         let event_idx = s.event_idx();
-        let Some(mem) = s.mem.clone() else {
-            return false;
-        };
+        let mem = s.mem.clone()?;
         let inflight = s.inflight.clone();
+        // Parked for a move: [`resume`] starts the ring again there.
+        if s.parked {
+            return None;
+        }
         let v = &mut s.vrings[index];
         if v.generation != generation {
-            return false;
+            return None;
         }
-        if event_idx {
+        if event_idx || disk.poll {
             let _ = v.queue.disable_notification(&*mem);
         }
         let mut chains = Vec::new();
@@ -502,23 +707,32 @@ fn drain(shared: &Shared, index: usize, generation: u64) -> bool {
         }
         // With EVENT_IDX, chains added while notifications were off are
         // seen here: go round again.
-        let more = event_idx && v.queue.enable_notification(&*mem).unwrap_or(false);
-        let disk = s.disk.clone();
+        let more = event_idx && !disk.poll && v.queue.enable_notification(&*mem).unwrap_or(false);
+        let taken: Vec<(u16, Segments)> = chains
+            .iter()
+            .map(|c| (c.head_index(), Segments::of(c)))
+            .collect();
+        s.running += taken.len();
+        took |= !taken.is_empty();
+        if let Some(w) = &mut s.watch {
+            for (_, segs) in &taken {
+                w.note(&mem, segs);
+            }
+        }
         drop(s);
-        for c in chains {
-            let segs = Segments::of(&c);
+        for (head, segs) in taken {
             hyperstor_reactor::spawn(serve(
                 shared.clone(),
                 disk.clone(),
                 index,
                 generation,
                 mem.clone(),
-                c.head_index(),
+                head,
                 segs,
             ));
         }
         if !more {
-            return true;
+            return Some(took);
         }
     }
 }
@@ -707,7 +921,8 @@ fn complete(
     head: u16,
     used: u32,
 ) {
-    let mut s = shared.borrow_mut();
+    let mut s = lock(shared);
+    s.running = s.running.saturating_sub(1);
     let inflight = s.inflight.clone();
     let v = &mut s.vrings[index];
     if v.generation != generation {
@@ -734,8 +949,8 @@ fn complete(
 struct Handler(Shared);
 
 impl Handler {
-    fn shared(&self) -> std::cell::RefMut<'_, State> {
-        self.0.borrow_mut()
+    fn shared(&self) -> MutexGuard<'_, State> {
+        lock(&self.0)
     }
 }
 
@@ -792,10 +1007,27 @@ impl VhostUserBackendReqHandlerMut for Handler {
         }
         let mem = GuestMemoryMmap::from_regions(regions).map_err(|_| VError::InvalidParam)?;
         let mut s = self.shared();
-        s.mem = Some(Rc::new(mem));
+        // The first table places the connection (D292): by the policy of
+        // the guest's largest region, as this process maps it (G59).
+        if !s.placed {
+            let largest = mem.iter().max_by_key(|r| r.len());
+            let policy = largest
+                .and_then(|r| crate::numa::policy_at(r.as_ptr() as usize).ok())
+                .unwrap_or(crate::numa::Policy::Any);
+            // Not bound to one node: placed again by its pages.
+            if policy.node().is_none() {
+                s.watch = Some(Watch {
+                    node: None,
+                    pages: Default::default(),
+                    last: Instant::now(),
+                });
+            }
+            s.place = Some(policy);
+        }
+        s.mem = Some(Arc::new(mem));
         s.regions = ctx.to_vec();
+        let n = s.vrings.len();
         drop(s);
-        let n = self.0.borrow().vrings.len();
         for i in 0..n {
             start(&self.0, i);
         }
@@ -907,7 +1139,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
         _flags: VhostUserConfigFlags,
     ) -> VResult<Vec<u8>> {
         let s = self.shared();
-        let c = blk::config(s.disk.volume.volume().size, s.disk.queues);
+        let c = blk::config(s.size, s.vrings.len() as u16);
         let (o, n) = (offset as usize, size as usize);
         if o.checked_add(n).is_none_or(|e| e > c.len()) {
             return Err(VError::InvalidParam);
@@ -954,7 +1186,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
             num_queues: inflight.num_queues,
             queue_size: inflight.queue_size,
         };
-        s.inflight = Some(Rc::new(inf));
+        s.inflight = Some(Arc::new(inf));
         Ok((answer, file))
     }
 
@@ -973,7 +1205,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
             inflight.queue_size,
         )
         .map_err(|_| VError::InvalidParam)?;
-        s.inflight = Some(Rc::new(inf));
+        s.inflight = Some(Arc::new(inf));
         Ok(())
     }
 
@@ -1016,29 +1248,151 @@ impl VhostUserBackendReqHandlerMut for Handler {
     }
 }
 
-/// Serves one frontend connected to a disk's socket until it disconnects
-/// (or the protocol fails). Its rings stop with it; the volume stays
-/// attached for the next connection (a hypervisor reconnecting).
-pub async fn serve_connection(disk: Rc<Disk>, stream: UnixStream) -> Result<(), String> {
-    let shared: Shared = Rc::new(RefCell::new(State::new(disk)));
-    // `vhost` wants its handler in an Arc; it never leaves this thread.
-    #[allow(clippy::arc_with_non_send_sync)]
+/// How a connection's part on one reactor ended.
+pub enum Ended {
+    /// The frontend hung up, or the protocol failed.
+    Closed(Result<(), String>),
+    /// The first memory table came (D292): the connection is to go on, by
+    /// [`resume`], on the reactor its guest's memory says.
+    Place(Moving, crate::numa::Policy),
+}
+
+/// A connection between reactors: `vhost`'s handler with its state.
+pub struct Moving {
+    req: BackendReqHandler<Mutex<Handler>>,
+    shared: Shared,
+}
+
+/// Serves one frontend connected to `volume`'s socket (`size` bytes,
+/// `queues` queues) until it disconnects, the protocol fails, or its
+/// memory table comes and it is to be placed.
+pub async fn serve_connection(volume: u128, size: u64, queues: u16, stream: UnixStream) -> Ended {
+    let shared: Shared = Arc::new(Mutex::new(State::new(volume, size, queues)));
     let handler = Arc::new(Mutex::new(Handler(shared.clone())));
-    let mut req = BackendReqHandler::from_stream(stream, handler);
-    let fd = req.as_raw_fd();
-    let r = loop {
-        if let Err(e) = fd::readable(fd).await {
-            break Err(e.to_string());
+    let req = BackendReqHandler::from_stream(stream, handler);
+    run_connection(Moving { req, shared }).await
+}
+
+/// Carries on with a connection on the reactor it was placed on, which
+/// holds its disk and is on NUMA node `node`: starts its rings and serves
+/// it until it disconnects, the protocol fails, or (a guest whose memory
+/// isn't bound) its pages turn out to be on another node.
+pub async fn resume(m: Moving, node: Option<u32>) -> Ended {
+    let n = {
+        let mut s = lock(&m.shared);
+        s.placed = true;
+        s.parked = false;
+        if let Some(w) = &mut s.watch {
+            w.node = node;
+            w.last = Instant::now();
         }
-        match req.handle_request() {
-            Ok(()) => {}
-            Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
-            // A request we refused was answered (or the frontend didn't
-            // ask for an answer); carry on.
-            Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
-            Err(e) => break Err(e.to_string()),
+        s.vrings.len()
+    };
+    for i in 0..n {
+        start(&m.shared, i);
+    }
+    run_connection(m).await
+}
+
+/// How long a move waits for the requests in flight; past it the
+/// connection stays (a write held for space, say).
+const PARK_FOR: Duration = Duration::from_secs(5);
+
+async fn run_connection(mut m: Moving) -> Ended {
+    let fd = m.req.as_raw_fd();
+    let r = loop {
+        // Woken each WATCH_EVERY only while watching an unbound guest.
+        let watching = {
+            let s = lock(&m.shared);
+            s.placed && s.watch.is_some()
+        };
+        let ready = if watching {
+            hyperstor_reactor::time::timeout(WATCH_EVERY, fd::readable(fd)).await
+        } else {
+            Ok(fd::readable(fd).await)
+        };
+        match ready {
+            Ok(Err(e)) => break Err(e.to_string()),
+            Ok(Ok(())) => match m.req.handle_request() {
+                Ok(()) => {}
+                Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
+                // A request we refused was answered (or the frontend
+                // didn't ask for an answer); carry on.
+                Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
+                Err(e) => break Err(e.to_string()),
+            },
+            Err(_) => {}
+        }
+        let place = {
+            let mut s = lock(&m.shared);
+            if s.placed { None } else { s.place.take() }
+        };
+        if let Some(p) = place {
+            return Ended::Place(m, p);
+        }
+        if let Some(node) = due(&m.shared)
+            && park(&m.shared).await
+        {
+            return Ended::Place(m, crate::numa::Policy::Nodes(vec![node]));
         }
     };
-    shared.borrow_mut().stop_all();
-    r
+    lock(&m.shared).stop_all();
+    Ended::Closed(r)
+}
+
+/// For a placed connection whose guest memory isn't bound, once a
+/// [`WATCH_EVERY`]: the node its pages are on, if not its reactor's. It
+/// is placed by its pages once (D292), so the watch ends either way once
+/// a node has the pages.
+fn due(shared: &Shared) -> Option<u32> {
+    let mut s = lock(shared);
+    if !s.placed {
+        return None;
+    }
+    let w = s.watch.as_mut()?;
+    if w.last.elapsed() < WATCH_EVERY {
+        return None;
+    }
+    w.last = Instant::now();
+    let node = w.elsewhere();
+    if node.is_some() {
+        s.watch = None;
+    }
+    node
+}
+
+/// Stops the rings taking requests and waits for those in flight, for a
+/// move. False, with the rings started again, if they take longer than
+/// [`PARK_FOR`].
+async fn park(shared: &Shared) -> bool {
+    let kicks: Vec<File> = {
+        let mut s = lock(shared);
+        s.parked = true;
+        s.vrings
+            .iter_mut()
+            .filter(|v| v.running)
+            .filter_map(|v| {
+                v.running = false;
+                v.kick.as_ref().and_then(|k| k.try_clone().ok())
+            })
+            .collect()
+    };
+    // Wakes each ring's task, which sees it is parked and ends; the
+    // guest's kick it took is made up for by [`resume`]'s first drain.
+    for k in &kicks {
+        kick(k);
+    }
+    let t = Instant::now();
+    while lock(shared).running > 0 {
+        if t.elapsed() > PARK_FOR {
+            lock(shared).parked = false;
+            let n = lock(shared).vrings.len();
+            for i in 0..n {
+                start(shared, i);
+            }
+            return false;
+        }
+        sleep(Duration::from_millis(1)).await;
+    }
+    true
 }

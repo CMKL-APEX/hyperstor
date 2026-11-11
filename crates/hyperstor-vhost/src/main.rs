@@ -1,5 +1,5 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS]`
-//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N]`
+//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -58,6 +58,24 @@ fn main() {
                     .filter(|s| *s <= 3600)
                     .unwrap_or_else(|| usage()),
             };
+            // D290: a reactor on each CPU listed (`0,64`, `0-1`); by
+            // default the first CPU of each NUMA node.
+            let cpus = get("--cpus").map(|l| {
+                hyperstor_vhost::numa::parse_cpulist(&l)
+                    .ok()
+                    .filter(|c| !c.is_empty())
+                    .unwrap_or_else(|| usage())
+            });
+            // D293: how long a polled disk's queues stay polled after
+            // they were last busy.
+            let poll_us: u64 = match get("--poll-us") {
+                None => 50,
+                Some(s) => s
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=10_000).contains(n))
+                    .unwrap_or_else(|| usage()),
+            };
             let stop = stop_on_signal();
             let r = serve(
                 Options {
@@ -76,6 +94,8 @@ fn main() {
                         })
                         .unwrap_or_default(),
                     host: get("--host").unwrap_or_else(hyperstor_client::Client::this_host),
+                    cpus,
+                    poll: std::time::Duration::from_micros(poll_us),
                 },
                 |p| {
                     println!("hyperstor-vhost: control socket {}", p.display());
@@ -116,6 +136,7 @@ fn main() {
                         "volume": id,
                         "serial": get("--serial").unwrap_or_default(),
                         "take": take,
+                        "poll": has("--poll"),
                     }})
                 }
                 _ => usage(),
