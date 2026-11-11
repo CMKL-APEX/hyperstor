@@ -2275,8 +2275,9 @@ fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
     let mut added = false;
     loop {
-        // Added only once its own map service answers: the group may make
-        // it a voter at once, and a voter that isn't running weakens it.
+        // Added only once its own map service answers, so that it can
+        // catch up; a learner left from an earlier run is added again,
+        // which waits for it once more and makes it a voter (I352).
         let runs = members_at(root, "admin", std::slice::from_ref(&p.api)).is_ok();
         if !runs {
         } else if let Ok((api, r)) = members_at(root, "admin", &apis) {
@@ -2285,7 +2286,7 @@ fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
                 println!("Member {id} is a voter.");
                 return true;
             }
-            if mine.is_none() && !added {
+            if !added {
                 let req = hyperstor_api::AddMemberRequest {
                     id: u64::from(id),
                     raft_address: me.raft.to_string(),
