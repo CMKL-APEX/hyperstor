@@ -46,8 +46,8 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
     otherwise. A device with a volatile write cache and no FUA is
     accepted with a warning, because every log write then costs a flush.
     As built, a commit round's writes are followed by one `fdatasync`
-    (§7.3), whatever the device, and there is no warning; `RWF_DSYNC`
-    waits for G57 (#248);
+    (§7.3), except a round of one write of one block, which is one
+    `RWF_DSYNC` write (D295); there is no warning;
   - discard and write-zeroes through `IORING_OP_FALLOCATE` (punch hole
     and zero range on the block device), which the kernel turns into the
     device's own commands. As built, there is no write-zeroes (a client's
@@ -226,7 +226,9 @@ device is formatted with the cluster's id; a superblock without one
   flush on devices without power-loss protection. The engine batches the
   records of concurrent writes into one log write. As built, a round's
   data and records are written, then the device flushed with
-  `fdatasync`; FUA and NVMe passthrough are to be measured (#248, G57).
+  `fdatasync`; a round of one block alone is one `RWF_DSYNC` write
+  instead, FUA on a drive with a volatile cache (D295). NVMe
+  passthrough is to be measured (#248, G57).
 - **G57. Commit durability by FUA and NVMe passthrough** (05-decision-log.md
   point 242; #248). On an NVMe drive the engine may own (not a file on a
   filesystem): the commit rate and p50/p99 of one-block rounds with

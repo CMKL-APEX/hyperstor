@@ -1519,3 +1519,14 @@ this, a connection had no limit on its request heads or idle time.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 256 | How to limit connections: time limits on request heads and idle kept connections, then a global cap of about 1024 and none per address (recommended); a cap per address, exempting proxies; or no cap | The recommendation | D294 |
+
+## One-block commits by FUA (2026-11-11)
+
+I345 measured commit rounds by `fdatasync` and by `RWF_DSYNC`
+(02-benchmarks.md, 2026-11-10) and asked whether the engine should
+pick FUA for one-block rounds; recommended then: not until a drive
+with power-loss protection is measured.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 257 | Whether one-block commit rounds use FUA: not yet, until G57 is measured on a drive with power-loss protection (recommended); yes, where the drive can; or every round | Yes, where the drive can | D295 |

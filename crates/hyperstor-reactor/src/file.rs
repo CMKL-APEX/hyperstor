@@ -11,9 +11,21 @@ use std::ops::DerefMut;
 use std::os::fd::RawFd;
 use std::rc::Rc;
 
+/// The largest round written as one `RWF_DSYNC` write instead of a write
+/// then `fdatasync` (D295): one block, the only size where it measured
+/// faster (02-benchmarks.md, 2026-11-10).
+pub const DSYNC_MAX: usize = 4096;
+
 /// Writes every buffer at its byte offset of `fd`, all submitted at once,
 /// then, once each has completed in full, makes them durable
 /// (`fdatasync`). The first error wins; a short write is one.
+///
+/// A round of one write of at most [`DSYNC_MAX`] bytes is one write with
+/// `RWF_DSYNC` instead (D295): a drive with a volatile write cache gets a
+/// FUA write and no flush, one command instead of two. Where it can't
+/// (no FUA, or a file whose write changes its metadata) the kernel makes
+/// the write durable as `fdatasync` would; either way it is durable when
+/// it completes.
 ///
 /// The buffers are the reactor's until the kernel is done with them, so
 /// dropping this future (a timeout, say) frees nothing the kernel still
@@ -28,6 +40,7 @@ pub async unsafe fn write_then_sync<B: AsRef<[u8]> + 'static>(
     writes: Vec<(u64, B)>,
 ) -> io::Result<()> {
     let r = current();
+    let dsync = writes.len() == 1 && writes[0].1.as_ref().len() <= DSYNC_MAX;
     let bufs = Rc::new(writes);
     let keep: Rc<dyn std::any::Any> = bufs.clone();
     let ops: Vec<_> = bufs
@@ -36,6 +49,7 @@ pub async unsafe fn write_then_sync<B: AsRef<[u8]> + 'static>(
             let b = b.as_ref();
             let sqe = opcode::Write::new(types::Fd(fd), b.as_ptr(), b.len() as u32)
                 .offset(*off)
+                .rw_flags(if dsync { libc::RWF_DSYNC } else { 0 })
                 .build();
             (r.submit(sqe, Resource::Keep(keep.clone())), b.len())
         })
@@ -59,6 +73,9 @@ pub async unsafe fn write_then_sync<B: AsRef<[u8]> + 'static>(
     }
     if let Some(e) = err {
         return Err(e);
+    }
+    if dsync {
+        return Ok(());
     }
     let sqe = opcode::Fsync::new(types::Fd(fd))
         .flags(types::FsyncFlags::DATASYNC)
@@ -166,6 +183,16 @@ mod tests {
         assert!(b[4096..8192].iter().all(|&x| x == 1));
         assert!(b[8192..12288].iter().all(|&x| x == 0));
         assert!(b[12288..20480].iter().all(|&x| x == 2));
+        // One block alone: one `RWF_DSYNC` write (D295), landing as well.
+        crate::block_on(async move {
+            // SAFETY: `f` stays open until after block_on returns.
+            unsafe { write_then_sync(fd, vec![(8192u64, vec![3u8; DSYNC_MAX])]) }
+                .await
+                .unwrap();
+        });
+        f.read_exact_at(&mut b, 0).unwrap();
+        assert!(b[8192..12288].iter().all(|&x| x == 3));
+        assert!(b[4096..8192].iter().all(|&x| x == 1));
         drop(f);
         std::fs::remove_dir_all(&dir).unwrap();
     }
