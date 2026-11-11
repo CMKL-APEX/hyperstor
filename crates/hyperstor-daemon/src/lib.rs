@@ -1611,18 +1611,28 @@ impl ShardState {
     async fn splitter(self: Rc<Self>) {
         // Each pool's count and flipped PGs when last caught up with.
         let mut seen: HashMap<u32, (u32, BTreeSet<u32>)> = HashMap::new();
+        // Test hook: when each marked PG was first seen marked, for a
+        // member slow to pause it (`CommitDelays::set_member_splits`).
+        let mut marked_at: HashMap<(u32, u32), std::time::Instant> = HashMap::new();
         loop {
             sleep(Duration::from_millis(100)).await;
             if self.cut_off() {
                 continue;
             }
             let map = self.map();
-            self.splitting.borrow_mut().retain(|(pool, pg), _| {
+            let is_marked = |(pool, pg): &(u32, u32)| {
                 map.pools
                     .get(pool)
                     .and_then(|p| p.split.as_ref())
                     .is_some_and(|s| s.marked.contains(pg))
-            });
+            };
+            self.splitting.borrow_mut().retain(|k, _| is_marked(k));
+            marked_at.retain(|k, _| is_marked(k));
+            let late = self
+                .commit_delays
+                .borrow()
+                .as_ref()
+                .map_or(Duration::ZERO, |d| d.member_splits(self.me));
             for p in map.pools.values() {
                 let done = p.split.as_ref().map(|s| s.done.clone()).unwrap_or_default();
                 // Every PG held the first time; then the PGs flipped since.
@@ -1645,6 +1655,16 @@ impl ShardState {
                     let k = (p.id, pg);
                     if !info.acting.contains(&self.me)
                         || self.splitting.borrow().get(&k) == Some(&info.epoch)
+                    {
+                        continue;
+                    }
+                    if !late.is_zero()
+                        && info.primary() != Some(self.me)
+                        && marked_at
+                            .entry(k)
+                            .or_insert_with(std::time::Instant::now)
+                            .elapsed()
+                            < late
                     {
                         continue;
                     }
@@ -1672,8 +1692,9 @@ impl ShardState {
     }
 
     /// Moves the objects of PG `pool`.`pg` that belong to another PG under
-    /// `pg_count` there, once the requests in flight for it are answered.
-    /// Whether every move committed.
+    /// `pg_count` there, once the requests in flight for it are answered
+    /// and every write queued for it has committed. Whether every move
+    /// committed.
     async fn split_pg(&self, pool: u32, pg: u32, pg_count: u32) -> bool {
         while self
             .pg_inflight
@@ -1685,7 +1706,12 @@ impl ShardState {
         {
             sleep(Duration::from_millis(1)).await;
         }
-        let lists = split_lists(&*self.shard.get().await, pool, pg, pg_count);
+        // A member's replicated writes aren't counted in flight: one
+        // queued before the PG paused that makes an object (a chunk's
+        // first) wouldn't be listed, and would stay in the old PG (#330).
+        // The PG takes no more writes while it splits.
+        self.drained().await;
+        let lists = split_lists(&self.shard.borrow(), pool, pg, pg_count);
         if lists.is_empty() {
             return true;
         }
@@ -1898,6 +1924,15 @@ impl ShardState {
         }
         self.peered.borrow_mut().insert(k, (info.epoch, false));
         let ok = self.sync_members(pool, pg, info).await;
+        // Test hook: the members' answers arrive late, as across hosts.
+        let slow = self
+            .commit_delays
+            .borrow()
+            .as_ref()
+            .map_or(Duration::ZERO, |d| d.peering(self.me));
+        if !slow.is_zero() {
+            sleep(slow).await;
+        }
         if ok {
             self.peered.borrow_mut().insert(k, (info.epoch, true));
         } else {
@@ -2502,6 +2537,9 @@ impl ShardState {
         if let Some(m) = fenced(&self.map(), instance, to.lease) {
             return send(m);
         }
+        if let Err(m) = self.replicas_current(&to, &fills) {
+            return send(m);
+        }
         // Being repaired from a member (`repair_own`): queued now, the
         // write could be overwritten by the copy fetched. Rare; retried.
         if !self.exec_locks.borrow().is_empty() && self.exec_locks.borrow().contains(&okey) {
@@ -2675,6 +2713,41 @@ impl ShardState {
                 })
                 .await;
         });
+    }
+
+    /// Whether a write may still go to the replicas [`Self::replicas`]
+    /// chose: checked after the writer's last wait, with none from here to
+    /// its queueing and sending, which is when the PG's other work counts
+    /// it (#330). Refused writes are retried by clients, on the map as it
+    /// is then.
+    /// - The PG's epoch moved: the replicas may have changed.
+    /// - The PG began splitting here: its objects may be listed and moved
+    ///   already. A write queued now would land in the old PG on every
+    ///   copy, acknowledged, and be dropped by catching up once the object
+    ///   is in the new PG.
+    /// - A backfill ended: its target is required now, and then an acting
+    ///   member at a new epoch. A best-effort copy sent to it isn't waited
+    ///   for; one it refused would leave the PG's new member, and so
+    ///   possibly its new primary, without an acknowledged write.
+    fn replicas_current(&self, to: &Target, fills: &[(u32, Conn)]) -> Result<(), Msg> {
+        let map = self.map();
+        if map
+            .pg(to.pool, to.pg)
+            .is_none_or(|p| p.epoch != to.pg_epoch)
+        {
+            return Err(err(Code::StaleMap, &map, "PG epoch changed"));
+        }
+        if self.splitting.borrow().contains_key(&(to.pool, to.pg)) {
+            return Err(err(Code::Unavailable, &map, "PG splitting"));
+        }
+        let required = self.required.borrow();
+        if fills
+            .iter()
+            .any(|(d, _)| required.contains(&(to.pool, to.pg, *d)))
+        {
+            return Err(err(Code::Unavailable, &map, "a backfill ended"));
+        }
+        Ok(())
     }
 
     /// Connections to a PG's replicas for a write: acting members, which
@@ -2855,6 +2928,10 @@ impl ShardState {
         if effects.is_empty() {
             unlock(self);
             return Box::pin(async { Ok(()) });
+        }
+        if let Err(m) = self.replicas_current(&to, &fills) {
+            unlock(self);
+            return fail(m);
         }
         *self
             .pg_inflight

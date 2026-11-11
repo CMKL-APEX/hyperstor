@@ -55,6 +55,12 @@ enum MetaCmd {
     Formats(std::sync::mpsc::Sender<(std::collections::BTreeMap<u32, u8>, Vec<u32>)>),
     /// The map the map service has published.
     Published(std::sync::mpsc::Sender<ClusterMap>),
+    /// Splits a pool to the PG count given (D187).
+    Split(
+        u32,
+        u32,
+        std::sync::mpsc::Sender<Result<(u64, bool), String>>,
+    ),
 }
 
 thread_local! {
@@ -441,6 +447,13 @@ impl Cluster {
                         MetaCmd::Published(tx) => {
                             let _ = tx.send(meta.published.borrow().clone());
                         }
+                        MetaCmd::Split(pool, pgs, tx) => {
+                            let change = hyperstor_meta::PoolChange {
+                                pg_count: Some(pgs),
+                                ..Default::default()
+                            };
+                            let _ = tx.send(meta.set_pool(pool, change, false));
+                        }
                     }
                 }
                 meta.published.borrow().clone()
@@ -645,6 +658,13 @@ impl Cluster {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Published(tx)).is_ok());
         rx.recv().unwrap()
+    }
+
+    /// Splits `pool` to `pgs` PGs (24-pools-and-devices.md §27.5, D187).
+    fn split(&self, pool: u32, pgs: u32) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Split(pool, pgs, tx)).is_ok());
+        rx.recv().unwrap().unwrap();
     }
 
     fn stuck(&self) -> hyperstor_meta::Stuck {
@@ -5856,6 +5876,141 @@ fn random_faults(seed: u64) {
     let map = c.published();
     let (_, devs) = c.stop();
     let chunks: Vec<(u128, u64)> = (0..CHUNKS).map(|c| (1, c)).collect();
+    copies_agree(&map, devs, &chunks);
+}
+
+/// Writes racing a PG split (24-pools-and-devices.md §27.5, D187; #330):
+/// a primary that paused a PG to split it while a write waited (for
+/// peering at the epoch the split's mark set) listed the PG's objects
+/// without the write, then queued it to the old PG once the members took
+/// it. Acknowledged, it was left behind on every copy; once the chunk's
+/// next piece made the object in the new PG, catching up dropped it, and
+/// the chunk read zeros there. Peering ends late, as across hosts, and
+/// members pause late, as devices that see the map late; each chunk is
+/// written in pieces while the pool splits, every piece reads back, and
+/// every copy agrees.
+#[test]
+fn writes_racing_a_split_are_kept() {
+    use std::time::Duration;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    for d in [0, 1000, 2000, 3000] {
+        c.commit_delays.set_peering(d, Duration::from_millis(20));
+        c.commit_delays
+            .set_member_splits(d, Duration::from_millis(400));
+    }
+    c.split(POOL, 128);
+    // Writers enough that each PG the split marks has writes waiting.
+    const WRITERS: u64 = 64;
+    // The start of each chunk, in pieces, as the io-test writes: a later
+    // piece makes the object at the new PG's key.
+    const PIECE: usize = 16 * 1024;
+    const PIECES: usize = 4;
+    const LEN: usize = PIECE * PIECES;
+    let written = with_client(meta, 5, move |cl| async move {
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let cl = cl.clone();
+                spawn(async move {
+                    let mut r = 0;
+                    loop {
+                        let n = r * WRITERS + w;
+                        for (i, b) in pattern(n, LEN).chunks(PIECE).enumerate() {
+                            let at = n * CHUNK as u64 + (i * PIECE) as u64;
+                            cl.write(POOL, 1, at, b.to_vec()).await.unwrap();
+                        }
+                        r += 1;
+                        if w == 0 {
+                            cl.refresh_map().await.unwrap();
+                        }
+                        // Until the split ends, or as much as the shard
+                        // holds.
+                        if cl.map().pools[&POOL].pg_count == 128 || r == 48 {
+                            return r;
+                        }
+                    }
+                })
+            })
+            .collect();
+        // Writer `w`'s chunks are `r * WRITERS + w`, up to its last round.
+        let mut written = Vec::new();
+        for (w, h) in writers.into_iter().enumerate() {
+            let rounds = h.await;
+            written.extend((0..rounds).map(|r| r * WRITERS + w as u64));
+        }
+        written.sort();
+        written
+    });
+    let end = written.last().unwrap() + 1;
+    for d in [0, 1000, 2000, 3000] {
+        c.commit_delays.set_peering(d, Duration::ZERO);
+        c.commit_delays.set_member_splits(d, Duration::ZERO);
+    }
+    let read = with_client(meta, 6, move |cl| async move {
+        // Then the new PGs move to their own devices (D173).
+        let t = std::time::Instant::now();
+        loop {
+            cl.refresh_map().await.unwrap();
+            let m = cl.map();
+            let p = &m.pools[&POOL];
+            if p.pg_count == 128
+                && p.placement == p.pg_count
+                && m.pgs.values().all(|i| i.acting == i.up)
+            {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 120, "pool {POOL} still moving");
+            hyperstor_reactor::time::sleep(Duration::from_millis(100)).await;
+        }
+        cl.read(POOL, 1, 0, end * CHUNK as u64).await.unwrap()
+    });
+    assert!(
+        written.len() > 4,
+        "{} chunks written during the split",
+        written.len()
+    );
+    let map = c.published();
+    let (_, devs) = c.stop();
+    let wrong: Vec<u64> = written
+        .iter()
+        .copied()
+        .filter(|n| read[(n * CHUNK as u64) as usize..][..LEN] != pattern(*n, LEN)[..])
+        .collect();
+    if let Some(&n) = wrong.first() {
+        // Where each device holds the chunk, under either count, and
+        // whether its copy is the one written.
+        let want = pattern(n, LEN);
+        let mut held = Vec::new();
+        for (id, d) in &devs {
+            let sh = hyperstor_engine::open(&copy(d)).unwrap().1.pop().unwrap();
+            for pg in [pg_of(1, n, 64), pg_of(1, n, 128)] {
+                let key = ObjKey::new(POOL, pg, Namespace::Vol, chunk_name(1, n), 0);
+                if let Ok(b) = sh.read(&key, 0, LEN as u64) {
+                    // Each piece: w written, 0 zeros, ? other.
+                    let pieces: String = (0..PIECES)
+                        .map(|i| {
+                            let (b, w) = (&b[i * PIECE..][..PIECE], &want[i * PIECE..][..PIECE]);
+                            if b == w {
+                                'w'
+                            } else if b.iter().all(|x| *x == 0) {
+                                '0'
+                            } else {
+                                '?'
+                            }
+                        })
+                        .collect();
+                    held.push(format!("device {id} PG {pg}: {pieces}"));
+                }
+            }
+        }
+        let pg = pg_of(1, n, 128);
+        panic!(
+            "chunks {wrong:?} of {} read wrong; chunk {n}: PG {pg} {:?}, held {held:?}",
+            written.len(),
+            map.pg(POOL, pg)
+        );
+    }
+    let chunks: Vec<(u128, u64)> = written.iter().map(|n| (1, *n)).collect();
     copies_agree(&map, devs, &chunks);
 }
 
