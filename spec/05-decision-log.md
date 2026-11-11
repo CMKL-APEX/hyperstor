@@ -1506,3 +1506,16 @@ options and a recommendation each:
 | 254 | Where a disk goes when its guest's memory isn't bound to one node: the least-loaded reactor, for the connection (recommended); or there first, then the node holding most of its pages once they are faulted in | Re-placed once memory faults in | D292 |
 | 255 | How adaptive polling ships: opt-in per disk at attach (recommended); a service-wide `--spin-us`; or not now | Per disk | D293 |
 
+## Connections to mgmt (2026-11-11)
+
+I353 left a cap on mgmt's connections to the owner. Asked what
+connects to mgmt first: browsers on the web UI (a few kept
+connections each, refreshed every few seconds), `hyperstorctl
+--mgmt` (one call per connection), a proxy or tunnel in front (few
+connections carrying everyone, all from one address), health checks,
+and plain HTTP sent to HTTPS. Nothing streams yet (I166). Before
+this, a connection had no limit on its request heads or idle time.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 256 | How to limit connections: time limits on request heads and idle kept connections, then a global cap of about 1024 and none per address (recommended); a cap per address, exempting proxies; or no cap | The recommendation | D294 |

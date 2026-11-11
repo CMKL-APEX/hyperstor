@@ -3,7 +3,7 @@
 //! its files change (an ACME client's renewals, D109), the node's
 //! Tailscale certificate for its ts.net names with HSTS, and plain HTTP
 //! sent to HTTPS; a request body no one reads leaves the connection
-//! open (#329).
+//! open (#329), and a request's head must come within 10 s (I355).
 
 use hyperstor_test::*;
 use std::io::{Read, Write};
@@ -244,6 +244,51 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
         "{:?}",
         t.elapsed()
     );
+
+    // Connections that never finish a request's head are closed after
+    // 10 s (I355): one that sends nothing, one that stops in its TLS
+    // handshake, and a kept one trickling its next request's headers.
+    let t = std::time::Instant::now();
+    let silent = std::thread::spawn(move || {
+        let mut tcp = std::net::TcpStream::connect((lo, port)).unwrap();
+        let mut b = [0u8; 64];
+        (tcp.read(&mut b).unwrap_or(0), t.elapsed())
+    });
+    let stalled = std::thread::spawn(move || {
+        let mut tcp = std::net::TcpStream::connect((lo, port)).unwrap();
+        // A TLS record's first bytes, then nothing.
+        tcp.write_all(&[0x16, 0x03, 0x01]).unwrap();
+        let mut b = [0u8; 64];
+        (tcp.read(&mut b).unwrap_or(0), t.elapsed())
+    });
+    let mut s = connect(lo, port, None);
+    let (head, _) = exchange(
+        &mut s,
+        &format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        b"",
+    );
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    let trickled = std::time::Instant::now();
+    let mut closed = false;
+    for b in format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Slow: ")
+        .bytes()
+        .chain(std::iter::repeat(b'x'))
+    {
+        if s.write_all(&[b]).and_then(|_| s.flush()).is_err() {
+            closed = true;
+            break;
+        }
+        assert!(trickled.elapsed().as_secs() < 30, "still open");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert!(closed);
+    let took = trickled.elapsed();
+    assert!(took.as_secs() >= 9, "{took:?}");
+    for (what, h) in [("silent", silent), ("stalled handshake", stalled)] {
+        let (n, took) = h.join().unwrap();
+        assert_eq!(n, 0, "{what}");
+        assert!((9..20).contains(&took.as_secs()), "{what}: {took:?}");
+    }
 
     // Plain HTTP on the port: sent to HTTPS.
     let mut tcp = std::net::TcpStream::connect((lo, port)).unwrap();
