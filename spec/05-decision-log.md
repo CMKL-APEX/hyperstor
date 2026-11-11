@@ -1506,3 +1506,13 @@ options and a recommendation each:
 | 254 | Where a disk goes when its guest's memory isn't bound to one node: the least-loaded reactor, for the connection (recommended); or there first, then the node holding most of its pages once they are faulted in | Re-placed once memory faults in | D292 |
 | 255 | How adaptive polling ships: opt-in per disk at attach (recommended); a service-wide `--spin-us`; or not now | Per disk | D293 |
 
+## One-block commits by FUA (2026-11-11)
+
+I345 measured commit rounds by `fdatasync` and by `RWF_DSYNC`
+(02-benchmarks.md, 2026-11-10) and asked whether the engine should
+pick FUA for one-block rounds; recommended then: not until a drive
+with power-loss protection is measured.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 257 | Whether one-block commit rounds use FUA: not yet, until G57 is measured on a drive with power-loss protection (recommended); yes, where the drive can; or every round | Yes, where the drive can | D295 |
