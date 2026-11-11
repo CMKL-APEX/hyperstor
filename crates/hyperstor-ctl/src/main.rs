@@ -4161,6 +4161,62 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
     0
 }
 
+/// Where and how `got`, read at byte `at`, differs from `want`, for
+/// `io-test`'s report: its length if short, the 4 KiB blocks that differ,
+/// the first byte that does, and what the first bad block holds instead:
+/// zeros, another block of what was written (`all`, from byte 0), or
+/// data never written.
+fn mismatch(want: &[u8], got: &[u8], at: u64, all: &[u8]) -> String {
+    const BLOCK: usize = 4096;
+    let mut out = Vec::new();
+    if got.len() != want.len() {
+        out.push(format!("{} bytes read of {}", got.len(), want.len()));
+    }
+    let bad: Vec<usize> = (0..want.len().min(got.len()).div_ceil(BLOCK))
+        .filter(|&b| {
+            let r = b * BLOCK..((b + 1) * BLOCK).min(want.len()).min(got.len());
+            want[r.clone()] != got[r]
+        })
+        .collect();
+    let Some(&first) = bad.first() else {
+        return out.join("; ");
+    };
+    let shown: Vec<String> = bad
+        .iter()
+        .take(8)
+        .map(|b| format!("{}", at + (b * BLOCK) as u64))
+        .collect();
+    out.push(format!(
+        "{} of {} blocks differ, at bytes {}{}",
+        bad.len(),
+        want.len().div_ceil(BLOCK),
+        shown.join(", "),
+        if bad.len() > 8 { ", ..." } else { "" }
+    ));
+    let byte = (first * BLOCK..want.len().min(got.len()))
+        .find(|&k| want[k] != got[k])
+        .unwrap_or(first * BLOCK);
+    let end = (byte + 16).min(want.len()).min(got.len());
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    out.push(format!(
+        "first at byte {}: wrote {}, read {}",
+        at + byte as u64,
+        hex(&want[byte..end]),
+        hex(&got[byte..end])
+    ));
+    let r = first * BLOCK..((first + 1) * BLOCK).min(got.len());
+    let block = &got[r];
+    let holds = if block.iter().all(|&x| x == 0) {
+        "zeros".to_string()
+    } else if let Some(k) = all.chunks(BLOCK).position(|c| c == block) {
+        format!("the block written at byte {}", k * BLOCK)
+    } else {
+        "data never written".to_string()
+    };
+    out.push(format!("that block holds {holds}"));
+    out.join("; ")
+}
+
 async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
     let cl = match hyperstor_reactor::time::timeout(
         Duration::from_secs(5),
@@ -4207,8 +4263,22 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
             .await
         {
             Ok(got) if got == piece => {}
-            Ok(_) => {
-                eprintln!("hyperstorctl: data read at {i} MiB differs from what was written");
+            Ok(got) => {
+                let at = (i * STEP) as u64;
+                eprintln!(
+                    "hyperstorctl: data read at {i} MiB differs from what was written \
+                     (pool {pool}, lineage {lineage:032x}): {}",
+                    mismatch(piece, &got, at, &data)
+                );
+                // Read again: the same answer means the copies hold it; a
+                // right one, that the first read went wrong on its way.
+                let again = match cl.read(pool, lineage, at, piece.len() as u64).await {
+                    Ok(g) if g == piece => "matches what was written".to_string(),
+                    Ok(g) if g == got => "the same wrong data again".to_string(),
+                    Ok(g) => format!("different data: {}", mismatch(piece, &g, at, &data)),
+                    Err(e) => format!("failed: {e}"),
+                };
+                eprintln!("hyperstorctl: a second read at {i} MiB: {again}");
                 return 1;
             }
             Err(e) => {
@@ -4227,4 +4297,41 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
         rate(r)
     );
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mismatch;
+
+    fn written() -> Vec<u8> {
+        (0..4 * 4096u32)
+            .map(|i| (i % 251) as u8 + (i / 4096) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn a_mismatch_names_the_blocks_and_what_they_hold() {
+        let all = written();
+        let want = &all[4096..3 * 4096];
+        // The first block zeroed: from byte 4096 + 100 on.
+        let mut got = want.to_vec();
+        got[100..4096].fill(0);
+        got[..100].fill(0);
+        let m = mismatch(want, &got, 4096, &all);
+        assert!(m.contains("1 of 2 blocks differ, at bytes 4096"), "{m}");
+        assert!(m.contains("that block holds zeros"), "{m}");
+        // The second block holds the one written at 0: a misplaced block.
+        let mut got = want.to_vec();
+        got[4096..].copy_from_slice(&all[..4096]);
+        let m = mismatch(want, &got, 4096, &all);
+        assert!(m.contains("at bytes 8192"), "{m}");
+        assert!(m.contains("first at byte 8192"), "{m}");
+        assert!(m.contains("the block written at byte 0"), "{m}");
+        // A short read, and data never written.
+        let mut got = want[..5000].to_vec();
+        got[4096] ^= 0xff;
+        let m = mismatch(want, &got, 4096, &all);
+        assert!(m.starts_with("5000 bytes read of 8192"), "{m}");
+        assert!(m.contains("data never written"), "{m}");
+    }
 }

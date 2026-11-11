@@ -167,8 +167,9 @@ pub fn free_ports(n: u16) -> u16 {
     }
 }
 
-/// A scratch directory, removed on drop unless `HS_E2E_KEEP` is set,
-/// with a short runtime directory for sockets beside it: a Unix socket's
+/// A scratch directory, removed on drop unless `HS_E2E_KEEP` is set or
+/// the test is failing, with a short runtime directory for sockets beside
+/// it: a Unix socket's
 /// path is limited to 107 bytes, which a checkout's path can use up.
 pub struct Scratch(pub PathBuf, pub PathBuf);
 
@@ -202,7 +203,9 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        if std::env::var_os("HS_E2E_KEEP").is_none() {
+        // A failing test's scratch is kept: its logs and data are what
+        // a rare failure leaves to look at.
+        if std::env::var_os("HS_E2E_KEEP").is_none() && !std::thread::panicking() {
             let _ = std::fs::remove_dir_all(&self.0);
             let _ = std::fs::remove_dir_all(&self.1);
         } else {
