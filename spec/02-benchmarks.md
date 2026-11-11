@@ -2305,3 +2305,83 @@ rounds each, alternately:
    system calls, the reactor, encoding and the engine's commit isn't
    measured here (`perf` isn't open to users on this host,
    `perf_event_paranoid` 4). That is what HS6 starts from.
+
+## 2026-11-11: VM disks through `hyperstor-vhost`: one reactor's ceiling, and spinning (I350)
+
+Question: what would adaptive polling and a reactor per NUMA node
+(11-frontends.md §11.1, HS3) gain? fio 3.36 (`libaio`, direct) in Cloud
+Hypervisor v53.0 guests (2 vCPUs, 1 GiB, two queues of 128; the guest
+kernel 6.8.0) on volumes served by `hyperstor-vhost`, on a development
+host (AMD EPYC 7742, two sockets, 8 NUMA nodes, Linux 6.17.0). The
+cluster is `hyperstor-test`'s all-in-one, three nodes of 1 GiB with
+three copies, on the same host, with its data on tmpfs; so these are
+the frontend's costs over loopback, not a storage host's. The harness is
+`crates/hyperstor-test/tests/vm_bench.rs`:
+
+```sh
+ln -s /dev/shm/e2e target/tmp/e2e    # the scratch directory on tmpfs
+HS_VMB=1 HS_VMB_VMS=1,2,4,8 HS_VMB_SVCS=1 cargo test --release -p hyperstor-test --test vm_bench -- --nocapture
+HS_VHOST_SPIN_US=200 HS_VMB=1 ...    # the reactor's completion spin in hyperstor-vhost
+```
+
+Runs alternated, three rounds each; medians, with ranges. CPU is
+`hyperstor-vhost`'s user and system time over a boot (fill and jobs).
+
+### One reactor's ceiling
+
+Every VM at QD32 on its own volume, 10 s per job (2 s ramp), each VM
+over 64 MiB; one `hyperstor-vhost` process (today's one reactor for
+every disk) against two, each serving half the VMs:
+
+| VMs | 4 KiB random reads, 1 process | 2 processes | 4 KiB random writes, 1 process | 2 processes |
+|---|---|---|---|---|
+| 1 | 36753 (36317–36902) | 37001 (33277–37306) | 20983 (20007–21120) | 19503 (19244–20818) |
+| 2 | 34569 (33643–36631) | 65750 (63326–70766) | 19558 (18342–23186) | 21106 (19932–22134) |
+| 4 | 34410 (33649–35104) | 67845 (60010–68046) | 21132 (17599–21340) | 22131 (19438–23639) |
+| 8 | 33835 (33293–34143) | 65857 (60899–67602) | 20820 (20767–22227) | 21715 (20129–23134) |
+
+IOPS are the sum over the VMs. With one process, reads took 12.0–12.4 s
+of its CPU in a 14 s boot (12 s of jobs), one core; with two, 24 s.
+
+### Spinning
+
+One VM, each job over 256 MiB (the harness now writes 128 MiB, so that
+eight VMs after it don't fill the cluster), 10 s (2 s ramp); the
+reactor's completion spin off (as today) against 200 µs (hyperstord's
+default, `--spin-us`):
+
+| Job | IOPS, no spin | IOPS, spin 200 µs | Mean latency µs | p99 µs |
+|---|---|---|---|---|
+| 4 KiB random reads, QD1 | 8879 (8845–9328) | 9875 (9782–9903), +11.2% | 112 → 101 | 138 → 119 |
+| 4 KiB random writes, QD1 | 4196 (3831–4359) | 4219 (4173–4679), +0.5% | 238 → 236 | 296 → 305 |
+| 4 KiB random reads, QD32 | 37164 (35295–37768) | 35477 (34577–37377), −4.5% | 861 → 902 | 1744 → 1826 |
+| 4 KiB random writes, QD32 | 20254 (18700–20360) | 20300 (19196–20881), +0.2% | 1579 → 1576 | 3325 → 3260 |
+| 1 MiB reads, QD4 | 1451 (1168–1480) | 1397 (1271–1476), −3.7% | 2755 → 2861 | 4685 → 4685 |
+| 1 MiB writes, QD4 | 980 (890–991) | 908 (891–1024), −7.3% | 4076 → 4403 | 5996 → 6651 |
+
+`hyperstor-vhost` took 45.6 s of CPU over the six jobs (75 s) without
+the spin and 68.7 s with it (+51%).
+
+### Findings
+
+1. **One reactor is a host's ceiling for VM disks.** One
+   `hyperstor-vhost` process serves about 35,000 4 KiB reads a second
+   whatever the number of VMs, at one core: about 30 µs of its CPU per
+   read. Two processes double it (66,000), so reactors per NUMA node
+   should scale about as far as cores are given to them. A storage
+   host's NVMe drives serve far more; this is the frontend's limit,
+   and RDMA doesn't lift it (the cost is CPU in the frontend, not the
+   network).
+2. **Writes here are the test cluster's limit** (about 21,000 a second
+   with three nodes sharing one host), not the frontend's: one process
+   ran under a core (9.5–10.6 s). At about 38 µs of its CPU per write
+   (an upper bound), one reactor would cap a host near 25,000 writes a
+   second.
+3. **Spinning only helps latency-bound reads.** 4 KiB reads at QD1:
+   +11% IOPS, −10% latency, −14% at p99. Nothing at QD32 or for writes,
+   whose QD1 latency is the cluster's commit. It costs half again the
+   CPU, spent while waiting. Polling the virtqueues as §11.1 describes
+   would also save the guest's notification exits, a few µs more.
+4. **So:** reactors per NUMA node first (01-implementation-notes.md
+   I350); adaptive polling as an option for latency-critical VMs, not
+   the default.

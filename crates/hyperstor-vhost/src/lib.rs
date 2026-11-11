@@ -197,6 +197,14 @@ pub fn serve(
         let _ = stop.recv();
         let _ = tx.send(());
     });
+    // For measurements only (02-benchmarks.md, 2026-11-11): the reactor's
+    // completion spin, as hyperstord's `--spin-us`. Off by default.
+    if let Some(us) = std::env::var("HS_VHOST_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        hyperstor_reactor::set_spin(std::time::Duration::from_micros(us));
+    }
     hyperstor_reactor::block_on(async move {
         let client = Client::connect_members(opts.meta.clone(), instance_id())
             .await

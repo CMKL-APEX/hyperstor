@@ -346,7 +346,8 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let mut procs = vec![
         Command::new(bin.join("hyperstor-meta"))
             .args(env_args(&meta_root, s.run(), "meta.env"))
-            .stderr(std::process::Stdio::null())
+            // Kept for a failure's diagnosis (#330's io-test mismatch).
+            .stderr(std::fs::File::create(s.path("meta.log")).unwrap())
             .spawn()
             .unwrap(),
     ];
@@ -378,7 +379,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
             Command::new(root.join("usr/local/bin/hyperstord"))
                 .args(env_args(&root, s.run(), &format!("node-{n}.env")))
                 .args(NODE_ARGS)
-                .stderr(std::process::Stdio::null())
+                .stderr(std::fs::File::create(s.path(&format!("node-{n}.log"))).unwrap())
                 .spawn()
                 .unwrap(),
         );
