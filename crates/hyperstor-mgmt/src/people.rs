@@ -287,14 +287,19 @@ fn encode<T: Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).expect("json")
 }
 
-/// A user name as PAM gives it, for a key.
-fn check_name(name: &str) -> Result<(), Error> {
-    let ok = !name.is_empty()
+/// Whether `name` has a user name's shape: 1-64 of letters, digits and
+/// `._-@`.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= 64
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b));
-    if ok {
+            .all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b))
+}
+
+/// A user name as PAM gives it, for a key.
+fn check_name(name: &str) -> Result<(), Error> {
+    if valid_name(name) {
         Ok(())
     } else {
         Err(Error::Invalid(format!("{name:?}: not a user name")))

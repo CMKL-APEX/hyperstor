@@ -557,15 +557,41 @@ fn audit(principal: &str, op: &str, target: &str, result: &str) {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    // The time as a number of seconds, as the map service writes it.
-    let line = serde_json::json!({
-        "audit": 1, "time": t.as_millis() as f64 / 1000.0,
-        "principal": principal, "op": op, "target": target, "result": result,
-    })
-    .to_string();
+    let line = audit_line(t.as_millis() as f64 / 1000.0, principal, op, target, result);
     eprintln!("{line}");
     // And into the cluster's audit log in .meta (D112).
     audit_ship::push(line);
+}
+
+/// An audit record's line, its fields bounded by [`field`] so that a line
+/// always fits the map service's 4096 bytes (`audit_log::append`); the
+/// time as a number of seconds, as the map service writes it.
+fn audit_line(time: f64, principal: &str, op: &str, target: &str, result: &str) -> String {
+    serde_json::json!({
+        "audit": 1, "time": time,
+        "principal": field(principal, 256), "op": field(op, 128),
+        "target": field(target, 512), "result": field(result, 512),
+    })
+    .to_string()
+}
+
+/// `s` with control characters as `?`, cut to at most `max` bytes on a
+/// character boundary, a cut one ending in `…`.
+fn field(s: &str, max: usize) -> String {
+    const MORE: &str = "…";
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect()
+    };
+    if s.len() <= max {
+        return clean(s);
+    }
+    let mut end = max - MORE.len();
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    clean(&s[..end]) + MORE
 }
 
 /// Whether `host` (a `Host` header) names this machine's loopback, or one
@@ -1333,7 +1359,17 @@ async fn with_login(
             let Ok(r) = serde_json::from_slice::<LoginReq>(&body) else {
                 return error(400, "invalid_argument", "expected {user, password}");
             };
-            let who = format!("user:{} from {}", r.user, peer.ip());
+            // Only a name of a user name's shape is written down: another
+            // is no one's.
+            let who = if people::valid_name(&r.user) {
+                format!("user:{} from {}", r.user, peer.ip())
+            } else {
+                format!("user:<invalid> from {}", peer.ip())
+            };
+            if !people::valid_name(&r.user) {
+                audit(&who, "Login", "mgmt", "refused");
+                return error(401, "login_failed", "wrong user name or password");
+            }
             if let Err(resp) = check_password(l, &r.user, &r.password).await {
                 audit(&who, "Login", "mgmt", "refused");
                 return resp;
@@ -1665,6 +1701,22 @@ pub fn parse_metrics(text: &str) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_fields_are_bounded_and_plain() {
+        assert_eq!(field("ok, pam", 256), "ok, pam");
+        assert_eq!(field("a\nb\u{1b}c", 256), "a?b?c");
+        let cut = field(&"é".repeat(300), 256);
+        assert!(cut.len() <= 256 && cut.ends_with('…'), "{cut}");
+        assert!(cut.trim_end_matches('…').chars().all(|c| c == 'é'));
+        // The worst case, every byte one escaped in JSON, still fits the
+        // map service's 4096 bytes.
+        let q = "\"".repeat(5000);
+        let line = audit_line(1e12, &q, &q, &q, &q);
+        assert!(line.len() <= 4096, "{}", line.len());
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(v["principal"].as_str().unwrap().ends_with('…'));
+    }
 
     #[test]
     fn the_build_names_its_commit_and_release() {
