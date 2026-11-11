@@ -35,7 +35,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
     notifications and the reactor waits on its eventfd (adaptive
     polling). Why opt-in: it helps only latency-bound I/O (4 KiB reads
     at QD1 +22%, nothing at QD32), for about a core while the disk is
-    busy (I350, I357);
+    busy (I350, I359);
   - completions are signalled through irqfd, which KVM delivers as a
     posted interrupt where the CPU supports it, again without an exit;
   - a VM marked latency-critical can use polled queues in its own
@@ -68,9 +68,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   node, a disk placed by its guest's memory policy when the memory table
   arrives, its connection and its lease moving there, and a disk whose
   guest's memory isn't bound moved once the pages its requests use show
-  their node (D290–D292, I355), on the CPUs glidex reserves, which
-  `hyperstor-install` passes (I356); disks attached with `poll`, their
-  queues polled while busy and for `--poll-us` after (D293, I357). Not
+  their node (D290–D292, I357), on the CPUs glidex reserves, which
+  `hyperstor-install` passes (I358); disks attached with `poll`, their
+  queues polled while busy and for `--poll-us` after (D293, I359). Not
   yet: discard, packed rings, zero copy and the config-change event.
 
 ### 11.2 NVMe-oF target (D19)

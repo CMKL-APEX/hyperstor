@@ -593,7 +593,7 @@ tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
 
 [[milestone.item]]
 what = "Reactors per NUMA node: a disk on its guest's node's reactor, its connection and lease moved there"
-spec = ["11-frontends.md §11.1", "D290", "D291", "D292", "G59", "I350", "I355", "I356"]
+spec = ["11-frontends.md §11.1", "D290", "D291", "D292", "G59", "I350", "I357", "I358"]
 status = "partial"
 tests = [
     "vhost::each_disk_runs_on_its_guests_reactor",
@@ -609,7 +609,7 @@ tests = [
 
 [[milestone.item]]
 what = "Adaptive polling: a disk attached with `poll` has its queues polled while busy and for a window after, its reactor spinning"
-spec = ["11-frontends.md §11.1", "D293", "I350", "I357"]
+spec = ["11-frontends.md §11.1", "D293", "I350", "I359"]
 status = "done"
 tests = ["vhost::a_polled_disk_takes_requests_its_guest_doesnt_notify"]
 

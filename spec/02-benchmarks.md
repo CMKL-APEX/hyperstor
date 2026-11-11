@@ -2433,7 +2433,7 @@ reserved.
 4. **Open:** hugepage-backed guests (hugetlbfs has its own policy
    handling), and guests large enough to spread over several nodes.
 
-## 2026-11-11: VM disks on a reactor per NUMA node (I355)
+## 2026-11-11: VM disks on a reactor per NUMA node (I357)
 
 Question: does a reactor per NUMA node (D290–D292) lift the one-reactor
 ceiling measured above (I350), and does a guest whose memory isn't
@@ -2481,7 +2481,7 @@ HS_VMB=1 HS_VMB_JOBS= HS_VMB_CPUS=48,80 HS_VMB_NODES=3,5 HS_VMB_VMS=2,4 \
 - Pinning a guest that isn't bound still gets the full gain: the move
   costs nothing measurable over 10 s.
 
-## 2026-11-11: A polled VM disk (D293, I357)
+## 2026-11-11: A polled VM disk (D293, I359)
 
 Question: what does a disk attached with `poll` (D293) give a VM, and
 what does it cost? Same host, guest, cluster and harness as the
