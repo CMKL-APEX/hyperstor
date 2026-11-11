@@ -2385,3 +2385,51 @@ the spin and 68.7 s with it (+51%).
 4. **So:** reactors per NUMA node first (01-implementation-notes.md
    I350); adaptive polling as an option for latency-critical VMs, not
    the default.
+
+## 2026-11-11: A guest's NUMA node as `hyperstor-vhost` sees it (G59)
+
+Question (D292): can `hyperstor-vhost` place a disk on the reactor of
+its guest's NUMA node from the guest's memory alone? A development host
+(AMD EPYC 7742, two sockets, 8 NUMA nodes, Linux 6.17.0), Cloud
+Hypervisor v53.0 and QEMU 8.2.2, 1 GiB guests on memfd memory with a
+volume through `hyperstor-vhost`. No hugepages: the host had none
+reserved.
+
+1. **The system calls.** A memfd mapped and bound to a node with
+   `mbind(MPOL_BIND)`, then mapped again in the same process and in
+   another one: `get_mempolicy(MPOL_F_ADDR)` on the other mappings
+   returns `bind` and the node (1 and 5 tried), before and after their
+   pages are faulted in, and the pages land on that node. A memfd's
+   policy is shared by every mapping of it.
+2. **Real hypervisors.** `crates/hyperstor-test/tests/vm_numa.rs`
+   (`HS_G59=1`) boots each guest, writes 768 MiB into its root
+   filesystem, then 48 MiB to the disk and back three times, and samples
+   `/proc/<pid>/numa_maps` (the kernel's `get_vma_policy`, as
+   `get_mempolicy(MPOL_F_ADDR)` uses) of `hyperstor-vhost` and of the
+   hypervisor every 250 ms:
+
+| Guest | Policy in `hyperstor-vhost`'s mapping | Seen at | Pages `hyperstor-vhost` touched | The hypervisor's pages |
+|---|---|---|---|---|
+| Cloud Hypervisor, `host_numa_node=3` | `bind:3` | 0.75 s, at the memory table | 2 MiB, node 3 | not readable from another process |
+| Cloud Hypervisor, unbound | `default` | 0.50 s | 2 MiB, node 7 | not readable from another process |
+| QEMU, `host-nodes=3,policy=bind` | `bind:3` | 0.26 s | 2 MiB, node 3 | 580 MiB, node 3 |
+| QEMU, unbound | `default` | 0.26 s | 2 MiB, node 7 | 595 MiB, node 7 |
+
+### Findings
+
+1. **A bound guest's node is known when the memory table arrives**,
+   under both hypervisors, from `hyperstor-vhost`'s own mapping, before
+   the guest has faulted in more than a few MiB. D292's placement works
+   as decided.
+2. **An unbound guest's I/O buffers tell its node.** The pages
+   `hyperstor-vhost` touches for I/O were on the node holding the rest
+   of the guest's memory from the first I/O, about a second after boot.
+   `move_pages` on the buffers it already maps gives that without
+   faulting in guest memory itself; a read of an unfaulted memfd page
+   would allocate it under `hyperstor-vhost`'s policy.
+3. **Cloud Hypervisor's `/proc/<pid>/numa_maps` read empty from another
+   process of the same user**, so the hypervisor's own view isn't a
+   source to rely on.
+4. **Open:** hugepage-backed guests (hugetlbfs has its own policy
+   handling), and guests large enough to spread over several nodes.
+
