@@ -5,9 +5,9 @@
 
 use virtio_bindings::virtio_blk::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_SEG_MAX,
-    VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_WRITE_ZEROES, VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR,
-    VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN,
-    VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
+    VIRTIO_BLK_F_SIZE_MAX, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_WRITE_ZEROES, VIRTIO_BLK_ID_BYTES,
+    VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH,
+    VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
 };
 use virtio_bindings::virtio_config::VIRTIO_F_VERSION_1;
 use virtio_bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC};
@@ -19,8 +19,22 @@ pub const BLOCK: u64 = 4096;
 /// images' partition tables and firmware assume. A request is in whole
 /// sectors; a partial block at either end is read, merged and written.
 pub const SECTOR: u64 = 512;
-/// Segments per request and bytes per write-zeroes range.
+/// Data segments per request (`seg_max`) and bytes per segment
+/// (`size_max`) a driver is told to keep to. A segment of `size_max` holds
+/// a page of any size guests use (up to 64 KiB).
 pub const SEG_MAX: u32 = 128;
+pub const SIZE_MAX: u32 = 64 << 10;
+/// Data bytes in one request at most: all a driver keeping to `seg_max`
+/// and `size_max` sends (8 MiB). A read's buffer is allocated, and a
+/// write's data read from the guest, whole, so a longer request is
+/// answered `IOERR` before either. Firmware that doesn't take
+/// `size_max` sends a request's data in one segment; it fits too, as long
+/// as it is at most this.
+pub const REQUEST_MAX: u64 = SEG_MAX as u64 * SIZE_MAX as u64;
+/// Descriptors in one chain at most: the data segments, and the header
+/// and the status besides.
+pub const DESCRIPTORS_MAX: usize = SEG_MAX as usize + 2;
+/// Bytes per write-zeroes range.
 pub const ZEROES_MAX_SECTORS: u32 = (16 << 20) / 512;
 /// Write-zeroes are written in pieces of this many bytes.
 pub const ZERO_PIECE: u64 = 1 << 20;
@@ -30,6 +44,7 @@ pub const ZERO_PIECE: u64 = 1 << 20;
 /// uncovering a snapshot's; packed rings, which `virtio-queue` lacks.
 pub fn features() -> u64 {
     [
+        VIRTIO_BLK_F_SIZE_MAX,
         VIRTIO_BLK_F_SEG_MAX,
         VIRTIO_BLK_F_BLK_SIZE,
         VIRTIO_BLK_F_TOPOLOGY,
@@ -49,7 +64,7 @@ pub fn features() -> u64 {
 pub fn config(size: u64, queues: u16) -> Vec<u8> {
     let mut c = Vec::with_capacity(60);
     c.extend((size / SECTOR).to_le_bytes()); // capacity
-    c.extend(0u32.to_le_bytes()); // size_max
+    c.extend(SIZE_MAX.to_le_bytes()); // size_max
     c.extend(SEG_MAX.to_le_bytes()); // seg_max
     c.extend([0u8; 4]); // geometry
     c.extend((SECTOR as u32).to_le_bytes()); // blk_size: logical
@@ -100,19 +115,33 @@ pub enum Bad {
     Malformed,
     /// A range outside the volume or not in whole sectors.
     Range,
+    /// More descriptors, or more data, than one request may have
+    /// ([`DESCRIPTORS_MAX`], [`REQUEST_MAX`]).
+    TooLarge,
 }
 
 /// Decodes a request. `readable` is the first readable bytes (the header
 /// and, for write-zeroes, the ranges; a write's data follows in the
-/// chain); `readable_len` and `writable_len` are the chain's totals.
+/// chain); `readable_len` and `writable_len` are the chain's totals, and
+/// `descriptors` how many descriptors it has.
 pub fn decode(
     readable: &[u8],
     readable_len: u64,
     writable_len: u64,
+    descriptors: usize,
     size: u64,
 ) -> Result<Request, Bad> {
     if readable.len() < 16 || writable_len < 1 {
         return Err(Bad::Malformed);
+    }
+    // Whatever the request, nothing past one request's data is read or
+    // written (a read's data in, a write's out; the id and write-zeroes'
+    // ranges are far shorter).
+    if descriptors > DESCRIPTORS_MAX
+        || readable_len - 16 > REQUEST_MAX
+        || writable_len - 1 > REQUEST_MAX
+    {
+        return Err(Bad::TooLarge);
     }
     let kind = u32::from_le_bytes(readable[0..4].try_into().unwrap());
     let sector = u64::from_le_bytes(readable[8..16].try_into().unwrap());
@@ -194,7 +223,7 @@ mod tests {
         let size = 1 << 20;
         let h = header(VIRTIO_BLK_T_IN, 8);
         assert_eq!(
-            decode(&h, 16, 8193, size),
+            decode(&h, 16, 8193, 3, size),
             Ok(Request::Read {
                 off: 4096,
                 len: 8192
@@ -202,36 +231,79 @@ mod tests {
         );
         let h = header(VIRTIO_BLK_T_OUT, 0);
         assert_eq!(
-            decode(&h, 16 + 4096, 1, size),
+            decode(&h, 16 + 4096, 1, 3, size),
             Ok(Request::Write { off: 0, len: 4096 })
         );
         // Sectors, not only blocks (512e); not part of one, or past the end.
         assert_eq!(
-            decode(&header(VIRTIO_BLK_T_OUT, 3), 16 + 1024, 1, size),
+            decode(&header(VIRTIO_BLK_T_OUT, 3), 16 + 1024, 1, 3, size),
             Ok(Request::Write {
                 off: 1536,
                 len: 1024
             })
         );
-        assert_eq!(decode(&h, 16 + 100, 1, size), Err(Bad::Range));
+        assert_eq!(decode(&h, 16 + 100, 1, 3, size), Err(Bad::Range));
         let h = header(VIRTIO_BLK_T_IN, (size / 512) - 8);
-        assert_eq!(decode(&h, 16, 8193, size), Err(Bad::Range));
-        assert_eq!(decode(&h[..8], 8, 1, size), Err(Bad::Malformed));
-        assert_eq!(decode(&h, 16, 0, size), Err(Bad::Malformed), "no status");
+        assert_eq!(decode(&h, 16, 8193, 3, size), Err(Bad::Range));
+        assert_eq!(decode(&h[..8], 8, 1, 3, size), Err(Bad::Malformed));
+        assert_eq!(decode(&h, 16, 0, 3, size), Err(Bad::Malformed), "no status");
         let h = header(VIRTIO_BLK_T_FLUSH, 0);
-        assert_eq!(decode(&h, 16, 1, size), Ok(Request::Flush));
+        assert_eq!(decode(&h, 16, 1, 3, size), Ok(Request::Flush));
         let h = header(VIRTIO_BLK_T_GET_ID, 0);
-        assert_eq!(decode(&h, 16, 21, size), Ok(Request::GetId));
+        assert_eq!(decode(&h, 16, 21, 3, size), Ok(Request::GetId));
         let h = header(99, 0);
-        assert_eq!(decode(&h, 16, 1, size), Ok(Request::Unsupported(99)));
+        assert_eq!(decode(&h, 16, 1, 3, size), Ok(Request::Unsupported(99)));
         let mut h = header(VIRTIO_BLK_T_WRITE_ZEROES, 0);
         h.extend(16u64.to_le_bytes());
         h.extend(8u32.to_le_bytes());
         h.extend(0u32.to_le_bytes());
         assert_eq!(
-            decode(&h, 32, 1, size),
+            decode(&h, 32, 1, 3, size),
             Ok(Request::WriteZeroes(vec![(8192, 4096)]))
         );
+    }
+
+    /// A chain with more descriptors, or more data, than one request may
+    /// have is answered IOERR (`Range`'s status) before anything is read
+    /// or allocated; one at the limits is a request.
+    #[test]
+    fn requests_past_the_limits_are_refused() {
+        let size = 1 << 30;
+        let rd = header(VIRTIO_BLK_T_IN, 0);
+        let wr = header(VIRTIO_BLK_T_OUT, 0);
+        let max = REQUEST_MAX;
+        assert_eq!(REQUEST_MAX, 8 << 20);
+        assert_eq!(
+            decode(&rd, 16, max + 1, DESCRIPTORS_MAX, size),
+            Ok(Request::Read { off: 0, len: max })
+        );
+        assert_eq!(
+            decode(&wr, 16 + max, 1, DESCRIPTORS_MAX, size),
+            Ok(Request::Write { off: 0, len: max })
+        );
+        // A sector more.
+        assert_eq!(decode(&rd, 16, max + 513, 3, size), Err(Bad::TooLarge));
+        assert_eq!(decode(&wr, 16 + max + 512, 1, 3, size), Err(Bad::TooLarge));
+        // Lengths a chain of 4 GiB descriptors adds up to, past the volume
+        // or not, and lengths that aren't whole sectors.
+        let huge = 1023 * u32::MAX as u64;
+        assert_eq!(decode(&rd, 16, huge, 1024, size), Err(Bad::TooLarge));
+        assert_eq!(decode(&rd, 16, huge, 3, u64::MAX), Err(Bad::TooLarge));
+        assert_eq!(decode(&wr, huge, 1, 3, u64::MAX), Err(Bad::TooLarge));
+        // Any kind: a flush or an id with too much room.
+        let fl = header(VIRTIO_BLK_T_FLUSH, 0);
+        assert_eq!(decode(&fl, 16, huge, 3, size), Err(Bad::TooLarge));
+        let id = header(VIRTIO_BLK_T_GET_ID, 0);
+        assert_eq!(decode(&id, 16, 21, 3, size), Ok(Request::GetId));
+        assert_eq!(decode(&id, 16, huge, 3, size), Err(Bad::TooLarge));
+        // One descriptor more than seg_max data segments and the header
+        // and status.
+        assert_eq!(
+            decode(&rd, 16, 4097, DESCRIPTORS_MAX + 1, size),
+            Err(Bad::TooLarge)
+        );
+        // Still malformed first: no status byte to answer in.
+        assert_eq!(decode(&rd, 16, 0, 1024, size), Err(Bad::Malformed));
     }
 
     #[test]
@@ -247,6 +319,12 @@ mod tests {
         assert_eq!((c[24], c[25]), (3, 0));
         assert_eq!(u16::from_le_bytes(c[26..28].try_into().unwrap()), 8);
         assert!(features() & (1 << VIRTIO_BLK_F_TOPOLOGY) != 0);
+        // The limits a driver keeps to, which the device enforces.
+        assert_eq!(u32::from_le_bytes(c[8..12].try_into().unwrap()), SIZE_MAX);
+        assert_eq!(u32::from_le_bytes(c[12..16].try_into().unwrap()), SEG_MAX);
+        assert!(features() & (1 << VIRTIO_BLK_F_SIZE_MAX) != 0);
+        assert!(features() & (1 << VIRTIO_BLK_F_SEG_MAX) != 0);
+        assert!(REQUEST_MAX >= SEG_MAX as u64 * SIZE_MAX as u64);
         assert_eq!(blocks(1536, 1024), (0, 4096));
         assert_eq!(blocks(3584, 1024), (0, 8192));
         assert_eq!(blocks(4096, 4096), (4096, 8192));

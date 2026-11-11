@@ -65,6 +65,15 @@ fn a_volume_is_served_over_vhost_user_blk() {
     assert_eq!(s, S_IOERR, "past the end");
     let (s, _, _) = g.request(T_IN, 1, &[], 4000);
     assert_eq!(s, S_IOERR, "not whole sectors");
+    // The limits a driver is told (size_max, seg_max) and what they add up
+    // to, 8 MiB: a request of it is served, a sector more refused.
+    assert_eq!(g.config_u32(8), 64 << 10, "size_max");
+    assert_eq!(g.config_u32(12), 128, "seg_max");
+    assert_eq!(g.request(T_IN, 0, &[], 8 << 20).0, S_OK, "at the limit");
+    let (s, _, _) = g.request(T_IN, 0, &[], (8 << 20) + 512);
+    assert_eq!(s, S_IOERR, "past the limit");
+    let (s, _, _) = g.request(T_OUT, 0, &vec![0; (8 << 20) + 512], 0);
+    assert_eq!(s, S_IOERR, "a write past the limit");
     // 512-byte sectors (D126): the disk's logical blocks are sectors, its
     // physical ones the volume's 4 KiB blocks.
     assert_eq!(g.config_u32(20), 512, "blk_size");

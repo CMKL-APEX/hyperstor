@@ -617,14 +617,21 @@ async fn serve(
     let readable_len = Segments::total(&segs.readable);
     let writable_len = Segments::total(&segs.writable);
     let size = disk.volume.volume().size;
+    let descriptors = segs.readable.len() + segs.writable.len();
     let first = read_stream(mem, &segs.readable, 0, readable_len.min(16));
     let req = match first {
         Some(h) if h.len() == 16 && h[0..4] == WRITE_ZEROES.to_le_bytes()[..] => {
             // The ranges follow the header.
             let all = read_stream(mem, &segs.readable, 0, readable_len.min(16 + 16 * 64));
-            all.map(|b| blk::decode(&b, readable_len, writable_len, size))
+            all.map(|b| blk::decode(&b, readable_len, writable_len, descriptors, size))
         }
-        Some(h) => Some(blk::decode(&h, readable_len, writable_len, size)),
+        Some(h) => Some(blk::decode(
+            &h,
+            readable_len,
+            writable_len,
+            descriptors,
+            size,
+        )),
         None => None,
     };
     let (status, used) = match req {
@@ -632,7 +639,9 @@ async fn serve(
             // No status byte to answer in: give the chain back, empty.
             return complete(&shared, index, generation, mem, head, 0);
         }
-        Some(Err(Bad::Range)) => (blk::S_IOERR, 1),
+        // Past the volume or the limits it advertises: refused before a
+        // buffer is allocated or guest memory read.
+        Some(Err(Bad::Range | Bad::TooLarge)) => (blk::S_IOERR, 1),
         Some(Ok(r)) => run_request(&disk, mem, &segs, r, writable_len).await,
     };
     if write_stream(mem, &segs.writable, writable_len - 1, &[status]).is_none() {
