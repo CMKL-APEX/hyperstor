@@ -173,6 +173,17 @@ impl Guest {
     /// first, as a hypervisor binds a guest placed on a node (`mbind` on
     /// its memfd; G59).
     pub fn connect_bound(socket: &Path, event_idx: bool, node: Option<u32>) -> Guest {
+        Self::connect_with(socket, event_idx, node, false)
+    }
+
+    /// [`Guest::connect`], with all the guest's memory written first by
+    /// this thread, so its pages are on this thread's node, as an unbound
+    /// guest's pages are where its vCPUs first touched them (G59).
+    pub fn connect_touched(socket: &Path, event_idx: bool) -> Guest {
+        Self::connect_with(socket, event_idx, None, true)
+    }
+
+    fn connect_with(socket: &Path, event_idx: bool, node: Option<u32>, touch: bool) -> Guest {
         // SAFETY: memfd_create with a static name; the descriptor is owned
         // by the File below.
         let fd = unsafe { libc::memfd_create(c"guest".as_ptr(), libc::MFD_CLOEXEC) };
@@ -200,6 +211,10 @@ impl Guest {
                 )
             };
             assert_eq!(r, 0, "mbind: {}", std::io::Error::last_os_error());
+        }
+        if touch {
+            // SAFETY: the MEM bytes just mapped, which nothing else uses yet.
+            unsafe { std::ptr::write_bytes(host as *mut u8, 0, MEM) };
         }
         let mem = GuestMemoryMmap::from_regions(vec![
             GuestRegionMmap::new(region, GuestAddress(0)).unwrap(),

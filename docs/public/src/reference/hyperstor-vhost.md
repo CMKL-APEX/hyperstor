@@ -90,8 +90,11 @@ memory when the hypervisor connects. Bind a VM's memory to a node for
 this (Cloud Hypervisor: `--memory size=0 --memory-zone
 id=mem0,size=2G,shared=on,host_numa_node=1`; QEMU:
 `memory-backend-memfd,...,host-nodes=1,policy=bind`). A guest whose
-memory isn't bound to one node goes to the reactor serving the fewest
-disks. `ctl list` shows where each disk runs.
+memory isn't bound to one node starts on the reactor serving the fewest
+disks; once the pages its I/O uses show which node its memory is on,
+its disk moves, once, to that node's reactor (a pause of a few
+milliseconds while requests in flight finish). `ctl list` shows where
+each disk runs.
 
 ## Restarts
 

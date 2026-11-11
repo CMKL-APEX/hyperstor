@@ -597,6 +597,9 @@ spec = ["11-frontends.md §11.1", "D290", "D291", "D292", "G59", "I350", "I354"]
 status = "partial"
 tests = [
     "vhost::each_disk_runs_on_its_guests_reactor",
+    "vhost::an_unbound_guests_disk_follows_its_pages",
+    "hyperstor_vhost::numa::tests::pages_touched_are_found_on_their_node",
+    "hyperstor_vhost::numa::tests::the_node_most_pages_are_on_wins",
     "hyperstor_vhost::numa::tests::a_memfds_binding_is_seen_through_another_mapping",
     "hyperstor_vhost::numa::tests::a_disk_goes_to_its_guests_node_or_the_least_loaded",
     "hyperstor_vhost::numa::tests::the_first_cpu_of_each_node_with_cpus_is_the_default",

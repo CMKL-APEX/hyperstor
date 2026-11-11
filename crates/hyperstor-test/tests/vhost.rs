@@ -376,6 +376,77 @@ fn each_disk_runs_on_its_guests_reactor() {
     svc.stop();
 }
 
+/// Pins this thread to `cpu`.
+fn pin(cpu: usize) {
+    // SAFETY: cpu_set_t is plain data; CPU_SET writes within it.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_SET(cpu, &mut set);
+        assert_eq!(
+            libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set),
+            0
+        );
+    }
+}
+
+/// D292's second half: a guest whose memory isn't bound starts on the
+/// least-loaded reactor; once the pages its requests use show its memory
+/// is on another node, its disk moves to that node's reactor, requests in
+/// flight finished first, and goes on there. Needs two NUMA nodes.
+#[test]
+fn an_unbound_guests_disk_follows_its_pages() {
+    let nodes = nodes();
+    let (Some(first), Some(last)) = (nodes.first(), nodes.last()) else {
+        return;
+    };
+    if first.0 == last.0 {
+        eprintln!("one NUMA node: nothing to move between");
+        return;
+    }
+    let c = Cluster::all_in_one("vhost-pages", 3);
+    let a = volume(&c, "16M");
+    let cpus = format!("{},{}", first.1, last.1);
+    let svc = Service::start(&c, "vhost-pages", &["--cpus", &cpus]);
+    let reactor = || {
+        let r = svc.ctl(serde_json::json!({"id": 1, "op": "list"}));
+        let d = r["ok"]["disks"][0].clone();
+        assert_eq!(d["lost"], false, "{d}");
+        (d["reactor"].as_u64().unwrap(), d["node"].as_u64())
+    };
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    // The guest's memory first touched on the last node.
+    pin(last.1);
+    let mut g = Guest::connect_touched(&sa, true);
+    let data = pattern(9, 256 << 10);
+    g.write(0, &data);
+    assert_eq!(reactor().0, 0, "unbound: the least loaded, the first");
+    let t = std::time::Instant::now();
+    let mut i = 0u64;
+    while reactor().0 != 1 {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(20),
+            "never moved"
+        );
+        i += 1;
+        g.write((i % 32) * (256 << 10), &data);
+    }
+    assert_eq!(reactor().1, Some(last.0 as u64));
+    // It goes on there, with what was written before and while it moved.
+    for k in 0..=i.min(31) {
+        assert!(
+            g.read(k * (256 << 10), data.len() as u32) == data,
+            "block {k}"
+        );
+    }
+    g.write(0, &data[..4096]);
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(reactor().0, 1, "placed by its pages once");
+    drop(g);
+    let d = svc.ctl(serde_json::json!({"id": 2, "op": "detach", "args": {"volume": a}}));
+    assert!(d.get("ok").is_some(), "{d}");
+    svc.stop();
+}
+
 /// D183: a write refused for space (a device past full, D27) is held and
 /// tried again every second; space freed in time lets it finish, and past
 /// `--hold-full` the guest sees `IOERR`. An overwrite of written blocks

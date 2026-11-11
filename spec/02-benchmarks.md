@@ -2433,3 +2433,50 @@ reserved.
 4. **Open:** hugepage-backed guests (hugetlbfs has its own policy
    handling), and guests large enough to spread over several nodes.
 
+## 2026-11-11: VM disks on a reactor per NUMA node (I354)
+
+Question: does a reactor per NUMA node (D290–D292) lift the one-reactor
+ceiling measured above (I350), and does a guest whose memory isn't
+bound land on its own node's reactor? Same host, guests, cluster and
+harness as that section; `vm_bench.rs` gained `HS_VMB_CPUS` (the
+service's `--cpus`), `HS_VMB_NODES` (VM `i` on the `i`-th node: memory
+bound with `host_numa_node`, the process pinned with `taskset` to the
+node's CPUs but its first, which is the reactor's) and
+`HS_VMB_UNBOUND=1` (pinned, memory not bound). One `hyperstor-vhost`
+process; each VM at QD32 on its own volume, 10 s per job, one round
+each (so ±5% or so, as the ranges above):
+
+```sh
+ln -s /dev/shm/e2e target/tmp/e2e
+HS_VMB=1 HS_VMB_JOBS= HS_VMB_CPUS=48,80 HS_VMB_NODES=3,5 HS_VMB_VMS=2,4 \
+  cargo test --release -p hyperstor-test --test vm_bench -- --nocapture
+```
+
+| Reactors (`--cpus`) | VMs, nodes | 4 KiB random reads | `hyperstor-vhost` cores | 4 KiB random writes |
+|---|---|---|---|---|
+| 1 (48) | 2, nodes 3 and 5 | 31370 | 0.89 | 20077 |
+| 1 (48) | 4 | 31147 | 0.86 | 20346 |
+| 2 (48, 80) | 2, bound | 67440 | 1.75 | 19382 |
+| 2 (48, 80) | 4, bound | 54744 | 1.58 | 17822 |
+| 2 (48, 80) | 2, not bound | 67286 | 1.76 | 23300 |
+| 2 (48, 80) | 4, not bound | 61075 | 1.59 | 23088 |
+| 4 (48, 80, 96, 112) | 4, nodes 3, 5, 6, 7 | 79585 | 2.60 | 21195 |
+| 4 | 8 | 88332 | 2.91 | 22770 |
+
+- **Every disk ran where it should.** Bound guests went to their node's
+  reactor at connect: with two reactors, one disk each for 2 VMs and
+  two each for 4; with four, one and two each. Guests not bound started
+  on the least-loaded reactor and moved to their pages' node within the
+  first seconds of I/O: the same split.
+- **Reads scale with reactors, up to a ceiling elsewhere.** One reactor
+  serves 31,000 reads a second at one core, as before (the 35,000 above
+  was unpinned). Two serve 2.1 times that with 2 VMs, as two processes
+  did (65,750). Four serve 80,000–88,000, not 4 times: at 2.6–2.9 cores
+  the reactors aren't full, so something else is the limit, most likely
+  the test cluster's three storage nodes on the same host (not
+  measured here). A host's storage cluster sets that limit in
+  production.
+- **Writes don't change** (about 20,000 a second): the test cluster's
+  three copies bind them, as above.
+- Pinning a guest that isn't bound still gets the full gain: the move
+  costs nothing measurable over 10 s.

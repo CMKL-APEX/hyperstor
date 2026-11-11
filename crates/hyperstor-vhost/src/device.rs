@@ -12,7 +12,10 @@
 //! `vhost`'s handler, to its disk's reactor once the frontend's memory
 //! table says where the guest's memory is (D292): [`serve_connection`]
 //! answers [`Ended::Place`] and [`resume`] carries on there. Its rings
-//! start only there, on the [`Disk`] that reactor holds.
+//! start only there, on the [`Disk`] that reactor holds. A guest whose
+//! memory isn't bound to one node is placed again once the pages its
+//! requests use show where its memory is ([`Watch`]): its rings stop
+//! taking requests, those in flight finish, and it moves.
 
 use crate::blk::{self, Bad, Request};
 use crate::inflight::Inflight;
@@ -278,6 +281,68 @@ struct State {
     /// The guest memory's policy, once the first memory table came and
     /// the connection is to be placed.
     place: Option<crate::numa::Policy>,
+    /// Requests taken and not yet completed, which a move waits for.
+    running: usize,
+    /// Rings stopped taking requests for a move: their tasks end, and
+    /// [`resume`] starts them again.
+    parked: bool,
+    /// For a guest whose memory isn't bound: where its pages are, until
+    /// it is placed by them.
+    watch: Option<Watch>,
+}
+
+/// The guest pages a connection's requests used lately, to find the node
+/// an unbound guest's memory is on (D292).
+pub struct Watch {
+    /// The node of the reactor serving the connection.
+    node: Option<u32>,
+    /// Host addresses of pages requests used, newest last.
+    pages: std::collections::VecDeque<usize>,
+    last: Instant,
+}
+
+/// Pages remembered for [`Watch`].
+const WATCH_PAGES: usize = 256;
+/// How often an unbound guest's pages are looked at.
+pub const WATCH_EVERY: Duration = Duration::from_secs(1);
+/// Pages that must be in memory before a node is chosen, and the share
+/// of them it must hold.
+const WATCH_MIN: usize = 32;
+
+impl Watch {
+    fn note(&mut self, mem: &GuestMemoryMmap, segs: &Segments) {
+        for &(addr, len) in segs.readable.iter().chain(&segs.writable) {
+            // Each page of the buffer, up to 64 of a large one.
+            let Ok(p) = mem.get_slice(addr, len as usize) else {
+                continue;
+            };
+            let start = p.ptr_guard().as_ptr() as usize;
+            let end = start + len as usize;
+            let mut page = start & !4095;
+            for _ in 0..64 {
+                if page >= end {
+                    break;
+                }
+                if !self.pages.contains(&page) {
+                    if self.pages.len() == WATCH_PAGES {
+                        self.pages.pop_front();
+                    }
+                    self.pages.push_back(page);
+                }
+                page += 4096;
+            }
+        }
+    }
+
+    /// The node holding two thirds or more of the pages looked at, if it
+    /// isn't this reactor's.
+    fn elsewhere(&self) -> Option<u32> {
+        let mut pages: Vec<usize> = self.pages.iter().copied().collect();
+        pages.sort_unstable();
+        pages.dedup();
+        let (node, n, of) = crate::numa::majority(&crate::numa::nodes_of(&pages))?;
+        (of >= WATCH_MIN && 3 * n >= 2 * of && Some(node) != self.node).then_some(node)
+    }
 }
 
 /// A connection's state, which moves with it to its disk's reactor; only
@@ -334,6 +399,9 @@ impl State {
             inflight: None,
             placed: false,
             place: None,
+            running: 0,
+            parked: false,
+            watch: None,
         }
     }
 
@@ -395,7 +463,10 @@ fn kick(f: &File) {
 /// negotiated), and it isn't running already.
 fn start(shared: &Shared, index: usize) {
     let mut s = lock(shared);
-    let can = s.placed && s.mem.is_some() && (s.vrings[index].enabled || !s.protocol_acked());
+    let can = s.placed
+        && !s.parked
+        && s.mem.is_some()
+        && (s.vrings[index].enabled || !s.protocol_acked());
     let event_idx = s.event_idx();
     let mem = s.mem.clone();
     let v = &mut s.vrings[index];
@@ -428,6 +499,8 @@ fn start(shared: &Shared, index: usize) {
     let Some(disk) = local_disk(s.volume) else {
         return;
     };
+    // Each completes, answered or given back empty.
+    s.running += again.len();
     let v = &mut s.vrings[index];
     v.running = true;
     let generation = v.generation;
@@ -536,6 +609,10 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> boo
             return false;
         };
         let inflight = s.inflight.clone();
+        // Parked for a move: [`resume`] starts the ring again there.
+        if s.parked {
+            return false;
+        }
         let v = &mut s.vrings[index];
         if v.generation != generation {
             return false;
@@ -554,16 +631,25 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> boo
         // With EVENT_IDX, chains added while notifications were off are
         // seen here: go round again.
         let more = event_idx && v.queue.enable_notification(&*mem).unwrap_or(false);
+        let taken: Vec<(u16, Segments)> = chains
+            .iter()
+            .map(|c| (c.head_index(), Segments::of(c)))
+            .collect();
+        s.running += taken.len();
+        if let Some(w) = &mut s.watch {
+            for (_, segs) in &taken {
+                w.note(&mem, segs);
+            }
+        }
         drop(s);
-        for c in chains {
-            let segs = Segments::of(&c);
+        for (head, segs) in taken {
             hyperstor_reactor::spawn(serve(
                 shared.clone(),
                 disk.clone(),
                 index,
                 generation,
                 mem.clone(),
-                c.head_index(),
+                head,
                 segs,
             ));
         }
@@ -758,6 +844,7 @@ fn complete(
     used: u32,
 ) {
     let mut s = lock(shared);
+    s.running = s.running.saturating_sub(1);
     let inflight = s.inflight.clone();
     let v = &mut s.vrings[index];
     if v.generation != generation {
@@ -846,11 +933,18 @@ impl VhostUserBackendReqHandlerMut for Handler {
         // the guest's largest region, as this process maps it (G59).
         if !s.placed {
             let largest = mem.iter().max_by_key(|r| r.len());
-            s.place = Some(
-                largest
-                    .and_then(|r| crate::numa::policy_at(r.as_ptr() as usize).ok())
-                    .unwrap_or(crate::numa::Policy::Any),
-            );
+            let policy = largest
+                .and_then(|r| crate::numa::policy_at(r.as_ptr() as usize).ok())
+                .unwrap_or(crate::numa::Policy::Any);
+            // Not bound to one node: placed again by its pages.
+            if policy.node().is_none() {
+                s.watch = Some(Watch {
+                    node: None,
+                    pages: Default::default(),
+                    last: Instant::now(),
+                });
+            }
+            s.place = Some(policy);
         }
         s.mem = Some(Arc::new(mem));
         s.regions = ctx.to_vec();
@@ -1102,35 +1196,54 @@ pub async fn serve_connection(volume: u128, size: u64, queues: u16, stream: Unix
 }
 
 /// Carries on with a connection on the reactor it was placed on, which
-/// holds its disk: starts its rings and serves it until it disconnects
-/// or the protocol fails. Its rings stop with it; the volume stays
-/// attached for the next connection (a hypervisor reconnecting).
-pub async fn resume(m: Moving) -> Result<(), String> {
-    lock(&m.shared).placed = true;
-    let n = lock(&m.shared).vrings.len();
+/// holds its disk and is on NUMA node `node`: starts its rings and serves
+/// it until it disconnects, the protocol fails, or (a guest whose memory
+/// isn't bound) its pages turn out to be on another node.
+pub async fn resume(m: Moving, node: Option<u32>) -> Ended {
+    let n = {
+        let mut s = lock(&m.shared);
+        s.placed = true;
+        s.parked = false;
+        if let Some(w) = &mut s.watch {
+            w.node = node;
+            w.last = Instant::now();
+        }
+        s.vrings.len()
+    };
     for i in 0..n {
         start(&m.shared, i);
     }
-    match run_connection(m).await {
-        Ended::Closed(r) => r,
-        // Placed already: a later table never asks again.
-        Ended::Place(..) => Err("placed twice".into()),
-    }
+    run_connection(m).await
 }
+
+/// How long a move waits for the requests in flight; past it the
+/// connection stays (a write held for space, say).
+const PARK_FOR: Duration = Duration::from_secs(5);
 
 async fn run_connection(mut m: Moving) -> Ended {
     let fd = m.req.as_raw_fd();
     let r = loop {
-        if let Err(e) = fd::readable(fd).await {
-            break Err(e.to_string());
-        }
-        match m.req.handle_request() {
-            Ok(()) => {}
-            Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
-            // A request we refused was answered (or the frontend didn't
-            // ask for an answer); carry on.
-            Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
-            Err(e) => break Err(e.to_string()),
+        // Woken each WATCH_EVERY only while watching an unbound guest.
+        let watching = {
+            let s = lock(&m.shared);
+            s.placed && s.watch.is_some()
+        };
+        let ready = if watching {
+            hyperstor_reactor::time::timeout(WATCH_EVERY, fd::readable(fd)).await
+        } else {
+            Ok(fd::readable(fd).await)
+        };
+        match ready {
+            Ok(Err(e)) => break Err(e.to_string()),
+            Ok(Ok(())) => match m.req.handle_request() {
+                Ok(()) => {}
+                Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
+                // A request we refused was answered (or the frontend
+                // didn't ask for an answer); carry on.
+                Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
+                Err(e) => break Err(e.to_string()),
+            },
+            Err(_) => {}
         }
         let place = {
             let mut s = lock(&m.shared);
@@ -1139,7 +1252,69 @@ async fn run_connection(mut m: Moving) -> Ended {
         if let Some(p) = place {
             return Ended::Place(m, p);
         }
+        if let Some(node) = due(&m.shared)
+            && park(&m.shared).await
+        {
+            return Ended::Place(m, crate::numa::Policy::Nodes(vec![node]));
+        }
     };
     lock(&m.shared).stop_all();
     Ended::Closed(r)
+}
+
+/// For a placed connection whose guest memory isn't bound, once a
+/// [`WATCH_EVERY`]: the node its pages are on, if not its reactor's. It
+/// is placed by its pages once (D292), so the watch ends either way once
+/// a node has the pages.
+fn due(shared: &Shared) -> Option<u32> {
+    let mut s = lock(shared);
+    if !s.placed {
+        return None;
+    }
+    let w = s.watch.as_mut()?;
+    if w.last.elapsed() < WATCH_EVERY {
+        return None;
+    }
+    w.last = Instant::now();
+    let node = w.elsewhere();
+    if node.is_some() {
+        s.watch = None;
+    }
+    node
+}
+
+/// Stops the rings taking requests and waits for those in flight, for a
+/// move. False, with the rings started again, if they take longer than
+/// [`PARK_FOR`].
+async fn park(shared: &Shared) -> bool {
+    let kicks: Vec<File> = {
+        let mut s = lock(shared);
+        s.parked = true;
+        s.vrings
+            .iter_mut()
+            .filter(|v| v.running)
+            .filter_map(|v| {
+                v.running = false;
+                v.kick.as_ref().and_then(|k| k.try_clone().ok())
+            })
+            .collect()
+    };
+    // Wakes each ring's task, which sees it is parked and ends; the
+    // guest's kick it took is made up for by [`resume`]'s first drain.
+    for k in &kicks {
+        kick(k);
+    }
+    let t = Instant::now();
+    while lock(shared).running > 0 {
+        if t.elapsed() > PARK_FOR {
+            lock(shared).parked = false;
+            let n = lock(shared).vrings.len();
+            for i in 0..n {
+                start(shared, i);
+            }
+            return false;
+        }
+        sleep(Duration::from_millis(1)).await;
+    }
+    true
 }

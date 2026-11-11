@@ -722,24 +722,28 @@ async fn serve_disk(
         let Ok(keep) = s.try_clone() else { continue };
         *conn.borrow_mut() = Some(keep);
         let size = svc.status(volume).await.map_or(0, |(_, size)| size);
-        let r = match device::serve_connection(volume, size, svc.opts.queues, s).await {
-            device::Ended::Closed(r) => r,
-            device::Ended::Place(moving, policy) => {
-                let to = {
-                    let load = svc.load.borrow();
-                    numa::place(&policy, &svc.reactors.nodes(), &load)
-                };
-                let at = svc.move_disk(volume, home.get(), to).await;
-                home.set(at);
-                svc.load.borrow_mut()[at] += 1;
-                let r = svc
-                    .reactors
-                    .run_on(at, move || device::resume(moving))
-                    .await
-                    .unwrap_or_else(|| Err("its reactor stopped".into()));
-                svc.load.borrow_mut()[at] -= 1;
-                r
-            }
+        let mut ended = device::serve_connection(volume, size, svc.opts.queues, s).await;
+        // Placed at its first memory table, and again, once, if its
+        // guest's memory isn't bound and its pages are elsewhere (D292).
+        let r = loop {
+            let (moving, policy) = match ended {
+                device::Ended::Closed(r) => break r,
+                device::Ended::Place(m, p) => (m, p),
+            };
+            let to = {
+                let load = svc.load.borrow();
+                numa::place(&policy, &svc.reactors.nodes(), &load)
+            };
+            let at = svc.move_disk(volume, home.get(), to).await;
+            home.set(at);
+            let node = svc.reactors.all[at].node;
+            svc.load.borrow_mut()[at] += 1;
+            ended = svc
+                .reactors
+                .run_on(at, move || device::resume(moving, node))
+                .await
+                .unwrap_or_else(|| device::Ended::Closed(Err("its reactor stopped".into())));
+            svc.load.borrow_mut()[at] -= 1;
         };
         *conn.borrow_mut() = None;
         if stopping.get() {

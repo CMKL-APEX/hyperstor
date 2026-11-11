@@ -138,6 +138,52 @@ fn mask_nodes(mask: &[libc::c_ulong]) -> Vec<u32> {
         .collect()
 }
 
+/// The node each page at `pages` (host addresses in this process) is on,
+/// or a negative errno for one not in memory (`move_pages` with no
+/// nodes, which only looks; it faults nothing in). A page this process
+/// never touched isn't in its page tables and reads as not in memory.
+pub fn nodes_of(pages: &[usize]) -> Vec<i32> {
+    if pages.is_empty() {
+        return Vec::new();
+    }
+    let mut status = vec![0i32; pages.len()];
+    // SAFETY: move_pages reads `pages.len()` addresses from `pages`, which
+    // it only looks up, and writes as many ints to `status`, of that
+    // length; with no nodes it moves nothing.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_move_pages,
+            0 as libc::pid_t,
+            pages.len() as libc::c_ulong,
+            pages.as_ptr(),
+            std::ptr::null::<libc::c_int>(),
+            status.as_mut_ptr(),
+            0 as libc::c_int,
+        )
+    };
+    if r < 0 {
+        let e = -std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EINVAL);
+        return vec![e; pages.len()];
+    }
+    status
+}
+
+/// The node most of `nodes` (as [`nodes_of`] gives them) are on: (node,
+/// pages on it, pages in memory).
+pub fn majority(nodes: &[i32]) -> Option<(u32, usize, usize)> {
+    let mut count = std::collections::BTreeMap::<u32, usize>::new();
+    for &n in nodes.iter().filter(|n| **n >= 0) {
+        *count.entry(n as u32).or_default() += 1;
+    }
+    let of = count.values().sum();
+    let (node, n) = count
+        .into_iter()
+        .max_by_key(|(n, c)| (*c, std::cmp::Reverse(*n)))?;
+    Some((node, n, of))
+}
+
 /// Where a disk's connection goes (D292): the reactor on the node its
 /// guest's memory is bound to; otherwise, or when no reactor is on that
 /// node, the least loaded (the first of equals). `reactors` are the
@@ -199,6 +245,30 @@ mod tests {
         assert_eq!(place(&Policy::Nodes(vec![0, 1]), &reactors, &[2, 3, 1]), 2);
         assert_eq!(place(&Policy::Any, &reactors, &[0, 0, 0]), 0);
         assert_eq!(place(&Policy::Any, &[None], &[4]), 0);
+    }
+
+    #[test]
+    fn the_node_most_pages_are_on_wins() {
+        assert_eq!(majority(&[3, 3, -14, 1, 3]), Some((3, 3, 4)));
+        assert_eq!(majority(&[1, 2]), Some((1, 1, 2)), "the lower of equals");
+        assert_eq!(majority(&[-14, -2]), None);
+        assert_eq!(majority(&[]), None);
+    }
+
+    #[test]
+    fn pages_touched_are_found_on_their_node() {
+        let mut v = vec![1u8; 64 << 12];
+        let pages: Vec<usize> = (0..64)
+            .map(|i| v.as_mut_ptr() as usize + (i << 12))
+            .collect();
+        let pages: Vec<usize> = pages.iter().map(|p| p & !4095).collect();
+        let found = nodes_of(&pages);
+        assert_eq!(found.len(), 64);
+        let nodes = nodes(Path::new(SYS_NODES));
+        let (node, n, _) = majority(&found).expect("pages in memory");
+        assert!(n >= 60, "{found:?}");
+        assert!(nodes.is_empty() || nodes.iter().any(|x| x.0 == node));
+        v[0] = 2;
     }
 
     #[test]
