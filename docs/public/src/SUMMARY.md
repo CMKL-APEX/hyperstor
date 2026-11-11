@@ -15,6 +15,7 @@
 
 - [Running a cluster](admin-guide/index.md)
   - [Installation](admin-guide/installation.md)
+  - [Upgrading](admin-guide/upgrading.md)
   - [Planning a cluster](admin-guide/planning.md)
   - [Managing a cluster](admin-guide/managing.md)
   - [Pools and devices](admin-guide/pools-and-devices.md)

@@ -9,9 +9,9 @@ on its own.
 > **Early implementation.** Hyperstor is not ready for production data.
 > Today it provides replicated block volumes over TCP, used through a
 > Rust client library, as virtual machines' disks over vhost-user-blk,
-> or, for testing, as Linux block devices through ublk, with failure
-> handling, snapshots and clones, and tools to install and manage a
-> cluster. There is no front end for remote hosts yet (NVMe over TCP),
+> or, for testing, as Linux block devices through ublk, and objects
+> through an S3 gateway, with failure handling, snapshots and clones,
+> tenants and realms, and tools to install and manage a cluster. There is no front end for remote hosts yet (NVMe over TCP),
 > and the data path between clients and storage nodes has no
 > authentication or encryption (the cluster API, the map service's
 > members and the management service use TLS). See [Status](status.md)
@@ -23,8 +23,9 @@ on its own.
   written to two or three storage nodes in different failure domains
   (devices, hosts or racks). A write returns once every copy has it.
   Pools are made, changed and deleted while the cluster runs, on the
-  device classes they name (`nvme`, `ssd`, `hdd`, or your own), and
-  their placement groups are split as devices are added.
+  device classes they name (`nvme`, `ssd`, `hdd`, or your own); their
+  placement groups are split as devices are added, and a pool can be
+  given more or fewer copies.
 - **Cache pools** keep one copy of data that can be recomputed: a failed
   device's data is lost instead of recovered. Expiry and eviction are
   not built yet.
@@ -33,8 +34,9 @@ on its own.
   its `full` threshold refuses new data, while overwrites and deletes go
   on, so space can always be freed.
 - **Its own storage engine.** Each storage device is driven directly
-  through Linux io_uring, with checksums on every 4 KiB block and crash
-  recovery.
+  through Linux io_uring, with checksums on every 4 KiB block, crash
+  recovery, and a device format that notices damaged, lost and
+  misplaced writes rather than returning them.
 - **Failure handling.** The map service notices when a node stops
   answering, moves its work to other nodes, and refills a node when it
   comes back with only what it missed. A short reboot moves no data, and
@@ -42,7 +44,8 @@ on its own.
   replica too slow to answer, is replaced at once. A background scrub
   compares the copies and repairs one that is damaged or differs.
 - **A replicated map service.** Three or five members keep the cluster
-  map with Raft, so losing one doesn't stop the cluster.
+  map with Raft, so losing one doesn't stop the cluster. Members are
+  added and removed while it runs, and a storage host can become one.
 - **Volumes** with one writer at a time: a client attaches a volume by
   holding its lease, and one that dies is fenced off when another takes
   the volume over. Each attached volume is fenced on its own, so taking
@@ -56,19 +59,32 @@ on its own.
   Hypervisor and QEMU, and restarting the service keeps their disks.
 - **Block devices for testing.** `hyperstor-ublk` serves a volume as
   `/dev/ublkbN`, for `mkfs`, `mount` and fio.
+- **An S3 gateway.** `hyperstor-s3` serves buckets and objects over S3's
+  HTTP API: signed requests, multipart uploads, copies, conditional
+  requests, path-style and virtual-hosted addressing. Its index lives in
+  key-value ranges on the same pools.
+- **Tenants and realms.** Volumes and buckets belong to tenants, and
+  each bucket's objects and bytes are counted. Realms group tenants,
+  pools, hosts and S3 gateways, and roles can be granted on one realm
+  only. Quotas and fair share between tenants are not built yet.
+- **Networks.** A cluster can name its data networks (a subnet each);
+  nodes serve each device on them and clients pick theirs, keeping
+  storage traffic off the control network.
 - **A client library** for Rust programs to read and write volumes, with
   a read cache that the clones of one image on a host share.
 - **Administration.** `hyperstor-install` installs a trial cluster on one
   host, or a cluster across hosts that join with single-use tokens.
   `hyperstorctl` and a web UI manage it, with people's logins (a
   password or an identity provider), roles, an audit log, and long
-  operations such as draining a node.
+  operations such as draining a node. Clusters are
+  [upgraded](admin-guide/upgrading.md) one host at a time while they run.
 
 ## What is planned
 
 NVMe over TCP and RDMA, erasure coding, GPU-direct storage, hard-disk
-pools with flash log devices, expiry and eviction in cache pools, an S3
-gateway and a distributed filesystem, all on the same object layer. The
+pools with flash log devices, expiry and eviction in cache pools,
+quotas and fair share between tenants, S3 over RDMA, and a distributed
+filesystem, all on the same object layer. The
 [Status](status.md) page lists the milestones.
 
 ## How this documentation is organized
