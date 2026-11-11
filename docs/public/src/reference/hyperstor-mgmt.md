@@ -67,6 +67,7 @@ service, so any host's mgmt serves any request.
 | The person's address | From a proxy's connection only: `CF-Connecting-IP`, else the last `X-Forwarded-For` entry. Others' such headers are ignored. It is the address in mgmt's log and the audit |
 | Only through the proxy | `--mgmt-proxy-only on`: other connections get `403`, except from loopback |
 | Request bodies | mgmt reads a request's whole body before answering, so a proxy can reuse the connection. Anyone may send 256 KiB; up to 4 MiB needs a valid session or API token. Larger bodies get `413`, and bodies that take longer than 10 s (60 s for the part past 256 KiB) get `408`, both with `Connection: close` |
+| Connections | A connection has 10 s to send each request's headers (the first one's TLS handshake included). A kept connection with no request closes after 2 minutes, longer than proxies keep theirs. At most 1024 are open at once, from every address together; past that, new ones wait until one closes |
 
 With a Cloudflare Tunnel on the host, one tunnel can serve several
 names: add a public hostname whose service is

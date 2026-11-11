@@ -1220,10 +1220,11 @@ tests = [
 
 [[milestone.item]]
 what = "A PG split in place: objects moved to their new PG's key without a copy, PG by PG"
-spec = ["24-pools-and-devices.md §27.5", "D173", "D187", "I218", "I219", "I220"]
+spec = ["24-pools-and-devices.md §27.5", "D173", "D187", "I218", "I219", "I220", "I354"]
 status = "done"
 tests = [
     "engine::take_moves_an_object_whole",
+    "cluster::writes_racing_a_split_are_kept",
     "hyperstor_placement::tests::keys_route_as_chunks_or_names_and_split_in_two",
     "hyperstor_daemon::tests::a_pg_splits_into_itself_and_its_sibling",
     "hyperstor_map::tests::a_split_flips_pg_by_pg_then_doubles_the_count",

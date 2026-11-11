@@ -61,6 +61,7 @@ use std::time::Duration;
 const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]";
 
 mod audit_ship;
+mod conn;
 mod front;
 mod members;
 mod oidc;
@@ -311,89 +312,159 @@ fn main() {
             tokio::spawn(audit_ship::ship(state.members.clone()));
         }
         let acceptor = web.map(|w| tokio_rustls::TlsAcceptor::from(w.config));
+        let limits = conn::Limits::for_this_process();
+        if limits.max < conn::MAX_CONNECTIONS {
+            eprintln!(
+                "hyperstor-mgmt: at most {} connections at once (open files are limited)",
+                limits.max
+            );
+        }
+        let gate = Arc::new(tokio::sync::Semaphore::new(limits.max));
         let mut tasks = tokio::task::JoinSet::new();
         for listener in listeners {
             let (state, acceptor) = (state.clone(), acceptor.clone());
-            tasks.spawn(serve(listener, state, acceptor));
+            tasks.spawn(serve(listener, state, acceptor, limits, gate.clone()));
         }
         while tasks.join_next().await.is_some() {}
     });
 }
 
-/// Accepts connections on `listener` for good.
+/// Accepts connections on `listener` for good, each under
+/// [`conn::Limits`], at most `limits.max` open at once over every
+/// listener (`gate`).
 async fn serve(
     listener: tokio::net::TcpListener,
     state: Arc<State>,
     acceptor: Option<tokio_rustls::TlsAcceptor>,
+    limits: conn::Limits,
+    gate: Arc<tokio::sync::Semaphore>,
 ) {
+    let mut said = None::<std::time::Instant>;
+    let mut say = |what: &str| {
+        // At most once a minute: a flood would fill the log.
+        if said.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            eprintln!("hyperstor-mgmt: {what}");
+            said = Some(std::time::Instant::now());
+        }
+    };
     loop {
-        let Ok((stream, peer)) = listener.accept().await else {
-            continue;
+        let permit = match gate.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                say(&format!(
+                    "{} connections open, the most it takes; waiting for one to close",
+                    limits.max
+                ));
+                let Ok(p) = gate.clone().acquire_owned().await else {
+                    return;
+                };
+                p
+            }
+        };
+        let (stream, peer) = match listener.accept().await {
+            Ok(a) => a,
+            Err(e) => {
+                // Out of file handles, most often: retrying at once would spin.
+                say(&format!("accepting a connection: {e}"));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
         };
         let state = state.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let builder = hyper::server::conn::http1::Builder::new();
-            let Some(a) = acceptor else {
-                let via = state.front.via_proxy(peer.ip(), false);
-                let svc = hyper::service::service_fn(move |req| {
-                    let state = state.clone();
-                    async move {
-                        Ok::<_, std::convert::Infallible>(serve_one(&state, req, peer, via).await)
-                    }
-                });
-                let _ = builder
-                    .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
-                    .await;
-                return;
-            };
-            match web::starts_tls(&stream).await {
-                Some(true) => {}
-                Some(false) => {
-                    // Plain HTTP on the HTTPS port: to HTTPS.
-                    let svc = hyper::service::service_fn(|req| async move {
-                        Ok::<_, std::convert::Infallible>(match whole(None, req).await {
-                            Ok(req) => web::to_https(&req),
-                            Err(r) => r,
-                        })
-                    });
-                    let _ = builder
-                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
-                        .await;
-                    return;
-                }
-                None => return,
+            let _permit = permit;
+            let watch = conn::Watch::new();
+            tokio::select! {
+                _ = serve_conn(stream, peer, state, acceptor, watch.clone()) => {}
+                _ = watch.expired(&limits) => {}
             }
-            let Ok(tls) = a.accept(stream).await else {
-                return;
-            };
-            // Served a Tailscale certificate: a browser trusts it, so HSTS.
-            let hsts = tls
-                .get_ref()
-                .1
-                .server_name()
-                .is_some_and(|n| state.held.as_ref().is_some_and(|h| h.contains(n)));
-            // A client certificate got this far only if `--proxy-ca` took it.
-            let cert = tls.get_ref().1.peer_certificates().is_some();
-            let via = state.front.via_proxy(peer.ip(), cert);
+        });
+    }
+}
+
+/// Serves one connection; `watch` sees its reads and writes and each
+/// request in flight.
+async fn serve_conn(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    state: Arc<State>,
+    acceptor: Option<tokio_rustls::TlsAcceptor>,
+    watch: Arc<conn::Watch>,
+) {
+    let builder = hyper::server::conn::http1::Builder::new();
+    let Some(a) = acceptor else {
+        let via = state.front.via_proxy(peer.ip(), false);
+        let w = watch.clone();
+        let svc = hyper::service::service_fn(move |req| {
+            let state = state.clone();
+            let busy = w.busy();
+            async move {
+                let r = serve_one(&state, req, peer, via).await;
+                drop(busy);
+                Ok::<_, std::convert::Infallible>(r)
+            }
+        });
+        let io = conn::Watched::new(stream, watch);
+        let _ = builder
+            .serve_connection(hyper_util::rt::TokioIo::new(io), svc)
+            .await;
+        return;
+    };
+    match web::starts_tls(&stream).await {
+        Some(true) => {}
+        Some(false) => {
+            // Plain HTTP on the HTTPS port: to HTTPS.
+            let w = watch.clone();
             let svc = hyper::service::service_fn(move |req| {
-                let state = state.clone();
+                let busy = w.busy();
                 async move {
-                    let mut r = serve_one(&state, req, peer, via).await;
-                    if hsts {
-                        r.headers_mut().insert(
-                            http::header::STRICT_TRANSPORT_SECURITY,
-                            http::HeaderValue::from_static("max-age=86400"),
-                        );
-                    }
+                    let r = match whole(None, req).await {
+                        Ok(req) => web::to_https(&req),
+                        Err(r) => r,
+                    };
+                    drop(busy);
                     Ok::<_, std::convert::Infallible>(r)
                 }
             });
+            let io = conn::Watched::new(stream, watch);
             let _ = builder
-                .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
+                .serve_connection(hyper_util::rt::TokioIo::new(io), svc)
                 .await;
-        });
+            return;
+        }
+        None => return,
     }
+    let Ok(tls) = a.accept(conn::Watched::new(stream, watch.clone())).await else {
+        return;
+    };
+    // Served a Tailscale certificate: a browser trusts it, so HSTS.
+    let hsts = tls
+        .get_ref()
+        .1
+        .server_name()
+        .is_some_and(|n| state.held.as_ref().is_some_and(|h| h.contains(n)));
+    // A client certificate got this far only if `--proxy-ca` took it.
+    let cert = tls.get_ref().1.peer_certificates().is_some();
+    let via = state.front.via_proxy(peer.ip(), cert);
+    let svc = hyper::service::service_fn(move |req| {
+        let state = state.clone();
+        let busy = watch.busy();
+        async move {
+            let mut r = serve_one(&state, req, peer, via).await;
+            drop(busy);
+            if hsts {
+                r.headers_mut().insert(
+                    http::header::STRICT_TRANSPORT_SECURITY,
+                    http::HeaderValue::from_static("max-age=86400"),
+                );
+            }
+            Ok::<_, std::convert::Infallible>(r)
+        }
+    });
+    let _ = builder
+        .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
+        .await;
 }
 
 /// While no one is a security administrator, prints a claim code: whoever
