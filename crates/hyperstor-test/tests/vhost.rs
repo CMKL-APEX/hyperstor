@@ -424,7 +424,7 @@ fn each_disk_runs_on_its_guests_reactor() {
         let d = l.iter().find(|d| d["volume"] == a.as_str()).unwrap();
         assert_eq!(d["node"], n, "{d}");
     }
-    // Unbound: the least loaded, the first.
+    // Unbound: the least loaded.
     let mut gb = Guest::connect(&sb, true);
     gb.write(0, &data);
     assert_eq!(reactor(&b), 0);
@@ -481,7 +481,9 @@ fn an_unbound_guests_disk_follows_its_pages() {
     }
     let c = Cluster::all_in_one("vhost-pages", 3);
     let a = volume(&c, "16M");
-    let cpus = format!("{},{}", first.1, last.1);
+    // Reactor 0 on the last node, 1 on the first: an unbound guest
+    // starts on 1, the least loaded that isn't the control socket's.
+    let cpus = format!("{},{}", last.1, first.1);
     let svc = Service::start(&c, "vhost-pages", &["--cpus", &cpus]);
     let reactor = || {
         let r = svc.ctl(serde_json::json!({"id": 1, "op": "list"}));
@@ -495,10 +497,10 @@ fn an_unbound_guests_disk_follows_its_pages() {
     let mut g = Guest::connect_touched(&sa, true);
     let data = pattern(9, 256 << 10);
     g.write(0, &data);
-    assert_eq!(reactor().0, 0, "unbound: the least loaded, the first");
+    assert_eq!(reactor().0, 1, "unbound: the least loaded, not the first");
     let t = std::time::Instant::now();
     let mut i = 0u64;
-    while reactor().0 != 1 {
+    while reactor().0 != 0 {
         assert!(
             t.elapsed() < std::time::Duration::from_secs(20),
             "never moved"
@@ -516,7 +518,7 @@ fn an_unbound_guests_disk_follows_its_pages() {
     }
     g.write(0, &data[..4096]);
     std::thread::sleep(std::time::Duration::from_millis(2500));
-    assert_eq!(reactor().0, 1, "placed by its pages once");
+    assert_eq!(reactor().0, 0, "placed by its pages once");
     drop(g);
     let d = svc.ctl(serde_json::json!({"id": 2, "op": "detach", "args": {"volume": a}}));
     assert!(d.get("ok").is_some(), "{d}");

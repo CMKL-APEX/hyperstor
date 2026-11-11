@@ -186,17 +186,20 @@ pub fn majority(nodes: &[i32]) -> Option<(u32, usize, usize)> {
 
 /// Where a disk's connection goes (D292): the reactor on the node its
 /// guest's memory is bound to; otherwise, or when no reactor is on that
-/// node, the least loaded (the first of equals). `reactors` are the
-/// reactors' nodes, `load` the connections each serves.
+/// node, the least loaded (of equals, not the first reactor). `reactors`
+/// are the reactors' nodes, `load` the connections each serves.
 pub fn place(policy: &Policy, reactors: &[Option<u32>], load: &[usize]) -> usize {
+    // Of equals, the first reactor last: it also serves the control
+    // socket and accepts every disk's connection.
+    let key = |r: &usize| (load[*r], *r == 0);
     if let Some(n) = policy.node()
         && let Some(r) = (0..reactors.len())
             .filter(|&r| reactors[r] == Some(n))
-            .min_by_key(|&r| load[r])
+            .min_by_key(key)
     {
         return r;
     }
-    (0..reactors.len()).min_by_key(|&r| load[r]).unwrap_or(0)
+    (0..reactors.len()).min_by_key(key).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -243,7 +246,9 @@ mod tests {
         // No reactor on its node, several nodes, or none: least loaded.
         assert_eq!(place(&bound(5), &reactors, &[2, 1, 1]), 1);
         assert_eq!(place(&Policy::Nodes(vec![0, 1]), &reactors, &[2, 3, 1]), 2);
-        assert_eq!(place(&Policy::Any, &reactors, &[0, 0, 0]), 0);
+        // Of equals, not the first, which has the control socket.
+        assert_eq!(place(&Policy::Any, &reactors, &[0, 0, 0]), 1);
+        assert_eq!(place(&Policy::Any, &[Some(0), Some(0)], &[1, 1]), 1);
         assert_eq!(place(&Policy::Any, &[None], &[4]), 0);
     }
 
