@@ -263,6 +263,9 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     // that isn't there is refused until it is set.
     assert_eq!(step(&["create", "first"]), "created");
     assert_eq!(step(&["roundtrip", "first"]), "roundtrip ok");
+    // A presigned PUT, and one with an x-amz- header it doesn't sign,
+    // refused as S3 refuses it.
+    assert_eq!(step(&["presigned", "first"]), "presigned ok");
     assert_eq!(
         step(&["create", "second", "fast"]),
         "InvalidLocationConstraint"

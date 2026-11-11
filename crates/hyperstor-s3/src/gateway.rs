@@ -373,6 +373,12 @@ impl From<AuthError> for ApiError {
             ),
             AuthError::Expired => ApiError::new(403, "AccessDenied", "the request has expired"),
             AuthError::Unsupported(w) => ApiError::not_implemented(w),
+            // S3's words, which clients and people search for.
+            AuthError::NotSigned(_) => ApiError::new(
+                403,
+                "AccessDenied",
+                "There were headers present in the request which were not signed",
+            ),
         }
     }
 }
