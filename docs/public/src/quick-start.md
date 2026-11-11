@@ -1,7 +1,8 @@
 # Quick start
 
 > **The easiest start** is the installer, which sets up the map service,
-> three storage nodes, `hyperstorctl` and the dashboard on one host, as
+> three storage nodes, `hyperstorctl`, the dashboard and an S3 gateway
+> on one host, as
 > system services, after the build below:
 > `sudo target/release/hyperstor-install install --all-in-one` (see
 > [Installing a trial cluster](admin-guide/installation.md#installing-a-trial-cluster)).

@@ -29,9 +29,10 @@ planned) on many storage nodes, places them by failure domain, and keeps
 serving when nodes, devices or links fail. Block volumes come first: for
 virtual machines through vhost-user-blk (built), and for other hosts
 through NVMe over Fabrics (planned). A read cache for data that can't
-change is being built into the client library. The same object layer is
-meant to carry GPU-direct reads into GPU memory, an S3 gateway and a
-distributed filesystem later, with NFS proposed on top of it. It is built for the
+change is being built into the client library. The same object layer
+carries an S3 gateway (built), over key-value ranges, and is meant to
+carry GPU-direct reads into GPU memory and a distributed filesystem
+later, with NFS proposed on top of it. It is built for the
 [glidex](https://github.com/CMKL-APEX/glidex) platform, which runs agent
 VMs, inference, fine-tuning and retrieval workloads, and it also runs on
 its own.
